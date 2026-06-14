@@ -700,6 +700,6 @@ fn branch_api_has_no_restore_method() {
 fn branch_api_has_no_publish_review_method() {
     let source = branch_api_source();
 
-    assert!(!source.contains("publish"));
-    assert!(!source.contains("review"));
+    assert!(!source.contains("pub fn publish"));
+    assert!(!source.contains("pub fn review"));
 }

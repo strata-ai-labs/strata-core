@@ -938,6 +938,29 @@ fn queued_wal_truncation_task_defers_without_retention_proof() {
 }
 
 #[test]
+fn wal_truncation_waits_for_queued_flush_watermark_work() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x2a);
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::table_manifest_flush_watermark(
+            CommitVersion::new(2),
+        ))
+        .expect("enqueue watermark");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::wal_truncation())
+        .expect("enqueue truncation");
+
+    let maintenance = runtime
+        .run_next_wal_truncation_maintenance()
+        .expect("run truncation");
+
+    assert_eq!(maintenance, None);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 2);
+    assert_eq!(runtime.maintenance_status().stats().started(), 0);
+}
+
+#[test]
 fn duplicate_wal_truncation_tasks_coalesce_by_retention_scope() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x29);

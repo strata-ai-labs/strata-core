@@ -408,14 +408,10 @@ impl BackgroundScheduler {
                 return false;
             }
             let remaining = timeout.saturating_sub(elapsed);
-            if self
+            let _ = self
                 .inner
                 .drain_cond
-                .wait_for(&mut queue, remaining.min(Duration::from_millis(100)))
-                .timed_out()
-            {
-                continue;
-            }
+                .wait_for(&mut queue, remaining.min(Duration::from_millis(100)));
         }
     }
 
@@ -1593,7 +1589,7 @@ mod tests {
             let submit_executed = Arc::clone(&executed);
             let submit_count = Arc::clone(&submitted);
             let submit_barrier = Arc::clone(&barrier);
-            let submitter = std::thread::spawn(move || {
+            let submit_thread = std::thread::spawn(move || {
                 submit_barrier.wait();
                 for _ in 0..100 {
                     let executed = Arc::clone(&submit_executed);
@@ -1615,7 +1611,7 @@ mod tests {
                 shutdown_scheduler.shutdown(None);
             });
 
-            submitter.join().expect("submitter joined");
+            submit_thread.join().expect("submitter joined");
             shutdowner.join().expect("shutdowner joined");
 
             let submitted = submitted.load(AtomicOrdering::Relaxed);

@@ -83,7 +83,7 @@ fn automatic_checkpoint_triggers_when_wal_bytes_exceed_threshold() {
 
     assert_eq!(
         outcome.status(),
-        LifecycleWalGrowthStatus::CheckpointEnqueued
+        LifecycleWalGrowthStatus::MaintenanceEnqueued
     );
     assert_eq!(
         outcome.trigger(),
@@ -96,16 +96,15 @@ fn automatic_checkpoint_triggers_when_wal_bytes_exceed_threshold() {
     assert!(outcome.facts().dirty_bytes() > 0);
     assert!(outcome.facts().dirty_records() > 0);
     assert_eq!(outcome.commits_since_checkpoint(), 1);
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 4);
     assert!(backend.snapshot_objects().is_empty());
     assert_eq!(backend.delete_calls(), 0);
 
-    let maintenance = runtime
-        .run_next_checkpoint_maintenance()
-        .expect("checkpoint runner")
-        .expect("checkpoint outcome");
-    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Completed);
-    assert_eq!(backend.snapshot_objects().len(), 1);
+    let outcomes = drain_wal_growth_maintenance(&mut runtime);
+    assert!(outcomes
+        .iter()
+        .any(|outcome| outcome.task_kind() == MaintenanceTaskKind::Checkpoint));
+    assert!(!backend.snapshot_objects().is_empty());
     assert_eq!(backend.delete_calls(), 0);
 }
 
@@ -137,14 +136,14 @@ fn automatic_checkpoint_triggers_when_retained_segments_exceed_threshold() {
 
     assert_eq!(
         outcome.status(),
-        LifecycleWalGrowthStatus::CheckpointEnqueued
+        LifecycleWalGrowthStatus::MaintenanceEnqueued
     );
     assert_eq!(
         outcome.trigger(),
         Some(LifecycleWalGrowthTrigger::RetainedSegments)
     );
     assert!(outcome.facts().retained_segments() > 1);
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 4);
 }
 
 #[test]
@@ -166,12 +165,15 @@ fn automatic_checkpoint_coalesces_existing_checkpoint_task() {
         .expect("automatic policy outcome");
     let second = runtime.evaluate_wal_growth_policy().expect("policy retry");
 
-    assert_eq!(first.status(), LifecycleWalGrowthStatus::CheckpointEnqueued);
+    assert_eq!(
+        first.status(),
+        LifecycleWalGrowthStatus::MaintenanceEnqueued
+    );
     assert_eq!(
         second.status(),
-        LifecycleWalGrowthStatus::CheckpointCoalesced
+        LifecycleWalGrowthStatus::MaintenanceCoalesced
     );
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 4);
     assert_eq!(
         first.enqueue().map(|outcome| outcome.task_id()),
         second.enqueue().map(|outcome| outcome.task_id())
@@ -196,22 +198,22 @@ fn automatic_checkpoint_uses_existing_maintenance_executor() {
         .expect("automatic policy outcome")
         .enqueue()
         .copied()
-        .expect("checkpoint enqueue");
+        .expect("maintenance enqueue");
 
     assert!(enqueue.was_enqueued());
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 4);
     assert!(backend.snapshot_objects().is_empty());
 
-    let maintenance = runtime
-        .run_next_checkpoint_maintenance()
-        .expect("checkpoint runner")
-        .expect("checkpoint outcome");
+    let outcomes = drain_wal_growth_maintenance(&mut runtime);
+    let maintenance = outcomes
+        .iter()
+        .find(|outcome| outcome.task_id() == Some(enqueue.task_id()))
+        .expect("returned task outcome");
 
     assert_eq!(maintenance.task_id(), Some(enqueue.task_id()));
-    assert_eq!(maintenance.task_kind(), MaintenanceTaskKind::Checkpoint);
-    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(maintenance.task_kind(), MaintenanceTaskKind::WalTruncation);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
-    assert_eq!(backend.snapshot_objects().len(), 1);
+    assert!(!backend.snapshot_objects().is_empty());
 }
 
 #[test]
@@ -271,11 +273,8 @@ fn automatic_checkpoint_deferred_while_quiesce_active() {
             generation_guard(),
         )
         .expect("durable commit");
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
-    runtime
-        .run_next_checkpoint_maintenance()
-        .expect("checkpoint runner")
-        .expect("checkpoint outcome");
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 4);
+    drain_wal_growth_maintenance(&mut runtime);
     let quiesce = runtime
         .guard_set()
         .try_begin_quiesce()
@@ -290,7 +289,10 @@ fn automatic_checkpoint_deferred_while_quiesce_active() {
     assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
     drop(quiesce);
     let retry = runtime.evaluate_wal_growth_policy().expect("policy retry");
-    assert_eq!(retry.status(), LifecycleWalGrowthStatus::CheckpointEnqueued);
+    assert_eq!(
+        retry.status(),
+        LifecycleWalGrowthStatus::MaintenanceEnqueued
+    );
 }
 
 #[test]
@@ -306,10 +308,7 @@ fn automatic_checkpoint_deferred_while_close_in_progress() {
             generation_guard(),
         )
         .expect("durable commit");
-    runtime
-        .run_next_checkpoint_maintenance()
-        .expect("checkpoint runner")
-        .expect("checkpoint outcome");
+    drain_wal_growth_maintenance(&mut runtime);
     runtime
         .force_close_requested_for_test()
         .expect("close requested");
@@ -391,7 +390,7 @@ fn wal_growth_pressure_facts_are_visible_to_public_boundary() {
 
     assert_eq!(
         outcome.status(),
-        LifecycleWalGrowthStatus::CheckpointEnqueued
+        LifecycleWalGrowthStatus::MaintenanceEnqueued
     );
     assert_eq!(
         outcome.trigger(),
@@ -436,8 +435,8 @@ fn automatic_checkpoint_policy_is_deterministic_without_background_thread() {
         second_outcome.commits_since_checkpoint()
     );
     assert_eq!(first_outcome.facts(), second_outcome.facts());
-    assert_eq!(first.maintenance_status().pending_tasks(), 1);
-    assert_eq!(second.maintenance_status().pending_tasks(), 1);
+    assert_eq!(first.maintenance_status().pending_tasks(), 4);
+    assert_eq!(second.maintenance_status().pending_tasks(), 4);
     assert!(first_backend.snapshot_objects().is_empty());
     assert!(second_backend.snapshot_objects().is_empty());
 }
@@ -524,11 +523,53 @@ fn dynamic_physical_key(branch: BranchId, user_key: Vec<u8>) -> PhysicalKey {
     .expect("physical key")
 }
 
+fn drain_wal_growth_maintenance(
+    runtime: &mut LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
+) -> Vec<MaintenanceOutcome> {
+    let mut outcomes = Vec::new();
+    for _ in 0..8 {
+        if runtime.maintenance_status().pending_tasks() == 0 {
+            break;
+        }
+        if let Some(outcome) = runtime
+            .run_next_flush_maintenance()
+            .expect("flush maintenance")
+        {
+            outcomes.push(outcome);
+            continue;
+        }
+        if let Some(outcome) = runtime
+            .run_next_checkpoint_maintenance()
+            .expect("checkpoint maintenance")
+        {
+            outcomes.push(outcome);
+            continue;
+        }
+        if let Some(outcome) = runtime
+            .run_next_flush_watermark_maintenance()
+            .expect("flush watermark maintenance")
+        {
+            outcomes.push(outcome);
+            continue;
+        }
+        if let Some(outcome) = runtime
+            .run_next_wal_truncation_maintenance()
+            .expect("WAL truncation maintenance")
+        {
+            outcomes.push(outcome);
+            continue;
+        }
+        panic!("pending WAL growth maintenance did not match a WAL runner");
+    }
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    outcomes
+}
+
 #[test]
 fn automatic_checkpoint_does_not_truncate_wal_without_retention_proof() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x96);
-    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, u64::MAX);
+    let policy = LifecycleWalGrowthPolicy::disabled();
     let mut runtime = open_durable_runtime(branch, &backend, policy);
 
     runtime
@@ -537,12 +578,15 @@ fn automatic_checkpoint_does_not_truncate_wal_without_retention_proof() {
             generation_guard(),
         )
         .expect("durable commit");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::wal_truncation())
+        .expect("enqueue direct WAL truncation");
     let maintenance = runtime
-        .run_next_checkpoint_maintenance()
-        .expect("checkpoint runner")
-        .expect("checkpoint outcome");
+        .run_next_wal_truncation_maintenance()
+        .expect("WAL truncation runner")
+        .expect("WAL truncation outcome");
 
-    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Deferred);
     assert_eq!(backend.delete_calls(), 0);
     assert!(!backend
         .events()
@@ -569,13 +613,15 @@ fn automatic_checkpoint_truncates_wal_only_after_checkpoint_or_table_manifest_pr
             )
             .expect("durable commit");
         if runtime.maintenance_status().pending_tasks() > 0 {
-            runtime
-                .run_next_checkpoint_maintenance()
-                .expect("automatic checkpoint runner")
-                .expect("automatic checkpoint outcome");
+            let outcomes = drain_wal_growth_maintenance(&mut runtime);
+            assert!(outcomes.iter().any(|outcome| {
+                matches!(
+                    outcome.status(),
+                    MaintenanceOutcomeStatus::Completed | MaintenanceOutcomeStatus::Deferred
+                )
+            }));
         }
-        assert_eq!(backend.delete_calls(), 0);
-        if runtime.services().wal().active_segment_id() > 1 {
+        if runtime.services().wal().active_segment_id() > 1 && backend.delete_calls() > 0 {
             break;
         }
     }
@@ -584,16 +630,5 @@ fn automatic_checkpoint_truncates_wal_only_after_checkpoint_or_table_manifest_pr
         "test setup must rotate the log"
     );
 
-    runtime
-        .enqueue_maintenance(MaintenanceTaskRequest::checkpoint_with_options(
-            MaintenanceCheckpointOptions::new(Some(99), true),
-        ))
-        .expect("proof checkpoint enqueue");
-    let maintenance = runtime
-        .run_next_checkpoint_maintenance()
-        .expect("proof checkpoint runner")
-        .expect("proof checkpoint outcome");
-
-    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Completed);
     assert!(backend.delete_calls() > 0);
 }

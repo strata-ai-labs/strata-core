@@ -1221,7 +1221,7 @@ fn rotation_budget_failure_does_not_advance_commit_visibility() {
         .execute_cache_commit(batch, CommitBranchGenerationGuard::not_supplied())
         .expect_err("rotation budget rejects oversize commit");
 
-    assert_budget_error(&error, StorageBudgetPool::FrozenMutable);
+    assert_frozen_backlog_pressure_rejection(&error);
     assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
     assert!(runtime.branch_state().is_empty());
     assert!(runtime
@@ -1266,8 +1266,8 @@ fn cache_and_durable_rotation_budget_behavior_match() {
         )
         .expect_err("durable rotation budget rejects oversize commit");
 
-    assert_budget_error(&cache_error, StorageBudgetPool::FrozenMutable);
-    assert_budget_error(&durable_error, StorageBudgetPool::FrozenMutable);
+    assert_frozen_backlog_pressure_rejection(&cache_error);
+    assert_frozen_backlog_pressure_rejection(&durable_error);
     assert_eq!(cache.visible_version(), CommitVersion::ZERO);
     assert_eq!(durable.visible_version(), CommitVersion::ZERO);
     assert!(cache.branch_state().is_empty());
@@ -1541,6 +1541,18 @@ fn assert_budget_error(error: &LifecycleError, expected_pool: StorageBudgetPool)
         current = candidate.source();
     }
     panic!("expected storage budget error for {expected_pool:?}, got {error:?}");
+}
+
+fn assert_frozen_backlog_pressure_rejection(error: &LifecycleError) {
+    assert!(matches!(
+        error,
+        LifecycleError::StoragePressureRejected {
+            severity: LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            pressure_reason: LifecycleStoragePressureReason::FrozenBacklog,
+            retryable: false,
+            ..
+        }
+    ));
 }
 
 fn assert_budget_error_details(

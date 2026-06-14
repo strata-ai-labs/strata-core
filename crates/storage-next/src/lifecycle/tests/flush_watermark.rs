@@ -446,6 +446,43 @@ fn flush_watermark_persists_from_table_manifest_coverage() {
 }
 
 #[test]
+fn flush_watermark_persists_from_table_manifest_coverage_without_checkpoint() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0xb0);
+    let shell = assemble_shell(branch, &backend).expect("shell");
+    let table_rows = rows_for_versions(branch, 1..=5, b"genesis-proof");
+    let manifest = durable_manifest(&backend, branch, "persist-genesis-proof", &table_rows);
+    let mut state = BranchLocalState::empty(branch);
+    install_l0_table_for_test(&mut state, branch, "persist-genesis-proof", &table_rows);
+    let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest(
+        CommitVersion::new(5),
+        &state,
+        &manifest,
+        &RecoveryHealth::Healthy,
+    )
+    .expect("proof");
+
+    let outcome = persist_table_manifest_watermark(
+        shell.services().manifest(),
+        CommitVersion::new(5),
+        CommitVersion::new(5),
+        &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+        &proof,
+    )
+    .expect("persist watermark");
+
+    assert!(outcome.was_persisted());
+    let database = DatabaseManifestService::new(&backend)
+        .load_required()
+        .expect("database manifest");
+    assert_eq!(
+        database.flushed_through_commit_id(),
+        Some(CommitVersion::new(5))
+    );
+    assert_eq!(database.snapshot_watermark(), None);
+}
+
+#[test]
 fn flush_watermark_persists_from_combined_checkpoint_and_table_manifest_coverage() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x98);
@@ -608,6 +645,50 @@ fn recovery_accepts_flush_watermark_above_checkpoint_when_table_manifest_covers(
         .services_mut()
         .wal_mut()
         .append(&wal_record(branch, 5, b"covered", b"table"))
+        .expect("append boundary");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&wal_record(branch, 6, b"tail", b"wal"))
+        .expect("append tail");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recover");
+
+    assert_eq!(outcome.wal().replay_start(), CommitVersion::new(5));
+    assert_eq!(outcome.wal().records().len(), 1);
+    assert_eq!(
+        outcome.wal().records()[0].commit_version(),
+        CommitVersion::new(6)
+    );
+    let view = shell.branch_state().capture_read_view().expect("read view");
+    assert_eq!(
+        view.latest(table_row.physical_key())
+            .expect("read table row")
+            .expect("table row")
+            .row()
+            .value(),
+        b"table"
+    );
+}
+
+#[test]
+fn recovery_accepts_flush_watermark_without_checkpoint_when_table_manifest_covers() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0xb1);
+    let mut manifest_rows = rows_for_versions(branch, 1..=4, b"genesis-covered");
+    let table_row = put_row(branch, 5, b"genesis", b"table");
+    manifest_rows.push(table_row.clone());
+    durable_manifest(&backend, branch, "recovery-genesis-covered", &manifest_rows);
+    seed_database_manifest(&backend, None, None, Some(CommitVersion::new(5)));
+    let mut shell = assemble_shell(branch, &backend).expect("shell");
+    shell
+        .services_mut()
+        .wal_mut()
+        .append(&wal_record(branch, 5, b"genesis", b"table"))
         .expect("append boundary");
     shell
         .services_mut()

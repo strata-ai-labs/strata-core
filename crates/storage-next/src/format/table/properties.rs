@@ -42,6 +42,24 @@ impl TableProperties {
         )
     }
 
+    pub(crate) fn from_encoded_key_bytes(
+        row_count: u64,
+        data_block_count: u32,
+        commit_min: CommitVersion,
+        commit_max: CommitVersion,
+        min_key_bytes: Vec<u8>,
+        max_key_bytes: Vec<u8>,
+    ) -> Result<Self, FormatError> {
+        Self::from_parts(
+            row_count,
+            data_block_count,
+            commit_min,
+            commit_max,
+            min_key_bytes,
+            max_key_bytes,
+        )
+    }
+
     pub(crate) fn from_data_blocks(blocks: &[TableDataBlock]) -> Result<Self, FormatError> {
         if blocks.is_empty() || blocks.len() > MAX_TABLE_DATA_BLOCKS as usize {
             return Err(FormatError::InvalidLength {

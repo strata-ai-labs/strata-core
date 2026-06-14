@@ -638,8 +638,8 @@ fn api_wal_growth_policy_status_reports_checkpoint_due() {
     assert_eq!(outcome.task(), MaintenanceTask::WalGrowth);
     assert!(matches!(
         growth.status(),
-        MaintenanceWalGrowthStatus::CheckpointEnqueued
-            | MaintenanceWalGrowthStatus::CheckpointCoalesced
+        MaintenanceWalGrowthStatus::MaintenanceEnqueued
+            | MaintenanceWalGrowthStatus::MaintenanceCoalesced
     ));
     assert_eq!(
         growth.trigger(),
@@ -647,13 +647,20 @@ fn api_wal_growth_policy_status_reports_checkpoint_due() {
     );
     assert!(growth.checkpoint_enqueued());
     assert_eq!(growth.commits_since_checkpoint(), 2);
-    assert_eq!(
-        runtime
-            .maintenance_status()
-            .expect("status")
-            .pending_tasks(),
-        1
-    );
+    let status = runtime.maintenance_status().expect("status");
+    assert!(status.pending_tasks() >= 4);
+    let pending_kinds = runtime.pending_lifecycle_maintenance_kinds_for_test();
+    for expected in [
+        crate::lifecycle::MaintenanceTaskKind::Flush,
+        crate::lifecycle::MaintenanceTaskKind::Checkpoint,
+        crate::lifecycle::MaintenanceTaskKind::FlushWatermark,
+        crate::lifecycle::MaintenanceTaskKind::WalTruncation,
+    ] {
+        assert!(
+            pending_kinds.contains(&expected),
+            "WAL growth should enqueue {expected:?}; pending={pending_kinds:?}"
+        );
+    }
 }
 
 #[test]
@@ -704,7 +711,7 @@ fn api_maintenance_enqueue_and_drain_are_deterministic() {
 
 #[test]
 fn api_maintenance_queue_status_reports_pending_only() {
-    let mut runtime = open_runtime();
+    let mut runtime = open_manual_runtime();
     runtime
         .commit(&put_batch(b"status", b"value"))
         .expect("commit");

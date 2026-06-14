@@ -14,6 +14,7 @@ use crate::format::{
 };
 use crate::layout::ObjectLayout;
 use crate::lifecycle::recovery::encode_checkpoint_row_section;
+use crate::lifecycle::wal_retention_watermark;
 use crate::object::ObjectName;
 use crate::observability::perf_trace;
 use crate::service::{
@@ -469,9 +470,9 @@ fn validate_flush_watermark_input(
     Ok(())
 }
 
-fn validate_table_manifest_proof_extending_checkpoint(
+fn validate_table_manifest_proof_extending_retention_watermark(
     proof: &LifecycleTableManifestFlushCoverageProof,
-    checkpoint_watermark: CommitVersion,
+    retention_watermark: CommitVersion,
     manifest_epoch: Option<u64>,
     recovery_health_epoch: Option<u64>,
     required_branch_epochs: &[(BranchId, u64)],
@@ -510,7 +511,7 @@ fn validate_table_manifest_proof_extending_checkpoint(
     proof.validate_current_epochs(manifest_epoch, recovery_health_epoch)?;
     proof.validate_current_branch_epochs(&branch_epochs)?;
     proof.validate_required_branches(&required_branches)?;
-    proof.validate_extends_checkpoint(checkpoint_watermark)
+    proof.validate_extends_checkpoint(retention_watermark)
 }
 
 fn sorted_required_branch_epochs(
@@ -690,11 +691,6 @@ impl LifecycleTableManifestFlushCoverageProof {
         &self,
         checkpoint_watermark: CommitVersion,
     ) -> LifecycleResult<()> {
-        if checkpoint_watermark == CommitVersion::ZERO {
-            return Err(LifecycleError::WalRetentionProofIncomplete {
-                reason: "table manifest flush proof requires a nonzero checkpoint lower bound",
-            });
-        }
         for coverage in &self.branch_coverages {
             coverage.validate_extends_checkpoint(checkpoint_watermark, self.candidate)?;
         }
@@ -1375,7 +1371,7 @@ pub(crate) fn checkpoint_durable_rows_with_budget(
     services: &LifecycleDurableLocalServices<'_>,
     request: &LifecycleCheckpointRequest,
     visible_version: CommitVersion,
-    rows: Vec<crate::row::StorageRow>,
+    rows: &[crate::row::StorageRow],
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
     request.validate()?;
@@ -1398,7 +1394,7 @@ fn publish_checkpoint(
     }
     let rows = collect_rows(visible_version)?;
     drop(quiesce);
-    publish_checkpoint_rows(services, visible_version, request, budget, rows)
+    publish_checkpoint_rows(services, visible_version, request, budget, &rows)
 }
 
 fn publish_checkpoint_rows(
@@ -1406,7 +1402,7 @@ fn publish_checkpoint_rows(
     visible_version: CommitVersion,
     request: &LifecycleCheckpointRequest,
     budget: Option<&StorageBudgetLedger>,
-    rows: Vec<crate::row::StorageRow>,
+    rows: &[crate::row::StorageRow],
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
     if visible_version == CommitVersion::ZERO || rows.is_empty() {
         return Ok(LifecycleCheckpointOutcome::deferred(request));
@@ -1417,7 +1413,7 @@ fn publish_checkpoint_rows(
         })?;
     validate_snapshot_id_advances(services.manifest(), request.snapshot_id())?;
     let mut sections = Vec::with_capacity(1 + request.extra_sections().len());
-    sections.push(encode_checkpoint_row_section(&rows).map_err(format_error)?);
+    sections.push(encode_checkpoint_row_section(rows).map_err(format_error)?);
     sections.extend(request.extra_sections().iter().cloned());
     require_checkpoint_artifact_budget(budget, request, &sections)?;
     let active_wal_segment = services.wal().active_segment_id();
@@ -1609,7 +1605,7 @@ fn validate_flush_watermark_proof(
             validate_table_manifest_flush_watermark(
                 candidate,
                 proof,
-                current.snapshot_watermark().map(CommitVersion::new),
+                current,
                 table_manifest_context,
             )?;
         }
@@ -1663,20 +1659,20 @@ fn validate_checkpoint_flush_watermark(
 fn validate_table_manifest_flush_watermark(
     candidate: CommitVersion,
     proof: &LifecycleTableManifestFlushCoverageProof,
-    snapshot_watermark: Option<CommitVersion>,
+    current: &crate::format::DatabaseManifest,
     table_manifest_context: Option<TableManifestFlushContext<'_>>,
 ) -> LifecycleResult<()> {
     proof.validate_for_candidate(candidate)?;
-    let Some(snapshot_watermark) = snapshot_watermark else {
-        return Err(LifecycleError::WalRetentionProofIncomplete {
-            reason: "table manifest flush proof requires durable checkpoint facts",
-        });
-    };
+    let retention_watermark = wal_retention_watermark(
+        current.snapshot_watermark().map(CommitVersion::new),
+        current.flushed_through_commit_id(),
+    )
+    .unwrap_or(CommitVersion::ZERO);
     let (manifest_epoch, recovery_health_epoch, branch_epochs) =
         unpack_table_manifest_context(table_manifest_context);
-    validate_table_manifest_proof_extending_checkpoint(
+    validate_table_manifest_proof_extending_retention_watermark(
         proof,
-        snapshot_watermark,
+        retention_watermark,
         manifest_epoch,
         recovery_health_epoch,
         branch_epochs,
@@ -1706,12 +1702,18 @@ fn validate_combined_flush_watermark(
             reason: "checkpoint lower bound exceeds durable checkpoint facts",
         });
     }
+    let retention_watermark = wal_retention_watermark(
+        current.snapshot_watermark().map(CommitVersion::new),
+        current.flushed_through_commit_id(),
+    )
+    .unwrap_or(CommitVersion::ZERO);
+    let table_manifest_lower_bound = checkpoint.max(retention_watermark);
     let (manifest_epoch, recovery_health_epoch, branch_epochs) =
         unpack_table_manifest_context(table_manifest_context);
     table_manifest.validate_for_candidate(candidate)?;
-    validate_table_manifest_proof_extending_checkpoint(
+    validate_table_manifest_proof_extending_retention_watermark(
         table_manifest,
-        checkpoint,
+        table_manifest_lower_bound,
         manifest_epoch,
         recovery_health_epoch,
         branch_epochs,

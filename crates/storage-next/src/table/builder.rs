@@ -6,8 +6,9 @@ use super::{
     TableRuntimeFacts, TableRuntimeResult,
 };
 use crate::format::{
-    ImmutableTableStreamingEncoder, ImmutableTableStreamingOutput, MAX_TABLE_BLOCK_DECODED_BYTES,
-    MAX_TABLE_BLOCK_ENTRIES, MAX_TABLE_KEY_BYTES, MAX_TABLE_ROW_BYTES,
+    ImmutableTableStreamingEncoder, ImmutableTableStreamingOutput, StreamingTableRow,
+    MAX_TABLE_BLOCK_DECODED_BYTES, MAX_TABLE_BLOCK_ENTRIES, MAX_TABLE_KEY_BYTES,
+    MAX_TABLE_ROW_BYTES,
 };
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
@@ -154,7 +155,10 @@ impl ImmutableTableStreamingBuilder {
     pub(crate) fn append(&mut self, row: &TableRow) -> TableRuntimeResult<()> {
         self.validate_next_row(row)?;
         self.encoder
-            .append(row.row())
+            .append_streaming_row(StreamingTableRow::new(
+                row.encoded_key().to_vec(),
+                row.row().clone(),
+            ))
             .map_err(|source| TableRuntimeError::BuildFormat { source })?;
         self.materialized_rows.push(row.clone());
         self.previous_key = Some(row.key().clone());

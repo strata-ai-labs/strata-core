@@ -622,6 +622,56 @@ fn maintenance_executor_does_not_coalesce_active_task() {
 }
 
 #[test]
+fn maintenance_executor_starts_flush_while_rewrite_is_active() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
+    let rewrite = MaintenanceTaskRequest::compaction(branch_id(10), 0);
+    let flush = MaintenanceTaskRequest::flush(branch_id(10));
+    executor.enqueue(open, rewrite).expect("rewrite");
+    executor.enqueue(open, flush).expect("flush");
+
+    let active_rewrite = executor
+        .start_next_matching(open, |task| task.kind() == MaintenanceTaskKind::Compaction)
+        .expect("start rewrite")
+        .expect("rewrite task");
+    assert_eq!(active_rewrite.kind(), MaintenanceTaskKind::Compaction);
+
+    let active_flush = executor
+        .start_next_matching(open, |task| task.kind() == MaintenanceTaskKind::Flush)
+        .expect("start flush")
+        .expect("flush task");
+
+    assert_eq!(active_flush.kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(executor.status().active_tasks(), 2);
+    assert_eq!(executor.status().pending_tasks(), 0);
+}
+
+#[test]
+fn maintenance_executor_serializes_rewrite_lane() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(4).expect("executor");
+    executor
+        .enqueue(open, MaintenanceTaskRequest::compaction(branch_id(10), 0))
+        .expect("compaction");
+    executor
+        .enqueue(open, MaintenanceTaskRequest::materialization(branch_id(11)))
+        .expect("materialization");
+
+    let active = executor
+        .start_next_matching(open, |_| true)
+        .expect("start rewrite")
+        .expect("active rewrite");
+    assert_eq!(active.kind(), MaintenanceTaskKind::Compaction);
+
+    let blocked = executor
+        .start_next_matching(open, |_| true)
+        .expect("same lane is skipped");
+    assert_eq!(blocked, None);
+    assert_eq!(executor.status().active_tasks(), 1);
+    assert_eq!(executor.status().pending_tasks(), 1);
+}
+
+#[test]
 fn maintenance_executor_clears_active_after_runner_error() {
     let open = open_state();
     let mut executor = LifecycleMaintenanceExecutor::new(2).expect("executor");

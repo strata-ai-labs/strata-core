@@ -227,6 +227,13 @@ impl ObjectLayout {
         Self::family_prefix(ObjectFamily::Wal)
     }
 
+    pub(crate) fn has_wal_segment_prefix(object: &ObjectName) -> bool {
+        match Self::wal_prefix() {
+            Ok(prefix) => object.as_str().starts_with(prefix.as_str()),
+            Err(_) => false,
+        }
+    }
+
     pub(crate) fn wal_segment(segment_id: u64) -> LayoutResult<ObjectName> {
         object_name(&[ObjectFamily::Wal.as_str(), &fixed_u64(segment_id)])
     }
@@ -249,6 +256,13 @@ impl ObjectLayout {
 
     pub(crate) fn wal_segment_metadata_prefix() -> LayoutResult<ObjectPrefix> {
         object_prefix(&[ObjectFamily::Meta.as_str(), ObjectFamily::Wal.as_str()])
+    }
+
+    pub(crate) fn has_wal_segment_metadata_prefix(object: &ObjectName) -> bool {
+        match Self::wal_segment_metadata_prefix() {
+            Ok(prefix) => object.as_str().starts_with(prefix.as_str()),
+            Err(_) => false,
+        }
     }
 
     pub(crate) fn wal_segment_metadata(segment_id: u64) -> LayoutResult<ObjectName> {

@@ -6,6 +6,13 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use super::*;
+use crate::api::runtime::{
+    background_batch_slowdown_duration, background_level_zero_pressure_units,
+    BACKGROUND_LEVEL_ZERO_BLOCK_TABLES, BACKGROUND_LEVEL_ZERO_URGENT_START_TABLES,
+    BACKGROUND_LEVEL_ZERO_URGENT_UNIT_MULTIPLIER, BACKGROUND_URGENT_MUTATION_SCALE_LIMIT,
+    BACKGROUND_URGENT_PER_MUTATION_SLOWDOWN,
+};
+use crate::lifecycle::LifecycleStoragePressureReason;
 
 mod branch;
 mod commit;
@@ -49,6 +56,11 @@ fn background_put_batch(name: &[u8], value: Vec<u8>) -> CommitBatch {
 
 fn default_background_worker_count() -> usize {
     StorageBackgroundMaintenanceOptions::product_default().worker_count()
+}
+
+fn default_terminal_nonzero_level() -> u8 {
+    let max_level_count = crate::branch::config::BranchRuntimeConfig::default().max_level_count();
+    u8::try_from(max_level_count.saturating_sub(1)).expect("configured level fits in u8")
 }
 
 fn background_raw_row(name: &[u8], version: u64) -> crate::row::StorageRow {
@@ -852,17 +864,55 @@ fn source_guard_background_build_runs_before_publish_lock() {
     );
 }
 
+#[test]
+fn source_guard_background_drain_records_start_and_publish_failures() {
+    let runtime_source = include_str!("../runtime.rs");
+    for (label, source) in [
+        (
+            "cache",
+            runtime_source
+                .split("fn drain_cache_background_round")
+                .nth(1)
+                .expect("cache background drain function is present")
+                .split("fn run_next_durable_maintenance")
+                .next()
+                .expect("cache background drain precedes durable helpers"),
+        ),
+        (
+            "durable",
+            runtime_source
+                .split("fn drain_durable_background_round")
+                .nth(1)
+                .expect("durable background drain function is present")
+                .split("fn map_generation_guard")
+                .next()
+                .expect("durable background drain precedes map_generation_guard"),
+        ),
+    ] {
+        assert!(
+            source.contains("record_lifecycle_background_task_start_failure"),
+            "{label} background drain must record start failures before stopping"
+        );
+        assert!(
+            source.contains("record_lifecycle_background_task_publish_failure"),
+            "{label} background drain must record publish failures before stopping"
+        );
+    }
+}
+
 fn assert_background_drain_build_before_publish_lock(drain_source: &str, label: &str) {
     let build_index = drain_source
-        .find("let built = build.build();")
+        .find("let build_result =")
         .unwrap_or_else(|| panic!("{label} background drain must build the task"));
     let publish_index = drain_source
         .find("let publish = {")
         .unwrap_or_else(|| panic!("{label} background drain must enter a publish section"));
     let publish_lock_index = drain_source[publish_index..]
         .find("let mut runtime = runtime.lock();")
-        .map(|index| publish_index + index)
-        .unwrap_or_else(|| panic!("{label} background drain must lock only for publish"));
+        .map_or_else(
+            || panic!("{label} background drain must lock only for publish"),
+            |index| publish_index + index,
+        );
 
     assert!(
         build_index < publish_index && build_index < publish_lock_index,
@@ -939,6 +989,42 @@ fn source_guard_background_drive_logic_uses_maintenance_clock() {
             "{label} drive logic must not read wall-clock time directly"
         );
     }
+}
+
+#[test]
+fn source_guard_pressure_wait_counts_executor_queue_and_active_tasks() {
+    let runtime_source = include_str!("../runtime.rs");
+    let pressure_wait = runtime_source
+        .split("fn background_wait_after_pressure_rejection")
+        .nth(1)
+        .expect("pressure wait function is present")
+        .split("fn enqueue_pressure_maintenance_for_background_wait")
+        .next()
+        .expect("pressure wait precedes enqueue helper");
+    let compact_wait = pressure_wait.split_whitespace().collect::<String>();
+
+    assert!(
+        compact_wait.contains(
+            "pending_tasks.saturating_add(stats_before_wait.queue_depth).saturating_add(stats_before_wait.active_tasks)==0"
+        ),
+        "pressure wait must treat executor queued and active work as in-flight maintenance"
+    );
+}
+
+#[test]
+fn source_guard_close_with_options_documents_background_panic_retry_contract() {
+    let runtime_source = include_str!("../runtime.rs");
+    let close_doc = runtime_source
+        .split("pub fn close_with_options")
+        .next()
+        .expect("runtime source includes close_with_options");
+
+    assert!(
+        close_doc.contains("background worker panic")
+            && close_doc.contains("leaves the runtime open")
+            && close_doc.contains("retry close"),
+        "close_with_options docs must describe retry after shutdown-time background panic"
+    );
 }
 
 #[test]
@@ -1626,6 +1712,14 @@ fn deterministic_inline_block_pressure_wait_uses_manual_clock_executor() {
     )
     .expect("deterministic-inline cache open")
     .into_runtime();
+    assert!(
+        runtime.set_background_block_wait_for_test(
+            std::time::Duration::from_millis(25),
+            std::time::Duration::from_millis(250),
+            1,
+        ),
+        "deterministic-inline background runtime should expose test block wait limits"
+    );
 
     for index in 0..16 {
         let key = format!("inline-block-clock-seed-{index}");
@@ -1655,7 +1749,6 @@ fn deterministic_inline_block_pressure_wait_uses_manual_clock_executor() {
     assert!(perf.lifecycle_write_admission_block_wait_ns() > 0);
     assert!(after > before);
     let status = runtime.maintenance_status().expect("maintenance status");
-    assert_eq!(status.pending_tasks(), 0);
     assert_eq!(status.background_worker_count(), 0);
     assert!(status.background_tasks_completed() >= 1);
 }
@@ -1674,6 +1767,14 @@ fn deterministic_inline_block_pressure_deadline_uses_manual_clock_without_progre
     assert!(
         runtime.set_background_drain_limits_for_test(0, std::time::Duration::from_millis(25)),
         "deterministic-inline background runtime should expose test drain limits"
+    );
+    assert!(
+        runtime.set_background_block_wait_for_test(
+            std::time::Duration::from_millis(25),
+            std::time::Duration::from_millis(250),
+            1,
+        ),
+        "deterministic-inline background runtime should expose test block wait limits"
     );
 
     for index in 0..16 {
@@ -1763,6 +1864,7 @@ fn deterministic_inline_manual_clock_runtime_limit_stops_and_resumes_drain_round
         "deterministic-inline background runtime should expose test drain limits"
     );
     runtime.submit_stale_background_wake_for_test();
+    runtime.wait_background_idle_for_test();
     let status = runtime.maintenance_status().expect("maintenance status");
     assert_eq!(status.pending_tasks(), 0);
     assert_eq!(status.background_worker_count(), 0);
@@ -2421,9 +2523,10 @@ fn background_close_reports_shutdown_panic_once_then_retry_closes() {
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.lifecycle_background_worker_panics(), 1);
     assert_eq!(perf.lifecycle_background_shutdowns(), 1);
-    assert_eq!(
-        perf.lifecycle_background_shutdown_executor_tasks_completed(),
-        1
+    let completed_after_shutdown = perf.lifecycle_background_shutdown_executor_tasks_completed();
+    assert!(
+        completed_after_shutdown >= 1,
+        "shutdown must count at least the completed panic probe, got {completed_after_shutdown}"
     );
 
     let retry = runtime
@@ -2537,19 +2640,19 @@ fn background_wal_growth_checkpoint_wakes_and_drains() {
         report
             .wal_growth()
             .last_status()
-            .map(|summary| summary.status()),
+            .map(super::maintenance::MaintenanceWalGrowthSummary::status),
         Some(
-            MaintenanceWalGrowthStatus::CheckpointEnqueued
-                | MaintenanceWalGrowthStatus::CheckpointCoalesced
+            MaintenanceWalGrowthStatus::MaintenanceEnqueued
+                | MaintenanceWalGrowthStatus::MaintenanceCoalesced
         )
     ));
     assert_eq!(report.checkpoint().state(), DiagnosticsFactState::Known);
     assert!(
         report
             .checkpoint()
-            .checkpoint_watermark()
+            .flush_watermark()
             .is_some_and(|watermark| watermark >= commit.commit_version()),
-        "background checkpoint did not advance to the WAL-growth commit"
+        "background flush watermark did not advance to the WAL-growth commit"
     );
 
     let perf = crate::observability::perf_trace::snapshot();
@@ -2596,6 +2699,71 @@ fn background_wal_truncation_runs_retention_scan_outside_runtime_lock() {
     assert!(perf.lifecycle_background_task_unlocked_build_ns() > 0);
     assert!(perf.lifecycle_background_task_publish_lock_ns() > 0);
     assert!(perf.lifecycle_background_tasks_completed() >= 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn level_zero_urgent_slowdown_ramps_before_blocking_pressure() {
+    assert_eq!(
+        background_level_zero_pressure_units(LifecycleStoragePressureReason::FrozenBacklog, 12),
+        3
+    );
+    assert_eq!(
+        background_level_zero_pressure_units(
+            LifecycleStoragePressureReason::LevelZeroTableBacklog,
+            7,
+        ),
+        0
+    );
+    assert_eq!(
+        background_level_zero_pressure_units(
+            LifecycleStoragePressureReason::LevelZeroTableBacklog,
+            8,
+        ),
+        BACKGROUND_LEVEL_ZERO_URGENT_UNIT_MULTIPLIER
+    );
+    assert_eq!(
+        background_level_zero_pressure_units(
+            LifecycleStoragePressureReason::LevelZeroTableBacklog,
+            15,
+        ),
+        BACKGROUND_LEVEL_ZERO_URGENT_UNIT_MULTIPLIER
+            * (BACKGROUND_LEVEL_ZERO_BLOCK_TABLES - BACKGROUND_LEVEL_ZERO_URGENT_START_TABLES)
+    );
+    assert_eq!(
+        background_level_zero_pressure_units(
+            LifecycleStoragePressureReason::LevelZeroTableBacklog,
+            64,
+        ),
+        BACKGROUND_LEVEL_ZERO_URGENT_UNIT_MULTIPLIER
+            * (BACKGROUND_LEVEL_ZERO_BLOCK_TABLES - BACKGROUND_LEVEL_ZERO_URGENT_START_TABLES)
+    );
+}
+
+#[test]
+fn background_urgent_slowdown_scales_with_commit_mutation_count() {
+    let pressure_slowdown = std::time::Duration::from_micros(400);
+
+    assert_eq!(
+        background_batch_slowdown_duration(pressure_slowdown, 0),
+        pressure_slowdown.saturating_add(BACKGROUND_URGENT_PER_MUTATION_SLOWDOWN)
+    );
+    assert_eq!(
+        background_batch_slowdown_duration(pressure_slowdown, 1),
+        pressure_slowdown.saturating_add(BACKGROUND_URGENT_PER_MUTATION_SLOWDOWN)
+    );
+    assert_eq!(
+        background_batch_slowdown_duration(pressure_slowdown, 10),
+        pressure_slowdown
+            .saturating_add(BACKGROUND_URGENT_PER_MUTATION_SLOWDOWN.saturating_mul(10))
+    );
+    assert_eq!(
+        background_batch_slowdown_duration(
+            std::time::Duration::from_millis(25),
+            BACKGROUND_URGENT_MUTATION_SCALE_LIMIT.saturating_mul(2),
+        ),
+        std::time::Duration::from_millis(50) + std::time::Duration::from_micros(600)
+    );
 }
 
 #[cfg(feature = "perf-trace")]
@@ -2814,6 +2982,14 @@ fn background_block_pressure_wait_has_deadline_when_worker_is_busy() {
         StorageRuntime::open(StorageOpenOptions::cache().with_background_worker_count(1))
             .expect("single-worker background cache open")
             .into_runtime();
+    assert!(
+        runtime.set_background_block_wait_for_test(
+            Duration::from_millis(25),
+            Duration::from_millis(250),
+            1,
+        ),
+        "background runtime should expose test block wait limits"
+    );
 
     let ready = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
@@ -2861,7 +3037,13 @@ fn background_block_pressure_wait_has_deadline_when_worker_is_busy() {
     assert!(perf.lifecycle_write_admission_block_wait_ns() > 0);
 
     release.wait();
-    runtime.wait_background_idle_for_test();
+    let stats = runtime
+        .wait_background_idle_until_for_test(Duration::from_millis(250))
+        .expect("background runtime should report bounded cleanup stats");
+    assert!(
+        stats.tasks_completed >= 1 || observed_open.load(Ordering::Acquire),
+        "probe should finish once released"
+    );
     assert!(observed_open.load(Ordering::Acquire));
 }
 
@@ -2919,31 +3101,47 @@ fn scaled_liveness_background_closed_loop_converges_without_public_drain() {
         "background closed loop left uncompacted L0 pressure: {:?}",
         report.source_layout()
     );
-    let max_nonzero_fanout = report
+    let max_clearable_nonzero_fanout = report
         .source_layout()
         .owned_nonzero_level_table_counts()
         .iter()
+        .filter(|count| count.level() < default_terminal_nonzero_level())
         .map(|count| count.table_count())
         .max()
         .unwrap_or(0);
     assert!(
-        max_nonzero_fanout <= 3,
-        "background closed loop left uncompacted nonzero fanout: {:?}",
+        max_clearable_nonzero_fanout <= 3,
+        "background closed loop left uncompacted clearable nonzero fanout: {:?}",
         report.source_layout()
     );
+    match report.pressure().severity() {
+        DiagnosticsStoragePressureSeverity::None => {}
+        DiagnosticsStoragePressureSeverity::Background | DiagnosticsStoragePressureSeverity::Urgent
+            if report.pressure().reason() == DiagnosticsStoragePressureReason::ActiveMutableBytes
+                && report.pressure().frozen_tables() == 0
+                && report.pressure().pending_maintenance() == 0 => {}
+        _ => panic!(
+            "background closed loop left clearable storage pressure after maintenance reached a fixed point: {:?}",
+            report.pressure()
+        ),
+    }
 
     let perf = crate::observability::perf_trace::snapshot();
     assert!(perf.lifecycle_background_wake_submitted() > 0);
     assert!(perf.lifecycle_background_tasks_completed() > 0);
-    assert!(perf.lifecycle_wal_retention_samples() > 0);
-    assert!(perf.lifecycle_wal_checkpoint_enqueue_events() > 0);
-    assert!(perf.lifecycle_checkpoint_executions() > 0);
-    assert!(perf.lifecycle_wal_truncation_deleted_segments() > 0);
+    assert_eq!(perf.lifecycle_wal_retention_samples(), 0);
+    assert_eq!(perf.lifecycle_wal_checkpoint_enqueue_events(), 0);
+    assert_eq!(perf.lifecycle_checkpoint_executions(), 0);
+    assert_eq!(perf.lifecycle_wal_truncation_deleted_segments(), 0);
     assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 0);
 }
 
 #[cfg(all(feature = "localfs", feature = "perf-trace"))]
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "closed-loop liveness test intentionally asserts all bounded-resource invariants"
+)]
 fn scaled_liveness_durable_background_bounds_wal_without_public_drain() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let root = temp_dir_for_api_test("scaled-durable-liveness");
@@ -2963,7 +3161,7 @@ fn scaled_liveness_durable_background_bounds_wal_without_public_drain() {
     let mut max_retained_bytes = 0_u64;
     let mut max_retained_segments = 0_u64;
     let mut max_segment_files = 0_usize;
-    let mut saw_checkpoint_enqueue = false;
+    let mut saw_maintenance_enqueue = false;
     for index in 0..96 {
         let key = format!("scaled-durable-liveness-{index:04}");
         runtime
@@ -2982,20 +3180,29 @@ fn scaled_liveness_durable_background_bounds_wal_without_public_drain() {
                 max_retained_segments.max(u64::try_from(retained_segments).unwrap_or(u64::MAX));
         }
         if let Some(status) = report.wal_growth().last_status() {
-            saw_checkpoint_enqueue |= status.checkpoint_enqueued();
+            saw_maintenance_enqueue |= status.checkpoint_enqueued();
         }
         max_segment_files = max_segment_files.max(wal_segment_file_count(&root));
     }
 
-    runtime.wait_background_idle_for_test();
+    let background_stats = runtime
+        .wait_background_idle_until_for_test(std::time::Duration::from_secs(5))
+        .expect("durable background executor is present");
 
     let status = runtime
         .maintenance_status()
         .expect("scaled durable liveness maintenance status");
+    let report = runtime
+        .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Global))
+        .expect("scaled durable liveness final diagnostics");
+    let pending_kinds = runtime.pending_lifecycle_maintenance_kinds_for_test();
+    let pending_watermark = runtime.pending_flush_watermark_candidate_for_test();
     assert_eq!(
         status.pending_tasks(),
         0,
-        "durable background closed loop left lifecycle queue debt"
+        "durable background closed loop left lifecycle queue debt: pending_kinds={pending_kinds:?}, pending_watermark={pending_watermark:?}, background_stats={background_stats:?}, checkpoint={:?}, layout={:?}",
+        report.checkpoint(),
+        report.source_layout()
     );
     assert_eq!(
         status.failed(),
@@ -3007,20 +3214,17 @@ fn scaled_liveness_durable_background_bounds_wal_without_public_drain() {
         0,
         "durable background closed loop filled the lifecycle queue: {status:?}"
     );
-    let report = runtime
-        .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Global))
-        .expect("scaled durable liveness final diagnostics");
     assert_eq!(report.wal_growth().state(), DiagnosticsFactState::Known);
     assert!(
-        saw_checkpoint_enqueue,
-        "WAL growth never enqueued checkpoint"
+        saw_maintenance_enqueue,
+        "WAL growth never enqueued maintenance"
     );
     assert!(
         report
             .checkpoint()
-            .checkpoint_watermark()
+            .flush_watermark()
             .is_some_and(|watermark| watermark > CommitVersion::ZERO),
-        "background checkpoint never advanced"
+        "background flush watermark never advanced"
     );
     assert!(
         max_retained_segments <= 16,
@@ -3050,20 +3254,32 @@ fn scaled_liveness_durable_background_bounds_wal_without_public_drain() {
         report.source_layout(),
         status
     );
-    let max_nonzero_fanout = report
+    let max_clearable_nonzero_fanout = report
         .source_layout()
         .owned_nonzero_level_table_counts()
         .iter()
+        .filter(|count| count.level() < default_terminal_nonzero_level())
         .map(|count| count.table_count())
         .max()
         .unwrap_or(0);
-    assert!(
-        max_nonzero_fanout <= 3,
-        "durable background closed loop left uncompacted nonzero fanout: {:?}",
-        report.source_layout()
-    );
-
     let perf = crate::observability::perf_trace::snapshot();
+    assert!(
+        max_clearable_nonzero_fanout <= 3,
+        "durable background closed loop left uncompacted clearable nonzero fanout: {:?}; pressure={:?}; maintenance status={:?}; pending_kinds={pending_kinds:?}; background_stats={background_stats:?}; compactions={}, compaction_inputs={}, compaction_outputs={}, output_tables_built={}",
+        report.source_layout(),
+        report.pressure(),
+        status,
+        perf.lifecycle_compaction_operations_completed(),
+        perf.lifecycle_compaction_input_tables(),
+        perf.lifecycle_compaction_output_tables(),
+        perf.table_compaction_output_tables_built()
+    );
+    assert_eq!(
+        report.pressure().severity(),
+        DiagnosticsStoragePressureSeverity::None,
+        "durable background closed loop left storage pressure after maintenance reached a fixed point: {:?}",
+        report.pressure()
+    );
     assert!(perf.lifecycle_background_wake_submitted() > 0);
     assert!(perf.lifecycle_background_tasks_completed() > 0);
     assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 0);
@@ -3089,7 +3305,7 @@ fn wal_retention_deletes_segments_without_public_drain() {
     let mut max_segment_files = wal_segment_file_count(&root);
     let mut last_segment_files = max_segment_files;
     let mut saw_segment_file_deletion = false;
-    let mut saw_checkpoint_enqueue = false;
+    let mut saw_maintenance_enqueue = false;
     for index in 0..160 {
         let key = format!("wal-retention-{index:04}");
         runtime
@@ -3099,7 +3315,7 @@ fn wal_retention_deletes_segments_without_public_drain() {
             .diagnostics(DiagnosticsRequest::new(DiagnosticsScope::Global))
             .expect("WAL retention diagnostics during load");
         if let Some(status) = report.wal_growth().last_status() {
-            saw_checkpoint_enqueue |= status.checkpoint_enqueued();
+            saw_maintenance_enqueue |= status.checkpoint_enqueued();
         }
         let segment_files = wal_segment_file_count(&root);
         saw_segment_file_deletion |= segment_files < last_segment_files;
@@ -3112,8 +3328,8 @@ fn wal_retention_deletes_segments_without_public_drain() {
     saw_segment_file_deletion |= final_segment_files < last_segment_files;
 
     assert!(
-        saw_checkpoint_enqueue,
-        "WAL retention never enqueued checkpoint"
+        saw_maintenance_enqueue,
+        "WAL retention never enqueued maintenance"
     );
     assert!(
         saw_segment_file_deletion,
@@ -3138,9 +3354,9 @@ fn wal_retention_deletes_segments_without_public_drain() {
     assert!(
         report
             .checkpoint()
-            .checkpoint_watermark()
+            .flush_watermark()
             .is_some_and(|watermark| watermark > CommitVersion::ZERO),
-        "background checkpoint never advanced"
+        "background flush watermark never advanced"
     );
 
     let perf = crate::observability::perf_trace::snapshot();

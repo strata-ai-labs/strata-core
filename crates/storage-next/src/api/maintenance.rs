@@ -72,6 +72,8 @@ pub enum MaintenanceWalGrowthStatus {
     BelowThreshold,
     CheckpointEnqueued,
     CheckpointCoalesced,
+    MaintenanceEnqueued,
+    MaintenanceCoalesced,
     Deferred,
     NoDurableAction,
 }

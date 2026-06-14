@@ -55,6 +55,10 @@ fn io_source() -> std::io::Error {
 /// One sample of every public variant, paired with the class it must report.
 /// Source-bearing variants are constructed *with* a source so the source-chain
 /// assertion is meaningful.
+#[allow(
+    clippy::too_many_lines,
+    reason = "exhaustive public error fixture keeps one explicit sample per variant"
+)]
 fn sample_errors() -> Vec<(&'static str, StorageApiError, StorageApiErrorClass, bool)> {
     vec![
         (

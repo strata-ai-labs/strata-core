@@ -785,9 +785,7 @@ fn table_manifest_covers_flush_watermark(
     tables: &LifecycleRecoveredTables,
     staged_branch: Option<&crate::branch::state::BranchLocalState>,
 ) -> bool {
-    let Some(checkpoint_watermark) = checkpoint_watermark else {
-        return false;
-    };
+    let checkpoint_watermark = checkpoint_watermark.unwrap_or(CommitVersion::ZERO);
     if tables
         .table_manifest()
         .install_outcome()

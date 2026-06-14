@@ -2,11 +2,14 @@
 
 use super::{
     telemetry_health_debt, LifecycleError, LifecycleOperationKind, LifecycleResult,
-    LifecycleStateMachine, LifecycleWalGrowthPolicy, MaintenanceCheckpointOptions,
-    MaintenanceEnqueueOutcome, MaintenanceTaskRequest, RecoveryHealth,
+    LifecycleStateMachine, LifecycleWalGrowthPolicy, MaintenanceEnqueueOutcome, RecoveryHealth,
 };
 use crate::service::WalGrowthFacts;
 use strata_core_next::CommitVersion;
+
+const WAL_GROWTH_BACKPRESSURE_BYTES_MULTIPLIER: u64 = 16;
+const WAL_GROWTH_BACKPRESSURE_SEGMENTS_MULTIPLIER: usize = 8;
+const WAL_GROWTH_BACKPRESSURE_COMMITS_MULTIPLIER: u64 = 16;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleWalGrowthOutcome {
@@ -24,8 +27,8 @@ pub(crate) struct LifecycleWalGrowthOutcome {
 pub(crate) enum LifecycleWalGrowthStatus {
     Disabled,
     BelowThreshold,
-    CheckpointEnqueued,
-    CheckpointCoalesced,
+    MaintenanceEnqueued,
+    MaintenanceCoalesced,
     Deferred,
     NoDurableAction,
 }
@@ -83,16 +86,16 @@ impl LifecycleWalGrowthOutcome {
         )
     }
 
-    pub(crate) fn enqueued(
+    pub(crate) fn maintenance_enqueued(
         facts: WalGrowthFacts,
         commits_since_checkpoint: u64,
         trigger: LifecycleWalGrowthTrigger,
         enqueue: MaintenanceEnqueueOutcome,
     ) -> Self {
         let status = if enqueue.was_coalesced() {
-            LifecycleWalGrowthStatus::CheckpointCoalesced
+            LifecycleWalGrowthStatus::MaintenanceCoalesced
         } else {
-            LifecycleWalGrowthStatus::CheckpointEnqueued
+            LifecycleWalGrowthStatus::MaintenanceEnqueued
         };
         Self::new(status, facts, commits_since_checkpoint, Some(trigger)).with_enqueue(enqueue)
     }
@@ -124,7 +127,7 @@ impl LifecycleWalGrowthOutcome {
             commits_since_checkpoint,
             trigger,
         )
-        .with_recovery_health(telemetry_health_debt("WAL growth checkpoint deferred")?)
+        .with_recovery_health(telemetry_health_debt("WAL growth maintenance deferred")?)
         .with_source_error(error))
     }
 
@@ -192,6 +195,38 @@ impl LifecycleWalGrowthPolicy {
         }
         None
     }
+
+    pub(crate) fn backpressure_trigger_for(
+        self,
+        facts: WalGrowthFacts,
+        commits_since_checkpoint: u64,
+    ) -> Option<LifecycleWalGrowthTrigger> {
+        if !self.enabled() {
+            return None;
+        }
+        if facts.retained_bytes()
+            > self
+                .max_retained_wal_bytes()
+                .saturating_mul(WAL_GROWTH_BACKPRESSURE_BYTES_MULTIPLIER)
+        {
+            return Some(LifecycleWalGrowthTrigger::RetainedBytes);
+        }
+        if facts.retained_segments()
+            > self
+                .max_retained_wal_segments()
+                .saturating_mul(WAL_GROWTH_BACKPRESSURE_SEGMENTS_MULTIPLIER)
+        {
+            return Some(LifecycleWalGrowthTrigger::RetainedSegments);
+        }
+        if commits_since_checkpoint
+            > self
+                .max_commits_since_checkpoint()
+                .saturating_mul(WAL_GROWTH_BACKPRESSURE_COMMITS_MULTIPLIER)
+        {
+            return Some(LifecycleWalGrowthTrigger::CommitsSinceCheckpoint);
+        }
+        None
+    }
 }
 
 pub(crate) fn commits_since_checkpoint(
@@ -203,10 +238,16 @@ pub(crate) fn commits_since_checkpoint(
         .saturating_sub(checkpoint_watermark.unwrap_or(CommitVersion::ZERO).as_u64())
 }
 
-pub(crate) fn checkpoint_task_for_wal_growth() -> MaintenanceTaskRequest {
-    MaintenanceTaskRequest::checkpoint_with_options(
-        MaintenanceCheckpointOptions::new(None, true).retention_critical(),
-    )
+pub(crate) fn wal_retention_watermark(
+    snapshot_watermark: Option<CommitVersion>,
+    flush_watermark: Option<CommitVersion>,
+) -> Option<CommitVersion> {
+    match (snapshot_watermark, flush_watermark) {
+        (Some(snapshot), Some(flush)) => Some(snapshot.max(flush)),
+        (Some(snapshot), None) => Some(snapshot),
+        (None, Some(flush)) => Some(flush),
+        (None, None) => None,
+    }
 }
 
 pub(crate) fn policy_admission_error(state: LifecycleStateMachine) -> Option<LifecycleError> {

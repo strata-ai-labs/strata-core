@@ -314,6 +314,48 @@ fn flush_watermark_equal_to_current_is_noop() {
 }
 
 #[test]
+fn table_manifest_flush_watermark_extends_existing_flush_watermark() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0xd4);
+    let shell = assemble_shell(branch, &backend).expect("shell");
+    shell
+        .services()
+        .manifest()
+        .persist_flush_watermark(CommitVersion::new(1))
+        .expect("existing watermark");
+    let row = put_row(branch, 2, b"extension", b"value");
+    let manifest = durable_manifest(&backend, branch, "extension", std::slice::from_ref(&row));
+    let state = state_with_installed_table(branch, "extension", std::slice::from_ref(&row));
+    let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest(
+        CommitVersion::new(2),
+        &state,
+        &manifest,
+        &RecoveryHealth::Healthy,
+    )
+    .expect("proof");
+
+    let outcome = persist_table_manifest_watermark(
+        shell.services().manifest(),
+        CommitVersion::new(2),
+        CommitVersion::new(2),
+        &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
+        &proof,
+    )
+    .expect("persist");
+
+    assert!(outcome.was_persisted());
+    assert_eq!(
+        shell
+            .services()
+            .manifest()
+            .load_required()
+            .expect("manifest")
+            .flushed_through_commit_id(),
+        Some(CommitVersion::new(2))
+    );
+}
+
+#[test]
 fn flush_watermark_persist_failure_prevents_wal_truncation() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0xbd);
@@ -982,7 +1024,7 @@ fn maintenance_task_can_request_table_manifest_flush_watermark() {
 }
 
 #[test]
-fn maintenance_task_coalesces_table_manifest_flush_watermark_by_candidate() {
+fn maintenance_task_coalesces_table_manifest_flush_watermark_to_newest_candidate() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0xd2);
     let mut runtime = open_runtime(branch, &backend);
@@ -1005,8 +1047,116 @@ fn maintenance_task_coalesces_table_manifest_flush_watermark_by_candidate() {
 
     assert!(first.was_enqueued());
     assert!(second.was_coalesced());
-    assert!(third.was_enqueued());
+    assert!(third.was_coalesced());
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert_eq!(
+        runtime.pending_flush_watermark_candidate_for_test(),
+        Some(CommitVersion::new(2))
+    );
+}
+
+#[test]
+fn background_flush_watermark_uses_highest_provable_candidate() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0xd3);
+    let mut runtime = runtime_with_flushed_table(branch, &backend, b"provable-candidate");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::table_manifest_flush_watermark(
+            CommitVersion::new(2),
+        ))
+        .expect("enqueue watermark");
+
+    let outcome = runtime
+        .run_next_background_flush_watermark_maintenance()
+        .expect("run")
+        .expect("background watermark outcome");
+
+    assert_eq!(outcome.task_kind(), MaintenanceTaskKind::FlushWatermark);
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        DatabaseManifestService::new(&backend)
+            .load_required()
+            .expect("manifest")
+            .flushed_through_commit_id(),
+        Some(CommitVersion::new(1))
+    );
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
+fn background_flush_watermark_uses_checkpoint_covered_candidate() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0xda);
+    let mut runtime = runtime_with_flushed_table(branch, &backend, b"checkpoint-covered");
+    runtime
+        .services()
+        .manifest()
+        .persist_snapshot_facts(9, CommitVersion::new(4))
+        .expect("snapshot facts");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::table_manifest_flush_watermark(
+            CommitVersion::new(1),
+        ))
+        .expect("enqueue watermark");
+
+    let outcome = runtime
+        .run_next_background_flush_watermark_maintenance()
+        .expect("run")
+        .expect("background watermark outcome");
+
+    assert_eq!(outcome.task_kind(), MaintenanceTaskKind::FlushWatermark);
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        DatabaseManifestService::new(&backend)
+            .load_required()
+            .expect("manifest")
+            .flushed_through_commit_id(),
+        Some(CommitVersion::new(1))
+    );
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
+fn flush_watermark_waits_for_queued_flush_work() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0xd7);
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue flush");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::table_manifest_flush_watermark(
+            CommitVersion::new(2),
+        ))
+        .expect("enqueue watermark");
+
+    let outcome = runtime
+        .run_next_flush_watermark_maintenance()
+        .expect("run watermark");
+
+    assert_eq!(outcome, None);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 2);
+    assert_eq!(runtime.maintenance_status().stats().started(), 0);
+}
+
+#[test]
+fn background_flush_watermark_waits_for_table_manifest_coverage() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0xd8);
+    let mut runtime = open_runtime(branch, &backend);
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::table_manifest_flush_watermark(
+            CommitVersion::new(2),
+        ))
+        .expect("enqueue watermark");
+
+    let outcome = runtime
+        .run_next_background_flush_watermark_maintenance()
+        .expect("run background watermark");
+
+    assert_eq!(outcome, None);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert_eq!(runtime.maintenance_status().stats().started(), 0);
 }
 
 #[test]

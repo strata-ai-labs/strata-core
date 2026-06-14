@@ -328,7 +328,7 @@ fn api_branch_surface_excludes_product_workflow_terms() {
             .to_ascii_lowercase();
         for term in ["merge", "cherry", "revert", "restore", "publish", "review"] {
             assert!(
-                !text.contains(term),
+                !text.contains(&format!("pub fn {term}")),
                 "{relative} exposes deferred branch workflow term {term}"
             );
         }

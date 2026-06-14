@@ -24,7 +24,7 @@ use crate::branch::state::materialization::{
 use crate::branch::state::BranchLocalState;
 use crate::object::ObjectName;
 use crate::table::{
-    TableCompactionConfig, TableCompactionReport, TableIdentity, TablePhysicalKeyBytes,
+    TableCompactionConfig, TableCompactionReport, TableIdentity, TableInternalKeyBytes,
 };
 use strata_core_next::BranchId;
 
@@ -44,6 +44,7 @@ const INHERITED_LAYER_BLOCKING_MATERIALIZATION_THRESHOLD: usize = 16;
 const FROZEN_BLOCKING_FLUSH_THRESHOLD: usize = 4;
 const PENDING_MAINTENANCE_BLOCKING_THRESHOLD: usize = 16;
 const DEFAULT_COMPACTION_DRAIN_PASS_LIMIT: usize = 16;
+const BOTTOMMOST_COMPACTION_INPUT_LIMIT: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -173,6 +174,7 @@ pub(crate) struct LifecycleStoragePressure {
     frozen_bytes: u64,
     level_zero_tables: usize,
     owned_tables: usize,
+    table_rewrite_bytes: u64,
     inherited_layers: usize,
     pending_maintenance: usize,
 }
@@ -222,6 +224,16 @@ pub(crate) struct LifecycleCompactionScoreKey {
     table_count: usize,
     byte_count: u64,
     low_level_tiebreaker: std::cmp::Reverse<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NonzeroCompactionInputChoice {
+    table_index: usize,
+    source_bytes: u64,
+    source_rows: u64,
+    overlap_bytes: u64,
+    merge_bytes: u64,
+    soft_budget_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -353,6 +365,7 @@ fn table_compaction_config_for_kind(
                 },
             )?)
         }
+        BranchCompactionKind::CompactBottommostLevel { level, .. } => level,
     };
     let default = TableCompactionConfig::default();
     let target_output_bytes = if output_level == BranchLevel::ZERO {
@@ -361,6 +374,32 @@ fn table_compaction_config_for_kind(
         nonzero_level_target_bytes(output_level)
     };
     TableCompactionConfig::new(target_output_bytes, default.max_output_tables()).map_err(|source| {
+        LifecycleError::lower_layer_with(
+            LifecycleLowerLayer::TableRuntime,
+            "table runtime failed",
+            source,
+        )
+    })
+}
+
+pub(crate) fn table_compaction_config_with_storage_budget(
+    config: TableCompactionConfig,
+    budget: Option<StorageRuntimeBudget>,
+) -> LifecycleResult<TableCompactionConfig> {
+    let Some(budget) = budget else {
+        return Ok(config);
+    };
+    let generated_limit = budget.pool_limit_bytes(StorageBudgetPool::GeneratedArtifact);
+    let reader_limit = budget.pool_limit_bytes(StorageBudgetPool::TableReader);
+    let limit = generated_limit.min(reader_limit);
+    if limit == 0 {
+        return Ok(config);
+    }
+    let capped_target = config.target_output_bytes().min((limit / 2).max(1));
+    if capped_target == config.target_output_bytes() {
+        return Ok(config);
+    }
+    TableCompactionConfig::new(capped_target, config.max_output_tables()).map_err(|source| {
         LifecycleError::lower_layer_with(
             LifecycleLowerLayer::TableRuntime,
             "table runtime failed",
@@ -1133,6 +1172,10 @@ impl LifecycleStoragePressure {
         self.owned_tables
     }
 
+    pub(crate) const fn table_rewrite_bytes(self) -> u64 {
+        self.table_rewrite_bytes
+    }
+
     pub(crate) const fn inherited_layers(self) -> usize {
         self.inherited_layers
     }
@@ -1292,6 +1335,14 @@ pub(crate) fn current_compaction_request_from_maintenance_task(
     task: &MaintenanceTask,
     branch: &BranchLocalState,
 ) -> LifecycleResult<Option<LifecycleCompactionRequest>> {
+    current_compaction_request_from_maintenance_task_with_budget(task, branch, None)
+}
+
+pub(crate) fn current_compaction_request_from_maintenance_task_with_budget(
+    task: &MaintenanceTask,
+    branch: &BranchLocalState,
+    budget: Option<StorageRuntimeBudget>,
+) -> LifecycleResult<Option<LifecycleCompactionRequest>> {
     let MaintenanceTaskScope::TableLevel { branch_id, level } = task.scope() else {
         return Err(LifecycleError::MaintenanceTaskFailed {
             reason: "compaction task must target a table level",
@@ -1307,10 +1358,10 @@ pub(crate) fn current_compaction_request_from_maintenance_task(
             reason: "compaction task branch must match branch state",
         });
     }
-    if let Some(score) = selected_compaction_score_for_task(branch, task) {
-        return compaction_request_from_score(branch, score).map(Some);
+    if let Some(score) = selected_compaction_score_for_task(branch, task, budget) {
+        return compaction_request_from_score(branch, score, budget).map(Some);
     }
-    let Some(kind) = direct_compaction_kind_for_task(branch, level) else {
+    let Some(kind) = direct_compaction_kind_for_task(branch, level, budget) else {
         return Ok(None);
     };
     LifecycleCompactionRequest::new(
@@ -1327,19 +1378,45 @@ pub(crate) fn current_compaction_request_from_maintenance_task(
 fn compaction_request_from_score(
     branch: &BranchLocalState,
     score: LifecycleCompactionScore,
+    budget: Option<StorageRuntimeBudget>,
 ) -> LifecycleResult<LifecycleCompactionRequest> {
     let branch_id = branch.branch_id();
     let kind = if score.level == 0 {
         BranchCompactionKind::CompactL0ToLevelOne
     } else {
         let level = BranchLevel::new(score.level);
-        let table_index = score
-            .table_index
+        if is_final_configured_level(branch, usize::from(score.level)) {
+            let target_output_bytes = bottommost_compaction_output_target(level, budget).ok_or(
+                LifecycleError::MaintenanceTaskFailed {
+                    reason: "scored bottommost compaction requires an output target",
+                },
+            )?;
+            let (start_table_index, table_count) = selected_bottommost_compaction_run_with_target(
+                branch.owned_levels().get(usize::from(score.level)).ok_or(
+                    LifecycleError::MaintenanceTaskFailed {
+                        reason: "scored bottommost compaction requires an existing level",
+                    },
+                )?,
+                target_output_bytes,
+            )
             .ok_or(LifecycleError::MaintenanceTaskFailed {
-                reason: "scored nonzero compaction requires a table index",
+                reason: "scored bottommost compaction requires a mergeable table run",
             })?;
-        record_selected_nonzero_input_policy(branch, level, table_index);
-        BranchCompactionKind::CompactLevel { level, table_index }
+            record_selected_bottommost_input_policy(branch, level, start_table_index, table_count);
+            BranchCompactionKind::CompactBottommostLevel {
+                level,
+                start_table_index,
+                table_count,
+            }
+        } else {
+            let table_index = score
+                .table_index
+                .ok_or(LifecycleError::MaintenanceTaskFailed {
+                    reason: "scored nonzero compaction requires a table index",
+                })?;
+            record_selected_nonzero_input_policy(branch, level, table_index);
+            BranchCompactionKind::CompactLevel { level, table_index }
+        }
     };
     crate::observability::perf_trace::record_lifecycle_compaction_selected(
         score.level,
@@ -1363,6 +1440,7 @@ fn compaction_request_from_score(
 fn direct_compaction_kind_for_task(
     branch: &BranchLocalState,
     level: u8,
+    budget: Option<StorageRuntimeBudget>,
 ) -> Option<BranchCompactionKind> {
     if level == BranchLevel::ZERO.raw() {
         let tables = branch
@@ -1370,13 +1448,33 @@ fn direct_compaction_kind_for_task(
             .get(usize::from(BranchLevel::ZERO.raw()))?;
         return (!tables.is_empty()).then_some(BranchCompactionKind::CompactL0ToLevelOne);
     }
-    let terminal_level_index = branch.owned_levels().len().saturating_sub(1);
     let level_index = usize::from(level);
-    if level_index >= terminal_level_index {
+    if level_index >= branch.owned_levels().len() {
         return None;
     }
-    let table_index =
-        selected_nonzero_compaction_table_index(branch.owned_levels().get(level_index)?)?;
+    let tables = branch.owned_levels().get(level_index)?;
+    if is_final_configured_level(branch, level_index) {
+        let target_output_bytes =
+            bottommost_compaction_output_target(BranchLevel::new(level), budget)?;
+        let (start_table_index, table_count) =
+            selected_bottommost_compaction_run_with_target(tables, target_output_bytes)?;
+        record_selected_bottommost_input_policy(
+            branch,
+            BranchLevel::new(level),
+            start_table_index,
+            table_count,
+        );
+        return Some(BranchCompactionKind::CompactBottommostLevel {
+            level: BranchLevel::new(level),
+            start_table_index,
+            table_count,
+        });
+    }
+    let table_index = selected_nonzero_compaction_candidate_for_branch(branch, level_index, budget)
+        .map_or_else(
+            || selected_nonzero_compaction_table_index(tables),
+            |candidate| Some(candidate.table_index),
+        )?;
     record_selected_nonzero_input_policy(branch, BranchLevel::new(level), table_index);
     Some(BranchCompactionKind::CompactLevel {
         level: BranchLevel::new(level),
@@ -1513,7 +1611,8 @@ pub(crate) fn collect_storage_pressure_with_budget(
         .owned_levels()
         .get(usize::from(BranchLevel::ZERO.raw()))
         .map_or(0, std::vec::Vec::len);
-    let table_rewrite_score = selected_table_rewrite_score(branch);
+    let table_rewrite_score = selected_table_rewrite_score(branch, budget);
+    let table_rewrite_bytes = table_rewrite_score.map_or(0, |score| score.byte_count);
     let owned_tables = branch.owned_table_count();
     let inherited_layers = branch.inherited_layer_count();
     let inherited_tables = branch.inherited_table_count();
@@ -1552,6 +1651,7 @@ pub(crate) fn collect_storage_pressure_with_budget(
         frozen_bytes,
         level_zero_tables,
         owned_tables,
+        table_rewrite_bytes,
         inherited_layers,
         pending_maintenance,
     }
@@ -1625,9 +1725,9 @@ fn storage_pressure_decision(
         severity == LifecycleStoragePressureSeverity::BlockMutatingAdmission
     }) {
         return (
-            LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            LifecycleStoragePressureSeverity::Urgent,
             LifecycleStoragePressureReason::ActiveMutableBytes,
-            active_byte_suggested_task,
+            None,
         );
     }
     storage_pressure_nonblocking_decision(
@@ -1764,19 +1864,20 @@ pub(crate) fn compaction_score_key_for_task(
     branch: &BranchLocalState,
     task: MaintenanceTask,
 ) -> Option<LifecycleCompactionScoreKey> {
-    selected_compaction_score_for_task(branch, &task).map(compaction_score_key)
+    selected_compaction_score_for_task(branch, &task, None).map(compaction_score_key)
 }
 
-pub(crate) fn table_rewrite_score_key_for_task(
+pub(crate) fn table_rewrite_score_key_for_task_with_budget(
     branch: &BranchLocalState,
     task: MaintenanceTask,
+    budget: Option<StorageRuntimeBudget>,
 ) -> Option<LifecycleTableRewriteScoreKey> {
     Some(table_rewrite_score_key(match task.scope() {
         MaintenanceTaskScope::TableLevel { branch_id, .. }
             if branch_id == branch.branch_id()
                 && task.kind() == MaintenanceTaskKind::Compaction =>
         {
-            selected_compaction_score_for_task(branch, &task)?.into()
+            selected_compaction_score_for_task(branch, &task, budget)?.into()
         }
         MaintenanceTaskScope::InheritedLayer {
             branch_id,
@@ -1794,6 +1895,7 @@ pub(crate) fn table_rewrite_score_key_for_task(
 fn selected_compaction_score_for_task(
     branch: &BranchLocalState,
     task: &MaintenanceTask,
+    budget: Option<StorageRuntimeBudget>,
 ) -> Option<LifecycleCompactionScore> {
     let MaintenanceTaskScope::TableLevel { branch_id, level } = task.scope() else {
         return None;
@@ -1802,30 +1904,39 @@ fn selected_compaction_score_for_task(
         return None;
     }
     if level == BranchLevel::ZERO.raw() {
-        return selected_compaction_score(branch);
+        return selected_compaction_score(branch, budget);
     }
-    let terminal_level_index = branch.owned_levels().len().saturating_sub(1);
     let level_index = usize::from(level);
-    if level_index >= terminal_level_index {
+    if level_index >= branch.owned_levels().len() {
         return None;
     }
-    nonzero_compaction_score(level_index, branch.owned_levels().get(level_index)?)
+    nonzero_compaction_score_for_branch(
+        branch,
+        level_index,
+        branch.owned_levels().get(level_index)?,
+        budget,
+    )
 }
 
-pub(crate) fn table_rewrite_score_key_for_branch(
+pub(crate) fn table_rewrite_score_key_for_branch_with_budget(
     branch: &BranchLocalState,
+    budget: Option<StorageRuntimeBudget>,
 ) -> Option<LifecycleTableRewriteScoreKey> {
-    selected_table_rewrite_score(branch).map(table_rewrite_score_key)
+    selected_table_rewrite_score(branch, budget).map(table_rewrite_score_key)
 }
 
-pub(crate) fn table_rewrite_task_request_for_branch(
+pub(crate) fn table_rewrite_task_request_for_branch_with_budget(
     branch: &BranchLocalState,
+    budget: Option<StorageRuntimeBudget>,
 ) -> Option<MaintenanceTaskRequest> {
-    selected_table_rewrite_score(branch).map(|score| score.task_request(branch.branch_id()))
+    selected_table_rewrite_score(branch, budget).map(|score| score.task_request(branch.branch_id()))
 }
 
-pub(crate) fn record_lifecycle_table_rewrite_post_operation_score(branch: &BranchLocalState) {
-    let score = selected_table_rewrite_score(branch);
+pub(crate) fn record_lifecycle_table_rewrite_post_operation_score_with_budget(
+    branch: &BranchLocalState,
+    budget: Option<StorageRuntimeBudget>,
+) {
+    let score = selected_table_rewrite_score(branch, budget);
     let (remaining, pressure_score, item_count, byte_count) = score
         .map_or((false, 0, 0, 0), |score| {
             (true, score.score, score.item_count, score.byte_count)
@@ -1838,8 +1949,11 @@ pub(crate) fn record_lifecycle_table_rewrite_post_operation_score(branch: &Branc
     );
 }
 
-fn selected_table_rewrite_score(branch: &BranchLocalState) -> Option<LifecycleTableRewriteScore> {
-    let mut best = selected_compaction_score(branch).map(LifecycleTableRewriteScore::from);
+fn selected_table_rewrite_score(
+    branch: &BranchLocalState,
+    budget: Option<StorageRuntimeBudget>,
+) -> Option<LifecycleTableRewriteScore> {
+    let mut best = selected_compaction_score(branch, budget).map(LifecycleTableRewriteScore::from);
     if let Some(score) = materialization_score(branch) {
         best = Some(match best {
             Some(current) if table_rewrite_score_key(current) >= table_rewrite_score_key(score) => {
@@ -1851,19 +1965,20 @@ fn selected_table_rewrite_score(branch: &BranchLocalState) -> Option<LifecycleTa
     best
 }
 
-fn selected_compaction_score(branch: &BranchLocalState) -> Option<LifecycleCompactionScore> {
+fn selected_compaction_score(
+    branch: &BranchLocalState,
+    budget: Option<StorageRuntimeBudget>,
+) -> Option<LifecycleCompactionScore> {
     let mut best = level_zero_compaction_score(branch);
-    let terminal_level_index = branch.owned_levels().len().saturating_sub(1);
     for (level_index, tables) in branch
         .owned_levels()
         .iter()
         .enumerate()
         .skip(usize::from(BranchLevel::ZERO.raw()) + 1)
     {
-        if level_index >= terminal_level_index {
-            continue;
-        }
-        if let Some(score) = nonzero_compaction_score(level_index, tables) {
+        if let Some(score) =
+            nonzero_compaction_score_for_branch(branch, level_index, tables, budget)
+        {
             best = Some(match best {
                 Some(current) if compaction_score_key(current) >= compaction_score_key(score) => {
                     current
@@ -1938,6 +2053,30 @@ fn nonzero_compaction_score(
         byte_count,
         target_bytes: Some(target_bytes),
     })
+}
+
+fn nonzero_compaction_score_for_branch(
+    branch: &BranchLocalState,
+    level_index: usize,
+    tables: &[crate::branch::read::BranchOwnedTable],
+    budget: Option<StorageRuntimeBudget>,
+) -> Option<LifecycleCompactionScore> {
+    let mut score = nonzero_compaction_score(level_index, tables)?;
+    if is_final_configured_level(branch, level_index) {
+        let level = BranchLevel::new(u8::try_from(level_index).ok()?);
+        let target_output_bytes = bottommost_compaction_output_target(level, budget)?;
+        let (start_table_index, _) =
+            selected_bottommost_compaction_run_with_target(tables, target_output_bytes)?;
+        score.table_index = Some(start_table_index);
+    } else {
+        score.table_index =
+            selected_nonzero_compaction_candidate_for_branch(branch, level_index, budget)
+                .map_or_else(
+                    || selected_nonzero_compaction_table_index(tables),
+                    |candidate| Some(candidate.table_index),
+                );
+    }
+    Some(score)
 }
 
 pub(super) fn nonzero_compaction_pressure(
@@ -2130,6 +2269,190 @@ fn selected_nonzero_compaction_table_index(
         .map(|(index, _)| index)
 }
 
+fn selected_nonzero_compaction_candidate_for_branch(
+    branch: &BranchLocalState,
+    level_index: usize,
+    budget: Option<StorageRuntimeBudget>,
+) -> Option<NonzeroCompactionInputChoice> {
+    let tables = branch.owned_levels().get(level_index)?;
+    let next_level_tables = branch.owned_levels().get(level_index.checked_add(1)?)?;
+    let level = BranchLevel::new(u8::try_from(level_index).ok()?);
+    let soft_budget_bytes = nonzero_compaction_soft_input_budget(level, budget)?;
+    tables
+        .iter()
+        .enumerate()
+        .map(|(table_index, table)| {
+            nonzero_compaction_candidate(table_index, table, next_level_tables, soft_budget_bytes)
+        })
+        .max_by_key(nonzero_compaction_candidate_key)
+}
+
+fn nonzero_compaction_candidate(
+    table_index: usize,
+    table: &crate::branch::read::BranchOwnedTable,
+    next_level_tables: &[crate::branch::read::BranchOwnedTable],
+    soft_budget_bytes: u64,
+) -> NonzeroCompactionInputChoice {
+    let source_bytes = table.facts().byte_count();
+    let source_rows = table.facts().row_count();
+    let overlap_bytes = next_level_tables
+        .iter()
+        .filter(|next_table| table_key_ranges_overlap(table, next_table))
+        .fold(0u64, |bytes, next_table| {
+            bytes.saturating_add(next_table.facts().byte_count())
+        });
+    NonzeroCompactionInputChoice {
+        table_index,
+        source_bytes,
+        source_rows,
+        overlap_bytes,
+        merge_bytes: source_bytes.saturating_add(overlap_bytes),
+        soft_budget_bytes,
+    }
+}
+
+fn nonzero_compaction_candidate_key(
+    candidate: &NonzeroCompactionInputChoice,
+) -> (
+    bool,
+    u64,
+    u64,
+    u64,
+    std::cmp::Reverse<u64>,
+    std::cmp::Reverse<u64>,
+    std::cmp::Reverse<usize>,
+) {
+    let within_budget = candidate.merge_bytes <= candidate.soft_budget_bytes;
+    let source_bytes = if within_budget {
+        candidate.source_bytes
+    } else {
+        0
+    };
+    let source_rows = if within_budget {
+        candidate.source_rows
+    } else {
+        0
+    };
+    let efficiency_score = if within_budget {
+        nonzero_compaction_efficiency_score(candidate)
+    } else {
+        0
+    };
+    (
+        within_budget,
+        efficiency_score,
+        source_bytes,
+        source_rows,
+        std::cmp::Reverse(candidate.overlap_bytes),
+        std::cmp::Reverse(candidate.merge_bytes),
+        std::cmp::Reverse(candidate.table_index),
+    )
+}
+
+fn nonzero_compaction_efficiency_score(candidate: &NonzeroCompactionInputChoice) -> u64 {
+    if candidate.merge_bytes == 0 {
+        return u64::MAX;
+    }
+    candidate
+        .source_bytes
+        .saturating_mul(1_000_000)
+        .checked_div(candidate.merge_bytes)
+        .unwrap_or(u64::MAX)
+}
+
+fn nonzero_compaction_soft_input_budget(
+    level: BranchLevel,
+    budget: Option<StorageRuntimeBudget>,
+) -> Option<u64> {
+    let base = nonzero_level_blocking_bytes(level);
+    let kind = BranchCompactionKind::CompactLevel {
+        level,
+        table_index: 0,
+    };
+    let config = table_compaction_config_with_storage_budget(
+        table_compaction_config_for_kind(kind).ok()?,
+        budget,
+    )
+    .ok()?;
+    Some(base.min(config.target_output_bytes()).max(1))
+}
+
+fn selected_bottommost_compaction_run_with_target(
+    tables: &[crate::branch::read::BranchOwnedTable],
+    target_output_bytes: u64,
+) -> Option<(usize, usize)> {
+    if tables.len() < 2 || target_output_bytes == 0 {
+        return None;
+    }
+    let max_run_len = tables.len().min(BOTTOMMOST_COMPACTION_INPUT_LIMIT);
+    (2..=max_run_len)
+        .flat_map(|run_len| {
+            tables
+                .windows(run_len)
+                .enumerate()
+                .filter_map(move |(start_index, run)| {
+                    let byte_count = run.iter().fold(0u64, |bytes, table| {
+                        bytes.saturating_add(table.facts().byte_count())
+                    });
+                    let estimated_output_tables =
+                        estimated_compaction_output_tables(byte_count, target_output_bytes)?;
+                    if estimated_output_tables >= run_len {
+                        return None;
+                    }
+                    let row_count = run.iter().fold(0u64, |rows, table| {
+                        rows.saturating_add(table.facts().row_count())
+                    });
+                    Some((
+                        start_index,
+                        run_len,
+                        run_len.saturating_sub(estimated_output_tables),
+                        byte_count,
+                        row_count,
+                    ))
+                })
+        })
+        .max_by_key(
+            |(start_index, run_len, table_reduction, byte_count, row_count)| {
+                (
+                    *table_reduction,
+                    *byte_count,
+                    *row_count,
+                    *run_len,
+                    std::cmp::Reverse(*start_index),
+                )
+            },
+        )
+        .map(|(start_index, run_len, _, _, _)| (start_index, run_len))
+}
+
+fn estimated_compaction_output_tables(byte_count: u64, target_output_bytes: u64) -> Option<usize> {
+    if byte_count == 0 || target_output_bytes == 0 {
+        return None;
+    }
+    usize::try_from(byte_count.div_ceil(target_output_bytes).max(1)).ok()
+}
+
+fn bottommost_compaction_output_target(
+    level: BranchLevel,
+    budget: Option<StorageRuntimeBudget>,
+) -> Option<u64> {
+    let kind = BranchCompactionKind::CompactBottommostLevel {
+        level,
+        start_table_index: 0,
+        table_count: 2,
+    };
+    let config = table_compaction_config_for_kind(kind).ok()?;
+    table_compaction_config_with_storage_budget(config, budget)
+        .ok()
+        .map(TableCompactionConfig::target_output_bytes)
+}
+
+fn is_final_configured_level(branch: &BranchLocalState, level_index: usize) -> bool {
+    level_index
+        .checked_add(1)
+        .is_some_and(|next| next == branch.config().max_level_count())
+}
+
 fn record_selected_nonzero_input_policy(
     branch: &BranchLocalState,
     level: BranchLevel,
@@ -2158,6 +2481,41 @@ fn record_selected_nonzero_input_policy(
             deeper_overlap_bytes,
         );
     }
+}
+
+fn record_selected_bottommost_input_policy(
+    branch: &BranchLocalState,
+    level: BranchLevel,
+    start_table_index: usize,
+    table_count: usize,
+) {
+    let Some(tables) = branch.owned_levels().get(usize::from(level.raw())) else {
+        return;
+    };
+    let byte_count = tables
+        .iter()
+        .skip(start_table_index)
+        .take(table_count)
+        .fold(0u64, |bytes, table| {
+            bytes.saturating_add(table.facts().byte_count())
+        });
+    let row_count = tables
+        .iter()
+        .skip(start_table_index)
+        .take(table_count)
+        .fold(0u64, |rows, table| {
+            rows.saturating_add(table.facts().row_count())
+        });
+    crate::observability::perf_trace::record_lifecycle_compaction_nonzero_input_selected(
+        level.raw(),
+        start_table_index,
+        byte_count,
+        row_count,
+    );
+    crate::observability::perf_trace::record_lifecycle_compaction_deeper_overlap_considered(
+        level.raw(),
+        0,
+    );
 }
 
 fn selected_nonzero_deeper_overlap_bytes(
@@ -2201,18 +2559,17 @@ fn table_key_ranges_overlap(
 
 fn table_physical_key_bounds(
     table: &crate::branch::read::BranchOwnedTable,
-) -> Option<(TablePhysicalKeyBytes, TablePhysicalKeyBytes)> {
-    let mut keys = table
-        .rows()
-        .iter()
-        .map(|row| TablePhysicalKeyBytes::from_row(row.row()));
-    let first = keys.next()?;
-    let (min, max) = keys.fold((first.clone(), first), |(min, max), key| {
-        let next_min = if key < min { key.clone() } else { min };
-        let next_max = if key > max { key } else { max };
-        (next_min, next_max)
-    });
-    Some((min, max))
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    let first =
+        TableInternalKeyBytes::from_canonical_bytes(table.facts().key_range().first_key().to_vec())
+            .ok()?;
+    let last =
+        TableInternalKeyBytes::from_canonical_bytes(table.facts().key_range().last_key().to_vec())
+            .ok()?;
+    Some((
+        first.physical_key_bytes().to_vec(),
+        last.physical_key_bytes().to_vec(),
+    ))
 }
 
 fn compact_branch(

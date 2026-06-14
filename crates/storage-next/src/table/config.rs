@@ -128,6 +128,7 @@ impl Default for TableBuilderConfig {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct TableReaderConfig {
     validation: TableReaderValidationMode,
+    eager_filter: TableReaderEagerFilterMode,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -135,15 +136,31 @@ pub(crate) enum TableReaderValidationMode {
     ValidateOnOpen,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TableReaderEagerFilterMode {
+    BuildOnOpen,
+    Unavailable,
+}
+
 impl TableReaderConfig {
     pub(crate) const fn new() -> Self {
         Self {
             validation: TableReaderValidationMode::ValidateOnOpen,
+            eager_filter: TableReaderEagerFilterMode::BuildOnOpen,
         }
     }
 
     pub(crate) const fn validation_mode(self) -> TableReaderValidationMode {
         self.validation
+    }
+
+    pub(crate) const fn with_eager_filter_unavailable(mut self) -> Self {
+        self.eager_filter = TableReaderEagerFilterMode::Unavailable;
+        self
+    }
+
+    pub(crate) const fn eager_filter_mode(self) -> TableReaderEagerFilterMode {
+        self.eager_filter
     }
 }
 

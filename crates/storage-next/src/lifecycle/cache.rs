@@ -6,14 +6,15 @@ use super::{
         begin_cache_materialization_build, bind_materialization_task_for_enqueue,
         collect_storage_pressure_with_budget, compact_cache_branch,
         compact_cache_branch_to_fixed_point_with_policy, compaction_score_key_for_task,
-        current_compaction_request_from_maintenance_task, defer_compaction_for_resource_policy,
-        install_prepared_cache_compaction, install_prepared_cache_materialization,
-        materialization_request_from_maintenance_task, materialize_cache_branch,
-        prepare_cache_compaction, record_lifecycle_compaction_outcome,
-        record_lifecycle_table_rewrite_post_operation_score, stale_compaction_maintenance_outcome,
-        table_rewrite_outcome_allows_chain_resubmit, table_rewrite_outcome_was_flush_preempted,
-        table_rewrite_score_key_for_branch, table_rewrite_score_key_for_task,
-        table_rewrite_task_request_for_branch, CacheMaterializationBegin,
+        current_compaction_request_from_maintenance_task_with_budget,
+        defer_compaction_for_resource_policy, install_prepared_cache_compaction,
+        install_prepared_cache_materialization, materialization_request_from_maintenance_task,
+        materialize_cache_branch, prepare_cache_compaction, record_lifecycle_compaction_outcome,
+        record_lifecycle_table_rewrite_post_operation_score_with_budget,
+        stale_compaction_maintenance_outcome, table_rewrite_outcome_allows_chain_resubmit,
+        table_rewrite_outcome_was_flush_preempted, table_rewrite_score_key_for_branch_with_budget,
+        table_rewrite_score_key_for_task_with_budget,
+        table_rewrite_task_request_for_branch_with_budget, CacheMaterializationBegin,
         CacheMaterializationBuild, LifecycleCompactionScoreKey, LifecycleTableRewriteScoreKey,
         PreparedCacheCompaction, PreparedCacheMaterialization,
     },
@@ -42,7 +43,7 @@ use super::{
     MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
     MaintenanceTaskId, MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner,
     MaintenanceTaskScope, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot, StorageMode,
-    StorageOpenDisposition, StorageOpenOutcome, StorageOpenPlan,
+    StorageOpenDisposition, StorageOpenOutcome, StorageOpenPlan, StorageRuntimeBudget,
 };
 use crate::backend::Backend;
 use crate::branch::config::BranchRuntimeConfig;
@@ -100,8 +101,8 @@ pub(crate) struct LifecycleCacheRuntime<S = CommitManualTimestampSource> {
 
 #[derive(Clone, Debug)]
 pub(crate) enum CacheBackgroundMaintenanceStep {
-    Completed(MaintenanceOutcome),
-    Build(CacheBackgroundMaintenanceBuild),
+    Completed(Box<MaintenanceOutcome>),
+    Build(Box<CacheBackgroundMaintenanceBuild>),
 }
 
 #[derive(Clone, Debug)]
@@ -479,6 +480,19 @@ impl<S> LifecycleCacheRuntime<S> {
         self.visible.visible_version()
     }
 
+    #[cfg(test)]
+    pub(crate) fn catch_up_commit_frontier_for_test(
+        &mut self,
+        version: CommitVersion,
+        timestamp: Timestamp,
+    ) {
+        self.allocator.catch_up_to_recovered_version(version);
+        self.allocator.catch_up_to_recovered_timestamp(timestamp);
+        self.visible
+            .catch_up_visible_after_replay(version)
+            .expect("test commit frontier must not regress");
+    }
+
     pub(crate) fn unresolved_durable(&self) -> LifecycleResult<Option<CommitUnresolvedDurable>> {
         self.durable_gate.unresolved().map_err(commit_error)
     }
@@ -759,7 +773,10 @@ impl<S> LifecycleCacheRuntime<S> {
         self.storage_pressure_for_branch(self.initial_branch_id)
     }
 
-    fn storage_pressure_for_branch(&self, branch_id: BranchId) -> LifecycleStoragePressure {
+    pub(crate) fn storage_pressure_for_branch(
+        &self,
+        branch_id: BranchId,
+    ) -> LifecycleStoragePressure {
         let branch = self
             .branch_catalog
             .branch_state(branch_id)
@@ -871,7 +888,7 @@ impl<S> LifecycleCacheRuntime<S> {
         dead_code,
         reason = "runtime hook is consumed by concrete maintenance modules"
     )]
-    pub(crate) const fn maintenance_status(&self) -> MaintenanceExecutorStatus {
+    pub(crate) fn maintenance_status(&self) -> MaintenanceExecutorStatus {
         self.maintenance.status()
     }
 
@@ -928,9 +945,12 @@ impl<S> LifecycleCacheRuntime<S> {
         self.schedule_post_commit_maintenance_for_branch(branch_id)
     }
 
-    pub(crate) fn schedule_background_maintenance_coverage(&mut self) -> usize {
-        let _ = self.schedule_post_commit_maintenance_for_branch(self.initial_branch_id);
-        self.maintenance_status().pending_tasks()
+    pub(crate) fn schedule_background_maintenance_coverage(&mut self) -> bool {
+        let outcome = self.schedule_post_commit_maintenance_for_branch(self.initial_branch_id);
+        matches!(
+            outcome.status(),
+            crate::lifecycle::maintenance::LifecyclePostCommitMaintenanceStatus::Enqueued
+        )
     }
 
     fn schedule_maintenance_coverage_after_branch(
@@ -1204,7 +1224,9 @@ impl<S> LifecycleCacheRuntime<S> {
                 return self
                     .maintenance
                     .finish_started(task, outcome, false)
-                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+                    .map(|outcome| {
+                        Some(CacheBackgroundMaintenanceStep::Completed(Box::new(outcome)))
+                    });
             }
         };
         let branch = match self
@@ -1217,10 +1239,24 @@ impl<S> LifecycleCacheRuntime<S> {
                 return self
                     .maintenance
                     .finish_started(task, outcome, false)
-                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+                    .map(|outcome| {
+                        Some(CacheBackgroundMaintenanceStep::Completed(Box::new(outcome)))
+                    });
             }
         };
-        Ok(Some(CacheBackgroundMaintenanceStep::Build(
+        if branch.active_row_count() > 0 {
+            if let Err(error) = require_rotate_budget(&self.budget, branch) {
+                let outcome = background_candidate_failed_outcome(task.kind(), error);
+                return self
+                    .maintenance
+                    .finish_started(task, outcome, false)
+                    .map(|outcome| {
+                        Some(CacheBackgroundMaintenanceStep::Completed(Box::new(outcome)))
+                    });
+            }
+            branch.rotate_active();
+        }
+        Ok(Some(CacheBackgroundMaintenanceStep::Build(Box::new(
             CacheBackgroundMaintenanceBuild::Flush {
                 task,
                 branch_id,
@@ -1229,7 +1265,7 @@ impl<S> LifecycleCacheRuntime<S> {
                 budget: self.budget.clone(),
                 started_at: std::time::Instant::now(),
             },
-        )))
+        ))))
     }
 
     #[allow(
@@ -1298,7 +1334,9 @@ impl<S> LifecycleCacheRuntime<S> {
                 return self
                     .maintenance
                     .finish_started(task, outcome, false)
-                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+                    .map(|outcome| {
+                        Some(CacheBackgroundMaintenanceStep::Completed(Box::new(outcome)))
+                    });
             }
         };
         let branch = match self
@@ -1311,10 +1349,17 @@ impl<S> LifecycleCacheRuntime<S> {
                 return self
                     .maintenance
                     .finish_started(task, outcome, false)
-                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+                    .map(|outcome| {
+                        Some(CacheBackgroundMaintenanceStep::Completed(Box::new(outcome)))
+                    });
             }
         };
-        let request = match current_compaction_request_from_maintenance_task(&task, branch) {
+        let budget = self.open_plan.lifecycle_config().storage_budget();
+        let request = match current_compaction_request_from_maintenance_task_with_budget(
+            &task,
+            branch,
+            Some(budget),
+        ) {
             Ok(Some(request)) => request,
             Ok(None) => {
                 crate::observability::perf_trace::record_lifecycle_background_candidate_stale_deferred(
@@ -1323,14 +1368,18 @@ impl<S> LifecycleCacheRuntime<S> {
                 return self
                     .maintenance
                     .finish_started(task, outcome, false)
-                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+                    .map(|outcome| {
+                        Some(CacheBackgroundMaintenanceStep::Completed(Box::new(outcome)))
+                    });
             }
             Err(error) => {
                 let outcome = background_candidate_failed_outcome(task.kind(), error);
                 return self
                     .maintenance
                     .finish_started(task, outcome, false)
-                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+                    .map(|outcome| {
+                        Some(CacheBackgroundMaintenanceStep::Completed(Box::new(outcome)))
+                    });
             }
         };
         let deferred =
@@ -1341,16 +1390,18 @@ impl<S> LifecycleCacheRuntime<S> {
                     return self
                         .maintenance
                         .finish_started(task, outcome, false)
-                        .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+                        .map(|outcome| {
+                            Some(CacheBackgroundMaintenanceStep::Completed(Box::new(outcome)))
+                        });
                 }
             };
         if let Some(outcome) = deferred {
             return self
                 .maintenance
                 .finish_started(task, outcome, false)
-                .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+                .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(Box::new(outcome))));
         }
-        Ok(Some(CacheBackgroundMaintenanceStep::Build(
+        Ok(Some(CacheBackgroundMaintenanceStep::Build(Box::new(
             CacheBackgroundMaintenanceBuild::Compaction {
                 task,
                 branch_id,
@@ -1358,7 +1409,7 @@ impl<S> LifecycleCacheRuntime<S> {
                 branch_snapshot: branch.clone(),
                 started_at: std::time::Instant::now(),
             },
-        )))
+        ))))
     }
 
     fn start_background_materialization_task(
@@ -1381,7 +1432,9 @@ impl<S> LifecycleCacheRuntime<S> {
                 return self
                     .maintenance
                     .finish_started(task, outcome, false)
-                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+                    .map(|outcome| {
+                        Some(CacheBackgroundMaintenanceStep::Completed(Box::new(outcome)))
+                    });
             }
         };
         let branch = match self
@@ -1394,7 +1447,9 @@ impl<S> LifecycleCacheRuntime<S> {
                 return self
                     .maintenance
                     .finish_started(task, outcome, false)
-                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+                    .map(|outcome| {
+                        Some(CacheBackgroundMaintenanceStep::Completed(Box::new(outcome)))
+                    });
             }
         };
         let begin = match begin_cache_materialization_build(branch, &request) {
@@ -1404,23 +1459,25 @@ impl<S> LifecycleCacheRuntime<S> {
                 return self
                     .maintenance
                     .finish_started(task, outcome, false)
-                    .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome)));
+                    .map(|outcome| {
+                        Some(CacheBackgroundMaintenanceStep::Completed(Box::new(outcome)))
+                    });
             }
         };
         match begin {
             CacheMaterializationBegin::Deferred(outcome) => self
                 .maintenance
                 .finish_started(task, outcome.maintenance_outcome(), false)
-                .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(outcome))),
+                .map(|outcome| Some(CacheBackgroundMaintenanceStep::Completed(Box::new(outcome)))),
             CacheMaterializationBegin::Build(build) => {
-                Ok(Some(CacheBackgroundMaintenanceStep::Build(
+                Ok(Some(CacheBackgroundMaintenanceStep::Build(Box::new(
                     CacheBackgroundMaintenanceBuild::Materialization {
                         task,
                         branch_id,
                         build,
                         started_at: std::time::Instant::now(),
                     },
-                )))
+                ))))
             }
         }
     }
@@ -1480,7 +1537,7 @@ impl<S> LifecycleCacheRuntime<S> {
                 let branch = self
                     .branch_catalog
                     .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
-                install_prepared_cache_flush(branch, prepared)
+                Ok(install_prepared_cache_flush(branch, prepared))
             })(),
             None => Ok(FlushFrozenOutcome::deferred(request)),
         };
@@ -1618,7 +1675,11 @@ impl<S> LifecycleCacheRuntime<S> {
     ) -> Option<LifecycleTableRewriteScoreKey> {
         let branch_id = branch_id_from_table_rewrite_task(task).ok()?;
         let branch = self.branch_catalog.branch_state(branch_id).ok()?;
-        table_rewrite_score_key_for_task(branch, task)
+        table_rewrite_score_key_for_task_with_budget(
+            branch,
+            task,
+            Some(self.open_plan.lifecycle_config().storage_budget()),
+        )
     }
 
     fn next_scored_compaction_task(&self) -> Option<MaintenanceTask> {
@@ -1673,6 +1734,7 @@ impl<S> LifecycleCacheRuntime<S> {
             let mut runner = CacheCompactionMaintenanceRunner {
                 branch,
                 compaction_io_policy: self.open_plan.lifecycle_config().compaction_io_policy(),
+                storage_budget: self.open_plan.lifecycle_config().storage_budget(),
             };
             maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
         }?;
@@ -1706,7 +1768,10 @@ impl<S> LifecycleCacheRuntime<S> {
 
     fn resubmit_table_rewrite_if_any_branch_still_unhealthy(&mut self, branch_id: BranchId) {
         if let Ok(branch) = self.branch_catalog.branch_state(branch_id) {
-            record_lifecycle_table_rewrite_post_operation_score(branch);
+            record_lifecycle_table_rewrite_post_operation_score_with_budget(
+                branch,
+                Some(self.budget.budget()),
+            );
         }
         let Some(request) = self.highest_scored_table_rewrite_request() else {
             return;
@@ -1747,9 +1812,15 @@ impl<S> LifecycleCacheRuntime<S> {
                     .branch_state(descriptor.branch_id())
                     .ok()?;
                 Some((
-                    table_rewrite_score_key_for_branch(branch)?,
+                    table_rewrite_score_key_for_branch_with_budget(
+                        branch,
+                        Some(self.open_plan.lifecycle_config().storage_budget()),
+                    )?,
                     std::cmp::Reverse(*descriptor.branch_id().as_bytes()),
-                    table_rewrite_task_request_for_branch(branch)?,
+                    table_rewrite_task_request_for_branch_with_budget(
+                        branch,
+                        Some(self.open_plan.lifecycle_config().storage_budget()),
+                    )?,
                 ))
             })
             .max_by_key(|(score, branch_tiebreaker, _)| (*score, *branch_tiebreaker))
@@ -1912,9 +1983,15 @@ impl<S> LifecycleCacheRuntime<S> {
                 branch,
                 budget: &self.budget,
             };
-            let active = maintenance.drain_active_for_close(state, &mut runner)?;
+            let mut active_tasks = 0_usize;
+            while maintenance
+                .drain_active_for_close(state, &mut runner)?
+                .is_some()
+            {
+                active_tasks = active_tasks.saturating_add(1);
+            }
             let drain = maintenance.drain_for_close(state, &mut runner)?;
-            drain.drained_tasks() + usize::from(active.is_some())
+            drain.drained_tasks().saturating_add(active_tasks)
         };
         Ok(drained_tasks)
     }
@@ -1930,6 +2007,10 @@ impl MaintenanceTaskRunner for CacheCloseRunner<'_> {
         match task.kind() {
             MaintenanceTaskKind::Flush => {
                 let request = flush_drain_request_from_maintenance_task(task)?;
+                if self.branch.active_row_count() > 0 {
+                    require_rotate_budget(self.budget, self.branch)?;
+                    self.branch.rotate_active();
+                }
                 Ok(
                     flush_branch_drain_with(self.branch, &request, |branch, request| {
                         Ok(
@@ -1941,8 +2022,11 @@ impl MaintenanceTaskRunner for CacheCloseRunner<'_> {
                 )
             }
             MaintenanceTaskKind::Compaction => {
-                let Some(request) =
-                    current_compaction_request_from_maintenance_task(task, self.branch)?
+                let Some(request) = current_compaction_request_from_maintenance_task_with_budget(
+                    task,
+                    self.branch,
+                    Some(self.budget.budget()),
+                )?
                 else {
                     return Ok(stale_compaction_maintenance_outcome());
                 };
@@ -2006,6 +2090,10 @@ impl MaintenanceTaskRunner for CacheFlushMaintenanceRunner<'_> {
                 branch_id,
                 CommitBranchGenerationGuard::exact(descriptor.generation()),
             )?;
+            if branch.active_row_count() > 0 {
+                require_rotate_budget(self.budget, branch)?;
+                branch.rotate_active();
+            }
             outcomes.push(flush_branch_drain_with(
                 branch,
                 &request,
@@ -2044,11 +2132,16 @@ fn flush_branch_descriptors_for_scope(
 struct CacheCompactionMaintenanceRunner<'a> {
     branch: &'a mut BranchLocalState,
     compaction_io_policy: LifecycleCompactionIoPolicy,
+    storage_budget: StorageRuntimeBudget,
 }
 
 impl MaintenanceTaskRunner for CacheCompactionMaintenanceRunner<'_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
-        let Some(request) = current_compaction_request_from_maintenance_task(task, self.branch)?
+        let Some(request) = current_compaction_request_from_maintenance_task_with_budget(
+            task,
+            self.branch,
+            Some(self.storage_budget),
+        )?
         else {
             return Ok(stale_compaction_maintenance_outcome());
         };

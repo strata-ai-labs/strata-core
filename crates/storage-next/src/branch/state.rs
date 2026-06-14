@@ -207,18 +207,37 @@ impl BranchLocalState {
         frozen_index: usize,
         table: BranchOwnedTable,
     ) -> BranchRuntimeResult<BranchImmutableInstallOutcome> {
-        if frozen_index >= self.frozen.len() {
+        let Some(replacement_index) = self.matching_frozen_replacement_index(frozen_index, &table)
+        else {
             return Err(BranchRuntimeError::InvalidBranchState {
-                reason: "frozen replacement index must exist",
+                reason: "frozen replacement table rows must match a frozen table",
             });
-        }
+        };
         let level_index = self.validate_install_identity_and_range(BranchLevel::ZERO, &table)?;
-        require_rows_match_frozen(&table, &self.frozen[frozen_index])?;
 
         self.owned_levels[level_index].insert(0, table);
-        self.frozen.remove(frozen_index);
+        self.frozen.remove(replacement_index);
         self.refresh_observed_row_facts();
-        Ok(self.install_outcome(BranchLevel::ZERO, 0, Some(frozen_index)))
+        Ok(self.install_outcome(BranchLevel::ZERO, 0, Some(replacement_index)))
+    }
+
+    fn matching_frozen_replacement_index(
+        &self,
+        preferred_index: usize,
+        table: &BranchOwnedTable,
+    ) -> Option<usize> {
+        let _ = self.frozen.get(preferred_index)?;
+        if self
+            .frozen
+            .get(preferred_index)
+            .is_some_and(|frozen| frozen_rows_match_table(table, frozen))
+        {
+            return Some(preferred_index);
+        }
+        self.frozen
+            .iter()
+            .enumerate()
+            .find_map(|(index, frozen)| frozen_rows_match_table(table, frozen).then_some(index))
     }
 
     fn require_absent_internal_key(&self, key: &TableInternalKeyBytes) -> BranchRuntimeResult<()> {
@@ -470,24 +489,11 @@ fn insert_sorted_by_range(
     Ok(index)
 }
 
-fn require_rows_match_frozen(
-    table: &BranchOwnedTable,
-    frozen: &FrozenTable,
-) -> BranchRuntimeResult<()> {
-    if table.rows().len() != frozen.len() {
-        return Err(BranchRuntimeError::InvalidBranchState {
-            reason: "frozen replacement table row count must match frozen table",
-        });
-    }
-    if !table
-        .rows()
-        .iter()
-        .zip(frozen.iter())
-        .all(|(left, right)| left.row() == right.row())
-    {
-        return Err(BranchRuntimeError::InvalidBranchState {
-            reason: "frozen replacement table rows must match frozen table",
-        });
-    }
-    Ok(())
+fn frozen_rows_match_table(table: &BranchOwnedTable, frozen: &FrozenTable) -> bool {
+    table.rows().len() == frozen.len()
+        && table
+            .rows()
+            .iter()
+            .zip(frozen.iter())
+            .all(|(left, right)| left.row() == right.row())
 }

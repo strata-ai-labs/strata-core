@@ -1,14 +1,14 @@
 //! Durable table rewrite publication.
 
 use super::compaction::{
-    branch_error, LifecycleCompactionIoFacts, LifecycleCompactionOutcome,
-    LifecycleCompactionRequest, LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
-    LifecycleTableRewriteDurability,
+    branch_error, table_compaction_config_with_storage_budget, LifecycleCompactionIoFacts,
+    LifecycleCompactionOutcome, LifecycleCompactionRequest, LifecycleMaterializationOutcome,
+    LifecycleMaterializationRequest, LifecycleTableRewriteDurability,
 };
 use super::{
     publish_table_manifest_for_branch_with_budget, require_generated_artifact_budget,
-    require_table_reader_budget, LifecycleDurableTableCatalog, LifecycleError, LifecycleLowerLayer,
-    LifecycleResult, StorageBudgetLedger, StorageBudgetPool,
+    require_table_reader_budget, LifecycleDurableTableCatalog, LifecycleError, LifecycleResult,
+    StorageBudgetLedger,
 };
 use crate::backend::{PublishError, PublishFailureKind};
 use crate::branch::error::BranchRuntimeError;
@@ -28,8 +28,47 @@ use crate::service::{
     TableManifestService, TableObjectFacts, TableObjectReadError, TableObjectReaderService,
     TableObjectService, TableObjectServiceError,
 };
-use crate::table::{BuiltTableArtifact, TableCompactionConfig, TableReaderConfig};
+use crate::table::{BuiltTableArtifact, TableCompactionReport, TableReaderConfig};
 use strata_core_next::BranchId;
+
+pub(crate) struct PreparedDurableCompaction {
+    request: LifecycleCompactionRequest,
+    branch_request: BranchCompactionRequest,
+    plan: BranchCompactionPlan,
+    io_facts: LifecycleCompactionIoFacts,
+    output: PreparedDurableCompactionOutput,
+    elapsed: std::time::Duration,
+}
+
+enum PreparedDurableCompactionOutput {
+    MetadataOnly,
+    Published {
+        report: TableCompactionReport,
+        published: Vec<PublishedRewriteTable>,
+    },
+}
+
+pub(crate) enum DurableMaterializationBegin {
+    Deferred(LifecycleMaterializationOutcome),
+    Build(DurableMaterializationBuild),
+}
+
+pub(crate) struct DurableMaterializationBuild {
+    request: LifecycleMaterializationRequest,
+    materialization_handle: BranchMaterializationHandle,
+    reachability_snapshot: crate::branch::facts::BranchReachabilitySnapshot,
+    branch_request: BranchMaterializationRequest,
+    branch_snapshot: BranchLocalState,
+}
+
+pub(crate) struct PreparedDurableMaterialization {
+    request: LifecycleMaterializationRequest,
+    materialization_handle: BranchMaterializationHandle,
+    reachability_snapshot: crate::branch::facts::BranchReachabilitySnapshot,
+    branch_request: BranchMaterializationRequest,
+    prepared: Option<BranchMaterializationPreparedOutput>,
+    published: Vec<PublishedRewriteTable>,
+}
 
 pub(crate) fn compact_durable_branch_manifest_backed(
     branch: &mut BranchLocalState,
@@ -40,6 +79,23 @@ pub(crate) fn compact_durable_branch_manifest_backed(
     request: &LifecycleCompactionRequest,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleCompactionOutcome> {
+    let prepared = prepare_durable_compaction_publication(
+        branch,
+        table_service,
+        reader_service,
+        request,
+        budget,
+    )?;
+    install_prepared_durable_compaction(branch, manifest_service, catalog, prepared, budget)
+}
+
+pub(crate) fn prepare_durable_compaction_publication(
+    branch: &BranchLocalState,
+    table_service: &TableObjectService<'_>,
+    reader_service: &TableObjectReaderService<'_>,
+    request: &LifecycleCompactionRequest,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<PreparedDurableCompaction> {
     let started = std::time::Instant::now();
     let request = request
         .clone()
@@ -50,52 +106,113 @@ pub(crate) fn compact_durable_branch_manifest_backed(
         .plan_branch_compaction(&branch_request)
         .map_err(branch_error)?;
     let io_facts = LifecycleCompactionIoFacts::from_plan(branch, &plan);
-    let Some((artifacts, report)) = branch
+    let output = match branch
         .prepare_branch_compaction_plan(&branch_request, &plan)
         .map_err(branch_error)?
-    else {
-        let branch_outcome = branch
-            .install_branch_compaction_plan(&branch_request, &plan)
-            .map_err(branch_error)?;
-        if plan.is_metadata_promotion() {
-            return Ok(finish_metadata_promotion_compaction(
-                branch,
-                manifest_service,
-                catalog,
+    {
+        Some((artifacts, report)) => {
+            let Some(output_level) = plan.output_level() else {
+                return Err(LifecycleError::RewritePublicationFailed {
+                    reason: "prepared compaction output requires a candidate plan",
+                    source: None,
+                });
+            };
+            let published = publish_compaction_outputs(
+                branch.branch_id(),
+                output_level,
+                plan.materialization_source(),
+                table_service,
+                reader_service,
+                artifacts,
+                budget,
+            )?;
+            PreparedDurableCompactionOutput::Published { report, published }
+        }
+        None => PreparedDurableCompactionOutput::MetadataOnly,
+    };
+    Ok(PreparedDurableCompaction {
+        request,
+        branch_request,
+        plan,
+        io_facts,
+        output,
+        elapsed: started.elapsed(),
+    })
+}
+
+pub(crate) fn install_prepared_durable_compaction(
+    branch: &mut BranchLocalState,
+    manifest_service: &TableManifestService<'_>,
+    catalog: &mut LifecycleDurableTableCatalog,
+    prepared: PreparedDurableCompaction,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<LifecycleCompactionOutcome> {
+    let PreparedDurableCompaction {
+        request,
+        branch_request,
+        plan,
+        io_facts,
+        output,
+        elapsed,
+    } = prepared;
+    match output {
+        PreparedDurableCompactionOutput::MetadataOnly => {
+            let branch_outcome = branch
+                .install_branch_compaction_plan(&branch_request, &plan)
+                .map_err(branch_error)?;
+            if plan.is_metadata_promotion() {
+                return Ok(finish_metadata_promotion_compaction(
+                    branch,
+                    manifest_service,
+                    catalog,
+                    plan,
+                    branch_outcome,
+                    io_facts,
+                    elapsed,
+                    budget,
+                ));
+            }
+            Ok(LifecycleCompactionOutcome::new(
+                &request,
                 plan,
                 branch_outcome,
                 io_facts,
-                started.elapsed(),
-                budget,
-            ));
+                elapsed,
+            ))
         }
-        return Ok(LifecycleCompactionOutcome::new(
-            &request,
-            plan,
-            branch_outcome,
-            io_facts,
-            started.elapsed(),
-        ));
-    };
-    let Some(output_level) = plan.output_level() else {
-        return Err(LifecycleError::RewritePublicationFailed {
-            reason: "prepared compaction output requires a candidate plan",
-            source: None,
-        });
-    };
-    let published = publish_compaction_outputs(
-        branch.branch_id(),
-        output_level,
-        plan.materialization_source(),
-        table_service,
-        reader_service,
-        artifacts,
-        budget,
-    )?;
+        PreparedDurableCompactionOutput::Published { report, published } => {
+            install_published_durable_compaction(
+                branch,
+                manifest_service,
+                catalog,
+                &branch_request,
+                plan,
+                io_facts,
+                elapsed,
+                report,
+                &published,
+                budget,
+            )
+        }
+    }
+}
+
+fn install_published_durable_compaction(
+    branch: &mut BranchLocalState,
+    manifest_service: &TableManifestService<'_>,
+    catalog: &mut LifecycleDurableTableCatalog,
+    branch_request: &BranchCompactionRequest,
+    plan: BranchCompactionPlan,
+    io_facts: LifecycleCompactionIoFacts,
+    elapsed: std::time::Duration,
+    report: TableCompactionReport,
+    published: &[PublishedRewriteTable],
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<LifecycleCompactionOutcome> {
     let mut next_catalog = catalog.clone();
-    record_published_outputs(&mut next_catalog, &published).map_err(|source| {
+    record_published_outputs(&mut next_catalog, published).map_err(|source| {
         LifecycleError::rewrite_publication_orphaned_with(
-            published_object_names(&published),
+            published_object_names(published),
             "table rewrite published output before catalog update failed",
             source,
         )
@@ -105,10 +222,10 @@ pub(crate) fn compact_durable_branch_manifest_backed(
         .map(|output| published_table(output).clone())
         .collect::<Vec<_>>();
     let branch_outcome = branch
-        .install_branch_compaction_prepared_plan(&branch_request, &plan, output_tables, report)
+        .install_branch_compaction_prepared_plan(branch_request, &plan, output_tables, report)
         .map_err(|source| {
             LifecycleError::rewrite_publication_orphaned_with(
-                published_object_names(&published),
+                published_object_names(published),
                 "table rewrite published output before branch install failed",
                 source,
             )
@@ -127,7 +244,7 @@ pub(crate) fn compact_durable_branch_manifest_backed(
         plan,
         branch_outcome,
         io_facts,
-        started.elapsed(),
+        elapsed,
         output_objects,
         retained_input_objects,
     );
@@ -141,41 +258,10 @@ fn compaction_request_with_durable_budget_target(
     request: BranchCompactionRequest,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<BranchCompactionRequest> {
-    let Some(budget) = budget else {
-        return Ok(request);
-    };
-    let config = table_compaction_config_with_generated_artifact_budget(
-        request.table_compaction_config(),
-        budget,
-    )?;
+    let budget = budget.map(StorageBudgetLedger::budget);
+    let config =
+        table_compaction_config_with_storage_budget(request.table_compaction_config(), budget)?;
     Ok(request.with_table_compaction_config(config))
-}
-
-fn table_compaction_config_with_generated_artifact_budget(
-    config: TableCompactionConfig,
-    budget: &StorageBudgetLedger,
-) -> LifecycleResult<TableCompactionConfig> {
-    let generated_limit = budget
-        .budget()
-        .pool_limit_bytes(StorageBudgetPool::GeneratedArtifact);
-    let reader_limit = budget
-        .budget()
-        .pool_limit_bytes(StorageBudgetPool::TableReader);
-    let limit = generated_limit.min(reader_limit);
-    if limit == 0 {
-        return Ok(config);
-    }
-    let capped_target = config.target_output_bytes().min((limit / 2).max(1));
-    if capped_target == config.target_output_bytes() {
-        return Ok(config);
-    }
-    TableCompactionConfig::new(capped_target, config.max_output_tables()).map_err(|source| {
-        LifecycleError::lower_layer_with(
-            LifecycleLowerLayer::TableRuntime,
-            "table runtime failed",
-            source,
-        )
-    })
 }
 
 fn finish_metadata_promotion_compaction(
@@ -216,6 +302,18 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
     request: &LifecycleMaterializationRequest,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleMaterializationOutcome> {
+    let build = match begin_durable_materialization_build(branch, request)? {
+        DurableMaterializationBegin::Deferred(outcome) => return Ok(outcome),
+        DurableMaterializationBegin::Build(build) => build,
+    };
+    let prepared = build.build(table_service, reader_service, budget)?;
+    install_prepared_durable_materialization(branch, manifest_service, catalog, prepared, budget)
+}
+
+pub(crate) fn begin_durable_materialization_build(
+    branch: &mut BranchLocalState,
+    request: &LifecycleMaterializationRequest,
+) -> LifecycleResult<DurableMaterializationBegin> {
     let request = request
         .clone()
         .with_durability(LifecycleTableRewriteDurability::DurableTableManifestBacked);
@@ -225,14 +323,71 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
         .is_none()
         && request.handle().is_none()
     {
-        return Ok(LifecycleMaterializationOutcome::deferred(&request));
+        return Ok(DurableMaterializationBegin::Deferred(
+            LifecycleMaterializationOutcome::deferred(&request),
+        ));
     }
     let (materialization_handle, reachability_snapshot, branch_request) =
         materialization_binding_and_request(branch, &request)?;
-    let Some(prepared) = branch
-        .prepare_materialization_output(&branch_request)
-        .map_err(branch_error)?
-    else {
+    Ok(DurableMaterializationBegin::Build(
+        DurableMaterializationBuild {
+            request,
+            materialization_handle,
+            reachability_snapshot,
+            branch_request,
+            branch_snapshot: branch.clone(),
+        },
+    ))
+}
+
+impl DurableMaterializationBuild {
+    pub(crate) fn build(
+        self,
+        table_service: &TableObjectService<'_>,
+        reader_service: &TableObjectReaderService<'_>,
+        budget: Option<&StorageBudgetLedger>,
+    ) -> LifecycleResult<PreparedDurableMaterialization> {
+        let prepared = self
+            .branch_snapshot
+            .prepare_materialization_output(&self.branch_request)
+            .map_err(branch_error)?;
+        let published = match prepared.as_ref() {
+            Some(prepared) if !prepared.artifacts().is_empty() => publish_materialization_outputs(
+                self.branch_snapshot.branch_id(),
+                table_service,
+                reader_service,
+                prepared,
+                budget,
+            )?,
+            _ => Vec::new(),
+        };
+        Ok(PreparedDurableMaterialization {
+            request: self.request,
+            materialization_handle: self.materialization_handle,
+            reachability_snapshot: self.reachability_snapshot,
+            branch_request: self.branch_request,
+            prepared,
+            published,
+        })
+    }
+}
+
+pub(crate) fn install_prepared_durable_materialization(
+    branch: &mut BranchLocalState,
+    manifest_service: &TableManifestService<'_>,
+    catalog: &mut LifecycleDurableTableCatalog,
+    prepared: PreparedDurableMaterialization,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<LifecycleMaterializationOutcome> {
+    let PreparedDurableMaterialization {
+        request,
+        materialization_handle,
+        reachability_snapshot,
+        branch_request,
+        prepared,
+        published,
+    } = prepared;
+    let Some(prepared_output) = prepared else {
         let branch_outcome = branch
             .materialize_inherited_layer(&branch_request)
             .map_err(branch_error)?;
@@ -248,9 +403,9 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
             budget,
         ));
     };
-    if prepared.artifacts().is_empty() {
+    if published.is_empty() {
         let branch_outcome = branch
-            .install_materialization_prepared_output(&branch_request, &prepared, Vec::new())
+            .install_materialization_prepared_output(&branch_request, &prepared_output, Vec::new())
             .map_err(branch_error)?;
         return Ok(finish_materialization_after_install(
             branch,
@@ -264,13 +419,6 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
             budget,
         ));
     }
-    let published = publish_materialization_outputs(
-        branch.branch_id(),
-        table_service,
-        reader_service,
-        &prepared,
-        budget,
-    )?;
     let mut next_catalog = catalog.clone();
     record_published_outputs(&mut next_catalog, &published).map_err(|source| {
         LifecycleError::rewrite_publication_orphaned_with(
@@ -284,7 +432,7 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
         .map(|output| published_table(output).clone())
         .collect::<Vec<_>>();
     let branch_outcome = branch
-        .install_materialization_prepared_output(&branch_request, &prepared, output_tables)
+        .install_materialization_prepared_output(&branch_request, &prepared_output, output_tables)
         .map_err(|source| {
             LifecycleError::rewrite_publication_orphaned_with(
                 published_object_names(&published),
@@ -449,7 +597,7 @@ fn publish_rewrite_artifact(
             table_facts,
             &bytes,
             rows,
-            TableReaderConfig::default(),
+            TableReaderConfig::default().with_eager_filter_unavailable(),
         )
         .map_err(|source| {
             orphaned_published_object_error(

@@ -75,12 +75,13 @@ impl Drop for WalRepairMutationAuthorizationGuard {
 
 #[cfg(debug_assertions)]
 fn is_wal_retention_object(name: &ObjectName) -> bool {
-    name.as_str().starts_with("wal/") || name.as_str().starts_with("meta/wal/")
+    ObjectLayout::has_wal_segment_prefix(name)
+        || ObjectLayout::has_wal_segment_metadata_prefix(name)
 }
 
 #[cfg(debug_assertions)]
 fn is_wal_segment_object(name: &ObjectName) -> bool {
-    name.as_str().starts_with("wal/")
+    ObjectLayout::has_wal_segment_prefix(name)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -23,7 +23,7 @@ use crate::lifecycle::{
     LifecycleMaintenanceExecutor, LifecycleOperationKind, LifecycleRecoveryOutcome,
     LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
     LifecycleStoragePressureReason, LifecycleStoragePressureSeverity, LifecycleTransitionTrigger,
-    LifecycleWalGrowthOutcome, LifecycleWalGrowthStatus, LifecycleWriteAdmissionOutcome,
+    LifecycleWalGrowthOutcome, LifecycleWalGrowthTrigger, LifecycleWriteAdmissionOutcome,
     RecoveryExclusivityToken, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot,
     StorageMode, StorageOpenOutcome, StorageOpenPlan,
 };
@@ -460,7 +460,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.services.wal().growth_facts().map_err(super::wal_error)
     }
 
-    pub(crate) fn current_wal_growth_exceeds_policy(&self) -> LifecycleResult<bool> {
+    pub(crate) fn current_wal_growth_backpressure_snapshot(
+        &self,
+    ) -> LifecycleResult<(WalGrowthFacts, u64, Option<LifecycleWalGrowthTrigger>)> {
         let policy = self.open_plan.lifecycle_config().wal_growth_policy();
         let facts = self.current_wal_growth_facts()?;
         let current_manifest = self
@@ -471,13 +473,16 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         let checkpoint_watermark = current_manifest
             .snapshot_watermark()
             .map(CommitVersion::new);
+        let retention_watermark = crate::lifecycle::wal_retention_watermark(
+            checkpoint_watermark,
+            current_manifest.flushed_through_commit_id(),
+        );
         let commits_since_checkpoint = crate::lifecycle::commits_since_checkpoint(
             self.visible.visible_version(),
-            checkpoint_watermark,
+            retention_watermark,
         );
-        Ok(policy
-            .trigger_for(facts, commits_since_checkpoint)
-            .is_some())
+        let trigger = policy.backpressure_trigger_for(facts, commits_since_checkpoint);
+        Ok((facts, commits_since_checkpoint, trigger))
     }
 
     pub(crate) const fn last_write_admission(&self) -> Option<LifecycleWriteAdmissionOutcome> {
@@ -638,6 +643,19 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 
     pub(crate) const fn visible_version(&self) -> CommitVersion {
         self.visible.visible_version()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn catch_up_commit_frontier_for_test(
+        &mut self,
+        version: CommitVersion,
+        timestamp: Timestamp,
+    ) {
+        self.allocator.catch_up_to_recovered_version(version);
+        self.allocator.catch_up_to_recovered_timestamp(timestamp);
+        self.visible
+            .catch_up_visible_after_replay(version)
+            .expect("test commit frontier must not regress");
     }
 
     pub(crate) const fn allocator(&self) -> &CommitFactAllocator<S> {
@@ -1098,17 +1116,15 @@ where
 
     fn record_wal_growth_outcome(&mut self, outcome: LifecycleWalGrowthOutcome) {
         let facts = outcome.facts();
+        let checkpoint_enqueued =
+            outcome.status() == crate::lifecycle::LifecycleWalGrowthStatus::MaintenanceEnqueued;
+        let checkpoint_coalesced =
+            outcome.status() == crate::lifecycle::LifecycleWalGrowthStatus::MaintenanceCoalesced;
         perf_trace::record_lifecycle_wal_growth_sample(
             facts.retained_bytes(),
             facts.retained_segments(),
-            matches!(
-                outcome.status(),
-                LifecycleWalGrowthStatus::CheckpointEnqueued
-            ),
-            matches!(
-                outcome.status(),
-                LifecycleWalGrowthStatus::CheckpointCoalesced
-            ),
+            checkpoint_enqueued,
+            checkpoint_coalesced,
         );
         self.record_recovery_health(outcome.recovery_health());
         self.last_wal_growth_outcome = Some(outcome);

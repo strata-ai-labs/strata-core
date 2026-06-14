@@ -8,8 +8,8 @@ use super::{
     BoundedTableCursor, TableBlockAddress, TableBlockCache, TableBlockCacheKey,
     TableBlockCacheKind, TableBloomFilter, TableBloomProbe, TableCacheTableId, TableCommitRange,
     TableIdentity, TableInternalKeyBytes, TableKeyBounds, TableKeyRange, TablePhysicalKeyBytes,
-    TablePreparedPointLookup, TableReaderConfig, TableRow, TableRuntimeError, TableRuntimeFacts,
-    TableRuntimeResult,
+    TablePreparedPointLookup, TableReaderConfig, TableReaderEagerFilterMode, TableRow,
+    TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
 };
 use crate::format::seek_immutable_table_data_block_point;
 use crate::format::{
@@ -153,12 +153,8 @@ impl TableReaderFilter {
         bits_per_key: usize,
     ) -> TableRuntimeResult<Self> {
         validate_filter_rows_match_facts(&facts, rows)?;
-        let physical_keys = rows
-            .iter()
-            .map(|row| TablePhysicalKeyBytes::from_physical_key(row.physical_key()))
-            .collect::<Vec<_>>();
         let filter = TableBloomFilter::build(
-            physical_keys.iter().map(TablePhysicalKeyBytes::as_slice),
+            rows.iter().map(|row| row.key().physical_key_bytes()),
             bits_per_key,
         )?;
         Ok(Self {
@@ -254,8 +250,9 @@ impl EagerTableRows {
         facts: TableRuntimeFacts,
         fingerprint: TableContentFingerprint,
         rows: Vec<TableRow>,
+        config: TableReaderConfig,
     ) -> TableRuntimeResult<Self> {
-        let filter = build_eager_filter(facts, fingerprint, &rows)?;
+        let filter = build_eager_filter(facts, fingerprint, &rows, config)?;
         Ok(Self::new(Arc::from(rows.into_boxed_slice()), filter))
     }
 
@@ -475,7 +472,7 @@ impl<'a> LazyTableRows<'a> {
         if let Some(filter) = filter {
             Ok(EagerTableRows::from_vec_with_filter(rows, filter))
         } else {
-            EagerTableRows::from_vec(facts, fingerprint, rows)
+            EagerTableRows::from_vec(facts, fingerprint, rows, TableReaderConfig::default())
         }
     }
 
@@ -888,7 +885,7 @@ impl<'a> ImmutableTableReader<'a> {
         require_validate_on_open(config);
         perf_trace::record_table_reader_open();
         let (facts, fingerprint, rows) = decode_reader_rows(identity, &bytes)?;
-        let rows = EagerTableRows::from_vec(facts.clone(), fingerprint, rows)?;
+        let rows = EagerTableRows::from_vec(facts.clone(), fingerprint, rows, config)?;
         let runtime_facts = TableReaderRuntimeFacts::eager(
             TableReaderOpenMode::EagerBytes,
             facts.data_block_count(),
@@ -933,7 +930,7 @@ impl<'a> ImmutableTableReader<'a> {
         require_validate_on_open(config);
         perf_trace::record_table_reader_open();
         let fingerprint = table_content_fingerprint_from_bytes(bytes)?;
-        let rows = EagerTableRows::from_vec(facts.clone(), fingerprint, rows)?;
+        let rows = EagerTableRows::from_vec(facts.clone(), fingerprint, rows, config)?;
         let runtime_facts = TableReaderRuntimeFacts::eager(
             TableReaderOpenMode::EagerBytes,
             facts.data_block_count(),
@@ -1501,8 +1498,20 @@ fn build_eager_filter(
     facts: TableRuntimeFacts,
     fingerprint: TableContentFingerprint,
     rows: &[TableRow],
+    config: TableReaderConfig,
 ) -> TableRuntimeResult<TableReaderFilter> {
-    build_filter_from_decoded_rows(facts, fingerprint, rows, DEFAULT_EAGER_FILTER_BITS_PER_KEY)
+    match config.eager_filter_mode() {
+        TableReaderEagerFilterMode::BuildOnOpen => build_filter_from_decoded_rows(
+            facts,
+            fingerprint,
+            rows,
+            DEFAULT_EAGER_FILTER_BITS_PER_KEY,
+        ),
+        TableReaderEagerFilterMode::Unavailable => {
+            validate_filter_rows_match_facts(&facts, rows)?;
+            Ok(TableReaderFilter::unavailable())
+        }
+    }
 }
 
 fn read_table_metadata(

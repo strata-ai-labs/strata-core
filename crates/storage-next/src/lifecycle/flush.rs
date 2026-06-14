@@ -84,6 +84,21 @@ pub(crate) struct PreparedCacheFlush {
     table: BranchOwnedTable,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedDurableFlush {
+    request: FlushFrozenRequest,
+    frozen_index: usize,
+    table_facts: TableRuntimeFacts,
+    object_facts: TableObjectFacts,
+    table: Result<BranchOwnedTable, FlushFrozenOutcome>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedDurableFlushDrain {
+    request: FlushDrainRequest,
+    prepared_flushes: Vec<PreparedDurableFlush>,
+}
+
 const DEFAULT_FLUSH_DRAIN_FREEZE_RETRY_LIMIT: usize = 4;
 const MEMORY_RELEASE_REEVALUATION_RETAINED_BYTES: u64 = 512 * 1024 * 1024;
 
@@ -590,7 +605,7 @@ pub(crate) fn flush_cache_branch_with_budget(
     let reader = ImmutableTableReader::open_bytes(
         identity.clone(),
         artifact.into_bytes(),
-        TableReaderConfig::default(),
+        TableReaderConfig::default().with_eager_filter_unavailable(),
     )
     .map_err(table_error)?;
     let table = branch_owned_table(branch.branch_id(), identity, reader)?;
@@ -637,7 +652,7 @@ pub(crate) fn prepare_cache_flush_with_budget(
     let reader = ImmutableTableReader::open_bytes(
         identity.clone(),
         artifact.into_bytes(),
-        TableReaderConfig::default(),
+        TableReaderConfig::default().with_eager_filter_unavailable(),
     )
     .map_err(table_error)?;
     let table = branch_owned_table(branch.branch_id(), identity, reader)?;
@@ -652,7 +667,7 @@ pub(crate) fn prepare_cache_flush_with_budget(
 pub(crate) fn install_prepared_cache_flush(
     branch: &mut BranchLocalState,
     prepared: PreparedCacheFlush,
-) -> LifecycleResult<FlushFrozenOutcome> {
+) -> FlushFrozenOutcome {
     let PreparedCacheFlush {
         request,
         frozen_index,
@@ -662,20 +677,16 @@ pub(crate) fn install_prepared_cache_flush(
     let install_outcome = match branch.replace_frozen_with_level_zero_table(frozen_index, table) {
         Ok(outcome) => outcome,
         Err(error) => {
-            return Ok(FlushFrozenOutcome::failed(
-                &request,
-                Some(frozen_index),
-                branch_error(error),
-            ));
+            return FlushFrozenOutcome::failed(&request, Some(frozen_index), branch_error(error));
         }
     };
-    Ok(FlushFrozenOutcome::completed_outcome(
+    FlushFrozenOutcome::completed_outcome(
         &request,
         frozen_index,
         table_facts,
         None,
         install_outcome,
-    ))
+    )
 }
 
 pub(crate) fn flush_durable_branch(
@@ -694,8 +705,23 @@ pub(crate) fn flush_durable_branch_with_budget(
     request: &FlushFrozenRequest,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<FlushFrozenOutcome> {
-    let Some(frozen_index) = select_frozen_index(branch, request)? else {
+    let Some(prepared) =
+        prepare_durable_flush_with_budget(branch, table_service, reader_service, request, budget)?
+    else {
         return Ok(FlushFrozenOutcome::deferred(request));
+    };
+    Ok(install_prepared_durable_flush(branch, prepared))
+}
+
+pub(crate) fn prepare_durable_flush_with_budget(
+    branch: &BranchLocalState,
+    table_service: &TableObjectService<'_>,
+    reader_service: &TableObjectReaderService<'_>,
+    request: &FlushFrozenRequest,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<Option<PreparedDurableFlush>> {
+    let Some(frozen_index) = select_frozen_index(branch, request)? else {
+        return Ok(None);
     };
     let artifact = build_frozen_artifact(branch, request, frozen_index)?;
     require_optional_generated_artifact_budget(
@@ -723,50 +749,193 @@ pub(crate) fn flush_durable_branch_with_budget(
     let reader = match reader_service.open_reader(
         identity.clone(),
         &object_facts,
-        TableReaderConfig::default(),
+        TableReaderConfig::default().with_eager_filter_unavailable(),
     ) {
         Ok(reader) => reader,
         Err(error) => {
-            return Ok(FlushFrozenOutcome::published_not_installed_outcome(
+            let outcome = FlushFrozenOutcome::published_not_installed_outcome(
                 request,
+                frozen_index,
+                table_facts.clone(),
+                object_facts.clone(),
+                table_read_error(error),
+            );
+            return Ok(Some(PreparedDurableFlush {
+                request: request.clone(),
                 frozen_index,
                 table_facts,
                 object_facts,
-                table_read_error(error),
-            ));
+                table: Err(outcome),
+            }));
         }
     };
     let table = match branch_owned_table(branch.branch_id(), identity, reader) {
+        Ok(table) => Ok(table),
+        Err(error) => Err(FlushFrozenOutcome::published_not_installed_outcome(
+            request,
+            frozen_index,
+            table_facts.clone(),
+            object_facts.clone(),
+            error,
+        )),
+    };
+    Ok(Some(PreparedDurableFlush {
+        request: request.clone(),
+        frozen_index,
+        table_facts,
+        object_facts,
+        table,
+    }))
+}
+
+pub(crate) fn install_prepared_durable_flush(
+    branch: &mut BranchLocalState,
+    prepared: PreparedDurableFlush,
+) -> FlushFrozenOutcome {
+    let PreparedDurableFlush {
+        request,
+        frozen_index,
+        table_facts,
+        object_facts,
+        table,
+    } = prepared;
+    let table = match table {
         Ok(table) => table,
-        Err(error) => {
-            return Ok(FlushFrozenOutcome::published_not_installed_outcome(
-                request,
-                frozen_index,
-                table_facts,
-                object_facts,
-                error,
-            ));
-        }
+        Err(outcome) => return outcome,
     };
     let install_outcome = match branch.replace_frozen_with_level_zero_table(frozen_index, table) {
         Ok(outcome) => outcome,
         Err(error) => {
-            return Ok(FlushFrozenOutcome::published_not_installed_outcome(
-                request,
+            return FlushFrozenOutcome::published_not_installed_outcome(
+                &request,
                 frozen_index,
                 table_facts,
                 object_facts,
                 branch_error(error),
-            ));
+            );
         }
     };
-    Ok(FlushFrozenOutcome::completed_outcome(
-        request,
+    FlushFrozenOutcome::completed_outcome(
+        &request,
         frozen_index,
         table_facts,
         Some(object_facts),
         install_outcome,
-    ))
+    )
+}
+
+pub(crate) fn prepare_durable_flush_drain_with_budget(
+    branch: &BranchLocalState,
+    table_service: &TableObjectService<'_>,
+    reader_service: &TableObjectReaderService<'_>,
+    request: &FlushDrainRequest,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<PreparedDurableFlushDrain> {
+    if branch.branch_id() != request.branch_id() {
+        return Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "flush drain branch id must match branch state",
+        });
+    }
+    let mut branch_snapshot = branch.clone();
+    let frozen_tables_discovered = branch_snapshot.frozen_table_count();
+    let operation_limit =
+        frozen_tables_discovered.saturating_add(request.freeze_during_drain_retry_limit());
+    let mut prepared_flushes = Vec::new();
+    let mut simulated_outcome =
+        FlushDrainOutcome::new(request.branch_id(), frozen_tables_discovered);
+    let mut operation_index = 0usize;
+    while branch_snapshot.frozen_table_count() > 0 && operation_index < operation_limit {
+        let flush_request = request.flush_request(operation_index)?;
+        let Some(prepared) = prepare_durable_flush_with_budget(
+            &branch_snapshot,
+            table_service,
+            reader_service,
+            &flush_request,
+            budget,
+        )?
+        else {
+            let maintenance = FlushFrozenOutcome::deferred(&flush_request).maintenance_outcome();
+            simulated_outcome.record_maintenance_outcome(&maintenance);
+            break;
+        };
+        let maintenance = install_prepared_durable_flush(&mut branch_snapshot, prepared.clone())
+            .maintenance_outcome();
+        let can_continue = simulated_outcome.record_maintenance_outcome(&maintenance);
+        prepared_flushes.push(prepared);
+        operation_index = operation_index.saturating_add(1);
+        if !can_continue {
+            break;
+        }
+    }
+    Ok(PreparedDurableFlushDrain {
+        request: request.clone(),
+        prepared_flushes,
+    })
+}
+
+pub(crate) fn install_prepared_durable_flush_drain_with(
+    branch: &mut BranchLocalState,
+    prepared: PreparedDurableFlushDrain,
+    mut install_one: impl FnMut(
+        &mut BranchLocalState,
+        PreparedDurableFlush,
+    ) -> LifecycleResult<MaintenanceOutcome>,
+) -> LifecycleResult<MaintenanceOutcome> {
+    if branch.branch_id() != prepared.request.branch_id() {
+        return Err(LifecycleError::MaintenanceTaskFailed {
+            reason: "flush drain branch id must match branch state",
+        });
+    }
+    let active_bytes_before = branch.active_byte_count();
+    let frozen_bytes_before = branch.frozen_byte_count();
+    let frozen_tables_discovered = branch.frozen_table_count();
+    crate::observability::perf_trace::record_lifecycle_flush_drain_frozen_tables_discovered(
+        frozen_tables_discovered,
+    );
+    if prepared.prepared_flushes.is_empty() {
+        let outcome =
+            FlushDrainOutcome::new(prepared.request.branch_id(), frozen_tables_discovered)
+                .skipped(0);
+        record_flush_drain_outcome_counters(&outcome);
+        record_flush_memory_retention(
+            active_bytes_before,
+            frozen_bytes_before,
+            branch.active_byte_count(),
+            branch.frozen_byte_count(),
+        );
+        return Ok(outcome.maintenance_outcome());
+    }
+
+    let mut outcome =
+        FlushDrainOutcome::new(prepared.request.branch_id(), frozen_tables_discovered);
+    for prepared_flush in prepared.prepared_flushes {
+        match install_one(branch, prepared_flush) {
+            Ok(maintenance) => {
+                if !outcome.record_maintenance_outcome(&maintenance) {
+                    break;
+                }
+            }
+            Err(error) => {
+                outcome.record_error(error);
+                break;
+            }
+        }
+    }
+
+    let freeze_during_drain_retries = outcome
+        .completed_flushes()
+        .saturating_sub(frozen_tables_discovered);
+    outcome = outcome
+        .with_freeze_during_drain_retries(freeze_during_drain_retries)
+        .with_post_drain_frozen_tables(branch.frozen_table_count());
+    record_flush_drain_outcome_counters(&outcome);
+    record_flush_memory_retention(
+        active_bytes_before,
+        frozen_bytes_before,
+        branch.active_byte_count(),
+        branch.frozen_byte_count(),
+    );
+    Ok(outcome.maintenance_outcome())
 }
 
 pub(crate) fn flush_branch_drain_with(

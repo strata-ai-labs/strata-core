@@ -110,6 +110,12 @@ impl TablePhysicalKeyBytes {
         Self::from_physical_key(row.physical_key())
     }
 
+    pub(crate) fn from_encoded_internal_key(encoded_key: &[u8]) -> Self {
+        Self {
+            bytes: table_internal_physical_key_bytes(encoded_key).to_vec(),
+        }
+    }
+
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.bytes
     }

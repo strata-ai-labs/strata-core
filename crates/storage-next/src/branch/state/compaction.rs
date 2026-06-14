@@ -6,21 +6,24 @@ use crate::branch::facts::BranchTableReferenceKind;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor, BranchTableRef};
 use crate::branch::pruning::{BranchCompactionPruningPolicy, BranchCompactionPruningProof};
 use crate::branch::read::{
-    require_table_physical_first_key, table_physical_ranges_overlap, BranchInheritedLayer,
-    BranchMaterializationSource, BranchOwnedTable, BranchTimestampCoverage,
+    table_physical_ranges_overlap, BranchInheritedLayer, BranchMaterializationSource,
+    BranchOwnedTable, BranchTimestampCoverage,
 };
 use crate::observability::perf_trace;
+#[cfg(any(test, debug_assertions))]
+use crate::table::TableInternalKeyBytes;
 use crate::table::{
     BuiltTableArtifact, ImmutableTableReader, TableBuilderConfig, TableCompactionConfig,
     TableCompactionDecision, TableCompactionInput, TableCompactionPolicy, TableCompactionReport,
     TableCompactionRowContext, TableCompactionSourceId, TableCompactor, TableCursor, TableIdentity,
-    TableInternalKeyBytes, TableReaderConfig, TableRow, TableRuntimeResult,
+    TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeResult,
 };
 use std::collections::BTreeSet;
 use strata_core_next::BranchId;
 
 const BRANCH_COMPACTION_SOURCE_METADATA_HASH_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const BRANCH_COMPACTION_SOURCE_METADATA_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
+const LEVEL_ZERO_COMPACTION_INPUT_LIMIT: usize = 4;
 
 fn keep_all_policy() -> impl TableCompactionPolicy {
     |_: &TableCompactionRowContext<'_>, _: &TableRow| Ok(TableCompactionDecision::Keep)
@@ -33,6 +36,11 @@ pub(crate) enum BranchCompactionKind {
     CompactLevel {
         level: BranchLevel,
         table_index: usize,
+    },
+    CompactBottommostLevel {
+        level: BranchLevel,
+        start_table_index: usize,
+        table_count: usize,
     },
 }
 
@@ -450,6 +458,16 @@ impl BranchLocalState {
             BranchCompactionKind::CompactLevel { level, table_index } => {
                 self.plan_nonzero_level_compaction(request, level, table_index)
             }
+            BranchCompactionKind::CompactBottommostLevel {
+                level,
+                start_table_index,
+                table_count,
+            } => self.plan_bottommost_level_compaction(
+                request,
+                level,
+                start_table_index,
+                table_count,
+            ),
         }
     }
 
@@ -774,7 +792,8 @@ impl BranchLocalState {
                 BranchCompactionNoopReason::EmptyInputLevel,
             ));
         }
-        let input_refs = self.table_refs_at_level(0, 0..input_count)?;
+        let input_start = input_count.saturating_sub(LEVEL_ZERO_COMPACTION_INPUT_LIMIT);
+        let input_refs = self.table_refs_at_level(0, input_start..input_count)?;
         let overlap_refs = self.overlapping_refs_for_input_range(&input_refs, 1)?;
         let input_row_count = self
             .table_ref_row_count(&input_refs)?
@@ -833,7 +852,17 @@ impl BranchLocalState {
                 ),
             });
         }
-        if level_index + 1 >= self.owned_levels.len() {
+        let output_level_index =
+            level_index
+                .checked_add(1)
+                .ok_or(BranchRuntimeError::InvalidCompaction {
+                    reason: BranchCompactionInvalidity::Generic(
+                        "compaction output level index overflowed",
+                    ),
+                })?;
+        if output_level_index >= self.owned_levels.len()
+            || u8::try_from(output_level_index).is_err()
+        {
             return Ok(BranchCompactionPlan::no_candidate(
                 self.branch_id,
                 kind,
@@ -855,11 +884,12 @@ impl BranchLocalState {
             });
         }
         let input_refs = self.table_refs_at_level(level_index, table_index..table_index + 1)?;
-        let overlap_refs = self.overlapping_refs_for_input_range(&input_refs, level_index + 1)?;
+        let overlap_refs =
+            self.overlapping_refs_for_input_range(&input_refs, output_level_index)?;
         let input_row_count = self
             .table_ref_row_count(&input_refs)?
             .saturating_add(self.table_ref_row_count(&overlap_refs)?);
-        let output_level = BranchLevel::new(u8::try_from(level_index + 1).map_err(|_| {
+        let output_level = BranchLevel::new(u8::try_from(output_level_index).map_err(|_| {
             BranchRuntimeError::InvalidCompaction {
                 reason: BranchCompactionInvalidity::Generic(
                     "compaction output level must fit in BranchLevel",
@@ -879,7 +909,7 @@ impl BranchLocalState {
                 self.branch_id,
                 input_refs,
                 output_level,
-                self.is_bottommost_output_level(level_index + 1),
+                self.is_bottommost_output_level(output_level_index),
                 input_row_count,
             );
             return Ok(BranchCompactionPlan::with_candidate(
@@ -893,9 +923,86 @@ impl BranchLocalState {
             input_refs,
             overlap_refs,
             output_level,
-            self.is_bottommost_output_level(level_index + 1),
+            self.is_bottommost_output_level(output_level_index),
             input_row_count,
             no_promotion_reason,
+        );
+        Ok(BranchCompactionPlan::with_candidate(
+            self.branch_id,
+            kind,
+            candidate,
+        ))
+    }
+
+    fn plan_bottommost_level_compaction(
+        &self,
+        request: &BranchCompactionRequest,
+        level: BranchLevel,
+        start_table_index: usize,
+        table_count: usize,
+    ) -> BranchRuntimeResult<BranchCompactionPlan> {
+        let kind = request.kind();
+        let level_index = usize::from(level.raw());
+        if level_index == 0 {
+            return Err(BranchRuntimeError::InvalidCompaction {
+                reason: BranchCompactionInvalidity::Generic(
+                    "bottommost compaction requests must target a nonzero level",
+                ),
+            });
+        }
+        if level_index >= self.owned_levels.len() {
+            return Err(BranchRuntimeError::InvalidCompaction {
+                reason: BranchCompactionInvalidity::Generic(
+                    "bottommost compaction level is outside configured level count",
+                ),
+            });
+        }
+        if level_index + 1 != self.owned_levels.len() {
+            return Err(BranchRuntimeError::InvalidCompaction {
+                reason: BranchCompactionInvalidity::Generic(
+                    "bottommost compaction must target the final configured level",
+                ),
+            });
+        }
+        if self.owned_levels[level_index].is_empty() {
+            return Ok(BranchCompactionPlan::no_candidate(
+                self.branch_id,
+                kind,
+                BranchCompactionNoopReason::EmptyInputLevel,
+            ));
+        }
+        if table_count < 2 {
+            return Ok(BranchCompactionPlan::no_candidate(
+                self.branch_id,
+                kind,
+                BranchCompactionNoopReason::NotEnoughInputTables,
+            ));
+        }
+        let end_table_index = start_table_index.checked_add(table_count).ok_or(
+            BranchRuntimeError::InvalidCompaction {
+                reason: BranchCompactionInvalidity::Generic(
+                    "bottommost compaction input range overflowed",
+                ),
+            },
+        )?;
+        if end_table_index > self.owned_levels[level_index].len() {
+            return Err(BranchRuntimeError::InvalidCompaction {
+                reason: BranchCompactionInvalidity::Generic(
+                    "bottommost compaction input range is outside requested level",
+                ),
+            });
+        }
+        let input_refs =
+            self.table_refs_at_level(level_index, start_table_index..end_table_index)?;
+        let input_row_count = self.table_ref_row_count(&input_refs)?;
+        let candidate = BranchCompactionCandidate::table_rewrite(
+            self.branch_id,
+            input_refs,
+            Vec::new(),
+            level,
+            true,
+            input_row_count,
+            Some(BranchCompactionNoPromotionReason::MultipleInputTables),
         );
         Ok(BranchCompactionPlan::with_candidate(
             self.branch_id,
@@ -1102,7 +1209,7 @@ impl BranchLocalState {
                 facts,
                 &bytes,
                 rows,
-                TableReaderConfig::default(),
+                TableReaderConfig::default().with_eager_filter_unavailable(),
             )
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             let descriptor =
@@ -1484,6 +1591,7 @@ fn validate_promoted_table_identity(
 pub(super) fn validate_compaction_levels(
     owned_levels: &[Vec<BranchOwnedTable>],
 ) -> BranchRuntimeResult<()> {
+    #[cfg(any(test, debug_assertions))]
     let mut seen_keys = BTreeSet::<TableInternalKeyBytes>::new();
     for (level_index, level) in owned_levels.iter().enumerate() {
         let branch_level = BranchLevel::new(u8::try_from(level_index).map_err(|_| {
@@ -1493,8 +1601,8 @@ pub(super) fn validate_compaction_levels(
                 ),
             }
         })?);
-        let mut previous_first_key = None;
-        for (left_index, table) in level.iter().enumerate() {
+        let mut previous_bounds = None;
+        for table in level {
             if table.level() != branch_level {
                 return Err(BranchRuntimeError::InvalidCompaction {
                     reason: BranchCompactionInvalidity::Generic(
@@ -1503,37 +1611,56 @@ pub(super) fn validate_compaction_levels(
                 });
             }
             if branch_level != BranchLevel::ZERO {
-                let first_key = require_table_physical_first_key(table)?;
-                if previous_first_key
+                let (first_key, last_key) = compaction_table_physical_key_bounds(table)?;
+                if previous_bounds
                     .as_ref()
-                    .is_some_and(|previous| previous > &first_key)
+                    .is_some_and(|(previous_first, _)| previous_first > &first_key)
                 {
                     return Err(BranchRuntimeError::InvalidCompaction { reason: BranchCompactionInvalidity::Generic("compaction output leaves nonzero-level tables out of physical-key order") });
                 }
-                previous_first_key = Some(first_key);
-            }
-            for row in table.rows() {
-                if !seen_keys.insert(row.key().clone()) {
+                if previous_bounds
+                    .as_ref()
+                    .is_some_and(|(_, previous_last)| previous_last >= &first_key)
+                {
                     return Err(BranchRuntimeError::InvalidCompaction {
                         reason: BranchCompactionInvalidity::Generic(
-                            "compaction levels must not contain duplicate internal keys",
+                            "compaction output leaves overlapping nonzero-level physical key ranges",
                         ),
                     });
                 }
+                previous_bounds = Some((first_key, last_key));
             }
-            if branch_level != BranchLevel::ZERO
-                && level
-                    .iter()
-                    .skip(left_index + 1)
-                    .any(|right| table_physical_ranges_overlap(table, right))
+            #[cfg(any(test, debug_assertions))]
             {
-                return Err(BranchRuntimeError::InvalidCompaction {
-                    reason: BranchCompactionInvalidity::Generic(
-                        "compaction output leaves overlapping nonzero-level physical key ranges",
-                    ),
-                });
+                for row in table.rows() {
+                    if !seen_keys.insert(row.key().clone()) {
+                        return Err(BranchRuntimeError::InvalidCompaction {
+                            reason: BranchCompactionInvalidity::Generic(
+                                "compaction levels must not contain duplicate internal keys",
+                            ),
+                        });
+                    }
+                }
             }
         }
     }
     Ok(())
+}
+
+fn compaction_table_physical_key_bounds(
+    table: &BranchOwnedTable,
+) -> BranchRuntimeResult<(TablePhysicalKeyBytes, TablePhysicalKeyBytes)> {
+    let first_key = table.facts().key_range().first_key();
+    let last_key = table.facts().key_range().last_key();
+    if first_key.is_empty() || last_key.is_empty() {
+        return Err(BranchRuntimeError::InvalidCompaction {
+            reason: BranchCompactionInvalidity::Generic(
+                "compaction output table must contain non-empty physical key bounds",
+            ),
+        });
+    }
+    Ok((
+        TablePhysicalKeyBytes::from_encoded_internal_key(first_key),
+        TablePhysicalKeyBytes::from_encoded_internal_key(last_key),
+    ))
 }

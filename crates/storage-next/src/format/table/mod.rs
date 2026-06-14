@@ -10,7 +10,7 @@ pub(crate) use artifact::{
     decode_immutable_table, decode_immutable_table_data_block, decode_immutable_table_metadata,
     encode_immutable_table, encode_immutable_table_with_block_compressions,
     seek_immutable_table_data_block_point, ImmutableTable, ImmutableTableMetadata,
-    ImmutableTableStreamingEncoder, ImmutableTableStreamingOutput,
+    ImmutableTableStreamingEncoder, ImmutableTableStreamingOutput, StreamingTableRow,
 };
 pub(crate) use data::TableDataBlockPointSeek;
 pub(crate) use index::TableIndexEntry;

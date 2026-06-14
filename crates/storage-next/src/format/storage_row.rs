@@ -45,6 +45,37 @@ pub(crate) fn encode_storage_row_into(
     Ok(())
 }
 
+pub(crate) fn encode_storage_row_with_physical_key_bytes_into(
+    row: &StorageRow,
+    physical_key_bytes: &[u8],
+    bytes: &mut Vec<u8>,
+) -> Result<(), FormatError> {
+    bytes.clear();
+    bytes.reserve(storage_row_encode_capacity_from_parts(
+        physical_key_bytes.len(),
+        row.value().len(),
+    ));
+    let value = row.value();
+    let physical_key_len =
+        u32::try_from(physical_key_bytes.len()).map_err(|_| FormatError::InvalidLength {
+            field: "physical_key",
+        })?;
+    let value_len =
+        u32::try_from(value.len()).map_err(|_| FormatError::InvalidLength { field: "value" })?;
+
+    bytes.push(STORAGE_ROW_FORMAT_VERSION);
+    bytes.extend_from_slice(&physical_key_len.to_le_bytes());
+    bytes.extend_from_slice(physical_key_bytes);
+    bytes.extend_from_slice(&row.commit_version().as_u64().to_le_bytes());
+    bytes.extend_from_slice(&row.commit_timestamp().as_micros().to_le_bytes());
+    bytes.extend_from_slice(&row.expires_at().as_micros().to_le_bytes());
+    bytes.extend_from_slice(&STORAGE_ROW_FLAGS_NONE.to_le_bytes());
+    bytes.push(u8::from(row.is_tombstone()));
+    bytes.extend_from_slice(&value_len.to_le_bytes());
+    bytes.extend_from_slice(value);
+    Ok(())
+}
+
 fn storage_row_encode_capacity(row: &StorageRow) -> usize {
     let key = row.physical_key();
     let physical_key_capacity = key
@@ -56,6 +87,13 @@ fn storage_row_encode_capacity(row: &StorageRow) -> usize {
         .saturating_add(1)
         .saturating_add(key.user_key().len())
         .saturating_add(2);
+    storage_row_encode_capacity_from_parts(physical_key_capacity, row.value().len())
+}
+
+fn storage_row_encode_capacity_from_parts(
+    physical_key_capacity: usize,
+    value_capacity: usize,
+) -> usize {
     1usize
         .saturating_add(4)
         .saturating_add(physical_key_capacity)
@@ -65,7 +103,7 @@ fn storage_row_encode_capacity(row: &StorageRow) -> usize {
         .saturating_add(4)
         .saturating_add(1)
         .saturating_add(4)
-        .saturating_add(row.value().len())
+        .saturating_add(value_capacity)
 }
 
 pub(crate) fn decode_storage_row(bytes: &[u8]) -> Result<StorageRow, FormatError> {

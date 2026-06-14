@@ -845,9 +845,7 @@ pub(crate) fn snapshot_with_runtime_usage(
 }
 
 fn maintenance_task_count(status: MaintenanceExecutorStatus) -> usize {
-    status
-        .pending_tasks()
-        .saturating_add(usize::from(status.active_task().is_some()))
+    status.pending_tasks().saturating_add(status.active_tasks())
 }
 
 fn estimate_rows_active_bytes(rows: &[crate::row::StorageRow]) -> LifecycleResult<u64> {

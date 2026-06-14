@@ -1438,12 +1438,12 @@ fn durable_coalesced_flush_task_drains_all_currently_frozen_tables() {
 
     assert_eq!(flush.task_kind(), MaintenanceTaskKind::Flush);
     assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
-    assert_eq!(flush.stats().maintenance_tasks(), 3);
-    assert_eq!(flush.affected_objects(), 3);
+    assert_eq!(flush.stats().maintenance_tasks(), 4);
+    assert_eq!(flush.affected_objects(), 4);
     assert!(flush.source_error().is_none());
     assert!(flush.recovery_health().is_none());
     assert_eq!(runtime.branch_state().frozen_table_count(), 0);
-    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 3);
+    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 4);
     assert!(
         backend
             .operations()
@@ -2839,6 +2839,29 @@ fn active_pressure_put_row(
     )
 }
 
+fn active_pressure_put_row_owned(
+    branch: BranchId,
+    user_key: Vec<u8>,
+    version: u64,
+    timestamp: u64,
+    value_len: usize,
+    byte: u8,
+) -> StorageRow {
+    StorageRow::put(
+        PhysicalKey::new(
+            branch,
+            "lifecycle",
+            StorageSpaceId::engine(0x24).expect("space"),
+            user_key,
+        )
+        .expect("physical key"),
+        CommitVersion::new(version),
+        Timestamp::from_micros(timestamp),
+        Timestamp::EPOCH,
+        vec![byte; value_len],
+    )
+}
+
 fn storage_budget_with_active_limit(
     active_bytes: u64,
     max_frozen_tables: u32,
@@ -2872,48 +2895,33 @@ fn storage_budget_pool_sum(parts: StorageRuntimeBudgetParts) -> u64 {
         + parts.manifest_catalog_bytes
 }
 
-fn cache_put_batch(branch: BranchId, user_key: &'static [u8], value: &'static [u8]) -> CommitBatch {
-    CommitBatch::mutating(
-        branch,
-        vec![CommitMutation::put(
-            physical_key(branch, user_key),
-            value.to_vec(),
-            CommitExpiry::None,
-            CommitRetentionHint::Append,
-        )],
-        CommitValidationFacts::empty(),
-        CommitBatchOptions::new(
-            CommitDurabilityMode::Cache,
-            CommitConflictValidationMode::Skip,
-            CommitDuplicateKeyPolicy::Reject,
-            CommitTimestampPolicy::RuntimeGenerated,
-            CommitOrigin::StorageRuntime,
-        ),
-    )
-}
-
 fn build_cache_l0_tables_with_scheduled_flushes(
     runtime: &mut LifecycleCacheRuntime<CommitManualTimestampSource>,
     branch: BranchId,
     table_count: usize,
 ) {
     assert!(table_count > 0);
-    runtime
-        .execute_cache_commit(
-            cache_put_batch(branch, b"cache-l0-seed", b"value"),
-            generation_guard(),
-        )
-        .expect("cache seed commit");
-    for _ in 0..table_count {
+    for index in 0..table_count {
+        {
+            let state = runtime
+                .branch_catalog_mut_for_test()
+                .branch_state_mut(branch, generation_guard())
+                .expect("cache branch state");
+            state
+                .append_committed_rows_atomically(vec![active_pressure_put_row_owned(
+                    branch,
+                    format!("cache-l0-trigger-{index}").into_bytes(),
+                    1 + u64::try_from(index).expect("index fits"),
+                    10_000 + u64::try_from(index).expect("index fits"),
+                    128,
+                    0x41,
+                )])
+                .expect("append cache L0 fixture row");
+            state.rotate_active();
+        }
         runtime
-            .rotate_active_for_branch_for_maintenance(branch)
-            .expect("rotate cache active table");
-        runtime
-            .execute_cache_commit(
-                cache_put_batch(branch, b"cache-l0-trigger", b"value"),
-                generation_guard(),
-            )
-            .expect("cache trigger commit");
+            .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+            .expect("enqueue cache fixture flush");
         let outcome = runtime
             .run_next_flush_maintenance()
             .expect("run cache flush maintenance")
@@ -2922,6 +2930,10 @@ fn build_cache_l0_tables_with_scheduled_flushes(
         assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
         assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
     }
+    runtime.catch_up_commit_frontier_for_test(
+        CommitVersion::new(u64::try_from(table_count).expect("table count fits")),
+        Timestamp::from_micros(10_000 + u64::try_from(table_count - 1).expect("table count fits")),
+    );
 }
 
 fn build_durable_l0_tables_with_scheduled_flushes(
@@ -2930,22 +2942,27 @@ fn build_durable_l0_tables_with_scheduled_flushes(
     table_count: usize,
 ) {
     assert!(table_count > 0);
-    runtime
-        .execute_durable_commit(
-            durable_put_batch(branch, b"durable-l0-seed", b"value"),
-            generation_guard(),
-        )
-        .expect("durable seed commit");
-    for _ in 0..table_count {
+    for index in 0..table_count {
+        {
+            let state = runtime
+                .branch_catalog_mut_for_test()
+                .branch_state_mut(branch, generation_guard())
+                .expect("durable branch state");
+            state
+                .append_committed_rows_atomically(vec![active_pressure_put_row_owned(
+                    branch,
+                    format!("durable-l0-trigger-{index}").into_bytes(),
+                    1 + u64::try_from(index).expect("index fits"),
+                    20_000 + u64::try_from(index).expect("index fits"),
+                    128,
+                    0x42,
+                )])
+                .expect("append durable L0 fixture row");
+            state.rotate_active();
+        }
         runtime
-            .rotate_active_for_branch_for_maintenance(branch)
-            .expect("rotate durable active table");
-        runtime
-            .execute_durable_commit(
-                durable_put_batch(branch, b"durable-l0-trigger", b"value"),
-                generation_guard(),
-            )
-            .expect("durable trigger commit");
+            .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+            .expect("enqueue durable fixture flush");
         let outcome = runtime
             .run_next_flush_maintenance()
             .expect("run durable flush maintenance")
@@ -2954,6 +2971,10 @@ fn build_durable_l0_tables_with_scheduled_flushes(
         assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
         assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
     }
+    runtime.catch_up_commit_frontier_for_test(
+        CommitVersion::new(u64::try_from(table_count).expect("table count fits")),
+        Timestamp::from_micros(20_000 + u64::try_from(table_count - 1).expect("table count fits")),
+    );
 }
 
 fn physical_key(branch: BranchId, user_key: &'static [u8]) -> PhysicalKey {

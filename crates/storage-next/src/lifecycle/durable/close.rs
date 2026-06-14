@@ -31,9 +31,9 @@ use crate::lifecycle::{
     purge_proof_from_maintenance_task, purge_quarantine as purge_lifecycle_quarantine,
     quarantine_task_without_request, repair_branch_from_maintenance_task,
     repair_branch_quarantine as repair_branch_lifecycle_quarantine,
-    repair_quarantine_family as repair_lifecycle_quarantine_family, CloseOutcome,
-    CloseOutcomeEffects, CloseOutcomeStatus, ClosePhase, LifecycleCloseFact, LifecycleCodecId,
-    LifecycleDurableLocalRuntime, LifecycleDurableLocalServices, LifecycleError,
+    repair_quarantine_family as repair_lifecycle_quarantine_family, require_rotate_budget,
+    CloseOutcome, CloseOutcomeEffects, CloseOutcomeStatus, ClosePhase, LifecycleCloseFact,
+    LifecycleCodecId, LifecycleDurableLocalRuntime, LifecycleDurableLocalServices, LifecycleError,
     LifecycleLowerLayer, LifecycleOperationKind, LifecycleResult, LifecycleState, LifecycleStats,
     LifecycleTransitionTrigger, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
     MaintenanceTaskKind, MaintenanceTaskRunner, RecoveryDegradationClass, RecoveryHealth,
@@ -121,18 +121,23 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             budget: &self.budget,
             table_catalog: &mut self.table_catalog,
         };
-        let active = match self
-            .maintenance
-            .drain_active_for_close(self.state, &mut runner)
-        {
-            Ok(outcome) => outcome,
-            Err(error) => {
-                self.mark_close_retry_pending()?;
-                return Err(close_drain_error(error));
-            }
-        };
         let mut observed_health = Vec::new();
-        if let Some(outcome) = &active {
+        let mut active_tasks = 0_usize;
+        loop {
+            let active = match self
+                .maintenance
+                .drain_active_for_close(self.state, &mut runner)
+            {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    self.mark_close_retry_pending()?;
+                    return Err(close_drain_error(error));
+                }
+            };
+            let Some(outcome) = active else {
+                break;
+            };
+            active_tasks = active_tasks.saturating_add(1);
             if let Some(health) = outcome.recovery_health() {
                 observed_health.push(health.clone());
             }
@@ -205,7 +210,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             .transition(LifecycleTransitionTrigger::CloseCompleted)?;
         let outcome = durable_close_outcome(
             cancel.canceled_tasks(),
-            usize::from(active.is_some()).saturating_add(drain.drained_tasks()),
+            active_tasks.saturating_add(drain.drained_tasks()),
         );
         // Snapshot the first-close outcome so subsequent idempotent close
         // calls return the same stats. Without this cache, a retry after
@@ -292,6 +297,10 @@ impl MaintenanceTaskRunner for DurableCloseMaintenanceRunner<'_, '_> {
         match task.kind() {
             MaintenanceTaskKind::Flush => {
                 let request = flush_drain_request_from_maintenance_task(task)?;
+                if self.branch.active_row_count() > 0 {
+                    require_rotate_budget(self.budget, self.branch)?;
+                    self.branch.rotate_active();
+                }
                 Ok(
                     flush_branch_drain_with(self.branch, &request, |branch, request| {
                         let outcome = flush_durable_branch_with_budget(

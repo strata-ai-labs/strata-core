@@ -39,9 +39,9 @@ mod wal_growth;
     reason = "background scheduler exports define the local lifecycle surface"
 )]
 pub(crate) use background::{
-    BackgroundBackpressureError, BackgroundScheduler, BackgroundTaskPriority,
-    InlineMaintenanceExecutor, MaintenanceClock, MaintenanceExecutor, MaintenanceExecutorStats,
-    MaintenanceInstant, ManualMaintenanceClock, RealMaintenanceClock, ThreadedMaintenanceExecutor,
+    BackgroundBackpressureError, BackgroundTaskPriority, InlineMaintenanceExecutor,
+    MaintenanceClock, MaintenanceExecutor, MaintenanceExecutorStats, MaintenanceInstant,
+    ManualMaintenanceClock, RealMaintenanceClock, ThreadedMaintenanceExecutor,
 };
 #[allow(
     unused_imports,
@@ -223,7 +223,11 @@ pub(crate) use retention::{
     reason = "durable rewrite publication exports define the local surface for maintenance dispatch"
 )]
 pub(crate) use rewrite_publication::{
-    compact_durable_branch_manifest_backed, materialize_durable_branch_manifest_backed,
+    begin_durable_materialization_build, compact_durable_branch_manifest_backed,
+    install_prepared_durable_compaction, install_prepared_durable_materialization,
+    materialize_durable_branch_manifest_backed, prepare_durable_compaction_publication,
+    DurableMaterializationBegin, DurableMaterializationBuild, PreparedDurableCompaction,
+    PreparedDurableMaterialization,
 };
 #[allow(
     unused_imports,
@@ -259,7 +263,7 @@ pub(crate) use table_reachability::{
     reason = "WAL growth facts define the pre-public-boundary lifecycle policy surface"
 )]
 pub(crate) use wal_growth::{
-    checkpoint_task_for_wal_growth, commits_since_checkpoint, policy_admission_error,
+    commits_since_checkpoint, policy_admission_error, wal_retention_watermark,
     LifecycleWalGrowthOutcome, LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger,
 };
 

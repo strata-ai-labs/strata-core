@@ -37,6 +37,22 @@ impl TableIndexEntry {
         )
     }
 
+    pub(crate) fn from_encoded_key_bytes(
+        first_key_bytes: Vec<u8>,
+        last_key_bytes: Vec<u8>,
+        block_offset: u64,
+        block_frame_len: u32,
+        row_count: u32,
+    ) -> Result<Self, FormatError> {
+        Self::from_parts(
+            first_key_bytes,
+            last_key_bytes,
+            block_offset,
+            block_frame_len,
+            row_count,
+        )
+    }
+
     fn from_parts(
         first_key_bytes: Vec<u8>,
         last_key_bytes: Vec<u8>,

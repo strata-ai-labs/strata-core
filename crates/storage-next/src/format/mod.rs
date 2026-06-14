@@ -63,8 +63,8 @@ pub(crate) use table::{
     decode_table_footer_metadata, decode_table_header, encode_immutable_table,
     encode_immutable_table_with_block_compressions, seek_immutable_table_data_block_point,
     ImmutableTable, ImmutableTableMetadata, ImmutableTableStreamingEncoder,
-    ImmutableTableStreamingOutput, TableCompression, TableDataBlockPointSeek, TableIndexEntry,
-    MAX_TABLE_BLOCK_DECODED_BYTES, MAX_TABLE_BLOCK_ENTRIES, MAX_TABLE_DATA_BLOCKS,
+    ImmutableTableStreamingOutput, StreamingTableRow, TableCompression, TableDataBlockPointSeek,
+    TableIndexEntry, MAX_TABLE_BLOCK_DECODED_BYTES, MAX_TABLE_BLOCK_ENTRIES, MAX_TABLE_DATA_BLOCKS,
     MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE, MAX_TABLE_KEY_BYTES, MAX_TABLE_ROWS,
     MAX_TABLE_ROW_BYTES,
 };

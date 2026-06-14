@@ -3836,17 +3836,15 @@ pub(super) fn require_table_physical_first_key(
 fn table_physical_key_bounds(
     table: &BranchOwnedTable,
 ) -> Option<(TablePhysicalKeyBytes, TablePhysicalKeyBytes)> {
-    let mut keys = table
-        .rows()
-        .iter()
-        .map(|row| TablePhysicalKeyBytes::from_row(row.row()));
-    let first = keys.next()?;
-    let (min, max) = keys.fold((first.clone(), first), |(min, max), key| {
-        let next_min = if key < min { key.clone() } else { min };
-        let next_max = if key > max { key } else { max };
-        (next_min, next_max)
-    });
-    Some((min, max))
+    let first_key = table.facts().key_range().first_key();
+    let last_key = table.facts().key_range().last_key();
+    if first_key.is_empty() || last_key.is_empty() {
+        return None;
+    }
+    Some((
+        TablePhysicalKeyBytes::from_encoded_internal_key(first_key),
+        TablePhysicalKeyBytes::from_encoded_internal_key(last_key),
+    ))
 }
 
 fn record_read_view_row_facts(

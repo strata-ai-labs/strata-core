@@ -1,6 +1,8 @@
 use super::super::{
     key::{decode_internal_key, encode_internal_key},
-    storage_row::{decode_storage_row, encode_storage_row},
+    storage_row::{
+        decode_storage_row, encode_storage_row, encode_storage_row_with_physical_key_bytes_into,
+    },
     ByteReader, FormatError,
 };
 use super::index::TableIndexEntry;
@@ -81,6 +83,32 @@ pub(crate) struct TableDataBlock {
     entries: Vec<TableDataEntry>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EncodedTableDataBlock {
+    payload: Vec<u8>,
+    row_count: usize,
+    first_key_bytes: Vec<u8>,
+    last_key_bytes: Vec<u8>,
+}
+
+impl EncodedTableDataBlock {
+    pub(crate) fn into_payload(self) -> Vec<u8> {
+        self.payload
+    }
+
+    pub(crate) const fn row_count(&self) -> usize {
+        self.row_count
+    }
+
+    pub(crate) fn first_key_bytes(&self) -> &[u8] {
+        &self.first_key_bytes
+    }
+
+    pub(crate) fn last_key_bytes(&self) -> &[u8] {
+        &self.last_key_bytes
+    }
+}
+
 impl TableDataBlock {
     pub(crate) fn from_rows(rows: &[StorageRow]) -> Result<Self, FormatError> {
         let entries = rows
@@ -130,6 +158,64 @@ pub(crate) fn encode_table_data_block(block: &TableDataBlock) -> Result<Vec<u8>,
         append_len_prefixed(&mut bytes, entry.row_bytes(), "row_len")?;
     }
     Ok(bytes)
+}
+
+pub(crate) fn encode_table_data_block_from_encoded_rows<'a>(
+    rows: impl IntoIterator<Item = (&'a [u8], &'a StorageRow)>,
+) -> Result<EncodedTableDataBlock, FormatError> {
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&0u32.to_le_bytes());
+
+    let mut row_bytes = Vec::new();
+    let mut row_count = 0usize;
+    let mut first_key = None;
+    let mut last_key = None;
+    let mut previous_key = None;
+    for (internal_key_bytes, row) in rows {
+        validate_len(
+            internal_key_bytes.len(),
+            MAX_TABLE_KEY_BYTES,
+            "internal_key_len",
+        )?;
+        let physical_key_bytes = internal_key_physical_key_bytes_checked(internal_key_bytes)?;
+        validate_internal_key_commit_suffix(internal_key_bytes, row.commit_version())?;
+        validate_next_key_order(previous_key, internal_key_bytes)?;
+        if first_key.is_none() {
+            first_key = Some(internal_key_bytes);
+        }
+        previous_key = Some(internal_key_bytes);
+        last_key = Some(internal_key_bytes);
+
+        encode_storage_row_with_physical_key_bytes_into(row, physical_key_bytes, &mut row_bytes)?;
+        validate_len(row_bytes.len(), MAX_TABLE_ROW_BYTES, "row_len")?;
+        append_len_prefixed(&mut payload, internal_key_bytes, "internal_key_len")?;
+        append_len_prefixed(&mut payload, &row_bytes, "row_len")?;
+        row_count = row_count.checked_add(1).ok_or(FormatError::InvalidLength {
+            field: "entry_count",
+        })?;
+    }
+
+    validate_count(row_count)?;
+    let entry_count = u32::try_from(row_count).map_err(|_| FormatError::InvalidLength {
+        field: "entry_count",
+    })?;
+    payload[..4].copy_from_slice(&entry_count.to_le_bytes());
+    let first_key_bytes = first_key
+        .ok_or(FormatError::InvalidLength {
+            field: "entry_count",
+        })?
+        .to_vec();
+    let last_key_bytes = last_key
+        .ok_or(FormatError::InvalidLength {
+            field: "entry_count",
+        })?
+        .to_vec();
+    Ok(EncodedTableDataBlock {
+        payload,
+        row_count,
+        first_key_bytes,
+        last_key_bytes,
+    })
 }
 
 pub(crate) fn decode_table_data_block(bytes: &[u8]) -> Result<TableDataBlock, FormatError> {
@@ -396,6 +482,41 @@ fn validate_scanned_block_against_index(
 
 fn internal_key_physical_key_bytes(bytes: &[u8]) -> &[u8] {
     &bytes[..bytes.len().saturating_sub(INTERNAL_KEY_SUFFIX_LEN)]
+}
+
+fn internal_key_physical_key_bytes_checked(bytes: &[u8]) -> Result<&[u8], FormatError> {
+    if bytes.len() < INTERNAL_KEY_SUFFIX_LEN {
+        return Err(FormatError::InsufficientBytes {
+            format: "internal_key",
+            needed: INTERNAL_KEY_SUFFIX_LEN,
+            actual: bytes.len(),
+        });
+    }
+    Ok(&bytes[..bytes.len() - INTERNAL_KEY_SUFFIX_LEN])
+}
+
+fn validate_internal_key_commit_suffix(
+    bytes: &[u8],
+    commit_version: CommitVersion,
+) -> Result<(), FormatError> {
+    if bytes.len() < INTERNAL_KEY_SUFFIX_LEN {
+        return Err(FormatError::InsufficientBytes {
+            format: "internal_key",
+            needed: INTERNAL_KEY_SUFFIX_LEN,
+            actual: bytes.len(),
+        });
+    }
+    let suffix =
+        <[u8; INTERNAL_KEY_SUFFIX_LEN]>::try_from(&bytes[bytes.len() - INTERNAL_KEY_SUFFIX_LEN..])
+            .map_err(|_| FormatError::InvalidLength {
+                field: "internal_key",
+            })?;
+    if CommitVersion::new(!u64::from_be_bytes(suffix)) != commit_version {
+        return Err(FormatError::InvalidValue {
+            field: "commit_version",
+        });
+    }
+    Ok(())
 }
 
 fn decode_storage_row_for_internal_key(

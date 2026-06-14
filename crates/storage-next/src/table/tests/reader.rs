@@ -3341,6 +3341,7 @@ fn immutable_reader_from_validated_rows_reuses_handoff_rows_and_rejects_mismatch
     .expect("validated row handoff reader");
     assert_eq!(reader.facts(), &facts);
     assert_eq!(reader.rows(), expected_rows.as_slice());
+    assert!(reader.runtime_facts().filter_available());
     assert_eq!(
         reader.runtime_facts().open_mode(),
         TableReaderOpenMode::EagerBytes
@@ -3359,6 +3360,45 @@ fn immutable_reader_from_validated_rows_reuses_handoff_rows_and_rejects_mismatch
             field: "table_filter_row_count",
         }
     );
+}
+
+#[test]
+fn immutable_reader_from_validated_rows_can_defer_eager_filter_build() {
+    let rows = [
+        put_row_for_key(
+            physical_key(8, "reader", 0x25, b"defer-filter-alpha".to_vec()),
+            7,
+            b"alpha".to_vec(),
+        ),
+        put_row_for_key(
+            physical_key(8, "reader", 0x25, b"defer-filter-beta".to_vec()),
+            8,
+            b"beta".to_vec(),
+        ),
+    ];
+    let (artifact, expected_rows) = build_artifact(
+        "reader-validated-row-deferred-filter",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let (bytes, facts, handoff_rows) = artifact.into_parts_with_rows();
+
+    let reader = ImmutableTableReader::from_validated_rows(
+        facts.clone(),
+        &bytes,
+        handoff_rows,
+        TableReaderConfig::default().with_eager_filter_unavailable(),
+    )
+    .expect("validated row handoff reader");
+    assert_eq!(reader.facts(), &facts);
+    assert_eq!(reader.rows(), expected_rows.as_slice());
+    assert!(!reader.runtime_facts().filter_available());
+
+    let (hit, visited) =
+        reader.seek_physical_key(rows[1].physical_key(), Some(CommitVersion::MAX), None);
+    assert_eq!(hit.as_ref().map(TableRow::row), Some(&rows[1]));
+    assert!(visited > 0);
 }
 
 #[test]

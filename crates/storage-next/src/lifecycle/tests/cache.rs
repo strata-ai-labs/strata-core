@@ -717,6 +717,7 @@ fn cache_post_commit_coverage_flush_preempts_quiet_branch_compaction() {
         )
         .expect("create quiet branch");
     build_l0_tables_with_scheduled_flushes(&mut runtime, quiet, 4);
+    append_active_cache_test_row(&mut runtime, quiet, b"coverage-quiet-frozen", 20_500);
     runtime
         .rotate_active_for_branch_for_maintenance(quiet)
         .expect("rotate quiet branch");
@@ -972,9 +973,9 @@ fn cache_coalesced_flush_task_drains_all_currently_frozen_tables() {
 
     assert_eq!(flush.task_kind(), MaintenanceTaskKind::Flush);
     assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
-    assert_eq!(flush.stats().maintenance_tasks(), 3);
+    assert_eq!(flush.stats().maintenance_tasks(), 4);
     assert_eq!(runtime.branch_state().frozen_table_count(), 0);
-    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 3);
+    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 4);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
 }
 
@@ -1117,6 +1118,12 @@ fn cache_post_commit_schedules_flush_before_compaction_when_both_are_needed() {
     build_l0_tables_with_scheduled_flushes(&mut runtime, branch, 4);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
 
+    append_active_cache_test_row(
+        &mut runtime,
+        branch,
+        b"flush-before-compaction-frozen",
+        19_500,
+    );
     runtime
         .rotate_active_for_branch_for_maintenance(branch)
         .expect("rotate active row into frozen state");
@@ -1133,7 +1140,13 @@ fn cache_post_commit_schedules_flush_before_compaction_when_both_are_needed() {
         .expect("run flush maintenance")
         .expect("flush task");
     assert_eq!(flush.task_kind(), MaintenanceTaskKind::Flush);
-    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        flush.status(),
+        MaintenanceOutcomeStatus::Completed,
+        "flush reason {:?}, source {:?}",
+        flush.reason(),
+        flush.source_error()
+    );
 }
 
 #[test]
@@ -1145,6 +1158,12 @@ fn cache_post_commit_flush_preempts_blocking_l0_compaction_pressure() {
     build_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
 
+    append_active_cache_test_row(
+        &mut runtime,
+        branch,
+        b"flush-before-blocking-compaction-frozen",
+        29_500,
+    );
     runtime
         .rotate_active_for_branch_for_maintenance(branch)
         .expect("rotate active row into frozen state");
@@ -1168,7 +1187,13 @@ fn cache_post_commit_flush_preempts_blocking_l0_compaction_pressure() {
         .expect("run flush maintenance")
         .expect("flush task");
     assert_eq!(flush.task_kind(), MaintenanceTaskKind::Flush);
-    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        flush.status(),
+        MaintenanceOutcomeStatus::Completed,
+        "flush reason {:?}, source {:?}",
+        flush.reason(),
+        flush.source_error()
+    );
 }
 
 #[test]
@@ -1312,6 +1337,29 @@ fn compaction_chain_resubmits_highest_scored_branch() {
         })
     );
     assert_eq!(second.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        runtime
+            .branch_catalog()
+            .branch_state(branch_high)
+            .expect("high branch")
+            .owned_levels()[0]
+            .len(),
+        4
+    );
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    let third = runtime
+        .run_next_compaction_maintenance()
+        .expect("run follow-up compaction")
+        .expect("follow-up compaction outcome");
+    assert_eq!(
+        third.task_scope(),
+        Some(MaintenanceTaskScope::TableLevel {
+            branch_id: branch_high,
+            level: 0,
+        })
+    );
+    assert_eq!(third.status(), MaintenanceOutcomeStatus::Completed);
     assert_eq!(
         runtime
             .branch_catalog()
@@ -1628,18 +1676,16 @@ fn cache_flush_drain_perf_trace_counts_discovered_completed_and_remaining_tables
     assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
 
     let perf = crate::observability::perf_trace::snapshot();
-    assert_eq!(perf.lifecycle_flush_drain_frozen_tables_discovered(), 3);
-    assert_eq!(perf.lifecycle_flush_drain_operations_completed(), 3);
+    assert_eq!(perf.lifecycle_flush_drain_frozen_tables_discovered(), 4);
+    assert_eq!(perf.lifecycle_flush_drain_operations_completed(), 4);
     assert_eq!(perf.lifecycle_flush_drain_freeze_retries(), 0);
     assert_eq!(perf.lifecycle_flush_drain_failures(), 0);
     assert_eq!(perf.lifecycle_flush_drain_post_drain_frozen_tables(), 0);
     assert_eq!(perf.lifecycle_flush_memory_measurements(), 1);
     assert!(perf.lifecycle_flush_frozen_bytes_before() > 0);
     assert_eq!(perf.lifecycle_flush_frozen_bytes_after(), 0);
-    assert_eq!(
-        perf.lifecycle_flush_active_bytes_after(),
-        perf.lifecycle_flush_active_bytes_before()
-    );
+    assert_eq!(perf.lifecycle_flush_active_bytes_before(), 0);
+    assert_eq!(perf.lifecycle_flush_active_bytes_after(), 0);
     assert_eq!(perf.lifecycle_memory_release_deferrals(), 1);
     assert!(perf.lifecycle_memory_release_threshold_bytes() > 0);
 }
@@ -1689,12 +1735,13 @@ fn generated_repeated_flush_cycles_record_retained_memory_measurements() {
 
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.lifecycle_flush_memory_measurements(), 4);
-    assert_eq!(perf.lifecycle_flush_drain_operations_completed(), 4);
+    assert_eq!(perf.lifecycle_flush_drain_operations_completed(), 8);
     assert_eq!(perf.lifecycle_flush_frozen_bytes_after(), 0);
     assert!(perf.lifecycle_flush_frozen_bytes_before() > 0);
-    assert!(perf.lifecycle_flush_active_bytes_after() > 0);
+    assert_eq!(perf.lifecycle_flush_active_bytes_before(), 0);
+    assert_eq!(perf.lifecycle_flush_active_bytes_after(), 0);
     assert_eq!(perf.lifecycle_memory_release_deferrals(), 4);
-    assert!(perf.lifecycle_memory_release_retained_bytes() > 0);
+    assert_eq!(perf.lifecycle_memory_release_retained_bytes(), 0);
     assert_eq!(
         perf.lifecycle_memory_release_threshold_bytes()
             % perf.lifecycle_flush_memory_measurements(),
@@ -1797,6 +1844,10 @@ fn cache_compaction_is_preempted_when_flush_pressure_exists() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "stale-candidate regression keeps setup, mutation, publish, and resubmit assertions together"
+)]
 fn cache_background_compaction_stale_candidate_defers_and_resubmits_pressure() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let branch = branch_id(0x7c);
@@ -1837,13 +1888,13 @@ fn cache_background_compaction_stale_candidate_defers_and_resubmits_pressure() {
         .start_next_background_table_rewrite_maintenance()
         .expect("start split background compaction")
         .expect("background compaction step");
-    let build = match step {
-        CacheBackgroundMaintenanceStep::Build(build) => build,
+    let candidate = match step {
+        CacheBackgroundMaintenanceStep::Build(candidate) => *candidate,
         CacheBackgroundMaintenanceStep::Completed(outcome) => {
             panic!("expected background build step, got {outcome:?}")
         }
     };
-    let built = build
+    let prepared = candidate
         .build()
         .expect("build compaction outside runtime lock");
     {
@@ -1873,7 +1924,7 @@ fn cache_background_compaction_stale_candidate_defers_and_resubmits_pressure() {
     }
 
     let outcome = runtime
-        .finish_background_maintenance(built)
+        .finish_background_maintenance(prepared)
         .expect("finish stale background compaction");
 
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
@@ -1931,13 +1982,13 @@ fn cache_background_flush_deleted_branch_finishes_stale_and_clears_active_task()
         .start_next_background_flush_maintenance()
         .expect("start split background flush")
         .expect("background flush step");
-    let build = match step {
-        CacheBackgroundMaintenanceStep::Build(build) => build,
+    let candidate = match step {
+        CacheBackgroundMaintenanceStep::Build(candidate) => *candidate,
         CacheBackgroundMaintenanceStep::Completed(outcome) => {
             panic!("expected background build step, got {outcome:?}")
         }
     };
-    let built = build.build().expect("build flush outside runtime lock");
+    let prepared = candidate.build().expect("build flush outside runtime lock");
     runtime
         .delete_branch(
             branch,
@@ -1948,7 +1999,7 @@ fn cache_background_flush_deleted_branch_finishes_stale_and_clears_active_task()
     crate::observability::perf_trace::reset();
 
     let outcome = runtime
-        .finish_background_maintenance(built)
+        .finish_background_maintenance(prepared)
         .expect("finish stale background flush");
 
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
@@ -2010,13 +2061,13 @@ fn cache_background_compaction_deleted_branch_finishes_stale_and_clears_active_t
         .start_next_background_table_rewrite_maintenance()
         .expect("start split background compaction")
         .expect("background compaction step");
-    let build = match step {
-        CacheBackgroundMaintenanceStep::Build(build) => build,
+    let candidate = match step {
+        CacheBackgroundMaintenanceStep::Build(candidate) => *candidate,
         CacheBackgroundMaintenanceStep::Completed(outcome) => {
             panic!("expected background build step, got {outcome:?}")
         }
     };
-    let built = build
+    let prepared = candidate
         .build()
         .expect("build compaction outside runtime lock");
     runtime
@@ -2029,7 +2080,7 @@ fn cache_background_compaction_deleted_branch_finishes_stale_and_clears_active_t
     crate::observability::perf_trace::reset();
 
     let outcome = runtime
-        .finish_background_maintenance(built)
+        .finish_background_maintenance(prepared)
         .expect("finish stale background compaction");
 
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
@@ -2082,13 +2133,13 @@ fn cache_background_materialization_deleted_branch_finishes_stale_and_clears_act
         .start_next_background_table_rewrite_maintenance()
         .expect("start split background materialization")
         .expect("background materialization step");
-    let build = match step {
-        CacheBackgroundMaintenanceStep::Build(build) => build,
+    let candidate = match step {
+        CacheBackgroundMaintenanceStep::Build(candidate) => *candidate,
         CacheBackgroundMaintenanceStep::Completed(outcome) => {
             panic!("expected background build step, got {outcome:?}")
         }
     };
-    let built = build
+    let prepared = candidate
         .build()
         .expect("build materialization outside runtime lock");
     runtime
@@ -2101,7 +2152,7 @@ fn cache_background_materialization_deleted_branch_finishes_stale_and_clears_act
     crate::observability::perf_trace::reset();
 
     let outcome = runtime
-        .finish_background_maintenance(built)
+        .finish_background_maintenance(prepared)
         .expect("finish stale background materialization");
 
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
@@ -2137,13 +2188,13 @@ fn cache_foreground_commit_completes_while_background_flush_build_is_paused() {
         .start_next_background_flush_maintenance()
         .expect("start split background flush")
         .expect("background flush step");
-    let build = expect_cache_background_build(step);
+    let candidate = expect_cache_background_build(step);
     assert!(
         runtime.maintenance_status().active_task().is_some(),
         "split build must leave the background task active while unlocked work is pending"
     );
-    let (build_thread, mut pause) =
-        spawn_paused_cache_background_build(build, CacheBackgroundBuildKind::Flush);
+    let (worker, mut pause) =
+        spawn_paused_cache_background_build(candidate, CacheBackgroundBuildKind::Flush);
     pause.wait_until_entered();
 
     commit_cache_put(&mut runtime, branch, b"background-flush-foreground", 2_000);
@@ -2154,18 +2205,77 @@ fn cache_foreground_commit_completes_while_background_flush_build_is_paused() {
     );
 
     pause.release();
-    let built = build_thread
+    let prepared = worker
         .join()
         .expect("background flush build thread")
         .expect("build flush outside runtime lock");
     let outcome = runtime
-        .finish_background_maintenance(built)
+        .finish_background_maintenance(prepared)
         .expect("finish background flush");
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
     assert_eq!(runtime.maintenance_status().active_task(), None);
     assert_eq!(
         cache_latest_value(&runtime, branch, b"background-flush-foreground"),
         b"background-flush-foreground".to_vec()
+    );
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_background_flush_publish_matches_frozen_rows_after_concurrent_rotation() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x9f);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    commit_cache_put(&mut runtime, branch, b"background-flush-old", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate original active table");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue flush");
+
+    let step = runtime
+        .start_next_background_flush_maintenance()
+        .expect("start split background flush")
+        .expect("background flush step");
+    let candidate = expect_cache_background_build(step);
+    let (worker, mut pause) =
+        spawn_paused_cache_background_build(candidate, CacheBackgroundBuildKind::Flush);
+    pause.wait_until_entered();
+
+    commit_cache_put(&mut runtime, branch, b"background-flush-new", 2_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate new active table while flush builds");
+    assert_eq!(
+        runtime.branch_state().frozen_table_count(),
+        2,
+        "new rotation should shift the prepared frozen table index"
+    );
+
+    pause.release();
+    let prepared = worker
+        .join()
+        .expect("background flush build thread")
+        .expect("build flush outside runtime lock");
+    let outcome = runtime
+        .finish_background_maintenance(prepared)
+        .expect("finish background flush");
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        runtime.branch_state().frozen_table_count(),
+        1,
+        "publish should replace the matching frozen rows, not the stale index"
+    );
+    assert_eq!(
+        cache_latest_value(&runtime, branch, b"background-flush-old"),
+        b"background-flush-old".to_vec()
+    );
+    assert_eq!(
+        cache_latest_value(&runtime, branch, b"background-flush-new"),
+        b"background-flush-new".to_vec()
     );
 }
 
@@ -2190,10 +2300,10 @@ fn cache_reads_and_commit_continue_while_background_compaction_build_is_paused()
         .start_next_background_table_rewrite_maintenance()
         .expect("start split background compaction")
         .expect("background compaction step");
-    let build = expect_cache_background_build(step);
+    let candidate = expect_cache_background_build(step);
     assert!(runtime.maintenance_status().active_task().is_some());
-    let (build_thread, mut pause) =
-        spawn_paused_cache_background_build(build, CacheBackgroundBuildKind::Compaction);
+    let (worker, mut pause) =
+        spawn_paused_cache_background_build(candidate, CacheBackgroundBuildKind::Compaction);
     pause.wait_until_entered();
 
     assert_eq!(
@@ -2222,12 +2332,12 @@ fn cache_reads_and_commit_continue_while_background_compaction_build_is_paused()
     );
 
     pause.release();
-    let built = build_thread
+    let prepared = worker
         .join()
         .expect("background compaction build thread")
         .expect("build compaction outside runtime lock");
     let outcome = runtime
-        .finish_background_maintenance(built)
+        .finish_background_maintenance(prepared)
         .expect("finish background compaction");
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
     assert_eq!(runtime.maintenance_status().active_task(), None);
@@ -2278,10 +2388,10 @@ fn cache_foreground_commit_completes_while_background_materialization_build_is_p
         .start_next_background_table_rewrite_maintenance()
         .expect("start split background materialization")
         .expect("background materialization step");
-    let build = expect_cache_background_build(step);
+    let candidate = expect_cache_background_build(step);
     assert!(runtime.maintenance_status().active_task().is_some());
-    let (build_thread, mut pause) =
-        spawn_paused_cache_background_build(build, CacheBackgroundBuildKind::Materialization);
+    let (worker, mut pause) =
+        spawn_paused_cache_background_build(candidate, CacheBackgroundBuildKind::Materialization);
     pause.wait_until_entered();
 
     assert_eq!(
@@ -2301,12 +2411,12 @@ fn cache_foreground_commit_completes_while_background_materialization_build_is_p
     );
 
     pause.release();
-    let built = build_thread
+    let prepared = worker
         .join()
         .expect("background materialization build thread")
         .expect("build materialization outside runtime lock");
     let outcome = runtime
-        .finish_background_maintenance(built)
+        .finish_background_maintenance(prepared)
         .expect("finish background materialization");
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
     assert_eq!(runtime.maintenance_status().active_task(), None);
@@ -2336,8 +2446,8 @@ fn cache_background_compaction_clear_branch_finishes_stale_without_publishing_ou
         .start_next_background_table_rewrite_maintenance()
         .expect("start split background compaction")
         .expect("background compaction step");
-    let build = expect_cache_background_build(step);
-    let built = build
+    let candidate = expect_cache_background_build(step);
+    let prepared = candidate
         .build()
         .expect("build compaction outside runtime lock");
 
@@ -2350,7 +2460,7 @@ fn cache_background_compaction_clear_branch_finishes_stale_without_publishing_ou
     crate::observability::perf_trace::reset();
 
     let outcome = runtime
-        .finish_background_maintenance(built)
+        .finish_background_maintenance(prepared)
         .expect("finish stale background compaction");
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
     assert_eq!(runtime.maintenance_status().active_task(), None);
@@ -2382,7 +2492,7 @@ fn cache_fork_during_background_compaction_keeps_child_reads_valid_after_publish
         .start_next_background_table_rewrite_maintenance()
         .expect("start split background compaction")
         .expect("background compaction step");
-    let build = expect_cache_background_build(step);
+    let candidate = expect_cache_background_build(step);
 
     runtime
         .fork_current(
@@ -2394,9 +2504,9 @@ fn cache_fork_during_background_compaction_keeps_child_reads_valid_after_publish
     let child_history_before = cache_history_facts(&runtime, child, inherited_key);
     assert_eq!(child_history_before.len(), 4);
 
-    let built = build.build().expect("build parent compaction");
+    let prepared = candidate.build().expect("build parent compaction");
     let outcome = runtime
-        .finish_background_maintenance(built)
+        .finish_background_maintenance(prepared)
         .expect("finish parent compaction");
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
     assert_eq!(
@@ -2586,7 +2696,11 @@ fn cache_commit_rejects_blocking_table_pressure_before_allocating_version() {
     let mut runtime = open_runtime(branch, &backend);
 
     build_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
-    assert_eq!(runtime.visible_version(), CommitVersion::new(17));
+    assert_eq!(runtime.visible_version(), CommitVersion::new(16));
+    assert_eq!(
+        runtime.allocator().version_allocator().last_allocated(),
+        CommitVersion::new(16)
+    );
     assert_eq!(
         runtime.storage_pressure().severity(),
         LifecycleStoragePressureSeverity::BlockMutatingAdmission
@@ -2614,7 +2728,11 @@ fn cache_commit_rejects_blocking_table_pressure_before_allocating_version() {
             ..
         } if rejected_branch == branch
     ));
-    assert_eq!(runtime.visible_version(), CommitVersion::new(17));
+    assert_eq!(runtime.visible_version(), CommitVersion::new(16));
+    assert_eq!(
+        runtime.allocator().version_allocator().last_allocated(),
+        CommitVersion::new(16)
+    );
     let key = physical_key(branch, b"blocked-by-table-pressure");
     assert!(
         runtime
@@ -2728,7 +2846,7 @@ fn cache_commit_stale_generation_takes_precedence_over_blocking_pressure() {
         } if rejected_branch == branch
     ));
     assert_eq!(runtime.last_write_admission(), None);
-    assert_eq!(runtime.visible_version(), CommitVersion::new(17));
+    assert_eq!(runtime.visible_version(), CommitVersion::new(16));
     assert!(
         runtime
             .read_view()
@@ -2767,7 +2885,7 @@ fn cache_commit_wrong_mode_takes_precedence_over_blocking_pressure() {
 
     assert_commit_runtime_error(&error);
     assert_eq!(runtime.last_write_admission(), None);
-    assert_eq!(runtime.visible_version(), CommitVersion::new(17));
+    assert_eq!(runtime.visible_version(), CommitVersion::new(16));
     assert!(
         runtime
             .read_view()
@@ -2803,7 +2921,7 @@ fn cache_commit_background_l0_pressure_records_clean_admission() {
         )
         .expect("background pressure admits commit");
 
-    assert_eq!(outcome.commit_version(), Some(CommitVersion::new(6)));
+    assert_eq!(outcome.commit_version(), Some(CommitVersion::new(5)));
     let admission = runtime
         .last_write_admission()
         .expect("background admission facts");
@@ -2846,7 +2964,7 @@ fn cache_commit_urgent_l0_pressure_records_under_pressure_admission() {
         )
         .expect("urgent pressure admits commit with pressure facts");
 
-    assert_eq!(outcome.commit_version(), Some(CommitVersion::new(10)));
+    assert_eq!(outcome.commit_version(), Some(CommitVersion::new(9)));
     let admission = runtime
         .last_write_admission()
         .expect("urgent admission facts");
@@ -2909,7 +3027,7 @@ fn cache_commit_retry_after_pressure_maintenance_succeeds() {
         )
         .expect("retry after maintenance succeeds");
 
-    assert_eq!(outcome.commit_version(), Some(CommitVersion::new(18)));
+    assert_eq!(outcome.commit_version(), Some(CommitVersion::new(17)));
     let admission = runtime
         .last_write_admission()
         .expect("retry records accepted admission facts");
@@ -4236,6 +4354,37 @@ fn commit_cache_put(
         .expect("cache put commit");
 }
 
+fn append_active_cache_test_row(
+    runtime: &mut LifecycleCacheRuntime<CommitManualTimestampSource>,
+    branch: BranchId,
+    user_key: &[u8],
+    timestamp_micros: u64,
+) {
+    let generation = runtime
+        .branch_catalog()
+        .lookup(branch)
+        .expect("test branch registered")
+        .generation();
+    let version = runtime
+        .visible_version()
+        .checked_next()
+        .expect("test commit version fits");
+    let row = StorageRow::put(
+        physical_key(branch, user_key),
+        version,
+        Timestamp::from_micros(timestamp_micros),
+        Timestamp::EPOCH,
+        user_key.to_vec(),
+    );
+    runtime
+        .branch_catalog_mut_for_test()
+        .branch_state_mut(branch, CommitBranchGenerationGuard::exact(generation))
+        .expect("test branch state")
+        .append_committed_rows_atomically(vec![row])
+        .expect("append active test row");
+    runtime.catch_up_commit_frontier_for_test(version, Timestamp::from_micros(timestamp_micros));
+}
+
 fn blocked_active_byte_pressure_state(branch: BranchId, rotation_bytes: usize) -> BranchLocalState {
     let branch_config = BranchRuntimeConfig::new(8, 64, 1)
         .expect("branch config")
@@ -4410,7 +4559,7 @@ fn expect_cache_background_build(
     step: CacheBackgroundMaintenanceStep,
 ) -> CacheBackgroundMaintenanceBuild {
     match step {
-        CacheBackgroundMaintenanceStep::Build(build) => build,
+        CacheBackgroundMaintenanceStep::Build(candidate) => *candidate,
         CacheBackgroundMaintenanceStep::Completed(outcome) => {
             panic!("expected background build step, got {outcome:?}")
         }
@@ -4529,22 +4678,42 @@ fn build_l0_tables_with_scheduled_flushes_from(
     base_timestamp_micros: u64,
 ) {
     assert!(table_count > 0);
-    commit_cache_put(runtime, branch, b"scheduled-l0-seed", base_timestamp_micros);
     for index in 0..table_count {
+        {
+            let state = runtime
+                .branch_catalog_mut_for_test()
+                .branch_state_mut(
+                    branch,
+                    CommitBranchGenerationGuard::exact(
+                        CommitBranchGeneration::new(1).expect("generation"),
+                    ),
+                )
+                .expect("branch state");
+            state
+                .append_committed_rows_atomically(vec![active_pressure_put_row(
+                    branch,
+                    format!("scheduled-l0-trigger-{index}").as_bytes(),
+                    1 + u64::try_from(index).expect("index fits"),
+                    base_timestamp_micros + u64::try_from(index).expect("index fits"),
+                    128,
+                    0x51,
+                )])
+                .expect("append scheduled L0 fixture row");
+            state.rotate_active();
+        }
         runtime
-            .rotate_active_for_branch_for_maintenance(branch)
-            .expect("rotate active table");
-        let key = format!("scheduled-l0-trigger-{index}");
-        commit_cache_put(
-            runtime,
-            branch,
-            key.as_bytes(),
-            base_timestamp_micros + 1 + index as u64,
-        );
+            .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+            .expect("enqueue scheduled fixture flush");
         assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
         run_queued_flush(runtime);
         assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
     }
+    runtime.catch_up_commit_frontier_for_test(
+        CommitVersion::new(u64::try_from(table_count).expect("table count fits")),
+        Timestamp::from_micros(
+            base_timestamp_micros + u64::try_from(table_count - 1).expect("table count fits"),
+        ),
+    );
 }
 
 fn build_l0_tables_with_manual_flushes_from(
@@ -4553,26 +4722,12 @@ fn build_l0_tables_with_manual_flushes_from(
     table_count: usize,
     base_timestamp_micros: u64,
 ) {
-    assert!(table_count > 0);
-    commit_cache_put(runtime, branch, b"manual-l0-seed", base_timestamp_micros);
-    for index in 0..table_count {
-        runtime
-            .rotate_active_for_branch_for_maintenance(branch)
-            .expect("rotate active table");
-        let key = format!("manual-l0-trigger-{index}");
-        commit_cache_put(
-            runtime,
-            branch,
-            key.as_bytes(),
-            base_timestamp_micros + 1 + index as u64,
-        );
-        runtime
-            .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
-            .expect("enqueue manual flush");
-        assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
-        run_queued_flush(runtime);
-        assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
-    }
+    build_l0_tables_with_scheduled_flushes_from(
+        runtime,
+        branch,
+        table_count,
+        base_timestamp_micros,
+    );
 }
 
 fn run_queued_flush(runtime: &mut LifecycleCacheRuntime<CommitManualTimestampSource>) {

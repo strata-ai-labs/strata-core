@@ -21,12 +21,12 @@ use crate::lifecycle::{
     LifecycleCompactionDrainRequest, LifecycleConfig, LifecycleDurableLocalOpenRequest,
     LifecycleDurableLocalRuntime, LifecycleDurableLocalShell, LifecycleError,
     LifecycleMaintenanceSchedulingPolicy, LifecycleMaintenanceStats, LifecycleRecoveryRuntime,
-    LifecycleRetentionRequest, LifecycleRetentionScope, LifecycleStoragePressureReason,
-    LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome, LifecycleWalGrowthPolicy,
-    LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger, LifecycleWriteAdmissionOutcome,
-    LifecycleWriteAdmissionStatus, MaintenanceCheckpointOptions, MaintenanceClock,
-    MaintenanceExecutor, MaintenanceExecutorStats, MaintenanceExecutorStatus, MaintenanceInstant,
-    MaintenanceOutcome as LifecycleMaintenanceOutcome,
+    LifecycleRetentionRequest, LifecycleRetentionScope, LifecycleStoragePressure,
+    LifecycleStoragePressureReason, LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome,
+    LifecycleWalGrowthPolicy, LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger,
+    LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus, MaintenanceCheckpointOptions,
+    MaintenanceClock, MaintenanceExecutor, MaintenanceExecutorStats, MaintenanceExecutorStatus,
+    MaintenanceInstant, MaintenanceOutcome as LifecycleMaintenanceOutcome,
     MaintenanceOutcomeReasonClass as LifecycleMaintenanceOutcomeReasonClass,
     MaintenanceOutcomeStatus as LifecycleMaintenanceOutcomeStatus,
     MaintenanceTaskKind as LifecycleMaintenanceTaskKind,
@@ -83,10 +83,52 @@ const DEFAULT_BRANCH_ID: BranchId = BranchId::from_bytes([0x01; BranchId::BYTE_L
 const DEFAULT_BRANCH_GENERATION: u64 = 1;
 const DEFAULT_TIMESTAMP: Timestamp = Timestamp::from_micros(1);
 const API_PHYSICAL_SPACE: &str = "api";
-const DEFAULT_BACKGROUND_URGENT_BASE_SLOWDOWN: Duration = Duration::from_micros(50);
-const DEFAULT_BACKGROUND_URGENT_MAX_SLOWDOWN: Duration = Duration::from_millis(5);
-const DEFAULT_BACKGROUND_BLOCK_WAIT_DEADLINE: Duration = Duration::from_millis(250);
+const DEFAULT_BACKGROUND_URGENT_BASE_SLOWDOWN: Duration = Duration::from_micros(100);
+const DEFAULT_BACKGROUND_URGENT_MAX_SLOWDOWN: Duration = Duration::from_millis(25);
+const DEFAULT_BACKGROUND_URGENT_MAX_BATCH_SLOWDOWN: Duration = Duration::from_millis(100);
+const DEFAULT_BACKGROUND_BLOCK_WAIT_SLICE: Duration = Duration::from_millis(250);
+const DEFAULT_BACKGROUND_BLOCK_STALL_DEADLINE: Duration = Duration::from_secs(30);
+const DEFAULT_BACKGROUND_BLOCK_NO_RELIEF_ROUNDS: usize = 4;
 const DEFAULT_BACKGROUND_CLOSE_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
+pub(crate) const BACKGROUND_LEVEL_ZERO_URGENT_START_TABLES: usize = 8;
+pub(crate) const BACKGROUND_LEVEL_ZERO_BLOCK_TABLES: usize = 16;
+pub(crate) const BACKGROUND_LEVEL_ZERO_URGENT_UNIT_MULTIPLIER: usize = 32;
+pub(crate) const BACKGROUND_URGENT_PER_MUTATION_SLOWDOWN: Duration = Duration::from_micros(25);
+pub(crate) const BACKGROUND_URGENT_MUTATION_SCALE_LIMIT: usize = 1024;
+
+fn background_pressure_byte_units(bytes: u64) -> usize {
+    let units = bytes / (4 * 1024 * 1024);
+    usize::try_from(units).unwrap_or(usize::MAX)
+}
+
+pub(crate) fn background_level_zero_pressure_units(
+    reason: LifecycleStoragePressureReason,
+    level_zero_tables: usize,
+) -> usize {
+    if reason != LifecycleStoragePressureReason::LevelZeroTableBacklog {
+        return level_zero_tables / 4;
+    }
+    let urgent_distance = level_zero_tables
+        .saturating_add(1)
+        .saturating_sub(BACKGROUND_LEVEL_ZERO_URGENT_START_TABLES)
+        .min(
+            BACKGROUND_LEVEL_ZERO_BLOCK_TABLES
+                .saturating_sub(BACKGROUND_LEVEL_ZERO_URGENT_START_TABLES),
+        );
+    urgent_distance.saturating_mul(BACKGROUND_LEVEL_ZERO_URGENT_UNIT_MULTIPLIER)
+}
+
+pub(crate) fn background_batch_slowdown_duration(
+    pressure_slowdown: Duration,
+    mutation_count: usize,
+) -> Duration {
+    let mutation_count = mutation_count.clamp(1, BACKGROUND_URGENT_MUTATION_SCALE_LIMIT);
+    let multiplier =
+        u32::try_from(mutation_count).expect("urgent mutation scale limit fits in u32");
+    pressure_slowdown
+        .saturating_add(BACKGROUND_URGENT_PER_MUTATION_SLOWDOWN.saturating_mul(multiplier))
+        .min(DEFAULT_BACKGROUND_URGENT_MAX_BATCH_SLOWDOWN)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ResolvedReadBound {
@@ -114,23 +156,32 @@ struct RuntimeSlot<R> {
     runtime: Arc<ParkingMutex<R>>,
     background: Option<BackgroundRuntimeController>,
     background_drain: Option<BackgroundDrainFn>,
+    #[cfg(test)]
+    background_block_wait: BackgroundBlockWaitConfig,
 }
 
 type BackgroundDrainFn = Arc<
     dyn Fn(BackgroundDrainLimits, Arc<dyn MaintenanceClock>) -> BackgroundDrainRound + Send + Sync,
 >;
+type BackgroundArcDrain<R> = fn(
+    &Arc<ParkingMutex<R>>,
+    BackgroundDrainLimits,
+    &Arc<dyn MaintenanceClock>,
+) -> BackgroundDrainRound;
 
 impl<R> fmt::Debug for RuntimeSlot<R>
 where
     R: fmt::Debug,
 {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("RuntimeSlot")
+        let mut debug = formatter.debug_struct("RuntimeSlot");
+        debug
             .field("runtime", &self.runtime)
             .field("background", &self.background)
-            .field("background_drain", &self.background_drain.is_some())
-            .finish()
+            .field("background_drain", &self.background_drain.is_some());
+        #[cfg(test)]
+        debug.field("background_block_wait", &self.background_block_wait);
+        debug.finish()
     }
 }
 
@@ -138,9 +189,8 @@ struct BackgroundRuntimeController {
     executor: Arc<dyn MaintenanceExecutor>,
     clock: Arc<dyn MaintenanceClock>,
     close_requested: Arc<AtomicBool>,
-    wake_scheduled: Arc<AtomicBool>,
-    wake_requested: Arc<AtomicBool>,
-    wake_priority: Arc<AtomicUsize>,
+    wake_scheduled_mask: Arc<AtomicUsize>,
+    wake_requested_mask: Arc<AtomicUsize>,
     max_tasks_per_wake: usize,
     max_runtime_per_wake: Duration,
     drain_immediately: bool,
@@ -152,9 +202,8 @@ impl fmt::Debug for BackgroundRuntimeController {
             .debug_struct("BackgroundRuntimeController")
             .field("stats", &self.stats())
             .field("close_requested", &self.close_requested)
-            .field("wake_scheduled", &self.wake_scheduled)
-            .field("wake_requested", &self.wake_requested)
-            .field("wake_priority", &self.wake_priority)
+            .field("wake_scheduled_mask", &self.wake_scheduled_mask)
+            .field("wake_requested_mask", &self.wake_requested_mask)
             .field("max_tasks_per_wake", &self.max_tasks_per_wake)
             .field("max_runtime_per_wake", &self.max_runtime_per_wake)
             .field("drain_immediately", &self.drain_immediately)
@@ -187,6 +236,108 @@ enum BackgroundExecutorMode {
     Inline,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BackgroundBlockWaitConfig {
+    wait_slice: Duration,
+    stall_deadline: Duration,
+    no_relief_rounds: usize,
+}
+
+impl Default for BackgroundBlockWaitConfig {
+    fn default() -> Self {
+        Self {
+            wait_slice: DEFAULT_BACKGROUND_BLOCK_WAIT_SLICE,
+            stall_deadline: DEFAULT_BACKGROUND_BLOCK_STALL_DEADLINE,
+            no_relief_rounds: DEFAULT_BACKGROUND_BLOCK_NO_RELIEF_ROUNDS,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BackgroundPressureSnapshot {
+    severity: LifecycleStoragePressureSeverity,
+    active_bytes: u64,
+    frozen_tables: usize,
+    frozen_bytes: u64,
+    level_zero_tables: usize,
+    owned_tables: usize,
+    table_rewrite_bytes: u64,
+    inherited_layers: usize,
+}
+
+impl BackgroundPressureSnapshot {
+    fn from_pressure(pressure: LifecycleStoragePressure) -> Self {
+        Self {
+            severity: pressure.severity(),
+            active_bytes: pressure.active_bytes(),
+            frozen_tables: pressure.frozen_tables(),
+            frozen_bytes: pressure.frozen_bytes(),
+            level_zero_tables: pressure.level_zero_tables(),
+            owned_tables: pressure.owned_tables(),
+            table_rewrite_bytes: pressure.table_rewrite_bytes(),
+            inherited_layers: pressure.inherited_layers(),
+        }
+    }
+
+    fn relieved_since(self, before: Self, reason: LifecycleStoragePressureReason) -> bool {
+        if reason == LifecycleStoragePressureReason::FrozenBacklog {
+            return self.active_bytes < before.active_bytes
+                || self.frozen_tables < before.frozen_tables
+                || self.frozen_bytes < before.frozen_bytes;
+        }
+        lifecycle_storage_pressure_severity_rank(self.severity)
+            < lifecycle_storage_pressure_severity_rank(before.severity)
+            || self.active_bytes < before.active_bytes
+            || self.frozen_tables < before.frozen_tables
+            || self.frozen_bytes < before.frozen_bytes
+            || self.level_zero_tables < before.level_zero_tables
+            || self.owned_tables < before.owned_tables
+            || self.table_rewrite_bytes < before.table_rewrite_bytes
+            || self.inherited_layers < before.inherited_layers
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BackgroundWalGrowthSnapshot {
+    retained_bytes: u64,
+    retained_segments: usize,
+    commits_since_checkpoint: u64,
+    exceeds_backpressure: bool,
+}
+
+impl BackgroundWalGrowthSnapshot {
+    fn from_parts(
+        facts: WalGrowthFacts,
+        commits_since_checkpoint: u64,
+        trigger: Option<LifecycleWalGrowthTrigger>,
+    ) -> Self {
+        Self {
+            retained_bytes: facts.retained_bytes(),
+            retained_segments: facts.retained_segments(),
+            commits_since_checkpoint,
+            exceeds_backpressure: trigger.is_some(),
+        }
+    }
+
+    fn relieved_since(self, before: Self) -> bool {
+        !self.exceeds_backpressure
+            || self.retained_bytes < before.retained_bytes
+            || self.retained_segments < before.retained_segments
+            || self.commits_since_checkpoint < before.commits_since_checkpoint
+    }
+}
+
+const fn lifecycle_storage_pressure_severity_rank(
+    severity: LifecycleStoragePressureSeverity,
+) -> u8 {
+    match severity {
+        LifecycleStoragePressureSeverity::None => 0,
+        LifecycleStoragePressureSeverity::Background => 1,
+        LifecycleStoragePressureSeverity::Urgent => 2,
+        LifecycleStoragePressureSeverity::BlockMutatingAdmission => 3,
+    }
+}
+
 enum DurableBackendHandleForOpen<'a> {
     Borrowed(BackendHandle<'a>),
     #[cfg(feature = "localfs")]
@@ -199,6 +350,8 @@ impl<R> RuntimeSlot<R> {
             runtime: Arc::new(ParkingMutex::new(runtime)),
             background: None,
             background_drain: None,
+            #[cfg(test)]
+            background_block_wait: BackgroundBlockWaitConfig::default(),
         }
     }
 
@@ -303,12 +456,54 @@ impl<R> RuntimeSlot<R> {
     }
 
     #[cfg(test)]
+    fn wait_background_idle_until(&self, timeout: Duration) -> Option<MaintenanceExecutorStats> {
+        let background = self.background.as_ref()?;
+        let deadline = std::time::Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(std::time::Instant::now);
+        loop {
+            if background.drain_immediately {
+                let completed_before_wait = background.stats().tasks_completed;
+                let _ = background
+                    .executor
+                    .wait_for_progress(completed_before_wait, Duration::from_millis(1));
+            }
+            let stats = background.stats();
+            if stats.queue_depth == 0 && stats.active_tasks == 0 {
+                return Some(stats);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Some(stats);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    #[cfg(test)]
     fn set_background_drain_limits(&mut self, max_tasks: usize, max_runtime: Duration) -> bool {
         let Some(background) = &mut self.background else {
             return false;
         };
         background.max_tasks_per_wake = max_tasks;
         background.max_runtime_per_wake = max_runtime;
+        true
+    }
+
+    #[cfg(test)]
+    fn set_background_block_wait_for_test(
+        &mut self,
+        wait_slice: Duration,
+        stall_deadline: Duration,
+        no_relief_rounds: usize,
+    ) -> bool {
+        if self.background.is_none() {
+            return false;
+        }
+        self.background_block_wait = BackgroundBlockWaitConfig {
+            wait_slice,
+            stall_deadline,
+            no_relief_rounds,
+        };
         true
     }
 }
@@ -322,11 +517,7 @@ where
         config: LifecycleConfig,
         background_config: StorageBackgroundMaintenanceOptions,
         executor_mode: BackgroundExecutorMode,
-        drain: fn(
-            Arc<ParkingMutex<R>>,
-            BackgroundDrainLimits,
-            Arc<dyn MaintenanceClock>,
-        ) -> BackgroundDrainRound,
+        drain: BackgroundArcDrain<R>,
     ) -> Self {
         let runtime = Arc::new(ParkingMutex::new(runtime));
         let background = if config.maintenance_scheduling_policy()
@@ -341,13 +532,14 @@ where
         };
         let background_drain = background.as_ref().map(|_| {
             let runtime = Arc::clone(&runtime);
-            Arc::new(move |limits, clock| drain(Arc::clone(&runtime), limits, clock))
-                as BackgroundDrainFn
+            Arc::new(move |limits, clock| drain(&runtime, limits, &clock)) as BackgroundDrainFn
         });
         Self {
             runtime,
             background,
             background_drain,
+            #[cfg(test)]
+            background_block_wait: BackgroundBlockWaitConfig::default(),
         }
     }
 }
@@ -396,11 +588,8 @@ impl BackgroundRuntimeController {
             executor,
             clock,
             close_requested: Arc::new(AtomicBool::new(false)),
-            wake_scheduled: Arc::new(AtomicBool::new(false)),
-            wake_requested: Arc::new(AtomicBool::new(false)),
-            wake_priority: Arc::new(AtomicUsize::new(background_priority_value(
-                BackgroundTaskPriority::Low,
-            ))),
+            wake_scheduled_mask: Arc::new(AtomicUsize::new(0)),
+            wake_requested_mask: Arc::new(AtomicUsize::new(0)),
             max_tasks_per_wake: background_config.max_tasks_per_wake(),
             max_runtime_per_wake: background_config.max_runtime_per_wake(),
             drain_immediately,
@@ -446,10 +635,11 @@ impl BackgroundRuntimeController {
         let progressed = self
             .executor
             .wait_for_progress(completed_before_wait, timeout);
-        if self.drain_immediately && progressed {
+        if self.drain_immediately {
             let elapsed = self.clock.now().saturating_duration_since(now);
-            if elapsed.is_zero() {
-                self.clock.sleep(timeout.min(self.max_runtime_per_wake));
+            let simulated_wait = timeout.min(self.max_runtime_per_wake);
+            if elapsed < simulated_wait {
+                self.clock.sleep(simulated_wait.saturating_sub(elapsed));
             }
         }
         progressed
@@ -466,40 +656,25 @@ impl BackgroundRuntimeController {
             perf_trace::record_lifecycle_background_wake_rejected();
             return;
         }
-        if self.wake_scheduled.swap(true, Ordering::AcqRel) {
-            self.record_requested_priority(priority);
-            self.wake_requested.store(true, Ordering::Release);
+        let wake_bit = background_priority_bit(priority);
+        let scheduled = self
+            .wake_scheduled_mask
+            .fetch_or(wake_bit, Ordering::AcqRel);
+        if scheduled & wake_bit != 0 {
+            self.wake_requested_mask
+                .fetch_or(wake_bit, Ordering::AcqRel);
             perf_trace::record_lifecycle_background_wake_coalesced();
             return;
         }
-        self.wake_priority
-            .store(background_priority_value(priority), Ordering::Release);
-        self.submit_drain(priority, drain);
+        self.submit_drain(priority, drain, wake_bit);
     }
 
-    fn record_requested_priority(&self, priority: BackgroundTaskPriority) {
-        let requested = background_priority_value(priority);
-        let mut current = self.wake_priority.load(Ordering::Acquire);
-        while requested > current {
-            match self.wake_priority.compare_exchange_weak(
-                current,
-                requested,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return,
-                Err(actual) => current = actual,
-            }
-        }
-    }
-
-    fn requested_priority_or(&self, fallback: BackgroundTaskPriority) -> BackgroundTaskPriority {
-        let fallback_value = background_priority_value(fallback);
-        let value = self.wake_priority.swap(fallback_value, Ordering::AcqRel);
-        background_priority_from_value(value.max(fallback_value))
-    }
-
-    fn submit_drain(&self, priority: BackgroundTaskPriority, drain: BackgroundDrainFn) {
+    fn submit_drain(
+        &self,
+        priority: BackgroundTaskPriority,
+        drain: BackgroundDrainFn,
+        wake_bit: usize,
+    ) {
         let controller = self.clone();
         let capture_enabled = perf_trace::test_capture_enabled_for_current_thread();
         let submit = self.executor.submit(
@@ -515,11 +690,16 @@ impl BackgroundRuntimeController {
                     if round.tasks_completed > 0 {
                         perf_trace::record_lifecycle_pressure_clear_wake();
                     }
-                    controller.wake_scheduled.store(false, Ordering::Release);
-                    let requested = controller.wake_requested.swap(false, Ordering::AcqRel);
+                    controller
+                        .wake_scheduled_mask
+                        .fetch_and(!wake_bit, Ordering::AcqRel);
+                    let requested = controller
+                        .wake_requested_mask
+                        .fetch_and(!wake_bit, Ordering::AcqRel)
+                        & wake_bit
+                        != 0;
                     if (round.pending_tasks > 0 && round.made_progress) || requested {
-                        let next_priority = controller.requested_priority_or(priority);
-                        controller.notify_drain(next_priority, drain);
+                        controller.notify_drain(priority, drain);
                     }
                 });
             }),
@@ -527,11 +707,16 @@ impl BackgroundRuntimeController {
         if let Ok(()) = submit {
             perf_trace::record_lifecycle_background_wake_submitted();
             if self.drain_immediately && self.executor.stats().active_tasks == 0 {
-                self.executor.wait_for_idle();
+                let completed_before_wait = self.executor.stats().tasks_completed;
+                let _ = self
+                    .executor
+                    .wait_for_progress(completed_before_wait, self.max_runtime_per_wake);
             }
         } else {
-            self.wake_scheduled.store(false, Ordering::Release);
-            self.wake_requested.store(false, Ordering::Release);
+            self.wake_scheduled_mask
+                .fetch_and(!wake_bit, Ordering::AcqRel);
+            self.wake_requested_mask
+                .fetch_and(!wake_bit, Ordering::AcqRel);
             perf_trace::record_lifecycle_background_wake_rejected();
         }
     }
@@ -560,15 +745,27 @@ impl BackgroundRuntimeController {
     }
 }
 
+fn background_pressure_wait_should_continue_for_progress(
+    progressed: bool,
+    lifecycle_pending_tasks: usize,
+    lifecycle_active_task: bool,
+    no_relief_rounds: &mut usize,
+) -> bool {
+    if lifecycle_active_task || (progressed && lifecycle_pending_tasks > 0) {
+        *no_relief_rounds = 0;
+        return true;
+    }
+    false
+}
+
 impl Clone for BackgroundRuntimeController {
     fn clone(&self) -> Self {
         Self {
             executor: Arc::clone(&self.executor),
             clock: Arc::clone(&self.clock),
             close_requested: Arc::clone(&self.close_requested),
-            wake_scheduled: Arc::clone(&self.wake_scheduled),
-            wake_requested: Arc::clone(&self.wake_requested),
-            wake_priority: Arc::clone(&self.wake_priority),
+            wake_scheduled_mask: Arc::clone(&self.wake_scheduled_mask),
+            wake_requested_mask: Arc::clone(&self.wake_requested_mask),
             max_tasks_per_wake: self.max_tasks_per_wake,
             max_runtime_per_wake: self.max_runtime_per_wake,
             drain_immediately: self.drain_immediately,
@@ -584,11 +781,104 @@ const fn background_priority_value(priority: BackgroundTaskPriority) -> usize {
     }
 }
 
-const fn background_priority_from_value(value: usize) -> BackgroundTaskPriority {
-    match value {
-        0 => BackgroundTaskPriority::Low,
-        1 => BackgroundTaskPriority::Normal,
-        _ => BackgroundTaskPriority::High,
+const fn background_priority_bit(priority: BackgroundTaskPriority) -> usize {
+    1usize << background_priority_value(priority)
+}
+
+#[cfg(test)]
+mod background_controller_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool as TestAtomicBool, Ordering as TestOrdering};
+    use std::sync::{Arc as TestArc, Barrier};
+    use std::time::Instant;
+
+    #[test]
+    fn controller_submits_high_priority_wake_while_normal_drain_is_active() {
+        let controller = BackgroundRuntimeController::new(
+            StorageBackgroundMaintenanceOptions::product_default()
+                .with_worker_count(2)
+                .with_scheduler_queue_depth(8),
+            BackgroundExecutorMode::Threaded,
+        );
+        let normal_started = TestArc::new(Barrier::new(2));
+        let normal_release = TestArc::new(Barrier::new(2));
+        let high_ran = TestArc::new(TestAtomicBool::new(false));
+
+        let normal_drain: BackgroundDrainFn = {
+            let normal_started = TestArc::clone(&normal_started);
+            let normal_release = TestArc::clone(&normal_release);
+            TestArc::new(move |_limits, _clock| {
+                normal_started.wait();
+                normal_release.wait();
+                BackgroundDrainRound {
+                    tasks_completed: 1,
+                    pending_tasks: 0,
+                    made_progress: true,
+                }
+            })
+        };
+        controller.notify_drain(BackgroundTaskPriority::Normal, normal_drain);
+        normal_started.wait();
+
+        let high_drain: BackgroundDrainFn = {
+            let high_ran = TestArc::clone(&high_ran);
+            TestArc::new(move |_limits, _clock| {
+                high_ran.store(true, TestOrdering::Release);
+                BackgroundDrainRound {
+                    tasks_completed: 1,
+                    pending_tasks: 0,
+                    made_progress: true,
+                }
+            })
+        };
+        controller.notify_drain(BackgroundTaskPriority::High, high_drain);
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !high_ran.load(TestOrdering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let ran_while_normal_active = high_ran.load(TestOrdering::Acquire);
+        normal_release.wait();
+        controller.shutdown(Some(Duration::from_secs(1)));
+
+        assert!(
+            ran_while_normal_active,
+            "high-priority wake should be submitted while normal-priority drain is still active"
+        );
+    }
+
+    #[test]
+    fn pressure_wait_keeps_waiting_when_progress_leaves_pending_work() {
+        let mut no_relief_rounds = usize::MAX;
+        assert!(background_pressure_wait_should_continue_for_progress(
+            true,
+            1,
+            false,
+            &mut no_relief_rounds,
+        ));
+        assert_eq!(no_relief_rounds, 0);
+
+        no_relief_rounds = usize::MAX;
+        assert!(background_pressure_wait_should_continue_for_progress(
+            false,
+            0,
+            true,
+            &mut no_relief_rounds,
+        ));
+        assert_eq!(no_relief_rounds, 0);
+
+        assert!(!background_pressure_wait_should_continue_for_progress(
+            true,
+            0,
+            false,
+            &mut no_relief_rounds,
+        ));
+        assert!(!background_pressure_wait_should_continue_for_progress(
+            false,
+            1,
+            false,
+            &mut no_relief_rounds,
+        ));
     }
 }
 
@@ -779,6 +1069,10 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::match_same_arms,
+        reason = "borrowed and owned durable slots have different concrete lifetimes"
+    )]
     pub(crate) fn background_shutdown_requested_flag_for_test(
         &self,
     ) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
@@ -791,6 +1085,10 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::match_same_arms,
+        reason = "borrowed and owned durable slots have different concrete lifetimes"
+    )]
     pub(crate) fn wait_background_idle_for_test(&self) {
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => slot.wait_background_idle(),
@@ -801,11 +1099,55 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::match_same_arms,
+        reason = "borrowed and owned durable slots have different concrete lifetimes"
+    )]
+    pub(crate) fn wait_background_idle_until_for_test(
+        &self,
+        timeout: Duration,
+    ) -> Option<MaintenanceExecutorStats> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => slot.wait_background_idle_until(timeout),
+            StorageRuntimeInner::Durable(slot) => slot.wait_background_idle_until(timeout),
+            StorageRuntimeInner::DurableOwned(slot) => slot.wait_background_idle_until(timeout),
+            StorageRuntimeInner::Closed => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_lifecycle_maintenance_kinds_for_test(
+        &self,
+    ) -> Vec<LifecycleMaintenanceTaskKind> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => Vec::new(),
+            StorageRuntimeInner::Durable(slot) => slot.lock().pending_maintenance_kinds_for_test(),
+            StorageRuntimeInner::DurableOwned(slot) => {
+                slot.lock().pending_maintenance_kinds_for_test()
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_flush_watermark_candidate_for_test(&self) -> Option<CommitVersion> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => None,
+            StorageRuntimeInner::Durable(slot) | StorageRuntimeInner::DurableOwned(slot) => {
+                slot.lock().pending_flush_watermark_candidate_for_test()
+            }
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn background_now_for_test(&self) -> Option<MaintenanceInstant> {
         self.background_now_for_current_runtime()
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::match_same_arms,
+        reason = "borrowed and owned durable slots have different concrete lifetimes"
+    )]
     pub(crate) fn set_background_drain_limits_for_test(
         &mut self,
         max_tasks: usize,
@@ -826,6 +1168,41 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::match_same_arms,
+        reason = "borrowed and owned durable slots have different concrete lifetimes"
+    )]
+    pub(crate) fn set_background_block_wait_for_test(
+        &mut self,
+        wait_slice: Duration,
+        stall_deadline: Duration,
+        no_relief_rounds: usize,
+    ) -> bool {
+        match &mut self.inner {
+            StorageRuntimeInner::Cache(slot) => slot.set_background_block_wait_for_test(
+                wait_slice,
+                stall_deadline,
+                no_relief_rounds,
+            ),
+            StorageRuntimeInner::Durable(slot) => slot.set_background_block_wait_for_test(
+                wait_slice,
+                stall_deadline,
+                no_relief_rounds,
+            ),
+            StorageRuntimeInner::DurableOwned(slot) => slot.set_background_block_wait_for_test(
+                wait_slice,
+                stall_deadline,
+                no_relief_rounds,
+            ),
+            StorageRuntimeInner::Closed => false,
+        }
+    }
+
+    #[cfg(test)]
+    #[allow(
+        clippy::match_same_arms,
+        reason = "borrowed and owned durable slots have different concrete lifetimes"
+    )]
     pub(crate) fn shutdown_background_for_test(&self) {
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
@@ -847,6 +1224,10 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
+    #[allow(
+        clippy::match_same_arms,
+        reason = "borrowed and owned durable slots have different concrete lifetimes"
+    )]
     pub(crate) fn enqueue_lifecycle_maintenance_for_test(
         &mut self,
         task: LifecycleMaintenanceTaskRequest,
@@ -1067,6 +1448,13 @@ impl<'a> StorageRuntime<'a> {
         self.close_with_options(StorageCloseOptions::graceful())
     }
 
+    /// Closes the runtime using the supplied close policy.
+    ///
+    /// If a background worker panic is discovered during shutdown, this method
+    /// returns that error and leaves the runtime open so callers can inspect the
+    /// failure and retry close. Dropping the runtime after such an error only
+    /// requests background shutdown; durable runtimes rely on recovery at the
+    /// next open rather than a clean close summary.
     pub fn close_with_options(
         &mut self,
         options: StorageCloseOptions,
@@ -2283,8 +2671,8 @@ impl<'a> StorageRuntime<'a> {
         .map_err(map_lifecycle_error)?;
         if matches!(
             outcome.status(),
-            LifecycleWalGrowthStatus::CheckpointEnqueued
-                | LifecycleWalGrowthStatus::CheckpointCoalesced
+            LifecycleWalGrowthStatus::MaintenanceEnqueued
+                | LifecycleWalGrowthStatus::MaintenanceCoalesced
         ) {
             self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
         }
@@ -2860,9 +3248,11 @@ impl<'a> StorageRuntime<'a> {
             map_api_commit_batch(batch, timestamp_base, timestamp_policy, durability);
         perf_trace::record_api_commit_map_elapsed(map_timer);
         let runtime_batch = runtime_batch_result?;
+        let mutation_count = batch.mutations().len();
 
         let runtime_timer = perf_trace::start_timer();
         let mut pressure_wait_deadline = None;
+        let mut pressure_no_relief_rounds = 0;
         loop {
             let (outcome_result, admission, pending_tasks, wal_growth) = match &mut self.inner {
                 StorageRuntimeInner::Cache(slot) => {
@@ -2909,7 +3299,9 @@ impl<'a> StorageRuntime<'a> {
             }
             match outcome_result {
                 Ok(outcome) => {
-                    if let Some(slowdown) = self.background_slowdown_duration(admission) {
+                    if let Some(slowdown) =
+                        self.background_slowdown_duration(admission, mutation_count)
+                    {
                         self.sleep_background_duration(slowdown);
                         perf_trace::record_lifecycle_write_admission_slowdown(slowdown);
                     }
@@ -2921,6 +3313,7 @@ impl<'a> StorageRuntime<'a> {
                     if self.background_wait_after_pressure_rejection(
                         &error,
                         &mut pressure_wait_deadline,
+                        &mut pressure_no_relief_rounds,
                     ) => {}
                 Err(error) => {
                     perf_trace::record_api_commit_runtime_elapsed(runtime_timer);
@@ -2948,6 +3341,7 @@ impl<'a> StorageRuntime<'a> {
     fn background_slowdown_duration(
         &self,
         admission: Option<LifecycleWriteAdmissionOutcome>,
+        mutation_count: usize,
     ) -> Option<Duration> {
         if !self.has_background_runtime() {
             return None;
@@ -2968,16 +3362,27 @@ impl<'a> StorageRuntime<'a> {
         let pressure_units = 1usize
             .saturating_add(pressure.pending_maintenance())
             .saturating_add(pressure.frozen_tables())
-            .saturating_add(pressure.level_zero_tables() / 4)
+            .saturating_add(background_pressure_byte_units(
+                pressure
+                    .active_bytes()
+                    .saturating_add(pressure.frozen_bytes())
+                    .saturating_add(pressure.table_rewrite_bytes()),
+            ))
+            .saturating_add(background_level_zero_pressure_units(
+                pressure.reason(),
+                pressure.level_zero_tables(),
+            ))
             .saturating_add(pressure.owned_tables() / 8)
             .saturating_add(queue_depth);
         let capped_pressure_units =
-            u32::try_from(pressure_units.min(100)).expect("pressure unit cap fits in u32");
-        Some(
-            DEFAULT_BACKGROUND_URGENT_BASE_SLOWDOWN
-                .saturating_mul(capped_pressure_units)
-                .min(DEFAULT_BACKGROUND_URGENT_MAX_SLOWDOWN),
-        )
+            u32::try_from(pressure_units.min(250)).expect("pressure unit cap fits in u32");
+        let pressure_slowdown = DEFAULT_BACKGROUND_URGENT_BASE_SLOWDOWN
+            .saturating_mul(capped_pressure_units)
+            .min(DEFAULT_BACKGROUND_URGENT_MAX_SLOWDOWN);
+        Some(background_batch_slowdown_duration(
+            pressure_slowdown,
+            mutation_count,
+        ))
     }
 
     fn has_background_runtime(&self) -> bool {
@@ -2994,6 +3399,54 @@ impl<'a> StorageRuntime<'a> {
             StorageRuntimeInner::Cache(slot) => slot.background_stats(),
             StorageRuntimeInner::Durable(slot) => slot.background_stats(),
             StorageRuntimeInner::DurableOwned(slot) => slot.background_stats(),
+            StorageRuntimeInner::Closed => None,
+        }
+    }
+
+    #[cfg(test)]
+    fn background_block_wait_for_current_runtime(&self) -> BackgroundBlockWaitConfig {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => slot.background_block_wait,
+            StorageRuntimeInner::Durable(slot) => slot.background_block_wait,
+            StorageRuntimeInner::DurableOwned(slot) => slot.background_block_wait,
+            StorageRuntimeInner::Closed => BackgroundBlockWaitConfig::default(),
+        }
+    }
+
+    fn background_pressure_snapshot_for_branch(
+        &self,
+        branch_id: BranchId,
+    ) -> Option<BackgroundPressureSnapshot> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => Some(BackgroundPressureSnapshot::from_pressure(
+                slot.lock().storage_pressure_for_branch(branch_id),
+            )),
+            StorageRuntimeInner::Durable(slot) => Some(BackgroundPressureSnapshot::from_pressure(
+                slot.lock().storage_pressure_for_branch(branch_id),
+            )),
+            StorageRuntimeInner::DurableOwned(slot) => {
+                Some(BackgroundPressureSnapshot::from_pressure(
+                    slot.lock().storage_pressure_for_branch(branch_id),
+                ))
+            }
+            StorageRuntimeInner::Closed => None,
+        }
+    }
+
+    fn background_lifecycle_work_for_current_runtime(&self) -> Option<(usize, bool)> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => {
+                let status = slot.lock().maintenance_status();
+                Some((status.pending_tasks(), status.active_tasks() > 0))
+            }
+            StorageRuntimeInner::Durable(slot) => {
+                let status = slot.lock().maintenance_status();
+                Some((status.pending_tasks(), status.active_tasks() > 0))
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                let status = slot.lock().maintenance_status();
+                Some((status.pending_tasks(), status.active_tasks() > 0))
+            }
             StorageRuntimeInner::Closed => None,
         }
     }
@@ -3020,9 +3473,11 @@ impl<'a> StorageRuntime<'a> {
         &mut self,
         error: &LifecycleError,
         deadline: &mut Option<MaintenanceInstant>,
+        no_relief_rounds: &mut usize,
     ) -> bool {
         let LifecycleError::StoragePressureRejected {
             branch_id,
+            pressure_reason,
             retryable: true,
             ..
         } = error
@@ -3032,33 +3487,48 @@ impl<'a> StorageRuntime<'a> {
         if !self.has_background_runtime() {
             return false;
         }
+        #[cfg(test)]
+        let block_wait = self.background_block_wait_for_current_runtime();
+        #[cfg(not(test))]
+        let block_wait = BackgroundBlockWaitConfig::default();
         let Some(now) = self.background_now_for_current_runtime() else {
             return false;
         };
-        let deadline = *deadline
-            .get_or_insert_with(|| now.saturating_add(DEFAULT_BACKGROUND_BLOCK_WAIT_DEADLINE));
-        if now >= deadline {
+        perf_trace::record_lifecycle_write_admission_wait_attempt();
+        let stall_deadline =
+            *deadline.get_or_insert_with(|| now.saturating_add(block_wait.stall_deadline));
+        if now >= stall_deadline {
             perf_trace::record_lifecycle_write_admission_wait_timeout();
             return false;
         }
-        let pending_tasks = self.enqueue_pressure_maintenance_for_background_wait(*branch_id);
-        if pending_tasks == 0 {
+        let wait_deadline = now
+            .saturating_add(block_wait.wait_slice)
+            .min(stall_deadline);
+        let pending_tasks =
+            self.enqueue_pressure_maintenance_for_background_wait(*branch_id, *pressure_reason);
+        let Some(stats_before_wait) = self.background_stats_for_current_runtime() else {
+            return false;
+        };
+        if pending_tasks
+            .saturating_add(stats_before_wait.queue_depth)
+            .saturating_add(stats_before_wait.active_tasks)
+            == 0
+        {
             return false;
         }
-        let completed_before_wait = self
-            .background_stats_for_current_runtime()
-            .map_or(0, |stats| stats.tasks_completed);
+        let pressure_before_wait = self.background_pressure_snapshot_for_branch(*branch_id);
+        let completed_before_wait = stats_before_wait.tasks_completed;
         let wait_start = self.background_now_for_current_runtime().unwrap_or(now);
         self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
         let progressed = match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                slot.wait_background_progress_until(completed_before_wait, deadline)
+                slot.wait_background_progress_until(completed_before_wait, wait_deadline)
             }
             StorageRuntimeInner::Durable(slot) => {
-                slot.wait_background_progress_until(completed_before_wait, deadline)
+                slot.wait_background_progress_until(completed_before_wait, wait_deadline)
             }
             StorageRuntimeInner::DurableOwned(slot) => {
-                slot.wait_background_progress_until(completed_before_wait, deadline)
+                slot.wait_background_progress_until(completed_before_wait, wait_deadline)
             }
             StorageRuntimeInner::Closed => return false,
         };
@@ -3067,11 +3537,32 @@ impl<'a> StorageRuntime<'a> {
             .unwrap_or(wait_start)
             .saturating_duration_since(wait_start);
         perf_trace::record_lifecycle_write_admission_block_wait(wait_elapsed);
-        if !progressed {
+        let pressure_after_wait = self.background_pressure_snapshot_for_branch(*branch_id);
+        if pressure_before_wait
+            .zip(pressure_after_wait)
+            .is_some_and(|(before, after)| after.relieved_since(before, *pressure_reason))
+        {
+            *deadline = None;
+            *no_relief_rounds = 0;
+            return true;
+        }
+        let (lifecycle_pending_tasks, lifecycle_active_task) = self
+            .background_lifecycle_work_for_current_runtime()
+            .unwrap_or((0, false));
+        if background_pressure_wait_should_continue_for_progress(
+            progressed,
+            lifecycle_pending_tasks,
+            lifecycle_active_task,
+            no_relief_rounds,
+        ) {
+            return true;
+        }
+        if progressed {
             perf_trace::record_lifecycle_write_admission_wait_timeout();
             return false;
         }
-        true
+        perf_trace::record_lifecycle_write_admission_wait_timeout();
+        false
     }
 
     fn background_wait_after_wal_growth_enqueue(
@@ -3087,36 +3578,75 @@ impl<'a> StorageRuntime<'a> {
         let Some(now) = self.background_now_for_current_runtime() else {
             return;
         };
-        let deadline = now.saturating_add(DEFAULT_BACKGROUND_BLOCK_WAIT_DEADLINE);
-        while self.current_wal_growth_exceeds_policy() {
-            let Some(wait_now) = self.background_now_for_current_runtime() else {
+        #[cfg(test)]
+        let block_wait = self.background_block_wait_for_current_runtime();
+        #[cfg(not(test))]
+        let block_wait = BackgroundBlockWaitConfig::default();
+        let stall_deadline = now.saturating_add(block_wait.stall_deadline);
+        let mut no_relief_rounds = 0usize;
+        while self.current_wal_growth_exceeds_backpressure() {
+            let Some(now) = self.background_now_for_current_runtime() else {
                 return;
             };
-            if wait_now >= deadline {
+            if now >= stall_deadline {
                 return;
             }
+            let snapshot_before_wait = self.background_wal_growth_snapshot_for_current_runtime();
+            let wait_deadline = now
+                .saturating_add(block_wait.wait_slice)
+                .min(stall_deadline);
             self.evaluate_wal_growth_policy_for_background_wait();
             self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
             let Some(stats) = self.background_stats_for_current_runtime() else {
                 return;
             };
-            if stats.queue_depth.saturating_add(stats.active_tasks) == 0 {
+            let (lifecycle_pending_tasks, lifecycle_active_task) = self
+                .background_lifecycle_work_for_current_runtime()
+                .unwrap_or((0, false));
+            if stats
+                .queue_depth
+                .saturating_add(stats.active_tasks)
+                .saturating_add(lifecycle_pending_tasks)
+                .saturating_add(usize::from(lifecycle_active_task))
+                == 0
+            {
                 return;
             }
             let completed_before_wait = stats.tasks_completed;
             let progressed = match &self.inner {
                 StorageRuntimeInner::Cache(slot) => {
-                    slot.wait_background_progress_until(completed_before_wait, deadline)
+                    slot.wait_background_progress_until(completed_before_wait, wait_deadline)
                 }
                 StorageRuntimeInner::Durable(slot) => {
-                    slot.wait_background_progress_until(completed_before_wait, deadline)
+                    slot.wait_background_progress_until(completed_before_wait, wait_deadline)
                 }
                 StorageRuntimeInner::DurableOwned(slot) => {
-                    slot.wait_background_progress_until(completed_before_wait, deadline)
+                    slot.wait_background_progress_until(completed_before_wait, wait_deadline)
                 }
                 StorageRuntimeInner::Closed => return,
             };
-            if !progressed {
+            let snapshot_after_wait = self.background_wal_growth_snapshot_for_current_runtime();
+            if snapshot_before_wait
+                .zip(snapshot_after_wait)
+                .is_some_and(|(before, after)| after.relieved_since(before))
+            {
+                no_relief_rounds = 0;
+                continue;
+            }
+            let (lifecycle_pending_tasks, lifecycle_active_task) = self
+                .background_lifecycle_work_for_current_runtime()
+                .unwrap_or((0, false));
+            if lifecycle_active_task {
+                no_relief_rounds = 0;
+                continue;
+            }
+            if progressed && lifecycle_pending_tasks > 0 {
+                no_relief_rounds = no_relief_rounds.saturating_add(1);
+                if no_relief_rounds < block_wait.no_relief_rounds {
+                    continue;
+                }
+            }
+            if !progressed || no_relief_rounds >= block_wait.no_relief_rounds {
                 return;
             }
         }
@@ -3134,35 +3664,78 @@ impl<'a> StorageRuntime<'a> {
         }
     }
 
-    fn current_wal_growth_exceeds_policy(&self) -> bool {
+    fn current_wal_growth_exceeds_backpressure(&self) -> bool {
+        self.background_wal_growth_snapshot_for_current_runtime()
+            .is_some_and(|snapshot| snapshot.exceeds_backpressure)
+    }
+
+    fn background_wal_growth_snapshot_for_current_runtime(
+        &self,
+    ) -> Option<BackgroundWalGrowthSnapshot> {
         match &self.inner {
-            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => false,
+            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => None,
             StorageRuntimeInner::Durable(slot) => slot
                 .lock()
-                .current_wal_growth_exceeds_policy()
-                .unwrap_or(false),
+                .current_wal_growth_backpressure_snapshot()
+                .ok()
+                .map(|(facts, commits_since_checkpoint, trigger)| {
+                    BackgroundWalGrowthSnapshot::from_parts(
+                        facts,
+                        commits_since_checkpoint,
+                        trigger,
+                    )
+                }),
             StorageRuntimeInner::DurableOwned(slot) => slot
                 .lock()
-                .current_wal_growth_exceeds_policy()
-                .unwrap_or(false),
+                .current_wal_growth_backpressure_snapshot()
+                .ok()
+                .map(|(facts, commits_since_checkpoint, trigger)| {
+                    BackgroundWalGrowthSnapshot::from_parts(
+                        facts,
+                        commits_since_checkpoint,
+                        trigger,
+                    )
+                }),
         }
     }
 
-    fn enqueue_pressure_maintenance_for_background_wait(&mut self, branch_id: BranchId) -> usize {
+    fn enqueue_pressure_maintenance_for_background_wait(
+        &mut self,
+        branch_id: BranchId,
+        pressure_reason: LifecycleStoragePressureReason,
+    ) -> usize {
         match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => {
                 let mut runtime = slot.lock();
                 let _ = runtime.schedule_post_commit_maintenance_for_branch(branch_id);
+                if pressure_reason == LifecycleStoragePressureReason::FrozenBacklog
+                    && runtime.maintenance_status().pending_tasks() == 0
+                {
+                    let _ = runtime
+                        .enqueue_maintenance(LifecycleMaintenanceTaskRequest::flush(branch_id));
+                }
                 runtime.maintenance_status().pending_tasks()
             }
             StorageRuntimeInner::Durable(slot) => {
                 let mut runtime = slot.lock();
                 let _ = runtime.schedule_post_commit_maintenance_for_branch(branch_id);
+                if pressure_reason == LifecycleStoragePressureReason::FrozenBacklog
+                    && runtime.maintenance_status().pending_tasks() == 0
+                {
+                    let _ = runtime
+                        .enqueue_maintenance(LifecycleMaintenanceTaskRequest::flush(branch_id));
+                }
                 runtime.maintenance_status().pending_tasks()
             }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 let _ = runtime.schedule_post_commit_maintenance_for_branch(branch_id);
+                if pressure_reason == LifecycleStoragePressureReason::FrozenBacklog
+                    && runtime.maintenance_status().pending_tasks() == 0
+                {
+                    let _ = runtime
+                        .enqueue_maintenance(LifecycleMaintenanceTaskRequest::flush(branch_id));
+                }
                 runtime.maintenance_status().pending_tasks()
             }
             StorageRuntimeInner::Closed => 0,
@@ -3639,10 +4212,8 @@ const fn map_maintenance_scheduling_policy(
     policy: StorageMaintenanceSchedulingPolicy,
 ) -> LifecycleMaintenanceSchedulingPolicy {
     match policy {
-        StorageMaintenanceSchedulingPolicy::Background => {
-            LifecycleMaintenanceSchedulingPolicy::Background
-        }
-        StorageMaintenanceSchedulingPolicy::DeterministicInline => {
+        StorageMaintenanceSchedulingPolicy::Background
+        | StorageMaintenanceSchedulingPolicy::DeterministicInline => {
             LifecycleMaintenanceSchedulingPolicy::Background
         }
         StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue => {
@@ -3888,11 +4459,11 @@ const fn map_wal_growth_status(status: LifecycleWalGrowthStatus) -> MaintenanceW
     match status {
         LifecycleWalGrowthStatus::Disabled => MaintenanceWalGrowthStatus::Disabled,
         LifecycleWalGrowthStatus::BelowThreshold => MaintenanceWalGrowthStatus::BelowThreshold,
-        LifecycleWalGrowthStatus::CheckpointEnqueued => {
-            MaintenanceWalGrowthStatus::CheckpointEnqueued
+        LifecycleWalGrowthStatus::MaintenanceEnqueued => {
+            MaintenanceWalGrowthStatus::MaintenanceEnqueued
         }
-        LifecycleWalGrowthStatus::CheckpointCoalesced => {
-            MaintenanceWalGrowthStatus::CheckpointCoalesced
+        LifecycleWalGrowthStatus::MaintenanceCoalesced => {
+            MaintenanceWalGrowthStatus::MaintenanceCoalesced
         }
         LifecycleWalGrowthStatus::Deferred => MaintenanceWalGrowthStatus::Deferred,
         LifecycleWalGrowthStatus::NoDurableAction => MaintenanceWalGrowthStatus::NoDurableAction,
@@ -4102,9 +4673,9 @@ fn run_next_cache_maintenance(
 }
 
 fn drain_cache_background_round(
-    runtime: Arc<ParkingMutex<LifecycleCacheRuntime<ApiTimestampSource>>>,
+    runtime: &Arc<ParkingMutex<LifecycleCacheRuntime<ApiTimestampSource>>>,
     limits: BackgroundDrainLimits,
-    clock: Arc<dyn MaintenanceClock>,
+    clock: &Arc<dyn MaintenanceClock>,
 ) -> BackgroundDrainRound {
     let start = clock.now();
     let mut tasks_completed = 0;
@@ -4120,9 +4691,9 @@ fn drain_cache_background_round(
             let step = match runtime.start_next_background_flush_maintenance() {
                 Ok(Some(step)) => Ok(Some(step)),
                 Ok(None) => match runtime.run_next_flush_maintenance() {
-                    Ok(Some(outcome)) => {
-                        Ok(Some(CacheBackgroundMaintenanceStep::Completed(outcome)))
-                    }
+                    Ok(Some(outcome)) => Ok(Some(CacheBackgroundMaintenanceStep::Completed(
+                        Box::new(outcome),
+                    ))),
                     Ok(None) => runtime.start_next_background_table_rewrite_maintenance(),
                     Err(error) => Err(error),
                 },
@@ -4133,19 +4704,18 @@ fn drain_cache_background_round(
         perf_trace::record_lifecycle_background_task_snapshot_lock(perf_trace::timer_elapsed(
             snapshot_start,
         ));
-        let Some(step) = (match step {
-            Ok(step) => step,
-            Err(_) => {
-                let pending_after = runtime.lock().maintenance_status().pending_tasks();
-                made_progress |= pending_after < pending_before;
-                break;
-            }
-        }) else {
-            let pending_after_coverage = {
+        let Ok(step) = step else {
+            perf_trace::record_lifecycle_background_task_start_failure();
+            let pending_after = runtime.lock().maintenance_status().pending_tasks();
+            made_progress |= pending_after < pending_before;
+            break;
+        };
+        let Some(step) = step else {
+            let coverage_scheduled = {
                 let mut runtime = runtime.lock();
                 runtime.schedule_background_maintenance_coverage()
             };
-            if pending_after_coverage > 0 {
+            if coverage_scheduled {
                 made_progress = true;
                 continue;
             }
@@ -4159,18 +4729,18 @@ fn drain_cache_background_round(
                 tasks_completed += 1;
                 made_progress = true;
             }
-            CacheBackgroundMaintenanceStep::Build(build) => {
-                let task = build.task();
+            CacheBackgroundMaintenanceStep::Build(pending_build) => {
+                let task = pending_build.task();
                 let build_start = perf_trace::start_timer();
-                let built = build.build();
+                let build_result = (*pending_build).build();
                 perf_trace::record_lifecycle_background_task_unlocked_build(
                     perf_trace::timer_elapsed(build_start),
                 );
                 let publish_start = perf_trace::start_timer();
                 let publish = {
                     let mut runtime = runtime.lock();
-                    match built {
-                        Ok(built) => runtime.finish_background_maintenance(built),
+                    match build_result {
+                        Ok(prepared_build) => runtime.finish_background_maintenance(prepared_build),
                         Err(error) => runtime.finish_background_build_error(task, error),
                     }
                 };
@@ -4180,17 +4750,27 @@ fn drain_cache_background_round(
                 perf_trace::record_lifecycle_background_task_total(perf_trace::timer_elapsed(
                     task_start,
                 ));
-                match publish {
-                    Ok(_outcome) => {
-                        tasks_completed += 1;
-                        made_progress = true;
-                    }
-                    Err(_) => break,
+                if let Ok(_outcome) = publish {
+                    tasks_completed += 1;
+                    made_progress = true;
+                } else {
+                    perf_trace::record_lifecycle_background_task_publish_failure();
+                    break;
                 }
             }
         }
     }
-    let pending_tasks = runtime.lock().maintenance_status().pending_tasks();
+    let mut pending_tasks = runtime.lock().maintenance_status().pending_tasks();
+    if tasks_completed > 0 && pending_tasks == 0 {
+        let coverage_scheduled = {
+            let mut runtime = runtime.lock();
+            runtime.schedule_background_maintenance_coverage()
+        };
+        if coverage_scheduled {
+            made_progress = true;
+            pending_tasks = runtime.lock().maintenance_status().pending_tasks();
+        }
+    }
     BackgroundDrainRound {
         tasks_completed,
         pending_tasks,
@@ -4214,13 +4794,13 @@ fn run_next_durable_maintenance(
         return Ok(Some(outcome));
     }
     if let Some(outcome) = runtime
-        .run_next_wal_truncation_maintenance()
+        .run_next_flush_watermark_maintenance()
         .map_err(map_lifecycle_error)?
     {
         return Ok(Some(outcome));
     }
     if let Some(outcome) = runtime
-        .run_next_flush_watermark_maintenance()
+        .run_next_wal_truncation_maintenance()
         .map_err(map_lifecycle_error)?
     {
         return Ok(Some(outcome));
@@ -4254,10 +4834,40 @@ fn run_next_durable_maintenance(
         .map_err(map_lifecycle_error)
 }
 
+fn run_next_background_durable_maintenance(
+    runtime: &mut LifecycleDurableLocalRuntime<'_, ApiTimestampSource>,
+) -> StorageApiResult<Option<LifecycleMaintenanceOutcome>> {
+    if let Some(outcome) = runtime
+        .run_next_retention_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    if let Some(outcome) = runtime
+        .run_next_purge_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    if let Some(outcome) = runtime
+        .run_next_quarantine_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    runtime
+        .run_next_quarantine_repair_maintenance()
+        .map_err(map_lifecycle_error)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "durable background drain is an explicit start/build/publish state machine"
+)]
 fn drain_durable_background_round(
-    runtime: Arc<ParkingMutex<LifecycleDurableLocalRuntime<'static, ApiTimestampSource>>>,
+    runtime: &Arc<ParkingMutex<LifecycleDurableLocalRuntime<'static, ApiTimestampSource>>>,
     limits: BackgroundDrainLimits,
-    clock: Arc<dyn MaintenanceClock>,
+    clock: &Arc<dyn MaintenanceClock>,
 ) -> BackgroundDrainRound {
     let start = clock.now();
     let mut tasks_completed = 0;
@@ -4270,12 +4880,37 @@ fn drain_durable_background_round(
         let (step, pending_before) = {
             let mut runtime = runtime.lock();
             let pending_before = runtime.maintenance_status().pending_tasks();
-            let step = match runtime.start_next_background_checkpoint_maintenance() {
+            let step = match runtime.start_next_background_flush_maintenance() {
                 Ok(Some(step)) => Ok(Some(step)),
-                Ok(None) => match runtime.start_next_background_wal_truncation_maintenance() {
+                Ok(None) => match runtime.start_next_background_checkpoint_maintenance() {
                     Ok(Some(step)) => Ok(Some(step)),
-                    Ok(None) => run_next_durable_maintenance(&mut runtime)
-                        .map(|outcome| outcome.map(DurableBackgroundMaintenanceStep::Completed)),
+                    Ok(None) => match runtime.run_next_background_flush_watermark_maintenance() {
+                        Ok(Some(outcome)) => {
+                            Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)))
+                        }
+                        Ok(None) => {
+                            match runtime.start_next_background_wal_truncation_maintenance() {
+                                Ok(Some(step)) => Ok(Some(step)),
+                                Ok(None) => {
+                                    match runtime.start_next_background_table_rewrite_maintenance()
+                                    {
+                                        Ok(Some(step)) => Ok(Some(step)),
+                                        Ok(None) => {
+                                            run_next_background_durable_maintenance(&mut runtime)
+                                                .map(|outcome| {
+                                                    outcome.map(
+                                                        DurableBackgroundMaintenanceStep::completed,
+                                                    )
+                                                })
+                                        }
+                                        Err(error) => Err(map_lifecycle_error(error)),
+                                    }
+                                }
+                                Err(error) => Err(map_lifecycle_error(error)),
+                            }
+                        }
+                        Err(error) => Err(map_lifecycle_error(error)),
+                    },
                     Err(error) => Err(map_lifecycle_error(error)),
                 },
                 Err(error) => Err(map_lifecycle_error(error)),
@@ -4285,19 +4920,18 @@ fn drain_durable_background_round(
         perf_trace::record_lifecycle_background_task_snapshot_lock(perf_trace::timer_elapsed(
             snapshot_start,
         ));
-        let Some(step) = (match step {
-            Ok(step) => step,
-            Err(_) => {
-                let pending_after = runtime.lock().maintenance_status().pending_tasks();
-                made_progress |= pending_after < pending_before;
-                break;
-            }
-        }) else {
-            let pending_after_coverage = {
+        let Ok(step) = step else {
+            perf_trace::record_lifecycle_background_task_start_failure();
+            let pending_after = runtime.lock().maintenance_status().pending_tasks();
+            made_progress |= pending_after < pending_before;
+            break;
+        };
+        let Some(step) = step else {
+            let coverage_scheduled = {
                 let mut runtime = runtime.lock();
                 runtime.schedule_background_maintenance_coverage()
             };
-            if pending_after_coverage > 0 {
+            if coverage_scheduled {
                 made_progress = true;
                 continue;
             }
@@ -4311,18 +4945,19 @@ fn drain_durable_background_round(
                 tasks_completed += 1;
                 made_progress = true;
             }
-            DurableBackgroundMaintenanceStep::Build(build) => {
-                let task = build.task();
+            DurableBackgroundMaintenanceStep::Build(pending_build) => {
+                let pending_build = *pending_build;
+                let task = pending_build.task();
                 let build_start = perf_trace::start_timer();
-                let built = build.build();
+                let build_result = pending_build.build();
                 perf_trace::record_lifecycle_background_task_unlocked_build(
                     perf_trace::timer_elapsed(build_start),
                 );
                 let publish_start = perf_trace::start_timer();
                 let publish = {
                     let mut runtime = runtime.lock();
-                    match built {
-                        Ok(built) => runtime.finish_background_maintenance(built),
+                    match build_result {
+                        Ok(prepared_build) => runtime.finish_background_maintenance(prepared_build),
                         Err(error) => runtime.finish_background_build_error(task, error),
                     }
                 };
@@ -4332,17 +4967,27 @@ fn drain_durable_background_round(
                 perf_trace::record_lifecycle_background_task_total(perf_trace::timer_elapsed(
                     task_start,
                 ));
-                match publish {
-                    Ok(_outcome) => {
-                        tasks_completed += 1;
-                        made_progress = true;
-                    }
-                    Err(_) => break,
+                if let Ok(_outcome) = publish {
+                    tasks_completed += 1;
+                    made_progress = true;
+                } else {
+                    perf_trace::record_lifecycle_background_task_publish_failure();
+                    break;
                 }
             }
         }
     }
-    let pending_tasks = runtime.lock().maintenance_status().pending_tasks();
+    let mut pending_tasks = runtime.lock().maintenance_status().pending_tasks();
+    if tasks_completed > 0 && pending_tasks == 0 {
+        let coverage_scheduled = {
+            let mut runtime = runtime.lock();
+            runtime.schedule_background_maintenance_coverage()
+        };
+        if coverage_scheduled {
+            made_progress = true;
+            pending_tasks = runtime.lock().maintenance_status().pending_tasks();
+        }
+    }
     BackgroundDrainRound {
         tasks_completed,
         pending_tasks,

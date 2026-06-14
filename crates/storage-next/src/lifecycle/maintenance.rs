@@ -161,6 +161,7 @@ pub(crate) enum LifecycleWriteAdmissionStatus {
 pub(crate) struct MaintenanceExecutorStatus {
     pending_tasks: usize,
     active_task: Option<MaintenanceTaskId>,
+    active_tasks: usize,
     stats: LifecycleMaintenanceStats,
 }
 
@@ -183,8 +184,19 @@ pub(crate) struct LifecycleMaintenanceExecutor {
     next_id: u64,
     max_queue_depth: usize,
     queue: Vec<MaintenanceTask>,
-    active: Option<MaintenanceTask>,
+    active: Vec<MaintenanceTask>,
     stats: LifecycleMaintenanceStats,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum MaintenanceTaskLane {
+    Flush,
+    Rewrite,
+    Checkpoint,
+    Wal,
+    Retention,
+    Quarantine,
+    Health,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -514,10 +526,7 @@ impl MaintenanceTaskRequest {
                     MaintenanceTaskKind::Checkpoint => self.checkpoint_options,
                     _ => None,
                 },
-                flush_watermark_candidate: match self.kind {
-                    MaintenanceTaskKind::FlushWatermark => self.flush_watermark_candidate,
-                    _ => None,
-                },
+                flush_watermark_candidate: None,
                 retention_options: match self.kind {
                     MaintenanceTaskKind::SnapshotPruning | MaintenanceTaskKind::Retention => {
                         self.retention_options
@@ -693,6 +702,26 @@ impl MaintenanceTask {
 
     const fn coalesce_key(self) -> Option<MaintenanceCoalesceKey> {
         self.request.coalesce_key()
+    }
+
+    const fn lane(self) -> MaintenanceTaskLane {
+        match self.kind() {
+            MaintenanceTaskKind::Flush => MaintenanceTaskLane::Flush,
+            MaintenanceTaskKind::Compaction | MaintenanceTaskKind::Materialization => {
+                MaintenanceTaskLane::Rewrite
+            }
+            MaintenanceTaskKind::Checkpoint => MaintenanceTaskLane::Checkpoint,
+            MaintenanceTaskKind::FlushWatermark | MaintenanceTaskKind::WalTruncation => {
+                MaintenanceTaskLane::Wal
+            }
+            MaintenanceTaskKind::SnapshotPruning | MaintenanceTaskKind::Retention => {
+                MaintenanceTaskLane::Retention
+            }
+            MaintenanceTaskKind::Quarantine
+            | MaintenanceTaskKind::Purge
+            | MaintenanceTaskKind::Repair => MaintenanceTaskLane::Quarantine,
+            MaintenanceTaskKind::HealthCollection => MaintenanceTaskLane::Health,
+        }
     }
 }
 
@@ -871,11 +900,13 @@ impl MaintenanceExecutorStatus {
     const fn new(
         pending_tasks: usize,
         active_task: Option<MaintenanceTaskId>,
+        active_tasks: usize,
         stats: LifecycleMaintenanceStats,
     ) -> Self {
         Self {
             pending_tasks,
             active_task,
+            active_tasks,
             stats,
         }
     }
@@ -886,6 +917,10 @@ impl MaintenanceExecutorStatus {
 
     pub(crate) const fn active_task(self) -> Option<MaintenanceTaskId> {
         self.active_task
+    }
+
+    pub(crate) const fn active_tasks(self) -> usize {
+        self.active_tasks
     }
 
     pub(crate) const fn stats(self) -> LifecycleMaintenanceStats {
@@ -1069,7 +1104,7 @@ impl LifecycleMaintenanceExecutor {
             next_id: 1,
             max_queue_depth,
             queue: Vec::new(),
-            active: None,
+            active: Vec::new(),
             stats: LifecycleMaintenanceStats::default(),
         })
     }
@@ -1118,14 +1153,22 @@ impl LifecycleMaintenanceExecutor {
         require_admitted(state, LifecycleOperationKind::OrdinaryMaintenance)?;
         fault.check(MaintenanceFaultPoint::BeforeEnqueue, None)?;
         if let Some(key) = request.coalesce_key() {
-            if let Some(existing) = self
+            if let Some(existing_index) = self
                 .queue
                 .iter()
-                .find(|task| task.coalesce_key() == Some(key))
+                .position(|task| task.coalesce_key() == Some(key))
             {
+                if request.kind == MaintenanceTaskKind::FlushWatermark {
+                    let candidate = self.queue[existing_index]
+                        .request
+                        .flush_watermark_candidate
+                        .zip(request.flush_watermark_candidate)
+                        .map(|(existing, requested)| existing.max(requested));
+                    self.queue[existing_index].request.flush_watermark_candidate = candidate;
+                }
                 self.stats.coalesced = self.stats.coalesced.saturating_add(1);
                 return Ok(MaintenanceEnqueueOutcome::coalesced(
-                    existing.id(),
+                    self.queue[existing_index].id(),
                     self.queue.len(),
                     self.stats,
                 ));
@@ -1187,7 +1230,7 @@ impl LifecycleMaintenanceExecutor {
         fault: &mut impl MaintenanceFaultHook,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         require_admitted(state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let Some(index) = self.next_task_index(predicate) else {
+        let Some(index) = self.next_startable_task_index(predicate) else {
             return Ok(None);
         };
         self.run_index(index, runner, fault, false).map(Some)
@@ -1221,14 +1264,15 @@ impl LifecycleMaintenanceExecutor {
         runner: &mut impl MaintenanceTaskRunner,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         require_admitted(state, LifecycleOperationKind::CloseRequiredDrain)?;
-        let Some(task) = self.active.take() else {
+        if self.active.is_empty() {
             return Ok(None);
-        };
+        }
+        let task = self.active.remove(0);
         let outcome = match runner.run_task(&task) {
             Ok(outcome) => attach_executor_facts(outcome, task)?,
             Err(error) => {
                 self.stats.failed = self.stats.failed.saturating_add(1);
-                self.active = Some(task);
+                self.active.insert(0, task);
                 return Err(error);
             }
         };
@@ -1262,19 +1306,53 @@ impl LifecycleMaintenanceExecutor {
         ))
     }
 
-    pub(crate) const fn status(&self) -> MaintenanceExecutorStatus {
+    pub(crate) fn status(&self) -> MaintenanceExecutorStatus {
         MaintenanceExecutorStatus::new(
             self.queue.len(),
-            match self.active {
-                Some(task) => Some(task.id()),
-                None => None,
-            },
+            self.active.first().map(|task| task.id()),
+            self.active.len(),
             self.stats,
         )
     }
 
     pub(crate) fn pending_tasks(&self) -> &[MaintenanceTask] {
         &self.queue
+    }
+
+    pub(crate) fn has_pending_or_active_kind(&self, kind: MaintenanceTaskKind) -> bool {
+        self.queue.iter().any(|task| task.kind() == kind)
+            || self.active.iter().any(|task| task.kind() == kind)
+    }
+
+    pub(crate) fn replace_pending_flush_watermark_candidate(
+        &mut self,
+        task_id: MaintenanceTaskId,
+        candidate: CommitVersion,
+    ) -> LifecycleResult<bool> {
+        let Some(task) = self.queue.iter_mut().find(|task| task.id() == task_id) else {
+            return Ok(false);
+        };
+        if task.kind() != MaintenanceTaskKind::FlushWatermark {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "flush watermark candidate replacement requires a flush watermark task",
+            });
+        }
+        task.request.flush_watermark_candidate = Some(candidate);
+        task.request.validate()?;
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_flush_watermark_candidate(&self) -> Option<CommitVersion> {
+        self.queue
+            .iter()
+            .find(|task| task.kind() == MaintenanceTaskKind::FlushWatermark)
+            .and_then(|task| task.flush_watermark_candidate())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_kinds(&self) -> Vec<MaintenanceTaskKind> {
+        self.queue.iter().map(|task| task.kind()).collect()
     }
 
     pub(crate) fn next_matching_task(
@@ -1291,11 +1369,11 @@ impl LifecycleMaintenanceExecutor {
         predicate: impl Fn(&MaintenanceTask) -> bool,
     ) -> LifecycleResult<Option<MaintenanceTask>> {
         require_admitted(state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        let Some(index) = self.next_task_index(predicate) else {
+        let Some(index) = self.next_startable_task_index(predicate) else {
             return Ok(None);
         };
         let task = self.queue.remove(index);
-        self.active = Some(task);
+        self.active.push(task);
         self.stats.started = self.stats.started.saturating_add(1);
         Ok(Some(task))
     }
@@ -1306,17 +1384,21 @@ impl LifecycleMaintenanceExecutor {
         outcome: MaintenanceOutcome,
         draining: bool,
     ) -> LifecycleResult<MaintenanceOutcome> {
-        let Some(active) = self.active else {
+        let Some(active_index) = self
+            .active
+            .iter()
+            .position(|active| active.id() == task.id())
+        else {
             return Err(LifecycleError::MaintenanceTaskFailed {
                 reason: "maintenance task completion requires an active task",
             });
         };
+        let active = self.active.remove(active_index);
         if active.id() != task.id() {
             return Err(LifecycleError::MaintenanceTaskFailed {
                 reason: "maintenance task completion id must match active task",
             });
         }
-        self.active = None;
         let outcome = attach_executor_facts(outcome, task)?;
         self.record_outcome(outcome.status(), draining);
         Ok(outcome)
@@ -1324,7 +1406,7 @@ impl LifecycleMaintenanceExecutor {
 
     #[cfg(test)]
     pub(crate) fn set_active_for_test(&mut self, task: MaintenanceTask) {
-        self.active = Some(task);
+        self.active.push(task);
     }
 
     pub(crate) const fn stats(&self) -> LifecycleMaintenanceStats {
@@ -1340,6 +1422,23 @@ impl LifecycleMaintenanceExecutor {
             .map(|(index, _)| index)
     }
 
+    fn next_startable_task_index(
+        &self,
+        predicate: impl Fn(&MaintenanceTask) -> bool,
+    ) -> Option<usize> {
+        self.queue
+            .iter()
+            .enumerate()
+            .filter(|(_, task)| predicate(task) && !self.task_lane_is_active(**task))
+            .min_by_key(|(_, task)| (task.priority().rank(), task.sequence()))
+            .map(|(index, _)| index)
+    }
+
+    fn task_lane_is_active(&self, task: MaintenanceTask) -> bool {
+        let lane = task.lane();
+        self.active.iter().any(|active| active.lane() == lane)
+    }
+
     fn run_index(
         &mut self,
         index: usize,
@@ -1348,12 +1447,18 @@ impl LifecycleMaintenanceExecutor {
         draining: bool,
     ) -> LifecycleResult<MaintenanceOutcome> {
         let task = self.queue.remove(index);
-        self.active = Some(task);
+        if self.task_lane_is_active(task) {
+            self.queue.insert(index, task);
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "maintenance task lane is already active",
+            });
+        }
+        self.active.push(task);
         self.stats.started = self.stats.started.saturating_add(1);
         let restore_on_error = draining;
         if let Err(error) = fault.check(MaintenanceFaultPoint::AtTaskStart, Some(&task)) {
             self.stats.failed = self.stats.failed.saturating_add(1);
-            self.active = None;
+            self.clear_active_task(task);
             if restore_on_error {
                 self.queue.insert(index, task);
             }
@@ -1363,7 +1468,7 @@ impl LifecycleMaintenanceExecutor {
             Ok(outcome) => attach_executor_facts(outcome, task)?,
             Err(error) => {
                 self.stats.failed = self.stats.failed.saturating_add(1);
-                self.active = None;
+                self.clear_active_task(task);
                 if restore_on_error {
                     self.queue.insert(index, task);
                 }
@@ -1376,12 +1481,22 @@ impl LifecycleMaintenanceExecutor {
                 .with_reason("maintenance task failed after run")
                 .with_recovery_health(telemetry_health_debt("maintenance task failed after run")?);
             self.record_outcome(outcome.status(), draining);
-            self.active = None;
+            self.clear_active_task(task);
             return Ok(outcome);
         }
         self.record_outcome(outcome.status(), draining);
-        self.active = None;
+        self.clear_active_task(task);
         Ok(outcome)
+    }
+
+    fn clear_active_task(&mut self, task: MaintenanceTask) {
+        if let Some(index) = self
+            .active
+            .iter()
+            .position(|active| active.id() == task.id())
+        {
+            self.active.remove(index);
+        }
     }
 
     fn record_outcome(&mut self, status: MaintenanceOutcomeStatus, draining: bool) {

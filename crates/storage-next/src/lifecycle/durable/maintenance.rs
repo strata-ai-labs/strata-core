@@ -6,6 +6,7 @@ use crate::branch::state::{BranchLocalState, BranchRotationOutcome};
 use crate::commit::{
     CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchRegistry, VisibleVersionTracker,
 };
+use crate::format::TableManifest;
 use crate::lifecycle::checkpoint::{
     checkpoint_durable_rows_with_budget, checkpoint_durable_runtime_with_budget,
     checkpoint_request_from_maintenance_task_with_snapshot_id, persist_flush_watermark,
@@ -17,17 +18,21 @@ use crate::lifecycle::checkpoint::{
 use crate::lifecycle::compaction::{
     bind_materialization_task_for_enqueue, collect_storage_pressure_with_budget,
     compact_branch_to_fixed_point_with_resource_policy, compaction_score_key_for_task,
-    current_compaction_request_from_maintenance_task, defer_compaction_for_resource_policy,
-    materialization_request_from_maintenance_task, record_lifecycle_compaction_outcome,
-    record_lifecycle_table_rewrite_post_operation_score, stale_compaction_maintenance_outcome,
-    table_rewrite_outcome_allows_chain_resubmit, table_rewrite_outcome_was_flush_preempted,
-    table_rewrite_score_key_for_branch, table_rewrite_score_key_for_task,
-    table_rewrite_task_request_for_branch, LifecycleCompactionScoreKey,
+    current_compaction_request_from_maintenance_task_with_budget,
+    defer_compaction_for_resource_policy, materialization_request_from_maintenance_task,
+    record_lifecycle_compaction_outcome,
+    record_lifecycle_table_rewrite_post_operation_score_with_budget,
+    stale_compaction_maintenance_outcome, table_rewrite_outcome_allows_chain_resubmit,
+    table_rewrite_outcome_was_flush_preempted, table_rewrite_score_key_for_branch_with_budget,
+    table_rewrite_score_key_for_task_with_budget,
+    table_rewrite_task_request_for_branch_with_budget, LifecycleCompactionScoreKey,
     LifecycleTableRewriteScoreKey,
 };
 use crate::lifecycle::flush::{
     flush_branch_drain_with, flush_drain_maintenance_outcome_for_scope,
     flush_drain_request_for_branch_from_maintenance_task, flush_durable_branch_with_budget,
+    install_prepared_durable_flush, install_prepared_durable_flush_drain_with,
+    prepare_durable_flush_drain_with_budget, PreparedDurableFlushDrain,
 };
 use crate::lifecycle::maintenance::{
     schedule_post_commit_maintenance as schedule_suggested_post_commit_maintenance,
@@ -48,15 +53,18 @@ use crate::lifecycle::table_reachability::{
     LifecycleTableObjectProofEpochs, LifecycleTableObjectRetentionRequest,
 };
 use crate::lifecycle::{
-    checkpoint_task_for_wal_growth, commits_since_checkpoint,
+    begin_durable_materialization_build, commits_since_checkpoint,
     compact_durable_branch_manifest_backed, evaluate_mutating_write_admission,
+    install_prepared_durable_compaction, install_prepared_durable_materialization,
     materialize_durable_branch_manifest_backed, policy_admission_error,
-    purge_proof_from_maintenance_task, purge_quarantine as purge_lifecycle_quarantine,
+    prepare_durable_compaction_publication, purge_proof_from_maintenance_task,
+    purge_quarantine as purge_lifecycle_quarantine,
     quarantine_object as quarantine_lifecycle_object, quarantine_task_without_request,
     repair_branch_from_maintenance_task,
     repair_branch_quarantine as repair_branch_lifecycle_quarantine,
     repair_quarantine_family as repair_lifecycle_quarantine_family,
     require_maintenance_enqueue_budget, require_rotate_budget, telemetry_health_debt,
+    wal_retention_watermark, DurableMaterializationBegin, DurableMaterializationBuild,
     FlushFrozenOutcome, FlushFrozenRequest, LifecycleCodecId, LifecycleCompactionDrainOutcome,
     LifecycleCompactionDrainRequest, LifecycleCompactionIoPolicy, LifecycleCompactionOutcome,
     LifecycleCompactionRequest, LifecycleError, LifecycleLowerLayer,
@@ -64,10 +72,11 @@ use crate::lifecycle::{
     LifecycleMaterializationRequest, LifecycleOperationKind, LifecyclePostCommitMaintenanceOutcome,
     LifecyclePurgeOutcome, LifecycleQuarantineOutcome, LifecycleQuarantineRepairOutcome,
     LifecycleQuarantineRequest, LifecycleResult, LifecycleStats, LifecycleStoragePressure,
-    LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome, MaintenanceEnqueueOutcome,
-    MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
-    MaintenanceTaskId, MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner,
-    MaintenanceTaskScope, RecoveryDegradationClass, RecoveryHealth,
+    LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome, MaintenanceCheckpointOptions,
+    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceOutcome,
+    MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskKind,
+    MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope, PreparedDurableCompaction,
+    PreparedDurableMaterialization, RecoveryDegradationClass, RecoveryHealth,
 };
 use crate::service::{
     QuarantineService, TableManifestService, TableObjectReaderService, TableObjectService,
@@ -76,11 +85,27 @@ use crate::service::{
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 pub(crate) enum DurableBackgroundMaintenanceStep<'a> {
-    Completed(MaintenanceOutcome),
-    Build(DurableBackgroundMaintenanceBuild<'a>),
+    Completed(Box<MaintenanceOutcome>),
+    Build(Box<DurableBackgroundMaintenanceBuild<'a>>),
+}
+
+impl DurableBackgroundMaintenanceStep<'_> {
+    pub(crate) fn completed(outcome: MaintenanceOutcome) -> Self {
+        Self::Completed(Box::new(outcome))
+    }
 }
 
 pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
+    Flush {
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        request: crate::lifecycle::flush::FlushDrainRequest,
+        branch_snapshot: BranchLocalState,
+        table_object: TableObjectService<'a>,
+        table_reader: TableObjectReaderService<'a>,
+        budget: crate::lifecycle::StorageBudgetLedger,
+        started_at: std::time::Instant,
+    },
     Checkpoint {
         task: MaintenanceTask,
         request: LifecycleCheckpointRequest,
@@ -92,9 +117,33 @@ pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
         proof: WalRetentionProof,
         wal: WalService<'a>,
     },
+    Compaction {
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        level: u8,
+        request: LifecycleCompactionRequest,
+        branch_snapshot: BranchLocalState,
+        table_object: TableObjectService<'a>,
+        table_reader: TableObjectReaderService<'a>,
+        budget: crate::lifecycle::StorageBudgetLedger,
+    },
+    Materialization {
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        build: DurableMaterializationBuild,
+        table_object: TableObjectService<'a>,
+        table_reader: TableObjectReaderService<'a>,
+        budget: crate::lifecycle::StorageBudgetLedger,
+    },
 }
 
 pub(crate) enum DurableBackgroundMaintenanceBuilt {
+    Flush {
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        prepared: PreparedDurableFlushDrain,
+        elapsed: std::time::Duration,
+    },
     Checkpoint {
         task: MaintenanceTask,
         request: LifecycleCheckpointRequest,
@@ -105,18 +154,53 @@ pub(crate) enum DurableBackgroundMaintenanceBuilt {
         task: MaintenanceTask,
         outcome: LifecycleWalTruncationOutcome,
     },
+    Compaction {
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        level: u8,
+        prepared: Box<PreparedDurableCompaction>,
+    },
+    Materialization {
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        prepared: Box<PreparedDurableMaterialization>,
+    },
 }
 
 impl DurableBackgroundMaintenanceBuild<'_> {
     pub(crate) const fn task(&self) -> MaintenanceTask {
         match self {
-            Self::Checkpoint { task, .. } => *task,
-            Self::WalTruncation { task, .. } => *task,
+            Self::Flush { task, .. }
+            | Self::Checkpoint { task, .. }
+            | Self::WalTruncation { task, .. }
+            | Self::Compaction { task, .. }
+            | Self::Materialization { task, .. } => *task,
         }
     }
 
     pub(crate) fn build(self) -> LifecycleResult<DurableBackgroundMaintenanceBuilt> {
         match self {
+            Self::Flush {
+                task,
+                branch_id,
+                request,
+                branch_snapshot,
+                table_object,
+                table_reader,
+                budget,
+                started_at,
+            } => Ok(DurableBackgroundMaintenanceBuilt::Flush {
+                task,
+                branch_id,
+                prepared: prepare_durable_flush_drain_with_budget(
+                    &branch_snapshot,
+                    &table_object,
+                    &table_reader,
+                    &request,
+                    Some(&budget),
+                )?,
+                elapsed: started_at.elapsed(),
+            }),
             Self::Checkpoint {
                 task,
                 request,
@@ -141,6 +225,39 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                 let outcome = truncate_wal(&wal, proof)?;
                 Ok(DurableBackgroundMaintenanceBuilt::WalTruncation { task, outcome })
             }
+            Self::Compaction {
+                task,
+                branch_id,
+                level,
+                request,
+                branch_snapshot,
+                table_object,
+                table_reader,
+                budget,
+            } => Ok(DurableBackgroundMaintenanceBuilt::Compaction {
+                task,
+                branch_id,
+                level,
+                prepared: Box::new(prepare_durable_compaction_publication(
+                    &branch_snapshot,
+                    &table_object,
+                    &table_reader,
+                    &request,
+                    Some(&budget),
+                )?),
+            }),
+            Self::Materialization {
+                task,
+                branch_id,
+                build,
+                table_object,
+                table_reader,
+                budget,
+            } => Ok(DurableBackgroundMaintenanceBuilt::Materialization {
+                task,
+                branch_id,
+                prepared: Box::new(build.build(&table_object, &table_reader, Some(&budget))?),
+            }),
         }
     }
 }
@@ -356,7 +473,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         self.storage_pressure_for_branch(self.initial_branch_id)
     }
 
-    fn storage_pressure_for_branch(&self, branch_id: BranchId) -> LifecycleStoragePressure {
+    pub(crate) fn storage_pressure_for_branch(
+        &self,
+        branch_id: BranchId,
+    ) -> LifecycleStoragePressure {
         let branch = self
             .branch_catalog
             .branch_state(branch_id)
@@ -434,9 +554,12 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         self.schedule_post_commit_maintenance_for_branch(branch_id)
     }
 
-    pub(crate) fn schedule_background_maintenance_coverage(&mut self) -> usize {
-        let _ = self.schedule_post_commit_maintenance_for_branch(self.initial_branch_id);
-        self.maintenance_status().pending_tasks()
+    pub(crate) fn schedule_background_maintenance_coverage(&mut self) -> bool {
+        let outcome = self.schedule_post_commit_maintenance_for_branch(self.initial_branch_id);
+        matches!(
+            outcome.status(),
+            crate::lifecycle::maintenance::LifecyclePostCommitMaintenanceStatus::Enqueued
+        )
     }
 
     fn schedule_maintenance_coverage_after_branch(
@@ -855,8 +978,18 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         dead_code,
         reason = "runtime hook is consumed by concrete maintenance modules"
     )]
-    pub(crate) const fn maintenance_status(&self) -> MaintenanceExecutorStatus {
+    pub(crate) fn maintenance_status(&self) -> MaintenanceExecutorStatus {
         self.maintenance.status()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_flush_watermark_candidate_for_test(&self) -> Option<CommitVersion> {
+        self.maintenance.pending_flush_watermark_candidate()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_maintenance_kinds_for_test(&self) -> Vec<MaintenanceTaskKind> {
+        self.maintenance.pending_kinds()
     }
 
     #[cfg(test)]
@@ -925,8 +1058,12 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         let checkpoint_watermark = current_manifest
             .snapshot_watermark()
             .map(CommitVersion::new);
+        let retention_watermark = wal_retention_watermark(
+            checkpoint_watermark,
+            current_manifest.flushed_through_commit_id(),
+        );
         let commits_since_checkpoint =
-            commits_since_checkpoint(self.visible.visible_version(), checkpoint_watermark);
+            commits_since_checkpoint(self.visible.visible_version(), retention_watermark);
         let Some(trigger) = policy.trigger_for(facts, commits_since_checkpoint) else {
             return Ok(LifecycleWalGrowthOutcome::below_threshold(
                 facts,
@@ -961,8 +1098,18 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 error,
             ));
         }
-        match self.enqueue_maintenance(checkpoint_task_for_wal_growth()) {
-            Ok(enqueue) => Ok(LifecycleWalGrowthOutcome::enqueued(
+        let enqueue = (|| {
+            self.enqueue_maintenance(MaintenanceTaskRequest::flush(self.initial_branch_id))?;
+            self.enqueue_maintenance(MaintenanceTaskRequest::checkpoint_with_options(
+                MaintenanceCheckpointOptions::new(None, true).retention_critical(),
+            ))?;
+            self.enqueue_maintenance(MaintenanceTaskRequest::table_manifest_flush_watermark(
+                self.visible.visible_version(),
+            ))?;
+            self.enqueue_maintenance(MaintenanceTaskRequest::wal_truncation())
+        })();
+        match enqueue {
+            Ok(enqueue) => Ok(LifecycleWalGrowthOutcome::maintenance_enqueued(
                 facts,
                 commits_since_checkpoint,
                 trigger,
@@ -1037,6 +1184,77 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         outcome
     }
 
+    pub(crate) fn start_next_background_flush_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Flush)
+        else {
+            return Ok(None);
+        };
+        let MaintenanceTaskScope::Branch(branch_id) = task.scope() else {
+            return Ok(None);
+        };
+        let state = self.state;
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == task.id())?
+        else {
+            return Ok(None);
+        };
+        let request = flush_drain_request_for_branch_from_maintenance_task(&task, branch_id)?;
+        let generation = match self.branch_catalog.registry().lookup(branch_id) {
+            Ok(descriptor) => descriptor.generation(),
+            Err(error) => {
+                let outcome =
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                        .with_source_error(commit_error(error));
+                let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+            }
+        };
+        let branch = match self
+            .branch_catalog
+            .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
+        {
+            Ok(branch) => branch,
+            Err(error) => {
+                let outcome =
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                        .with_source_error(error);
+                let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+            }
+        };
+        if branch.active_row_count() > 0 {
+            if let Err(error) = require_rotate_budget(&self.budget, branch) {
+                let outcome =
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
+                        .with_source_error(error);
+                let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+            }
+            branch.rotate_active();
+        }
+        Ok(Some(DurableBackgroundMaintenanceStep::Build(Box::new(
+            DurableBackgroundMaintenanceBuild::Flush {
+                task,
+                branch_id,
+                request,
+                branch_snapshot: branch.clone(),
+                table_object: self.services.table_object().clone(),
+                table_reader: self.services.table_reader().clone(),
+                budget: self.budget.clone(),
+                started_at: std::time::Instant::now(),
+            },
+        ))))
+    }
+
     #[allow(
         dead_code,
         reason = "runtime maintenance entry point is consumed by dedicated tests"
@@ -1109,7 +1327,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 .with_source_error(error);
                 let outcome = self.maintenance.finish_started(task, outcome, false)?;
                 self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
-                return Ok(Some(DurableBackgroundMaintenanceStep::Completed(outcome)));
+                return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
             }
         };
         let visible_version = self.visible.visible_version();
@@ -1121,14 +1339,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                     .clone(),
             );
         }
-        Ok(Some(DurableBackgroundMaintenanceStep::Build(
+        Ok(Some(DurableBackgroundMaintenanceStep::Build(Box::new(
             DurableBackgroundMaintenanceBuild::Checkpoint {
                 task,
                 request,
                 visible_version,
                 branches,
             },
-        )))
+        ))))
     }
 
     #[allow(
@@ -1138,6 +1356,15 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     pub(crate) fn run_next_wal_truncation_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        if self
+            .maintenance
+            .has_pending_or_active_kind(MaintenanceTaskKind::Flush)
+            || self
+                .maintenance
+                .has_pending_or_active_kind(MaintenanceTaskKind::FlushWatermark)
+        {
+            return Ok(None);
+        }
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let manifest = self.services.manifest();
@@ -1152,6 +1379,15 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         &mut self,
     ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        if self
+            .maintenance
+            .has_pending_or_active_kind(MaintenanceTaskKind::Flush)
+            || self
+                .maintenance
+                .has_pending_or_active_kind(MaintenanceTaskKind::FlushWatermark)
+        {
+            return Ok(None);
+        }
         let Some(task) = self
             .maintenance
             .next_matching_task(|task| task.kind() == MaintenanceTaskKind::WalTruncation)
@@ -1175,7 +1411,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                     )
                     .with_reason("WAL truncation has no retention proof");
                     let outcome = self.maintenance.finish_started(task, outcome, false)?;
-                    return Ok(Some(DurableBackgroundMaintenanceStep::Completed(outcome)));
+                    return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
                 }
                 Err(error) => {
                     let outcome = MaintenanceOutcome::new(
@@ -1185,16 +1421,16 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                     .with_source_error(error);
                     let outcome = self.maintenance.finish_started(task, outcome, false)?;
                     self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
-                    return Ok(Some(DurableBackgroundMaintenanceStep::Completed(outcome)));
+                    return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
                 }
             };
-        Ok(Some(DurableBackgroundMaintenanceStep::Build(
+        Ok(Some(DurableBackgroundMaintenanceStep::Build(Box::new(
             DurableBackgroundMaintenanceBuild::WalTruncation {
                 task,
                 proof,
                 wal: self.services.wal().clone_for_background_retention(),
             },
-        )))
+        ))))
     }
 
     pub(crate) fn finish_background_maintenance(
@@ -1202,6 +1438,12 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         built: DurableBackgroundMaintenanceBuilt,
     ) -> LifecycleResult<MaintenanceOutcome> {
         let outcome = match built {
+            DurableBackgroundMaintenanceBuilt::Flush {
+                task,
+                branch_id,
+                prepared,
+                elapsed,
+            } => self.finish_background_flush_task(task, branch_id, prepared, elapsed),
             DurableBackgroundMaintenanceBuilt::Checkpoint {
                 task,
                 request,
@@ -1212,7 +1454,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                     &self.services,
                     &request,
                     visible_version,
-                    rows,
+                    &rows,
                     Some(&self.budget),
                 );
                 match checkpoint {
@@ -1238,6 +1480,17 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             DurableBackgroundMaintenanceBuilt::WalTruncation { task, outcome } => self
                 .maintenance
                 .finish_started(task, outcome.maintenance_outcome(), false),
+            DurableBackgroundMaintenanceBuilt::Compaction {
+                task,
+                branch_id,
+                level,
+                prepared,
+            } => self.finish_background_compaction_task(task, branch_id, level, *prepared),
+            DurableBackgroundMaintenanceBuilt::Materialization {
+                task,
+                branch_id,
+                prepared,
+            } => self.finish_background_materialization_task(task, branch_id, *prepared),
         };
         self.record_optional_maintenance_health(&outcome.clone().map(Some));
         outcome
@@ -1255,6 +1508,125 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         outcome
     }
 
+    fn finish_background_flush_task(
+        &mut self,
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        prepared: PreparedDurableFlushDrain,
+        _elapsed: std::time::Duration,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        let result: LifecycleResult<MaintenanceOutcome> = (|| {
+            let generation = self
+                .branch_catalog
+                .registry()
+                .lookup(branch_id)
+                .map_err(commit_error)?
+                .generation();
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            install_prepared_durable_flush_drain_with(branch, prepared, |branch, prepared_flush| {
+                let outcome = install_prepared_durable_flush(branch, prepared_flush);
+                let mut maintenance_outcome = outcome.maintenance_outcome();
+                if let Some(error) = publish_table_manifest_after_flush(
+                    branch,
+                    self.services.table_manifest(),
+                    &mut self.table_catalog,
+                    Some(&self.budget),
+                    &outcome,
+                ) {
+                    maintenance_outcome = table_manifest_debt_outcome(maintenance_outcome, error);
+                }
+                Ok(maintenance_outcome)
+            })
+        })();
+        let outcome = result.unwrap_or_else(|error| {
+            MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                .with_source_error(error)
+        });
+        self.maintenance.finish_started(task, outcome, false)
+    }
+
+    fn finish_background_compaction_task(
+        &mut self,
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        level: u8,
+        prepared: PreparedDurableCompaction,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        let result: LifecycleResult<LifecycleCompactionOutcome> = (|| {
+            let generation = self
+                .branch_catalog
+                .registry()
+                .lookup(branch_id)
+                .map_err(commit_error)?
+                .generation();
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            install_prepared_durable_compaction(
+                branch,
+                self.services.table_manifest(),
+                &mut self.table_catalog,
+                prepared,
+                Some(&self.budget),
+            )
+        })();
+        let maintenance = match result {
+            Ok(compaction) => {
+                record_lifecycle_compaction_outcome(&compaction);
+                let maintenance = compaction.maintenance_outcome();
+                if table_rewrite_outcome_was_flush_preempted(&maintenance) {
+                    self.requeue_flush_preempted_compaction(branch_id, level);
+                } else if table_rewrite_outcome_allows_chain_resubmit(&maintenance) {
+                    self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
+                }
+                maintenance
+            }
+            Err(error) => MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                .with_source_error(error),
+        };
+        self.maintenance.finish_started(task, maintenance, false)
+    }
+
+    fn finish_background_materialization_task(
+        &mut self,
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        prepared: PreparedDurableMaterialization,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        let result: LifecycleResult<LifecycleMaterializationOutcome> = (|| {
+            let generation = self
+                .branch_catalog
+                .registry()
+                .lookup(branch_id)
+                .map_err(commit_error)?
+                .generation();
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            install_prepared_durable_materialization(
+                branch,
+                self.services.table_manifest(),
+                &mut self.table_catalog,
+                prepared,
+                Some(&self.budget),
+            )
+        })();
+        let maintenance = match result {
+            Ok(materialization) => {
+                let maintenance = materialization.maintenance_outcome();
+                if table_rewrite_outcome_allows_chain_resubmit(&maintenance) {
+                    self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
+                }
+                maintenance
+            }
+            Err(error) => MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                .with_source_error(error),
+        };
+        self.maintenance.finish_started(task, maintenance, false)
+    }
+
     #[allow(
         dead_code,
         reason = "runtime maintenance entry point is consumed by dedicated tests"
@@ -1262,6 +1634,12 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     pub(crate) fn run_next_flush_watermark_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        if self
+            .maintenance
+            .has_pending_or_active_kind(MaintenanceTaskKind::Flush)
+        {
+            return Ok(None);
+        }
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let branch = self
@@ -1284,6 +1662,183 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::FlushWatermark
         })
+    }
+
+    pub(crate) fn run_next_background_flush_watermark_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        if self
+            .maintenance
+            .has_pending_or_active_kind(MaintenanceTaskKind::Flush)
+        {
+            return Ok(None);
+        }
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::FlushWatermark)
+        else {
+            return Ok(None);
+        };
+        if let Some(outcome) = self.run_background_flush_watermark_if_checkpoint_covered(task)? {
+            return Ok(Some(outcome));
+        }
+        if !self.flush_watermark_task_has_table_coverage(task)? {
+            let Some(candidate) = self.highest_coverable_flush_watermark_candidate()? else {
+                return Ok(None);
+            };
+            if !self
+                .maintenance
+                .replace_pending_flush_watermark_candidate(task.id(), candidate)?
+            {
+                return Ok(None);
+            }
+        }
+        self.run_next_flush_watermark_maintenance()
+    }
+
+    fn run_background_flush_watermark_if_checkpoint_covered(
+        &mut self,
+        task: MaintenanceTask,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let Some(candidate) = task.flush_watermark_candidate() else {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "flush watermark task requires a candidate",
+            });
+        };
+        let current_manifest = self
+            .services
+            .manifest()
+            .load_required()
+            .map_err(manifest_error)?;
+        let Some(snapshot_watermark) = current_manifest
+            .snapshot_watermark()
+            .map(CommitVersion::new)
+        else {
+            return Ok(None);
+        };
+        if candidate > snapshot_watermark {
+            return Ok(None);
+        }
+        let state = self.state;
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == task.id())?
+        else {
+            return Ok(None);
+        };
+        let outcome = self.persist_flush_watermark(
+            candidate,
+            &LifecycleFlushWatermarkProof::CheckpointCovered { snapshot_watermark },
+        );
+        let maintenance = match outcome {
+            Ok(outcome) => outcome.maintenance_outcome(),
+            Err(error) => MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                .with_source_error(error),
+        };
+        let outcome = self.maintenance.finish_started(task, maintenance, false)?;
+        self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+        Ok(Some(outcome))
+    }
+
+    fn flush_watermark_task_has_table_coverage(
+        &self,
+        task: MaintenanceTask,
+    ) -> LifecycleResult<bool> {
+        let Some(candidate) = task.flush_watermark_candidate() else {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "flush watermark task requires a candidate",
+            });
+        };
+        let branch_id = self.initial_branch_id;
+        let Some(manifest) = self
+            .services
+            .table_manifest()
+            .load_current(branch_id)
+            .map_err(manifest_error)?
+        else {
+            return Ok(false);
+        };
+        let branch = self
+            .branch_catalog
+            .branch_state(branch_id)
+            .expect("seeded branch is always present in the catalog");
+        match self.flush_watermark_candidate_has_table_coverage(candidate, branch, &manifest) {
+            Ok(()) => Ok(self.branch_catalog.registry().active_branch_ids() == vec![branch_id]),
+            Err(LifecycleError::WalRetentionProofIncomplete { .. }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn highest_coverable_flush_watermark_candidate(
+        &self,
+    ) -> LifecycleResult<Option<CommitVersion>> {
+        let branch_id = self.initial_branch_id;
+        if self.branch_catalog.registry().active_branch_ids() != vec![branch_id] {
+            return Ok(None);
+        }
+        let Some(manifest) = self
+            .services
+            .table_manifest()
+            .load_current(branch_id)
+            .map_err(manifest_error)?
+        else {
+            return Ok(None);
+        };
+        let current_manifest = self
+            .services
+            .manifest()
+            .load_required()
+            .map_err(manifest_error)?;
+        let retention_watermark = wal_retention_watermark(
+            current_manifest
+                .snapshot_watermark()
+                .map(CommitVersion::new),
+            current_manifest.flushed_through_commit_id(),
+        );
+        let branch = self
+            .branch_catalog
+            .branch_state(branch_id)
+            .expect("seeded branch is always present in the catalog");
+        for candidate in flush_watermark_candidates_from_manifest(
+            &manifest,
+            self.visible.visible_version(),
+            retention_watermark.unwrap_or(CommitVersion::ZERO),
+        ) {
+            match self.flush_watermark_candidate_has_table_coverage(candidate, branch, &manifest) {
+                Ok(()) => return Ok(Some(candidate)),
+                Err(LifecycleError::WalRetentionProofIncomplete { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(None)
+    }
+
+    fn flush_watermark_candidate_has_table_coverage(
+        &self,
+        candidate: CommitVersion,
+        branch: &BranchLocalState,
+        manifest: &TableManifest,
+    ) -> LifecycleResult<()> {
+        let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest(
+            candidate,
+            branch,
+            manifest,
+            &self.current_recovery_health,
+        )?;
+        let current_manifest = self
+            .services
+            .manifest()
+            .load_required()
+            .map_err(manifest_error)?;
+        proof.validate_extends_checkpoint(
+            wal_retention_watermark(
+                current_manifest
+                    .snapshot_watermark()
+                    .map(CommitVersion::new),
+                current_manifest.flushed_through_commit_id(),
+            )
+            .unwrap_or(CommitVersion::ZERO),
+        )
     }
 
     #[allow(
@@ -1316,6 +1871,22 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         }
     }
 
+    pub(crate) fn start_next_background_table_rewrite_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let Some(task) = self.next_scored_table_rewrite_task() else {
+            return Ok(None);
+        };
+        match task.kind() {
+            MaintenanceTaskKind::Compaction => self.start_background_compaction_task(task),
+            MaintenanceTaskKind::Materialization => {
+                self.start_background_materialization_task(task)
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn next_scored_table_rewrite_task(&self) -> Option<MaintenanceTask> {
         self.maintenance
             .pending_tasks()
@@ -1341,7 +1912,11 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     ) -> Option<LifecycleTableRewriteScoreKey> {
         let branch_id = branch_id_from_table_rewrite_task(task).ok()?;
         let branch = self.branch_catalog.branch_state(branch_id).ok()?;
-        table_rewrite_score_key_for_task(branch, task)
+        table_rewrite_score_key_for_task_with_budget(
+            branch,
+            task,
+            Some(self.open_plan.lifecycle_config().storage_budget()),
+        )
     }
 
     fn next_scored_compaction_task(&self) -> Option<MaintenanceTask> {
@@ -1421,6 +1996,89 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         Ok(outcome)
     }
 
+    fn start_background_compaction_task(
+        &mut self,
+        task: MaintenanceTask,
+    ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
+        let state = self.state;
+        let (branch_id, level) = table_level_scope_from_task(task)?;
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == task.id())?
+        else {
+            return Ok(None);
+        };
+        let generation = match self.branch_catalog.registry().lookup(branch_id) {
+            Ok(descriptor) => descriptor.generation(),
+            Err(error) => {
+                let outcome =
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                        .with_source_error(commit_error(error));
+                let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+            }
+        };
+        let branch = match self
+            .branch_catalog
+            .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
+        {
+            Ok(branch) => branch,
+            Err(error) => {
+                let outcome =
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                        .with_source_error(error);
+                let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+            }
+        };
+        let budget = self.open_plan.lifecycle_config().storage_budget();
+        let request = match current_compaction_request_from_maintenance_task_with_budget(
+            &task,
+            branch,
+            Some(budget),
+        ) {
+            Ok(Some(request)) => request,
+            Ok(None) => {
+                crate::observability::perf_trace::record_lifecycle_background_candidate_stale_deferred(
+                );
+                let outcome = stale_compaction_maintenance_outcome();
+                let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+            }
+            Err(error) => {
+                let outcome =
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                        .with_source_error(error);
+                let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+            }
+        };
+        let compaction_io_policy = self.open_plan.lifecycle_config().compaction_io_policy();
+        if let Some(outcome) =
+            defer_compaction_for_resource_policy(branch, &request, compaction_io_policy)?
+        {
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+            return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+        }
+        Ok(Some(DurableBackgroundMaintenanceStep::Build(Box::new(
+            DurableBackgroundMaintenanceBuild::Compaction {
+                task,
+                branch_id,
+                level,
+                request,
+                branch_snapshot: branch.clone(),
+                table_object: self.services.table_object().clone(),
+                table_reader: self.services.table_reader().clone(),
+                budget: self.budget.clone(),
+            },
+        ))))
+    }
+
     fn requeue_flush_preempted_compaction(
         &mut self,
         branch_id: strata_core_next::BranchId,
@@ -1441,7 +2099,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
 
     fn resubmit_table_rewrite_if_any_branch_still_unhealthy(&mut self, branch_id: BranchId) {
         if let Ok(branch) = self.branch_catalog.branch_state(branch_id) {
-            record_lifecycle_table_rewrite_post_operation_score(branch);
+            record_lifecycle_table_rewrite_post_operation_score_with_budget(
+                branch,
+                Some(self.budget.budget()),
+            );
         }
         let Some(request) = self.highest_scored_table_rewrite_request() else {
             return;
@@ -1474,9 +2135,15 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                     .branch_state(descriptor.branch_id())
                     .ok()?;
                 Some((
-                    table_rewrite_score_key_for_branch(branch)?,
+                    table_rewrite_score_key_for_branch_with_budget(
+                        branch,
+                        Some(self.open_plan.lifecycle_config().storage_budget()),
+                    )?,
                     std::cmp::Reverse(*descriptor.branch_id().as_bytes()),
-                    table_rewrite_task_request_for_branch(branch)?,
+                    table_rewrite_task_request_for_branch_with_budget(
+                        branch,
+                        Some(self.open_plan.lifecycle_config().storage_budget()),
+                    )?,
                 ))
             })
             .max_by_key(|(score, branch_tiebreaker, _)| (*score, *branch_tiebreaker))
@@ -1546,6 +2213,67 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
         }
         Ok(outcome)
+    }
+
+    fn start_background_materialization_task(
+        &mut self,
+        task: MaintenanceTask,
+    ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
+        let state = self.state;
+        let branch_id = branch_id_from_inherited_layer_task(task)?;
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == task.id())?
+        else {
+            return Ok(None);
+        };
+        let request = materialization_request_from_maintenance_task(&task)?;
+        let generation = match self.branch_catalog.registry().lookup(branch_id) {
+            Ok(descriptor) => descriptor.generation(),
+            Err(error) => {
+                let outcome =
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                        .with_source_error(commit_error(error));
+                let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+            }
+        };
+        let branch = match self
+            .branch_catalog
+            .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
+        {
+            Ok(branch) => branch,
+            Err(error) => {
+                let outcome =
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                        .with_source_error(error);
+                let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+            }
+        };
+        match begin_durable_materialization_build(branch, &request)? {
+            DurableMaterializationBegin::Deferred(outcome) => {
+                let outcome =
+                    self.maintenance
+                        .finish_started(task, outcome.maintenance_outcome(), false)?;
+                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)))
+            }
+            DurableMaterializationBegin::Build(build) => {
+                Ok(Some(DurableBackgroundMaintenanceStep::Build(Box::new(
+                    DurableBackgroundMaintenanceBuild::Materialization {
+                        task,
+                        branch_id,
+                        build,
+                        table_object: self.services.table_object().clone(),
+                        table_reader: self.services.table_reader().clone(),
+                        budget: self.budget.clone(),
+                    },
+                ))))
+            }
+        }
     }
 
     #[allow(
@@ -1737,6 +2465,10 @@ impl MaintenanceTaskRunner for DurableFlushMaintenanceRunner<'_, '_> {
                 branch_id,
                 CommitBranchGenerationGuard::exact(descriptor.generation()),
             )?;
+            if branch.active_row_count() > 0 {
+                require_rotate_budget(self.budget, branch)?;
+                branch.rotate_active();
+            }
             outcomes.push(flush_branch_drain_with(
                 branch,
                 &request,
@@ -1963,7 +2695,11 @@ struct DurableCompactionMaintenanceRunner<'a, 'b> {
 
 impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
-        let Some(request) = current_compaction_request_from_maintenance_task(task, self.branch)?
+        let Some(request) = current_compaction_request_from_maintenance_task_with_budget(
+            task,
+            self.branch,
+            Some(self.budget.budget()),
+        )?
         else {
             return Ok(stale_compaction_maintenance_outcome());
         };
@@ -2579,6 +3315,36 @@ fn append_released_table_names(
         }
     }
     outcome.with_affected_object_names(names)
+}
+
+fn flush_watermark_candidates_from_manifest(
+    manifest: &TableManifest,
+    visible_version: CommitVersion,
+    retention_watermark: CommitVersion,
+) -> Vec<CommitVersion> {
+    let mut candidates = Vec::new();
+    for level in manifest.levels() {
+        for table in level.tables() {
+            let candidate = table.facts().commit_max();
+            if candidate <= visible_version && candidate > retention_watermark {
+                candidates.push(candidate);
+            }
+        }
+    }
+    for layer in manifest.inherited_layers() {
+        for level in layer.levels() {
+            for table in level.tables() {
+                let candidate = table.facts().commit_max();
+                if candidate <= visible_version && candidate > retention_watermark {
+                    candidates.push(candidate);
+                }
+            }
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    candidates.reverse();
+    candidates
 }
 
 fn bind_materialization_request_in_catalog(

@@ -361,7 +361,7 @@ fn rotation_budget_rejects_before_mutation() {
         .execute_cache_commit(batch, CommitBranchGenerationGuard::not_supplied())
         .expect_err("rotation budget rejects");
 
-    assert_budget_error(&error, StorageBudgetPool::FrozenMutable);
+    assert_frozen_backlog_pressure_rejection(&error);
     assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
     assert!(runtime.branch_state().is_empty());
     assert!(runtime
@@ -774,6 +774,18 @@ fn assert_budget_error(error: &LifecycleError, expected_pool: StorageBudgetPool)
         current = candidate.source();
     }
     panic!("expected storage budget error for {expected_pool:?}, got {error:?}");
+}
+
+fn assert_frozen_backlog_pressure_rejection(error: &LifecycleError) {
+    assert!(matches!(
+        error,
+        LifecycleError::StoragePressureRejected {
+            severity: LifecycleStoragePressureSeverity::BlockMutatingAdmission,
+            pressure_reason: LifecycleStoragePressureReason::FrozenBacklog,
+            retryable: false,
+            ..
+        }
+    ));
 }
 
 fn assert_commit_runtime_error(

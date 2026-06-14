@@ -17,6 +17,7 @@ use crate::branch::state::materialization::BranchMaterializationRecovery;
 use crate::branch::state::BranchLocalState;
 use crate::lifecycle::compaction::{
     compact_cache_branch_to_fixed_point, current_compaction_request_from_maintenance_task,
+    current_compaction_request_from_maintenance_task_with_budget,
     defer_compaction_for_resource_policy, nonzero_compaction_pressure, nonzero_level_target_bytes,
     LifecycleCompactionDrainRequest,
 };
@@ -1957,7 +1958,7 @@ fn storage_pressure_suggests_flush_before_blocking_l0_compaction() {
 }
 
 #[test]
-fn storage_pressure_does_not_schedule_terminal_level_compaction() {
+fn storage_pressure_schedules_bottommost_level_compaction() {
     let branch = branch_id(0x6b);
     let mut state = BranchLocalState::empty(branch);
     let terminal_level =
@@ -1980,9 +1981,158 @@ fn storage_pressure_does_not_schedule_terminal_level_compaction() {
 
     let pressure = collect_storage_pressure(&state, empty_maintenance_status());
 
-    assert_eq!(pressure.reason(), LifecycleStoragePressureReason::None);
+    assert_eq!(
+        pressure.reason(),
+        LifecycleStoragePressureReason::NonZeroLevelTableBacklog
+    );
+    assert!(matches!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::scope),
+        Some(MaintenanceTaskScope::TableLevel {
+            branch_id,
+            level
+        }) if branch_id == branch && level == terminal_level.raw()
+    ));
+    let task = MaintenanceTask::new_for_test(1, pressure.suggested_task().expect("task"))
+        .expect("maintenance task");
+    let request = current_compaction_request_from_maintenance_task(&task, &state)
+        .expect("request")
+        .expect("current compaction request");
+    assert_eq!(
+        request.kind(),
+        BranchCompactionKind::CompactBottommostLevel {
+            level: terminal_level,
+            start_table_index: 0,
+            table_count: 4,
+        }
+    );
+}
+
+#[test]
+fn storage_pressure_skips_unclearable_bottommost_table_count_under_output_budget() {
+    let branch = branch_id(0x6d);
+    let mut state = BranchLocalState::empty(branch);
+    let terminal_level =
+        BranchLevel::new(u8::try_from(state.owned_levels().len() - 1).expect("level fits in u8"));
+    for index in 0..4 {
+        let value = vec![0x55; 4096];
+        install_owned_table(
+            &mut state,
+            branch,
+            terminal_level,
+            &format!("terminal-unclearable-{index}"),
+            vec![put_row(
+                branch,
+                format!("terminal-unclearable-{index}").as_bytes(),
+                index + 1,
+                (index + 1) * 1_000,
+                &value,
+            )],
+        );
+    }
+
+    let budget = StorageRuntimeBudget::low_memory_test_profile();
+    let pressure =
+        collect_storage_pressure_with_budget(&state, empty_maintenance_status(), Some(budget));
+
     assert_eq!(pressure.severity(), LifecycleStoragePressureSeverity::None);
+    assert_eq!(pressure.reason(), LifecycleStoragePressureReason::None);
     assert!(pressure.suggested_task().is_none());
+
+    let task = MaintenanceTask::new_for_test(
+        1,
+        MaintenanceTaskRequest::compaction(branch, terminal_level.raw()),
+    )
+    .expect("maintenance task");
+    assert!(
+        current_compaction_request_from_maintenance_task_with_budget(&task, &state, Some(budget))
+            .expect("request")
+            .is_none()
+    );
+}
+
+#[test]
+fn nonzero_compaction_prefers_bounded_merge_candidate_over_largest_source() {
+    let branch = branch_id(0x6e);
+    let mut state = BranchLocalState::empty(branch);
+    let source_level = BranchLevel::new(1);
+    let next_level = BranchLevel::new(2);
+    let large_value = vec![0x71; 4096];
+
+    install_owned_table(
+        &mut state,
+        branch,
+        source_level,
+        "source-broad-overlap",
+        vec![
+            put_row(branch, b"a-000", 1, 1_000, &large_value),
+            put_row(branch, b"m-999", 2, 2_000, &large_value),
+        ],
+    );
+    install_owned_table(
+        &mut state,
+        branch,
+        source_level,
+        "source-bounded-primary",
+        vec![put_row(branch, b"n-000", 3, 3_000, &[0x72; 128])],
+    );
+    install_owned_table(
+        &mut state,
+        branch,
+        source_level,
+        "source-bounded-secondary",
+        vec![put_row(branch, b"o-000", 4, 4_000, &[0x73; 64])],
+    );
+    install_owned_table(
+        &mut state,
+        branch,
+        source_level,
+        "source-bounded-tertiary",
+        vec![put_row(branch, b"p-000", 5, 5_000, &[0x74; 32])],
+    );
+    for (index, first, last) in [
+        (0, b"b-000".as_slice(), b"b-999".as_slice()),
+        (1, b"d-000".as_slice(), b"d-999".as_slice()),
+        (2, b"h-000".as_slice(), b"h-999".as_slice()),
+        (3, b"l-000".as_slice(), b"l-999".as_slice()),
+    ] {
+        install_owned_table(
+            &mut state,
+            branch,
+            next_level,
+            &format!("next-overlap-{index}"),
+            vec![
+                put_row(
+                    branch,
+                    first,
+                    10 + index,
+                    (10 + index) * 1_000,
+                    &large_value,
+                ),
+                put_row(branch, last, 20 + index, (20 + index) * 1_000, &large_value),
+            ],
+        );
+    }
+
+    let task = MaintenanceTask::new_for_test(
+        1,
+        MaintenanceTaskRequest::compaction(branch, source_level.raw()),
+    )
+    .expect("maintenance task");
+    let request = current_compaction_request_from_maintenance_task_with_budget(
+        &task,
+        &state,
+        Some(StorageRuntimeBudget::low_memory_test_profile()),
+    )
+    .expect("request")
+    .expect("current compaction request");
+
+    assert_eq!(
+        request.kind(),
+        BranchCompactionKind::CompactLevel {
+            level: source_level,
+            table_index: 1,
+        }
+    );
 }
 
 #[test]
@@ -2877,15 +3027,26 @@ fn queued_table_rewrite_runs_compaction_when_it_has_higher_score() {
     assert_eq!(first.task_id(), Some(compaction.task_id()));
     assert_eq!(first.task_kind(), MaintenanceTaskKind::Compaction);
     assert_eq!(first.status(), MaintenanceOutcomeStatus::Completed);
-    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 0);
+    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 4);
     assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 2);
 
     let second = runtime
+        .run_next_table_rewrite_maintenance()
+        .expect("run follow-up table rewrite")
+        .expect("follow-up rewrite outcome");
+    assert_eq!(second.task_kind(), MaintenanceTaskKind::Compaction);
+    assert_eq!(second.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 0);
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    let third = runtime
         .run_next_materialization_maintenance()
         .expect("run materialization")
         .expect("materialization outcome");
-    assert_eq!(second.task_id(), Some(materialization.task_id()));
-    assert_eq!(second.task_kind(), MaintenanceTaskKind::Materialization);
+    assert_eq!(third.task_id(), Some(materialization.task_id()));
+    assert_eq!(third.task_kind(), MaintenanceTaskKind::Materialization);
 }
 
 #[test]
@@ -3937,16 +4098,17 @@ fn storage_pressure_perf_trace_records_level_specific_targets() {
         pressure.reason(),
         LifecycleStoragePressureReason::NonZeroLevelTableBacklog
     );
-    assert_eq!(perf.lifecycle_compaction_level_target_evaluations(), 3);
+    assert_eq!(perf.lifecycle_compaction_level_target_evaluations(), 4);
     assert_eq!(
         perf.lifecycle_compaction_level_target_level_sum(),
-        1 + 2 + 3
+        1 + 2 + 3 + 4
     );
     assert_eq!(
         perf.lifecycle_compaction_level_target_bytes(),
         nonzero_level_target_bytes(BranchLevel::new(1))
             + nonzero_level_target_bytes(BranchLevel::new(2))
             + nonzero_level_target_bytes(BranchLevel::new(3))
+            + nonzero_level_target_bytes(BranchLevel::new(4))
     );
     assert_ne!(
         nonzero_level_target_bytes(BranchLevel::new(1)),
