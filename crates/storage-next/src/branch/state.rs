@@ -10,7 +10,8 @@ use super::read::{
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
 use crate::table::{
-    FrozenTable, MutableTable, TableIdentity, TableInternalKeyBytes, TableRuntimeError,
+    FrozenTable, MutableTable, TableIdentity, TableInternalKeyBytes, TablePhysicalKeyBytes,
+    TableRuntimeError,
 };
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -68,6 +69,7 @@ pub(crate) struct BranchLocalState {
     active: MutableTable,
     frozen: Vec<FrozenTable>,
     owned_levels: Vec<Vec<BranchOwnedTable>>,
+    compact_pointers: Vec<Option<TablePhysicalKeyBytes>>,
     inherited_layers: Vec<BranchInheritedLayer>,
     max_commit_version: Option<CommitVersion>,
     timestamp_min: Option<Timestamp>,
@@ -89,6 +91,7 @@ impl BranchLocalState {
             active: MutableTable::new(),
             frozen: Vec::new(),
             owned_levels: vec![Vec::new(); config.max_level_count()],
+            compact_pointers: vec![None; config.max_level_count()],
             inherited_layers: Vec::new(),
             max_commit_version: None,
             timestamp_min: None,
@@ -102,6 +105,23 @@ impl BranchLocalState {
     pub(crate) fn empty(branch_id: BranchId) -> Self {
         Self::new(branch_id, BranchRuntimeConfig::default())
             .expect("default branch-local state configuration is valid")
+    }
+
+    pub(crate) fn compact_pointer(&self, level: BranchLevel) -> Option<&TablePhysicalKeyBytes> {
+        self.compact_pointers
+            .get(usize::from(level.raw()))
+            .and_then(Option::as_ref)
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn set_compact_pointer_for_test(
+        &mut self,
+        level: BranchLevel,
+        pointer: Option<TablePhysicalKeyBytes>,
+    ) {
+        if let Some(slot) = self.compact_pointers.get_mut(usize::from(level.raw())) {
+            *slot = pointer;
+        }
     }
 
     pub(crate) fn reachability_snapshot(&self) -> BranchRuntimeResult<BranchReachabilitySnapshot> {

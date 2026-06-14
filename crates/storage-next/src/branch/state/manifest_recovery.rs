@@ -150,6 +150,9 @@ impl BranchLocalState {
         staged
             .owned_levels
             .resize_with(self.config.max_level_count(), Vec::new);
+        staged
+            .compact_pointers
+            .resize_with(self.config.max_level_count(), || None);
         staged.inherited_layers = request.inherited_layers;
         staged.timestamp_coverage = request.timestamp_coverage;
         compaction::validate_compaction_levels(&staged.owned_levels)?;

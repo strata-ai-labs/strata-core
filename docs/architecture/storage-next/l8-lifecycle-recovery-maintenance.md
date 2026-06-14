@@ -79,11 +79,14 @@ small. Table compaction output target bytes are separate from level pressure
 target bytes; table output sizing remains owned by the table runtime compaction
 configuration.
 
-Queued nonzero compaction selects the deterministic largest current input table
-for the requested level. The tie-breaker is byte count descending, row count
-descending, then lower table index first. Stateless maintenance-task conversion
-is only allowed to build L0 compaction requests; nonzero queued execution must
-inspect current branch state before producing a branch compaction request.
+Queued nonzero compaction uses a compact pointer for each nonzero level. It
+selects the first table whose max physical key is greater than the pointer and
+wraps to the first table when all current tables are at or before the pointer.
+Ordinary write-pressure scoring skips the final configured level; bottommost
+consolidation is only selected by an explicit level-scoped maintenance task.
+Stateless maintenance-task conversion is only allowed to build L0 compaction
+requests; nonzero queued execution must inspect current branch state before
+producing a branch compaction request.
 
 Grandparent-overlap output split budgeting remains owned by the lower branch and
 table compaction layers. L8 records deeper-overlap bytes and a deferred

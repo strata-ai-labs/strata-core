@@ -621,6 +621,7 @@ impl BranchLocalState {
             &self.inherited_layers,
         )?;
         self.require_candidate_current(candidate)?;
+        let compact_pointer = self.next_compact_pointer_after_success(request.kind(), candidate);
 
         let mut replacement_levels = self.owned_levels.clone();
         remove_compacted_tables(&mut replacement_levels, candidate)?;
@@ -628,6 +629,7 @@ impl BranchLocalState {
         validate_compaction_levels(&replacement_levels)?;
 
         self.owned_levels = replacement_levels;
+        self.advance_compact_pointer(compact_pointer);
         self.refresh_observed_row_facts();
         if report.dropped_rows() != 0 {
             if let Some(floor) = request
@@ -670,6 +672,7 @@ impl BranchLocalState {
 
         let promoted_table = self.promoted_compaction_table(candidate)?;
         let output_identity = promoted_table.descriptor().identity().clone();
+        let compact_pointer = self.next_compact_pointer_after_success(request.kind(), candidate);
         let mut replacement_levels = self.owned_levels.clone();
         remove_compacted_tables(&mut replacement_levels, candidate)?;
         validate_promoted_table_identity(
@@ -681,6 +684,7 @@ impl BranchLocalState {
         validate_compaction_levels(&replacement_levels)?;
 
         self.owned_levels = replacement_levels;
+        self.advance_compact_pointer(compact_pointer);
         self.refresh_observed_row_facts();
 
         let output_refs =
@@ -1401,6 +1405,37 @@ impl BranchLocalState {
             })
             .collect()
     }
+
+    fn next_compact_pointer_after_success(
+        &self,
+        kind: BranchCompactionKind,
+        candidate: &BranchCompactionCandidate,
+    ) -> Option<(BranchLevel, TablePhysicalKeyBytes)> {
+        let BranchCompactionKind::CompactLevel { level, .. } = kind else {
+            return None;
+        };
+        let input_ref = candidate.input_refs().first()?;
+        if input_ref.level() != level {
+            return None;
+        }
+        self.table_for_candidate_ref(candidate, input_ref)
+            .and_then(table_physical_last_key)
+            .map(|pointer| (level, pointer))
+    }
+
+    fn advance_compact_pointer(&mut self, pointer: Option<(BranchLevel, TablePhysicalKeyBytes)>) {
+        let Some((level, pointer)) = pointer else {
+            return;
+        };
+        if let Some(slot) = self.compact_pointers.get_mut(usize::from(level.raw())) {
+            *slot = Some(pointer);
+        }
+    }
+}
+
+fn table_physical_last_key(table: &BranchOwnedTable) -> Option<TablePhysicalKeyBytes> {
+    let last_key = table.facts().key_range().last_key();
+    (!last_key.is_empty()).then(|| TablePhysicalKeyBytes::from_encoded_internal_key(last_key))
 }
 
 fn table_source_metadata_hash(

@@ -373,8 +373,11 @@ fn compaction_shape_semantic_decisions_are_recorded() {
         "multiplies the previous target by 10",
         "clamp the base between 1 MiB and 256 MiB",
         "Table compaction output target bytes are separate from level pressure target bytes",
-        "deterministic largest current input table",
-        "byte count descending, row count descending, then lower table index first",
+        "compact pointer for each nonzero level",
+        "first table whose max physical key is greater than the pointer",
+        "wraps to the first table",
+        "Ordinary write-pressure scoring skips the final configured level",
+        "bottommost consolidation is only selected by an explicit level-scoped maintenance task",
         "lower branch and table compaction layers",
         "deferred split-budget fact",
     ] {

@@ -2113,7 +2113,7 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         perf_trace.lifecycle_compaction_nonzero_input_rows()
     );
     field!(
-        "lifecycle_compaction_largest_input_selections",
+        "lifecycle_compaction_nonzero_input_pointer_selections",
         perf_trace.lifecycle_compaction_largest_input_selections()
     );
     field!(
@@ -2860,7 +2860,7 @@ fn source_shape_metrics_json(
             "table_index_sum": perf_trace.lifecycle_compaction_nonzero_input_table_index_sum(),
             "bytes": perf_trace.lifecycle_compaction_nonzero_input_bytes(),
             "rows": perf_trace.lifecycle_compaction_nonzero_input_rows(),
-            "largest_input_selections": perf_trace.lifecycle_compaction_largest_input_selections(),
+            "pointer_selections": perf_trace.lifecycle_compaction_largest_input_selections(),
         },
         "operation_kinds": {
             "l0": perf_trace.lifecycle_compaction_l0_operations(),
@@ -4436,7 +4436,7 @@ mod tests {
             "lifecycle_compaction_nonzero_input_table_index_sum",
             "lifecycle_compaction_nonzero_input_bytes",
             "lifecycle_compaction_nonzero_input_rows",
-            "lifecycle_compaction_largest_input_selections",
+            "lifecycle_compaction_nonzero_input_pointer_selections",
             "table_compaction_merge_ns",
             "table_compaction_merge_input_rows",
             "table_compaction_merge_ns_per_input_row",
