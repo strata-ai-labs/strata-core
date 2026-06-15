@@ -117,6 +117,7 @@ pub struct StoragePerfSnapshot {
     lifecycle_write_admission_pressure_cleared_retries: u64,
     lifecycle_write_admission_wait_attempts: u64,
     lifecycle_write_admission_wait_timeouts: u64,
+    lifecycle_write_admission_wait_progress_resets: u64,
     lifecycle_pressure_clear_wakes: u64,
     lifecycle_pressure_collection_calls: u64,
     lifecycle_pressure_collection_branches_inspected: u64,
@@ -169,6 +170,7 @@ pub struct StoragePerfSnapshot {
     lifecycle_background_task_snapshot_lock_ns: u64,
     lifecycle_background_task_unlocked_build_ns: u64,
     lifecycle_background_task_publish_lock_ns: u64,
+    lifecycle_background_publish_manifest_persist_ns: u64,
     lifecycle_background_task_total_ns: u64,
     lifecycle_background_candidate_stale_deferred: u64,
     lifecycle_foreground_wait_background_lock_ns: u64,
@@ -708,6 +710,11 @@ impl StoragePerfSnapshot {
     pub const fn lifecycle_write_admission_wait_timeouts(self) -> u64 {
         self.lifecycle_write_admission_wait_timeouts
     }
+    /// Pressure waits whose stall watchdog was reset because background
+    /// maintenance completed a task (made progress) during the wait slice.
+    pub const fn lifecycle_write_admission_wait_progress_resets(self) -> u64 {
+        self.lifecycle_write_admission_wait_progress_resets
+    }
 
     /// Notifications emitted after storage pressure cleared.
     pub const fn lifecycle_pressure_clear_wakes(self) -> u64 {
@@ -967,6 +974,12 @@ impl StoragePerfSnapshot {
     /// Nanoseconds spent holding the runtime lock while publishing background task output.
     pub const fn lifecycle_background_task_publish_lock_ns(self) -> u64 {
         self.lifecycle_background_task_publish_lock_ns
+    }
+    /// Nanoseconds spent persisting the table manifest (durable write + fsync)
+    /// within the locked publish window; subtract from publish-lock time to
+    /// attribute the in-memory pointer/state swap.
+    pub const fn lifecycle_background_publish_manifest_persist_ns(self) -> u64 {
+        self.lifecycle_background_publish_manifest_persist_ns
     }
 
     /// Total nanoseconds spent by split background maintenance tasks.
@@ -2397,6 +2410,8 @@ static LIFECYCLE_WRITE_ADMISSION_WAIT_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_WAIT_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_WRITE_ADMISSION_WAIT_PROGRESS_RESETS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_PRESSURE_CLEAR_WAKES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_PRESSURE_COLLECTION_CALLS: AtomicU64 = AtomicU64::new(0);
@@ -2500,6 +2515,8 @@ static LIFECYCLE_BACKGROUND_TASK_SNAPSHOT_LOCK_NS: AtomicU64 = AtomicU64::new(0)
 static LIFECYCLE_BACKGROUND_TASK_UNLOCKED_BUILD_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_PUBLISH_MANIFEST_PERSIST_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_BACKGROUND_TASK_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -3154,6 +3171,7 @@ pub fn reset() {
     LIFECYCLE_WRITE_ADMISSION_PRESSURE_CLEARED_RETRIES.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_WAIT_ATTEMPTS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_WAIT_TIMEOUTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_WRITE_ADMISSION_WAIT_PROGRESS_RESETS.store(0, Ordering::Relaxed);
     LIFECYCLE_PRESSURE_CLEAR_WAKES.store(0, Ordering::Relaxed);
     LIFECYCLE_PRESSURE_COLLECTION_CALLS.store(0, Ordering::Relaxed);
     LIFECYCLE_PRESSURE_COLLECTION_BRANCHES_INSPECTED.store(0, Ordering::Relaxed);
@@ -3206,6 +3224,7 @@ pub fn reset() {
     LIFECYCLE_BACKGROUND_TASK_SNAPSHOT_LOCK_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_TASK_UNLOCKED_BUILD_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_PUBLISH_MANIFEST_PERSIST_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_TASK_TOTAL_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_CANDIDATE_STALE_DEFERRED.store(0, Ordering::Relaxed);
     LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS.store(0, Ordering::Relaxed);
@@ -3566,6 +3585,8 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         lifecycle_write_admission_wait_timeouts: LIFECYCLE_WRITE_ADMISSION_WAIT_TIMEOUTS
             .load(Ordering::Relaxed),
+        lifecycle_write_admission_wait_progress_resets:
+            LIFECYCLE_WRITE_ADMISSION_WAIT_PROGRESS_RESETS.load(Ordering::Relaxed),
         lifecycle_pressure_clear_wakes: LIFECYCLE_PRESSURE_CLEAR_WAKES.load(Ordering::Relaxed),
         lifecycle_pressure_collection_calls: LIFECYCLE_PRESSURE_COLLECTION_CALLS
             .load(Ordering::Relaxed),
@@ -3666,6 +3687,8 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         lifecycle_background_task_publish_lock_ns: LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS
             .load(Ordering::Relaxed),
+        lifecycle_background_publish_manifest_persist_ns:
+            LIFECYCLE_BACKGROUND_PUBLISH_MANIFEST_PERSIST_NS.load(Ordering::Relaxed),
         lifecycle_background_task_total_ns: LIFECYCLE_BACKGROUND_TASK_TOTAL_NS
             .load(Ordering::Relaxed),
         lifecycle_background_candidate_stale_deferred:
@@ -4701,6 +4724,17 @@ pub(crate) fn record_lifecycle_write_admission_wait_timeout() {
 }
 
 #[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_write_admission_wait_progress_reset() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_write_admission_wait_progress_reset() {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_WRITE_ADMISSION_WAIT_PROGRESS_RESETS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
 #[allow(
     dead_code,
     reason = "pressure-clear wakeups are not implemented by the current fail-fast policy"
@@ -5012,6 +5046,21 @@ pub(crate) fn record_lifecycle_background_task_publish_lock(duration: std::time:
         return;
     }
     LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS.fetch_add(
+        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_publish_manifest_persist(_duration: std::time::Duration) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_publish_manifest_persist(duration: std::time::Duration) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_PUBLISH_MANIFEST_PERSIST_NS.fetch_add(
         u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
         Ordering::Relaxed,
     );

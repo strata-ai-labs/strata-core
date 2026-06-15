@@ -905,19 +905,6 @@ impl BackgroundRuntimeController {
     }
 }
 
-fn background_pressure_wait_should_continue_for_progress(
-    progressed: bool,
-    lifecycle_pending_tasks: usize,
-    lifecycle_active_task: bool,
-    no_relief_rounds: &mut usize,
-) -> bool {
-    if lifecycle_active_task || (progressed && lifecycle_pending_tasks > 0) {
-        *no_relief_rounds = 0;
-        return true;
-    }
-    false
-}
-
 impl Clone for BackgroundRuntimeController {
     fn clone(&self) -> Self {
         Self {
@@ -1006,40 +993,6 @@ mod background_controller_tests {
             ran_while_normal_active,
             "high-priority wake should be submitted while normal-priority drain is still active"
         );
-    }
-
-    #[test]
-    fn pressure_wait_keeps_waiting_when_progress_leaves_pending_work() {
-        let mut no_relief_rounds = usize::MAX;
-        assert!(background_pressure_wait_should_continue_for_progress(
-            true,
-            1,
-            false,
-            &mut no_relief_rounds,
-        ));
-        assert_eq!(no_relief_rounds, 0);
-
-        no_relief_rounds = usize::MAX;
-        assert!(background_pressure_wait_should_continue_for_progress(
-            false,
-            0,
-            true,
-            &mut no_relief_rounds,
-        ));
-        assert_eq!(no_relief_rounds, 0);
-
-        assert!(!background_pressure_wait_should_continue_for_progress(
-            true,
-            0,
-            false,
-            &mut no_relief_rounds,
-        ));
-        assert!(!background_pressure_wait_should_continue_for_progress(
-            false,
-            1,
-            false,
-            &mut no_relief_rounds,
-        ));
     }
 
     fn throttle_observation(
@@ -3493,7 +3446,6 @@ impl<'a> StorageRuntime<'a> {
 
         let runtime_timer = perf_trace::start_timer();
         let mut pressure_wait_deadline = None;
-        let mut pressure_no_relief_rounds = 0;
         loop {
             let (outcome_result, admission, pending_tasks, wal_growth) = match &mut self.inner {
                 StorageRuntimeInner::Cache(slot) => {
@@ -3552,7 +3504,6 @@ impl<'a> StorageRuntime<'a> {
                     if self.background_wait_after_pressure_rejection(
                         &error,
                         &mut pressure_wait_deadline,
-                        &mut pressure_no_relief_rounds,
                     ) => {}
                 Err(error) => {
                     perf_trace::record_api_commit_runtime_elapsed(runtime_timer);
@@ -3772,7 +3723,6 @@ impl<'a> StorageRuntime<'a> {
         &mut self,
         error: &LifecycleError,
         deadline: &mut Option<MaintenanceInstant>,
-        no_relief_rounds: &mut usize,
     ) -> bool {
         let LifecycleError::StoragePressureRejected {
             branch_id,
@@ -3803,23 +3753,26 @@ impl<'a> StorageRuntime<'a> {
         let wait_deadline = now
             .saturating_add(block_wait.wait_slice)
             .min(stall_deadline);
-        let pending_tasks =
-            self.enqueue_pressure_maintenance_for_background_wait(*branch_id, *pressure_reason);
+        // Ensure the maintenance this pressure needs is enqueued before we wait
+        // on it (forced flush for FrozenBacklog, forced compaction for
+        // LevelZeroTableBacklog); the writer is then paced on its progress
+        // rather than rejected for lack of immediately-visible work.
+        self.enqueue_pressure_maintenance_for_background_wait(*branch_id, *pressure_reason);
         let Some(stats_before_wait) = self.background_stats_for_current_runtime() else {
             return false;
         };
-        if pending_tasks
-            .saturating_add(stats_before_wait.queue_depth)
-            .saturating_add(stats_before_wait.active_tasks)
-            == 0
-        {
-            return false;
-        }
         let pressure_before_wait = self.background_pressure_snapshot_for_branch(*branch_id);
         let completed_before_wait = stats_before_wait.tasks_completed;
+        let lifecycle_completed_before = self.background_lifecycle_completed_for_current_runtime();
         let wait_start = self.background_now_for_current_runtime().unwrap_or(now);
         self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
-        let progressed = match &self.inner {
+        // Drive the background drain for one bounded slice (and advance the
+        // manual clock under deterministic simulation). The executor-level
+        // "progressed" flag is intentionally discarded: it reports true when the
+        // executor is merely idle, which is not real maintenance progress. The
+        // watchdog reset below is gated on the lifecycle maintenance completion
+        // count and the pressure snapshot instead.
+        let _drove_drain = match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
                 slot.wait_background_progress_until(completed_before_wait, wait_deadline)
             }
@@ -3837,31 +3790,27 @@ impl<'a> StorageRuntime<'a> {
             .saturating_duration_since(wait_start);
         perf_trace::record_lifecycle_write_admission_block_wait(wait_elapsed);
         let pressure_after_wait = self.background_pressure_snapshot_for_branch(*branch_id);
-        if pressure_before_wait
+        let backlog_reduced = pressure_before_wait
             .zip(pressure_after_wait)
-            .is_some_and(|(before, after)| after.relieved_since(before, *pressure_reason))
-        {
+            .is_some_and(|(before, after)| after.relieved_since(before, *pressure_reason));
+        let maintenance_completed_task =
+            self.background_lifecycle_completed_for_current_runtime() > lifecycle_completed_before;
+        if backlog_reduced || maintenance_completed_task {
+            // The executor is alive and making real maintenance progress (it
+            // completed a maintenance task, or the backlog shrank this slice).
+            // Reset the stall watchdog so a sustained overload that maintenance
+            // can service keeps pacing the writer instead of timing out on an
+            // absolute clock. The top-of-function `now >= stall_deadline` check
+            // then fires only after a full window with zero maintenance
+            // completions and no backlog reduction — a provably dead or stuck
+            // executor (the bounded liveness backstop).
             *deadline = None;
-            *no_relief_rounds = 0;
-            return true;
+            perf_trace::record_lifecycle_write_admission_wait_progress_reset();
         }
-        let (lifecycle_pending_tasks, lifecycle_active_task) = self
-            .background_lifecycle_work_for_current_runtime()
-            .unwrap_or((0, false));
-        if background_pressure_wait_should_continue_for_progress(
-            progressed,
-            lifecycle_pending_tasks,
-            lifecycle_active_task,
-            no_relief_rounds,
-        ) {
-            return true;
-        }
-        if progressed {
-            perf_trace::record_lifecycle_write_admission_wait_timeout();
-            return false;
-        }
-        perf_trace::record_lifecycle_write_admission_wait_timeout();
-        false
+        // Keep pacing the writer in wait-slices; the sole give-up is the
+        // top-of-function watchdog. Backlog that maintenance is still working
+        // through is throttled, never converted into a rejection.
+        true
     }
 
     fn background_wait_after_wal_growth_enqueue(
@@ -4024,6 +3973,17 @@ impl<'a> StorageRuntime<'a> {
                     let _ = runtime
                         .enqueue_maintenance(LifecycleMaintenanceTaskRequest::flush(branch_id));
                 }
+                // Symmetric to the forced flush above: an L0 backlog that blocks
+                // admission must have its L0->L1 compaction enqueued before the
+                // wait path can give up, so the writer is paced on real
+                // maintenance progress rather than rejected for lack of a task.
+                if pressure_reason == LifecycleStoragePressureReason::LevelZeroTableBacklog
+                    && runtime.maintenance_status().pending_tasks() == 0
+                {
+                    let _ = runtime.enqueue_maintenance(
+                        LifecycleMaintenanceTaskRequest::compaction(branch_id, 0),
+                    );
+                }
                 runtime.maintenance_status().pending_tasks()
             }
             StorageRuntimeInner::DurableOwned(slot) => {
@@ -4034,6 +3994,17 @@ impl<'a> StorageRuntime<'a> {
                 {
                     let _ = runtime
                         .enqueue_maintenance(LifecycleMaintenanceTaskRequest::flush(branch_id));
+                }
+                // Symmetric to the forced flush above: an L0 backlog that blocks
+                // admission must have its L0->L1 compaction enqueued before the
+                // wait path can give up, so the writer is paced on real
+                // maintenance progress rather than rejected for lack of a task.
+                if pressure_reason == LifecycleStoragePressureReason::LevelZeroTableBacklog
+                    && runtime.maintenance_status().pending_tasks() == 0
+                {
+                    let _ = runtime.enqueue_maintenance(
+                        LifecycleMaintenanceTaskRequest::compaction(branch_id, 0),
+                    );
                 }
                 runtime.maintenance_status().pending_tasks()
             }

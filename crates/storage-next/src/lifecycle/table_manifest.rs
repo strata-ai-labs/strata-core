@@ -377,9 +377,12 @@ pub(crate) fn publish_table_manifest_for_branch_with_budget(
             "table manifest exceeds manifest catalog budget",
         )?;
     }
-    let write = service
-        .publish_replace_manifest(branch.branch_id(), &manifest)
-        .map_err(table_manifest_service_error)?;
+    let persist_start = crate::observability::perf_trace::start_timer();
+    let write_result = service.publish_replace_manifest(branch.branch_id(), &manifest);
+    crate::observability::perf_trace::record_lifecycle_background_publish_manifest_persist(
+        crate::observability::perf_trace::timer_elapsed(persist_start),
+    );
+    let write = write_result.map_err(table_manifest_service_error)?;
     catalog.record_manifest(write.manifest())?;
     Ok(write)
 }

@@ -1157,7 +1157,7 @@ fn source_guard_background_drive_logic_uses_maintenance_clock() {
 }
 
 #[test]
-fn source_guard_pressure_wait_counts_executor_queue_and_active_tasks() {
+fn source_guard_pressure_wait_gates_watchdog_reset_on_real_maintenance_progress() {
     let runtime_source = include_str!("../runtime.rs");
     let pressure_wait = runtime_source
         .split("fn background_wait_after_pressure_rejection")
@@ -1166,13 +1166,19 @@ fn source_guard_pressure_wait_counts_executor_queue_and_active_tasks() {
         .split("fn enqueue_pressure_maintenance_for_background_wait")
         .next()
         .expect("pressure wait precedes enqueue helper");
-    let compact_wait = pressure_wait.split_whitespace().collect::<String>();
 
+    // The stall watchdog may reset only on real maintenance progress: the
+    // lifecycle maintenance completion count advancing, or the backlog shrinking.
+    // It must not reset on the executor-level "progressed" flag, which reports
+    // true when the executor is merely idle and would let a dead/stuck executor
+    // reset the watchdog forever (an unbounded hang).
     assert!(
-        compact_wait.contains(
-            "pending_tasks.saturating_add(stats_before_wait.queue_depth).saturating_add(stats_before_wait.active_tasks)==0"
-        ),
-        "pressure wait must treat executor queued and active work as in-flight maintenance"
+        pressure_wait.contains("background_lifecycle_completed_for_current_runtime"),
+        "pressure wait must gate progress on the lifecycle maintenance completion count"
+    );
+    assert!(
+        pressure_wait.contains("record_lifecycle_write_admission_wait_progress_reset"),
+        "pressure wait must record when the stall watchdog is reset on progress"
     );
 }
 
@@ -4651,4 +4657,268 @@ fn outcome_summaries_expose_stored_fields() {
     assert_eq!(commit.branch_id(), branch_id(6));
     assert_eq!(commit.commit_version(), CommitVersion::new(7));
     assert_eq!(commit.commit_timestamp(), Timestamp::from_micros(8));
+}
+
+// ----------------------------------------------------------------------------
+// Durable write-admission liveness.
+//
+// Durable mode must survive a sustained mutating load that outpaces maintenance
+// by bounded backpressure, never by rejecting commits while maintenance is
+// alive — and a genuinely dead/stuck executor must still surface a typed,
+// bounded failure rather than hang. These tests drive the durable inline
+// background driver under a manual clock so the stall watchdog, wait slice, and
+// progress reset are all evaluated deterministically without real time.
+// ----------------------------------------------------------------------------
+
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+fn open_durable_inline_for_admission_test(name: &str) -> StorageRuntime<'static> {
+    let backend = Box::leak(Box::new(StorageBackend::local_fs(temp_dir_for_api_test(
+        name,
+    ))));
+    StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_maintenance_scheduling_policy(
+                StorageMaintenanceSchedulingPolicy::DeterministicInline,
+            ),
+        backend,
+    )
+    .expect("durable deterministic-inline open should use owned inline background driver")
+    .into_runtime()
+}
+
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+fn seed_frozen_backlog(runtime: &mut StorageRuntime, prefix: &str, count: usize) {
+    for index in 0..count {
+        let key = format!("{prefix}-{index}");
+        runtime
+            .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))
+            .expect("seed active row before rotation");
+        runtime
+            .rotate_default_branch_for_test()
+            .expect("rotate active into a frozen table");
+    }
+}
+
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+#[test]
+fn durable_write_admission_liveness_completes_overload_and_records_manifest_persist() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = open_durable_inline_for_admission_test("durable-liveness-overload");
+    assert!(
+        runtime.set_background_block_wait_for_test(
+            std::time::Duration::from_millis(25),
+            std::time::Duration::from_millis(250),
+            1,
+        ),
+        "durable inline background runtime should expose test block wait limits"
+    );
+
+    seed_frozen_backlog(&mut runtime, "durable-liveness-frozen", 16);
+
+    // Blocking FrozenBacklog pressure. Previously this was converted into a
+    // retryable rejection; the writer must instead be paced until maintenance
+    // drains the backlog, then admitted.
+    runtime
+        .commit(&background_put_batch(
+            b"durable-liveness-followup",
+            b"value".to_vec(),
+        ))
+        .expect("sustained backlog must pace the writer and complete, never reject");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_write_admission_wait_attempts() >= 1);
+    assert_eq!(
+        perf.lifecycle_write_admission_wait_timeouts(),
+        0,
+        "a live, progressing executor must never time out the writer"
+    );
+    assert!(perf.lifecycle_background_tasks_completed() >= 1);
+    // The background flush published a table manifest, and the durable
+    // manifest-persist sub-cost is attributable and bounded by the publish-lock
+    // window (the baseline for the later publish/manifest decoupling work).
+    assert!(
+        perf.lifecycle_background_publish_manifest_persist_ns() > 0,
+        "durable flush publish must record manifest-persist time"
+    );
+    assert!(
+        perf.lifecycle_background_publish_manifest_persist_ns()
+            <= perf.lifecycle_background_task_publish_lock_ns(),
+        "manifest persist runs inside the publish-lock window"
+    );
+}
+
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+#[test]
+fn durable_write_admission_liveness_resets_stall_deadline_on_progress() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = open_durable_inline_for_admission_test("durable-liveness-reset");
+    // One maintenance task per drain round so the writer is paced across more
+    // than one wait slice while maintenance drains the backlog.
+    assert!(
+        runtime.set_background_drain_limits_for_test(1, std::time::Duration::from_secs(1)),
+        "durable inline background runtime should expose test drain limits"
+    );
+    assert!(runtime.set_background_block_wait_for_test(
+        std::time::Duration::from_millis(25),
+        std::time::Duration::from_millis(250),
+        1,
+    ));
+
+    seed_frozen_backlog(&mut runtime, "durable-reset-frozen", 16);
+
+    // Blocking pressure. The commit must be paced through several wait slices and
+    // complete; each maintenance completion / backlog reduction resets the stall
+    // watchdog. (The paired dead-executor test proves the watchdog still fires
+    // when there is no progress, so success here is gated on real liveness, not
+    // an absolute clock.)
+    runtime
+        .commit(&background_put_batch(
+            b"durable-reset-followup",
+            b"value".to_vec(),
+        ))
+        .expect("maintenance progress must keep resetting the watchdog and complete");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(
+        perf.lifecycle_write_admission_wait_attempts() >= 1,
+        "the commit must actually have waited on pressure"
+    );
+    assert!(
+        perf.lifecycle_write_admission_block_wait_ns() > 0,
+        "the writer was paced (block-waited), not admitted immediately"
+    );
+    assert_eq!(
+        perf.lifecycle_write_admission_wait_timeouts(),
+        0,
+        "progress must prevent the watchdog from firing"
+    );
+    assert!(
+        perf.lifecycle_write_admission_wait_progress_resets() >= 1,
+        "maintenance progress must reset the stall watchdog at least once"
+    );
+}
+
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+#[test]
+fn durable_write_admission_liveness_dead_executor_rejects_after_bounded_window() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = open_durable_inline_for_admission_test("durable-liveness-dead");
+    // No task may run: the executor makes zero progress, modelling a dead/stuck
+    // executor.
+    assert!(runtime.set_background_drain_limits_for_test(0, std::time::Duration::from_millis(25)));
+    assert!(runtime.set_background_block_wait_for_test(
+        std::time::Duration::from_millis(25),
+        std::time::Duration::from_millis(250),
+        1,
+    ));
+
+    seed_frozen_backlog(&mut runtime, "durable-dead-frozen", 16);
+
+    let before = runtime
+        .background_now_for_test()
+        .expect("inline background runtime exposes manual clock");
+    let error = runtime
+        .commit(&background_put_batch(
+            b"durable-dead-followup",
+            b"value".to_vec(),
+        ))
+        .expect_err("a dead executor must surface a bounded typed failure, not hang");
+    let after = runtime
+        .background_now_for_test()
+        .expect("inline background runtime exposes manual clock");
+
+    assert!(
+        matches!(
+            error,
+            StorageApiError::StoragePressure {
+                severity: CommitAdmissionPressureSeverity::Blocking,
+                retryable: true,
+                ..
+            }
+        ),
+        "expected a typed retryable blocking storage-pressure rejection"
+    );
+    assert_eq!(
+        error.code(),
+        "failed_precondition.storage_api.storage_pressure"
+    );
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 1);
+    assert_eq!(
+        perf.lifecycle_write_admission_wait_progress_resets(),
+        0,
+        "a dead executor never makes progress, so the watchdog never resets"
+    );
+    assert!(
+        after.saturating_duration_since(before) >= std::time::Duration::from_millis(250),
+        "the backstop must wait the full liveness window before failing"
+    );
+}
+
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+#[test]
+fn durable_write_admission_liveness_level_zero_backlog_completes_via_forced_compaction() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = open_durable_inline_for_admission_test("durable-liveness-l0");
+    assert!(runtime.set_background_block_wait_for_test(
+        std::time::Duration::from_millis(25),
+        std::time::Duration::from_millis(500),
+        1,
+    ));
+
+    // Build a blocking L0 backlog: each flush turns one frozen memtable into one
+    // owned level-zero table.
+    for index in 0..16 {
+        let key = format!("durable-level-zero-{index}");
+        runtime
+            .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))
+            .expect("seed active row before flush");
+        runtime
+            .flush_default_branch_for_test()
+            .expect("flush a frozen memtable into a level-zero table");
+    }
+
+    // LevelZeroTableBacklog blocking pressure. The wait path must have an
+    // L0->L1 compaction enqueued (symmetric to the FrozenBacklog forced flush)
+    // so the writer is paced on real compaction progress, not rejected.
+    runtime
+        .commit(&background_put_batch(
+            b"durable-level-zero-followup",
+            b"value".to_vec(),
+        ))
+        .expect("level-zero backlog must enqueue compaction and complete");
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert!(perf.lifecycle_write_admission_wait_attempts() >= 1);
+    assert_eq!(
+        perf.lifecycle_write_admission_wait_timeouts(),
+        0,
+        "level-zero backlog with live compaction must complete, never reject"
+    );
+    assert!(perf.lifecycle_background_tasks_completed() >= 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn durable_admission_changes_do_not_disturb_cache_absence_counters() {
+    // Cache regression guard: the durable liveness/publish changes must not leak
+    // background maintenance, admission waits, or manifest persistence into the
+    // volatile cache path.
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+        .expect("cache open")
+        .into_runtime();
+    for index in 0..64 {
+        let key = format!("durable-cache-regression-{index}");
+        runtime
+            .commit(&background_put_batch(key.as_bytes(), b"value".to_vec()))
+            .expect("cache commit");
+    }
+
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_background_tasks_completed(), 0);
+    assert_eq!(perf.lifecycle_write_admission_wait_attempts(), 0);
+    assert_eq!(perf.lifecycle_write_admission_wait_progress_resets(), 0);
+    assert_eq!(perf.lifecycle_background_publish_manifest_persist_ns(), 0);
 }
