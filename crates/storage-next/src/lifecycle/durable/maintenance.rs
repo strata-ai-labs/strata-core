@@ -2266,7 +2266,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                     DurableBackgroundMaintenanceBuild::Materialization {
                         task,
                         branch_id,
-                        build,
+                        build: *build,
                         table_object: self.services.table_object().clone(),
                         table_reader: self.services.table_reader().clone(),
                         budget: self.budget.clone(),

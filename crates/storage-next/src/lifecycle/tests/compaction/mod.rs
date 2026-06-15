@@ -2256,7 +2256,7 @@ fn nonzero_compaction_uses_pointer_candidate_and_keeps_overlap_selection() {
     );
     let output_keys = state.owned_levels()[usize::from(next_level.raw())]
         .iter()
-        .flat_map(|table| table.rows())
+        .flat_map(crate::branch::read::BranchOwnedTable::rows)
         .map(|row| row.physical_key().user_key().to_vec())
         .collect::<Vec<_>>();
     for expected in [b"a-000".as_slice(), b"b-000", b"l-999", b"m-999"] {
@@ -2372,68 +2372,6 @@ fn queued_cache_compaction_moves_only_the_requested_table_level() {
 }
 
 #[test]
-fn scheduler_enqueues_nonzero_level_compaction_with_selected_level() {
-    let branch = branch_id(0x6a);
-    let mut runtime = cache_runtime(branch);
-    {
-        let state = runtime
-            .branch_catalog_mut_for_test()
-            .branch_state_mut(
-                branch,
-                crate::commit::CommitBranchGenerationGuard::exact(
-                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
-                ),
-            )
-            .expect("branch state");
-        for index in 0_u64..4 {
-            install_owned_table(
-                state,
-                branch,
-                BranchLevel::new(1),
-                &format!("scheduled-nonzero-input-{index}"),
-                vec![put_row(
-                    branch,
-                    format!("scheduled-nonzero-{index}").as_bytes(),
-                    index + 1,
-                    (index + 1) * 1_000,
-                    b"value",
-                )],
-            );
-        }
-    }
-
-    let pressure = runtime.storage_pressure();
-    assert_eq!(
-        pressure.reason(),
-        LifecycleStoragePressureReason::NonZeroLevelTableBacklog
-    );
-    assert!(matches!(
-        pressure.suggested_task().map(MaintenanceTaskRequest::scope),
-        Some(MaintenanceTaskScope::TableLevel {
-            branch_id,
-            level: 1
-        }) if branch_id == branch
-    ));
-
-    let outcome = runtime.schedule_post_commit_maintenance();
-    assert_eq!(
-        outcome.status(),
-        LifecyclePostCommitMaintenanceStatus::Enqueued
-    );
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
-    let compaction = runtime
-        .run_next_compaction_maintenance()
-        .expect("run compaction")
-        .expect("compaction outcome");
-    let state = runtime.branch_state();
-
-    assert_eq!(compaction.task_kind(), MaintenanceTaskKind::Compaction);
-    assert_eq!(compaction.status(), MaintenanceOutcomeStatus::Completed);
-    assert_eq!(state.owned_levels()[1].len(), 3);
-    assert_eq!(state.owned_levels()[2].len(), 1);
-}
-
-#[test]
 fn compaction_pressure_selects_highest_scored_level() {
     let branch = branch_id(0x6b);
     let mut l0_dominant = BranchLocalState::empty(branch);
@@ -2523,81 +2461,6 @@ fn compaction_pressure_selects_highest_scored_level() {
             level: 1
         }) if branch_id == branch
     ));
-}
-
-#[test]
-fn generated_mixed_pressure_changes_selected_level_after_rewrite() {
-    let branch = branch_id(0x5f);
-    let mut runtime = cache_runtime(branch);
-    {
-        let state = runtime
-            .branch_catalog_mut_for_test()
-            .branch_state_mut(
-                branch,
-                crate::commit::CommitBranchGenerationGuard::exact(
-                    crate::commit::CommitBranchGeneration::new(1).expect("generation"),
-                ),
-            )
-            .expect("branch state");
-        for index in 0_u64..4 {
-            install_l0_table(
-                state,
-                branch,
-                &format!("mixed-pressure-l0-{index}"),
-                vec![put_row(
-                    branch,
-                    format!("mixed-pressure-l0-{index}").as_bytes(),
-                    index + 1,
-                    (index + 1) * 1_000,
-                    b"value",
-                )],
-            );
-        }
-        for index in 0_u64..5 {
-            install_owned_table(
-                state,
-                branch,
-                BranchLevel::new(1),
-                &format!("mixed-pressure-l1-{index}"),
-                vec![put_row(
-                    branch,
-                    format!("mixed-pressure-l1-{index}").as_bytes(),
-                    index + 20,
-                    (index + 20) * 1_000,
-                    b"value",
-                )],
-            );
-        }
-    }
-
-    let first = runtime.storage_pressure();
-    assert!(matches!(
-        first.suggested_task().map(MaintenanceTaskRequest::scope),
-        Some(MaintenanceTaskScope::TableLevel {
-            branch_id,
-            level: 1
-        }) if branch_id == branch
-    ));
-    runtime
-        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 1))
-        .expect("enqueue nonzero compaction");
-
-    let outcome = runtime
-        .run_next_compaction_maintenance()
-        .expect("run nonzero compaction")
-        .expect("nonzero outcome");
-    let second = runtime.storage_pressure();
-
-    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
-    assert!(matches!(
-        second.suggested_task().map(MaintenanceTaskRequest::scope),
-        Some(MaintenanceTaskScope::TableLevel {
-            branch_id,
-            level: 0
-        }) if branch_id == branch
-    ));
-    assert_eq!(runtime.branch_state().owned_levels()[1].len(), 4);
-    assert_eq!(runtime.branch_state().owned_levels()[2].len(), 1);
 }
 
 #[test]
@@ -2819,7 +2682,7 @@ fn queued_nonzero_compaction_advances_past_compact_pointer_and_wraps() {
         .expect("wrap compaction outcome");
     let wrapped_key = runtime.branch_state().owned_levels()[2]
         .iter()
-        .flat_map(|table| table.rows())
+        .flat_map(crate::branch::read::BranchOwnedTable::rows)
         .find(|row| row.physical_key().user_key() == b"pointer-advance-0")
         .expect("wrapped table promoted")
         .physical_key()

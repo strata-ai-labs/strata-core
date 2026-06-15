@@ -1209,6 +1209,21 @@ impl LifecycleStoragePressure {
         self.branch_id
     }
 
+    /// Return a copy with all source/table-shape pressure neutralized: the
+    /// severity, reason, and suggested maintenance task are cleared while the
+    /// descriptive shape counts are preserved for diagnostics. Volatile (cache)
+    /// modes use this so writes never slow or block on source-table shape and no
+    /// maintenance task is suggested, without forking the shared collection
+    /// logic.
+    pub(crate) const fn with_source_shape_neutralized(self) -> Self {
+        Self {
+            severity: LifecycleStoragePressureSeverity::None,
+            reason: LifecycleStoragePressureReason::None,
+            suggested_task: None,
+            ..self
+        }
+    }
+
     pub(crate) const fn severity(self) -> LifecycleStoragePressureSeverity {
         self.severity
     }
@@ -2849,8 +2864,8 @@ fn materialize_branch(
 
 #[derive(Clone, Debug)]
 pub(crate) enum CacheMaterializationBegin {
-    Deferred(LifecycleMaterializationOutcome),
-    Build(CacheMaterializationBuild),
+    Deferred(Box<LifecycleMaterializationOutcome>),
+    Build(Box<CacheMaterializationBuild>),
 }
 
 #[derive(Clone, Debug)]
@@ -2887,9 +2902,9 @@ pub(crate) fn begin_cache_materialization_build(
         .is_none()
         && request.handle().is_none()
     {
-        return Ok(CacheMaterializationBegin::Deferred(
+        return Ok(CacheMaterializationBegin::Deferred(Box::new(
             LifecycleMaterializationOutcome::deferred(request),
-        ));
+        )));
     }
     let (materialization_handle, reachability_snapshot, branch_request) =
         if let Some(handle) = request.handle() {
@@ -2926,7 +2941,7 @@ pub(crate) fn begin_cache_materialization_build(
             .map_err(branch_error)?;
             (handle, snapshot, branch_request)
         };
-    Ok(CacheMaterializationBegin::Build(
+    Ok(CacheMaterializationBegin::Build(Box::new(
         CacheMaterializationBuild {
             request: request.clone(),
             materialization_handle,
@@ -2934,7 +2949,7 @@ pub(crate) fn begin_cache_materialization_build(
             branch_request,
             branch_snapshot: branch.clone(),
         },
-    ))
+    )))
 }
 
 impl CacheMaterializationBuild {

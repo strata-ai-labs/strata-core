@@ -34,10 +34,11 @@ use crate::lifecycle::{
     MaintenanceTaskPriority as LifecycleMaintenanceTaskPriority,
     MaintenanceTaskRequest as LifecycleMaintenanceTaskRequest,
     MaintenanceTaskScope as LifecycleMaintenanceTaskScope, ManualMaintenanceClock,
-    RealMaintenanceClock, RecoveryDegradationClass, RecoveryFaultKind, RecoveryHealth,
-    RecoveryStrictness, StorageBudgetPool, StorageBudgetPressureSeverity, StorageBudgetSnapshot,
-    StorageMode as LifecycleStorageMode, StorageOpenOutcome as LifecycleStorageOpenOutcome,
-    StorageOpenPlan, StorageRuntimeBudget, ThreadedMaintenanceExecutor,
+    ModeLifecyclePolicy, RealMaintenanceClock, RecoveryDegradationClass, RecoveryFaultKind,
+    RecoveryHealth, RecoveryStrictness, StorageBudgetPool, StorageBudgetPressureSeverity,
+    StorageBudgetSnapshot, StorageMode as LifecycleStorageMode,
+    StorageOpenOutcome as LifecycleStorageOpenOutcome, StorageOpenPlan, StorageRuntimeBudget,
+    ThreadedMaintenanceExecutor,
 };
 use crate::observability::perf_trace;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId as RowStorageSpaceId};
@@ -320,13 +321,14 @@ impl BackgroundAdmissionThrottle {
         let pressure_snapshot_relieved = observation
             .pressure_snapshot
             .relieved_since(last.pressure_snapshot, observation.reason);
+        let severity_improved = lifecycle_storage_pressure_severity_rank(observation.severity)
+            < lifecycle_storage_pressure_severity_rank(last.severity);
         if observation.branch_id != last.branch_id
             || observation.reason != last.reason
-            || (completed_tasks_advanced && (pressure_units_stable || pressure_units_improved))
-            || lifecycle_storage_pressure_severity_rank(observation.severity)
-                < lifecycle_storage_pressure_severity_rank(last.severity)
             || pressure_units_improved
+            || severity_improved
             || pressure_snapshot_relieved
+            || (completed_tasks_advanced && pressure_units_stable)
         {
             let relief_reset =
                 self.consecutive_no_relief_rounds != 0 || !self.current_slowdown.is_zero();
@@ -640,11 +642,17 @@ where
         config: LifecycleConfig,
         background_config: StorageBackgroundMaintenanceOptions,
         executor_mode: BackgroundExecutorMode,
+        mode_policy: ModeLifecyclePolicy,
         drain: BackgroundArcDrain<R>,
     ) -> Self {
         let runtime = Arc::new(ParkingMutex::new(runtime));
+        // The maintenance scheduling policy selects the executor flavor, but the
+        // mode policy is authoritative: volatile modes (cache) never run a
+        // background maintenance executor, so no worker thread, condvar, or
+        // clock is created for them.
         let background = if config.maintenance_scheduling_policy()
             == LifecycleMaintenanceSchedulingPolicy::Background
+            && mode_policy.may_run_background_maintenance()
         {
             Some(BackgroundRuntimeController::new(
                 background_config,
@@ -1570,6 +1578,7 @@ fn open_durable_with_owned_backend_handle<'runtime>(
     let executor_mode = background_executor_mode(options.maintenance_scheduling_policy());
     let background_config = options.background_maintenance();
     let (runtime, summary, recovery_report, config) = assemble_durable_runtime(options, backend)?;
+    let mode_policy = runtime.open_plan().lifecycle_policy();
     Ok(StorageOpenOutcome::new(
         StorageRuntime {
             inner: StorageRuntimeInner::DurableOwned(Box::new(
@@ -1578,6 +1587,7 @@ fn open_durable_with_owned_backend_handle<'runtime>(
                     config,
                     background_config,
                     executor_mode,
+                    mode_policy,
                     drain_durable_background_round,
                 ),
             )),
@@ -3233,6 +3243,7 @@ impl<'a> StorageRuntime<'a> {
         let summary = map_open_summary(runtime.open_outcome(), options.mode(), options);
         let recovery = map_diagnostics_recovery(runtime.open_outcome().recovery_health());
         let config = runtime.open_plan().lifecycle_config();
+        let mode_policy = runtime.open_plan().lifecycle_policy();
         Ok(StorageOpenOutcome::new(
             Self {
                 inner: StorageRuntimeInner::Cache(Box::new(
@@ -3241,6 +3252,7 @@ impl<'a> StorageRuntime<'a> {
                         config,
                         background_config,
                         executor_mode,
+                        mode_policy,
                         drain_cache_background_round,
                     ),
                 )),
@@ -4401,6 +4413,19 @@ impl<'a> StorageRuntime<'a> {
     }
 }
 
+/// The storage budget a fresh open uses when no test override is supplied.
+///
+/// Cache mode is volatile: it never flushes mutable state to table sources, so
+/// it carries no source-table memory budget and grows with the working set
+/// until host memory is exhausted, like an in-memory cache. Durable modes use
+/// the configured budget policy.
+fn default_open_storage_budget(options: &StorageOpenOptions) -> StorageRuntimeBudget {
+    match options.mode() {
+        StorageMode::Cache => StorageRuntimeBudget::unlimited(),
+        _ => map_budget_policy(options.budget_policy()),
+    }
+}
+
 fn lifecycle_plan(options: StorageOpenOptions) -> StorageApiResult<StorageOpenPlan> {
     let mode = match options.mode() {
         StorageMode::Cache => LifecycleStorageMode::Cache,
@@ -4432,9 +4457,9 @@ fn lifecycle_plan(options: StorageOpenOptions) -> StorageApiResult<StorageOpenPl
     #[cfg(test)]
     let storage_budget = options
         .storage_budget_for_test()
-        .unwrap_or_else(|| map_budget_policy(options.budget_policy()));
+        .unwrap_or_else(|| default_open_storage_budget(&options));
     #[cfg(not(test))]
-    let storage_budget = map_budget_policy(options.budget_policy());
+    let storage_budget = default_open_storage_budget(&options);
     config = config
         .with_storage_budget(storage_budget)
         .map_err(map_lifecycle_error)?;

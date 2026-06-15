@@ -1211,41 +1211,24 @@ fn low_memory_profile_defers_large_compaction_artifact() {
 }
 
 #[test]
-fn rotation_budget_failure_does_not_advance_commit_visibility() {
-    let branch = branch_id(0x60);
-    let mut runtime = open_cache_runtime(branch, storage_budget_with_frozen(128, 64));
-    let key = physical_key(branch, b"visibility-stays");
-    let batch = put_batch(branch, key.clone(), vec![0xaa; 1024]);
-
-    let error = runtime
-        .execute_cache_commit(batch, CommitBranchGenerationGuard::not_supplied())
-        .expect_err("rotation budget rejects oversize commit");
-
-    assert_frozen_backlog_pressure_rejection(&error);
-    assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
-    assert!(runtime.branch_state().is_empty());
-    assert!(runtime
-        .read_view()
-        .expect("view")
-        .latest(&key)
-        .expect("read")
-        .is_none());
-    assert!(
-        runtime.unresolved_durable().expect("gate query").is_none(),
-        "budget rejection must not leak unresolved durable state"
-    );
-}
-
-#[test]
-fn cache_and_durable_rotation_budget_behavior_match() {
+fn cache_and_durable_rotation_budget_behavior_diverges() {
     let cache_branch = branch_id(0x61);
     let durable_branch = branch_id(0x62);
-    let budget = storage_budget_with_frozen(128, 64);
-    let mut cache = open_cache_runtime(cache_branch, budget);
+    // Durable mode still enforces the projected rotation/frozen budget, so a
+    // tight frozen pool rejects an oversize commit. Cache is volatile and no
+    // longer applies source-shape admission pressure, so it must accept the
+    // same oversize commit; it is given a roomy frozen pool that the rotated
+    // table fits within, proving the divergence is the admission decision and
+    // not a hidden hard-ledger rejection.
+    let durable_budget = storage_budget_with_frozen(128, 64);
+    let cache_budget = storage_budget_with_frozen(16 * 1024, 16 * 1024);
+    let mut cache = open_cache_runtime(cache_branch, cache_budget);
     let backend = super::checkpoint::shared::CheckpointTestBackend::new();
-    let mut durable = open_durable_runtime(durable_branch, &backend, budget);
+    let mut durable = open_durable_runtime(durable_branch, &backend, durable_budget);
 
-    let cache_error = cache
+    // Cache is volatile in-memory storage: it no longer projects incoming
+    // rotation against the frozen budget, so an oversize commit succeeds.
+    cache
         .execute_cache_commit(
             put_batch(
                 cache_branch,
@@ -1254,7 +1237,9 @@ fn cache_and_durable_rotation_budget_behavior_match() {
             ),
             CommitBranchGenerationGuard::not_supplied(),
         )
-        .expect_err("cache rotation budget rejects oversize commit");
+        .expect("cache no longer blocks on rotation budget");
+    // Durable mode is unchanged: it still rejects on the projected frozen
+    // budget before allocating a commit version.
     let durable_error = durable
         .execute_durable_commit(
             durable_put_batch(
@@ -1266,15 +1251,20 @@ fn cache_and_durable_rotation_budget_behavior_match() {
         )
         .expect_err("durable rotation budget rejects oversize commit");
 
-    assert_frozen_backlog_pressure_rejection(&cache_error);
     assert_frozen_backlog_pressure_rejection(&durable_error);
-    assert_eq!(cache.visible_version(), CommitVersion::ZERO);
+    assert_ne!(
+        cache.visible_version(),
+        CommitVersion::ZERO,
+        "cache commit must advance visible version past zero"
+    );
+    assert!(
+        !cache.branch_state().is_empty(),
+        "cache commit must populate branch state"
+    );
     assert_eq!(durable.visible_version(), CommitVersion::ZERO);
-    assert!(cache.branch_state().is_empty());
     assert!(durable.branch_state().is_empty());
-    // Budget rejection precedes WAL append, so neither shell records an
-    // unresolved durable commit — if WAL append had run before the budget
-    // check, the durable gate would carry a pending fact.
+    // The durable budget rejection precedes WAL append, so neither shell
+    // records an unresolved durable commit.
     assert!(cache.unresolved_durable().expect("cache gate").is_none());
     assert!(durable
         .unresolved_durable()

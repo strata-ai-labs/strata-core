@@ -43,6 +43,125 @@ impl fmt::Display for StorageMode {
     }
 }
 
+/// Per-mode lifecycle policy: which source/table lifecycle work a storage mode
+/// is permitted to perform.
+///
+/// This is the single canonical place a [`StorageMode`] maps to its lifecycle
+/// capabilities. It is a pure function of the mode — never of benchmark scale,
+/// workload, or configuration flags — so a source guard can assert that cache
+/// denies source-table work while durable permits it.
+///
+/// Cache mode is volatile in-memory storage: it shares the commit, branch,
+/// conflict, timestamp, and read mechanics but performs no source/table
+/// lifecycle maintenance and applies no source-shape write-admission pressure.
+/// The mode is the canonical gate; the maintenance scheduling policy only
+/// selects the executor flavor for modes this policy permits to run background
+/// maintenance.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "per-mode capability matrix; one bool per lifecycle capability is the clearest representation and lets future modes diverge per capability"
+)]
+pub(crate) struct ModeLifecyclePolicy {
+    schedule_post_commit_source_maintenance: bool,
+    apply_source_shape_admission_pressure: bool,
+    run_background_maintenance: bool,
+    flush_to_table_source: bool,
+    rewrite_or_compact_tables: bool,
+    checkpoint_or_truncate_wal: bool,
+}
+
+impl ModeLifecyclePolicy {
+    /// The canonical mode → policy mapping. This is the only constructor; every
+    /// gate derives its policy from a [`StorageMode`] through here so there is a
+    /// single source of truth.
+    pub(crate) const fn for_storage_mode(mode: StorageMode) -> Self {
+        match mode {
+            StorageMode::Cache => Self::volatile(),
+            // Candidate modes are rejected at validation and never reach a
+            // runtime; keep them permissive so no current path changes.
+            StorageMode::DurableLocalStandard
+            | StorageMode::DurableLocalAlways
+            | StorageMode::ObjectDurableCandidate => Self::durable(),
+        }
+    }
+
+    const fn volatile() -> Self {
+        Self {
+            schedule_post_commit_source_maintenance: false,
+            apply_source_shape_admission_pressure: false,
+            run_background_maintenance: false,
+            flush_to_table_source: false,
+            rewrite_or_compact_tables: false,
+            checkpoint_or_truncate_wal: false,
+        }
+    }
+
+    const fn durable() -> Self {
+        Self {
+            schedule_post_commit_source_maintenance: true,
+            apply_source_shape_admission_pressure: true,
+            run_background_maintenance: true,
+            flush_to_table_source: true,
+            rewrite_or_compact_tables: true,
+            checkpoint_or_truncate_wal: true,
+        }
+    }
+
+    /// Whether ordinary writes may enqueue flush/compaction/materialization work
+    /// to maintain source/table shape.
+    pub(crate) const fn may_schedule_post_commit_source_maintenance(self) -> bool {
+        self.schedule_post_commit_source_maintenance
+    }
+
+    /// Whether write admission may slow or block on source/table-shape pressure
+    /// (L0 backlog, frozen backlog, table fanout, nonzero-level bytes).
+    pub(crate) const fn may_apply_source_shape_admission_pressure(self) -> bool {
+        self.apply_source_shape_admission_pressure
+    }
+
+    /// Whether this mode requires a background maintenance executor.
+    pub(crate) const fn may_run_background_maintenance(self) -> bool {
+        self.run_background_maintenance
+    }
+
+    /// Whether this mode flushes active/frozen state to table sources.
+    ///
+    /// Part of the canonical capability surface and asserted by source guards;
+    /// flush execution is reached only via scheduling (gated by
+    /// [`Self::may_schedule_post_commit_source_maintenance`]) or the explicit
+    /// test-only maintenance door, so this is not a separate product gate yet.
+    #[allow(
+        dead_code,
+        reason = "canonical capability surface; exercised by source-guard tests"
+    )]
+    pub(crate) const fn may_flush_to_table_source(self) -> bool {
+        self.flush_to_table_source
+    }
+
+    /// Whether this mode rewrites or compacts tables. See
+    /// [`Self::may_flush_to_table_source`] for why this is not a separate
+    /// product gate yet.
+    #[allow(
+        dead_code,
+        reason = "canonical capability surface; exercised by source-guard tests"
+    )]
+    pub(crate) const fn may_rewrite_or_compact_tables(self) -> bool {
+        self.rewrite_or_compact_tables
+    }
+
+    /// Whether this mode checkpoints or truncates the WAL. Cache already
+    /// excludes these via the maintenance-kind allowlist; this records the
+    /// invariant in the policy surface.
+    #[allow(
+        dead_code,
+        reason = "canonical capability surface; exercised by source-guard tests"
+    )]
+    pub(crate) const fn may_checkpoint_or_truncate_wal(self) -> bool {
+        self.checkpoint_or_truncate_wal
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub(crate) enum RecoveryStrictness {
@@ -176,6 +295,12 @@ impl StorageOpenPlan {
 
     pub(crate) const fn storage_mode(&self) -> StorageMode {
         self.storage_mode
+    }
+
+    /// The per-mode lifecycle policy for this plan. Single source of truth — all
+    /// gates derive their policy from here.
+    pub(crate) const fn lifecycle_policy(&self) -> ModeLifecyclePolicy {
+        ModeLifecyclePolicy::for_storage_mode(self.storage_mode)
     }
 
     pub(crate) fn codec_id(&self) -> &LifecycleCodecId {

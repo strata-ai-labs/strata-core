@@ -90,8 +90,19 @@ fn default_terminal_nonzero_level() -> u8 {
 const SCALED_COMPACTION_AMPLIFICATION_GATE: u128 = 4;
 
 #[cfg(feature = "perf-trace")]
+const SCALED_CLOSED_LOOP_CACHE_ROWS: usize = 50_000;
+#[cfg(feature = "perf-trace")]
+const SCALED_CLOSED_LOOP_CACHE_BATCH_SIZE: usize = 1_000;
+#[cfg(feature = "perf-trace")]
+const SCALED_CLOSED_LOOP_CACHE_VALUE_BYTES: usize = 150;
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+const SCALED_CLOSED_LOOP_DURABLE_ROWS: usize = 160;
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+const SCALED_CLOSED_LOOP_DURABLE_VALUE_BYTES: usize = 256;
+
+#[cfg(feature = "perf-trace")]
 fn assert_scaled_compaction_amplification_below_gate(
-    perf: crate::observability::perf_trace::StoragePerfSnapshot,
+    perf: &crate::observability::perf_trace::StoragePerfSnapshot,
     logical_rows: u64,
     logical_bytes: u64,
     context: &str,
@@ -1436,10 +1447,7 @@ fn open_cache_returns_open_runtime_and_cache_summary() {
         crate::lifecycle::LifecycleMaintenanceSchedulingPolicy::Background
     );
     let queue = runtime.maintenance_status().expect("maintenance status");
-    assert_eq!(
-        queue.background_worker_count(),
-        default_background_worker_count()
-    );
+    assert_eq!(queue.background_worker_count(), 0);
     assert_eq!(queue.background_queue_depth(), 0);
     assert_eq!(queue.background_active_tasks(), 0);
 }
@@ -1468,7 +1476,7 @@ fn open_ephemeral_returns_open_runtime_and_cache_summary() {
             .maintenance_status()
             .expect("maintenance status")
             .background_worker_count(),
-        default_background_worker_count()
+        0
     );
 }
 
@@ -1490,12 +1498,12 @@ fn open_cache_helper_returns_open_runtime_and_cache_summary() {
             .maintenance_status()
             .expect("maintenance status")
             .background_worker_count(),
-        default_background_worker_count()
+        0
     );
 }
 
 #[test]
-fn open_cache_reports_configured_background_worker_count() {
+fn open_cache_ignores_configured_background_worker_count() {
     let configured_workers = 2;
     let outcome = StorageRuntime::open(
         StorageOpenOptions::cache().with_background_worker_count(configured_workers),
@@ -1504,10 +1512,33 @@ fn open_cache_reports_configured_background_worker_count() {
     let mut runtime = outcome.into_runtime();
 
     let status = runtime.maintenance_status().expect("maintenance status");
-    assert_eq!(status.background_worker_count(), configured_workers);
+    assert_eq!(status.background_worker_count(), 0);
     assert_eq!(status.background_queue_depth(), 0);
     assert_eq!(status.background_active_tasks(), 0);
     runtime.close().expect("close configured-worker runtime");
+}
+
+#[test]
+fn cache_load_records_no_source_table_maintenance() {
+    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+        .expect("cache open should succeed")
+        .into_runtime();
+
+    for index in 0..8 {
+        let name = format!("cache-load-{index}");
+        runtime
+            .commit(&background_put_batch(name.as_bytes(), vec![0x42; 64]))
+            .expect("cache load commit");
+    }
+
+    // Cache never schedules post-commit source-table maintenance and has no
+    // background maintenance executor.
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(status.enqueued(), 0);
+    assert_eq!(status.background_worker_count(), 0);
+    assert_eq!(status.background_active_tasks(), 0);
+    assert_eq!(status.background_tasks_completed(), 0);
 }
 
 #[test]
@@ -1552,6 +1583,7 @@ fn open_cache_can_select_non_background_maintenance_policies_for_tests() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn deterministic_inline_uses_background_drive_path_without_worker_threads() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -1605,6 +1637,7 @@ struct InlineReplayFacts {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn inline_executor_replays_fixed_background_scenario_deterministically() {
     let first = run_inline_replay_scenario();
@@ -1806,6 +1839,7 @@ fn run_background_compaction_parity_scenario(
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn deterministic_inline_urgent_pressure_with_progress_does_not_sleep() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -1857,6 +1891,7 @@ fn deterministic_inline_urgent_pressure_with_progress_does_not_sleep() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn deterministic_inline_urgent_pressure_without_relief_escalates_slowdown() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -1919,6 +1954,7 @@ fn deterministic_inline_urgent_pressure_without_relief_escalates_slowdown() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn deterministic_inline_urgent_pressure_relief_resets_slowdown() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -1991,6 +2027,7 @@ fn deterministic_inline_urgent_pressure_relief_resets_slowdown() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn deterministic_inline_block_pressure_wait_uses_manual_clock_executor() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -2043,6 +2080,7 @@ fn deterministic_inline_block_pressure_wait_uses_manual_clock_executor() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn deterministic_inline_block_pressure_deadline_uses_manual_clock_without_progress() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -2110,6 +2148,7 @@ fn deterministic_inline_block_pressure_deadline_uses_manual_clock_without_progre
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn deterministic_inline_manual_clock_runtime_limit_stops_and_resumes_drain_round() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -2192,9 +2231,11 @@ fn disabled_maintenance_policy_skips_api_post_commit_enqueue_and_worker_wake() {
     assert_eq!(queue.pending_tasks(), 0);
     assert_eq!(queue.background_worker_count(), 0);
 
+    // Cache no longer evaluates post-commit source-table maintenance at all,
+    // so even the disabled-policy counters stay at zero.
     let perf = crate::observability::perf_trace::snapshot();
-    assert_eq!(perf.lifecycle_post_commit_maintenance_evaluations(), 1);
-    assert_eq!(perf.lifecycle_post_commit_maintenance_disabled(), 1);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_evaluations(), 0);
+    assert_eq!(perf.lifecycle_post_commit_maintenance_disabled(), 0);
     assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_enqueued(), 0);
     assert_eq!(perf.lifecycle_background_runtimes_created(), 0);
 }
@@ -2269,6 +2310,7 @@ fn background_manual_mode_run_next_maintenance_drains_explicit_work_without_work
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_explicit_enqueue_wakes_and_drains_queue() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -2312,6 +2354,7 @@ fn background_explicit_enqueue_wakes_and_drains_queue() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_compaction_enqueue_wakes_and_drains_table_rewrite() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -2370,6 +2413,7 @@ fn background_compaction_enqueue_wakes_and_drains_table_rewrite() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_materialization_enqueue_wakes_and_drains_table_rewrite() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -2449,6 +2493,7 @@ fn background_materialization_enqueue_wakes_and_drains_table_rewrite() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_duplicate_enqueue_coalesces_wake_while_worker_busy() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -2499,6 +2544,7 @@ fn background_duplicate_enqueue_coalesces_wake_while_worker_busy() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_foreground_wait_counter_records_short_runtime_lock_waits() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -2545,6 +2591,7 @@ fn background_foreground_wait_counter_records_short_runtime_lock_waits() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_stale_wake_records_noop_without_pending_task() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -2564,6 +2611,7 @@ fn background_stale_wake_records_noop_without_pending_task() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_wake_after_shutdown_records_rejected_without_running_task() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -2589,6 +2637,7 @@ fn background_wake_after_shutdown_records_rejected_without_running_task() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_close_summary_includes_shutdown_stats() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -2615,6 +2664,7 @@ fn background_close_summary_includes_shutdown_stats() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_repeated_close_preserves_prior_background_facts() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -2653,6 +2703,7 @@ fn background_repeated_close_preserves_prior_background_facts() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_close_with_active_task_obeys_shutdown_deadline() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -2723,6 +2774,7 @@ fn background_close_with_active_task_obeys_shutdown_deadline() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_close_succeeds_after_pre_shutdown_background_panic() {
     use std::sync::{Arc, Barrier};
@@ -2764,6 +2816,7 @@ fn background_close_succeeds_after_pre_shutdown_background_panic() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_close_reports_shutdown_panic_once_then_retry_closes() {
     use std::sync::atomic::Ordering;
@@ -2825,6 +2878,7 @@ fn background_close_reports_shutdown_panic_once_then_retry_closes() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn dropping_open_background_runtime_requests_shutdown() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -3055,6 +3109,7 @@ fn source_guard_background_urgent_slowdown_is_not_mutation_scaled() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_urgent_pressure_records_slowdown_without_inline_maintenance() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -3101,6 +3156,7 @@ fn background_urgent_pressure_records_slowdown_without_inline_maintenance() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn sustained_background_overload_slows_writer_without_permanent_block() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -3170,61 +3226,8 @@ fn sustained_background_overload_slows_writer_without_permanent_block() {
     assert!(perf.lifecycle_background_tasks_completed() > 0);
 }
 
-#[test]
-fn mutating_commit_projects_incoming_rotation_against_frozen_budget() {
-    let mut runtime = StorageRuntime::open(
-        StorageOpenOptions::cache()
-            .with_budget_policy(StorageBudgetPolicy::LowMemory)
-            .with_maintenance_scheduling_policy(StorageMaintenanceSchedulingPolicy::Disabled),
-    )
-    .expect("low-memory cache open")
-    .into_runtime();
-
-    for index in 0..12 {
-        let key = format!("projected-frozen-budget-seed-{index}");
-        runtime
-            .append_raw_row_for_test(background_raw_row_with_value(
-                key.as_bytes(),
-                index + 1,
-                vec![0x44; 900],
-            ))
-            .expect("seed raw active row before rotation");
-    }
-    runtime
-        .rotate_default_branch_for_test()
-        .expect("create frozen bytes below the hard limit");
-
-    let error = runtime
-        .commit(&background_put_batch(
-            b"projected-frozen-budget-large-batch",
-            vec![0x55; 7 * 1024],
-        ))
-        .expect_err("incoming rotation should be rejected before lower-layer budget failure");
-
-    match error {
-        StorageApiError::StoragePressure {
-            severity,
-            pressure_reason,
-            retryable,
-            reason,
-            ..
-        } => {
-            assert_eq!(severity, CommitAdmissionPressureSeverity::Blocking);
-            assert_eq!(
-                pressure_reason,
-                CommitAdmissionPressureReason::FrozenBacklog
-            );
-            assert!(retryable);
-            assert_eq!(
-                reason,
-                "incoming commit would exceed frozen mutable storage budget after rotation"
-            );
-        }
-        other => panic!("expected storage pressure rejection, got {other:?}"),
-    }
-}
-
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_block_pressure_waits_for_flush_progress_before_retry() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -3270,6 +3273,7 @@ fn background_block_pressure_waits_for_flush_progress_before_retry() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_block_pressure_wait_has_deadline_when_worker_is_busy() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -3347,13 +3351,15 @@ fn background_block_pressure_wait_has_deadline_when_worker_is_busy() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "closed-loop liveness test intentionally asserts all bounded-resource invariants"
+)]
 fn lifecycle_background_closed_loop_scaled_cache_converges_without_public_drain() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    const ROWS: usize = 50_000;
-    const BATCH_SIZE: usize = 1_000;
-    const VALUE_BYTES: usize = 150;
-    let value = vec![0x5A; VALUE_BYTES];
+    let value = vec![0x5A; SCALED_CLOSED_LOOP_CACHE_VALUE_BYTES];
     let mut runtime = StorageRuntime::open(
         StorageOpenOptions::cache()
             .with_storage_budget_for_test(
@@ -3366,8 +3372,10 @@ fn lifecycle_background_closed_loop_scaled_cache_converges_without_public_drain(
     .into_runtime();
 
     let mut written = 0usize;
-    while written < ROWS {
-        let end = written.saturating_add(BATCH_SIZE).min(ROWS);
+    while written < SCALED_CLOSED_LOOP_CACHE_ROWS {
+        let end = written
+            .saturating_add(SCALED_CLOSED_LOOP_CACHE_BATCH_SIZE)
+            .min(SCALED_CLOSED_LOOP_CACHE_ROWS);
         runtime
             .commit(&background_put_batch_range(
                 "scaled-liveness-",
@@ -3440,7 +3448,12 @@ fn lifecycle_background_closed_loop_scaled_cache_converges_without_public_drain(
         ),
     }
 
-    assert_background_closed_loop_reads(&runtime, "scaled-liveness-", ROWS, &value);
+    assert_background_closed_loop_reads(
+        &runtime,
+        "scaled-liveness-",
+        SCALED_CLOSED_LOOP_CACHE_ROWS,
+        &value,
+    );
 
     let perf = crate::observability::perf_trace::snapshot();
     assert!(perf.lifecycle_background_wake_submitted() > 0);
@@ -3451,9 +3464,9 @@ fn lifecycle_background_closed_loop_scaled_cache_converges_without_public_drain(
     assert_eq!(perf.lifecycle_wal_truncation_deleted_segments(), 0);
     assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 0);
     assert_scaled_compaction_amplification_below_gate(
-        perf,
-        ROWS as u64,
-        (ROWS * VALUE_BYTES) as u64,
+        &perf,
+        SCALED_CLOSED_LOOP_CACHE_ROWS as u64,
+        (SCALED_CLOSED_LOOP_CACHE_ROWS * SCALED_CLOSED_LOOP_CACHE_VALUE_BYTES) as u64,
         &format!(
             "cache background closed-loop final_layout={:?} final_pressure={:?}",
             report.source_layout(),
@@ -3470,9 +3483,7 @@ fn lifecycle_background_closed_loop_scaled_cache_converges_without_public_drain(
 )]
 fn lifecycle_background_closed_loop_scaled_durable_bounds_wal_without_public_drain() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    const ROWS: usize = 160;
-    const VALUE_BYTES: usize = 256;
-    let value = vec![0x6B; VALUE_BYTES];
+    let value = vec![0x6B; SCALED_CLOSED_LOOP_DURABLE_VALUE_BYTES];
     let root = temp_dir_for_api_test("scaled-durable-liveness");
     let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
     let mut runtime = StorageRuntime::open_with_backend(
@@ -3493,7 +3504,7 @@ fn lifecycle_background_closed_loop_scaled_durable_bounds_wal_without_public_dra
     let mut max_retained_segments = 0_u64;
     let mut max_segment_files = 0_usize;
     let mut saw_maintenance_enqueue = false;
-    for index in 0..ROWS {
+    for index in 0..SCALED_CLOSED_LOOP_DURABLE_ROWS {
         let key = format!("scaled-durable-liveness-{index:08}");
         runtime
             .commit(&background_put_batch(key.as_bytes(), value.clone()))
@@ -3634,7 +3645,12 @@ fn lifecycle_background_closed_loop_scaled_durable_bounds_wal_without_public_dra
         "durable background closed loop left storage pressure after maintenance reached a fixed point: {:?}",
         report.pressure()
     );
-    assert_background_closed_loop_reads(&runtime, "scaled-durable-liveness-", ROWS, &value);
+    assert_background_closed_loop_reads(
+        &runtime,
+        "scaled-durable-liveness-",
+        SCALED_CLOSED_LOOP_DURABLE_ROWS,
+        &value,
+    );
     assert!(perf.lifecycle_background_wake_submitted() > 0);
     assert!(perf.lifecycle_background_tasks_completed() > 0);
     assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 0);
@@ -3724,6 +3740,7 @@ fn wal_retention_deletes_segments_without_public_drain() {
 }
 
 #[cfg(feature = "perf-trace")]
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_runtime_creation_perf_trace_records_only_background_opens() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
@@ -3753,6 +3770,7 @@ fn background_runtime_creation_perf_trace_records_only_background_opens() {
     drop(background);
 }
 
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn background_close_drains_queued_work_before_lifecycle_close() {
     let runtime = StorageRuntime::open_cache()

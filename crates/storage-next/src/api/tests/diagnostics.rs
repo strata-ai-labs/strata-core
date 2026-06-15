@@ -280,6 +280,7 @@ fn diagnostics_reports_memory_budget_limits() {
     assert!(usage(report.budget(), DiagnosticsBudgetPool::TableReader).limit_bytes() > 0);
 }
 
+#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn diagnostics_reports_background_scheduler_facts() {
     let runtime = open_runtime();
@@ -332,6 +333,9 @@ fn diagnostics_reports_memory_budget_usage() {
 
 #[test]
 fn diagnostics_reports_cache_budget_facts() {
+    // Cache is volatile: it uses an effectively-unlimited memory budget so
+    // writes never reject on source-table memory, regardless of the requested
+    // budget policy. An explicit LowMemory request is therefore overridden.
     let runtime = StorageRuntime::open(
         StorageOpenOptions::cache().with_budget_policy(StorageBudgetPolicy::LowMemory),
     )
@@ -339,10 +343,15 @@ fn diagnostics_reports_cache_budget_facts() {
     .into_runtime();
 
     let report = diagnostics(&runtime);
-    let block_cache = usage(report.budget(), DiagnosticsBudgetPool::BlockCache);
+    let frozen = usage(report.budget(), DiagnosticsBudgetPool::FrozenMutable);
+    let active = usage(report.budget(), DiagnosticsBudgetPool::ActiveMutable);
 
-    assert_eq!(block_cache.limit_bytes(), 0);
-    assert_eq!(block_cache.pressure(), DiagnosticsBudgetPressure::Normal);
+    // The volatile mutable pools dwarf any finite policy preset (LowMemory caps
+    // these at kibibytes), proving the cache budget is unbounded, not LowMemory.
+    assert!(frozen.limit_bytes() > (1 << 50));
+    assert!(active.limit_bytes() > (1 << 50));
+    assert_eq!(frozen.pressure(), DiagnosticsBudgetPressure::Normal);
+    assert_eq!(active.pressure(), DiagnosticsBudgetPressure::Normal);
 }
 
 #[test]

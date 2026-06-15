@@ -450,7 +450,10 @@ fn contains_forbidden_runtime_dependency(line: &str) -> bool {
 }
 
 fn contains_forbidden_product_vocabulary(line: &str) -> bool {
-    let compact = compact_line(line);
+    // `ModeLifecyclePolicy` is a lifecycle type, not product vocabulary, but its
+    // lowercased form embeds the `model` needle. Strip it before scanning so the
+    // substring check does not false-positive on a legitimate identifier.
+    let compact = compact_line(line).replace("modelifecyclepolicy", "");
     [
         "json",
         "event",

@@ -792,11 +792,24 @@ impl<S> LifecycleCacheRuntime<S> {
             .branch_catalog
             .branch_state(branch_id)
             .expect("pressure target branch is present in the catalog");
-        collect_storage_pressure_with_budget(
+        let pressure = collect_storage_pressure_with_budget(
             branch,
             self.maintenance.status(),
             Some(self.open_plan.lifecycle_config().storage_budget()),
-        )
+        );
+        // Volatile modes (cache) never slow, block, or schedule on source-table
+        // shape. Neutralizing here is the single chokepoint feeding both write
+        // admission and post-commit maintenance suggestion, so neither path acts
+        // on source-shape pressure while diagnostics keep the descriptive counts.
+        if self
+            .open_plan
+            .lifecycle_policy()
+            .may_apply_source_shape_admission_pressure()
+        {
+            pressure
+        } else {
+            pressure.with_source_shape_neutralized()
+        }
     }
 
     fn evaluate_mutating_write_admission_for_branch(
@@ -829,6 +842,15 @@ impl<S> LifecycleCacheRuntime<S> {
         branch_id: BranchId,
         batch: &CommitBatch,
     ) -> LifecycleResult<()> {
+        // Volatile modes (cache) never block writes on frozen/source-table
+        // budget; the accepted trade-off is unbounded in-memory growth.
+        if !self
+            .open_plan
+            .lifecycle_policy()
+            .may_apply_source_shape_admission_pressure()
+        {
+            return Ok(());
+        }
         let incoming_active_bytes = estimate_commit_batch_active_bytes(batch)?;
         let branch = self
             .branch_catalog
@@ -1486,7 +1508,7 @@ impl<S> LifecycleCacheRuntime<S> {
                     CacheBackgroundMaintenanceBuild::Materialization {
                         task,
                         branch_id,
-                        build,
+                        build: *build,
                         started_at: std::time::Instant::now(),
                     },
                 ))))
@@ -2247,7 +2269,12 @@ where
             .execute(batch, generation_guard)
             .map_err(commit_error)
         };
-        if outcome.is_ok() {
+        if outcome.is_ok()
+            && self
+                .open_plan
+                .lifecycle_policy()
+                .may_schedule_post_commit_source_maintenance()
+        {
             let _ = self.schedule_post_commit_maintenance_for_branch(branch_id);
         }
         outcome

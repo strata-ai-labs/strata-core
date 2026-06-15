@@ -351,28 +351,6 @@ fn active_append_under_budget_succeeds() {
 }
 
 #[test]
-fn rotation_budget_rejects_before_mutation() {
-    let branch = branch_id(0x21);
-    let mut runtime = open_cache_runtime(branch, storage_budget_with_active_and_frozen(128, 64));
-    let key = physical_key(branch, b"large-active");
-    let batch = put_batch(branch, key.clone(), vec![0x55; 1024]);
-
-    let error = runtime
-        .execute_cache_commit(batch, CommitBranchGenerationGuard::not_supplied())
-        .expect_err("rotation budget rejects");
-
-    assert_frozen_backlog_pressure_rejection(&error);
-    assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
-    assert!(runtime.branch_state().is_empty());
-    assert!(runtime
-        .read_view()
-        .expect("view")
-        .latest(&key)
-        .expect("read")
-        .is_none());
-}
-
-#[test]
 fn commit_semantic_validation_precedes_active_budget_rejection() {
     let branch = branch_id(0x31);
     let other_branch = branch_id(0x32);
@@ -774,18 +752,6 @@ fn assert_budget_error(error: &LifecycleError, expected_pool: StorageBudgetPool)
         current = candidate.source();
     }
     panic!("expected storage budget error for {expected_pool:?}, got {error:?}");
-}
-
-fn assert_frozen_backlog_pressure_rejection(error: &LifecycleError) {
-    assert!(matches!(
-        error,
-        LifecycleError::StoragePressureRejected {
-            severity: LifecycleStoragePressureSeverity::BlockMutatingAdmission,
-            pressure_reason: LifecycleStoragePressureReason::FrozenBacklog,
-            retryable: false,
-            ..
-        }
-    ));
 }
 
 fn assert_commit_runtime_error(

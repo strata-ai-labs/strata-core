@@ -8,6 +8,7 @@ mod branch_lifecycle;
 mod budget;
 mod budget_runtime;
 mod cache;
+mod cache_mode_lifecycle_policy;
 mod capability;
 mod checkpoint;
 mod close;

@@ -195,6 +195,36 @@ impl StorageRuntimeBudget {
         Ok(budget)
     }
 
+    /// An effectively-unlimited budget for volatile (cache) storage.
+    ///
+    /// Cache mode never flushes mutable state to table sources, so frozen and
+    /// active mutable memory grow with the working set. Like an in-memory cache
+    /// (or a `:memory:` database), the only real bound is host memory, so the
+    /// mutable pools and the overall total are set far above any real working
+    /// set. The durable-artifact pools keep their defaults because cache never
+    /// produces table/manifest artifacts. The mutable pools are set to a
+    /// fraction of `u64::MAX` rather than the max itself so the validation sum
+    /// stays free of overflow. The huge active-mutable limit also lifts the
+    /// active rotation threshold, so a cache branch keeps a single growing
+    /// in-memory table instead of fanning out across frozen tables.
+    pub(crate) fn unlimited() -> Self {
+        let unbounded_pool = u64::MAX / 4;
+        Self::from_parts(StorageRuntimeBudgetParts {
+            total_bytes: u64::MAX,
+            block_cache_bytes: DEFAULT_BLOCK_CACHE_BYTES,
+            table_reader_bytes: DEFAULT_TABLE_READER_BYTES,
+            active_mutable_bytes: unbounded_pool,
+            frozen_mutable_bytes: unbounded_pool,
+            maintenance_queue_bytes: DEFAULT_MAINTENANCE_QUEUE_BYTES,
+            generated_artifact_bytes: DEFAULT_GENERATED_ARTIFACT_BYTES,
+            manifest_catalog_bytes: DEFAULT_MANIFEST_CATALOG_BYTES,
+            max_open_readers: DEFAULT_MAX_OPEN_READERS,
+            max_frozen_tables: u32::MAX,
+            max_pending_maintenance_tasks: DEFAULT_MAX_PENDING_MAINTENANCE_TASKS,
+        })
+        .expect("unlimited storage budget is valid")
+    }
+
     pub(crate) fn low_memory_test_profile() -> Self {
         Self::from_parts(StorageRuntimeBudgetParts {
             total_bytes: 64 * 1024,

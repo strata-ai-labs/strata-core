@@ -18,9 +18,9 @@ fn type_inventory_snapshot_is_current() {
             "--require-inventory",
             INVENTORY_SNAPSHOT,
             "--max-all-types",
-            "1086",
+            "1090",
             "--max-cleanup-target-types",
-            "638",
+            "639",
         ])
         .output()
         .expect("run inventory guard");
@@ -37,7 +37,7 @@ fn parent_facade_reexports_do_not_regrow() {
         .args([
             "--quiet",
             "--max-reexport-names",
-            "lifecycle/mod.rs=237",
+            "lifecycle/mod.rs=238",
             "--max-reexport-names",
             "testkit/mod.rs=99",
             "--max-reexport-names",
@@ -71,7 +71,7 @@ fn operation_family_suffix_counts_do_not_regrow() {
             "--max-suffix-count",
             "Request=24",
             "--max-suffix-count",
-            "Policy=15",
+            "Policy=16",
             "--max-suffix-count",
             "Report=12",
             "--max-suffix-count",

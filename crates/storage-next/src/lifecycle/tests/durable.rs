@@ -1739,8 +1739,8 @@ fn durable_branch_guard_rejection_under_pressure_keeps_pressure_counters_separat
 }
 
 #[test]
-fn cache_and_durable_l0_pressure_facts_match_for_equivalent_source_shapes() {
-    for (index, table_count, expected_severity) in [
+fn cache_and_durable_l0_pressure_facts_diverge_for_equivalent_source_shapes() {
+    for (index, table_count, expected_durable_severity) in [
         (0_u8, 4_usize, LifecycleStoragePressureSeverity::Background),
         (1, 8, LifecycleStoragePressureSeverity::Urgent),
         (
@@ -1760,45 +1760,28 @@ fn cache_and_durable_l0_pressure_facts_match_for_equivalent_source_shapes() {
 
         let cache_pressure = cache.storage_pressure();
         let durable_pressure = durable.storage_pressure();
-        assert_eq!(cache_pressure.severity(), expected_severity);
-        assert_eq!(durable_pressure.severity(), expected_severity);
-        assert_eq!(cache_pressure.reason(), durable_pressure.reason());
+
+        // Durable mode is unchanged: equivalent L0 source shapes still raise
+        // level-zero backlog pressure with escalating severity.
+        assert_eq!(durable_pressure.severity(), expected_durable_severity);
         assert_eq!(
-            cache_pressure.reason(),
+            durable_pressure.reason(),
             LifecycleStoragePressureReason::LevelZeroTableBacklog
         );
+
+        // Cache is volatile in-memory storage: it neutralizes source-shape
+        // write-admission pressure regardless of the same L0 backlog.
         assert_eq!(
-            cache_pressure.level_zero_tables(),
-            durable_pressure.level_zero_tables()
+            cache_pressure.severity(),
+            LifecycleStoragePressureSeverity::None
         );
         assert_eq!(
-            cache_pressure.owned_tables(),
-            durable_pressure.owned_tables()
+            cache_pressure.reason(),
+            LifecycleStoragePressureReason::None
         );
-        assert_eq!(
-            cache_pressure.frozen_tables(),
-            durable_pressure.frozen_tables()
-        );
-        assert_eq!(
-            cache_pressure.pending_maintenance(),
-            durable_pressure.pending_maintenance()
-        );
-        assert_eq!(
-            cache_pressure
-                .suggested_task()
-                .map(MaintenanceTaskRequest::kind),
-            durable_pressure
-                .suggested_task()
-                .map(MaintenanceTaskRequest::kind)
-        );
-        assert_eq!(
-            cache_pressure
-                .suggested_task()
-                .map(MaintenanceTaskRequest::scope),
-            durable_pressure
-                .suggested_task()
-                .map(MaintenanceTaskRequest::scope)
-        );
+        assert!(cache_pressure.suggested_task().is_none());
+        assert_ne!(cache_pressure.severity(), durable_pressure.severity());
+        assert_ne!(cache_pressure.reason(), durable_pressure.reason());
     }
 }
 

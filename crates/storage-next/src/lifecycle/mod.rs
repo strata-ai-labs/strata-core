@@ -138,7 +138,8 @@ pub(crate) use error::{LifecycleError, LifecycleLowerLayer};
 )]
 pub(crate) use facts::{
     ClosePhase, LifecycleCodecId, LifecycleState, LifecycleStats, MaintenanceTaskKind,
-    QuarantineStage, RecoveryStrictness, RetentionDecision, StorageMode, StorageOpenPlan,
+    ModeLifecyclePolicy, QuarantineStage, RecoveryStrictness, RetentionDecision, StorageMode,
+    StorageOpenPlan,
 };
 #[allow(
     unused_imports,

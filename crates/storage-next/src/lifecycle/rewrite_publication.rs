@@ -49,8 +49,8 @@ enum PreparedDurableCompactionOutput {
 }
 
 pub(crate) enum DurableMaterializationBegin {
-    Deferred(LifecycleMaterializationOutcome),
-    Build(DurableMaterializationBuild),
+    Deferred(Box<LifecycleMaterializationOutcome>),
+    Build(Box<DurableMaterializationBuild>),
 }
 
 pub(crate) struct DurableMaterializationBuild {
@@ -303,8 +303,8 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleMaterializationOutcome> {
     let build = match begin_durable_materialization_build(branch, request)? {
-        DurableMaterializationBegin::Deferred(outcome) => return Ok(outcome),
-        DurableMaterializationBegin::Build(build) => build,
+        DurableMaterializationBegin::Deferred(outcome) => return Ok(*outcome),
+        DurableMaterializationBegin::Build(build) => *build,
     };
     let prepared = build.build(table_service, reader_service, budget)?;
     install_prepared_durable_materialization(branch, manifest_service, catalog, prepared, budget)
@@ -323,13 +323,13 @@ pub(crate) fn begin_durable_materialization_build(
         .is_none()
         && request.handle().is_none()
     {
-        return Ok(DurableMaterializationBegin::Deferred(
+        return Ok(DurableMaterializationBegin::Deferred(Box::new(
             LifecycleMaterializationOutcome::deferred(&request),
-        ));
+        )));
     }
     let (materialization_handle, reachability_snapshot, branch_request) =
         materialization_binding_and_request(branch, &request)?;
-    Ok(DurableMaterializationBegin::Build(
+    Ok(DurableMaterializationBegin::Build(Box::new(
         DurableMaterializationBuild {
             request,
             materialization_handle,
@@ -337,7 +337,7 @@ pub(crate) fn begin_durable_materialization_build(
             branch_request,
             branch_snapshot: branch.clone(),
         },
-    ))
+    )))
 }
 
 impl DurableMaterializationBuild {
