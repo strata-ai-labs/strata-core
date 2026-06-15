@@ -74,7 +74,7 @@ commit rejected by Blocking storage pressure from LevelZeroTableBacklog:
 mutating commit admission requires maintenance progress
 ```
 
-Storage-next durable standard load facts (same environment):
+Storage-next durable standard load facts, **pre-Slice-1** (same environment):
 
 | Scale | Throughput | Elapsed | Result |
 | --- | ---: | ---: | --- |
@@ -98,6 +98,51 @@ Durable 1M maintenance attribution (`--diagnostic-source-shape`):
 The merge cost is negligible (0.32s). The dominant cost is publish-under-lock
 (10.77s) and the foreground lock-wait it causes (9.55s). At 5M these scale until
 the writer cannot make admission progress and the load is rejected.
+
+### Post-Slice-1 confirmation (Groups A + B landed)
+
+With the admission-liveness fix in place the 5M durable standard load **now
+completes** instead of failing the gate, and the first full 5M attribution
+confirms the diagnosis is correct and *sharper at scale* than the 1M baseline
+above. Measured 5M durable standard (same environment, commit `c23b8ccd`):
+
+| Scale | Throughput | Elapsed | Result |
+| --- | ---: | ---: | --- |
+| 5M (storage-next) | 13.1K ops/s | 380.8s | **completes**, 0 rejections, 0 admission timeouts |
+| 5M (old standard) | 288.1K ops/s | 17.35s | completes |
+
+Gap vs. old at 5M: **~21.9x**.
+
+Durable 5M maintenance attribution:
+
+| Fact | Value | Share |
+| --- | ---: | ---: |
+| Background maintenance total | 367.4s / 1186 tasks | — |
+| Publish phase (lock held) | 317.4s | **86% of maintenance** |
+| Unlocked build phase | 49.4s | 13% of maintenance |
+| Foreground wait on background lock | 304.1s | **80% of elapsed** |
+| Admission slowdown | 27.2s | 7% of elapsed |
+| Admission block wait | 18.1s | 5% of elapsed |
+| Compaction merge | 3.9s | ~1% of elapsed |
+| WAL append (the real durable write) | 4.35s | ~1% of elapsed |
+
+Two facts sharpen the case for Groups C–E:
+
+1. **Publish-under-lock is now 86% of maintenance (was 68% at 1M), and 304s of
+   the 317s publish-lock window — 96% — directly blocks the foreground.** The
+   coupling worsens with scale exactly as predicted; Group C (move manifest
+   persistence off-lock) is the single highest-leverage lever.
+2. **The actual commit/WAL work is small.** Subtracting the 304.1s lock-wait,
+   27.2s slowdown, and 18.1s block-wait from the 380.8s run leaves ~31s of real
+   commit work — the same ballpark as the old engine's *entire* 17.35s run. The
+   ~22x gap is almost entirely maintenance serialization, not the durable write
+   path, which is the premise Groups C–E are built on.
+
+Note on the 2x soft target: removing the 304s lock-wait alone drops 5M from
+~381s toward ~77s (~4.4x old), so Groups C–D make the engine usable and reclaim
+the bulk but will not by themselves reach the 2x target. That is owned by Group E
+(admission ramp + concurrent drain) plus the commit/WAL hot-path follow-on the
+soft-target note in Group F already anticipates.
 
 Old engine standard load (same environment):
 

@@ -1878,6 +1878,10 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         perf_trace.lifecycle_background_task_publish_lock_ns()
     );
     field!(
+        "lifecycle_background_publish_manifest_persist_ns",
+        perf_trace.lifecycle_background_publish_manifest_persist_ns()
+    );
+    field!(
         "lifecycle_background_task_total_ns",
         perf_trace.lifecycle_background_task_total_ns()
     );
@@ -1912,6 +1916,10 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
     field!(
         "lifecycle_write_admission_wait_timeouts",
         perf_trace.lifecycle_write_admission_wait_timeouts()
+    );
+    field!(
+        "lifecycle_write_admission_wait_progress_resets",
+        perf_trace.lifecycle_write_admission_wait_progress_resets()
     );
     field!(
         "lifecycle_write_admission_block_wait_ns",

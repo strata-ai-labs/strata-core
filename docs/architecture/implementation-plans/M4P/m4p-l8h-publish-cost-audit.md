@@ -29,7 +29,12 @@ The durable background drain runs a `snapshot → build → publish` state machi
 The defect L8H targets: the **publish** critical section includes durable disk
 I/O (manifest fsync, snapshot/checkpoint writes), so foreground commits — which
 need the same runtime lock — serialize behind background durable I/O. At 1M:
-publish-under-lock ≈ 10.77s, foreground lock-wait ≈ 9.55s, merge ≈ 0.32s.
+publish-under-lock ≈ 10.77s, foreground lock-wait ≈ 9.55s, merge ≈ 0.32s. The
+first full 5M run after Slice 1 confirms the coupling worsens with scale:
+publish-under-lock ≈ 317.4s (**86%** of the 367.4s maintenance total, up from 68%
+at 1M), foreground lock-wait ≈ 304.1s (**80%** of the 380.8s run), unlocked build
+≈ 49.4s, merge ≈ 3.9s. 304 of the 317s publish-lock window — 96% — directly
+blocks the foreground writer.
 
 ## New Slice-1 counter
 
@@ -46,7 +51,11 @@ durable manifest persist (fsync) = publish_manifest_persist_ns
 ```
 
 This is the separation Group A's exit gate requires and the metric Slice 2 will
-drive toward zero-under-lock.
+drive toward zero-under-lock. The benchmark
+(`benchmarks/src/bin/storage_next_l9_scale.rs`) emits this counter alongside
+`lifecycle_background_task_publish_lock_ns` in the perf-trace dump, so the
+publish-lock → manifest-persist split — and Slice 2's progress driving it to
+zero-under-lock — is observable from benchmark output, not only from unit tests.
 
 ## Audit table
 
