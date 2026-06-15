@@ -25,7 +25,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | lifecycle/compaction.rs | 22 | 3046 |
 | table/reader.rs | 20 | 1826 |
 | table/compaction.rs | 19 | 1220 |
-| api/runtime.rs | 18 | 6401 |
+| api/runtime.rs | 18 | 6464 |
 | commit/batch.rs | 18 | 774 |
 | service/wal.rs | 18 | 1643 |
 | branch/facts.rs | 17 | 1160 |
@@ -45,7 +45,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | File | LOC |
 |---|---|
 | observability/perf_trace.rs | 6908 |
-| api/runtime.rs | 6401 |
+| api/runtime.rs | 6464 |
 | api/tests/mod.rs | 4924 |
 | branch/tests/owned_compaction.rs | 4822 |
 | lifecycle/tests/compaction/mod.rs | 4335 |

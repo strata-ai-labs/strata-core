@@ -7,8 +7,12 @@ use std::time::Duration;
 
 const DEFAULT_BACKGROUND_WORKER_COUNT: usize = 4;
 const DEFAULT_BACKGROUND_QUEUE_DEPTH: usize = 4096;
-const DEFAULT_BACKGROUND_MAX_TASKS_PER_WAKE: usize = 8;
-const DEFAULT_BACKGROUND_MAX_RUNTIME_PER_WAKE: Duration = Duration::from_millis(25);
+// A drain wake should accomplish a meaningful chunk of maintenance before
+// re-submitting: a small budget fragments work (a single compaction merge can
+// exceed 25ms, blowing the old per-wake runtime cap every wake) and adds
+// re-submission overhead. Raised so concurrent drains do real work per wake.
+const DEFAULT_BACKGROUND_MAX_TASKS_PER_WAKE: usize = 32;
+const DEFAULT_BACKGROUND_MAX_RUNTIME_PER_WAKE: Duration = Duration::from_millis(250);
 
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

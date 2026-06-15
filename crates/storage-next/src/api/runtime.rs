@@ -177,7 +177,8 @@ struct BackgroundRuntimeController {
     clock: Arc<dyn MaintenanceClock>,
     admission_throttle: Arc<ParkingMutex<BackgroundAdmissionThrottle>>,
     close_requested: Arc<AtomicBool>,
-    wake_scheduled_mask: Arc<AtomicUsize>,
+    active_drains: Arc<AtomicUsize>,
+    max_concurrent_drains: usize,
     wake_requested_mask: Arc<AtomicUsize>,
     max_tasks_per_wake: usize,
     max_runtime_per_wake: Duration,
@@ -191,7 +192,8 @@ impl fmt::Debug for BackgroundRuntimeController {
             .field("stats", &self.stats())
             .field("admission_throttle", &self.admission_throttle)
             .field("close_requested", &self.close_requested)
-            .field("wake_scheduled_mask", &self.wake_scheduled_mask)
+            .field("active_drains", &self.active_drains)
+            .field("max_concurrent_drains", &self.max_concurrent_drains)
             .field("wake_requested_mask", &self.wake_requested_mask)
             .field("max_tasks_per_wake", &self.max_tasks_per_wake)
             .field("max_runtime_per_wake", &self.max_runtime_per_wake)
@@ -720,7 +722,11 @@ impl BackgroundRuntimeController {
             clock,
             admission_throttle: Arc::new(ParkingMutex::new(BackgroundAdmissionThrottle::default())),
             close_requested: Arc::new(AtomicBool::new(false)),
-            wake_scheduled_mask: Arc::new(AtomicUsize::new(0)),
+            active_drains: Arc::new(AtomicUsize::new(0)),
+            // Allow up to one concurrent drain per worker thread; the inline
+            // (deterministic) executor reports zero workers and stays
+            // single-flight via the `max(1)` floor.
+            max_concurrent_drains: worker_count.max(1),
             wake_requested_mask: Arc::new(AtomicUsize::new(0)),
             max_tasks_per_wake: background_config.max_tasks_per_wake(),
             max_runtime_per_wake: background_config.max_runtime_per_wake(),
@@ -817,24 +823,28 @@ impl BackgroundRuntimeController {
             return;
         }
         let wake_bit = background_priority_bit(priority);
-        let scheduled = self
-            .wake_scheduled_mask
-            .fetch_or(wake_bit, Ordering::AcqRel);
-        if scheduled & wake_bit != 0 {
+        // Claim one of up to `max_concurrent_drains` drain slots so the worker
+        // pool can run several drains at once. Each drain claims a different
+        // maintenance lane under the runtime lock (same-lane collisions are
+        // impossible — see `next_startable_task_index`/`task_lane_is_active`), so
+        // flush, compaction, checkpoint, and WAL maintenance overlap. If we are
+        // already at the concurrency cap, record the wake so a finishing drain
+        // re-arms it instead of dropping it.
+        let claimed =
+            self.active_drains
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |in_flight| {
+                    (in_flight < self.max_concurrent_drains).then_some(in_flight + 1)
+                });
+        if claimed.is_err() {
             self.wake_requested_mask
                 .fetch_or(wake_bit, Ordering::AcqRel);
             perf_trace::record_lifecycle_background_wake_coalesced();
             return;
         }
-        self.submit_drain(priority, drain, wake_bit);
+        self.submit_drain(priority, drain);
     }
 
-    fn submit_drain(
-        &self,
-        priority: BackgroundTaskPriority,
-        drain: BackgroundDrainFn,
-        wake_bit: usize,
-    ) {
+    fn submit_drain(&self, priority: BackgroundTaskPriority, drain: BackgroundDrainFn) {
         let controller = self.clone();
         let capture_enabled = perf_trace::test_capture_enabled_for_current_thread();
         let submit = self.executor.submit(
@@ -850,14 +860,13 @@ impl BackgroundRuntimeController {
                     if round.tasks_completed > 0 {
                         perf_trace::record_lifecycle_pressure_clear_wake();
                     }
-                    controller
-                        .wake_scheduled_mask
-                        .fetch_and(!wake_bit, Ordering::AcqRel);
-                    let requested = controller
-                        .wake_requested_mask
-                        .fetch_and(!wake_bit, Ordering::AcqRel)
-                        & wake_bit
-                        != 0;
+                    // Release this drain's concurrency slot, then re-arm: if work
+                    // remains after making progress, or a wake arrived while we
+                    // were at the concurrency cap, kick another drain. Clearing
+                    // every requested bit is safe because a drain services all
+                    // lanes regardless of the priority that triggered it.
+                    controller.active_drains.fetch_sub(1, Ordering::AcqRel);
+                    let requested = controller.wake_requested_mask.swap(0, Ordering::AcqRel) != 0;
                     if (round.pending_tasks > 0 && round.made_progress) || requested {
                         controller.notify_drain(priority, drain);
                     }
@@ -873,10 +882,9 @@ impl BackgroundRuntimeController {
                     .wait_for_progress(completed_before_wait, self.max_runtime_per_wake);
             }
         } else {
-            self.wake_scheduled_mask
-                .fetch_and(!wake_bit, Ordering::AcqRel);
-            self.wake_requested_mask
-                .fetch_and(!wake_bit, Ordering::AcqRel);
+            // The executor rejected the submission (e.g. shutdown): release the
+            // slot claimed in `notify_drain` so the counter stays balanced.
+            self.active_drains.fetch_sub(1, Ordering::AcqRel);
             perf_trace::record_lifecycle_background_wake_rejected();
         }
     }
@@ -912,7 +920,8 @@ impl Clone for BackgroundRuntimeController {
             clock: Arc::clone(&self.clock),
             admission_throttle: Arc::clone(&self.admission_throttle),
             close_requested: Arc::clone(&self.close_requested),
-            wake_scheduled_mask: Arc::clone(&self.wake_scheduled_mask),
+            active_drains: Arc::clone(&self.active_drains),
+            max_concurrent_drains: self.max_concurrent_drains,
             wake_requested_mask: Arc::clone(&self.wake_requested_mask),
             max_tasks_per_wake: self.max_tasks_per_wake,
             max_runtime_per_wake: self.max_runtime_per_wake,
@@ -936,7 +945,9 @@ const fn background_priority_bit(priority: BackgroundTaskPriority) -> usize {
 #[cfg(test)]
 mod background_controller_tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool as TestAtomicBool, Ordering as TestOrdering};
+    use std::sync::atomic::{
+        AtomicBool as TestAtomicBool, AtomicUsize as TestAtomicUsize, Ordering as TestOrdering,
+    };
     use std::sync::{Arc as TestArc, Barrier};
     use std::time::Instant;
 
@@ -992,6 +1003,58 @@ mod background_controller_tests {
         assert!(
             ran_while_normal_active,
             "high-priority wake should be submitted while normal-priority drain is still active"
+        );
+    }
+
+    #[test]
+    fn controller_runs_multiple_drains_concurrently_under_worker_pool() {
+        let controller = BackgroundRuntimeController::new(
+            StorageBackgroundMaintenanceOptions::product_default()
+                .with_worker_count(2)
+                .with_scheduler_queue_depth(8),
+            BackgroundExecutorMode::Threaded,
+        );
+        // The prior single-flight gating ran one drain at a time. The concurrency
+        // counter must let up to `worker_count` drains run simultaneously, so two
+        // same-priority wakes should both be in flight at once.
+        let active = TestArc::new(TestAtomicUsize::new(0));
+        let peak = TestArc::new(TestAtomicUsize::new(0));
+        let release = TestArc::new(TestAtomicBool::new(false));
+
+        let make_drain = || -> BackgroundDrainFn {
+            let active = TestArc::clone(&active);
+            let peak = TestArc::clone(&peak);
+            let release = TestArc::clone(&release);
+            TestArc::new(move |_limits, _clock| {
+                let now_active = active.fetch_add(1, TestOrdering::AcqRel) + 1;
+                peak.fetch_max(now_active, TestOrdering::AcqRel);
+                let deadline = Instant::now() + Duration::from_secs(2);
+                while !release.load(TestOrdering::Acquire) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                active.fetch_sub(1, TestOrdering::AcqRel);
+                BackgroundDrainRound {
+                    tasks_completed: 1,
+                    pending_tasks: 0,
+                    made_progress: true,
+                }
+            })
+        };
+
+        controller.notify_drain(BackgroundTaskPriority::Normal, make_drain());
+        controller.notify_drain(BackgroundTaskPriority::Normal, make_drain());
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while peak.load(TestOrdering::Acquire) < 2 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let observed_peak = peak.load(TestOrdering::Acquire);
+        release.store(true, TestOrdering::Release);
+        controller.shutdown(Some(Duration::from_secs(1)));
+
+        assert_eq!(
+            observed_peak, 2,
+            "two same-priority drains must run concurrently under the worker pool"
         );
     }
 
