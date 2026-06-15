@@ -1541,6 +1541,108 @@ fn cache_load_records_no_source_table_maintenance() {
     assert_eq!(status.background_tasks_completed(), 0);
 }
 
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_load_records_zero_durable_and_maintenance_counters() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+        .expect("cache open should succeed")
+        .into_runtime();
+
+    for batch in 0..6 {
+        for index in 0..8 {
+            let name = format!("cache-absence-{batch}-{index}");
+            runtime
+                .commit(&background_put_batch(name.as_bytes(), vec![0x42; 128]))
+                .expect("cache load commit");
+        }
+    }
+
+    let perf = crate::observability::perf_trace::snapshot();
+
+    // WAL is never built or appended.
+    assert_eq!(perf.commit_wal_records_built(), 0);
+    assert_eq!(perf.commit_wal_appends(), 0);
+    assert_eq!(perf.commit_wal_append_bytes(), 0);
+
+    // No checkpoint or WAL-retention/truncation work.
+    assert_eq!(perf.lifecycle_checkpoint_executions(), 0);
+    assert_eq!(perf.lifecycle_wal_retention_samples(), 0);
+    assert_eq!(perf.lifecycle_wal_checkpoint_enqueue_events(), 0);
+    assert_eq!(perf.lifecycle_wal_truncation_deleted_segments(), 0);
+
+    // No post-commit source-table maintenance scheduling or background work.
+    assert_eq!(perf.lifecycle_post_commit_maintenance_tasks_enqueued(), 0);
+    assert_eq!(perf.lifecycle_background_tasks_completed(), 0);
+
+    // No flush, table rewrite, or compaction work — including zero compaction
+    // input rows and bytes.
+    assert_eq!(perf.lifecycle_flush_drain_operations_completed(), 0);
+    assert_eq!(perf.lifecycle_compaction_operations_completed(), 0);
+    assert_eq!(perf.lifecycle_compaction_input_rows(), 0);
+    assert_eq!(perf.lifecycle_compaction_input_bytes(), 0);
+}
+
+#[test]
+fn cache_load_exceeds_old_default_budget_without_rejecting() {
+    // Review-fix regression guard: cache uses an effectively-unlimited memory
+    // budget. A load that exceeds the old default 64 MiB active / 128 MiB frozen
+    // caps must complete with every commit succeeding and the runtime open.
+    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+        .expect("cache open should succeed")
+        .into_runtime();
+
+    // ~70 commits of 1 MiB each => ~70 MiB held in one growing active table,
+    // past the old 64 MiB active cap that would previously have rejected writes.
+    let value = vec![0x5A; 1024 * 1024];
+    for index in 0..70 {
+        let name = format!("over-budget-{index:04}");
+        runtime
+            .commit(&background_put_batch(name.as_bytes(), value.clone()))
+            .unwrap_or_else(|error| panic!("cache commit {index} must succeed: {error}"));
+        assert!(
+            runtime.is_open(),
+            "runtime must stay open at commit {index}"
+        );
+    }
+
+    assert_eq!(runtime.state(), StorageRuntimeState::Open);
+    let status = runtime.maintenance_status().expect("maintenance status");
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(status.background_worker_count(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_close_performs_no_durable_finalization_work() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+        .expect("cache open should succeed")
+        .into_runtime();
+
+    for index in 0..8 {
+        let name = format!("cache-close-load-{index}");
+        runtime
+            .commit(&background_put_batch(name.as_bytes(), vec![0x42; 64]))
+            .expect("cache load commit");
+    }
+    crate::observability::perf_trace::reset();
+
+    let close = runtime.close().expect("cache close");
+
+    // Close reports no durable sync, and performs no checkpoint, WAL
+    // truncation, manifest publication, or source-table drain.
+    assert!(!close.durable_synced());
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_checkpoint_executions(), 0);
+    assert_eq!(perf.lifecycle_wal_truncation_deleted_segments(), 0);
+    assert_eq!(perf.lifecycle_wal_checkpoint_enqueue_events(), 0);
+    assert_eq!(perf.commit_wal_appends(), 0);
+    assert_eq!(perf.lifecycle_flush_drain_operations_completed(), 0);
+    assert_eq!(perf.lifecycle_compaction_operations_completed(), 0);
+    assert_eq!(perf.lifecycle_background_tasks_completed(), 0);
+}
+
 #[test]
 fn open_cache_can_select_non_background_maintenance_policies_for_tests() {
     for (api_policy, lifecycle_policy, worker_count) in [

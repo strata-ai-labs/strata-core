@@ -2135,6 +2135,773 @@ fn cache_reads_remain_correct_across_frozen_without_flush() {
     read_all(&runtime);
 }
 
+#[test]
+fn cache_neutralizes_l0_owned_table_backlog_pressure() {
+    let branch = branch_id(0x6d);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    // Install many L0 owned tables directly — well past the durable urgent and
+    // blocking L0 backlog thresholds — so the durable classifier would raise
+    // LevelZeroTableBacklog. Cache neutralizes the entire source-shape class.
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("cache branch state");
+        for index in 0..16 {
+            install_owned_table_for_cache_test(
+                state,
+                branch,
+                BranchLevel::ZERO,
+                &format!("cache-l0-backlog-{index}"),
+                vec![active_pressure_put_row(
+                    branch,
+                    format!("l0-backlog-{index}").as_bytes(),
+                    1 + u64::try_from(index).expect("index fits"),
+                    10_000 + u64::try_from(index).expect("index fits"),
+                    128,
+                    0x41,
+                )],
+            );
+        }
+    }
+    assert_eq!(runtime.branch_state().owned_levels()[0].len(), 16);
+    // The synthetic tables carried commit versions 1..=16; advance the runtime
+    // frontier past them so a subsequent ordinary commit is well-formed.
+    runtime
+        .catch_up_commit_frontier_for_test(CommitVersion::new(16), Timestamp::from_micros(10_016));
+
+    let pressure = runtime.storage_pressure();
+    assert_eq!(pressure.severity(), LifecycleStoragePressureSeverity::None);
+    assert_eq!(pressure.reason(), LifecycleStoragePressureReason::None);
+    assert!(pressure.suggested_task().is_none());
+
+    commit_cache_put(&mut runtime, branch, b"l0-backlog-admit", 60_000);
+    let admission = runtime
+        .last_write_admission()
+        .expect("clean admission facts");
+    assert_eq!(
+        admission.status(),
+        LifecycleWriteAdmissionStatus::AcceptedClean
+    );
+    assert!(!admission.inline_maintenance_driven());
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
+fn cache_neutralizes_nonzero_level_table_backlog_pressure() {
+    let branch = branch_id(0x6e);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    // Install many owned tables at a nonzero level. On a durable runtime this
+    // raises NonZeroLevelTableBacklog table-rewrite pressure; cache must report
+    // no source-shape pressure regardless.
+    {
+        let state = runtime
+            .branch_catalog_mut_for_test()
+            .branch_state_mut(
+                branch,
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("cache branch state");
+        for index in 0..16 {
+            install_owned_table_for_cache_test(
+                state,
+                branch,
+                BranchLevel::new(1),
+                &format!("cache-l1-backlog-{index}"),
+                vec![active_pressure_put_row(
+                    branch,
+                    format!("l1-backlog-{index}").as_bytes(),
+                    1 + u64::try_from(index).expect("index fits"),
+                    10_000 + u64::try_from(index).expect("index fits"),
+                    128,
+                    0x42,
+                )],
+            );
+        }
+    }
+    assert_eq!(runtime.branch_state().owned_levels()[1].len(), 16);
+    runtime
+        .catch_up_commit_frontier_for_test(CommitVersion::new(16), Timestamp::from_micros(10_016));
+
+    let pressure = runtime.storage_pressure();
+    assert_eq!(pressure.severity(), LifecycleStoragePressureSeverity::None);
+    assert_eq!(pressure.reason(), LifecycleStoragePressureReason::None);
+    assert!(pressure.suggested_task().is_none());
+
+    commit_cache_put(&mut runtime, branch, b"l1-backlog-admit", 60_000);
+    let admission = runtime
+        .last_write_admission()
+        .expect("clean admission facts");
+    assert_eq!(
+        admission.status(),
+        LifecycleWriteAdmissionStatus::AcceptedClean
+    );
+    assert!(!admission.inline_maintenance_driven());
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn cache_pressure_records_no_admission_slowdown_or_block_wait() {
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let branch = branch_id(0x6f);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    // Build a large frozen backlog with real commits and rotations — enough to
+    // exceed the durable urgent/blocking frozen thresholds — then drive a commit
+    // through write admission under that shape.
+    for index in 0..7 {
+        commit_cache_put(
+            &mut runtime,
+            branch,
+            format!("clock-pressure-seed-{index}").as_bytes(),
+            1_000 + u64::try_from(index).expect("index fits"),
+        );
+        runtime
+            .rotate_active_for_branch_for_maintenance(branch)
+            .expect("rotate into frozen state");
+    }
+    assert!(runtime.branch_state().frozen_table_count() >= 6);
+    crate::observability::perf_trace::reset();
+
+    commit_cache_put(&mut runtime, branch, b"clock-pressure-final", 90_000);
+
+    // Cache never enters admission slowdown or block-wait: there is no clock
+    // advance, no sleep, and no wait attempt under synthetic source-shape
+    // pressure.
+    let perf = crate::observability::perf_trace::snapshot();
+    assert_eq!(perf.lifecycle_write_admission_slowdown_attempts(), 0);
+    assert_eq!(perf.lifecycle_write_admission_slowdown_ns(), 0);
+    assert_eq!(perf.lifecycle_write_admission_block_wait_ns(), 0);
+    assert_eq!(perf.lifecycle_write_admission_pressure_rejects(), 0);
+}
+
+#[test]
+fn cache_rejects_commit_after_close_with_typed_invalid_state() {
+    let branch = branch_id(0x70);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    runtime.close().expect("cache close");
+
+    let error = runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"after-close"),
+                b"value".to_vec(),
+                Timestamp::from_micros(5_000),
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect_err("commit after close rejected");
+
+    assert!(matches!(
+        error,
+        LifecycleError::InvalidLifecycleState { .. }
+    ));
+    assert_eq!(error.code(), "failed_precondition.lifecycle.state");
+}
+
+#[test]
+fn cache_rejects_durable_commit_with_typed_durability_unavailable() {
+    use crate::commit::CommitRuntimeError;
+
+    let branch = branch_id(0x7c);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    // A durable commit request against the cache executor is rejected with the
+    // existing typed durability-unavailable error, asserted on class/code and
+    // the downcast variant — never on display text.
+    let error = runtime
+        .execute_cache_commit(
+            put_batch_with_durability(
+                branch,
+                physical_key(branch, b"durable-on-cache"),
+                b"value".to_vec(),
+                Timestamp::from_micros(1_000),
+                CommitDurabilityMode::Standard,
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect_err("durable commit rejected by cache executor");
+
+    assert_eq!(error.code(), "failed_precondition.lifecycle.commit_runtime");
+    let LifecycleError::LowerLayer {
+        layer: LifecycleLowerLayer::CommitRuntime,
+        source: Some(source),
+        ..
+    } = &error
+    else {
+        panic!("expected commit-runtime lower-layer error, got {error:?}");
+    };
+    let commit_error = source
+        .downcast_ref::<CommitRuntimeError>()
+        .expect("source must downcast to CommitRuntimeError");
+    assert!(
+        matches!(
+            commit_error,
+            CommitRuntimeError::DurabilityUnavailable { .. }
+        ),
+        "expected DurabilityUnavailable, got {commit_error:?}"
+    );
+}
+
+#[test]
+fn cache_reads_and_writes_succeed_with_zero_background_tasks() {
+    // Cache correctness never depends on a background worker draining tasks: a
+    // load and its reads succeed while the maintenance queue reports zero
+    // background workers, zero active tasks, and zero completed tasks.
+    let branch = branch_id(0x7d);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    for index in 0..16 {
+        commit_cache_put(
+            &mut runtime,
+            branch,
+            format!("no-worker-{index}").as_bytes(),
+            1_000 + u64::try_from(index).expect("index fits"),
+        );
+    }
+
+    // Every committed key reads back correctly with no maintenance progress.
+    for index in 0..16 {
+        let user_key = format!("no-worker-{index}");
+        let row = runtime
+            .read_latest_point_or_tombstone_for_branch(
+                branch,
+                &physical_key(branch, user_key.as_bytes()),
+            )
+            .expect("latest read")
+            .expect("visible row");
+        assert_eq!(row.row().value(), user_key.as_bytes());
+    }
+
+    let status = runtime.maintenance_status();
+    assert_eq!(status.active_tasks(), 0);
+    assert_eq!(status.active_task(), None);
+    assert_eq!(status.stats().completed(), 0);
+    assert_eq!(status.pending_tasks(), 0);
+}
+
+fn delete_batch(branch: BranchId, key: PhysicalKey, timestamp: Timestamp) -> CommitBatch {
+    CommitBatch::mutating(
+        branch,
+        vec![CommitMutation::delete(key)],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::new(
+            CommitDurabilityMode::Cache,
+            crate::commit::CommitConflictValidationMode::Skip,
+            crate::commit::CommitDuplicateKeyPolicy::Reject,
+            CommitTimestampPolicy::Explicit(timestamp),
+            CommitOrigin::StorageRuntime,
+        ),
+    )
+}
+
+fn commit_cache_delete(
+    runtime: &mut LifecycleCacheRuntime<CommitManualTimestampSource>,
+    branch: BranchId,
+    user_key: &[u8],
+    timestamp_micros: u64,
+) {
+    runtime
+        .execute_cache_commit(
+            delete_batch(
+                branch,
+                physical_key(branch, user_key),
+                Timestamp::from_micros(timestamp_micros),
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("cache delete commit");
+}
+
+#[test]
+fn cache_read_correctness_without_maintenance_point_and_repeated_puts() {
+    let branch = branch_id(0x71);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    let key = physical_key(branch, b"repeat");
+
+    // Several versions of the same key, rotated into frozen tables between each
+    // commit. No flush or compaction is ever run.
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                key.clone(),
+                b"v1".to_vec(),
+                Timestamp::from_micros(1_000),
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("first put");
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate after first put");
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                key.clone(),
+                b"v2".to_vec(),
+                Timestamp::from_micros(2_000),
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("second put");
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate after second put");
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                key.clone(),
+                b"v3".to_vec(),
+                Timestamp::from_micros(3_000),
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("third put");
+
+    let latest = runtime
+        .read_latest_point_or_tombstone_for_branch(branch, &key)
+        .expect("latest read")
+        .expect("visible row");
+    assert_eq!(latest.row().value(), b"v3");
+    assert!(!latest.row().is_tombstone());
+}
+
+#[test]
+fn cache_read_correctness_without_maintenance_deletes_and_tombstones() {
+    let branch = branch_id(0x72);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    let key = physical_key(branch, b"deleted");
+
+    commit_cache_put(&mut runtime, branch, b"deleted", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate put into frozen");
+    commit_cache_delete(&mut runtime, branch, b"deleted", 2_000);
+
+    // Latest visible read sees nothing once the key is deleted.
+    assert!(runtime
+        .read_view_for_branch(branch)
+        .expect("read view")
+        .latest(&key)
+        .expect("latest read")
+        .is_none());
+
+    // The tombstone is still observable through the tombstone-inclusive read.
+    let with_tombstone = runtime
+        .read_latest_point_or_tombstone_for_branch(branch, &key)
+        .expect("tombstone read")
+        .expect("tombstone row");
+    assert!(with_tombstone.row().is_tombstone());
+}
+
+#[test]
+fn cache_read_correctness_without_maintenance_range_scans_with_limit() {
+    let branch = branch_id(0x73);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    // Commit several keys across multiple batches, rotating each into its own
+    // frozen table so the scan must merge across frozen sources without flush.
+    let keys: [&[u8]; 4] = [b"scan-a", b"scan-b", b"scan-c", b"scan-d"];
+    for (index, user_key) in keys.iter().enumerate() {
+        commit_cache_put(
+            &mut runtime,
+            branch,
+            user_key,
+            1_000 + u64::try_from(index).expect("index fits"),
+        );
+        runtime
+            .rotate_active_for_branch_for_maintenance(branch)
+            .expect("rotate each key into frozen table");
+    }
+
+    let bounds = crate::branch::read::BranchScanBounds::prefix(&physical_key(branch, b"scan-"));
+
+    // Full scan returns all four keys in order.
+    let full = runtime
+        .scan_latest_including_tombstones_for_branch(branch, &bounds, None)
+        .expect("full prefix scan");
+    let full_keys: Vec<Vec<u8>> = full
+        .iter()
+        .map(|row| row.row().physical_key().user_key().to_vec())
+        .collect();
+    assert_eq!(
+        full_keys,
+        keys.iter().map(|key| key.to_vec()).collect::<Vec<_>>()
+    );
+
+    // A bounded scan honors the visible limit.
+    let bounded = runtime
+        .scan_latest_including_tombstones_for_branch(branch, &bounds, Some(2))
+        .expect("bounded prefix scan");
+    assert_eq!(bounded.len(), 2);
+    assert_eq!(bounded[0].row().physical_key().user_key(), b"scan-a");
+    assert_eq!(bounded[1].row().physical_key().user_key(), b"scan-b");
+}
+
+#[test]
+fn cache_read_correctness_without_maintenance_history_across_versions() {
+    let branch = branch_id(0x74);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    let key = physical_key(branch, b"history");
+
+    for (index, (value, timestamp)) in [
+        (b"h1".to_vec(), 1_000_u64),
+        (b"h2".to_vec(), 2_000),
+        (b"h3".to_vec(), 3_000),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        runtime
+            .execute_cache_commit(
+                put_batch(
+                    branch,
+                    key.clone(),
+                    value,
+                    Timestamp::from_micros(timestamp),
+                ),
+                CommitBranchGenerationGuard::not_supplied(),
+            )
+            .expect("history put");
+        if index < 2 {
+            runtime
+                .rotate_active_for_branch_for_maintenance(branch)
+                .expect("rotate each version into frozen table");
+        }
+    }
+
+    let history = runtime
+        .read_view_for_branch(branch)
+        .expect("read view")
+        .history(&key, crate::branch::read::BranchHistoryOptions::all())
+        .expect("history");
+    let versions: Vec<u64> = history
+        .iter()
+        .map(|row| row.row().commit_version().as_u64())
+        .collect();
+    assert_eq!(
+        versions,
+        vec![3, 2, 1],
+        "history is newest-first across versions"
+    );
+}
+
+#[test]
+fn cache_read_correctness_without_maintenance_timestamp_reads() {
+    let branch = branch_id(0x75);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+    let key = physical_key(branch, b"ts");
+
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                key.clone(),
+                b"early".to_vec(),
+                Timestamp::from_micros(2_000),
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("early put");
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate early version into frozen table");
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                key.clone(),
+                b"late".to_vec(),
+                Timestamp::from_micros(4_000),
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("late put");
+
+    let view = runtime.read_view_for_branch(branch).expect("read view");
+
+    // Before any write: no visible row.
+    assert!(view
+        .read_point(
+            &key,
+            crate::branch::read::BranchReadBound::at_timestamp(Timestamp::from_micros(1_000))
+        )
+        .expect("read before first write")
+        .is_none());
+    // At the early write timestamp: early value.
+    assert_eq!(
+        view.read_point(
+            &key,
+            crate::branch::read::BranchReadBound::at_timestamp(Timestamp::from_micros(2_000))
+        )
+        .expect("read at early ts")
+        .expect("early row")
+        .row()
+        .value(),
+        b"early"
+    );
+    // Between writes: still the early value.
+    assert_eq!(
+        view.read_point(
+            &key,
+            crate::branch::read::BranchReadBound::at_timestamp(Timestamp::from_micros(3_000))
+        )
+        .expect("read between writes")
+        .expect("early row")
+        .row()
+        .value(),
+        b"early"
+    );
+    // At or after the late write timestamp: late value.
+    assert_eq!(
+        view.read_point(
+            &key,
+            crate::branch::read::BranchReadBound::at_timestamp(Timestamp::from_micros(5_000))
+        )
+        .expect("read after late ts")
+        .expect("late row")
+        .row()
+        .value(),
+        b"late"
+    );
+}
+
+#[test]
+fn cache_read_correctness_without_maintenance_branch_fork_reads() {
+    let parent = branch_id(0x76);
+    let child = branch_id(0x77);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(parent, &backend);
+
+    commit_cache_put(&mut runtime, parent, b"shared", 1_000);
+    // fork_current requires the source to hold no active rows and no frozen
+    // tables; flush the parent into an owned L0 table first. The fork itself
+    // runs no maintenance — it inherits the parent's owned tables by reference.
+    runtime
+        .rotate_active_for_branch_for_maintenance(parent)
+        .expect("rotate parent into frozen table");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(parent))
+        .expect("enqueue parent flush");
+    runtime
+        .run_next_flush_maintenance()
+        .expect("run parent flush")
+        .expect("flush outcome");
+
+    runtime
+        .fork_current(
+            parent,
+            child,
+            CommitBranchGeneration::new(1).expect("generation"),
+        )
+        .expect("fork child branch");
+
+    // The child inherits the parent row without any flush or materialization.
+    // Inherited rows are read through the child-scoped key.
+    let inherited = runtime
+        .read_latest_point_or_tombstone_for_branch(child, &physical_key(child, b"shared"))
+        .expect("child inherited read")
+        .expect("inherited row");
+    assert_eq!(inherited.row().value(), b"shared");
+
+    // A child-local commit is visible only on the child; the parent's own
+    // branch-scoped key for the same user key never sees it.
+    commit_cache_put(&mut runtime, child, b"child-only", 2_000);
+    assert!(runtime
+        .read_view_for_branch(child)
+        .expect("child view")
+        .latest(&physical_key(child, b"child-only"))
+        .expect("child read")
+        .is_some());
+    assert!(runtime
+        .read_view_for_branch(parent)
+        .expect("parent view")
+        .latest(&physical_key(parent, b"child-only"))
+        .expect("parent read")
+        .is_none());
+}
+
+#[test]
+fn cache_read_results_are_identical_before_and_after_flush_and_compaction() {
+    let branch = branch_id(0x78);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    let keys: [&[u8]; 4] = [b"stable-a", b"stable-b", b"stable-c", b"stable-d"];
+    for (index, user_key) in keys.iter().enumerate() {
+        commit_cache_put(
+            &mut runtime,
+            branch,
+            user_key,
+            1_000 + u64::try_from(index).expect("index fits"),
+        );
+        runtime
+            .rotate_active_for_branch_for_maintenance(branch)
+            .expect("rotate each key into frozen table");
+    }
+
+    let read_all = |runtime: &LifecycleCacheRuntime<CommitManualTimestampSource>| -> Vec<Vec<u8>> {
+        keys.iter()
+            .map(|user_key| {
+                runtime
+                    .read_latest_point_or_tombstone_for_branch(
+                        branch,
+                        &physical_key(branch, user_key),
+                    )
+                    .expect("latest read")
+                    .expect("visible row")
+                    .row()
+                    .value()
+                    .to_vec()
+            })
+            .collect()
+    };
+
+    let before = read_all(&runtime);
+
+    // Explicit test-only flush, then explicit test-only compaction.
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue explicit flush");
+    runtime
+        .run_next_flush_maintenance()
+        .expect("run explicit flush")
+        .expect("flush outcome");
+    let after_flush = read_all(&runtime);
+
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue explicit compaction");
+    runtime
+        .run_next_compaction_maintenance()
+        .expect("run explicit compaction")
+        .expect("compaction outcome");
+    let after_compaction = read_all(&runtime);
+
+    assert_eq!(before, after_flush, "reads must not depend on flush");
+    assert_eq!(
+        before, after_compaction,
+        "reads must not depend on compaction"
+    );
+}
+
+#[test]
+fn cache_ordinary_commits_enqueue_no_maintenance_across_shapes() {
+    let branch = branch_id(0x79);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    let assert_no_maintenance = |runtime: &LifecycleCacheRuntime<CommitManualTimestampSource>| {
+        let status = runtime.maintenance_status();
+        assert_eq!(status.pending_tasks(), 0);
+        assert_eq!(status.stats().enqueued(), 0);
+        assert_eq!(status.stats().completed(), 0);
+    };
+
+    // One batch.
+    commit_cache_put(&mut runtime, branch, b"single-batch", 1_000);
+    assert_no_maintenance(&runtime);
+
+    // Many batches.
+    for index in 0..32 {
+        commit_cache_put(
+            &mut runtime,
+            branch,
+            format!("many-batches-{index}").as_bytes(),
+            2_000 + u64::try_from(index).expect("index fits"),
+        );
+    }
+    assert_no_maintenance(&runtime);
+
+    // Large values.
+    for index in 0..4 {
+        runtime
+            .execute_cache_commit(
+                put_batch(
+                    branch,
+                    physical_key(branch, format!("large-value-{index}").as_bytes()),
+                    vec![0x55; 256 * 1024],
+                    Timestamp::from_micros(10_000 + u64::try_from(index).expect("index fits")),
+                ),
+                CommitBranchGenerationGuard::not_supplied(),
+            )
+            .expect("large value commit");
+    }
+    assert_no_maintenance(&runtime);
+
+    // Many distinct key ranges.
+    for range in 0..8 {
+        for offset in 0..8 {
+            commit_cache_put(
+                &mut runtime,
+                branch,
+                format!("range-{range}-key-{offset}").as_bytes(),
+                20_000 + u64::try_from(range * 8 + offset).expect("index fits"),
+            );
+        }
+    }
+    assert_no_maintenance(&runtime);
+}
+
+#[test]
+fn cache_explicit_test_only_maintenance_door_still_runs_flush() {
+    // Ordinary cache commits never enqueue maintenance (proven above), but the
+    // explicit test-only maintenance door remains fully functional: the
+    // mechanics are intact, separated from product cache scheduling policy.
+    let branch = branch_id(0x7b);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    commit_cache_put(&mut runtime, branch, b"explicit-door", 1_000);
+    runtime
+        .rotate_active_for_branch_for_maintenance(branch)
+        .expect("rotate into frozen source");
+    assert!(runtime.branch_state().frozen_table_count() > 0);
+
+    let enqueue = runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue explicit flush");
+    assert!(enqueue.was_enqueued());
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+
+    let outcome = runtime
+        .run_next_flush_maintenance()
+        .expect("run explicit flush")
+        .expect("flush outcome");
+    assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Flush);
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+
+    let status = runtime.maintenance_status();
+    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(status.stats().completed(), 1);
+    assert_eq!(runtime.branch_state().frozen_table_count(), 0);
+}
+
 fn open_runtime(
     branch: BranchId,
     backend: &dyn Backend,

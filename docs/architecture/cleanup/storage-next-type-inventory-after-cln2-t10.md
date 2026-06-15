@@ -7,12 +7,12 @@ Counts are conservative text matches, not a Rust AST parse.
 
 | Metric | Count |
 |---|---|
-| Rust files | 343 |
+| Rust files | 344 |
 | Production Rust files | 151 |
-| All struct/enum definitions | 1086 |
-| Production struct/enum definitions | 803 |
-| Cleanup-target production definitions | 638 |
-| Public API definitions | 112 |
+| All struct/enum definitions | 1090 |
+| Production struct/enum definitions | 807 |
+| Cleanup-target production definitions | 639 |
+| Public API definitions | 115 |
 | Durable format definitions | 53 |
 
 ## Top Files By Type Count
@@ -20,16 +20,16 @@ Counts are conservative text matches, not a Rust AST parse.
 | File | Types | LOC |
 |---|---|---|
 | api/diagnostics.rs | 25 | 1255 |
-| lifecycle/compaction.rs | 23 | 2997 |
 | lifecycle/maintenance.rs | 23 | 1630 |
 | branch/read.rs | 22 | 3909 |
+| lifecycle/compaction.rs | 22 | 3046 |
 | table/reader.rs | 20 | 1826 |
 | table/compaction.rs | 19 | 1220 |
+| api/runtime.rs | 18 | 6430 |
 | commit/batch.rs | 18 | 774 |
 | service/wal.rs | 18 | 1643 |
 | branch/facts.rs | 17 | 1160 |
 | api/read.rs | 16 | 540 |
-| api/runtime.rs | 15 | 6103 |
 | branch/state/materialization.rs | 13 | 1355 |
 | lifecycle/background.rs | 13 | 1651 |
 | lifecycle/branch_lifecycle.rs | 13 | 1210 |
@@ -37,30 +37,30 @@ Counts are conservative text matches, not a Rust AST parse.
 | testkit/branch_lsm/contracts.rs | 13 | 441 |
 | api/outcome.rs | 12 | 560 |
 | backend/mod.rs | 12 | 893 |
-| lifecycle/cache.rs | 12 | 2377 |
+| lifecycle/cache.rs | 12 | 2421 |
 | api/maintenance.rs | 11 | 587 |
 
 ## Files Over 1,500 LOC
 
 | File | LOC |
 |---|---|
-| observability/perf_trace.rs | 6747 |
-| api/runtime.rs | 6103 |
-| lifecycle/tests/cache.rs | 5066 |
-| lifecycle/tests/compaction/mod.rs | 4314 |
-| branch/tests/owned_compaction.rs | 4193 |
-| api/tests/mod.rs | 4179 |
+| observability/perf_trace.rs | 6859 |
+| api/runtime.rs | 6430 |
+| branch/tests/owned_compaction.rs | 4822 |
+| api/tests/mod.rs | 4654 |
+| lifecycle/tests/compaction/mod.rs | 4335 |
 | table/tests/reader.rs | 4018 |
 | branch/read.rs | 3909 |
+| lifecycle/tests/cache.rs | 3669 |
 | lifecycle/durable/maintenance.rs | 3478 |
-| lifecycle/tests/durable.rs | 3435 |
+| lifecycle/tests/durable.rs | 3418 |
 | service/manifest.rs | 3334 |
 | service/table.rs | 3272 |
+| lifecycle/compaction.rs | 3046 |
 | commit/tests/durable.rs | 3013 |
 | lifecycle/tests/recovery.rs | 3007 |
-| lifecycle/compaction.rs | 2997 |
 | commit/tests/cache.rs | 2503 |
-| lifecycle/cache.rs | 2377 |
+| lifecycle/cache.rs | 2421 |
 | branch/tests/read_view.rs | 2202 |
 | testkit/integration_harness.rs | 2111 |
 | backend/local_fs.rs | 2040 |
@@ -68,25 +68,25 @@ Counts are conservative text matches, not a Rust AST parse.
 | table/tests/compaction.rs | 2027 |
 | lifecycle/tests/table_manifest_recovery.rs | 2014 |
 | lifecycle/tests/compaction/publication_plan.rs | 1990 |
+| branch/state/compaction.rs | 1958 |
 | lifecycle/tests/retention.rs | 1913 |
 | lifecycle/checkpoint.rs | 1886 |
 | table/reader.rs | 1826 |
 | lifecycle/tests/compaction/remaining.rs | 1807 |
-| branch/state/compaction.rs | 1666 |
 | lifecycle/background.rs | 1651 |
 | service/wal.rs | 1643 |
 | testkit/commit_runtime.rs | 1631 |
 | lifecycle/maintenance.rs | 1630 |
 | commit/tests/replay.rs | 1621 |
 | lifecycle/quarantine.rs | 1614 |
-| lifecycle/tests/budget_runtime.rs | 1598 |
+| lifecycle/tests/budget_runtime.rs | 1588 |
 | lifecycle/tests/table_object_retention/plan.rs | 1550 |
 
 ## Parent Module Re-Exports
 
 | File | pub use statements | Approx exported names |
 |---|---|---|
-| lifecycle/mod.rs | 24 | 237 |
+| lifecycle/mod.rs | 24 | 238 |
 | api/mod.rs | 14 | 104 |
 | testkit/mod.rs | 15 | 99 |
 | format/mod.rs | 15 | 86 |
@@ -105,7 +105,7 @@ Counts are conservative text matches, not a Rust AST parse.
 |---|---|
 | Outcome | 47 |
 | Request | 24 |
-| Policy | 15 |
+| Policy | 16 |
 | Report | 12 |
 | Reason | 9 |
 | Proof | 7 |
@@ -139,8 +139,8 @@ Counts are conservative text matches, not a Rust AST parse.
 | format/branch_catalog_manifest.rs | 0 | 4 |
 | backend/mod.rs | 0 | 4 |
 | service/mod.rs | 3 | 0 |
+| lifecycle/facts.rs | 0 | 3 |
 | branch/error.rs | 0 | 3 |
-| api/runtime.rs | 0 | 3 |
 
 ## Low-Reference Cleanup Candidates
 

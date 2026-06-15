@@ -383,6 +383,69 @@ fn diagnostics_reports_pressure_facts() {
 }
 
 #[test]
+fn diagnostics_reports_cache_volatile_in_memory_shape() {
+    // Cache reports its volatile in-memory source layout explicitly (Known with
+    // active/frozen rows and zero owned/inherited tables) rather than treating
+    // absent durable table shape as unknown. Durable-only facts are Unsupported.
+    let mut runtime = open_runtime();
+    runtime
+        .commit(&put_batch(b"volatile-shape", b"value"))
+        .expect("commit");
+
+    let report = diagnostics(&runtime);
+
+    let layout = report.source_layout();
+    assert_eq!(layout.state(), DiagnosticsFactState::Known);
+    assert!(layout.active_rows() > 0);
+    assert_eq!(layout.owned_total_tables(), 0);
+    assert_eq!(layout.owned_l0_tables(), 0);
+    assert_eq!(layout.inherited_total_tables(), 0);
+
+    // Durable table-reachability, checkpoint, and retention facts are
+    // unsupported for volatile cache mode.
+    assert_eq!(
+        report.table_manifest().state(),
+        DiagnosticsFactState::Unsupported
+    );
+    assert_eq!(
+        report.checkpoint().state(),
+        DiagnosticsFactState::Unsupported
+    );
+    assert_eq!(
+        report.retention().state(),
+        DiagnosticsFactState::Unsupported
+    );
+}
+
+#[test]
+fn diagnostics_reports_neutralized_cache_pressure_with_frozen_tables() {
+    // Review-fix regression guard: even when frozen tables exist (rotation
+    // without flush), cache diagnostics report neutralized source-shape pressure
+    // (severity None) while the source layout still shows the frozen tables. This
+    // proves diagnostics pressure flows through the neutralized cache path.
+    let mut runtime = open_runtime();
+    runtime
+        .commit(&put_batch(b"frozen-pressure", b"value"))
+        .expect("commit");
+    runtime
+        .rotate_default_branch_for_test()
+        .expect("rotate active table into frozen source");
+
+    let report = diagnostics(&runtime);
+
+    assert!(report.source_layout().frozen_table_count() > 0);
+    assert_eq!(report.pressure().state(), DiagnosticsFactState::Known);
+    assert_eq!(
+        report.pressure().severity(),
+        DiagnosticsStoragePressureSeverity::None
+    );
+    assert_eq!(
+        report.pressure().reason(),
+        DiagnosticsStoragePressureReason::None
+    );
+}
+
+#[test]
 fn diagnostics_reports_source_layout_after_flush_and_compact() {
     let mut runtime = open_runtime();
     runtime

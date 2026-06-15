@@ -80,3 +80,95 @@ fn cache_and_durable_policies_are_distinct() {
         "cache and durable lifecycle policies must be distinguishable"
     );
 }
+
+/// Every storage mode that exists today, with its required disposition: cache is
+/// volatile (all six capabilities denied), every other mode is durable (all six
+/// permitted). New modes added to [`StorageMode`] force this list to be updated.
+const ALL_MODES_WITH_DISPOSITION: [(StorageMode, bool); 4] = [
+    (StorageMode::Cache, false),
+    (StorageMode::DurableLocalStandard, true),
+    (StorageMode::DurableLocalAlways, true),
+    (StorageMode::ObjectDurableCandidate, true),
+];
+
+#[test]
+fn lifecycle_policy_matrix_covers_every_mode_and_capability() {
+    for (mode, source_table_permitted) in ALL_MODES_WITH_DISPOSITION {
+        let policy = ModeLifecyclePolicy::for_storage_mode(mode);
+        for (name, permitted) in all_capabilities(policy) {
+            assert_eq!(
+                permitted, source_table_permitted,
+                "{mode} capability {name} must be {source_table_permitted}"
+            );
+        }
+    }
+}
+
+#[test]
+fn cache_denies_and_durable_candidate_modes_permit_each_capability() {
+    // Pivot the matrix the other way: for each of the six capabilities, cache is
+    // false while every durable/candidate mode is true. This is the
+    // capability-kind angle requested by the plan: there is no maintenance-task
+    // scheduling helper beyond these predicates, so denial of flush/compaction/
+    // materialization scheduling is proven through the six policy predicates.
+    let cache = ModeLifecyclePolicy::for_storage_mode(StorageMode::Cache);
+    let durable_modes = [
+        ModeLifecyclePolicy::for_storage_mode(StorageMode::DurableLocalStandard),
+        ModeLifecyclePolicy::for_storage_mode(StorageMode::DurableLocalAlways),
+        ModeLifecyclePolicy::for_storage_mode(StorageMode::ObjectDurableCandidate),
+    ];
+
+    let cache_caps = all_capabilities(cache);
+    for (index, (name, cache_permitted)) in cache_caps.into_iter().enumerate() {
+        assert!(!cache_permitted, "cache must deny capability: {name}");
+        for durable in durable_modes {
+            let (durable_name, durable_permitted) = all_capabilities(durable)[index];
+            assert_eq!(durable_name, name, "capability ordering must be stable");
+            assert!(
+                durable_permitted,
+                "durable mode must permit capability: {name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn lifecycle_policy_is_independent_of_scheduling_policy_and_config() {
+    // The policy surface is a pure function of mode. Constructing open plans that
+    // vary the maintenance scheduling policy and other config fields must not
+    // shift the lifecycle policy: the gate is the mode, not the config.
+    let configs = [
+        LifecycleConfig::default(),
+        LifecycleConfig::default()
+            .with_maintenance_scheduling_policy(LifecycleMaintenanceSchedulingPolicy::Disabled)
+            .expect("disabled scheduling config"),
+        LifecycleConfig::default()
+            .with_maintenance_scheduling_policy(
+                LifecycleMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+            )
+            .expect("evaluate-and-enqueue scheduling config"),
+        LifecycleConfig::default()
+            .with_maintenance_scheduling_policy(
+                LifecycleMaintenanceSchedulingPolicy::DeterministicInline,
+            )
+            .expect("deterministic-inline scheduling config"),
+    ];
+
+    for (mode, _) in ALL_MODES_WITH_DISPOSITION {
+        let expected = ModeLifecyclePolicy::for_storage_mode(mode);
+        for config in configs {
+            let plan = StorageOpenPlan::new(
+                mode,
+                LifecycleCodecId::identity(),
+                RecoveryStrictness::Strict,
+                config,
+            )
+            .expect("open plan");
+            assert_eq!(
+                plan.lifecycle_policy(),
+                expected,
+                "{mode} lifecycle policy must not depend on the scheduling policy or config"
+            );
+        }
+    }
+}

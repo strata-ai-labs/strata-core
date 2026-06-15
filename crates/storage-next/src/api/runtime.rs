@@ -1956,6 +1956,7 @@ impl<'a> StorageRuntime<'a> {
                 branch_id,
                 runtime.maintenance_status(),
                 runtime.open_plan().lifecycle_config().storage_budget(),
+                runtime.open_plan().lifecycle_policy(),
             ),
             diagnostics_source_layout_report(runtime.branch_catalog(), branch_id),
             DiagnosticsReadActivityReport::unknown(),
@@ -2003,6 +2004,7 @@ impl<'a> StorageRuntime<'a> {
                 branch_id,
                 runtime.maintenance_status(),
                 runtime.open_plan().lifecycle_config().storage_budget(),
+                runtime.open_plan().lifecycle_policy(),
             ),
             diagnostics_source_layout_report(runtime.branch_catalog(), branch_id),
             DiagnosticsReadActivityReport::unknown(),
@@ -5555,11 +5557,20 @@ fn diagnostics_pressure_report(
     branch_id: BranchId,
     maintenance: MaintenanceExecutorStatus,
     budget: StorageRuntimeBudget,
+    policy: ModeLifecyclePolicy,
 ) -> DiagnosticsStoragePressureReport {
     let Ok(branch) = catalog.branch_state(branch_id) else {
         return DiagnosticsStoragePressureReport::unknown();
     };
     let pressure = collect_storage_pressure_with_budget(branch, maintenance, Some(budget));
+    // Mirror the admission chokepoint: volatile modes (cache) apply no
+    // source-shape pressure, so diagnostics must report the neutralized view
+    // rather than raw backlog the engine never acts on.
+    let pressure = if policy.may_apply_source_shape_admission_pressure() {
+        pressure
+    } else {
+        pressure.with_source_shape_neutralized()
+    };
     DiagnosticsStoragePressureReport::known(
         branch_id,
         map_storage_pressure_severity(pressure.severity()),
