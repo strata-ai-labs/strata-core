@@ -25,9 +25,13 @@ is different: flush, compaction, checkpoint, and WAL truncation are real
 correctness requirements and cannot be removed. The defect is therefore not
 "durable does maintenance" but two specific coupling bugs:
 
-1. **Publish coupling.** Background maintenance persists the table manifest to
-   disk (fsync) while holding the single runtime lock that every commit needs,
-   so commits serialize behind background durable I/O.
+1. **Publish coupling.** Background maintenance runs the publish phase under the
+   single runtime lock that every commit needs, and that phase rebuilds
+   branch-wide facts and the full table manifest by scanning the entire resident
+   dataset on every flush/compaction (then fsyncs), so commits serialize behind
+   O(dataset) per-publish work. (Group A's `manifest_persist` counter later showed
+   the fsync itself is only 2-4% of the lock-held cost; the rescans are the rest —
+   see Group C.)
 2. **Admission coupling.** When the L0 backlog reaches the blocking threshold,
    write admission converts sustained backpressure into a commit *rejection*
    instead of slowing the writer until maintenance catches up.
@@ -51,9 +55,11 @@ The durable standard load is slow and eventually unable to complete because:
 1. each commit takes the runtime lock to append WAL and apply to the memtable;
 2. a background worker runs flush/compaction/checkpoint as a
    snapshot → build → publish state machine;
-3. the build phase already runs unlocked, but the **publish phase reacquires
-   the runtime lock and performs durable manifest persistence (fsync) inside
-   it**;
+3. the build phase already runs unlocked, but the **publish phase reacquires the
+   runtime lock and, under it, rebuilds branch-wide observed-row facts and the
+   entire table manifest by scanning the resident dataset — O(dataset) per
+   publish — then fsyncs the manifest** (the fsync is the small tail, ~2-4%; see
+   Group C);
 4. so the foreground spends a large fraction of the run blocked on the lock the
    publish phase holds;
 5. background maintenance therefore cannot keep pace with the writer, L0 tables
@@ -62,8 +68,9 @@ The durable standard load is slow and eventually unable to complete because:
    load fails.
 
 The old standard engine is not faster because its compaction is better. It is
-faster and reliable because it never serializes commits behind durable manifest
-I/O and never converts compaction backlog into a write failure.
+faster and reliable because its publish does O(tables-changed) work — it never
+serializes commits behind a full-dataset rescan or full manifest rebuild — and
+never converts compaction backlog into a write failure.
 
 ## Current Evidence
 
@@ -130,19 +137,28 @@ Two facts sharpen the case for Groups C–E:
 
 1. **Publish-under-lock is now 86% of maintenance (was 68% at 1M), and 304s of
    the 317s publish-lock window — 96% — directly blocks the foreground.** The
-   coupling worsens with scale exactly as predicted; Group C (move manifest
-   persistence off-lock) is the single highest-leverage lever.
+   later full-scale sweep (commit `5f2c68e1`) added the `manifest_persist`
+   counter, which overturned the original mechanism: fsync is only **2-4%** of
+   publish-lock (10.2s of 240.95s at 5M; 39.9s of 1474.3s at 10M). The dominant
+   **~96%** is the publish phase rebuilding branch-wide facts and the full
+   manifest by scanning the resident dataset on every flush/compaction
+   (`refresh_observed_row_facts` + `build_manifest`'s per-row bounds) — O(rows)
+   per publish × O(flushes) = O(N²). Group C is therefore re-aimed at eliminating
+   the rescans (cache immutable per-table facts; incremental observed-facts and
+   manifest), **not** at moving fsync off-lock.
 2. **The actual commit/WAL work is small.** Subtracting the 304.1s lock-wait,
    27.2s slowdown, and 18.1s block-wait from the 380.8s run leaves ~31s of real
    commit work — the same ballpark as the old engine's *entire* 17.35s run. The
    ~22x gap is almost entirely maintenance serialization, not the durable write
    path, which is the premise Groups C–E are built on.
 
-Note on the 2x soft target: removing the 304s lock-wait alone drops 5M from
-~381s toward ~77s (~4.4x old), so Groups C–D make the engine usable and reclaim
-the bulk but will not by themselves reach the 2x target. That is owned by Group E
-(admission ramp + concurrent drain) plus the commit/WAL hot-path follow-on the
-soft-target note in Group F already anticipates.
+Note on the 2x soft target: because the rescans are ~96% of publish-lock,
+eliminating them (Group C) should collapse foreground lock-wait by roughly that
+fraction — a far larger reclaim than the ~4.4x an off-lock-fsync move alone would
+have bought — and is expected to bring the gap from 19x/44x (5M/10M) toward single
+digits, plausibly to or past the 2x target. Any residual after C is owned by
+Group E (admission ramp + concurrent drain) plus the commit/WAL hot-path
+follow-on the soft-target note in Group F already anticipates.
 
 Old engine standard load (same environment):
 
@@ -182,7 +198,9 @@ load that is merely slow.
    or table-object writes.
 3. The runtime lock is held by publish only long enough to swap in-memory
    layout pointers and update in-memory maintenance, branch, and visibility
-   state.
+   state. This update is O(tables changed by the task), never a scan or rebuild
+   proportional to the resident dataset (no per-publish row rescan, full manifest
+   rebuild, or full catalog clone).
 4. Manifest durability ordering is preserved: a table is relied upon for
    recovery only after its manifest entry is durably persisted. A crash between
    the in-memory pointer swap and manifest persistence must recover to a
@@ -209,7 +227,7 @@ load that is merely slow.
 | --- | --- | --- |
 | A. Publish Cost Audit | Attribute durable publish-lock time to each step and classify each as lock-required (pointer/state swap) or movable (durable I/O). | A table names each durable publish step and its required disposition, backed by a counter that separates lock-held publish time from off-lock durable I/O. |
 | B. Write-Admission Liveness | Stop converting sustained backlog into commit rejection. | A sustained durable overload load completes; admission never surfaces a retryable pressure rejection while maintenance completes tasks. |
-| C. Publish/Manifest Decoupling | Move durable manifest persistence and fsync out of the runtime-locked publish critical section. | Lock-held publish time excludes manifest fsync; foreground lock-wait drops sharply; durable counters unchanged in meaning. |
+| C. Publish Critical-Section Cost Elimination | Make publish touch only the tables the task changed: cache immutable per-table bounds/facts at seal time, update branch facts incrementally, publish the manifest incrementally; then move the residual fsync off-lock. | Per-task lock-held publish time is flat across 1M→10M (no full-dataset rescan); manifest bytes and recovery byte-identical to baseline; foreground lock-wait drops by the non-fsync residual. |
 | D. Crash-Consistency And Recovery | Prove the decoupled publish preserves durability ordering. | Recovery, snapshot, and WAL-replay tests pass; no layout/manifest divergence after simulated crash between pointer swap and manifest persist. |
 | E. Maintenance Throughput And Backpressure Shape | Let the worker pool parallelize durable maintenance and pace the writer smoothly. | Durable maintenance wall-clock scales with worker count; admission ramps instead of cliffing at the blocking threshold. |
 | F. Benchmark Closeout | Re-run durable standard and always loads versus old standard. | Durable completes 100K-10M with bounded backpressure and no rejection. |
@@ -240,11 +258,12 @@ that already completes.
      enqueued or active compaction to wait on before it can give up.
    - Preserve the existing runtime-shutdown, panic, and recovery-health
      rejection paths unchanged.
-3. **Publish decoupling third (Group C).**
-   - Restructure durable publish into a short locked pointer/state swap plus an
-     off-lock durable persistence step.
-   - Keep manifest persistence ordered before any reliance on the new table for
-     recovery and before WAL truncation that retires its inputs.
+3. **Publish critical-section cost elimination third (Group C).**
+   - Cache immutable per-table bounds/facts at seal time and make observed-row
+     facts and manifest publication incremental, so publish is O(tables changed),
+     not O(resident dataset). This is the dominant cost (~96% of publish-lock).
+   - Then move the residual fsync off-lock, kept ordered before any reliance on
+     the new table for recovery and before WAL truncation that retires its inputs.
 4. **Crash-consistency and recovery fourth (Group D).**
    - Prove WAL replay reconstructs any table whose manifest entry was not yet
      persisted at crash.
@@ -319,35 +338,82 @@ Exit gates:
 3. The give-up path is driven by maintenance liveness, not by an absolute clock
    deadline alone.
 
-## C. Publish/Manifest Decoupling
+## C. Publish Critical-Section Cost Elimination (was: Publish/Manifest Decoupling)
 
-Goal: durable disk I/O leaves the commit-blocking critical section.
+Goal: the publish critical section must touch only the tables the running task
+changed — never the whole resident dataset. The dominant lock-held cost is not
+durable I/O; it is per-publish recomputation of branch-wide facts and the full
+table manifest from a full scan of the resident dataset.
+
+What the Group A counter revealed (full-scale sweep, commit `5f2c68e1`): manifest
+fsync (`lifecycle_background_publish_manifest_persist_ns`) is only 2-4% of
+publish-lock (10.2s of 240.95s at 5M; 39.9s of 1474.3s at 10M). The other 96-97%
+is in-memory recomputation, all under the runtime lock, none captured by the
+fsync timer:
+
+1. `refresh_observed_row_facts` (`branch/state.rs`) via `observe_own_rows`
+   rescans every row of every owned table on every flush install to recompute
+   `max_commit_version`, timestamp min/max, and put/tombstone counts.
+2. `build_manifest` (`lifecycle/table_manifest.rs`) rebuilds the entire manifest;
+   `manifest_table_bounds` and `timestamp_bounds` rescan every row of every table
+   to recompute key/timestamp bounds that are immutable once a table is sealed.
+3. the budget pre-encode (`encode_table_manifest`) serializes the whole manifest
+   each publish only to measure its byte length, then discards it;
+   `record_manifest` re-walks every table ref; compaction
+   (`install_published_durable_compaction`) clones the entire catalog
+   (`catalog.clone()`).
+
+This is O(resident rows) per publish × O(flushes) publishes = O(N²). It is why
+per-task publish-lock time roughly doubles 5M→10M (232ms→460ms) and the
+foreground lock-wait reaches 80-86% of the run. Moving fsync off the lock — the
+original framing of this group — would reclaim only the 2-4%; the rescans are the
+target.
 
 Implementation tasks:
 
-1. Split durable publish into:
-   - a short locked step that swaps in-memory layout pointers and updates
-     in-memory maintenance/branch/visibility state;
-   - an off-lock step that performs manifest persistence, fsync, table-object
-     and checkpoint/snapshot writes.
-2. Order the off-lock persistence so that a newly installed table is durable in
-   the manifest before it is relied upon for recovery and before any WAL
-   truncation that retires its inputs.
-3. Keep readers correct during the window between pointer swap and manifest
-   persistence by serving from WAL-backed in-memory state, exactly as recovery
-   would.
-4. Ensure publish failure (I/O error, fsync failure) is surfaced as durable
-   maintenance health and does not leave an authoritative table without a
-   durable manifest entry.
-5. Do not change the table format, manifest format, or codec.
+1. **Cache immutable per-table bounds and facts at seal time.** A built table is
+   immutable; compute its physical/internal key bounds, timestamp min/max, and
+   manifest table facts once when the table object is sealed (flush or compaction
+   output) and store them on the owned-table / catalog entry. `build_manifest`
+   then reads them in O(1) per table instead of rescanning rows. (Internal-key
+   min/max are the first and last row of a sorted table; no scan is needed.)
+2. **Make branch observed-row facts incremental.** A flush moves one known frozen
+   table into L0; a compaction replaces known inputs with known outputs. Update
+   branch `max_commit_version`, timestamp min/max, and put/tombstone counts by
+   delta from the changed tables' cached facts, instead of
+   `refresh_observed_row_facts` rescanning all owned levels.
+3. **Make manifest publication incremental.** Assemble and persist the manifest
+   as a function of the tables the task changed (add/remove refs over the prior
+   manifest), not a full rebuild of all levels each publish. Remove the throwaway
+   budget pre-encode (budget from cached per-table byte counts) and the
+   per-compaction full `catalog.clone()`.
+4. **Then** move the residual durable I/O (manifest fsync, snapshot/checkpoint
+   writes) off the runtime lock — last, and only after tasks 1-3, because once
+   the rescans are gone the fsync is the next item but is small (2-4% today).
+   Order it per Group D: the new table's manifest entry must be durable before it
+   is relied upon for recovery and before any WAL truncation that retires its
+   inputs.
+5. Preserve durability and format exactly. Cached facts are an in-memory
+   acceleration of values recovery already recomputes independently from the
+   table objects; the two must agree, and a divergent cached bound is a
+   durability correctness bug, not a performance regression. Do not change the
+   table format, manifest format, or codec — the manifest bytes written for a
+   given logical state must be identical to today's.
 
 Exit gates:
 
-1. Lock-held publish time no longer includes manifest fsync or table-object
-   writes.
-2. Foreground wait-on-background-lock drops by the manifest-persist fraction
-   measured in Group A.
-3. Durable lifecycle counters keep the same meaning and durable tests pass.
+1. Per-task lock-held publish time is independent of total resident row/table
+   count: `publish_lock_ns / lifecycle_background_tasks_completed` is flat (within
+   noise) across 1M→5M→10M, instead of doubling per scale.
+2. The publish path performs no per-row scan of already-sealed tables: a source
+   guard shows publish does not call `observe_own_rows`, `manifest_table_bounds`,
+   or `timestamp_bounds` over owned tables; bounds and facts come from cached
+   values.
+3. Foreground wait-on-background-lock drops by the non-fsync residual fraction
+   (~96% of publish-lock), not merely the manifest-persist fraction.
+4. Manifest bytes and recovery output are byte-identical to the full-rebuild
+   baseline for the same write history; durable lifecycle counters keep their
+   meaning and durable tests pass.
 
 ## D. Crash-Consistency And Recovery
 
@@ -455,7 +521,8 @@ Hard gates:
 1. Durable standard completes 100K, 1M, 5M, and 10M with no commit rejection.
 2. No load surfaces `StoragePressureRejected` to the caller while maintenance is
    alive.
-3. Lock-held publish time excludes manifest fsync at every scale.
+3. Per-task lock-held publish time (`publish_lock_ns / tasks_completed`) is flat
+   across 100K-10M, independent of resident dataset size.
 4. Foreground wait-on-background-lock is a small fraction of commit time at
    every scale.
 5. Durable recovery, snapshot, and WAL tests pass unchanged.
@@ -466,9 +533,9 @@ Soft targets:
 
 1. 10M durable standard throughput is within 2x of old standard in the same
    environment.
-2. If the soft target fails with liveness clean and publish decoupled, the next
-   owner is a commit/WAL/flush hot-path slice, not admission or publish
-   coupling.
+2. If the soft target fails with liveness clean and per-task publish cost flat
+   across scale, the next owner is a commit/WAL/flush hot-path slice, not
+   admission or publish coupling.
 
 ## Stop Conditions
 

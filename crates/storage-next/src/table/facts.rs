@@ -1,8 +1,9 @@
 //! Table identity, facts, and statistics.
 
+use super::key::{TablePhysicalKeyBytes, TableRow};
 use super::{TableRuntimeError, TableRuntimeResult};
 use crate::format::ImmutableTable;
-use strata_core_next::CommitVersion;
+use strata_core_next::{CommitVersion, Timestamp};
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct TableIdentity {
@@ -152,6 +153,97 @@ impl TableRuntimeFacts {
 
     pub(crate) const fn byte_count(&self) -> u64 {
         self.byte_count
+    }
+}
+
+/// Per-table summary statistics computed once when a table is sealed.
+///
+/// These are the values a consumer would otherwise derive by scanning every row
+/// of a table: timestamp bounds, physical-key bounds, and the put/tombstone row
+/// split. They are immutable for a sealed table, so caching them lets higher
+/// layers summarize a table without rescanning its rows. Internal-key bounds,
+/// commit range, and row/byte/block counts are NOT duplicated here; they already
+/// live on `TableRuntimeFacts`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TableSummaryExtras {
+    timestamp_min: Option<Timestamp>,
+    timestamp_max: Option<Timestamp>,
+    physical_key_min: Vec<u8>,
+    physical_key_max: Vec<u8>,
+    put_rows: u64,
+    tombstone_rows: u64,
+}
+
+impl TableSummaryExtras {
+    /// Compute the summary in a single pass over a sealed table's rows.
+    ///
+    /// The physical-key and timestamp bounds are the per-row extremes, and the
+    /// put/tombstone split counts each row by kind. Equivalence tests and the
+    /// recovery-time validation in higher layers guard against a cached summary
+    /// drifting from a fresh scan.
+    pub(crate) fn from_rows(rows: &[TableRow]) -> TableRuntimeResult<Self> {
+        let Some(first) = rows.first() else {
+            return Err(TableRuntimeError::InvalidRange { field: "rows" });
+        };
+        let mut physical_key_min = TablePhysicalKeyBytes::from_row(first.row());
+        let mut physical_key_max = physical_key_min.clone();
+        let mut timestamp_min = first.commit_timestamp();
+        let mut timestamp_max = timestamp_min;
+        let mut put_rows = 0u64;
+        let mut tombstone_rows = 0u64;
+        for row in rows {
+            let physical = TablePhysicalKeyBytes::from_row(row.row());
+            if physical < physical_key_min {
+                physical_key_min = physical.clone();
+            }
+            if physical > physical_key_max {
+                physical_key_max = physical;
+            }
+            let timestamp = row.commit_timestamp();
+            if timestamp < timestamp_min {
+                timestamp_min = timestamp;
+            }
+            if timestamp > timestamp_max {
+                timestamp_max = timestamp;
+            }
+            if row.is_tombstone() {
+                tombstone_rows = tombstone_rows.saturating_add(1);
+            } else {
+                put_rows = put_rows.saturating_add(1);
+            }
+        }
+        Ok(Self {
+            timestamp_min: Some(timestamp_min),
+            timestamp_max: Some(timestamp_max),
+            physical_key_min: physical_key_min.as_slice().to_vec(),
+            physical_key_max: physical_key_max.as_slice().to_vec(),
+            put_rows,
+            tombstone_rows,
+        })
+    }
+
+    pub(crate) const fn timestamp_min(&self) -> Option<Timestamp> {
+        self.timestamp_min
+    }
+
+    pub(crate) const fn timestamp_max(&self) -> Option<Timestamp> {
+        self.timestamp_max
+    }
+
+    pub(crate) fn physical_key_min(&self) -> &[u8] {
+        &self.physical_key_min
+    }
+
+    pub(crate) fn physical_key_max(&self) -> &[u8] {
+        &self.physical_key_max
+    }
+
+    pub(crate) const fn put_rows(&self) -> u64 {
+        self.put_rows
+    }
+
+    pub(crate) const fn tombstone_rows(&self) -> u64 {
+        self.tombstone_rows
     }
 }
 

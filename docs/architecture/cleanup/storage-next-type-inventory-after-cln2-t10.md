@@ -9,9 +9,9 @@ Counts are conservative text matches, not a Rust AST parse.
 |---|---|
 | Rust files | 344 |
 | Production Rust files | 151 |
-| All struct/enum definitions | 1090 |
-| Production struct/enum definitions | 807 |
-| Cleanup-target production definitions | 639 |
+| All struct/enum definitions | 1091 |
+| Production struct/enum definitions | 808 |
+| Cleanup-target production definitions | 640 |
 | Public API definitions | 115 |
 | Durable format definitions | 53 |
 
@@ -21,7 +21,7 @@ Counts are conservative text matches, not a Rust AST parse.
 |---|---|---|
 | api/diagnostics.rs | 25 | 1255 |
 | lifecycle/maintenance.rs | 23 | 1630 |
-| branch/read.rs | 22 | 3909 |
+| branch/read.rs | 22 | 3922 |
 | lifecycle/compaction.rs | 22 | 3046 |
 | table/reader.rs | 20 | 1826 |
 | table/compaction.rs | 19 | 1220 |
@@ -50,7 +50,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | branch/tests/owned_compaction.rs | 4822 |
 | lifecycle/tests/compaction/mod.rs | 4335 |
 | table/tests/reader.rs | 4018 |
-| branch/read.rs | 3909 |
+| branch/read.rs | 3922 |
 | lifecycle/tests/cache.rs | 3669 |
 | lifecycle/durable/maintenance.rs | 3478 |
 | lifecycle/tests/durable.rs | 3418 |
@@ -91,7 +91,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | testkit/mod.rs | 15 | 99 |
 | format/mod.rs | 15 | 86 |
 | commit/mod.rs | 16 | 80 |
-| table/mod.rs | 11 | 67 |
+| table/mod.rs | 11 | 68 |
 | service/mod.rs | 10 | 61 |
 | testkit/lifecycle/mod.rs | 17 | 36 |
 | backend/mod.rs | 6 | 17 |

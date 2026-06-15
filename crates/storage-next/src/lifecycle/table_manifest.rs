@@ -690,6 +690,30 @@ fn table_ref_from_branch_table(
 ) -> LifecycleResult<TableManifestTableRef> {
     let entry = catalog.entry_for(table.descriptor().identity())?;
     validate_catalog_entry_matches_table(entry, table.facts())?;
+    let facts = table.facts();
+    let extras = table.extras();
+    // Read the per-table summary cached at seal time instead of rescanning the
+    // table's rows. Internal-key bounds come from the table facts' key range;
+    // timestamp and physical-key bounds come from the cached summary. The values
+    // are identical to a full row scan (recovery validation cross-checks them),
+    // so the manifest bytes are unchanged.
+    let manifest_facts = TableManifestTableFacts::new(
+        facts.byte_count(),
+        facts.row_count(),
+        facts.data_block_count(),
+        facts.commit_range().min(),
+        facts.commit_range().max(),
+        extras.timestamp_min(),
+        extras.timestamp_max(),
+    )
+    .map_err(format_error)?;
+    let manifest_bounds = TableManifestTableBounds::new(
+        extras.physical_key_min().to_vec(),
+        extras.physical_key_max().to_vec(),
+        facts.key_range().first_key().to_vec(),
+        facts.key_range().last_key().to_vec(),
+    )
+    .map_err(format_error)?;
     TableManifestTableRef::new(
         table.descriptor().identity().clone(),
         entry.object_facts.object().clone(),
@@ -697,8 +721,8 @@ fn table_ref_from_branch_table(
             reason: "table order does not fit table manifest",
             source: None,
         })?,
-        manifest_table_facts(table.facts(), table.rows())?,
-        manifest_table_bounds(table.rows())?,
+        manifest_facts,
+        manifest_bounds,
         manifest_table_provenance(table, entry)?,
     )
     .map_err(format_error)

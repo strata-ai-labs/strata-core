@@ -17,10 +17,15 @@ fn type_inventory_snapshot_is_current() {
             "--quiet",
             "--require-inventory",
             INVENTORY_SNAPSHOT,
+            // +1 over the prior cap for TableSummaryExtras: the per-table summary
+            // (timestamp/physical-key bounds, put/tombstone split) cached at seal
+            // time so durable publish no longer rescans every row. It is a new
+            // cohesive value type rather than extra fields on TableRuntimeFacts,
+            // which is compared field-for-field against on-disk-derived facts.
             "--max-all-types",
-            "1090",
+            "1091",
             "--max-cleanup-target-types",
-            "639",
+            "640",
         ])
         .output()
         .expect("run inventory guard");
@@ -48,8 +53,10 @@ fn parent_facade_reexports_do_not_regrow() {
             "service/mod.rs=61",
             "--max-reexport-names",
             "format/mod.rs=86",
+            // +1 to re-export TableSummaryExtras so branch state can name the
+            // per-table summary type (its `facts` submodule is crate-private).
             "--max-reexport-names",
-            "table/mod.rs=67",
+            "table/mod.rs=68",
             "--max-reexport-names",
             "testkit/lifecycle/mod.rs=36",
             "--max-reexport-names",

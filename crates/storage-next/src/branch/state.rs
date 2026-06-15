@@ -237,7 +237,10 @@ impl BranchLocalState {
 
         self.owned_levels[level_index].insert(0, table);
         self.frozen.remove(replacement_index);
-        self.refresh_observed_row_facts();
+        // A flush moves the same rows from a frozen table into a new L0 table, so
+        // the observed-row facts are unchanged and need no refresh. This is the
+        // hot flush-install path; the refresh here was the dominant publish-lock
+        // cost (a full resident-dataset rescan) before per-table summaries.
         Ok(self.install_outcome(BranchLevel::ZERO, 0, Some(replacement_index)))
     }
 
@@ -386,12 +389,45 @@ impl BranchLocalState {
     }
 
     fn refresh_observed_row_facts(&mut self) {
-        let observed = self.observe_rows();
+        let observed = self.observe_rows_from_summaries();
+        // The cached fold must stay bit-exactly equal to a full row scan: these
+        // facts are asserted equal to a rescan during read-view recovery
+        // validation and feed read bounds. The scan oracle runs in debug builds.
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            observed,
+            self.observe_rows(),
+            "cached observed-row facts diverged from a full row scan"
+        );
         self.max_commit_version = observed.max_commit_version;
         self.timestamp_min = observed.timestamp_min;
         self.timestamp_max = observed.timestamp_max;
         self.put_rows = observed.put_rows;
         self.tombstone_rows = observed.tombstone_rows;
+    }
+
+    /// Aggregate observed-row facts from cached per-table summaries instead of a
+    /// full row scan. Active and frozen rows (bounded by the rotation threshold)
+    /// are still scanned, but owned-level and inherited tables fold their
+    /// sealed-time `TableSummaryExtras` — O(tables), not O(resident rows). Equal
+    /// to `observe_rows` by construction.
+    fn observe_rows_from_summaries(&self) -> ObservedBranchRows {
+        let mut observed = ObservedBranchRows::default();
+        for row in self.active.iter() {
+            observed.record(row.row());
+        }
+        for table in &self.frozen {
+            for row in table.iter() {
+                observed.record(row.row());
+            }
+        }
+        for table in self.owned_levels.iter().flatten() {
+            observed.record_owned_table(table);
+        }
+        for layer in &self.inherited_layers {
+            observed.record_inherited_layer_summary(layer);
+        }
+        observed
     }
 
     fn observe_own_rows(&self) -> ObservedBranchRows {
@@ -477,6 +513,57 @@ impl ObservedBranchRows {
             self.timestamp_max
                 .map_or(commit_timestamp, |max| max.max(commit_timestamp)),
         );
+    }
+
+    /// Fold a sealed owned table's cached summary into the observed facts without
+    /// a per-row scan. Equivalent to recording every row of the table:
+    /// `commit_range().max()` is the table's max commit version, and folding the
+    /// cached timestamp min and max reproduces a scan of every row's timestamp.
+    fn record_owned_table(&mut self, table: &BranchOwnedTable) {
+        self.record_commit_version(table.facts().commit_range().max());
+        let extras = table.extras();
+        if let Some(timestamp) = extras.timestamp_min() {
+            self.record_timestamp(timestamp);
+        }
+        if let Some(timestamp) = extras.timestamp_max() {
+            self.record_timestamp(timestamp);
+        }
+        self.put_rows = self.put_rows.saturating_add(extras.put_rows());
+        self.tombstone_rows = self.tombstone_rows.saturating_add(extras.tombstone_rows());
+    }
+
+    /// Fold a non-materialized inherited layer's contribution from cached
+    /// per-table summaries. Inherited layers contribute version and timestamp
+    /// extremes only (never put/tombstone counts), and only for rows at or
+    /// before the fork version. `BranchInheritedLayer::new` forbids rows past the
+    /// fork version, so a table whose commit range is within the cutoff folds
+    /// directly from its summary; a table straddling the cutoff (only reachable
+    /// via unchecked test construction) falls back to a per-row scan to stay
+    /// exactly equal to `record_inherited_layer`.
+    fn record_inherited_layer_summary(&mut self, layer: &BranchInheritedLayer) {
+        if layer.status() == InheritedLayerStatus::Materialized {
+            return;
+        }
+        let fork_version = layer.fork_version();
+        for table in layer.owned_levels().iter().flatten() {
+            if table.facts().commit_range().max().as_u64() <= fork_version.as_u64() {
+                self.record_commit_version(table.facts().commit_range().max());
+                let extras = table.extras();
+                if let Some(timestamp) = extras.timestamp_min() {
+                    self.record_timestamp(timestamp);
+                }
+                if let Some(timestamp) = extras.timestamp_max() {
+                    self.record_timestamp(timestamp);
+                }
+            } else {
+                for row in table.rows() {
+                    if row.commit_version().as_u64() <= fork_version.as_u64() {
+                        self.record_commit_version(row.commit_version());
+                        self.record_timestamp(row.commit_timestamp());
+                    }
+                }
+            }
+        }
     }
 }
 

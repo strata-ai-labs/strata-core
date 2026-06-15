@@ -77,7 +77,9 @@ pub(crate) use cursor::{
     MERGE_HEAP_THRESHOLD,
 };
 pub(crate) use error::{TableRuntimeError, TableRuntimeResult};
-pub(crate) use facts::{TableCommitRange, TableIdentity, TableKeyRange, TableRuntimeFacts};
+pub(crate) use facts::{
+    TableCommitRange, TableIdentity, TableKeyRange, TableRuntimeFacts, TableSummaryExtras,
+};
 #[cfg_attr(
     not(test),
     expect(

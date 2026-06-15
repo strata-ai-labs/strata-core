@@ -12,7 +12,7 @@ use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     BoundedTableCursor, FrozenTable, ImmutableTableReader, MutableTable, TableCursor,
     TableInternalKeyBytes, TableKeyBounds, TablePhysicalKeyBound, TablePhysicalKeyBytes,
-    TablePointLookupRow, TablePreparedPointLookup, TableRow, TableRuntimeFacts,
+    TablePointLookupRow, TablePreparedPointLookup, TableRow, TableRuntimeFacts, TableSummaryExtras,
 };
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, BinaryHeap};
@@ -455,6 +455,7 @@ pub(crate) struct BranchOwnedTable {
     descriptor: BranchTableDescriptor,
     reader: ImmutableTableReader<'static>,
     materialization_source: Option<BranchMaterializationSource>,
+    extras: TableSummaryExtras,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -531,11 +532,19 @@ impl BranchOwnedTable {
                 reason: "branch-owned table rows must match the target branch",
             });
         }
+        // A sealed table is immutable, so compute its summary (timestamp +
+        // physical-key bounds, put/tombstone split) once here — in the off-lock
+        // build phase that already materializes the rows — and read it O(1)
+        // thereafter. This is the single construction choke point, so every
+        // branch-owned table carries an up-to-date summary by construction.
+        let extras = TableSummaryExtras::from_rows(reader.rows())
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
         Ok(Self {
             branch_id,
             descriptor,
             reader,
             materialization_source,
+            extras,
         })
     }
 
@@ -561,6 +570,10 @@ impl BranchOwnedTable {
 
     pub(crate) fn rows(&self) -> &[TableRow] {
         self.reader.rows()
+    }
+
+    pub(crate) const fn extras(&self) -> &TableSummaryExtras {
+        &self.extras
     }
 
     pub(crate) fn reader(&self) -> &ImmutableTableReader<'static> {

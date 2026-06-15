@@ -215,3 +215,66 @@ fn table_runtime_error_display_and_sources_are_typed() {
     assert!(cache.to_string().contains("capacity exceeded"));
     assert!(compaction.to_string().contains("policy rejected row"));
 }
+
+#[test]
+fn table_summary_extras_from_rows_folds_bounds_and_counts() {
+    use super::{TablePhysicalKeyBytes, TableRow, TableSummaryExtras};
+    use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
+    use strata_core_next::{BranchId, Timestamp};
+
+    fn physical_key(user_key: &[u8]) -> PhysicalKey {
+        PhysicalKey::new(
+            BranchId::from_bytes([1; BranchId::BYTE_LEN]),
+            "default",
+            StorageSpaceId::from_raw(0x20).expect("storage space id"),
+            user_key.to_vec(),
+        )
+        .expect("physical key")
+    }
+
+    let row_a = StorageRow::put(
+        physical_key(b"a"),
+        CommitVersion::new(3),
+        Timestamp::from_micros(20),
+        Timestamp::EPOCH,
+        vec![1],
+    );
+    let row_b = StorageRow::put(
+        physical_key(b"b"),
+        CommitVersion::new(5),
+        Timestamp::from_micros(50),
+        Timestamp::EPOCH,
+        vec![2],
+    );
+    let row_c = StorageRow::tombstone(
+        physical_key(b"c"),
+        CommitVersion::new(9),
+        Timestamp::from_micros(35),
+    );
+    // Out-of-order on purpose: from_rows must fold extremes, not assume sorting.
+    let rows = vec![
+        TableRow::new(row_b.clone()),
+        TableRow::new(row_a.clone()),
+        TableRow::new(row_c.clone()),
+    ];
+
+    let extras = TableSummaryExtras::from_rows(&rows).expect("non-empty summary");
+
+    assert_eq!(extras.put_rows(), 2);
+    assert_eq!(extras.tombstone_rows(), 1);
+    assert_eq!(extras.timestamp_min(), Some(Timestamp::from_micros(20)));
+    assert_eq!(extras.timestamp_max(), Some(Timestamp::from_micros(50)));
+    assert_eq!(
+        extras.physical_key_min(),
+        TablePhysicalKeyBytes::from_row(&row_a).as_slice()
+    );
+    assert_eq!(
+        extras.physical_key_max(),
+        TablePhysicalKeyBytes::from_row(&row_c).as_slice()
+    );
+
+    assert!(matches!(
+        TableSummaryExtras::from_rows(&[]),
+        Err(TableRuntimeError::InvalidRange { field: "rows" })
+    ));
+}
