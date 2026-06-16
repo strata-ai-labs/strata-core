@@ -1144,7 +1144,7 @@ fn recovery_preflights_checkpoint_and_table_manifest_disjoint_succeeds() {
         branch,
         BranchLevel::ZERO,
         "preflight-disjoint-manifest",
-        &[manifest_row],
+        std::slice::from_ref(&manifest_row),
     );
     publish_table_manifest(
         &backend,
@@ -1172,6 +1172,10 @@ fn recovery_preflights_checkpoint_and_table_manifest_disjoint_succeeds() {
 
     let (shell, _outcome) = recover_shell(&backend, branch, RecoveryStrictness::Strict);
 
+    // Unified recovery COMBINES the two disjoint sources: the manifest-resident
+    // owned row AND the checkpoint's not-yet-durable row are both visible. (Before
+    // unified recovery the checkpoint was authoritative and the manifest-only row
+    // was silently dropped.) This is the shape a bounded delta checkpoint produces.
     let view = shell.branch_state().capture_read_view().expect("view");
     assert_eq!(
         view.latest(checkpoint_row.physical_key())
@@ -1180,6 +1184,14 @@ fn recovery_preflights_checkpoint_and_table_manifest_disjoint_succeeds() {
             .row()
             .value(),
         b"checkpoint"
+    );
+    assert_eq!(
+        view.latest(manifest_row.physical_key())
+            .expect("read manifest row")
+            .expect("manifest row visible after combine")
+            .row()
+            .value(),
+        b"manifest"
     );
 }
 

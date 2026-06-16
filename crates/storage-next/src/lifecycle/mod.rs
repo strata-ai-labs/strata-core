@@ -245,8 +245,8 @@ pub(crate) use state::{
 )]
 pub(crate) use table_manifest::{
     apply_loaded_table_manifest_to_branch, preflight_table_manifest_with_checkpoint,
-    publish_table_manifest_for_branch_with_budget, require_table_manifest_covers_checkpoint_rows,
-    stage_table_manifest_for_branch, table_manifest_debt_outcome, LifecycleDurableTableCatalog,
+    publish_table_manifest_for_branch_with_budget, stage_table_manifest_for_branch,
+    table_manifest_debt_outcome, LifecycleDurableTableCatalog,
     LifecycleTableManifestRecoveryOutcome, LifecycleTableManifestRecoveryStage,
 };
 #[allow(

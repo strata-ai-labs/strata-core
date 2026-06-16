@@ -1,12 +1,14 @@
 //! Durable-local recovery orchestration.
 
+use std::collections::BTreeSet;
+
 use super::checkpoint::branch_durable_rows_cover_interval;
 use super::{
     preflight_table_manifest_with_checkpoint, require_generated_artifact_budget,
-    require_table_manifest_covers_checkpoint_rows, LifecycleDurableLocalShell, LifecycleError,
-    LifecycleLowerLayer, LifecycleResult, LifecycleTableManifestRecoveryOutcome,
-    LifecycleTableManifestRecoveryStage, RecoveryDegradationClass, RecoveryFault,
-    RecoveryFaultKind, RecoveryHealth, RecoveryStrictness, StorageBudgetLedger, StorageOpenPlan,
+    LifecycleDurableLocalShell, LifecycleError, LifecycleLowerLayer, LifecycleResult,
+    LifecycleTableManifestRecoveryOutcome, LifecycleTableManifestRecoveryStage,
+    RecoveryDegradationClass, RecoveryFault, RecoveryFaultKind, RecoveryHealth, RecoveryStrictness,
+    StorageBudgetLedger, StorageOpenPlan,
 };
 use crate::branch::state::snapshot::{
     install_snapshot_rows_into_branches, BranchSnapshotInstallOutcome, BranchSnapshotInstallRequest,
@@ -120,59 +122,40 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
             trusted_replay_start(checkpoint.trusted_watermark(), trusted_flush_watermark);
         let wal = self.recover_wal(request, replay_start, &mut faults)?;
         let health = recovery_health_from_faults(request, faults)?;
-        let use_table_manifest_as_base = trusted_flush_watermark.is_some_and(|flush| {
-            checkpoint
-                .trusted_watermark()
-                .is_none_or(|checkpoint| flush > checkpoint)
-        });
-        if let Some(recovered_branch) = recovered_branch {
-            if let Some(stage) = table_manifest_stage {
-                // Recovery Protocol rule 9: when both checkpoint rows and a
-                // table manifest are present, preflight the combined state
-                // before installing either source. Exact byte duplicates at
-                // the same internal key are accepted; divergent bytes fail.
-                preflight_table_manifest_with_checkpoint(&recovered_branch, stage.staged_branch())?;
-                if use_table_manifest_as_base {
-                    require_table_manifest_covers_checkpoint_rows(
-                        &recovered_branch,
-                        stage.staged_branch(),
-                    )?;
-                    self.shell.apply_table_manifest_recovery(stage);
-                    return Ok(LifecycleRecoveryOutcome {
-                        health,
-                        checkpoint,
-                        wal,
-                        quarantine,
-                        tables,
-                    });
+        match (recovered_branch, table_manifest_stage) {
+            (Some(recovered_branch), Some(stage)) => {
+                // Recovery Protocol rule 9: when both a checkpoint and a table
+                // manifest are present, COMBINE them — reconstruct owned levels
+                // from the manifest and layer the checkpoint's not-yet-durable
+                // rows (those the manifest does not cover) on top — rather than
+                // choosing one source as authoritative. Exact byte duplicates at
+                // the same internal key are accepted; divergent bytes fail. The
+                // manifest is the durable base (owned L0-L7 + retained-history
+                // timestamp coverage); the delta carries the active/frozen rows
+                // above the flush watermark into the active memtable, matching a
+                // synchronous baseline and keeping reads active-first newest-wins.
+                // This is what lets a bounded delta checkpoint recover without
+                // losing manifest-resident owned rows.
+                let _overlap = preflight_table_manifest_with_checkpoint(
+                    &recovered_branch,
+                    stage.staged_branch(),
+                )?;
+                let delta = checkpoint_delta_rows(&recovered_branch, stage.staged_branch());
+                self.shell.apply_table_manifest_recovery(stage);
+                if !delta.is_empty() {
+                    self.shell
+                        .branch_state_mut()
+                        .append_committed_rows_atomically(delta)
+                        .map_err(branch_error)?;
                 }
-                // The flush watermark sits at or below the checkpoint, so the
-                // checkpoint is authoritative for the in-memory branch state.
-                // The staged manifest stays staged: its table objects remain
-                // reachable via the catalog and are protected by table-object
-                // reachability retention, but the rows are not promoted into
-                // the branch state — the checkpoint is a superset for this
-                // commit range.
-                //
-                // The manifest's retained-history extension must still be
-                // applied to the checkpoint-recovered branch so that prior
-                // row pruning narrows timestamp coverage on reopen.
-                let staged_coverage = stage.staged_branch().timestamp_coverage();
-                *self.shell.branch_state_mut() = recovered_branch;
-                self.shell
-                    .branch_state_mut()
-                    .set_timestamp_coverage(staged_coverage);
-                return Ok(LifecycleRecoveryOutcome {
-                    health,
-                    checkpoint,
-                    wal,
-                    quarantine,
-                    tables,
-                });
             }
-            *self.shell.branch_state_mut() = recovered_branch;
-        } else if let Some(stage) = table_manifest_stage {
-            self.shell.apply_table_manifest_recovery(stage);
+            (Some(recovered_branch), None) => {
+                *self.shell.branch_state_mut() = recovered_branch;
+            }
+            (None, Some(stage)) => {
+                self.shell.apply_table_manifest_recovery(stage);
+            }
+            (None, None) => {}
         }
 
         Ok(LifecycleRecoveryOutcome {
@@ -718,6 +701,36 @@ fn install_checkpoint_rows(
         .into_iter()
         .find(|branch| branch.branch_id() == branch_id);
     Ok((recovered_branch, outcome))
+}
+
+/// The checkpoint rows that the table manifest does not already cover, keyed by
+/// internal key (physical key + commit version). For a full-superset checkpoint
+/// this drops the owned-level rows the manifest also holds, leaving the
+/// not-yet-durable active/frozen delta; for a bounded delta checkpoint it is
+/// every row. Recovery installs this delta on top of the manifest-recovered
+/// owned levels. Invariant (relied on for active-first newest-wins reads): every
+/// delta row's commit version is above the manifest flush watermark, so a delta
+/// row is strictly newer than any manifest-resident owned row at the same
+/// physical key.
+fn checkpoint_delta_rows(
+    checkpoint_branch: &BranchLocalState,
+    staged_manifest_branch: &BranchLocalState,
+) -> Vec<StorageRow> {
+    let mut manifest_keys = BTreeSet::<&[u8]>::new();
+    for table in staged_manifest_branch.owned_levels().iter().flatten() {
+        for row in table.rows() {
+            manifest_keys.insert(row.key().as_slice());
+        }
+    }
+    let mut delta = Vec::new();
+    for table in checkpoint_branch.owned_levels().iter().flatten() {
+        for row in table.rows() {
+            if !manifest_keys.contains(row.key().as_slice()) {
+                delta.push(row.row().clone());
+            }
+        }
+    }
+    delta
 }
 
 fn trusted_replay_start(

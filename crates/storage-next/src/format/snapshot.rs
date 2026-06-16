@@ -181,7 +181,22 @@ impl SnapshotSection {
 }
 
 pub(crate) fn encode_snapshot_section(section: &SnapshotSection) -> Result<Vec<u8>, FormatError> {
+    encode_snapshot_section_with_payload_limit(section, MAX_MATERIALIZED_SNAPSHOT_PAYLOAD_BYTES)
+}
+
+fn encode_snapshot_section_with_payload_limit(
+    section: &SnapshotSection,
+    max_payload_bytes: usize,
+) -> Result<Vec<u8>, FormatError> {
     validate_section_kind(section.section_kind())?;
+    // Enforce the materialization ceiling at encode time so a section that
+    // decode would reject as unreadable is never written durably. Keeps encode
+    // and decode symmetric: encode succeeds only if the bytes can be read back.
+    if section.payload().len() > max_payload_bytes {
+        return Err(FormatError::InvalidLength {
+            field: "snapshot_materialized_payload",
+        });
+    }
     let payload_len =
         u64::try_from(section.payload().len()).map_err(|_| FormatError::InvalidLength {
             field: SNAPSHOT_SECTION_FORMAT,
@@ -314,15 +329,38 @@ impl SnapshotContainer {
 pub(crate) fn encode_snapshot_container(
     container: &SnapshotContainer,
 ) -> Result<Vec<u8>, FormatError> {
-    if container.sections().len() > MAX_SNAPSHOT_SECTION_COUNT {
+    encode_snapshot_container_with_materialized_limits(container, DEFAULT_MATERIALIZED_LIMITS)
+}
+
+fn encode_snapshot_container_with_materialized_limits(
+    container: &SnapshotContainer,
+    limits: SnapshotMaterializedLimits,
+) -> Result<Vec<u8>, FormatError> {
+    if container.sections().len() > limits.max_sections {
         return Err(FormatError::InvalidLength {
             field: "snapshot_section_count",
         });
     }
 
+    // Mirror the cumulative decode ceiling so a container whose total section
+    // payload exceeds what decode will materialize is never written durably.
+    let mut total_payload_bytes = 0usize;
     let mut bytes = encode_snapshot_header(container.header())?;
     for section in container.sections() {
-        bytes.extend_from_slice(&encode_snapshot_section(section)?);
+        total_payload_bytes = total_payload_bytes
+            .checked_add(section.payload().len())
+            .ok_or(FormatError::InvalidLength {
+                field: "snapshot_materialized_payload",
+            })?;
+        if total_payload_bytes > limits.max_payload_bytes {
+            return Err(FormatError::InvalidLength {
+                field: "snapshot_materialized_payload",
+            });
+        }
+        bytes.extend_from_slice(&encode_snapshot_section_with_payload_limit(
+            section,
+            limits.max_payload_bytes,
+        )?);
     }
     let crc = crc32fast::hash(&bytes);
     bytes.extend_from_slice(&crc.to_le_bytes());

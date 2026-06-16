@@ -3,7 +3,8 @@
 use super::{
     decode_snapshot_container, decode_snapshot_container_with_materialized_limits,
     decode_snapshot_header, decode_snapshot_section, decode_snapshot_section_ref,
-    encode_snapshot_container, encode_snapshot_header, encode_snapshot_section,
+    encode_snapshot_container, encode_snapshot_container_with_materialized_limits,
+    encode_snapshot_header, encode_snapshot_section, encode_snapshot_section_with_payload_limit,
     visit_snapshot_container_sections, SnapshotContainer, SnapshotHeader,
     SnapshotMaterializedLimits, SnapshotSection, SNAPSHOT_FORMAT, SNAPSHOT_HEADER_FORMAT,
     SNAPSHOT_MAGIC, SNAPSHOT_SECTION_FORMAT,
@@ -381,6 +382,58 @@ fn container_rejects_materialized_payload_over_limit() {
             field: "snapshot_materialized_payload"
         })
     );
+}
+
+#[test]
+fn encode_section_rejects_materialized_payload_over_limit() {
+    // Encode must reject a section whose payload exceeds the materialization
+    // ceiling, so we never write a section that decode would reject — encode and
+    // decode stay symmetric.
+    let section = SnapshotSection::new(0x01, b"rows".to_vec()).expect("section");
+    assert_eq!(
+        encode_snapshot_section_with_payload_limit(&section, 3),
+        Err(FormatError::InvalidLength {
+            field: "snapshot_materialized_payload"
+        })
+    );
+    // Within the limit it still encodes.
+    encode_snapshot_section_with_payload_limit(&section, 4).expect("encode within limit");
+}
+
+#[test]
+fn encode_container_rejects_materialized_payload_over_limit() {
+    // The cumulative section payload must be rejected at encode time when it
+    // exceeds the ceiling decode enforces, so an unreadable container is never
+    // written durably.
+    let container = SnapshotContainer::new(
+        header(),
+        vec![
+            SnapshotSection::new(0x01, b"aaa".to_vec()).expect("section"),
+            SnapshotSection::new(0x02, b"bbb".to_vec()).expect("section"),
+        ],
+    );
+    assert_eq!(
+        encode_snapshot_container_with_materialized_limits(
+            &container,
+            SnapshotMaterializedLimits {
+                max_sections: 8,
+                max_payload_bytes: 5,
+            },
+        ),
+        Err(FormatError::InvalidLength {
+            field: "snapshot_materialized_payload"
+        })
+    );
+    // The bytes a successful encode produces must round-trip through decode.
+    let bytes = encode_snapshot_container_with_materialized_limits(
+        &container,
+        SnapshotMaterializedLimits {
+            max_sections: 8,
+            max_payload_bytes: 64,
+        },
+    )
+    .expect("encode within limit");
+    decode_snapshot_container(&bytes).expect("encoded container decodes");
 }
 
 #[test]
