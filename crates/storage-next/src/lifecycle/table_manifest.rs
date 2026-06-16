@@ -125,13 +125,7 @@ impl LifecycleDurableTableCatalog {
                 source: None,
             });
         }
-        for table in manifest_table_refs(manifest) {
-            self.record_table_with_provenance(
-                table.table_identity().clone(),
-                TableObjectFacts::from_table_manifest_ref(table),
-                table.provenance().clone(),
-            )?;
-        }
+        self.record_manifest_tables(manifest)?;
         self.next_manifest_sequence = manifest.manifest_sequence().checked_add(1).ok_or(
             LifecycleError::TableManifestPublicationFailed {
                 reason: "table manifest sequence overflow",
@@ -141,9 +135,55 @@ impl LifecycleDurableTableCatalog {
         Ok(())
     }
 
+    /// Records a manifest whose sequence was already reserved under the runtime lock via
+    /// [`reserve_manifest_sequence`](Self::reserve_manifest_sequence) (the off-lock publish
+    /// path). Only the manifest's tables are folded into the catalog; the sequence marker was
+    /// advanced at reservation time, so it is not advanced again here.
+    pub(crate) fn record_reserved_manifest(
+        &mut self,
+        manifest: &TableManifest,
+    ) -> LifecycleResult<()> {
+        self.record_manifest_tables(manifest)
+    }
+
+    fn record_manifest_tables(&mut self, manifest: &TableManifest) -> LifecycleResult<()> {
+        for table in manifest_table_refs(manifest) {
+            self.record_table_with_provenance(
+                table.table_identity().clone(),
+                TableObjectFacts::from_table_manifest_ref(table),
+                table.provenance().clone(),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Reserves the next manifest sequence under the runtime lock. The caller stamps the
+    /// reserved value into the manifest it persists off-lock; advancing the counter here (rather
+    /// than at record time) keeps cross-branch sequences unique and monotonic when the durable
+    /// write runs off-lock under a per-branch publish lock.
+    pub(crate) fn reserve_manifest_sequence(&mut self) -> LifecycleResult<u64> {
+        let reserved = self.next_manifest_sequence;
+        self.next_manifest_sequence =
+            reserved
+                .checked_add(1)
+                .ok_or(LifecycleError::TableManifestPublicationFailed {
+                    reason: "table manifest sequence overflow",
+                    source: None,
+                })?;
+        Ok(reserved)
+    }
+
     pub(crate) fn build_manifest(
         &self,
         branch: &BranchLocalState,
+    ) -> LifecycleResult<TableManifest> {
+        self.build_manifest_with_sequence(branch, self.next_manifest_sequence)
+    }
+
+    pub(crate) fn build_manifest_with_sequence(
+        &self,
+        branch: &BranchLocalState,
+        manifest_sequence: u64,
     ) -> LifecycleResult<TableManifest> {
         let levels = manifest_levels_from_owned(branch.owned_levels(), self)?;
         let inherited_layers = manifest_inherited_layers(branch.inherited_layers(), self)?;
@@ -161,7 +201,7 @@ impl LifecycleDurableTableCatalog {
         TableManifest::new(
             branch.branch_id(),
             None,
-            self.next_manifest_sequence,
+            manifest_sequence,
             levels,
             inherited_layers,
             extensions,
@@ -338,8 +378,23 @@ pub(crate) fn publish_table_manifest_for_branch_with_budget(
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<TableManifestWrite> {
     let manifest = catalog.build_manifest(branch)?;
+    let write = persist_reserved_manifest(service, branch.branch_id(), &manifest, budget)?;
+    catalog.record_manifest(write.manifest())?;
+    Ok(write)
+}
+
+/// Persists an already-built (and, on the off-lock path, sequence-reserved) table manifest:
+/// the budget check + encode + durable `publish_replace_manifest` (the fsync). This is the only
+/// step the off-lock publish phase runs while the global runtime lock is released; it touches no
+/// catalog state, so it is safe to call between the under-lock reserve and record phases.
+pub(crate) fn persist_reserved_manifest(
+    service: &TableManifestService<'_>,
+    branch_id: BranchId,
+    manifest: &TableManifest,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<TableManifestWrite> {
     if let Some(budget) = budget {
-        let bytes = encode_table_manifest(&manifest).map_err(format_error)?;
+        let bytes = encode_table_manifest(manifest).map_err(format_error)?;
         require_manifest_catalog_budget(
             budget,
             bytes.len() as u64,
@@ -348,13 +403,11 @@ pub(crate) fn publish_table_manifest_for_branch_with_budget(
         )?;
     }
     let persist_start = crate::observability::perf_trace::start_timer();
-    let write_result = service.publish_replace_manifest(branch.branch_id(), &manifest);
+    let write_result = service.publish_replace_manifest(branch_id, manifest);
     crate::observability::perf_trace::record_lifecycle_background_publish_manifest_persist(
         crate::observability::perf_trace::timer_elapsed(persist_start),
     );
-    let write = write_result.map_err(table_manifest_service_error)?;
-    catalog.record_manifest(write.manifest())?;
-    Ok(write)
+    write_result.map_err(table_manifest_service_error)
 }
 
 pub(crate) fn stage_table_manifest_for_branch(

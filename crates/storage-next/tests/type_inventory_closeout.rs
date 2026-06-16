@@ -22,10 +22,16 @@ fn type_inventory_snapshot_is_current() {
             // time so durable publish no longer rescans every row. It is a new
             // cohesive value type rather than extra fields on TableRuntimeFacts,
             // which is compared field-for-field against on-disk-derived facts.
+            //
+            // +4 more for the off-lock background publish: PreparedPublishStep,
+            // PreparedPublish, and PreparedPublishPost carry the three-phase publish
+            // across the global-lock release, plus BranchPublishGuard serializes the
+            // per-branch off-lock fsync. These are the cohesive state needed to move
+            // the manifest fsync off the global runtime lock.
             "--max-all-types",
-            "1091",
+            "1092",
             "--max-cleanup-target-types",
-            "640",
+            "644",
         ])
         .output()
         .expect("run inventory guard");
@@ -41,8 +47,13 @@ fn parent_facade_reexports_do_not_regrow() {
     let output = inventory_command()
         .args([
             "--quiet",
+            // +4 for the off-lock background publish surface re-exported from lifecycle:
+            // PreparedPublishStep plus the install-without-publish / publish-manifest split
+            // (install_prepared_durable_{compaction,materialization}_without_publish and
+            // publish_{compaction,materialization}_outcome_manifest) that lets the manifest
+            // fsync move off the global runtime lock while synchronous callers stay 2-phase.
             "--max-reexport-names",
-            "lifecycle/mod.rs=238",
+            "lifecycle/mod.rs=242",
             "--max-reexport-names",
             "testkit/mod.rs=99",
             "--max-reexport-names",

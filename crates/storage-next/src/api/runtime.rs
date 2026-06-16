@@ -34,9 +34,9 @@ use crate::lifecycle::{
     MaintenanceTaskPriority as LifecycleMaintenanceTaskPriority,
     MaintenanceTaskRequest as LifecycleMaintenanceTaskRequest,
     MaintenanceTaskScope as LifecycleMaintenanceTaskScope, ManualMaintenanceClock,
-    ModeLifecyclePolicy, RealMaintenanceClock, RecoveryDegradationClass, RecoveryFaultKind,
-    RecoveryHealth, RecoveryStrictness, StorageBudgetPool, StorageBudgetPressureSeverity,
-    StorageBudgetSnapshot, StorageMode as LifecycleStorageMode,
+    ModeLifecyclePolicy, PreparedPublishStep, RealMaintenanceClock, RecoveryDegradationClass,
+    RecoveryFaultKind, RecoveryHealth, RecoveryStrictness, StorageBudgetPool,
+    StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageMode as LifecycleStorageMode,
     StorageOpenOutcome as LifecycleStorageOpenOutcome, StorageOpenPlan, StorageRuntimeBudget,
     ThreadedMaintenanceExecutor,
 };
@@ -4922,17 +4922,43 @@ fn drain_durable_background_round(
                 perf_trace::record_lifecycle_background_task_unlocked_build(
                     perf_trace::timer_elapsed(build_start),
                 );
+                // Phase one: install in memory, reserve the manifest sequence, and claim the
+                // per-branch publish slot under the global lock. The manifest fsync itself is
+                // deferred to phase two so it runs off-lock.
                 let publish_start = perf_trace::start_timer();
-                let publish = {
+                let begin = {
                     let mut runtime = runtime.lock();
                     match build_result {
-                        Ok(prepared_build) => runtime.finish_background_maintenance(prepared_build),
-                        Err(error) => runtime.finish_background_build_error(task, error),
+                        Ok(prepared_build) => runtime.begin_publish_phase(prepared_build),
+                        Err(error) => Ok(PreparedPublishStep::Done(
+                            runtime.finish_background_build_error(task, error),
+                        )),
                     }
                 };
                 perf_trace::record_lifecycle_background_task_publish_lock(
                     perf_trace::timer_elapsed(publish_start),
                 );
+                let publish = match begin {
+                    Ok(PreparedPublishStep::Done(result)) => result,
+                    Ok(PreparedPublishStep::OffLock(prepared)) => {
+                        // Phase two: durable manifest fsync with the global lock RELEASED. The
+                        // per-branch publish slot stays held so no concurrent same-branch publish
+                        // can interleave between the reserved sequence and the catalog record.
+                        let (prepared, write_result) = prepared.persist_off_lock();
+                        // Phase three: fold the persisted manifest back into the catalog and
+                        // finish the task under the global lock again.
+                        let finish_start = perf_trace::start_timer();
+                        let finish = {
+                            let mut runtime = runtime.lock();
+                            runtime.finish_publish_phase(prepared, write_result)
+                        };
+                        perf_trace::record_lifecycle_background_task_publish_lock(
+                            perf_trace::timer_elapsed(finish_start),
+                        );
+                        finish
+                    }
+                    Err(error) => Err(error),
+                };
                 perf_trace::record_lifecycle_background_task_total(perf_trace::timer_elapsed(
                     task_start,
                 ));

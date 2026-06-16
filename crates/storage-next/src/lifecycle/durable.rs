@@ -39,7 +39,7 @@ mod maintenance;
 pub(crate) use bootstrap::{LifecycleDurableLocalRuntime, LifecycleRecoveryBootstrapReport};
 pub(crate) use maintenance::{
     DurableBackgroundMaintenanceBuild, DurableBackgroundMaintenanceBuilt,
-    DurableBackgroundMaintenanceStep,
+    DurableBackgroundMaintenanceStep, PreparedPublishStep,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

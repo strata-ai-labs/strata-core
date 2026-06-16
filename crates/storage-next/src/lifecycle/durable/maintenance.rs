@@ -1,6 +1,6 @@
 //! Durable-local maintenance dispatch.
 
-use super::bootstrap::LifecycleDurableLocalRuntime;
+use super::bootstrap::{BranchPublishGuard, LifecycleDurableLocalRuntime};
 use super::{branch_error, commit_error, require_admitted};
 use crate::branch::state::{BranchLocalState, BranchRotationOutcome};
 use crate::commit::{
@@ -46,7 +46,8 @@ use crate::lifecycle::retention::{
     LifecycleSnapshotPruningRequest,
 };
 use crate::lifecycle::table_manifest::{
-    publish_table_manifest_for_branch_with_budget, table_manifest_debt_outcome,
+    persist_reserved_manifest, publish_table_manifest_for_branch_with_budget,
+    table_manifest_debt_outcome,
 };
 use crate::lifecycle::table_reachability::{
     table_object_retention_outcome, LifecycleTableObjectInventoryEntry,
@@ -55,7 +56,8 @@ use crate::lifecycle::table_reachability::{
 use crate::lifecycle::{
     begin_durable_materialization_build, commits_since_checkpoint,
     compact_durable_branch_manifest_backed, evaluate_mutating_write_admission,
-    install_prepared_durable_compaction, install_prepared_durable_materialization,
+    install_prepared_durable_compaction_without_publish,
+    install_prepared_durable_materialization_without_publish,
     materialize_durable_branch_manifest_backed, policy_admission_error,
     prepare_durable_compaction_publication, purge_proof_from_maintenance_task,
     purge_quarantine as purge_lifecycle_quarantine,
@@ -79,8 +81,8 @@ use crate::lifecycle::{
     PreparedDurableMaterialization, RecoveryDegradationClass, RecoveryHealth,
 };
 use crate::service::{
-    QuarantineService, TableManifestService, TableObjectReaderService, TableObjectService,
-    WalGrowthFacts, WalRetentionProof, WalService,
+    QuarantineService, TableManifestService, TableManifestWrite, TableObjectReaderService,
+    TableObjectService, WalGrowthFacts, WalRetentionProof, WalService,
 };
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -266,6 +268,73 @@ impl DurableBackgroundMaintenanceBuild<'_> {
     }
 }
 
+/// Outcome of the first locked phase of the three-phase background publish
+/// ([`LifecycleDurableLocalRuntime::begin_publish_phase`]). Either the publish completed entirely
+/// under the lock (`Done`), or an off-lock manifest fsync is staged (`OffLock`).
+#[allow(
+    clippy::large_enum_variant,
+    reason = "transient drain-loop return consumed immediately; never stored in a collection, and \
+              MaintenanceOutcome is passed by value throughout the maintenance layer"
+)]
+pub(crate) enum PreparedPublishStep<'a> {
+    Done(LifecycleResult<MaintenanceOutcome>),
+    OffLock(PreparedPublish<'a>),
+}
+
+/// A staged off-lock table-manifest publish. Carries everything the off-lock fsync needs
+/// (`service`, `manifest`, `budget`) plus the per-branch publish-slot guard and the kind-specific
+/// data needed to finish the task once the manifest is durable. The durable write runs in
+/// [`PreparedPublish::persist_off_lock`] with the global runtime lock released; nothing in this
+/// struct touches catalog or runtime state, so the off-lock step is free of shared mutable access.
+pub(crate) struct PreparedPublish<'a> {
+    task: MaintenanceTask,
+    branch_id: BranchId,
+    base_outcome: MaintenanceOutcome,
+    manifest: TableManifest,
+    service: TableManifestService<'a>,
+    budget: crate::lifecycle::StorageBudgetLedger,
+    guard: BranchPublishGuard,
+    post: PreparedPublishPost,
+}
+
+/// Kind-specific finish data carried across the off-lock fsync. Compaction and materialization
+/// keep their full lifecycle outcome so manifest debt and post-install requeue decisions are
+/// resolved against the persisted result in [`LifecycleDurableLocalRuntime::finish_publish_phase`].
+enum PreparedPublishPost {
+    Flush,
+    Compaction {
+        branch_id: BranchId,
+        level: u8,
+        outcome: LifecycleCompactionOutcome,
+    },
+    Materialization {
+        branch_id: BranchId,
+        outcome: LifecycleMaterializationOutcome,
+    },
+}
+
+impl PreparedPublish<'_> {
+    /// Perform the durable manifest fsync with the global runtime lock released. This is the only
+    /// step of the background publish that runs off-lock; it reads only owned fields (the manifest
+    /// was built and its sequence reserved under the lock) and records the off-lock publish
+    /// duration. The per-branch publish-slot guard keeps any concurrent same-branch publish out of
+    /// the reserve→record window. Returns `self` (slot still held) plus the persist result for
+    /// [`LifecycleDurableLocalRuntime::finish_publish_phase`].
+    pub(crate) fn persist_off_lock(self) -> (Self, LifecycleResult<TableManifestWrite>) {
+        let started = crate::observability::perf_trace::start_timer();
+        let write_result = persist_reserved_manifest(
+            &self.service,
+            self.branch_id,
+            &self.manifest,
+            Some(&self.budget),
+        );
+        crate::observability::perf_trace::record_lifecycle_background_publish_offlock(
+            crate::observability::perf_trace::timer_elapsed(started),
+        );
+        (self, write_result)
+    }
+}
+
 impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     #[allow(
         dead_code,
@@ -321,6 +390,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     ) -> LifecycleResult<FlushFrozenOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let branch_id = request.branch_id();
+        // Coordinate this foreground publish with the background drain's off-lock fsync via the
+        // per-branch publish slot. The slot is busy only while a background publish for this same
+        // branch is between sequence-reserve and record; defer rather than risk a concurrent
+        // same-branch manifest fsync. Try-lock only — never block the global lock on this slot.
+        let Some(_publish_guard) = self.try_acquire_branch_publish_guard(branch_id) else {
+            return Ok(FlushFrozenOutcome::deferred(request));
+        };
         let generation = self
             .branch_catalog
             .registry()
@@ -403,6 +479,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     ) -> LifecycleResult<LifecycleCompactionDrainOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let branch_id = request.branch_id();
+        // Hold the per-branch publish slot across this foreground compaction drain so its manifest
+        // fsync cannot run concurrently with a background off-lock fsync for the same branch.
+        let Some(_publish_guard) = self.try_acquire_branch_publish_guard(branch_id) else {
+            let layout = self.branch_catalog.branch_state(branch_id)?.source_layout();
+            return Ok(LifecycleCompactionDrainOutcome::deferred_for_publish_busy(
+                branch_id, layout,
+            ));
+        };
         let generation = self
             .branch_catalog
             .registry()
@@ -1159,14 +1243,31 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         task_id: MaintenanceTaskId,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        if self
-            .maintenance
-            .next_matching_task(|task| {
-                task.id() == task_id && task.kind() == MaintenanceTaskKind::Flush
-            })
-            .is_none()
-        {
+        let Some(task) = self.maintenance.next_matching_task(|task| {
+            task.id() == task_id && task.kind() == MaintenanceTaskKind::Flush
+        }) else {
             return Ok(None);
+        };
+        // Hold the per-branch publish slot for every branch this flush will publish, so its
+        // manifest fsync(s) cannot run concurrently with a background off-lock fsync for the same
+        // branch. A global flush publishes each active branch; defer the whole task if any slot is
+        // busy (try-lock only) rather than block the global lock.
+        let flush_branch_ids: Vec<BranchId> =
+            flush_branch_descriptors_for_scope(&self.branch_catalog, task.scope())?
+                .iter()
+                .map(|descriptor| descriptor.branch_id())
+                .collect();
+        let mut publish_guards = Vec::with_capacity(flush_branch_ids.len());
+        for branch_id in flush_branch_ids {
+            match self.try_acquire_branch_publish_guard(branch_id) {
+                Some(guard) => publish_guards.push(guard),
+                None => {
+                    return Ok(Some(self.defer_started_task_for_publish_busy(
+                        task_id,
+                        MaintenanceTaskKind::Flush,
+                    )?));
+                }
+            }
         }
         let outcome = {
             let maintenance = &mut self.maintenance;
@@ -1185,6 +1286,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
         };
         self.record_optional_maintenance_health(&outcome);
+        // Hold the per-branch publish slots until the manifest publish(es) above complete.
+        drop(publish_guards);
         outcome
     }
 
@@ -1437,17 +1540,28 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         ))))
     }
 
-    pub(crate) fn finish_background_maintenance(
+    /// First locked phase of the three-phase background publish. The in-memory install,
+    /// sequence-reserve, and (for table-manifest-backed flush/compaction/materialization) the
+    /// per-branch publish-slot claim all happen here under the global runtime lock. The actual
+    /// durable manifest fsync is deferred to [`PreparedPublish::persist_off_lock`], which runs
+    /// with the global lock released; [`finish_publish_phase`](Self::finish_publish_phase) folds
+    /// the persisted manifest back into the catalog under the lock again.
+    ///
+    /// Checkpoint and WAL-truncation publishes are unaffected: they run to completion here and
+    /// return [`PreparedPublishStep::Done`]. Flush/compaction/materialization either return
+    /// `Done` (nothing to publish, or the per-branch slot is busy so the task defers) or
+    /// [`PreparedPublishStep::OffLock`] carrying the manifest to persist off-lock.
+    pub(crate) fn begin_publish_phase(
         &mut self,
         built: DurableBackgroundMaintenanceBuilt,
-    ) -> LifecycleResult<MaintenanceOutcome> {
-        let outcome = match built {
+    ) -> LifecycleResult<PreparedPublishStep<'a>> {
+        let step = match built {
             DurableBackgroundMaintenanceBuilt::Flush {
                 task,
                 branch_id,
                 prepared,
                 elapsed,
-            } => self.finish_background_flush_task(task, branch_id, prepared, elapsed),
+            } => self.begin_flush_publish(task, branch_id, prepared, elapsed),
             DurableBackgroundMaintenanceBuilt::Checkpoint {
                 task,
                 request,
@@ -1463,7 +1577,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                     has_durable_rows,
                     Some(&self.budget),
                 );
-                match checkpoint {
+                let outcome = match checkpoint {
                     Ok(outcome) => {
                         if let Some(snapshot_id) = outcome.snapshot_id() {
                             self.next_checkpoint_snapshot_id = snapshot_id.checked_add(1).ok_or(
@@ -1481,23 +1595,38 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                                 .with_source_error(error);
                         self.maintenance.finish_started(task, outcome, false)
                     }
-                }
+                };
+                PreparedPublishStep::Done(self.record_publish_phase_health(outcome))
             }
-            DurableBackgroundMaintenanceBuilt::WalTruncation { task, outcome } => self
-                .maintenance
-                .finish_started(task, outcome.maintenance_outcome(), false),
+            DurableBackgroundMaintenanceBuilt::WalTruncation { task, outcome } => {
+                let outcome =
+                    self.maintenance
+                        .finish_started(task, outcome.maintenance_outcome(), false);
+                PreparedPublishStep::Done(self.record_publish_phase_health(outcome))
+            }
             DurableBackgroundMaintenanceBuilt::Compaction {
                 task,
                 branch_id,
                 level,
                 prepared,
-            } => self.finish_background_compaction_task(task, branch_id, level, *prepared),
+            } => self.begin_compaction_publish(task, branch_id, level, *prepared),
             DurableBackgroundMaintenanceBuilt::Materialization {
                 task,
                 branch_id,
                 prepared,
-            } => self.finish_background_materialization_task(task, branch_id, *prepared),
+            } => self.begin_materialization_publish(task, branch_id, *prepared),
         };
+        Ok(step)
+    }
+
+    /// Record maintenance health for an outcome resolved entirely under the lock (checkpoint,
+    /// WAL-truncation, deferred/error short-circuits, and the off-lock finish). Mirrors the
+    /// health bookkeeping the previous single-phase `finish_background_maintenance` applied to
+    /// every outcome it returned.
+    fn record_publish_phase_health(
+        &mut self,
+        outcome: LifecycleResult<MaintenanceOutcome>,
+    ) -> LifecycleResult<MaintenanceOutcome> {
         self.record_optional_maintenance_health(&outcome.clone().map(Some));
         outcome
     }
@@ -1514,123 +1643,330 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         outcome
     }
 
-    fn finish_background_flush_task(
+    /// Install a prepared flush drain in memory and record its frozen tables in the catalog
+    /// under the lock, then prepare a single off-lock table-manifest publish for the whole drain
+    /// (the previous path published one manifest per frozen table). The drain may flush several
+    /// frozen tables; each install records its table, and one reserved-sequence manifest covers
+    /// them all. When nothing completed there is no durable change to publish.
+    fn begin_flush_publish(
         &mut self,
         task: MaintenanceTask,
         branch_id: BranchId,
         prepared: PreparedDurableFlushDrain,
         _elapsed: std::time::Duration,
-    ) -> LifecycleResult<MaintenanceOutcome> {
-        let result: LifecycleResult<MaintenanceOutcome> = (|| {
+    ) -> PreparedPublishStep<'a> {
+        let install: LifecycleResult<(MaintenanceOutcome, bool)> = (|| {
             let generation = self
                 .branch_catalog
                 .registry()
                 .lookup(branch_id)
                 .map_err(commit_error)?
                 .generation();
+            let table_catalog = &mut self.table_catalog;
             let branch = self
                 .branch_catalog
                 .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
-            install_prepared_durable_flush_drain_with(branch, prepared, |branch, prepared_flush| {
-                let outcome = install_prepared_durable_flush(branch, prepared_flush);
-                let mut maintenance_outcome = outcome.maintenance_outcome();
-                if let Some(error) = publish_table_manifest_after_flush(
-                    branch,
-                    self.services.table_manifest(),
-                    &mut self.table_catalog,
-                    Some(&self.budget),
-                    &outcome,
-                ) {
-                    maintenance_outcome = table_manifest_debt_outcome(maintenance_outcome, error);
-                }
-                Ok(maintenance_outcome)
-            })
+            let mut any_completed = false;
+            let drain_outcome = install_prepared_durable_flush_drain_with(
+                branch,
+                prepared,
+                |branch, prepared_flush| {
+                    let outcome = install_prepared_durable_flush(branch, prepared_flush);
+                    let maintenance_outcome = outcome.maintenance_outcome();
+                    if outcome.completed() {
+                        if let (Some(identity), Some(object_facts)) =
+                            (outcome.table_identity(), outcome.object_facts())
+                        {
+                            table_catalog.record_table(identity.clone(), object_facts.clone())?;
+                            any_completed = true;
+                        }
+                    }
+                    Ok(maintenance_outcome)
+                },
+            )?;
+            Ok((drain_outcome, any_completed))
         })();
-        let outcome = result.unwrap_or_else(|error| {
-            MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
-                .with_source_error(error)
-        });
-        self.maintenance.finish_started(task, outcome, false)
+        let (drain_outcome, any_completed) = match install {
+            Ok(values) => values,
+            Err(error) => {
+                let outcome =
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                        .with_source_error(error);
+                return self.finish_locked_publish(task, outcome);
+            }
+        };
+        if !any_completed {
+            return self.finish_locked_publish(task, drain_outcome);
+        }
+        self.begin_off_lock_publish(task, branch_id, drain_outcome, PreparedPublishPost::Flush)
     }
 
-    fn finish_background_compaction_task(
+    /// Install a prepared compaction in memory and record its output tables in the catalog under
+    /// the lock, splitting the durable manifest publish off to the off-lock phase. Outcomes that
+    /// rewrote nothing (no-candidate) carry no manifest to publish and finish under the lock.
+    fn begin_compaction_publish(
         &mut self,
         task: MaintenanceTask,
         branch_id: BranchId,
         level: u8,
         prepared: PreparedDurableCompaction,
-    ) -> LifecycleResult<MaintenanceOutcome> {
-        let result: LifecycleResult<LifecycleCompactionOutcome> = (|| {
+    ) -> PreparedPublishStep<'a> {
+        let install: LifecycleResult<LifecycleCompactionOutcome> = (|| {
             let generation = self
                 .branch_catalog
                 .registry()
                 .lookup(branch_id)
                 .map_err(commit_error)?
                 .generation();
+            let table_catalog = &mut self.table_catalog;
             let branch = self
                 .branch_catalog
                 .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
-            install_prepared_durable_compaction(
+            install_prepared_durable_compaction_without_publish(
                 branch,
-                self.services.table_manifest(),
-                &mut self.table_catalog,
+                table_catalog,
                 prepared,
                 Some(&self.budget),
             )
         })();
-        let maintenance = match result {
-            Ok(compaction) => {
-                record_lifecycle_compaction_outcome(&compaction);
-                let maintenance = compaction.maintenance_outcome();
-                if table_rewrite_outcome_was_flush_preempted(&maintenance) {
-                    self.requeue_flush_preempted_compaction(branch_id, level);
-                } else if table_rewrite_outcome_allows_chain_resubmit(&maintenance) {
-                    self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
-                }
-                maintenance
+        let compaction = match install {
+            Ok(compaction) => compaction,
+            Err(error) => {
+                let outcome =
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                        .with_source_error(error);
+                return self.finish_locked_publish(task, outcome);
             }
-            Err(error) => MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
-                .with_source_error(error),
         };
-        self.maintenance.finish_started(task, maintenance, false)
+        if compaction.status() == crate::lifecycle::LifecycleCompactionStatus::DeferredNoCandidate {
+            // No rewrite output: no manifest to publish. Run the post-install requeue logic and
+            // finish under the lock, exactly as the no-candidate path did before.
+            record_lifecycle_compaction_outcome(&compaction);
+            let maintenance = compaction.maintenance_outcome();
+            self.apply_compaction_post(branch_id, level, &maintenance);
+            return self.finish_locked_publish(task, maintenance);
+        }
+        let base_outcome = compaction.maintenance_outcome();
+        self.begin_off_lock_publish(
+            task,
+            branch_id,
+            base_outcome,
+            PreparedPublishPost::Compaction {
+                branch_id,
+                level,
+                outcome: compaction,
+            },
+        )
     }
 
-    fn finish_background_materialization_task(
+    /// Install a prepared materialization in memory and record its replacement tables in the
+    /// catalog under the lock, splitting the durable manifest publish off to the off-lock phase.
+    fn begin_materialization_publish(
         &mut self,
         task: MaintenanceTask,
         branch_id: BranchId,
         prepared: PreparedDurableMaterialization,
-    ) -> LifecycleResult<MaintenanceOutcome> {
-        let result: LifecycleResult<LifecycleMaterializationOutcome> = (|| {
+    ) -> PreparedPublishStep<'a> {
+        let install: LifecycleResult<LifecycleMaterializationOutcome> = (|| {
             let generation = self
                 .branch_catalog
                 .registry()
                 .lookup(branch_id)
                 .map_err(commit_error)?
                 .generation();
+            let table_catalog = &mut self.table_catalog;
             let branch = self
                 .branch_catalog
                 .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
-            install_prepared_durable_materialization(
+            install_prepared_durable_materialization_without_publish(
                 branch,
-                self.services.table_manifest(),
-                &mut self.table_catalog,
+                table_catalog,
                 prepared,
                 Some(&self.budget),
             )
         })();
-        let maintenance = match result {
-            Ok(materialization) => {
-                let maintenance = materialization.maintenance_outcome();
+        let materialization = match install {
+            Ok(materialization) => materialization,
+            Err(error) => {
+                let outcome =
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                        .with_source_error(error);
+                return self.finish_locked_publish(task, outcome);
+            }
+        };
+        let base_outcome = materialization.maintenance_outcome();
+        self.begin_off_lock_publish(
+            task,
+            branch_id,
+            base_outcome,
+            PreparedPublishPost::Materialization {
+                branch_id,
+                outcome: materialization,
+            },
+        )
+    }
+
+    /// Reserve the manifest sequence, build the branch's table manifest, and claim the per-branch
+    /// publish slot for an off-lock fsync. With the slot busy (another publish for the branch is
+    /// between sequence-reserve and record), defer the task under the lock rather than block —
+    /// blocking on the per-branch slot while holding the global lock would deadlock the drain.
+    fn begin_off_lock_publish(
+        &mut self,
+        task: MaintenanceTask,
+        branch_id: BranchId,
+        base_outcome: MaintenanceOutcome,
+        post: PreparedPublishPost,
+    ) -> PreparedPublishStep<'a> {
+        let reserved = match self.table_catalog.reserve_manifest_sequence() {
+            Ok(reserved) => reserved,
+            Err(error) => {
+                let outcome = table_manifest_debt_outcome(base_outcome, error);
+                return self.finish_locked_publish(task, outcome);
+            }
+        };
+        let manifest = {
+            let branch = match self.branch_catalog.branch_state(branch_id) {
+                Ok(branch) => branch,
+                Err(error) => {
+                    let outcome = table_manifest_debt_outcome(base_outcome, error);
+                    return self.finish_locked_publish(task, outcome);
+                }
+            };
+            match self
+                .table_catalog
+                .build_manifest_with_sequence(branch, reserved)
+            {
+                Ok(manifest) => manifest,
+                Err(error) => {
+                    let outcome = table_manifest_debt_outcome(base_outcome, error);
+                    return self.finish_locked_publish(task, outcome);
+                }
+            }
+        };
+        let Some(guard) = self.try_acquire_branch_publish_guard(branch_id) else {
+            // Another publish for this branch holds the slot. Defer; the next drain round retries.
+            let outcome = MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
+                .with_reason("table manifest publish slot is busy for this branch");
+            return self.finish_locked_publish(task, outcome);
+        };
+        PreparedPublishStep::OffLock(PreparedPublish {
+            task,
+            branch_id,
+            base_outcome,
+            manifest,
+            service: self.services.table_manifest().clone(),
+            budget: self.budget.clone(),
+            guard,
+            post,
+        })
+    }
+
+    /// Finish a task whose publish resolved entirely under the lock (deferred, errored, or with
+    /// no durable manifest to write) and record its maintenance health.
+    fn finish_locked_publish(
+        &mut self,
+        task: MaintenanceTask,
+        outcome: MaintenanceOutcome,
+    ) -> PreparedPublishStep<'a> {
+        let finished = self.maintenance.finish_started(task, outcome, false);
+        PreparedPublishStep::Done(self.record_publish_phase_health(finished))
+    }
+
+    /// Apply the post-install requeue/resubmit decisions for a compaction outcome. Mirrors the
+    /// requeue logic the previous single-phase compaction finisher ran right after install.
+    fn apply_compaction_post(
+        &mut self,
+        branch_id: BranchId,
+        level: u8,
+        maintenance: &MaintenanceOutcome,
+    ) {
+        if table_rewrite_outcome_was_flush_preempted(maintenance) {
+            self.requeue_flush_preempted_compaction(branch_id, level);
+        } else if table_rewrite_outcome_allows_chain_resubmit(maintenance) {
+            self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
+        }
+    }
+
+    /// Final locked phase of the three-phase background publish. Folds the off-lock-persisted
+    /// manifest back into the catalog (or stamps manifest debt on persist failure), applies any
+    /// kind-specific post-install requeue logic, finishes the task, and records its health. The
+    /// per-branch publish slot guard held by `prepared` is released when it drops here.
+    pub(crate) fn finish_publish_phase(
+        &mut self,
+        prepared: PreparedPublish<'_>,
+        write_result: LifecycleResult<TableManifestWrite>,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        let PreparedPublish {
+            task,
+            branch_id: _,
+            base_outcome,
+            manifest: _,
+            service: _,
+            budget: _,
+            guard,
+            post,
+        } = prepared;
+        let outcome = match post {
+            PreparedPublishPost::Flush => match write_result {
+                Ok(write) => match self
+                    .table_catalog
+                    .record_reserved_manifest(write.manifest())
+                {
+                    Ok(()) => base_outcome,
+                    Err(error) => table_manifest_debt_outcome(base_outcome, error),
+                },
+                Err(error) => table_manifest_debt_outcome(base_outcome, error),
+            },
+            PreparedPublishPost::Compaction {
+                branch_id,
+                level,
+                outcome,
+            } => {
+                let outcome = self.fold_rewrite_publish(write_result, outcome, |outcome, error| {
+                    outcome.manifest_debt(error)
+                });
+                record_lifecycle_compaction_outcome(&outcome);
+                let maintenance = outcome.maintenance_outcome();
+                self.apply_compaction_post(branch_id, level, &maintenance);
+                maintenance
+            }
+            PreparedPublishPost::Materialization { branch_id, outcome } => {
+                let outcome = self.fold_rewrite_publish(write_result, outcome, |outcome, error| {
+                    outcome.manifest_debt(error)
+                });
+                let maintenance = outcome.maintenance_outcome();
                 if table_rewrite_outcome_allows_chain_resubmit(&maintenance) {
                     self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
                 }
                 maintenance
             }
-            Err(error) => MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
-                .with_source_error(error),
         };
-        self.maintenance.finish_started(task, maintenance, false)
+        // The publish slot is released only after the catalog record above, so no concurrent
+        // publish for this branch can interleave between persist and record.
+        drop(guard);
+        let finished = self.maintenance.finish_started(task, outcome, false);
+        self.record_publish_phase_health(finished)
+    }
+
+    /// Fold an off-lock persist result into a rewrite outcome: record the persisted manifest's
+    /// tables on success (the sequence was advanced at reserve time), or stamp the outcome with
+    /// manifest debt on persist or record failure.
+    fn fold_rewrite_publish<T>(
+        &mut self,
+        write_result: LifecycleResult<TableManifestWrite>,
+        outcome: T,
+        manifest_debt: impl FnOnce(T, LifecycleError) -> T,
+    ) -> T {
+        match write_result {
+            Ok(write) => match self
+                .table_catalog
+                .record_reserved_manifest(write.manifest())
+            {
+                Ok(()) => outcome,
+                Err(error) => manifest_debt(outcome, error),
+            },
+            Err(error) => manifest_debt(outcome, error),
+        }
     }
 
     #[allow(
@@ -1959,6 +2295,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             return Ok(None);
         };
         let (branch_id, level) = table_level_scope_from_task(task)?;
+        // Hold the per-branch publish slot across this foreground rewrite so its manifest fsync
+        // cannot run concurrently with a background off-lock fsync for the same branch. Defer
+        // (try-lock only) if the slot is busy rather than block the global lock.
+        let Some(_publish_guard) = self.try_acquire_branch_publish_guard(branch_id) else {
+            return Ok(Some(
+                self.defer_started_task_for_publish_busy(task_id, task.kind())?,
+            ));
+        };
         // Pre-sync shadow into catalog so the runner sees direct shadow
         // mutations (test-only) before fetching from the catalog.
         let generation = self
@@ -2184,6 +2528,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             return Ok(None);
         };
         let branch_id = branch_id_from_inherited_layer_task(task)?;
+        // Hold the per-branch publish slot across this foreground materialization so its manifest
+        // fsync cannot run concurrently with a background off-lock fsync for the same branch.
+        let Some(_publish_guard) = self.try_acquire_branch_publish_guard(branch_id) else {
+            return Ok(Some(
+                self.defer_started_task_for_publish_busy(task_id, task.kind())?,
+            ));
+        };
         // Pre-sync shadow into catalog so the runner sees direct shadow
         // mutations (test-only) before fetching from the catalog.
         let generation = self
@@ -2428,6 +2779,31 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         if let Ok(Some(outcome)) = outcome {
             self.record_recovery_health(outcome.recovery_health());
         }
+    }
+
+    /// Start a pending task and immediately finish it `Deferred` because its branch's publish slot
+    /// is held by an in-flight off-lock publish. The next maintenance pass retries once the slot
+    /// frees; the task is not lost. Used by the foreground rewrite paths to coordinate with the
+    /// background drain's off-lock fsync without blocking the global lock.
+    fn defer_started_task_for_publish_busy(
+        &mut self,
+        task_id: MaintenanceTaskId,
+        kind: MaintenanceTaskKind,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        let state = self.state;
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == task_id)?
+        else {
+            return Err(LifecycleError::MaintenanceTaskFailed {
+                reason: "maintenance task is no longer startable",
+            });
+        };
+        let outcome = MaintenanceOutcome::new(kind, MaintenanceOutcomeStatus::Deferred)
+            .with_reason("table manifest publish slot is busy for this branch");
+        let outcome = self.maintenance.finish_started(task, outcome, false)?;
+        self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+        Ok(outcome)
     }
 
     pub(super) fn record_recovery_health(&mut self, health: Option<&RecoveryHealth>) {

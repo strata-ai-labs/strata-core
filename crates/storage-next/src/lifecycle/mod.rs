@@ -125,7 +125,7 @@ pub(crate) use durable::{
     DurableBackgroundMaintenanceBuild, DurableBackgroundMaintenanceBuilt,
     DurableBackgroundMaintenanceStep, LifecycleDurableAssemblyFacts,
     LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime, LifecycleDurableLocalServices,
-    LifecycleDurableLocalShell, LifecycleRecoveryBootstrapReport,
+    LifecycleDurableLocalShell, LifecycleRecoveryBootstrapReport, PreparedPublishStep,
 };
 #[allow(
     unused_imports,
@@ -225,8 +225,11 @@ pub(crate) use retention::{
 )]
 pub(crate) use rewrite_publication::{
     begin_durable_materialization_build, compact_durable_branch_manifest_backed,
-    install_prepared_durable_compaction, install_prepared_durable_materialization,
+    install_prepared_durable_compaction, install_prepared_durable_compaction_without_publish,
+    install_prepared_durable_materialization,
+    install_prepared_durable_materialization_without_publish,
     materialize_durable_branch_manifest_backed, prepare_durable_compaction_publication,
+    publish_compaction_outcome_manifest, publish_materialization_outcome_manifest,
     DurableMaterializationBegin, DurableMaterializationBuild, PreparedDurableCompaction,
     PreparedDurableMaterialization,
 };

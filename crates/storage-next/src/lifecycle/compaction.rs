@@ -587,6 +587,18 @@ impl LifecycleCompactionDrainOutcome {
         }
     }
 
+    /// A no-op drain outcome produced when the branch's manifest publish slot is held by an
+    /// in-flight off-lock publish. Nothing was attempted; the caller should retry once the slot
+    /// frees. `maintenance_outcome` reports this as `Deferred` (zero operations installed).
+    pub(crate) fn deferred_for_publish_busy(
+        branch_id: BranchId,
+        final_source_layout: BranchSourceLayout,
+    ) -> Self {
+        let mut outcome = Self::new(branch_id, final_source_layout);
+        outcome.deferred_reason = Some("table manifest publish slot is busy for this branch");
+        outcome
+    }
+
     fn record_attempt(&mut self) {
         self.operations_attempted = self.operations_attempted.saturating_add(1);
     }

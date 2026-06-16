@@ -14,9 +14,7 @@ use crate::backend::{PublishError, PublishFailureKind};
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::{BranchMaterializationSource, BranchOwnedTable};
-use crate::branch::state::compaction::{
-    BranchCompactionOutcome, BranchCompactionPlan, BranchCompactionRequest,
-};
+use crate::branch::state::compaction::{BranchCompactionPlan, BranchCompactionRequest};
 use crate::branch::state::materialization::{
     BranchMaterializationHandle, BranchMaterializationOutcome, BranchMaterializationPreparedOutput,
     BranchMaterializationRecovery, BranchMaterializationRequest,
@@ -147,6 +145,28 @@ pub(crate) fn install_prepared_durable_compaction(
     prepared: PreparedDurableCompaction,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleCompactionOutcome> {
+    let outcome =
+        install_prepared_durable_compaction_without_publish(branch, catalog, prepared, budget)?;
+    Ok(publish_compaction_outcome_manifest(
+        branch,
+        manifest_service,
+        catalog,
+        outcome,
+        budget,
+    ))
+}
+
+/// Install a prepared compaction's in-memory and catalog state without writing the table
+/// manifest. The returned outcome describes a completed install whose durable manifest is not
+/// yet published; the caller must follow with a manifest publish (synchronous under the runtime
+/// lock, or off-lock via the three-phase background publish). On a `MetadataOnly` no-candidate
+/// plan the returned outcome carries no rewrite, so no publish is required.
+pub(crate) fn install_prepared_durable_compaction_without_publish(
+    branch: &mut BranchLocalState,
+    catalog: &mut LifecycleDurableTableCatalog,
+    prepared: PreparedDurableCompaction,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<LifecycleCompactionOutcome> {
     let PreparedDurableCompaction {
         request,
         branch_request,
@@ -161,15 +181,18 @@ pub(crate) fn install_prepared_durable_compaction(
                 .install_branch_compaction_plan(&branch_request, &plan)
                 .map_err(branch_error)?;
             if plan.is_metadata_promotion() {
-                return Ok(finish_metadata_promotion_compaction(
-                    branch,
-                    manifest_service,
-                    catalog,
+                let retained_input_objects = branch_outcome
+                    .removed_refs()
+                    .iter()
+                    .map(|table_ref| table_ref.table_identity().as_str().to_owned())
+                    .collect::<Vec<_>>();
+                return Ok(LifecycleCompactionOutcome::completed_durable(
                     plan,
                     branch_outcome,
                     io_facts,
                     elapsed,
-                    budget,
+                    Vec::new(),
+                    retained_input_objects,
                 ));
             }
             Ok(LifecycleCompactionOutcome::new(
@@ -183,7 +206,6 @@ pub(crate) fn install_prepared_durable_compaction(
         PreparedDurableCompactionOutput::Published { report, published } => {
             install_published_durable_compaction(
                 branch,
-                manifest_service,
                 catalog,
                 &branch_request,
                 plan,
@@ -197,9 +219,27 @@ pub(crate) fn install_prepared_durable_compaction(
     }
 }
 
+/// Publish the table manifest for an already-installed compaction outcome. Returns the outcome
+/// unchanged on success, or stamped with manifest debt on publish failure. Compaction outcomes
+/// that did not rewrite anything (`DeferredNoCandidate`) require no manifest publish.
+pub(crate) fn publish_compaction_outcome_manifest(
+    branch: &BranchLocalState,
+    manifest_service: &TableManifestService<'_>,
+    catalog: &mut LifecycleDurableTableCatalog,
+    outcome: LifecycleCompactionOutcome,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleCompactionOutcome {
+    if outcome.status() == crate::lifecycle::LifecycleCompactionStatus::DeferredNoCandidate {
+        return outcome;
+    }
+    match publish_table_manifest_for_branch_with_budget(branch, manifest_service, catalog, budget) {
+        Ok(_) => outcome,
+        Err(error) => outcome.manifest_debt(error),
+    }
+}
+
 fn install_published_durable_compaction(
     branch: &mut BranchLocalState,
-    manifest_service: &TableManifestService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
     branch_request: &BranchCompactionRequest,
     plan: BranchCompactionPlan,
@@ -207,7 +247,7 @@ fn install_published_durable_compaction(
     elapsed: std::time::Duration,
     report: TableCompactionReport,
     published: &[PublishedRewriteTable],
-    budget: Option<&StorageBudgetLedger>,
+    _budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleCompactionOutcome> {
     let mut next_catalog = catalog.clone();
     record_published_outputs(&mut next_catalog, published).map_err(|source| {
@@ -240,18 +280,14 @@ fn install_published_durable_compaction(
         .iter()
         .map(|output| published_object_facts(output).object().clone())
         .collect::<Vec<_>>();
-    let outcome = LifecycleCompactionOutcome::completed_durable(
+    Ok(LifecycleCompactionOutcome::completed_durable(
         plan,
         branch_outcome,
         io_facts,
         elapsed,
         output_objects,
         retained_input_objects,
-    );
-    match publish_table_manifest_for_branch_with_budget(branch, manifest_service, catalog, budget) {
-        Ok(_) => Ok(outcome),
-        Err(error) => Ok(outcome.manifest_debt(error)),
-    }
+    ))
 }
 
 fn compaction_request_with_durable_budget_target(
@@ -262,35 +298,6 @@ fn compaction_request_with_durable_budget_target(
     let config =
         table_compaction_config_with_storage_budget(request.table_compaction_config(), budget)?;
     Ok(request.with_table_compaction_config(config))
-}
-
-fn finish_metadata_promotion_compaction(
-    branch: &BranchLocalState,
-    manifest_service: &TableManifestService<'_>,
-    catalog: &mut LifecycleDurableTableCatalog,
-    plan: BranchCompactionPlan,
-    branch_outcome: BranchCompactionOutcome,
-    io_facts: LifecycleCompactionIoFacts,
-    elapsed: std::time::Duration,
-    budget: Option<&StorageBudgetLedger>,
-) -> LifecycleCompactionOutcome {
-    let retained_input_objects = branch_outcome
-        .removed_refs()
-        .iter()
-        .map(|table_ref| table_ref.table_identity().as_str().to_owned())
-        .collect::<Vec<_>>();
-    let outcome = LifecycleCompactionOutcome::completed_durable(
-        plan,
-        branch_outcome,
-        io_facts,
-        elapsed,
-        Vec::new(),
-        retained_input_objects,
-    );
-    match publish_table_manifest_for_branch_with_budget(branch, manifest_service, catalog, budget) {
-        Ok(_) => outcome,
-        Err(error) => outcome.manifest_debt(error),
-    }
 }
 
 pub(crate) fn materialize_durable_branch_manifest_backed(
@@ -379,6 +386,29 @@ pub(crate) fn install_prepared_durable_materialization(
     prepared: PreparedDurableMaterialization,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleMaterializationOutcome> {
+    let outcome = install_prepared_durable_materialization_without_publish(
+        branch, catalog, prepared, budget,
+    )?;
+    Ok(publish_materialization_outcome_manifest(
+        branch,
+        manifest_service,
+        catalog,
+        outcome,
+        budget,
+    ))
+}
+
+/// Install a prepared materialization's in-memory and catalog state without writing the table
+/// manifest. The returned outcome describes a completed install whose durable manifest is not yet
+/// published; the caller must follow with a manifest publish (synchronous under the runtime lock,
+/// or off-lock via the three-phase background publish). An already-materialized layer requires no
+/// manifest publish.
+pub(crate) fn install_prepared_durable_materialization_without_publish(
+    branch: &mut BranchLocalState,
+    catalog: &mut LifecycleDurableTableCatalog,
+    prepared: PreparedDurableMaterialization,
+    _budget: Option<&StorageBudgetLedger>,
+) -> LifecycleResult<LifecycleMaterializationOutcome> {
     let PreparedDurableMaterialization {
         request,
         materialization_handle,
@@ -391,32 +421,24 @@ pub(crate) fn install_prepared_durable_materialization(
         let branch_outcome = branch
             .materialize_inherited_layer(&branch_request)
             .map_err(branch_error)?;
-        return Ok(finish_materialization_after_install(
-            branch,
-            manifest_service,
-            catalog,
+        return Ok(materialization_outcome_after_install(
             &request,
             materialization_handle,
             reachability_snapshot,
             branch_outcome,
             Vec::new(),
-            budget,
         ));
     };
     if published.is_empty() {
         let branch_outcome = branch
             .install_materialization_prepared_output(&branch_request, &prepared_output, Vec::new())
             .map_err(branch_error)?;
-        return Ok(finish_materialization_after_install(
-            branch,
-            manifest_service,
-            catalog,
+        return Ok(materialization_outcome_after_install(
             &request,
             materialization_handle,
             reachability_snapshot,
             branch_outcome,
             Vec::new(),
-            budget,
         ));
     }
     let mut next_catalog = catalog.clone();
@@ -445,31 +467,38 @@ pub(crate) fn install_prepared_durable_materialization(
         .iter()
         .map(|output| published_object_facts(output).object().clone())
         .collect::<Vec<_>>();
-    Ok(finish_materialization_after_install(
-        branch,
-        manifest_service,
-        catalog,
+    Ok(materialization_outcome_after_install(
         &request,
         materialization_handle,
         reachability_snapshot,
         branch_outcome,
         output_objects,
-        budget,
     ))
 }
 
-fn finish_materialization_after_install(
+/// Publish the table manifest for an already-installed materialization outcome. Returns the
+/// outcome unchanged on success, or stamped with manifest debt on publish failure.
+pub(crate) fn publish_materialization_outcome_manifest(
     branch: &BranchLocalState,
     manifest_service: &TableManifestService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
+    outcome: LifecycleMaterializationOutcome,
+    budget: Option<&StorageBudgetLedger>,
+) -> LifecycleMaterializationOutcome {
+    match publish_table_manifest_for_branch_with_budget(branch, manifest_service, catalog, budget) {
+        Ok(_) => outcome,
+        Err(error) => outcome.manifest_debt(error),
+    }
+}
+
+fn materialization_outcome_after_install(
     request: &LifecycleMaterializationRequest,
     materialization_handle: BranchMaterializationHandle,
     reachability_snapshot: crate::branch::facts::BranchReachabilitySnapshot,
     branch_outcome: BranchMaterializationOutcome,
     output_objects: Vec<crate::object::ObjectName>,
-    budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleMaterializationOutcome {
-    let outcome = if matches!(
+    if matches!(
         branch_outcome.recovery(),
         BranchMaterializationRecovery::LayerAlreadyMaterialized,
     ) {
@@ -486,10 +515,6 @@ fn finish_materialization_after_install(
             branch_outcome,
             output_objects,
         )
-    };
-    match publish_table_manifest_for_branch_with_budget(branch, manifest_service, catalog, budget) {
-        Ok(_) => outcome,
-        Err(error) => outcome.manifest_debt(error),
     }
 }
 

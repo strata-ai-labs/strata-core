@@ -1002,6 +1002,8 @@ fn source_guard_background_priority_maps_lifecycle_work_by_pressure_cost() {
 #[test]
 fn source_guard_background_build_runs_before_publish_lock() {
     let runtime_source = include_str!("../runtime.rs");
+    // The cache drain stays two-phase (volatile mode has no manifest fsync): the unlocked build
+    // precedes the single publish lock.
     assert_background_drain_build_before_publish_lock(
         runtime_source
             .split("fn drain_cache_background_round")
@@ -1012,15 +1014,110 @@ fn source_guard_background_build_runs_before_publish_lock() {
             .expect("cache background drain precedes durable helpers"),
         "cache",
     );
-    assert_background_drain_build_before_publish_lock(
+    // The durable drain is three-phase: a first lock block installs and reserves
+    // (`begin_publish_phase`), the manifest fsync runs off-lock (`persist_off_lock`), and a second
+    // lock block records and finishes (`finish_publish_phase`).
+    assert_durable_background_drain_three_phase_publish(
         runtime_source
             .split("fn drain_durable_background_round")
             .nth(1)
             .expect("durable background drain function is present")
-            .split("impl BackgroundDrainRound")
+            .split("fn map_generation_guard")
             .next()
-            .expect("durable background drain precedes drain-round impl"),
-        "durable",
+            .expect("durable background drain precedes map_generation_guard"),
+    );
+}
+
+/// The durable background drain must build unlocked, then run two locked phases around an off-lock
+/// manifest fsync. Guards that the fsync (`persist_reserved_manifest` / `publish_replace_manifest`)
+/// is NOT performed inside either locked phase, and that phase one reserves under the lock and
+/// claims the per-branch publish slot with a try-lock.
+fn assert_durable_background_drain_three_phase_publish(drain_source: &str) {
+    let build_index = drain_source
+        .find("let build_result =")
+        .expect("durable background drain must build the task");
+    let begin_index = drain_source
+        .find("let begin = {")
+        .expect("durable background drain must enter phase one under the lock");
+    let first_lock_index = drain_source[begin_index..]
+        .find("let mut runtime = runtime.lock();")
+        .map(|index| begin_index + index)
+        .expect("durable background drain phase one must lock");
+    let persist_index = drain_source
+        .find("persist_off_lock()")
+        .expect("durable background drain must persist the manifest off-lock");
+    let finish_index = drain_source
+        .find("let finish = {")
+        .expect("durable background drain must enter phase three under the lock");
+    let second_lock_index = drain_source[finish_index..]
+        .find("let mut runtime = runtime.lock();")
+        .map(|index| finish_index + index)
+        .expect("durable background drain phase three must lock");
+
+    assert!(
+        build_index < begin_index && begin_index < persist_index && persist_index < finish_index,
+        "durable background drain must build, then phase one, then off-lock persist, then phase three"
+    );
+    assert!(
+        first_lock_index < persist_index,
+        "durable background drain phase one must hold the lock before the off-lock persist"
+    );
+    assert!(
+        persist_index < second_lock_index,
+        "durable background drain off-lock persist must run before re-acquiring the lock"
+    );
+    assert!(
+        drain_source[begin_index..persist_index].contains("begin_publish_phase"),
+        "durable background drain phase one must call begin_publish_phase"
+    );
+    assert!(
+        drain_source[finish_index..].contains("finish_publish_phase"),
+        "durable background drain phase three must call finish_publish_phase"
+    );
+    // The manifest fsync must not run inside either locked phase: phase one ends at the off-lock
+    // persist, phase three runs after it. Neither locked region may call the durable persist.
+    for forbidden in ["persist_reserved_manifest", "publish_replace_manifest"] {
+        assert!(
+            !drain_source[begin_index..persist_index].contains(forbidden),
+            "durable background drain phase one must not call {forbidden} (the fsync is off-lock)"
+        );
+    }
+
+    // Phase one (in the lifecycle layer) reserves the manifest sequence under the lock and claims
+    // the per-branch publish slot with a try-lock so the global lock is never blocked on the slot.
+    let maintenance_source = include_str!("../../lifecycle/durable/maintenance.rs");
+    let begin_phase = maintenance_source
+        .split("fn begin_off_lock_publish")
+        .nth(1)
+        .expect("begin_off_lock_publish is present")
+        .split("fn finish_locked_publish")
+        .next()
+        .expect("begin_off_lock_publish precedes finish_locked_publish");
+    assert!(
+        begin_phase.contains("reserve_manifest_sequence"),
+        "off-lock publish phase one must reserve the manifest sequence under the lock"
+    );
+    assert!(
+        begin_phase.contains("try_acquire_branch_publish_guard"),
+        "off-lock publish phase one must claim the per-branch publish slot before releasing the lock"
+    );
+    assert!(
+        !begin_phase.contains("persist_reserved_manifest"),
+        "off-lock publish phase one must not fsync the manifest under the lock"
+    );
+    // The per-branch publish slot must be a try-lock (CAS), never a blocking acquire, so the
+    // global lock is never blocked on it (the global -> per-branch order cannot deadlock).
+    let bootstrap_source = include_str!("../../lifecycle/durable/bootstrap.rs");
+    let try_acquire = bootstrap_source
+        .split("fn try_acquire_branch_publish_guard")
+        .nth(1)
+        .expect("try_acquire_branch_publish_guard is present")
+        .split("fn ")
+        .next()
+        .expect("try_acquire_branch_publish_guard has a body");
+    assert!(
+        try_acquire.contains("compare_exchange"),
+        "per-branch publish slot must be claimed with a try-lock (compare_exchange), never a blocking lock"
     );
 }
 
@@ -4532,17 +4629,22 @@ fn durable_write_admission_liveness_completes_overload_and_records_manifest_pers
         "a live, progressing executor must never time out the writer"
     );
     assert!(perf.lifecycle_background_tasks_completed() >= 1);
-    // The background flush published a table manifest, and the durable
-    // manifest-persist sub-cost is attributable and bounded by the publish-lock
-    // window (the baseline for the later publish/manifest decoupling work).
+    // The background flush published a table manifest off-lock: the manifest fsync now runs with
+    // the global runtime lock released, inside the off-lock publish window rather than the
+    // publish-lock window. The manifest-persist sub-cost is the fsync itself; it is a subset of
+    // the off-lock window that wraps it.
+    assert!(
+        perf.lifecycle_background_publish_offlock_ns() > 0,
+        "durable flush publish must record off-lock publish time"
+    );
     assert!(
         perf.lifecycle_background_publish_manifest_persist_ns() > 0,
-        "durable flush publish must record manifest-persist time"
+        "durable flush publish must still record the manifest-persist (fsync) sub-cost"
     );
     assert!(
         perf.lifecycle_background_publish_manifest_persist_ns()
-            <= perf.lifecycle_background_task_publish_lock_ns(),
-        "manifest persist runs inside the publish-lock window"
+            <= perf.lifecycle_background_publish_offlock_ns(),
+        "the manifest fsync is a subset of the off-lock publish window that wraps it"
     );
 }
 

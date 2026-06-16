@@ -171,6 +171,7 @@ pub struct StoragePerfSnapshot {
     lifecycle_background_task_unlocked_build_ns: u64,
     lifecycle_background_task_publish_lock_ns: u64,
     lifecycle_background_publish_manifest_persist_ns: u64,
+    lifecycle_background_publish_offlock_ns: u64,
     lifecycle_background_task_total_ns: u64,
     lifecycle_background_candidate_stale_deferred: u64,
     lifecycle_foreground_wait_background_lock_ns: u64,
@@ -976,6 +977,12 @@ impl StoragePerfSnapshot {
     /// attribute the in-memory pointer/state swap.
     pub const fn lifecycle_background_publish_manifest_persist_ns(self) -> u64 {
         self.lifecycle_background_publish_manifest_persist_ns
+    }
+
+    /// Wall-clock nanoseconds the background publish spent OUTSIDE the global runtime lock —
+    /// the off-lock phase that performs the manifest fsync. Zero when nothing published off-lock.
+    pub const fn lifecycle_background_publish_offlock_ns(self) -> u64 {
+        self.lifecycle_background_publish_offlock_ns
     }
 
     /// Total nanoseconds spent by split background maintenance tasks.
@@ -2494,6 +2501,8 @@ static LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_BACKGROUND_PUBLISH_MANIFEST_PERSIST_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_PUBLISH_OFFLOCK_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_BACKGROUND_TASK_TOTAL_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_BACKGROUND_CANDIDATE_STALE_DEFERRED: AtomicU64 = AtomicU64::new(0);
@@ -3193,6 +3202,7 @@ pub fn reset() {
     LIFECYCLE_BACKGROUND_TASK_UNLOCKED_BUILD_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_PUBLISH_MANIFEST_PERSIST_NS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_PUBLISH_OFFLOCK_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_TASK_TOTAL_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_CANDIDATE_STALE_DEFERRED.store(0, Ordering::Relaxed);
     LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS.store(0, Ordering::Relaxed);
@@ -3653,6 +3663,8 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         lifecycle_background_publish_manifest_persist_ns:
             LIFECYCLE_BACKGROUND_PUBLISH_MANIFEST_PERSIST_NS.load(Ordering::Relaxed),
+        lifecycle_background_publish_offlock_ns: LIFECYCLE_BACKGROUND_PUBLISH_OFFLOCK_NS
+            .load(Ordering::Relaxed),
         lifecycle_background_task_total_ns: LIFECYCLE_BACKGROUND_TASK_TOTAL_NS
             .load(Ordering::Relaxed),
         lifecycle_background_candidate_stale_deferred:
@@ -5017,6 +5029,20 @@ pub(crate) fn record_lifecycle_background_publish_manifest_persist(duration: std
         return;
     }
     LIFECYCLE_BACKGROUND_PUBLISH_MANIFEST_PERSIST_NS.fetch_add(
+        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_publish_offlock(_duration: std::time::Duration) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_publish_offlock(duration: std::time::Duration) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_PUBLISH_OFFLOCK_NS.fetch_add(
         u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
         Ordering::Relaxed,
     );
