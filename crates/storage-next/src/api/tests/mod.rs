@@ -1086,6 +1086,62 @@ fn assert_background_drain_build_before_publish_lock(drain_source: &str, label: 
 }
 
 #[test]
+fn source_guard_publish_reads_cached_table_summary_not_row_scan() {
+    // C1+C2 made the durable publish critical section build the table manifest from
+    // per-table cached summaries (TableSummaryExtras) instead of rescanning every
+    // row of every table. Guard the two hot-path functions so a regression cannot
+    // silently reintroduce the O(resident-rows) scans that made publish O(N^2).
+    let manifest_source = include_str!("../../lifecycle/table_manifest.rs");
+    let table_ref = manifest_source
+        .split("fn table_ref_from_branch_table")
+        .nth(1)
+        .expect("table_ref_from_branch_table is present")
+        .split("fn validate_catalog_entry_matches_table")
+        .next()
+        .expect("table_ref_from_branch_table precedes validate_catalog_entry_matches_table");
+    assert!(
+        table_ref.contains(".extras()"),
+        "manifest table-ref must read the cached per-table summary"
+    );
+    for forbidden in ["manifest_table_bounds(", "timestamp_bounds(", ".rows()"] {
+        assert!(
+            !table_ref.contains(forbidden),
+            "manifest table-ref must not rescan rows via {forbidden} (publish stays O(tables))"
+        );
+    }
+
+    // Flush install moves frozen rows into an L0 table without changing the row
+    // set, so it must not trigger a full observed-row-facts rescan (the dominant
+    // pre-C1+C2 publish-lock cost).
+    let state_source = include_str!("../../branch/state.rs");
+    let flush_install = state_source
+        .split("fn replace_frozen_with_level_zero_table")
+        .nth(1)
+        .expect("replace_frozen_with_level_zero_table is present")
+        .split("fn matching_frozen_replacement_index")
+        .next()
+        .expect("replace_frozen_with_level_zero_table precedes matching_frozen_replacement_index");
+    assert!(
+        !flush_install.contains("refresh_observed_row_facts"),
+        "flush install must not rescan observed-row facts (rows are unchanged frozen->L0)"
+    );
+
+    // The branch fact refresh must fold cached per-table summaries, not rescan rows
+    // on the hot path; observe_rows stays only as the debug oracle / recovery path.
+    let refresh = state_source
+        .split("fn refresh_observed_row_facts")
+        .nth(1)
+        .expect("refresh_observed_row_facts is present")
+        .split("fn observe_rows_from_summaries")
+        .next()
+        .expect("refresh_observed_row_facts precedes observe_rows_from_summaries");
+    assert!(
+        refresh.contains("observe_rows_from_summaries"),
+        "refresh_observed_row_facts must fold cached summaries, not rescan rows"
+    );
+}
+
+#[test]
 fn source_guard_background_controller_uses_executor_trait_and_clock() {
     let runtime_source = include_str!("../runtime.rs");
     let controller_block = runtime_source

@@ -1,6 +1,24 @@
 # M4P-L8H Test Plan: Durable Maintenance Liveness and Publish Decoupling
 
-Status: draft
+Status: implemented for the landed L8H scope (Slice 1 admission liveness, C1+C2
+publish-cost elimination, C3 concurrency). The sections covering **off-lock manifest
+fsync, crash-between-swap-and-persist recovery, and admission-ramp shaping are
+deferred to M4P-L8I** (`m4p-l8i-runtime-lock-decoupling-test-plan.md`), because that
+work itself was deferred from L8H — shipped L8H still persists the manifest
+synchronously under the lock, so there is no swap-vs-persist window to test here.
+
+Coverage of the landed scope (test → file):
+- Admission liveness / backstop / L0 enqueue gap → `durable_write_admission_liveness_*`
+  (`api/tests/mod.rs`); the manual clock + deterministic-inline harness back them.
+- Publish-cost elimination → `table_summary_extras_from_rows_folds_bounds_and_counts`
+  (`table/tests/mod.rs`), the `cfg(debug_assertions)` oracle in
+  `refresh_observed_row_facts` (facts == full `observe_rows` scan, exercised by the
+  whole suite), the format goldens (byte-identical manifest), and the source guard
+  `source_guard_publish_reads_cached_table_summary_not_row_scan` (`api/tests/mod.rs`).
+- Concurrency (C3) → `controller_runs_multiple_drains_concurrently_under_worker_pool`
+  (`api/runtime.rs` tests) + the closed-loop liveness gate.
+- Scaling is proven by the benchmark hard-gate (44×→8× at 10M); an in-suite per-task
+  timing test is intentionally NOT added (see "Publish Critical-Section Cost Tests").
 
 Implementation plan:
 `docs/architecture/implementation-plans/M4P/m4p-l8h-durable-maintenance-liveness-implementation-plan.md`
@@ -123,22 +141,28 @@ Correctness tests:
    during publish (proven by a publish-scoped row-visit counter / the absence of
    bounds/observe calls in the publish path).
 
-Scaling tests:
+Scaling proof:
 
-1. Per-task lock-held publish time (`publish_lock_ns / tasks_completed`) does not
-   grow with resident dataset size across a small→large in-process load: it stays
-   flat within noise rather than doubling per scale. The pre-Group-C
-   O(dataset)-per-publish behavior is detected and fails.
+1. Scaling is measured by the **benchmark hard-gate** (the per-publish row scans are
+   gone — the 44×→8× collapse at 10M). An in-suite per-task *timing* assertion is
+   intentionally NOT added: post-C1+C2 the per-publish cost still has a small
+   O(tables) component (manifest *assembly* + the per-compaction catalog clone),
+   deferred to L8I, so a "flat per-task" timing test would be flaky and slightly
+   misleading. The robust in-suite proof that the O(resident-rows) scans are gone is
+   the source guard below plus the `from_rows`/oracle correctness tests.
 
 Source guards:
 
-1. The durable publish critical section under the runtime lock does not call the
-   row-scanning helpers (`observe_own_rows` / `refresh_observed_row_facts`,
-   `manifest_table_bounds`, `timestamp_bounds`) over owned tables, and does not
-   clone the full table catalog; bounds and facts come from cached values.
-2. Once task 4 of Group C lands, off-lock durable persistence (manifest fsync,
-   snapshot/checkpoint writes) is reachable only after the locked pointer/state
-   swap returns.
+1. IMPLEMENTED (`source_guard_publish_reads_cached_table_summary_not_row_scan`):
+   `table_ref_from_branch_table` reads the cached per-table summary and never calls
+   the row-scanning helpers (`manifest_table_bounds`, `timestamp_bounds`) or touches
+   `table.rows()`; the flush install does not call `refresh_observed_row_facts`; and
+   `refresh_observed_row_facts` folds cached summaries. (Removing the full-catalog
+   clone is part of the deferred incremental-assembly work — L8I — so it is not
+   asserted here.)
+2. DEFERRED to M4P-L8I: once off-lock durable persistence lands, assert manifest
+   fsync / snapshot / checkpoint writes are reachable only after the locked
+   pointer/state swap returns.
 
 Pass gates:
 
@@ -151,6 +175,12 @@ Pass gates:
    baseline for the same write history.
 
 ## Durability Ordering And Crash Recovery Tests
+
+> **DEFERRED to M4P-L8I.** These exercise the off-lock manifest-fsync swap→persist
+> window, which shipped L8H does not have (publish persists the manifest synchronously
+> under the runtime lock). The L8I test plan carries this suite. The one item already
+> true today — WAL-fsync-failure halts the writer and requires explicit resume (#5) —
+> remains covered by the existing WAL fault tests.
 
 Correctness tests:
 
@@ -179,6 +209,12 @@ Pass gates:
    histories.
 
 ## Throughput And Backpressure Shape Tests
+
+> Partially landed. Concurrent drain (C3) is IMPLEMENTED
+> (`controller_runs_multiple_drains_concurrently_under_worker_pool`; the closed-loop
+> liveness gate covers correctness/recovery under concurrency). The **admission-ramp
+> shaping** items (#3 graduated slowdown / pass-gate #2 "no admission cliff") are
+> **DEFERRED to M4P-L8I** — ramp shaping was deferred from L8H.
 
 Correctness tests:
 
@@ -311,12 +347,14 @@ cargo fmt --all
 cargo clippy -p strata-storage-next --all-targets --all-features -- -D warnings
 cargo test -p strata-storage-next --all-features
 cargo test -p strata-storage-next durable_write_admission_liveness
-cargo test -p strata-storage-next durable_publish_lock_flat_with_scale
-cargo test -p strata-storage-next durable_publish_crash_recovery
+cargo test -p strata-storage-next source_guard_publish_reads_cached_table_summary_not_row_scan
+cargo test -p strata-storage-next table_summary_extras_from_rows
+cargo test -p strata-storage-next controller_runs_multiple_drains_concurrently
 cargo test -p strata-storage-next lifecycle::tests::recovery
+# durable_publish_crash_recovery — DEFERRED to M4P-L8I (off-lock-fsync swap→persist window)
 ```
 
-The named test filters are required discoverability targets. If the actual
+The named test filters are the landed-scope discoverability targets. If the actual
 module names differ, keep them equally descriptive and update this plan.
 
 ## Failure Interpretation
