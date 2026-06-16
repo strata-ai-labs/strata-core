@@ -282,6 +282,15 @@ pub(crate) fn install_snapshot_rows_into_branches(
 }
 
 impl BranchLocalState {
+    /// The checkpoint snapshot's rows: a bounded **delta** of the not-yet-durable
+    /// state — the active memtable and frozen tables only. Owned-level rows are
+    /// already durable in their table objects (recorded in the table manifest) and
+    /// are reconstructed from the manifest at recovery, which combines manifest
+    /// owned levels + this delta + WAL replay; materializing them here again would
+    /// make the snapshot O(database size) and can exceed the snapshot decode
+    /// ceiling. Every delta row has `commit_version > flush_watermark`, so at
+    /// recovery a delta row is strictly newer than any manifest-resident owned row
+    /// at the same physical key.
     pub(crate) fn checkpoint_rows(
         &self,
         watermark: CommitVersion,
@@ -301,11 +310,6 @@ impl BranchLocalState {
         }
         for table in &self.frozen {
             for row in table.iter() {
-                push_checkpoint_row(self.branch_id, watermark, row.row(), &mut rows)?;
-            }
-        }
-        for table in self.owned_levels.iter().flatten() {
-            for row in table.rows() {
                 push_checkpoint_row(self.branch_id, watermark, row.row(), &mut rows)?;
             }
         }

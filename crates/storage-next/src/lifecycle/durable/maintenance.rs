@@ -149,6 +149,7 @@ pub(crate) enum DurableBackgroundMaintenanceBuilt {
         request: LifecycleCheckpointRequest,
         visible_version: CommitVersion,
         rows: Vec<crate::row::StorageRow>,
+        has_durable_rows: bool,
     },
     WalTruncation {
         task: MaintenanceTask,
@@ -208,7 +209,9 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                 branches,
             } => {
                 let mut rows = Vec::new();
+                let mut has_durable_rows = false;
                 for branch in &branches {
+                    has_durable_rows |= branch.owned_table_count() > 0;
                     let mut branch_rows = branch
                         .checkpoint_rows(visible_version)
                         .map_err(branch_error)?;
@@ -219,6 +222,7 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                     request,
                     visible_version,
                     rows,
+                    has_durable_rows,
                 })
             }
             Self::WalTruncation { task, proof, wal } => {
@@ -1449,12 +1453,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 request,
                 visible_version,
                 rows,
+                has_durable_rows,
             } => {
                 let checkpoint = checkpoint_durable_rows_with_budget(
                     &self.services,
                     &request,
                     visible_version,
                     &rows,
+                    has_durable_rows,
                     Some(&self.budget),
                 );
                 match checkpoint {

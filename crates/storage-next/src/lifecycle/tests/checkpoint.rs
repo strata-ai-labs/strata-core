@@ -68,7 +68,7 @@ fn checkpoint_task_rejects_wrong_maintenance_scope() {
 }
 
 #[test]
-fn checkpoint_rows_include_owned_frozen_active_and_exclude_newer_rows() {
+fn checkpoint_rows_emit_active_frozen_delta_excluding_owned_and_newer() {
     let branch = branch_id(0x11);
     let mut state = BranchLocalState::empty(branch);
     let owned = put_row(branch, 1, b"owned", b"owned-value");
@@ -96,8 +96,12 @@ fn checkpoint_rows_include_owned_frozen_active_and_exclude_newer_rows() {
         .checkpoint_rows(CommitVersion::new(3))
         .expect("checkpoint rows");
 
-    assert_eq!(rows.len(), 3);
-    assert!(rows.contains(&owned));
+    // The checkpoint is a bounded delta: the flushed `owned` row now lives in an
+    // owned level and is excluded (recovery restores it from the table manifest);
+    // `hidden` is above the watermark. Only the not-yet-durable active + frozen
+    // rows are emitted.
+    assert_eq!(rows.len(), 2);
+    assert!(!rows.contains(&owned));
     assert!(rows.contains(&frozen));
     assert!(rows.contains(&active));
     assert!(rows
@@ -106,6 +110,46 @@ fn checkpoint_rows_include_owned_frozen_active_and_exclude_newer_rows() {
             |window| crate::table::TableInternalKeyBytes::from_row(&window[0])
                 < crate::table::TableInternalKeyBytes::from_row(&window[1])
         ));
+}
+
+#[test]
+fn checkpoint_rows_delta_size_is_independent_of_owned_levels() {
+    // The checkpoint is a bounded delta: its size tracks the not-yet-durable
+    // active/frozen backlog, never the owned-level row count. Several rows flushed
+    // into an owned level plus a single active row produce a one-row delta — recovery
+    // restores the owned rows from the table manifest, so they never inflate the
+    // snapshot (this is what removes the snapshot size-ceiling crash at scale).
+    let branch = branch_id(0x40);
+    let mut state = BranchLocalState::empty(branch);
+    let owned = [
+        put_row(branch, 1, b"owned-a", b"value"),
+        put_row(branch, 2, b"owned-b", b"value"),
+        put_row(branch, 3, b"owned-c", b"value"),
+    ];
+    for row in &owned {
+        state
+            .append_committed_row(row.clone())
+            .expect("append owned candidate");
+    }
+    state.rotate_active();
+    flush_cache_branch(&mut state, &flush_request(branch)).expect("flush owned rows");
+    let active = put_row(branch, 4, b"active-tail", b"value");
+    state
+        .append_committed_row(active.clone())
+        .expect("append active candidate");
+
+    let rows = state
+        .checkpoint_rows(CommitVersion::new(4))
+        .expect("checkpoint rows");
+
+    assert_eq!(rows.len(), 1, "delta must be just the active tail");
+    assert!(rows.contains(&active));
+    for owned_row in &owned {
+        assert!(
+            !rows.contains(owned_row),
+            "owned-level rows must be excluded from the delta",
+        );
+    }
 }
 
 #[test]
@@ -241,6 +285,60 @@ fn checkpoint_snapshot_publish_failure_releases_quiesce_and_keeps_recovery_facts
         .expect("current database record");
     assert_eq!(manifest.snapshot_id(), None);
     assert_eq!(manifest.snapshot_watermark(), None);
+}
+
+#[test]
+fn checkpoint_publishes_empty_delta_and_advances_watermark_when_all_rows_flushed() {
+    // After everything is flushed to owned levels the checkpoint delta is empty, but
+    // durable owned rows exist under the watermark. The checkpoint must still PUBLISH
+    // (an empty-delta snapshot) to advance the snapshot watermark — otherwise WAL
+    // truncation stalls and recovery replays past the durable point. Contrast with
+    // `checkpoint_defers_when_branch_has_no_rows_under_visible_watermark` below, where a
+    // genuinely empty branch still defers. Recovery restores the flushed row from the
+    // table manifest.
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x41);
+    let mut runtime = open_runtime(branch, &backend);
+    let key = physical_key(branch, b"flushed-then-checkpointed");
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"flushed-then-checkpointed", b"value"),
+            generation_guard(),
+        )
+        .expect("commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+    runtime
+        .flush_frozen(&flush_request(branch))
+        .expect("flush frozen");
+    let request =
+        LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(31)).expect("request");
+
+    let outcome = runtime.checkpoint(&request).expect("checkpoint");
+
+    assert_eq!(outcome.status(), LifecycleCheckpointStatus::Completed);
+    assert_eq!(
+        outcome.row_count(),
+        0,
+        "delta is empty; every row is durable in an owned level",
+    );
+    assert!(outcome.snapshot_id().is_some());
+    assert_eq!(outcome.checkpoint_watermark(), Some(CommitVersion::new(1)));
+    drop(runtime);
+
+    let reopened = open_runtime(branch, &backend);
+    assert_eq!(
+        reopened
+            .read_view()
+            .expect("read view")
+            .latest(&key)
+            .expect("read")
+            .expect("visible")
+            .row()
+            .value(),
+        b"value"
+    );
 }
 
 #[test]

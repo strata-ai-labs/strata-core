@@ -142,7 +142,7 @@ fn checkpoint_recovery_ignores_opaque_snapshot_sections() {
 }
 
 #[test]
-fn checkpoint_rows_include_materialized_replacement_rows() {
+fn checkpoint_rows_exclude_materialized_owned_rows() {
     let source = branch_id(0x2d);
     let child = branch_id(0x2e);
     let mut source_state = BranchLocalState::empty(source);
@@ -167,9 +167,11 @@ fn checkpoint_rows_include_materialized_replacement_rows() {
         .checkpoint_rows(fork.fork_version())
         .expect("checkpoint rows");
 
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].physical_key().branch_id(), child);
-    assert_eq!(rows[0].value(), b"value");
+    // Materialization installs the inherited rows as owned-level tables, which are
+    // durable and recorded in the table manifest. The checkpoint delta therefore
+    // excludes them (a durable runtime recovers them from the manifest); the child
+    // has no active/frozen rows, so the delta is empty.
+    assert!(rows.is_empty());
 }
 
 #[test]
@@ -225,7 +227,12 @@ fn checkpoint_recovery_round_trip_after_frozen_flush() {
         .expect("second commit");
     let request =
         LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(13)).expect("request");
-    runtime.checkpoint(&request).expect("checkpoint");
+    let outcome = runtime.checkpoint(&request).expect("checkpoint");
+    // J2: the checkpoint is a bounded delta. Only the still-active `second` commit
+    // (its user row + 2 timeline rows = 3) is emitted; the flushed `first` commit's
+    // rows are owned and excluded (recovery restores them from the table manifest).
+    // Pre-J2 this would have been 6 (both commits' rows).
+    assert_eq!(outcome.row_count(), 3);
     drop(runtime);
 
     let reopened = open_runtime(branch, &backend);

@@ -1319,9 +1319,10 @@ pub(crate) fn checkpoint_durable_branch_with_budget(
         request,
         budget,
         |visible_version| {
-            branch
+            let rows = branch
                 .checkpoint_rows(visible_version)
-                .map_err(branch_error)
+                .map_err(branch_error)?;
+            Ok((rows, branch.owned_table_count() > 0))
         },
     )
 }
@@ -1355,14 +1356,16 @@ pub(crate) fn checkpoint_durable_runtime_with_budget(
         |visible_version| {
             let active_descriptors = branch_catalog.list_branches(false);
             let mut combined = Vec::new();
+            let mut has_durable_rows = false;
             for descriptor in &active_descriptors {
                 let branch = branch_catalog.branch_state(descriptor.branch_id())?;
+                has_durable_rows |= branch.owned_table_count() > 0;
                 let mut rows = branch
                     .checkpoint_rows(visible_version)
                     .map_err(branch_error)?;
                 combined.append(&mut rows);
             }
-            Ok(combined)
+            Ok((combined, has_durable_rows))
         },
     )
 }
@@ -1372,10 +1375,18 @@ pub(crate) fn checkpoint_durable_rows_with_budget(
     request: &LifecycleCheckpointRequest,
     visible_version: CommitVersion,
     rows: &[crate::row::StorageRow],
+    has_durable_rows: bool,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
     request.validate()?;
-    publish_checkpoint_rows(services, visible_version, request, budget, rows)
+    publish_checkpoint_rows(
+        services,
+        visible_version,
+        request,
+        budget,
+        rows,
+        has_durable_rows,
+    )
 }
 
 fn publish_checkpoint(
@@ -1384,7 +1395,7 @@ fn publish_checkpoint(
     read_visible_version: impl FnOnce() -> CommitVersion,
     request: &LifecycleCheckpointRequest,
     budget: Option<&StorageBudgetLedger>,
-    collect_rows: impl FnOnce(CommitVersion) -> LifecycleResult<Vec<crate::row::StorageRow>>,
+    collect_rows: impl FnOnce(CommitVersion) -> LifecycleResult<(Vec<crate::row::StorageRow>, bool)>,
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
     let quiesce = guard_set.try_begin_quiesce().map_err(commit_error)?;
     let visible_version = read_visible_version();
@@ -1392,9 +1403,19 @@ fn publish_checkpoint(
         drop(quiesce);
         return Ok(LifecycleCheckpointOutcome::deferred(request));
     }
-    let rows = collect_rows(visible_version)?;
+    // `collect_rows` returns the delta rows and whether any checkpointed branch
+    // has durable owned-level rows under the watermark (so an empty delta still
+    // advances the snapshot watermark instead of deferring).
+    let (rows, has_durable_rows) = collect_rows(visible_version)?;
     drop(quiesce);
-    publish_checkpoint_rows(services, visible_version, request, budget, &rows)
+    publish_checkpoint_rows(
+        services,
+        visible_version,
+        request,
+        budget,
+        &rows,
+        has_durable_rows,
+    )
 }
 
 fn publish_checkpoint_rows(
@@ -1403,8 +1424,16 @@ fn publish_checkpoint_rows(
     request: &LifecycleCheckpointRequest,
     budget: Option<&StorageBudgetLedger>,
     rows: &[crate::row::StorageRow],
+    has_durable_rows: bool,
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
-    if visible_version == CommitVersion::ZERO || rows.is_empty() {
+    // The checkpoint snapshot is a bounded delta (active + frozen rows). An empty
+    // delta does NOT mean "nothing to checkpoint": when the branch has durable
+    // owned-level rows, the snapshot watermark must still advance to
+    // `visible_version` so WAL truncation can proceed and recovery replays the WAL
+    // only after the durable point (otherwise pruned/flushed commits get replayed).
+    // Defer only when there is genuinely nothing under the watermark — no delta and
+    // no durable owned rows.
+    if visible_version == CommitVersion::ZERO || (rows.is_empty() && !has_durable_rows) {
         return Ok(LifecycleCheckpointOutcome::deferred(request));
     }
     let row_count =

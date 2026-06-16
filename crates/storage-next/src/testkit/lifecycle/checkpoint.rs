@@ -190,7 +190,13 @@ fn check_input_rows(
 
     let watermark = CommitVersion::new(5);
     let rows = state.checkpoint_rows(watermark).map_err(testkit_error)?;
-    ensure(rows.contains(&owned), "owned checkpoint row missing")?;
+    // The checkpoint is a bounded delta (active + frozen). The flushed `owned` row
+    // lives in an owned level and is excluded — recovery restores it from the table
+    // manifest, not the checkpoint snapshot.
+    ensure(
+        !rows.contains(&owned),
+        "owned checkpoint row must be excluded from the delta",
+    )?;
     ensure(rows.contains(&frozen), "frozen checkpoint row missing")?;
     ensure(rows.contains(&active), "active checkpoint row missing")?;
     ensure(
