@@ -174,10 +174,6 @@ pub struct StoragePerfSnapshot {
     lifecycle_background_task_total_ns: u64,
     lifecycle_background_candidate_stale_deferred: u64,
     lifecycle_foreground_wait_background_lock_ns: u64,
-    lifecycle_write_admission_slowdown_attempts: u64,
-    lifecycle_write_admission_slowdown_ns: u64,
-    lifecycle_write_admission_throttle_no_relief_escalations: u64,
-    lifecycle_write_admission_throttle_relief_resets: u64,
     lifecycle_write_admission_block_wait_ns: u64,
     lifecycle_wal_retention_samples: u64,
     lifecycle_wal_retained_bytes_last: u64,
@@ -995,26 +991,6 @@ impl StoragePerfSnapshot {
     /// Nanoseconds foreground commits spent waiting to acquire the runtime lock.
     pub const fn lifecycle_foreground_wait_background_lock_ns(self) -> u64 {
         self.lifecycle_foreground_wait_background_lock_ns
-    }
-
-    /// Urgent admission attempts that entered the slowdown path.
-    pub const fn lifecycle_write_admission_slowdown_attempts(self) -> u64 {
-        self.lifecycle_write_admission_slowdown_attempts
-    }
-
-    /// Nanoseconds spent in urgent admission slowdown.
-    pub const fn lifecycle_write_admission_slowdown_ns(self) -> u64 {
-        self.lifecycle_write_admission_slowdown_ns
-    }
-
-    /// Urgent admission no-relief rounds that increased the adaptive delay.
-    pub const fn lifecycle_write_admission_throttle_no_relief_escalations(self) -> u64 {
-        self.lifecycle_write_admission_throttle_no_relief_escalations
-    }
-
-    /// Urgent admission throttle resets caused by observed relief.
-    pub const fn lifecycle_write_admission_throttle_relief_resets(self) -> u64 {
-        self.lifecycle_write_admission_throttle_relief_resets
     }
 
     /// Nanoseconds spent waiting for background progress under Block pressure.
@@ -2524,14 +2500,6 @@ static LIFECYCLE_BACKGROUND_CANDIDATE_STALE_DEFERRED: AtomicU64 = AtomicU64::new
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
-static LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "perf-trace")]
-static LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_NS: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "perf-trace")]
-static LIFECYCLE_WRITE_ADMISSION_THROTTLE_NO_RELIEF_ESCALATIONS: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "perf-trace")]
-static LIFECYCLE_WRITE_ADMISSION_THROTTLE_RELIEF_RESETS: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_WAL_RETENTION_SAMPLES: AtomicU64 = AtomicU64::new(0);
@@ -3228,10 +3196,6 @@ pub fn reset() {
     LIFECYCLE_BACKGROUND_TASK_TOTAL_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_CANDIDATE_STALE_DEFERRED.store(0, Ordering::Relaxed);
     LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS.store(0, Ordering::Relaxed);
-    LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_ATTEMPTS.store(0, Ordering::Relaxed);
-    LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_NS.store(0, Ordering::Relaxed);
-    LIFECYCLE_WRITE_ADMISSION_THROTTLE_NO_RELIEF_ESCALATIONS.store(0, Ordering::Relaxed);
-    LIFECYCLE_WRITE_ADMISSION_THROTTLE_RELIEF_RESETS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_WAL_RETENTION_SAMPLES.store(0, Ordering::Relaxed);
     LIFECYCLE_WAL_RETAINED_BYTES_LAST.store(0, Ordering::Relaxed);
@@ -3695,14 +3659,6 @@ pub fn snapshot() -> StoragePerfSnapshot {
             LIFECYCLE_BACKGROUND_CANDIDATE_STALE_DEFERRED.load(Ordering::Relaxed),
         lifecycle_foreground_wait_background_lock_ns: LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS
             .load(Ordering::Relaxed),
-        lifecycle_write_admission_slowdown_attempts: LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_ATTEMPTS
-            .load(Ordering::Relaxed),
-        lifecycle_write_admission_slowdown_ns: LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_NS
-            .load(Ordering::Relaxed),
-        lifecycle_write_admission_throttle_no_relief_escalations:
-            LIFECYCLE_WRITE_ADMISSION_THROTTLE_NO_RELIEF_ESCALATIONS.load(Ordering::Relaxed),
-        lifecycle_write_admission_throttle_relief_resets:
-            LIFECYCLE_WRITE_ADMISSION_THROTTLE_RELIEF_RESETS.load(Ordering::Relaxed),
         lifecycle_write_admission_block_wait_ns: LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS
             .load(Ordering::Relaxed),
         lifecycle_wal_retention_samples: LIFECYCLE_WAL_RETENTION_SAMPLES.load(Ordering::Relaxed),
@@ -5103,43 +5059,6 @@ pub(crate) fn record_lifecycle_foreground_wait_background_lock(duration: std::ti
         u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
         Ordering::Relaxed,
     );
-}
-
-#[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_lifecycle_write_admission_slowdown(_duration: std::time::Duration) {}
-
-#[cfg(feature = "perf-trace")]
-pub(crate) fn record_lifecycle_write_admission_slowdown(duration: std::time::Duration) {
-    if !recording_enabled() {
-        return;
-    }
-    LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
-    LIFECYCLE_WRITE_ADMISSION_SLOWDOWN_NS.fetch_add(
-        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
-        Ordering::Relaxed,
-    );
-}
-
-#[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_lifecycle_write_admission_throttle_no_relief_escalation() {}
-
-#[cfg(feature = "perf-trace")]
-pub(crate) fn record_lifecycle_write_admission_throttle_no_relief_escalation() {
-    if !recording_enabled() {
-        return;
-    }
-    LIFECYCLE_WRITE_ADMISSION_THROTTLE_NO_RELIEF_ESCALATIONS.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_lifecycle_write_admission_throttle_relief_reset() {}
-
-#[cfg(feature = "perf-trace")]
-pub(crate) fn record_lifecycle_write_admission_throttle_relief_reset() {
-    if !recording_enabled() {
-        return;
-    }
-    LIFECYCLE_WRITE_ADMISSION_THROTTLE_RELIEF_RESETS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

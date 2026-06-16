@@ -130,7 +130,7 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                 // rows (those the manifest does not cover) on top — rather than
                 // choosing one source as authoritative. Exact byte duplicates at
                 // the same internal key are accepted; divergent bytes fail. The
-                // manifest is the durable base (owned L0-L7 + retained-history
+                // manifest is the durable base (lower owned level + retained-history
                 // timestamp coverage); the delta carries the active/frozen rows
                 // above the flush watermark into the active memtable, matching a
                 // synchronous baseline and keeping reads active-first newest-wins.

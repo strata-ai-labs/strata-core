@@ -6,11 +6,6 @@ use std::path::Path;
 use std::path::PathBuf;
 
 use super::*;
-use crate::api::runtime::{
-    background_level_zero_pressure_units, BACKGROUND_LEVEL_ZERO_BLOCK_TABLES,
-    BACKGROUND_LEVEL_ZERO_URGENT_START_TABLES, BACKGROUND_LEVEL_ZERO_URGENT_UNIT_MULTIPLIER,
-};
-use crate::lifecycle::LifecycleStoragePressureReason;
 
 mod branch;
 mod commit;
@@ -2040,154 +2035,16 @@ fn deterministic_inline_urgent_pressure_with_progress_does_not_sleep() {
         .expect("inline background runtime exposes manual clock");
 
     let perf = crate::observability::perf_trace::snapshot();
-    assert_eq!(perf.lifecycle_write_admission_slowdown_attempts(), 0);
-    assert_eq!(perf.lifecycle_write_admission_slowdown_ns(), 0);
     assert_eq!(
         after.saturating_duration_since(before),
         std::time::Duration::ZERO,
-        "background progress must not advance the manual clock through urgent slowdown"
+        "urgent admission must not sleep the writer; background pressure is paced by the blocking wait-loop, not a per-commit slowdown"
     );
     assert_eq!(perf.lifecycle_inline_maintenance_attempts(), 0);
     let status = runtime.maintenance_status().expect("maintenance status");
     assert_eq!(status.pending_tasks(), 0);
     assert_eq!(status.background_worker_count(), 0);
     assert!(status.background_tasks_completed() >= 1);
-}
-
-#[cfg(feature = "perf-trace")]
-#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
-#[test]
-fn deterministic_inline_urgent_pressure_without_relief_escalates_slowdown() {
-    let _capture = crate::observability::perf_trace::begin_test_capture();
-    let mut runtime = StorageRuntime::open(
-        StorageOpenOptions::cache()
-            .with_budget_policy(StorageBudgetPolicy::LowMemory)
-            .with_maintenance_scheduling_policy(
-                StorageMaintenanceSchedulingPolicy::DeterministicInline,
-            ),
-    )
-    .expect("low-memory deterministic-inline cache open")
-    .into_runtime();
-    assert!(
-        runtime.set_background_drain_limits_for_test(0, std::time::Duration::from_millis(25)),
-        "deterministic-inline background runtime should expose test drain limits"
-    );
-
-    runtime
-        .commit(&background_put_batch(
-            b"inline-urgent-no-relief-seed",
-            b"value".to_vec(),
-        ))
-        .expect("seed active row");
-    runtime
-        .rotate_default_branch_for_test()
-        .expect("create frozen urgent pressure");
-    let before = runtime
-        .background_now_for_test()
-        .expect("inline background runtime exposes manual clock");
-    for index in 0..3 {
-        let key = format!("inline-urgent-no-relief-followup-{index}");
-        runtime
-            .commit(&background_put_batch(key.as_bytes(), b"value".to_vec()))
-            .expect("urgent no-relief commit should remain accepted");
-    }
-    let after = runtime
-        .background_now_for_test()
-        .expect("inline background runtime exposes manual clock");
-
-    let perf = crate::observability::perf_trace::snapshot();
-    assert_eq!(perf.lifecycle_write_admission_slowdown_attempts(), 1);
-    assert!(perf.lifecycle_write_admission_slowdown_ns() > 0);
-    assert_eq!(
-        perf.lifecycle_write_admission_throttle_no_relief_escalations(),
-        1
-    );
-    assert_eq!(
-        after.saturating_duration_since(before),
-        std::time::Duration::from_nanos(perf.lifecycle_write_admission_slowdown_ns())
-    );
-    assert_eq!(perf.lifecycle_inline_maintenance_attempts(), 0);
-    assert!(
-        runtime
-            .maintenance_status()
-            .expect("maintenance status")
-            .pending_tasks()
-            > 0,
-        "no-relief fixture must leave maintenance debt queued"
-    );
-}
-
-#[cfg(feature = "perf-trace")]
-#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
-#[test]
-fn deterministic_inline_urgent_pressure_relief_resets_slowdown() {
-    let _capture = crate::observability::perf_trace::begin_test_capture();
-    let mut runtime = StorageRuntime::open(
-        StorageOpenOptions::cache()
-            .with_budget_policy(StorageBudgetPolicy::LowMemory)
-            .with_maintenance_scheduling_policy(
-                StorageMaintenanceSchedulingPolicy::DeterministicInline,
-            ),
-    )
-    .expect("low-memory deterministic-inline cache open")
-    .into_runtime();
-    assert!(
-        runtime.set_background_drain_limits_for_test(0, std::time::Duration::from_millis(25)),
-        "deterministic-inline background runtime should expose test drain limits"
-    );
-
-    runtime
-        .commit(&background_put_batch(
-            b"inline-urgent-relief-seed",
-            b"value".to_vec(),
-        ))
-        .expect("seed active row");
-    runtime
-        .rotate_default_branch_for_test()
-        .expect("create frozen urgent pressure");
-    for index in 0..3 {
-        let key = format!("inline-urgent-relief-no-progress-{index}");
-        runtime
-            .commit(&background_put_batch(key.as_bytes(), b"value".to_vec()))
-            .expect("urgent no-relief commit should remain accepted");
-    }
-    let after_no_relief = runtime
-        .background_now_for_test()
-        .expect("inline background runtime exposes manual clock");
-    assert!(
-        runtime.set_background_drain_limits_for_test(usize::MAX, std::time::Duration::from_secs(1)),
-        "deterministic-inline background runtime should restore drain limits"
-    );
-    runtime
-        .commit(&background_put_batch(
-            b"inline-urgent-relief-followup",
-            b"value".to_vec(),
-        ))
-        .expect("urgent commit should observe background relief");
-    let after_relief = runtime
-        .background_now_for_test()
-        .expect("inline background runtime exposes manual clock");
-
-    let perf = crate::observability::perf_trace::snapshot();
-    assert_eq!(perf.lifecycle_write_admission_slowdown_attempts(), 1);
-    assert_eq!(
-        perf.lifecycle_write_admission_throttle_no_relief_escalations(),
-        1
-    );
-    assert_eq!(perf.lifecycle_write_admission_throttle_relief_resets(), 1);
-    assert_eq!(
-        after_relief.saturating_duration_since(after_no_relief),
-        std::time::Duration::ZERO,
-        "relief should clear throttle state without an additional slowdown sleep"
-    );
-    assert!(
-        runtime
-            .maintenance_status()
-            .expect("maintenance status")
-            .background_tasks_completed()
-            > 0,
-        "relief fixture should complete lifecycle maintenance"
-    );
 }
 
 #[cfg(feature = "perf-trace")]
@@ -3209,120 +3066,9 @@ fn background_wal_truncation_runs_retention_scan_outside_runtime_lock() {
 }
 
 #[cfg(feature = "perf-trace")]
-#[test]
-fn level_zero_urgent_slowdown_ramps_before_blocking_pressure() {
-    assert_eq!(
-        background_level_zero_pressure_units(LifecycleStoragePressureReason::FrozenBacklog, 12),
-        3
-    );
-    assert_eq!(
-        background_level_zero_pressure_units(
-            LifecycleStoragePressureReason::LevelZeroTableBacklog,
-            7,
-        ),
-        0
-    );
-    assert_eq!(
-        background_level_zero_pressure_units(
-            LifecycleStoragePressureReason::LevelZeroTableBacklog,
-            8,
-        ),
-        BACKGROUND_LEVEL_ZERO_URGENT_UNIT_MULTIPLIER
-    );
-    assert_eq!(
-        background_level_zero_pressure_units(
-            LifecycleStoragePressureReason::LevelZeroTableBacklog,
-            15,
-        ),
-        BACKGROUND_LEVEL_ZERO_URGENT_UNIT_MULTIPLIER
-            * (BACKGROUND_LEVEL_ZERO_BLOCK_TABLES - BACKGROUND_LEVEL_ZERO_URGENT_START_TABLES)
-    );
-    assert_eq!(
-        background_level_zero_pressure_units(
-            LifecycleStoragePressureReason::LevelZeroTableBacklog,
-            64,
-        ),
-        BACKGROUND_LEVEL_ZERO_URGENT_UNIT_MULTIPLIER
-            * (BACKGROUND_LEVEL_ZERO_BLOCK_TABLES - BACKGROUND_LEVEL_ZERO_URGENT_START_TABLES)
-    );
-}
-
-#[test]
-fn source_guard_background_urgent_slowdown_is_not_mutation_scaled() {
-    let runtime_source = include_str!("../runtime.rs");
-    let slowdown_source = runtime_source
-        .split("fn background_admission_slowdown")
-        .nth(1)
-        .expect("background admission slowdown function is present")
-        .split("fn has_background_runtime")
-        .next()
-        .expect("slowdown helper precedes background runtime helper");
-
-    assert!(
-        !runtime_source.contains("BACKGROUND_URGENT_PER_MUTATION_SLOWDOWN"),
-        "urgent admission must not restore the per-mutation slowdown constant"
-    );
-    assert!(
-        !runtime_source.contains("BACKGROUND_URGENT_MUTATION_SCALE_LIMIT"),
-        "urgent admission must not restore the mutation-count slowdown cap"
-    );
-    assert!(
-        !slowdown_source.contains("mutation_count"),
-        "urgent slowdown must not depend on commit mutation count"
-    );
-}
-
-#[cfg(feature = "perf-trace")]
 #[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
-fn background_urgent_pressure_records_slowdown_without_inline_maintenance() {
-    let _capture = crate::observability::perf_trace::begin_test_capture();
-    let mut runtime = StorageRuntime::open(
-        StorageOpenOptions::cache().with_budget_policy(StorageBudgetPolicy::LowMemory),
-    )
-    .expect("low-memory background cache open")
-    .into_runtime();
-    assert!(
-        runtime.set_background_drain_limits_for_test(0, std::time::Duration::from_millis(25)),
-        "background runtime should expose test drain limits"
-    );
-
-    runtime
-        .commit(&background_put_batch(b"urgent-seed", b"value".to_vec()))
-        .expect("seed active row");
-    runtime
-        .rotate_default_branch_for_test()
-        .expect("create frozen pressure");
-    for index in 0..3 {
-        let key = format!("urgent-followup-{index}");
-        runtime
-            .commit(&background_put_batch(key.as_bytes(), b"value".to_vec()))
-            .expect("urgent commit should be accepted");
-    }
-    assert!(
-        runtime.set_background_drain_limits_for_test(usize::MAX, std::time::Duration::from_secs(1)),
-        "background runtime should restore drain limits"
-    );
-    runtime
-        .enqueue_lifecycle_maintenance_for_test(crate::lifecycle::MaintenanceTaskRequest::flush(
-            StorageRuntime::default_branch_id_for_test(),
-        ))
-        .expect("restored background runtime should accept explicit flush enqueue");
-    runtime.wait_background_idle_for_test();
-
-    let perf = crate::observability::perf_trace::snapshot();
-    assert!(perf.lifecycle_write_admission_slowdown_attempts() >= 1);
-    assert!(perf.lifecycle_write_admission_slowdown_ns() > 0);
-    assert_eq!(perf.lifecycle_inline_maintenance_attempts(), 0);
-    let status = runtime.maintenance_status().expect("maintenance status");
-    assert!(status.background_tasks_completed() >= 1);
-    assert_eq!(status.pending_tasks(), 0);
-}
-
-#[cfg(feature = "perf-trace")]
-#[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
-#[test]
-fn sustained_background_overload_slows_writer_without_permanent_block() {
+fn sustained_background_overload_paces_writer_via_block_wait() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let mut runtime = StorageRuntime::open(
         StorageOpenOptions::cache()
@@ -3379,12 +3125,9 @@ fn sustained_background_overload_slows_writer_without_permanent_block() {
     );
 
     let perf = crate::observability::perf_trace::snapshot();
-    let pressure_relief_attempts = perf
-        .lifecycle_write_admission_slowdown_attempts()
-        .saturating_add(perf.lifecycle_write_admission_wait_attempts());
     assert!(
-        pressure_relief_attempts > 0,
-        "sustained overload did not enter slowdown or block-wait relief"
+        perf.lifecycle_write_admission_wait_attempts() > 0,
+        "sustained overload did not enter block-wait relief"
     );
     assert_eq!(perf.lifecycle_write_admission_wait_timeouts(), 0);
     assert!(perf.lifecycle_background_tasks_completed() > 0);

@@ -84,38 +84,10 @@ const DEFAULT_BRANCH_ID: BranchId = BranchId::from_bytes([0x01; BranchId::BYTE_L
 const DEFAULT_BRANCH_GENERATION: u64 = 1;
 const DEFAULT_TIMESTAMP: Timestamp = Timestamp::from_micros(1);
 const API_PHYSICAL_SPACE: &str = "api";
-const DEFAULT_BACKGROUND_URGENT_BASE_SLOWDOWN: Duration = Duration::from_micros(100);
-const DEFAULT_BACKGROUND_URGENT_MAX_SLOWDOWN: Duration = Duration::from_millis(25);
-const DEFAULT_BACKGROUND_URGENT_NO_RELIEF_ROUNDS: usize = 2;
 const DEFAULT_BACKGROUND_BLOCK_WAIT_SLICE: Duration = Duration::from_millis(250);
 const DEFAULT_BACKGROUND_BLOCK_STALL_DEADLINE: Duration = Duration::from_secs(30);
 const DEFAULT_BACKGROUND_BLOCK_NO_RELIEF_ROUNDS: usize = 4;
 const DEFAULT_BACKGROUND_CLOSE_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
-pub(crate) const BACKGROUND_LEVEL_ZERO_URGENT_START_TABLES: usize = 8;
-pub(crate) const BACKGROUND_LEVEL_ZERO_BLOCK_TABLES: usize = 16;
-pub(crate) const BACKGROUND_LEVEL_ZERO_URGENT_UNIT_MULTIPLIER: usize = 32;
-
-fn background_pressure_byte_units(bytes: u64) -> usize {
-    let units = bytes / (4 * 1024 * 1024);
-    usize::try_from(units).unwrap_or(usize::MAX)
-}
-
-pub(crate) fn background_level_zero_pressure_units(
-    reason: LifecycleStoragePressureReason,
-    level_zero_tables: usize,
-) -> usize {
-    if reason != LifecycleStoragePressureReason::LevelZeroTableBacklog {
-        return level_zero_tables / 4;
-    }
-    let urgent_distance = level_zero_tables
-        .saturating_add(1)
-        .saturating_sub(BACKGROUND_LEVEL_ZERO_URGENT_START_TABLES)
-        .min(
-            BACKGROUND_LEVEL_ZERO_BLOCK_TABLES
-                .saturating_sub(BACKGROUND_LEVEL_ZERO_URGENT_START_TABLES),
-        );
-    urgent_distance.saturating_mul(BACKGROUND_LEVEL_ZERO_URGENT_UNIT_MULTIPLIER)
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ResolvedReadBound {
@@ -175,7 +147,6 @@ where
 struct BackgroundRuntimeController {
     executor: Arc<dyn MaintenanceExecutor>,
     clock: Arc<dyn MaintenanceClock>,
-    admission_throttle: Arc<ParkingMutex<BackgroundAdmissionThrottle>>,
     close_requested: Arc<AtomicBool>,
     active_drains: Arc<AtomicUsize>,
     max_concurrent_drains: usize,
@@ -190,7 +161,6 @@ impl fmt::Debug for BackgroundRuntimeController {
         formatter
             .debug_struct("BackgroundRuntimeController")
             .field("stats", &self.stats())
-            .field("admission_throttle", &self.admission_throttle)
             .field("close_requested", &self.close_requested)
             .field("active_drains", &self.active_drains)
             .field("max_concurrent_drains", &self.max_concurrent_drains)
@@ -254,125 +224,6 @@ struct BackgroundPressureSnapshot {
     owned_tables: usize,
     table_rewrite_bytes: u64,
     inherited_layers: usize,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct BackgroundAdmissionThrottleObservation {
-    branch_id: BranchId,
-    reason: LifecycleStoragePressureReason,
-    severity: LifecycleStoragePressureSeverity,
-    pressure_units: usize,
-    pressure_snapshot: BackgroundPressureSnapshot,
-    completed_tasks: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct BackgroundAdmissionThrottleDecision {
-    slowdown: Option<Duration>,
-    no_relief_escalated: bool,
-    relief_reset: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct BackgroundAdmissionThrottle {
-    last: Option<BackgroundAdmissionThrottleObservation>,
-    consecutive_no_relief_rounds: usize,
-    current_slowdown: Duration,
-    last_slowdown_at: Option<MaintenanceInstant>,
-}
-
-impl Default for BackgroundAdmissionThrottle {
-    fn default() -> Self {
-        Self {
-            last: None,
-            consecutive_no_relief_rounds: 0,
-            current_slowdown: Duration::ZERO,
-            last_slowdown_at: None,
-        }
-    }
-}
-
-impl BackgroundAdmissionThrottle {
-    fn reset(&mut self) -> bool {
-        let had_pressure = self.last.is_some()
-            || self.consecutive_no_relief_rounds != 0
-            || !self.current_slowdown.is_zero()
-            || self.last_slowdown_at.is_some();
-        *self = Self::default();
-        had_pressure
-    }
-
-    fn observe_urgent(
-        &mut self,
-        observation: BackgroundAdmissionThrottleObservation,
-        base_slowdown: Duration,
-        now: MaintenanceInstant,
-    ) -> BackgroundAdmissionThrottleDecision {
-        let Some(last) = self.last else {
-            self.last = Some(observation);
-            return BackgroundAdmissionThrottleDecision {
-                slowdown: None,
-                no_relief_escalated: false,
-                relief_reset: false,
-            };
-        };
-
-        let completed_tasks_advanced = observation.completed_tasks > last.completed_tasks;
-        let pressure_units_improved = observation.pressure_units < last.pressure_units;
-        let pressure_units_stable = observation.pressure_units == last.pressure_units;
-        let pressure_snapshot_relieved = observation
-            .pressure_snapshot
-            .relieved_since(last.pressure_snapshot, observation.reason);
-        let severity_improved = lifecycle_storage_pressure_severity_rank(observation.severity)
-            < lifecycle_storage_pressure_severity_rank(last.severity);
-        if observation.branch_id != last.branch_id
-            || observation.reason != last.reason
-            || pressure_units_improved
-            || severity_improved
-            || pressure_snapshot_relieved
-            || (completed_tasks_advanced && pressure_units_stable)
-        {
-            let relief_reset =
-                self.consecutive_no_relief_rounds != 0 || !self.current_slowdown.is_zero();
-            self.consecutive_no_relief_rounds = 0;
-            self.current_slowdown = Duration::ZERO;
-            self.last_slowdown_at = None;
-            self.last = Some(observation);
-            return BackgroundAdmissionThrottleDecision {
-                slowdown: None,
-                no_relief_escalated: false,
-                relief_reset,
-            };
-        }
-
-        self.consecutive_no_relief_rounds = self.consecutive_no_relief_rounds.saturating_add(1);
-        self.last = Some(observation);
-        if self.consecutive_no_relief_rounds < DEFAULT_BACKGROUND_URGENT_NO_RELIEF_ROUNDS {
-            return BackgroundAdmissionThrottleDecision {
-                slowdown: None,
-                no_relief_escalated: false,
-                relief_reset: false,
-            };
-        }
-
-        let should_escalate = self.last_slowdown_at.is_none_or(|last_slowdown_at| {
-            now > last_slowdown_at || self.current_slowdown.is_zero()
-        });
-        if should_escalate {
-            self.current_slowdown = if self.current_slowdown.is_zero() {
-                base_slowdown.max(DEFAULT_BACKGROUND_URGENT_BASE_SLOWDOWN)
-            } else {
-                self.current_slowdown.saturating_mul(2)
-            }
-            .min(DEFAULT_BACKGROUND_URGENT_MAX_SLOWDOWN);
-        }
-        self.last_slowdown_at = Some(now);
-        BackgroundAdmissionThrottleDecision {
-            slowdown: Some(self.current_slowdown),
-            no_relief_escalated: should_escalate,
-            relief_reset: false,
-        }
-    }
 }
 
 impl BackgroundPressureSnapshot {
@@ -521,29 +372,6 @@ impl<R> RuntimeSlot<R> {
         self.background
             .as_ref()
             .map(BackgroundRuntimeController::now)
-    }
-
-    fn sleep_background_duration(&self, duration: Duration) {
-        if let Some(background) = &self.background {
-            background.sleep(duration);
-        }
-    }
-
-    fn background_admission_slowdown_duration(
-        &self,
-        pressure: LifecycleStoragePressure,
-        pressure_units: usize,
-        completed_tasks: u64,
-    ) -> Option<BackgroundAdmissionThrottleDecision> {
-        self.background.as_ref().map(|background| {
-            background.admission_slowdown_duration(pressure, pressure_units, completed_tasks)
-        })
-    }
-
-    fn reset_background_admission_throttle(&self) -> bool {
-        self.background
-            .as_ref()
-            .is_some_and(BackgroundRuntimeController::reset_admission_throttle)
     }
 
     fn has_background(&self) -> bool {
@@ -720,7 +548,6 @@ impl BackgroundRuntimeController {
         Self {
             executor,
             clock,
-            admission_throttle: Arc::new(ParkingMutex::new(BackgroundAdmissionThrottle::default())),
             close_requested: Arc::new(AtomicBool::new(false)),
             active_drains: Arc::new(AtomicUsize::new(0)),
             // Allow up to one concurrent drain per worker thread; the inline
@@ -740,38 +567,6 @@ impl BackgroundRuntimeController {
 
     fn now(&self) -> MaintenanceInstant {
         self.clock.now()
-    }
-
-    fn sleep(&self, duration: Duration) {
-        self.clock.sleep(duration);
-    }
-
-    fn admission_slowdown_duration(
-        &self,
-        pressure: LifecycleStoragePressure,
-        pressure_units: usize,
-        completed_tasks: u64,
-    ) -> BackgroundAdmissionThrottleDecision {
-        let observation = BackgroundAdmissionThrottleObservation {
-            branch_id: pressure.branch_id(),
-            reason: pressure.reason(),
-            severity: pressure.severity(),
-            pressure_units,
-            pressure_snapshot: BackgroundPressureSnapshot::from_pressure(pressure),
-            completed_tasks,
-        };
-        let capped_pressure_units =
-            u32::try_from(pressure_units.min(250)).expect("pressure unit cap fits in u32");
-        let base_slowdown = DEFAULT_BACKGROUND_URGENT_BASE_SLOWDOWN
-            .saturating_mul(capped_pressure_units)
-            .min(DEFAULT_BACKGROUND_URGENT_MAX_SLOWDOWN);
-        self.admission_throttle
-            .lock()
-            .observe_urgent(observation, base_slowdown, self.clock.now())
-    }
-
-    fn reset_admission_throttle(&self) -> bool {
-        self.admission_throttle.lock().reset()
     }
 
     fn submit(
@@ -918,7 +713,6 @@ impl Clone for BackgroundRuntimeController {
         Self {
             executor: Arc::clone(&self.executor),
             clock: Arc::clone(&self.clock),
-            admission_throttle: Arc::clone(&self.admission_throttle),
             close_requested: Arc::clone(&self.close_requested),
             active_drains: Arc::clone(&self.active_drains),
             max_concurrent_drains: self.max_concurrent_drains,
@@ -1056,81 +850,6 @@ mod background_controller_tests {
             observed_peak, 2,
             "two same-priority drains must run concurrently under the worker pool"
         );
-    }
-
-    fn throttle_observation(
-        level_zero_tables: usize,
-        pressure_units: usize,
-        completed_tasks: u64,
-    ) -> BackgroundAdmissionThrottleObservation {
-        BackgroundAdmissionThrottleObservation {
-            branch_id: DEFAULT_BRANCH_ID,
-            reason: LifecycleStoragePressureReason::LevelZeroTableBacklog,
-            severity: LifecycleStoragePressureSeverity::Urgent,
-            pressure_units,
-            pressure_snapshot: BackgroundPressureSnapshot {
-                severity: LifecycleStoragePressureSeverity::Urgent,
-                active_bytes: 0,
-                frozen_tables: 0,
-                frozen_bytes: 0,
-                level_zero_tables,
-                owned_tables: level_zero_tables,
-                table_rewrite_bytes: 0,
-                inherited_layers: 0,
-            },
-            completed_tasks,
-        }
-    }
-
-    #[test]
-    fn admission_throttle_treats_progress_as_relief_only_when_pressure_stops_worsening() {
-        let mut throttle = BackgroundAdmissionThrottle::default();
-        let base_slowdown = Duration::from_millis(1);
-
-        let first = throttle.observe_urgent(
-            throttle_observation(8, 32, 0),
-            base_slowdown,
-            MaintenanceInstant::from_elapsed(Duration::ZERO),
-        );
-        assert_eq!(first.slowdown, None);
-        assert!(!first.no_relief_escalated);
-        assert!(!first.relief_reset);
-
-        let still_worse = throttle.observe_urgent(
-            throttle_observation(10, 96, 1),
-            base_slowdown,
-            MaintenanceInstant::from_elapsed(Duration::from_millis(1)),
-        );
-        assert_eq!(still_worse.slowdown, None);
-        assert!(!still_worse.no_relief_escalated);
-        assert!(!still_worse.relief_reset);
-
-        let escalated = throttle.observe_urgent(
-            throttle_observation(11, 128, 2),
-            base_slowdown,
-            MaintenanceInstant::from_elapsed(Duration::from_millis(2)),
-        );
-        assert_eq!(escalated.slowdown, Some(base_slowdown));
-        assert!(escalated.no_relief_escalated);
-        assert!(!escalated.relief_reset);
-
-        let stable_after_progress = throttle.observe_urgent(
-            throttle_observation(11, 128, 3),
-            base_slowdown,
-            MaintenanceInstant::from_elapsed(Duration::from_millis(3)),
-        );
-        assert_eq!(stable_after_progress.slowdown, None);
-        assert!(!stable_after_progress.no_relief_escalated);
-        assert!(stable_after_progress.relief_reset);
-
-        let improved_after_progress = throttle.observe_urgent(
-            throttle_observation(10, 96, 4),
-            base_slowdown,
-            MaintenanceInstant::from_elapsed(Duration::from_millis(4)),
-        );
-        assert_eq!(improved_after_progress.slowdown, None);
-        assert!(!improved_after_progress.no_relief_escalated);
-        assert!(!improved_after_progress.relief_reset);
     }
 }
 
@@ -3555,10 +3274,6 @@ impl<'a> StorageRuntime<'a> {
             }
             match outcome_result {
                 Ok(outcome) => {
-                    if let Some(slowdown) = self.background_admission_slowdown(admission) {
-                        self.sleep_background_duration(slowdown);
-                        perf_trace::record_lifecycle_write_admission_slowdown(slowdown);
-                    }
                     self.background_wait_after_wal_growth_enqueue(wal_growth.as_ref());
                     perf_trace::record_api_commit_runtime_elapsed(runtime_timer);
                     return map_commit_summary(&outcome, admission);
@@ -3591,60 +3306,6 @@ impl<'a> StorageRuntime<'a> {
         }
     }
 
-    fn background_admission_slowdown(
-        &self,
-        admission: Option<LifecycleWriteAdmissionOutcome>,
-    ) -> Option<Duration> {
-        if !self.has_background_runtime() {
-            return None;
-        }
-        let admission = admission?;
-        if admission.status() != LifecycleWriteAdmissionStatus::AcceptedUnderPressure
-            || admission.pressure().severity() != LifecycleStoragePressureSeverity::Urgent
-            || admission.inline_maintenance_driven()
-        {
-            if self.reset_background_admission_throttle_for_current_runtime() {
-                perf_trace::record_lifecycle_write_admission_throttle_relief_reset();
-            }
-            return None;
-        }
-        let pressure = admission.pressure();
-        self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
-        let queue_depth = self
-            .background_stats_for_current_runtime()
-            .map_or(0, |stats| {
-                stats.queue_depth.saturating_add(stats.active_tasks)
-            });
-        let pressure_units = 1usize
-            .saturating_add(pressure.pending_maintenance())
-            .saturating_add(pressure.frozen_tables())
-            .saturating_add(background_pressure_byte_units(
-                pressure
-                    .active_bytes()
-                    .saturating_add(pressure.frozen_bytes())
-                    .saturating_add(pressure.table_rewrite_bytes()),
-            ))
-            .saturating_add(background_level_zero_pressure_units(
-                pressure.reason(),
-                pressure.level_zero_tables(),
-            ))
-            .saturating_add(pressure.owned_tables() / 8)
-            .saturating_add(queue_depth);
-        let completed_tasks = self.background_lifecycle_completed_for_current_runtime();
-        let decision = self.background_admission_slowdown_for_current_runtime(
-            pressure,
-            pressure_units,
-            completed_tasks,
-        )?;
-        if decision.relief_reset {
-            perf_trace::record_lifecycle_write_admission_throttle_relief_reset();
-        }
-        if decision.no_relief_escalated {
-            perf_trace::record_lifecycle_write_admission_throttle_no_relief_escalation();
-        }
-        decision.slowdown
-    }
-
     fn has_background_runtime(&self) -> bool {
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => slot.has_background(),
@@ -3660,41 +3321,6 @@ impl<'a> StorageRuntime<'a> {
             StorageRuntimeInner::Durable(slot) => slot.background_stats(),
             StorageRuntimeInner::DurableOwned(slot) => slot.background_stats(),
             StorageRuntimeInner::Closed => None,
-        }
-    }
-
-    fn background_admission_slowdown_for_current_runtime(
-        &self,
-        pressure: LifecycleStoragePressure,
-        pressure_units: usize,
-        completed_tasks: u64,
-    ) -> Option<BackgroundAdmissionThrottleDecision> {
-        match &self.inner {
-            StorageRuntimeInner::Cache(slot) => slot.background_admission_slowdown_duration(
-                pressure,
-                pressure_units,
-                completed_tasks,
-            ),
-            StorageRuntimeInner::Durable(slot) => slot.background_admission_slowdown_duration(
-                pressure,
-                pressure_units,
-                completed_tasks,
-            ),
-            StorageRuntimeInner::DurableOwned(slot) => slot.background_admission_slowdown_duration(
-                pressure,
-                pressure_units,
-                completed_tasks,
-            ),
-            StorageRuntimeInner::Closed => None,
-        }
-    }
-
-    fn reset_background_admission_throttle_for_current_runtime(&self) -> bool {
-        match &self.inner {
-            StorageRuntimeInner::Cache(slot) => slot.reset_background_admission_throttle(),
-            StorageRuntimeInner::Durable(slot) => slot.reset_background_admission_throttle(),
-            StorageRuntimeInner::DurableOwned(slot) => slot.reset_background_admission_throttle(),
-            StorageRuntimeInner::Closed => false,
         }
     }
 
@@ -3770,15 +3396,6 @@ impl<'a> StorageRuntime<'a> {
             StorageRuntimeInner::Durable(slot) => slot.background_now(),
             StorageRuntimeInner::DurableOwned(slot) => slot.background_now(),
             StorageRuntimeInner::Closed => None,
-        }
-    }
-
-    fn sleep_background_duration(&self, duration: Duration) {
-        match &self.inner {
-            StorageRuntimeInner::Cache(slot) => slot.sleep_background_duration(duration),
-            StorageRuntimeInner::Durable(slot) => slot.sleep_background_duration(duration),
-            StorageRuntimeInner::DurableOwned(slot) => slot.sleep_background_duration(duration),
-            StorageRuntimeInner::Closed => {}
         }
     }
 

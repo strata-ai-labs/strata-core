@@ -2253,7 +2253,7 @@ fn cache_neutralizes_nonzero_level_table_backlog_pressure() {
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn cache_pressure_records_no_admission_slowdown_or_block_wait() {
+fn cache_pressure_records_no_block_wait_or_pressure_reject() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let branch = branch_id(0x6f);
     let backend = MemoryBackend::new();
@@ -2278,12 +2278,9 @@ fn cache_pressure_records_no_admission_slowdown_or_block_wait() {
 
     commit_cache_put(&mut runtime, branch, b"clock-pressure-final", 90_000);
 
-    // Cache never enters admission slowdown or block-wait: there is no clock
-    // advance, no sleep, and no wait attempt under synthetic source-shape
-    // pressure.
+    // Cache never enters admission block-wait: there is no wait attempt and no
+    // pressure rejection under synthetic source-shape pressure.
     let perf = crate::observability::perf_trace::snapshot();
-    assert_eq!(perf.lifecycle_write_admission_slowdown_attempts(), 0);
-    assert_eq!(perf.lifecycle_write_admission_slowdown_ns(), 0);
     assert_eq!(perf.lifecycle_write_admission_block_wait_ns(), 0);
     assert_eq!(perf.lifecycle_write_admission_pressure_rejects(), 0);
 }
