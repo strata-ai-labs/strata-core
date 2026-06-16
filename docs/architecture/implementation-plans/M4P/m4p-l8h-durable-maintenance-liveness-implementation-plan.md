@@ -1,6 +1,12 @@
 # M4P-L8H Implementation Plan: Durable Maintenance Liveness and Publish Decoupling
 
-Status: draft
+Status: closed — objective met. Landed: Group A + Group B (Slice 1), Group C C1+C2
+(per-table summary cache, eliminated the O(N²) publish rescans), and Group E slice C3
+(concurrent maintenance drain + per-wake tuning). Deferred to a dedicated
+locking-architecture milestone: off-lock manifest fsync + Group D crash-consistency, the
+Group E admission-ramp shaping, and finer-grained commit-vs-maintenance locking. See the
+closeout for the profiling finding and the deferred-work rationale:
+`docs/architecture/implementation-plans/M4P/m4p-l8h-closeout.md`.
 
 Parent implementation plan:
 `docs/architecture/implementation-plans/M4P/m4p-l8-lifecycle-maintenance-parity-implementation-plan.md`
