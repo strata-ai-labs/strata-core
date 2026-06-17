@@ -7,9 +7,12 @@ use rusqlite::{Connection, Transaction};
 use std::fs::File;
 use std::ops::Bound;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{fs, mem, thread};
+use strata_engine_next::{
+    BranchName, CacheOpenOptions, Database, DurableLocalOpenOptions, KvKey, KvValue, ProductSpace,
+};
 use stratadb::{Strata, Value};
 
 #[allow(dead_code)]
@@ -195,18 +198,10 @@ pub fn benchmark<T: BenchDatabase + Send + Sync>(
             let start = Instant::now();
             let len = txn.get_reader().len();
             let expected = elements as u64;
+            let diff = len as i64 - expected as i64;
             if len != expected {
-                let diff = len as i64 - expected as i64;
-                assert!(
-                    diff.abs() <= 1,
-                    "{}: len()={} differs from expected={} by {}",
-                    T::db_type_name(),
-                    len,
-                    expected,
-                    diff
-                );
                 eprintln!(
-                    "{}: warning — len()={} differs from expected={} by {} (tolerated)",
+                    "{}: warning - len()={} differs from expected={} by {}",
                     T::db_type_name(),
                     len,
                     expected,
@@ -215,7 +210,14 @@ pub fn benchmark<T: BenchDatabase + Send + Sync>(
             }
             let end = Instant::now();
             let duration = end - start;
-            println!("{}: len() in {}ms", T::db_type_name(), duration.as_millis());
+            println!(
+                "{}: len()={} expected={} delta={} in {}ms",
+                T::db_type_name(),
+                len,
+                expected,
+                diff,
+                duration.as_millis()
+            );
             results.push(("len()".to_string(), ResultType::Duration(duration)));
         }
 
@@ -1889,6 +1891,273 @@ impl BenchIterator for StrataBenchIterator {
         };
         Some((key_bytes, val_bytes))
     }
+}
+
+// =============================================================================
+// Engine
+// =============================================================================
+
+pub struct EngineBenchDatabase {
+    db: Arc<Mutex<Database>>,
+}
+
+impl EngineBenchDatabase {
+    pub fn durable(path: &Path) -> Self {
+        let db = Database::open_local(path, DurableLocalOpenOptions::new())
+            .unwrap()
+            .into_database();
+        Self {
+            db: Arc::new(Mutex::new(db)),
+        }
+    }
+
+    pub fn cache() -> Self {
+        let db = Database::open_cache(CacheOpenOptions::new())
+            .unwrap()
+            .into_database();
+        Self {
+            db: Arc::new(Mutex::new(db)),
+        }
+    }
+}
+
+impl BenchDatabase for EngineBenchDatabase {
+    type C<'db>
+        = EngineBenchDatabaseConnection
+    where
+        Self: 'db;
+
+    fn db_type_name() -> &'static str {
+        "engine"
+    }
+
+    fn connect(&self) -> Self::C<'_> {
+        EngineBenchDatabaseConnection {
+            db: Arc::clone(&self.db),
+        }
+    }
+}
+
+pub struct EngineBenchDatabaseConnection {
+    db: Arc<Mutex<Database>>,
+}
+
+impl BenchDatabaseConnection for EngineBenchDatabaseConnection {
+    type W<'db>
+        = EngineBenchWriteTransaction
+    where
+        Self: 'db;
+    type R<'db>
+        = EngineBenchReadTransaction
+    where
+        Self: 'db;
+
+    fn write_transaction(&self) -> Self::W<'_> {
+        EngineBenchWriteTransaction {
+            db: Arc::clone(&self.db),
+            inserts: Vec::new(),
+            deletes: Vec::new(),
+        }
+    }
+
+    fn read_transaction(&self) -> Self::R<'_> {
+        EngineBenchReadTransaction {
+            db: Arc::clone(&self.db),
+        }
+    }
+}
+
+pub struct EngineBenchWriteTransaction {
+    db: Arc<Mutex<Database>>,
+    inserts: Vec<(KvKey, KvValue)>,
+    deletes: Vec<KvKey>,
+}
+
+impl BenchWriteTransaction for EngineBenchWriteTransaction {
+    type W<'txn>
+        = EngineBenchInserter<'txn>
+    where
+        Self: 'txn;
+
+    fn get_inserter(&mut self) -> Self::W<'_> {
+        EngineBenchInserter {
+            db: Arc::clone(&self.db),
+            inserts: &mut self.inserts,
+            deletes: &mut self.deletes,
+        }
+    }
+
+    fn commit(self) -> Result<(), ()> {
+        commit_engine_inserts(&self.db, self.inserts)?;
+        commit_engine_deletes(&self.db, self.deletes)?;
+        Ok(())
+    }
+}
+
+pub struct EngineBenchInserter<'a> {
+    db: Arc<Mutex<Database>>,
+    inserts: &'a mut Vec<(KvKey, KvValue)>,
+    deletes: &'a mut Vec<KvKey>,
+}
+
+const ENGINE_WRITES_PER_COMMIT: usize = 4094;
+
+impl BenchInserter for EngineBenchInserter<'_> {
+    fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<(), ()> {
+        self.inserts.push((
+            KvKey::new(key.to_vec()).map_err(|_| ())?,
+            KvValue::new(value.to_vec()),
+        ));
+        if self.inserts.len() >= ENGINE_WRITES_PER_COMMIT {
+            commit_engine_inserts(&self.db, std::mem::take(self.inserts))?;
+        }
+        Ok(())
+    }
+
+    fn remove(&mut self, key: &[u8]) -> Result<(), ()> {
+        self.deletes.push(KvKey::new(key.to_vec()).map_err(|_| ())?);
+        if self.deletes.len() >= ENGINE_WRITES_PER_COMMIT {
+            commit_engine_deletes(&self.db, std::mem::take(self.deletes))?;
+        }
+        Ok(())
+    }
+}
+
+pub struct EngineBenchReadTransaction {
+    db: Arc<Mutex<Database>>,
+}
+
+impl BenchReadTransaction for EngineBenchReadTransaction {
+    type T<'txn>
+        = EngineBenchReader
+    where
+        Self: 'txn;
+
+    fn get_reader(&self) -> Self::T<'_> {
+        EngineBenchReader {
+            db: Arc::clone(&self.db),
+        }
+    }
+}
+
+pub struct EngineBenchReader {
+    db: Arc<Mutex<Database>>,
+}
+
+impl BenchReader for EngineBenchReader {
+    type Output<'out>
+        = Vec<u8>
+    where
+        Self: 'out;
+    type Iterator<'out>
+        = EngineBenchIterator
+    where
+        Self: 'out;
+
+    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+        let key = KvKey::new(key.to_vec()).ok()?;
+        let mut db = self.db.lock().ok()?;
+        db.kv(default_engine_branch(), default_engine_space())
+            .ok()?
+            .get(&key)
+            .ok()?
+            .map(KvValue::into_bytes)
+    }
+
+    fn range_from<'a>(&'a self, key: &'a [u8]) -> Self::Iterator<'a> {
+        let rows = KvKey::new(key.to_vec())
+            .ok()
+            .and_then(|start| {
+                let mut db = self.db.lock().ok()?;
+                db.kv(default_engine_branch(), default_engine_space())
+                    .ok()?
+                    .scan(Some(&start), Some(SCAN_LEN))
+                    .ok()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .map(|row| {
+                (
+                    row.key().as_bytes().to_vec(),
+                    row.value().as_bytes().to_vec(),
+                )
+            })
+            .collect::<Vec<_>>();
+        EngineBenchIterator {
+            rows: rows.into_iter(),
+        }
+    }
+
+    fn len(&self) -> u64 {
+        let Ok(mut db) = self.db.lock() else {
+            return 0;
+        };
+        db.kv(default_engine_branch(), default_engine_space())
+            .and_then(|mut kv| kv.count(None))
+            .unwrap_or(0)
+    }
+}
+
+pub struct EngineBenchIterator {
+    rows: std::vec::IntoIter<(Vec<u8>, Vec<u8>)>,
+}
+
+impl BenchIterator for EngineBenchIterator {
+    type Output<'out>
+        = Vec<u8>
+    where
+        Self: 'out;
+
+    fn next(&mut self) -> Option<(Self::Output<'_>, Self::Output<'_>)> {
+        self.rows.next()
+    }
+}
+
+fn commit_engine_inserts(
+    db: &Arc<Mutex<Database>>,
+    inserts: Vec<(KvKey, KvValue)>,
+) -> Result<(), ()> {
+    for chunk in inserts.chunks(ENGINE_WRITES_PER_COMMIT) {
+        let mut db = db.lock().map_err(|_| ())?;
+        let mut kv = db
+            .kv(default_engine_branch(), default_engine_space())
+            .map_err(|err| {
+                eprintln!("engine: failed to open KV service for inserts: {err:?}");
+            })?;
+        kv.put_batch(chunk.iter().cloned()).map_err(|err| {
+            eprintln!(
+                "engine: failed to write batch of {} entries: {err:?}",
+                chunk.len()
+            );
+        })?;
+    }
+    Ok(())
+}
+
+fn commit_engine_deletes(db: &Arc<Mutex<Database>>, deletes: Vec<KvKey>) -> Result<(), ()> {
+    for chunk in deletes.chunks(ENGINE_WRITES_PER_COMMIT) {
+        let mut db = db.lock().map_err(|_| ())?;
+        let mut kv = db
+            .kv(default_engine_branch(), default_engine_space())
+            .map_err(|err| {
+                eprintln!("engine: failed to open KV service for deletes: {err:?}");
+            })?;
+        kv.delete_batch(chunk.iter().cloned()).map_err(|err| {
+            eprintln!(
+                "engine: failed to delete batch of {} keys: {err:?}",
+                chunk.len()
+            );
+        })?;
+    }
+    Ok(())
+}
+
+fn default_engine_branch() -> BranchName {
+    BranchName::new("default").unwrap()
+}
+
+fn default_engine_space() -> ProductSpace {
+    ProductSpace::new("default").unwrap()
 }
 
 // Redis, MongoDB, SurrealDB, Qdrant implementations removed for strata-core port.

@@ -6,7 +6,7 @@
 //!
 //! Adapted from: https://github.com/cberner/redb/tree/master/crates/redb-bench
 
-use std::env::current_dir;
+use std::env::{args, current_dir};
 use std::{fs, process};
 use tempfile::{NamedTempFile, TempDir};
 
@@ -16,6 +16,7 @@ use common::*;
 
 fn main() {
     let _ = env_logger::try_init();
+    let args = args().collect::<Vec<_>>();
     let tmpdir = current_dir().unwrap().join(".benchmark");
     fs::create_dir_all(&tmpdir).unwrap();
 
@@ -27,6 +28,27 @@ fn main() {
     .unwrap();
 
     println!("=== redb benchmark: {} records ===\n", BULK_ELEMENTS);
+
+    if args.iter().any(|arg| arg == "--engine-cache") {
+        let tmpdir_engine: TempDir = tempfile::tempdir_in(&tmpdir).unwrap();
+        println!("mode: engine cache\n");
+        let table = EngineBenchDatabase::cache();
+        let _ = benchmark(table, tmpdir_engine.path());
+        fs::remove_dir_all(&tmpdir).unwrap();
+        return;
+    }
+
+    if args
+        .iter()
+        .any(|arg| arg == "--engine-durable" || arg == "--engine-only")
+    {
+        let tmpdir_engine: TempDir = tempfile::tempdir_in(&tmpdir).unwrap();
+        println!("mode: engine durable\n");
+        let table = EngineBenchDatabase::durable(tmpdir_engine.path());
+        let _ = benchmark(table, tmpdir_engine.path());
+        fs::remove_dir_all(&tmpdir).unwrap();
+        return;
+    }
 
     // ── Strata ──────────────────────────────────────────────────────────────
     let strata_results = {
@@ -42,6 +64,13 @@ fn main() {
         let db = stratadb::Strata::open(tmpdir_strata.path()).unwrap();
         let table = StrataBenchDatabase::new(db);
         benchmark(table, tmpdir_strata.path())
+    };
+
+    // ── Engine ──────────────────────────────────────────────────────────────
+    let engine_results = {
+        let tmpdir_engine: TempDir = tempfile::tempdir_in(&tmpdir).unwrap();
+        let table = EngineBenchDatabase::durable(tmpdir_engine.path());
+        benchmark(table, tmpdir_engine.path())
     };
 
     // ── redb ────────────────────────────────────────────────────────────────
@@ -144,6 +173,7 @@ fn main() {
 
     let results = [
         strata_results,
+        engine_results,
         redb_results,
         lmdb_results,
         rocksdb_results,
@@ -181,7 +211,7 @@ fn main() {
     table.load_preset(comfy_table::presets::ASCII_MARKDOWN);
     table.set_width(120);
     table.set_header([
-        "", "strata", "redb", "lmdb", "rocksdb", "sled", "fjall", "sqlite",
+        "", "strata", "engine", "redb", "lmdb", "rocksdb", "sled", "fjall", "sqlite",
     ]);
     for row in rows {
         table.add_row(row);

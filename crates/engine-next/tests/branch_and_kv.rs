@@ -579,6 +579,13 @@ fn kv_scan_and_sample_suppress_tombstones() {
         .scan(Some(&key(b"app:001")), Some(2))
         .expect("limited scan succeeds");
     assert_row_key_bytes(&limited, &[b"app:001", b"app:003"]);
+    let limited_after_tombstones = kv
+        .scan(Some(&key(b"app:000")), Some(3))
+        .expect("limited tombstone scan succeeds");
+    assert_row_key_bytes(
+        &limited_after_tombstones,
+        &[b"app:001", b"app:003", b"app:004"],
+    );
     assert!(kv
         .scan(None, Some(0))
         .expect("zero scan succeeds")

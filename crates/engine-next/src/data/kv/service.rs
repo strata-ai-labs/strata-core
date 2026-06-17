@@ -19,6 +19,9 @@ use super::{
     KvScanRow, KvValue, KvVersionedValue, ProductSpace,
 };
 
+const KV_SCAN_RAW_PAGE_MIN: usize = 64;
+const KV_SCAN_RAW_PAGE_MAX: usize = 4096;
+
 /// Service for byte-oriented KV operations.
 pub struct KvService<'a> {
     persistence: &'a mut StoragePersistence,
@@ -251,20 +254,23 @@ impl<'a> KvService<'a> {
         if start >= end {
             return Ok(Vec::new());
         }
-        self.persistence
-            .scan_range(
-                record.storage_branch_id(),
-                RowClass::Kv,
-                Some(start),
-                Some(end),
-                ReadSelector::Latest,
-                None,
-            )?
-            .into_iter()
-            .filter(|row| !row.is_tombstone())
-            .map(|row| scan_row_from_row(&self.space, &row))
-            .take(limit.unwrap_or(usize::MAX))
-            .collect()
+        match limit {
+            Some(limit) => self.scan_range_limited(&record, start, end, limit),
+            None => self
+                .persistence
+                .scan_range(
+                    record.storage_branch_id(),
+                    RowClass::Kv,
+                    Some(start),
+                    Some(end),
+                    ReadSelector::Latest,
+                    None,
+                )?
+                .into_iter()
+                .filter(|row| !row.is_tombstone())
+                .map(|row| scan_row_from_row(&self.space, &row))
+                .collect(),
+        }
     }
 
     /// Counts latest visible keys with an optional user-key prefix.
@@ -441,6 +447,43 @@ impl<'a> KvService<'a> {
             start = exclusive_after_key(last_raw_key);
         }
         Ok(keys)
+    }
+
+    fn scan_range_limited(
+        &mut self,
+        record: &BranchCatalogRecord,
+        mut start: Vec<u8>,
+        end: Vec<u8>,
+        limit: usize,
+    ) -> EngineResult<Vec<KvScanRow>> {
+        let mut visible = Vec::with_capacity(limit.min(KV_SCAN_RAW_PAGE_MIN));
+        while visible.len() < limit && start < end {
+            let remaining = limit.saturating_sub(visible.len());
+            let raw_limit = remaining.clamp(KV_SCAN_RAW_PAGE_MIN, KV_SCAN_RAW_PAGE_MAX);
+            let rows = self.persistence.scan_range(
+                record.storage_branch_id(),
+                RowClass::Kv,
+                Some(start.clone()),
+                Some(end.clone()),
+                ReadSelector::Latest,
+                Some(raw_limit),
+            )?;
+            if rows.is_empty() {
+                break;
+            }
+            for row in &rows {
+                if row.is_tombstone() {
+                    continue;
+                }
+                visible.push(scan_row_from_row(&self.space, row)?);
+                if visible.len() >= limit {
+                    break;
+                }
+            }
+            let last_raw_key = rows.last().expect("non-empty raw page").key();
+            start = exclusive_after_key(last_raw_key);
+        }
+        Ok(visible)
     }
 
     fn encode_batch_key(&self, key: KvKey, seen: &mut BTreeSet<Vec<u8>>) -> EngineResult<Vec<u8>> {
