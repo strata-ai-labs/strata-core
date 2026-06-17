@@ -7,7 +7,7 @@ Counts are conservative text matches, not a Rust AST parse.
 
 | Metric | Count |
 |---|---|
-| Rust files | 344 |
+| Rust files | 353 |
 | Production Rust files | 151 |
 | All struct/enum definitions | 1092 |
 | Production struct/enum definitions | 809 |
@@ -46,7 +46,6 @@ Counts are conservative text matches, not a Rust AST parse.
 |---|---|
 | observability/perf_trace.rs | 6853 |
 | api/runtime.rs | 6107 |
-| api/tests/mod.rs | 5453 |
 | branch/tests/owned_compaction.rs | 4822 |
 | lifecycle/tests/compaction/mod.rs | 4335 |
 | table/tests/reader.rs | 4018 |
@@ -82,6 +81,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | lifecycle/tests/budget_runtime.rs | 1588 |
 | lifecycle/tests/table_object_retention/plan.rs | 1550 |
 | lifecycle/durable/bootstrap.rs | 1536 |
+| api/tests/background.rs | 1517 |
 
 ## Parent Module Re-Exports
 

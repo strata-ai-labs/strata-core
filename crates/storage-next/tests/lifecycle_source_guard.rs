@@ -438,8 +438,10 @@ fn compaction_resource_semantic_decisions_and_benchmark_fields_are_recorded() {
 #[test]
 fn background_closed_loop_ci_guard_is_named_and_gated() {
     let root = common::crate_root();
-    let api_tests = root.join("src/api/tests/mod.rs");
-    let source = fs::read_to_string(&api_tests).expect("read API test module");
+    let source = ["src/api/tests/mod.rs", "src/api/tests/background_scale.rs"]
+        .iter()
+        .map(|relative| fs::read_to_string(root.join(relative)).expect("read API test module"))
+        .collect::<String>();
 
     for required in [
         "fn lifecycle_background_closed_loop_scaled_cache_converges_without_public_drain",
