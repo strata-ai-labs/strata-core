@@ -21,6 +21,8 @@ mod format_fuzz;
 mod integration_harness;
 mod lifecycle;
 mod quarantine_fuzz;
+mod recovery_oracle;
+mod rng;
 mod service_fuzz;
 mod table_runtime;
 
@@ -84,6 +86,8 @@ pub use lifecycle::{
     LifecycleTableRewriteContractOutcome,
 };
 pub use quarantine_fuzz::{run_quarantine_service_script, QuarantineServiceFuzzOutcome};
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+pub use recovery_oracle::{run_recovery_oracle_harness, RecoveryOracleOutcome};
 pub use service_fuzz::{
     run_snapshot_service_script, ServiceFuzzViolation, SnapshotServiceFuzzOutcome,
 };
