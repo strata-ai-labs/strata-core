@@ -1,0 +1,10 @@
+//! Product branch names, records, and services.
+
+mod name;
+mod service;
+
+pub(crate) mod catalog;
+
+pub use name::BranchName;
+pub(crate) use name::SYSTEM_BRANCH;
+pub use service::BranchService;

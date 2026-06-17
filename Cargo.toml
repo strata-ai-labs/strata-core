@@ -16,6 +16,8 @@ members = [
     "crates/core",
     "crates/core-next",
     "crates/storage-next",
+    "crates/engine-next",
+    "crates/executor-next",
     "crates/storage",
     "crates/engine",
     "crates/inference",

@@ -1,0 +1,29 @@
+[package]
+name = "strata-executor-next"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Serializable command boundary for the rebuilt engine"
+
+[features]
+default = ["localfs"]
+localfs = ["strata-engine-next/localfs"]
+testkit = ["strata-engine-next/testkit"]
+
+[dependencies]
+serde = { workspace = true }
+serde_bytes = { workspace = true }
+serde_json = { workspace = true }
+strata-core-next = { path = "../core-next" }
+strata-engine-next = { path = "../engine-next", default-features = false }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

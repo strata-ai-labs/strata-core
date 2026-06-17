@@ -1,0 +1,384 @@
+//! Control-plane row payloads.
+
+use strata_core_next::BranchId;
+
+use crate::branch::catalog::BranchCatalogRecord;
+use crate::branch::BranchName;
+use crate::diagnostics::{EngineError, EngineResult};
+
+const PAYLOAD_VERSION: u8 = 1;
+const IDENTITY_MAGIC: &[u8] = b"strata.engine.identity";
+const REGISTRY_MAGIC: &[u8] = b"strata.engine.registry";
+const CAPABILITY_MAGIC: &[u8] = b"strata.engine.capabilities";
+const INDEX_MAGIC: &[u8] = b"strata.engine.branch-index";
+const PENDING_INDEX_MAGIC: &[u8] = b"strata.engine.branch-pending-index";
+const BRANCH_MAGIC: &[u8] = b"strata.engine.branch-record";
+const PENDING_MAGIC: &[u8] = b"strata.engine.branch-pending";
+const LAYOUT_VERSION: u16 = 1;
+const REGISTRY_VERSION: u16 = 1;
+const KV_CAPABILITY_VERSION: u16 = 1;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DatabaseIdentityRecord {
+    layout_version: u16,
+}
+
+impl DatabaseIdentityRecord {
+    pub(crate) const fn current() -> Self {
+        Self {
+            layout_version: LAYOUT_VERSION,
+        }
+    }
+}
+
+pub(crate) fn encode_database_identity(record: &DatabaseIdentityRecord) -> Vec<u8> {
+    let mut out = versioned_payload(IDENTITY_MAGIC);
+    out.extend_from_slice(&record.layout_version.to_be_bytes());
+    out
+}
+
+pub(crate) fn decode_database_identity(bytes: &[u8]) -> EngineResult<DatabaseIdentityRecord> {
+    let mut cursor = Cursor::new(expect_payload(bytes, IDENTITY_MAGIC)?);
+    let layout_version = cursor.u16("database identity layout version")?;
+    cursor.finish("database identity")?;
+    if layout_version != LAYOUT_VERSION {
+        return Err(EngineError::incompatible_layout(
+            "failed_precondition.engine.layout_version",
+            "database identity layout version is not supported",
+        ));
+    }
+    Ok(DatabaseIdentityRecord { layout_version })
+}
+
+pub(crate) fn encode_storage_registry() -> Vec<u8> {
+    let mut out = versioned_payload(REGISTRY_MAGIC);
+    out.extend_from_slice(&REGISTRY_VERSION.to_be_bytes());
+    out.extend_from_slice(&[0x20, 0x30, 0x32, 0x34]);
+    out
+}
+
+pub(crate) fn decode_storage_registry(bytes: &[u8]) -> EngineResult<()> {
+    let mut cursor = Cursor::new(expect_payload(bytes, REGISTRY_MAGIC)?);
+    let version = cursor.u16("storage registry version")?;
+    let ids = cursor.remaining();
+    if version != REGISTRY_VERSION || ids != [0x20, 0x30, 0x32, 0x34] {
+        return Err(EngineError::incompatible_layout(
+            "failed_precondition.engine.storage_registry",
+            "storage-space registry is not supported",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn encode_capability_registry() -> Vec<u8> {
+    let mut out = versioned_payload(CAPABILITY_MAGIC);
+    out.extend_from_slice(&KV_CAPABILITY_VERSION.to_be_bytes());
+    out.extend_from_slice(b"kv");
+    out
+}
+
+pub(crate) fn decode_capability_registry(bytes: &[u8]) -> EngineResult<()> {
+    let mut cursor = Cursor::new(expect_payload(bytes, CAPABILITY_MAGIC)?);
+    let version = cursor.u16("capability registry version")?;
+    let capability = cursor.remaining();
+    if version != KV_CAPABILITY_VERSION || capability != b"kv" {
+        return Err(EngineError::incompatible_layout(
+            "failed_precondition.engine.capability_registry",
+            "capability registry does not advertise KV support",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn encode_branch_index(names: &[BranchName]) -> EngineResult<Vec<u8>> {
+    encode_name_index(INDEX_MAGIC, names)
+}
+
+pub(crate) fn decode_branch_index(bytes: &[u8]) -> EngineResult<Vec<BranchName>> {
+    decode_name_index(bytes, INDEX_MAGIC, "branch index")
+}
+
+pub(crate) fn encode_pending_branch_index(names: &[BranchName]) -> EngineResult<Vec<u8>> {
+    encode_name_index(PENDING_INDEX_MAGIC, names)
+}
+
+pub(crate) fn decode_pending_branch_index(bytes: &[u8]) -> EngineResult<Vec<BranchName>> {
+    decode_name_index(bytes, PENDING_INDEX_MAGIC, "pending branch index")
+}
+
+pub(crate) fn encode_branch_record(record: &BranchCatalogRecord) -> Vec<u8> {
+    let mut out = versioned_payload(BRANCH_MAGIC);
+    write_name(&mut out, record.name().as_str());
+    out.extend_from_slice(record.branch_id().as_bytes());
+    out.extend_from_slice(&record.generation().to_be_bytes());
+    match record.source() {
+        Some(source) => {
+            out.push(1);
+            out.extend_from_slice(source.as_bytes());
+        }
+        None => out.push(0),
+    }
+    out
+}
+
+pub(crate) fn decode_branch_record(bytes: &[u8]) -> EngineResult<BranchCatalogRecord> {
+    decode_branch_like(bytes, BRANCH_MAGIC, "branch catalog")
+}
+
+pub(crate) fn encode_pending_branch_record(record: &BranchCatalogRecord) -> Vec<u8> {
+    let mut out = versioned_payload(PENDING_MAGIC);
+    write_name(&mut out, record.name().as_str());
+    out.extend_from_slice(record.branch_id().as_bytes());
+    out.extend_from_slice(&record.generation().to_be_bytes());
+    match record.source() {
+        Some(source) => {
+            out.push(1);
+            out.extend_from_slice(source.as_bytes());
+        }
+        None => out.push(0),
+    }
+    out
+}
+
+pub(crate) fn decode_pending_branch_record(bytes: &[u8]) -> EngineResult<BranchCatalogRecord> {
+    decode_branch_like(bytes, PENDING_MAGIC, "pending branch record")
+}
+
+fn decode_branch_like(
+    bytes: &[u8],
+    magic: &[u8],
+    description: &'static str,
+) -> EngineResult<BranchCatalogRecord> {
+    let mut cursor = Cursor::new(expect_payload(bytes, magic)?);
+    let name = BranchName::new(cursor.name(description)?)?;
+    let branch_id = cursor.branch_id("branch id")?;
+    let generation = cursor.u64("branch generation")?;
+    let has_source = cursor.u8("source flag")?;
+    let source = match has_source {
+        0 => None,
+        1 => Some(cursor.branch_id("source branch id")?),
+        _ => {
+            return Err(EngineError::corruption(
+                "data_loss.engine.branch_catalog",
+                "branch record has an invalid source flag",
+            ))
+        }
+    };
+    cursor.finish(description)?;
+    Ok(BranchCatalogRecord::new(
+        name, branch_id, generation, source,
+    ))
+}
+
+fn versioned_payload(magic: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(magic.len() + 2);
+    out.extend_from_slice(magic);
+    out.push(0);
+    out.push(PAYLOAD_VERSION);
+    out
+}
+
+fn expect_payload<'a>(bytes: &'a [u8], magic: &[u8]) -> EngineResult<&'a [u8]> {
+    let header_len = magic.len() + 2;
+    if bytes.len() < header_len || &bytes[..magic.len()] != magic || bytes[magic.len()] != 0 {
+        return Err(EngineError::corruption(
+            "data_loss.engine.control_plane",
+            "control-plane row has an unknown payload family",
+        ));
+    }
+    let version = bytes[magic.len() + 1];
+    if version != PAYLOAD_VERSION {
+        return Err(EngineError::incompatible_layout(
+            "failed_precondition.engine.control_payload_version",
+            "control-plane row payload version is not supported",
+        ));
+    }
+    Ok(&bytes[header_len..])
+}
+
+fn encode_name_index(magic: &[u8], names: &[BranchName]) -> EngineResult<Vec<u8>> {
+    let count = u16::try_from(names.len()).map_err(|_| {
+        EngineError::invalid_input(
+            "invalid_argument.engine.branch_catalog",
+            "branch catalog contains too many entries",
+        )
+    })?;
+    let mut out = versioned_payload(magic);
+    out.extend_from_slice(&count.to_be_bytes());
+    for name in names {
+        write_name(&mut out, name.as_str());
+    }
+    Ok(out)
+}
+
+fn decode_name_index(
+    bytes: &[u8],
+    magic: &[u8],
+    description: &'static str,
+) -> EngineResult<Vec<BranchName>> {
+    let mut cursor = Cursor::new(expect_payload(bytes, magic)?);
+    let count = usize::from(cursor.u16(description)?);
+    let mut names = Vec::with_capacity(count);
+    for _ in 0..count {
+        names.push(BranchName::new(cursor.name(description)?)?);
+    }
+    cursor.finish(description)?;
+    Ok(names)
+}
+
+fn write_name(out: &mut Vec<u8>, name: &str) {
+    let name_len = u16::try_from(name.len()).expect("validated control name length");
+    out.extend_from_slice(&name_len.to_be_bytes());
+    out.extend_from_slice(name.as_bytes());
+}
+
+struct Cursor<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> Cursor<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn remaining(&mut self) -> &'a [u8] {
+        let remaining = &self.bytes[self.offset..];
+        self.offset = self.bytes.len();
+        remaining
+    }
+
+    fn u8(&mut self, field: &'static str) -> EngineResult<u8> {
+        self.take(1, field).map(|bytes| bytes[0])
+    }
+
+    fn u16(&mut self, field: &'static str) -> EngineResult<u16> {
+        let bytes = self.take(2, field)?;
+        Ok(u16::from_be_bytes([bytes[0], bytes[1]]))
+    }
+
+    fn u64(&mut self, field: &'static str) -> EngineResult<u64> {
+        let bytes = self.take(8, field)?;
+        Ok(u64::from_be_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
+    }
+
+    fn branch_id(&mut self, field: &'static str) -> EngineResult<BranchId> {
+        let bytes = self.take(BranchId::BYTE_LEN, field)?;
+        BranchId::try_from_slice(bytes).map_err(|_| {
+            EngineError::corruption("data_loss.engine.branch_id", "branch id payload is invalid")
+        })
+    }
+
+    fn name(&mut self, field: &'static str) -> EngineResult<String> {
+        let len = usize::from(self.u16(field)?);
+        let bytes = self.take(len, field)?;
+        String::from_utf8(bytes.to_vec()).map_err(|_| {
+            EngineError::corruption(
+                "data_loss.engine.control_name",
+                "control-plane name is not UTF-8",
+            )
+        })
+    }
+
+    fn finish(&self, description: &'static str) -> EngineResult<()> {
+        if self.offset == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(EngineError::corruption(
+                "data_loss.engine.control_plane",
+                format!("{description} row has trailing bytes"),
+            ))
+        }
+    }
+
+    fn take(&mut self, len: usize, field: &'static str) -> EngineResult<&'a [u8]> {
+        let end = self.offset.saturating_add(len);
+        if end > self.bytes.len() {
+            return Err(EngineError::corruption(
+                "data_loss.engine.control_plane",
+                format!("control-plane row is truncated at {field}"),
+            ));
+        }
+        let bytes = &self.bytes[self.offset..end];
+        self.offset = end;
+        Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        decode_branch_index, decode_branch_record, decode_database_identity,
+        decode_storage_registry, encode_branch_index, encode_branch_record,
+        encode_database_identity, encode_storage_registry, DatabaseIdentityRecord, IDENTITY_MAGIC,
+        REGISTRY_MAGIC,
+    };
+    use crate::branch::catalog::{BranchCatalogRecord, DEFAULT_BRANCH_ID};
+    use crate::branch::BranchName;
+    use crate::diagnostics::EngineErrorClass;
+
+    #[test]
+    fn database_identity_rejects_truncated_payload() {
+        let mut payload = encode_database_identity(&DatabaseIdentityRecord::current());
+        payload.pop();
+        let error = decode_database_identity(&payload).expect_err("truncated payload must fail");
+        assert_eq!(error.class(), EngineErrorClass::Corruption);
+    }
+
+    #[test]
+    fn control_payload_rejects_unknown_version() {
+        let mut payload = encode_database_identity(&DatabaseIdentityRecord::current());
+        payload[IDENTITY_MAGIC.len() + 1] = 2;
+        let error =
+            decode_database_identity(&payload).expect_err("unknown payload version must fail");
+        assert_eq!(error.class(), EngineErrorClass::IncompatibleLayout);
+        assert_eq!(
+            error.code(),
+            "failed_precondition.engine.control_payload_version"
+        );
+    }
+
+    #[test]
+    fn storage_registry_rejects_unknown_future_version() {
+        let mut payload = encode_storage_registry();
+        let offset = REGISTRY_MAGIC.len() + 2;
+        payload[offset..offset + 2].copy_from_slice(&2_u16.to_be_bytes());
+        let error = decode_storage_registry(&payload).expect_err("future registry must fail");
+        assert_eq!(error.class(), EngineErrorClass::IncompatibleLayout);
+        assert_eq!(error.code(), "failed_precondition.engine.storage_registry");
+    }
+
+    #[test]
+    fn branch_record_round_trips() {
+        let record = BranchCatalogRecord::new(
+            BranchName::new("default").expect("valid branch"),
+            DEFAULT_BRANCH_ID,
+            1,
+            None,
+        );
+        let decoded =
+            decode_branch_record(&encode_branch_record(&record)).expect("record must decode");
+        assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn branch_index_rejects_count_overflow() {
+        let names: Vec<_> = (0..=u16::MAX)
+            .map(|index| BranchName::new(format!("branch-{index}")).expect("valid branch"))
+            .collect();
+        let error = encode_branch_index(&names).expect_err("oversized index must fail");
+        assert_eq!(error.class(), EngineErrorClass::InvalidInput);
+        assert_eq!(error.code(), "invalid_argument.engine.branch_catalog");
+    }
+
+    #[test]
+    fn branch_index_decode_rejects_trailing_bytes() {
+        let names = [BranchName::new("default").expect("valid branch")];
+        let mut payload = encode_branch_index(&names).expect("index encodes");
+        payload.push(0xff);
+        let error = decode_branch_index(&payload).expect_err("trailing bytes must fail");
+        assert_eq!(error.class(), EngineErrorClass::Corruption);
+    }
+}
