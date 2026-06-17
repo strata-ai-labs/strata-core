@@ -17,7 +17,11 @@ use common::{
 fn cache_database_supports_branch_and_kv_workflow() {
     let mut database = open_cache_database().expect("cache open succeeds");
 
-    let branches = database.branches().expect("branch service opens").list();
+    let branches = database
+        .branches()
+        .expect("branch service opens")
+        .list()
+        .expect("branch list succeeds");
     assert!(branches
         .iter()
         .any(|summary| summary.name().as_str() == "default"));

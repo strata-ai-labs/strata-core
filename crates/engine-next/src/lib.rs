@@ -20,8 +20,9 @@ pub mod test_support;
 pub mod testkit;
 
 pub use api::{
-    BranchCreateOutcome, BranchName, BranchService, BranchSummary, CacheOpenOptions, CloseOutcome,
-    Database, DatabaseOpenOutcome, DatabaseOpenSummary, DatabaseOpenTarget,
+    BranchCleanupSummary, BranchCreateOutcome, BranchDeleteOutcome, BranchName,
+    BranchParentSummary, BranchService, BranchStatus, BranchSummary, CacheOpenOptions,
+    CloseOutcome, Database, DatabaseOpenOutcome, DatabaseOpenSummary, DatabaseOpenTarget,
     DurableLocalOpenOptions, EngineError, EngineErrorClass, EngineResult, KvBatchDeleteOutcome,
     KvDeleteOutcome, KvHistory, KvHistoryRow, KvKey, KvListPage, KvSample, KvScanRow, KvService,
     KvValue, KvVersionedValue, ProductSpace,

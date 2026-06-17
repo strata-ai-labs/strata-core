@@ -1,12 +1,17 @@
 //! Product branch service.
 
-use crate::branch::catalog::BranchCatalogRecord;
+use strata_core_next::{CommitVersion, Timestamp};
+
+use crate::branch::catalog::{BranchCatalogRecord, BranchParentRecord, BranchStatus};
 use crate::control::ControlPlane;
 use crate::diagnostics::{EngineError, EngineResult};
-use crate::persistence::StoragePersistence;
+use crate::persistence::{
+    PersistenceBranchCleanup, PersistenceBranchOutcome, PersistenceBranchStatus,
+    PersistenceBranchSummary, StoragePersistence,
+};
 
 use super::BranchName;
-use crate::api::{BranchCreateOutcome, BranchSummary};
+use crate::api::{BranchCleanupSummary, BranchCreateOutcome, BranchDeleteOutcome, BranchSummary};
 
 /// Service for product branch operations.
 pub struct BranchService<'a> {
@@ -26,26 +31,56 @@ impl<'a> BranchService<'a> {
     }
 
     /// Lists active product branches.
-    pub fn list(&self) -> Vec<BranchSummary> {
-        self.control
+    pub fn list(&self) -> EngineResult<Vec<BranchSummary>> {
+        self.control.require_healthy()?;
+        Ok(self
+            .control
             .list_branches()
             .into_iter()
-            .map(|record| BranchSummary::new(record.name().clone(), record.generation()))
-            .collect()
+            .map(|record| BranchSummary::from_catalog(&record))
+            .collect())
     }
 
     /// Looks up an active product branch by name.
     pub fn get(&self, name: &BranchName) -> EngineResult<BranchSummary> {
+        self.control.require_healthy()?;
         let record = self.control.lookup_branch(name).ok_or_else(|| {
             EngineError::not_found(
                 "not_found.engine.branch",
                 format!("branch `{name}` does not exist"),
             )
         })?;
-        Ok(BranchSummary::new(
-            record.name().clone(),
-            record.generation(),
-        ))
+        Ok(BranchSummary::from_catalog(record))
+    }
+
+    /// Creates an empty root product branch.
+    pub fn create(&mut self, name: BranchName) -> EngineResult<BranchCreateOutcome> {
+        self.control.require_healthy()?;
+        self.reject_duplicate_active(&name)?;
+        let generation = self.control.next_generation_for_name(&name);
+        let record = BranchCatalogRecord::root(name, generation);
+
+        ControlPlane::begin_branch_operation(self.persistence, &record)?;
+        let outcome = match self
+            .persistence
+            .create_branch(record.storage_branch_id(), generation)
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return Err(self.clear_pending_after_storage_error(&record, error));
+            }
+        };
+        let record = record.with_storage_facts(
+            outcome.branch().generation(),
+            branch_status(outcome.branch()),
+            outcome.branch().created_at(),
+            outcome.branch().deleted_at(),
+            outcome.branch().state_revision(),
+        );
+        self.persist_catalog_record(record.clone())?;
+        Ok(BranchCreateOutcome::new(BranchSummary::from_catalog(
+            &record,
+        )))
     }
 
     /// Creates a product branch from the current source branch head.
@@ -54,56 +89,300 @@ impl<'a> BranchService<'a> {
         source: &BranchName,
         name: BranchName,
     ) -> EngineResult<BranchCreateOutcome> {
-        if self.control.contains_branch(&name) {
-            return Err(EngineError::conflict(
-                "already_exists.engine.branch",
-                format!("branch `{name}` already exists"),
-            ));
-        }
+        self.fork_current(source, name)
+    }
+
+    /// Forks a product branch from the current source branch head.
+    pub fn fork_current(
+        &mut self,
+        source: &BranchName,
+        name: BranchName,
+    ) -> EngineResult<BranchCreateOutcome> {
+        self.control.require_healthy()?;
+        self.reject_duplicate_active(&name)?;
         let source_record = self.control.lookup_branch(source).cloned().ok_or_else(|| {
             EngineError::not_found(
                 "not_found.engine.branch",
                 format!("source branch `{source}` does not exist"),
             )
         })?;
-        let record = BranchCatalogRecord::derived(name, source_record.branch_id());
-
-        ControlPlane::begin_branch_create(self.persistence, &record)?;
-        if let Err(error) = self.persistence.fork_branch_current(
-            record.branch_id(),
+        let generation = self.control.next_generation_for_name(&name);
+        let placeholder_parent = BranchParentRecord::new(
+            source_record.name().clone(),
             source_record.branch_id(),
-            record.generation(),
+            source_record.generation(),
+            CommitVersion::ZERO,
+            None,
+        );
+        let record = BranchCatalogRecord::forked(name, generation, placeholder_parent);
+        let storage_branch_id = record.storage_branch_id();
+
+        ControlPlane::begin_branch_operation(self.persistence, &record)?;
+        if let Err(error) = self.persistence.fork_branch_current(
+            storage_branch_id,
+            source_record.storage_branch_id(),
+            generation,
         ) {
             if error.code() == "not_found.engine.persistence_history" {
-                self.persistence
-                    .ensure_branch_created(record.branch_id(), record.generation())?;
-                self.control
-                    .activate_branch(self.persistence, record.clone())?;
-                return Ok(BranchCreateOutcome::new(BranchSummary::new(
-                    record.name().clone(),
-                    record.generation(),
+                let outcome = match self
+                    .persistence
+                    .create_branch(storage_branch_id, generation)
+                {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        return Err(self.clear_pending_after_storage_error(&record, error));
+                    }
+                };
+                let branch = outcome.branch();
+                let record = record.with_storage_facts(
+                    branch.generation(),
+                    branch_status(branch),
+                    branch.created_at(),
+                    branch.deleted_at(),
+                    branch.state_revision(),
+                );
+                self.persist_catalog_record(record.clone())?;
+                return Ok(BranchCreateOutcome::new(BranchSummary::from_catalog(
+                    &record,
                 )));
             }
-            let _ = ControlPlane::clear_pending_branch_create(self.persistence, &record);
-            return Err(error);
+            return Err(self.clear_pending_after_storage_error(&record, error));
         }
-        self.control
-            .activate_branch(self.persistence, record.clone())?;
+        let outcome = match self.persistence.describe_branch(storage_branch_id) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.control
+                    .fail_closed_after_branch_operation_error(&error);
+                return Err(error);
+            }
+        };
+        let parent = BranchParentRecord::new(
+            source_record.name().clone(),
+            source_record.branch_id(),
+            source_record.generation(),
+            outcome.parent().map_or(
+                CommitVersion::ZERO,
+                crate::persistence::PersistenceBranchParent::fork_version,
+            ),
+            None,
+        );
+        let record = BranchCatalogRecord::forked(record.name().clone(), generation, parent)
+            .with_storage_facts(
+                outcome.generation(),
+                branch_status(outcome),
+                outcome.created_at(),
+                outcome.deleted_at(),
+                outcome.state_revision(),
+            );
+        self.persist_catalog_record(record.clone())?;
 
-        Ok(BranchCreateOutcome::new(BranchSummary::new(
-            record.name().clone(),
-            record.generation(),
+        Ok(BranchCreateOutcome::new(BranchSummary::from_catalog(
+            &record,
         )))
     }
+
+    /// Forks a product branch from a retained source version.
+    pub fn fork_at_version(
+        &mut self,
+        source: &BranchName,
+        name: BranchName,
+        version: CommitVersion,
+    ) -> EngineResult<BranchCreateOutcome> {
+        self.fork_with(
+            source,
+            name,
+            |persistence, branch_id, source_id, generation| {
+                persistence.fork_branch_at_version(branch_id, source_id, version, generation)
+            },
+        )
+    }
+
+    /// Forks a product branch from a retained source timestamp.
+    pub fn fork_at_timestamp(
+        &mut self,
+        source: &BranchName,
+        name: BranchName,
+        timestamp: Timestamp,
+    ) -> EngineResult<BranchCreateOutcome> {
+        self.fork_with(
+            source,
+            name,
+            |persistence, branch_id, source_id, generation| {
+                persistence.fork_branch_at_timestamp(branch_id, source_id, timestamp, generation)
+            },
+        )
+    }
+
+    /// Deletes an active product branch.
+    pub fn delete(&mut self, name: &BranchName) -> EngineResult<BranchDeleteOutcome> {
+        self.control.require_healthy()?;
+        if name == self.control.default_branch() {
+            return Err(EngineError::invalid_input(
+                "invalid_argument.engine.branch_delete",
+                "default branch cannot be deleted",
+            ));
+        }
+        if self.control.active_branch_count() <= 1 {
+            return Err(EngineError::invalid_input(
+                "invalid_argument.engine.branch_delete",
+                "delete would remove the last active branch",
+            ));
+        }
+        let record = self.control.lookup_branch(name).cloned().ok_or_else(|| {
+            EngineError::not_found(
+                "not_found.engine.branch",
+                format!("branch `{name}` does not exist"),
+            )
+        })?;
+
+        ControlPlane::begin_branch_operation(self.persistence, &record)?;
+        let outcome = match self
+            .persistence
+            .delete_branch(record.storage_branch_id(), record.generation())
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return Err(self.clear_pending_after_storage_error(&record, error));
+            }
+        };
+        let branch = outcome.branch();
+        let deleted = record.with_storage_facts(
+            branch.generation(),
+            branch_status(branch),
+            branch.created_at(),
+            branch.deleted_at(),
+            branch.state_revision(),
+        );
+        self.persist_catalog_record(deleted.clone())?;
+        Ok(BranchDeleteOutcome::new(
+            BranchSummary::from_catalog(&deleted),
+            outcome.generation_before(),
+            outcome.generation_after(),
+            outcome.cleanup().map(cleanup_summary),
+        ))
+    }
+
+    fn fork_with(
+        &mut self,
+        source: &BranchName,
+        name: BranchName,
+        fork: impl FnOnce(
+            &mut StoragePersistence,
+            strata_core_next::BranchId,
+            strata_core_next::BranchId,
+            u64,
+        ) -> EngineResult<PersistenceBranchOutcome>,
+    ) -> EngineResult<BranchCreateOutcome> {
+        self.control.require_healthy()?;
+        self.reject_duplicate_active(&name)?;
+        let source_record = self.control.lookup_branch(source).cloned().ok_or_else(|| {
+            EngineError::not_found(
+                "not_found.engine.branch",
+                format!("source branch `{source}` does not exist"),
+            )
+        })?;
+        let generation = self.control.next_generation_for_name(&name);
+        let pending = BranchCatalogRecord::root(name.clone(), generation);
+        let storage_branch_id = pending.storage_branch_id();
+        ControlPlane::begin_branch_operation(self.persistence, &pending)?;
+        let outcome = match fork(
+            self.persistence,
+            storage_branch_id,
+            source_record.storage_branch_id(),
+            generation,
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return Err(self.clear_pending_after_storage_error(&pending, error));
+            }
+        };
+        let branch = outcome.branch();
+        let parent = BranchParentRecord::new(
+            source_record.name().clone(),
+            source_record.branch_id(),
+            source_record.generation(),
+            outcome
+                .fork_version()
+                .or_else(|| {
+                    branch
+                        .parent()
+                        .map(crate::persistence::PersistenceBranchParent::fork_version)
+                })
+                .unwrap_or(CommitVersion::ZERO),
+            outcome.fork_timestamp(),
+        );
+        let record = BranchCatalogRecord::forked(name, generation, parent).with_storage_facts(
+            branch.generation(),
+            branch_status(branch),
+            branch.created_at(),
+            branch.deleted_at(),
+            branch.state_revision(),
+        );
+        self.persist_catalog_record(record.clone())?;
+        Ok(BranchCreateOutcome::new(BranchSummary::from_catalog(
+            &record,
+        )))
+    }
+
+    fn reject_duplicate_active(&self, name: &BranchName) -> EngineResult<()> {
+        if self.control.contains_branch(name) {
+            return Err(EngineError::conflict(
+                "already_exists.engine.branch",
+                format!("branch `{name}` already exists"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn clear_pending_after_storage_error(
+        &mut self,
+        record: &BranchCatalogRecord,
+        original: EngineError,
+    ) -> EngineError {
+        match ControlPlane::clear_pending_branch_operation(self.persistence, record) {
+            Ok(()) => original,
+            Err(error) => {
+                self.control
+                    .fail_closed_after_branch_operation_error(&error);
+                error
+            }
+        }
+    }
+
+    fn persist_catalog_record(&mut self, record: BranchCatalogRecord) -> EngineResult<()> {
+        match self.control.persist_branch_record(self.persistence, record) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.control
+                    .fail_closed_after_branch_operation_error(&error);
+                Err(error)
+            }
+        }
+    }
+}
+
+const fn branch_status(summary: PersistenceBranchSummary) -> BranchStatus {
+    match summary.status() {
+        PersistenceBranchStatus::Active => BranchStatus::Active,
+        PersistenceBranchStatus::Deleted => BranchStatus::Deleted,
+    }
+}
+
+const fn cleanup_summary(cleanup: PersistenceBranchCleanup) -> BranchCleanupSummary {
+    BranchCleanupSummary::new(
+        cleanup.removed_refs(),
+        cleanup.releasable_tables(),
+        cleanup.protected_tables(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::BranchService;
-    use crate::branch::catalog::{BranchCatalogRecord, DEFAULT_BRANCH_GENERATION};
+    use crate::branch::catalog::{BranchCatalogRecord, BranchStatus, DEFAULT_BRANCH_GENERATION};
     use crate::branch::BranchName;
     use crate::control::bootstrap_or_load;
-    use crate::diagnostics::EngineErrorClass;
+    use crate::diagnostics::{EngineError, EngineErrorClass};
     use crate::persistence::{PersistenceOpenTarget, StoragePersistence};
     use strata_core_next::BranchId;
 
@@ -111,14 +390,19 @@ mod tests {
     fn branch_create_failure_after_pending_does_not_activate_catalog_entry() {
         let (mut persistence, summary) =
             StoragePersistence::open(PersistenceOpenTarget::Cache).expect("cache opens");
-        let mut control =
-            bootstrap_or_load(&mut persistence, summary.created()).expect("bootstrap succeeds");
+        let mut control = bootstrap_or_load(&mut persistence, summary.created(), None)
+            .expect("bootstrap succeeds");
         let feature = BranchName::new("feature").expect("valid branch");
         control.insert_branch(BranchCatalogRecord::new(
             BranchName::default_branch(),
             BranchId::from_bytes([0x44; BranchId::BYTE_LEN]),
+            BranchId::from_bytes([0x44; BranchId::BYTE_LEN]),
             DEFAULT_BRANCH_GENERATION,
+            BranchStatus::Active,
             None,
+            None,
+            None,
+            0,
         ));
 
         let error = BranchService::new(&mut persistence, &mut control)
@@ -128,8 +412,54 @@ mod tests {
         assert_eq!(error.code(), "not_found.engine.persistence");
         assert!(!control.contains_branch(&feature));
 
-        let loaded =
-            bootstrap_or_load(&mut persistence, false).expect("control plane reloads cleanly");
+        let loaded = bootstrap_or_load(&mut persistence, false, None)
+            .expect("control plane reloads cleanly");
         assert!(!loaded.contains_branch(&feature));
+    }
+
+    #[test]
+    fn fork_empty_source_fallback_failure_clears_pending_catalog_entry() {
+        let (mut persistence, summary) =
+            StoragePersistence::open(PersistenceOpenTarget::Cache).expect("cache opens");
+        let mut control = bootstrap_or_load(&mut persistence, summary.created(), None)
+            .expect("bootstrap succeeds");
+        let feature = BranchName::new("feature").expect("valid branch");
+        let feature_record = BranchCatalogRecord::root(feature.clone(), DEFAULT_BRANCH_GENERATION);
+        persistence
+            .create_branch(
+                feature_record.storage_branch_id(),
+                feature_record.generation(),
+            )
+            .expect("lower branch is preexisting");
+
+        let error = BranchService::new(&mut persistence, &mut control)
+            .fork_current(&BranchName::default_branch(), feature.clone())
+            .expect_err("fallback create fails");
+        assert_eq!(error.class(), EngineErrorClass::Conflict);
+        assert_eq!(error.code(), "conflict.engine.persistence");
+        assert!(!control.contains_branch(&feature));
+
+        let loaded = bootstrap_or_load(&mut persistence, false, None)
+            .expect("control plane reloads cleanly");
+        assert!(!loaded.contains_branch(&feature));
+    }
+
+    #[test]
+    fn branch_service_refuses_work_after_control_plane_failure() {
+        let (mut persistence, summary) =
+            StoragePersistence::open(PersistenceOpenTarget::Cache).expect("cache opens");
+        let mut control = bootstrap_or_load(&mut persistence, summary.created(), None)
+            .expect("bootstrap succeeds");
+        let cause = EngineError::corruption(
+            "data_loss.engine.branch_catalog",
+            "catalog update failed after branch operation",
+        );
+        control.fail_closed_after_branch_operation_error(&cause);
+
+        let error = BranchService::new(&mut persistence, &mut control)
+            .list()
+            .expect_err("failed control plane rejects list");
+        assert_eq!(error.class(), EngineErrorClass::Unavailable);
+        assert_eq!(error.code(), "unavailable.engine.control_plane");
     }
 }

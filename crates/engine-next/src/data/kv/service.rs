@@ -58,7 +58,7 @@ impl<'a> KvService<'a> {
         let mut mutations = Vec::with_capacity(iterator.size_hint().0);
         for (key, value) in iterator {
             let encoded_key = self.encode_batch_key(key, &mut seen)?;
-            let address = RowAddress::new(record.branch_id(), RowClass::Kv, encoded_key);
+            let address = RowAddress::new(record.storage_branch_id(), RowClass::Kv, encoded_key);
             mutations.push(RowMutation::put(address, value.into_bytes()));
         }
         self.commit_batch(&record, mutations)
@@ -163,7 +163,7 @@ impl<'a> KvService<'a> {
         let scan_prefix = self.scan_prefix(prefix);
         self.persistence
             .scan_prefix(
-                record.branch_id(),
+                record.storage_branch_id(),
                 RowClass::Kv,
                 scan_prefix,
                 ReadSelector::Latest,
@@ -208,7 +208,7 @@ impl<'a> KvService<'a> {
         let record = self.branch_record()?;
         self.persistence
             .scan_prefix(
-                record.branch_id(),
+                record.storage_branch_id(),
                 RowClass::Kv,
                 self.scan_prefix(prefix),
                 ReadSelector::AtTimestamp(timestamp),
@@ -253,7 +253,7 @@ impl<'a> KvService<'a> {
         }
         self.persistence
             .scan_range(
-                record.branch_id(),
+                record.storage_branch_id(),
                 RowClass::Kv,
                 Some(start),
                 Some(end),
@@ -273,7 +273,7 @@ impl<'a> KvService<'a> {
         let count = self
             .persistence
             .scan_prefix(
-                record.branch_id(),
+                record.storage_branch_id(),
                 RowClass::Kv,
                 self.scan_prefix(prefix),
                 ReadSelector::Latest,
@@ -291,7 +291,7 @@ impl<'a> KvService<'a> {
         let rows = self
             .persistence
             .scan_prefix(
-                record.branch_id(),
+                record.storage_branch_id(),
                 RowClass::Kv,
                 self.scan_prefix(prefix),
                 ReadSelector::Latest,
@@ -334,7 +334,7 @@ impl<'a> KvService<'a> {
         let mut deleted = Vec::with_capacity(iterator.size_hint().0);
         for key in iterator {
             let encoded_key = self.encode_batch_key(key, &mut seen)?;
-            let address = RowAddress::new(record.branch_id(), RowClass::Kv, encoded_key);
+            let address = RowAddress::new(record.storage_branch_id(), RowClass::Kv, encoded_key);
             let exists = self
                 .persistence
                 .read_row(&address, ReadSelector::Latest)?
@@ -358,6 +358,7 @@ impl<'a> KvService<'a> {
     }
 
     fn branch_record(&self) -> EngineResult<BranchCatalogRecord> {
+        self.control.require_healthy()?;
         self.control
             .lookup_branch(&self.branch)
             .cloned()
@@ -371,7 +372,7 @@ impl<'a> KvService<'a> {
 
     fn row_address(&self, record: &BranchCatalogRecord, key: &KvKey) -> RowAddress {
         RowAddress::new(
-            record.branch_id(),
+            record.storage_branch_id(),
             RowClass::Kv,
             encode_kv_key(&self.space, key),
         )
@@ -408,7 +409,7 @@ impl<'a> KvService<'a> {
         while keys.len() < limit && start < prefix_end {
             let raw_limit = limit.saturating_sub(keys.len()).saturating_add(1);
             let rows = self.persistence.scan_range(
-                record.branch_id(),
+                record.storage_branch_id(),
                 RowClass::Kv,
                 Some(start.clone()),
                 Some(prefix_end.clone()),
@@ -465,7 +466,11 @@ impl<'a> KvService<'a> {
                 "KV batch must contain at least one mutation",
             ));
         }
-        let plan = CommitPlan::new(record.branch_id(), mutations, Some(record.generation()));
+        let plan = CommitPlan::new(
+            record.storage_branch_id(),
+            mutations,
+            Some(record.generation()),
+        );
         self.persistence.commit(&plan)
     }
 }

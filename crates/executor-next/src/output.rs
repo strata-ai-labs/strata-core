@@ -3,13 +3,29 @@
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    BatchGetItemResult, BatchItemResult, Bytes, HistoryItem, SampleItem, ScanItem, VersionedValue,
+    BatchGetItemResult, BatchItemResult, BranchCleanupItem, BranchItem, Bytes, HistoryItem,
+    SampleItem, ScanItem, VersionedValue,
 };
 
 /// Successful executor output.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum Output {
+    /// One branch summary.
+    Branch(BranchItem),
+    /// Branch list.
+    Branches(Vec<BranchItem>),
+    /// Branch deletion result.
+    BranchDeleteResult {
+        /// Deleted branch summary.
+        branch: BranchItem,
+        /// Generation before delete.
+        generation_before: Option<u64>,
+        /// Generation after delete.
+        generation_after: Option<u64>,
+        /// Cleanup facts.
+        cleanup: Option<BranchCleanupItem>,
+    },
     /// Optional raw KV value.
     KvValue(Option<Bytes>),
     /// Optional KV value with commit metadata.

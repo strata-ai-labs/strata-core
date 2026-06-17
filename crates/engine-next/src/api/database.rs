@@ -131,30 +131,37 @@ pub struct Database {
 
 impl Database {
     /// Opens an explicit cache database.
-    pub fn open_cache(_options: CacheOpenOptions) -> EngineResult<DatabaseOpenOutcome> {
-        Self::open(PersistenceOpenTarget::Cache, DatabaseOpenTarget::Cache)
+    pub fn open_cache(options: CacheOpenOptions) -> EngineResult<DatabaseOpenOutcome> {
+        Self::open(
+            PersistenceOpenTarget::Cache,
+            DatabaseOpenTarget::Cache,
+            options.into_default_branch(),
+        )
     }
 
     /// Opens an explicit durable local database.
     pub fn open_local(
         path: impl Into<PathBuf>,
-        _options: DurableLocalOpenOptions,
+        options: DurableLocalOpenOptions,
     ) -> EngineResult<DatabaseOpenOutcome> {
         Self::open(
             PersistenceOpenTarget::DurableLocal(path.into()),
             DatabaseOpenTarget::DurableLocal,
+            options.into_default_branch(),
         )
     }
 
     /// Returns a branch service for this database.
     pub fn branches(&mut self) -> EngineResult<BranchService<'_>> {
         self.require_open()?;
+        self.control.require_healthy()?;
         Ok(BranchService::new(&mut self.persistence, &mut self.control))
     }
 
     /// Returns a byte-oriented KV service for the selected branch and space.
     pub fn kv(&mut self, branch: BranchName, space: ProductSpace) -> EngineResult<KvService<'_>> {
         self.require_open()?;
+        self.control.require_healthy()?;
         Ok(KvService::new(
             &mut self.persistence,
             &mut self.control,
@@ -187,12 +194,23 @@ impl Database {
         self.summary
     }
 
+    #[must_use]
+    /// Returns the configured default product branch.
+    pub fn default_branch(&self) -> &BranchName {
+        self.control.default_branch()
+    }
+
     fn open(
         target: PersistenceOpenTarget,
         open_target: DatabaseOpenTarget,
+        default_branch: Option<BranchName>,
     ) -> EngineResult<DatabaseOpenOutcome> {
         let (mut persistence, persistence_summary) = StoragePersistence::open(target)?;
-        let control = bootstrap_or_load(&mut persistence, persistence_summary.created())?;
+        let control = bootstrap_or_load(
+            &mut persistence,
+            persistence_summary.created(),
+            default_branch,
+        )?;
         let summary = DatabaseOpenSummary::new(open_target, persistence_summary);
         Ok(DatabaseOpenOutcome::new(
             Self {

@@ -5,7 +5,10 @@ mod database;
 mod kv;
 mod options;
 
-pub use branch::{BranchCreateOutcome, BranchSummary};
+pub use branch::{
+    BranchCleanupSummary, BranchCreateOutcome, BranchDeleteOutcome, BranchParentSummary,
+    BranchStatus, BranchSummary,
+};
 pub use database::{
     CloseOutcome, Database, DatabaseOpenOutcome, DatabaseOpenSummary, DatabaseOpenTarget,
 };

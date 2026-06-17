@@ -76,7 +76,11 @@ fn durable_open_reopen_preserves_control_plane_and_kv() {
         assert!(outcome.summary().durable());
 
         let mut database = outcome.into_database();
-        let branches = database.branches().expect("branch service opens").list();
+        let branches = database
+            .branches()
+            .expect("branch service opens")
+            .list()
+            .expect("branch list succeeds");
         assert!(branches
             .iter()
             .any(|branch| branch.name().as_str() == "default"));
@@ -107,7 +111,11 @@ fn system_branch_is_not_listed() {
     let mut database = Database::open_cache(CacheOpenOptions::new())
         .expect("cache open succeeds")
         .into_database();
-    let branches = database.branches().expect("branch service opens").list();
+    let branches = database
+        .branches()
+        .expect("branch service opens")
+        .list()
+        .expect("branch list succeeds");
     assert!(branches
         .iter()
         .all(|summary| summary.name().as_str() != "_system_"));

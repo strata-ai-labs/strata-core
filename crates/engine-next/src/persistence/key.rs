@@ -70,6 +70,10 @@ pub(crate) fn branch_index_key() -> Vec<u8> {
     b"\x01branch:index".to_vec()
 }
 
+pub(crate) fn branch_default_key() -> Vec<u8> {
+    b"\x01branch:default".to_vec()
+}
+
 pub(crate) fn branch_pending_index_key() -> Vec<u8> {
     b"\x01branch:pending-index".to_vec()
 }
@@ -95,8 +99,9 @@ pub(crate) fn branch_pending_key(name: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        branch_catalog_key, branch_index_key, branch_pending_key, database_identity_key,
-        decode_kv_key, encode_kv_key, encode_kv_space_prefix, storage_registry_key,
+        branch_catalog_key, branch_default_key, branch_index_key, branch_pending_key,
+        database_identity_key, decode_kv_key, encode_kv_key, encode_kv_space_prefix,
+        storage_registry_key,
     };
     use crate::data::kv::{KvKey, ProductSpace};
     use crate::diagnostics::EngineErrorClass;
@@ -194,6 +199,7 @@ mod tests {
             database_identity_key(),
             storage_registry_key(),
             branch_index_key(),
+            branch_default_key(),
             branch_catalog_key("default"),
             branch_pending_key("feature"),
         ] {
@@ -210,6 +216,7 @@ mod tests {
             storage_registry_key(),
             b"\x01registry:storage-spaces".to_vec()
         );
+        assert_eq!(branch_default_key(), b"\x01branch:default".to_vec());
         assert_eq!(
             branch_catalog_key("default"),
             b"\x01branch:\0\x07default".to_vec()

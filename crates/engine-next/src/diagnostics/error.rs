@@ -104,6 +104,17 @@ impl EngineError {
     }
 
     #[must_use]
+    /// Creates a control-plane-unavailable error.
+    pub(crate) fn control_plane_unavailable(message: impl Into<String>) -> Self {
+        Self::new(
+            EngineErrorClass::Unavailable,
+            "unavailable.engine.control_plane",
+            false,
+            message,
+        )
+    }
+
+    #[must_use]
     /// Creates a closed-runtime error.
     pub fn closed_runtime(message: impl Into<String>) -> Self {
         Self::new(

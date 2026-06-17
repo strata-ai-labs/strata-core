@@ -8,6 +8,48 @@ use crate::types::{BatchKvEntry, Bytes};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    /// Lists active branches.
+    BranchList,
+    /// Reads one branch summary.
+    BranchGet {
+        /// Branch name.
+        branch: String,
+    },
+    /// Creates an empty root branch.
+    BranchCreate {
+        /// Branch name.
+        branch: String,
+    },
+    /// Forks a branch from the current source head.
+    BranchForkCurrent {
+        /// Source branch name.
+        source: String,
+        /// Destination branch name.
+        branch: String,
+    },
+    /// Forks a branch from a retained source version.
+    BranchForkAtVersion {
+        /// Source branch name.
+        source: String,
+        /// Destination branch name.
+        branch: String,
+        /// Source version.
+        version: u64,
+    },
+    /// Forks a branch from a retained source timestamp.
+    BranchForkAtTimestamp {
+        /// Source branch name.
+        source: String,
+        /// Destination branch name.
+        branch: String,
+        /// Source timestamp in microseconds.
+        timestamp: u64,
+    },
+    /// Deletes an active branch.
+    BranchDelete {
+        /// Branch name.
+        branch: String,
+    },
     /// Writes one KV entry.
     KvPut {
         /// Target branch. Defaults to the executor handle branch.
@@ -181,6 +223,13 @@ impl Command {
     /// Returns the stable command name.
     pub const fn name(&self) -> &'static str {
         match self {
+            Self::BranchList => "branch_list",
+            Self::BranchGet { .. } => "branch_get",
+            Self::BranchCreate { .. } => "branch_create",
+            Self::BranchForkCurrent { .. } => "branch_fork_current",
+            Self::BranchForkAtVersion { .. } => "branch_fork_at_version",
+            Self::BranchForkAtTimestamp { .. } => "branch_fork_at_timestamp",
+            Self::BranchDelete { .. } => "branch_delete",
             Self::KvPut { .. } => "kv_put",
             Self::KvGet { .. } => "kv_get",
             Self::KvDelete { .. } => "kv_delete",

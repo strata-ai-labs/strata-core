@@ -5,11 +5,13 @@ use std::path::PathBuf;
 use strata_core_next::BranchId;
 use strata_core_next::{CommitVersion, Timestamp};
 use strata_storage_next::api::{
-    BranchAction, BranchGeneration as StorageBranchGeneration, BranchRequest, CommitBatch,
-    CommitDurabilitySummary, CommitMutation, CommitOptions, HistoryReadRequest, PointReadRequest,
-    PrefixScanReadRequest, ReadBound, ReadLimit, ScanRange, ScanReadRequest, StorageApiError,
-    StorageApiErrorClass, StorageCloseSummary, StorageKey, StorageOpenDisposition, StorageReadRow,
-    StorageRuntime, StorageRuntimeState, StorageSpaceId, StorageValue,
+    BranchAction, BranchCleanupSummary as StorageBranchCleanupSummary,
+    BranchGeneration as StorageBranchGeneration, BranchOutcome as StorageBranchOutcome,
+    BranchRequest, BranchStatus as StorageBranchStatus, BranchSummary as StorageBranchSummary,
+    CommitBatch, CommitDurabilitySummary, CommitMutation, CommitOptions, HistoryReadRequest,
+    PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit, ScanRange, ScanReadRequest,
+    StorageApiError, StorageApiErrorClass, StorageCloseSummary, StorageKey, StorageOpenDisposition,
+    StorageReadRow, StorageRuntime, StorageRuntimeState, StorageSpaceId, StorageValue,
 };
 
 use crate::branch::catalog::{DEFAULT_BRANCH_GENERATION, SYSTEM_BRANCH_ID};
@@ -45,6 +47,119 @@ impl PersistenceOpenSummary {
 pub(crate) struct StoragePersistence {
     runtime: StorageRuntime<'static>,
     durable: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PersistenceBranchStatus {
+    Active,
+    Deleted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PersistenceBranchParent {
+    source_branch_id: BranchId,
+    fork_version: CommitVersion,
+}
+
+impl PersistenceBranchParent {
+    pub(crate) const fn fork_version(self) -> CommitVersion {
+        self.fork_version
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PersistenceBranchSummary {
+    branch_id: BranchId,
+    generation: u64,
+    status: PersistenceBranchStatus,
+    parent: Option<PersistenceBranchParent>,
+    created_at: Option<CommitVersion>,
+    deleted_at: Option<CommitVersion>,
+    state_revision: u64,
+}
+
+impl PersistenceBranchSummary {
+    pub(crate) const fn generation(self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) const fn status(self) -> PersistenceBranchStatus {
+        self.status
+    }
+
+    pub(crate) const fn parent(self) -> Option<PersistenceBranchParent> {
+        self.parent
+    }
+
+    pub(crate) const fn created_at(self) -> Option<CommitVersion> {
+        self.created_at
+    }
+
+    pub(crate) const fn deleted_at(self) -> Option<CommitVersion> {
+        self.deleted_at
+    }
+
+    pub(crate) const fn state_revision(self) -> u64 {
+        self.state_revision
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PersistenceBranchCleanup {
+    removed_refs: usize,
+    releasable_tables: usize,
+    protected_tables: usize,
+}
+
+impl PersistenceBranchCleanup {
+    pub(crate) const fn removed_refs(self) -> usize {
+        self.removed_refs
+    }
+
+    pub(crate) const fn releasable_tables(self) -> usize {
+        self.releasable_tables
+    }
+
+    pub(crate) const fn protected_tables(self) -> usize {
+        self.protected_tables
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PersistenceBranchOutcome {
+    branch: PersistenceBranchSummary,
+    generation_before: Option<u64>,
+    generation_after: Option<u64>,
+    source_branch_id: Option<BranchId>,
+    fork_version: Option<CommitVersion>,
+    fork_timestamp: Option<Timestamp>,
+    cleanup: Option<PersistenceBranchCleanup>,
+}
+
+impl PersistenceBranchOutcome {
+    pub(crate) const fn branch(&self) -> PersistenceBranchSummary {
+        self.branch
+    }
+
+    pub(crate) const fn generation_before(&self) -> Option<u64> {
+        self.generation_before
+    }
+
+    pub(crate) const fn generation_after(&self) -> Option<u64> {
+        self.generation_after
+    }
+
+    pub(crate) const fn fork_version(&self) -> Option<CommitVersion> {
+        self.fork_version
+    }
+
+    pub(crate) const fn fork_timestamp(&self) -> Option<Timestamp> {
+        self.fork_timestamp
+    }
+
+    pub(crate) const fn cleanup(&self) -> Option<PersistenceBranchCleanup> {
+        self.cleanup
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -137,10 +252,32 @@ impl StoragePersistence {
     pub(crate) fn branch_exists(&mut self, branch_id: BranchId) -> EngineResult<bool> {
         let request = BranchRequest::new(branch_id, BranchAction::Describe, None);
         match self.runtime.branch(&request) {
-            Ok(_) => Ok(true),
+            Ok(outcome) => Ok(outcome
+                .branch()
+                .is_some_and(|branch| branch.status() == StorageBranchStatus::Active)),
             Err(StorageApiError::BranchNotFound { .. }) => Ok(false),
             Err(error) => Err(map_storage_error(error)),
         }
+    }
+
+    pub(crate) fn create_branch(
+        &mut self,
+        branch_id: BranchId,
+        generation: u64,
+    ) -> EngineResult<PersistenceBranchOutcome> {
+        self.branch_action(
+            branch_id,
+            BranchAction::Create,
+            Some(StorageBranchGeneration::new(generation)),
+        )
+    }
+
+    pub(crate) fn describe_branch(
+        &mut self,
+        branch_id: BranchId,
+    ) -> EngineResult<PersistenceBranchSummary> {
+        let outcome = self.branch_action(branch_id, BranchAction::Describe, None)?;
+        Ok(outcome.branch())
     }
 
     pub(crate) fn fork_branch_current(
@@ -148,16 +285,63 @@ impl StoragePersistence {
         branch_id: BranchId,
         source: BranchId,
         generation: u64,
-    ) -> EngineResult<()> {
-        let request = BranchRequest::new(
+    ) -> EngineResult<PersistenceBranchOutcome> {
+        self.branch_action(
             branch_id,
             BranchAction::ForkCurrent { source },
             Some(StorageBranchGeneration::new(generation)),
-        );
-        self.runtime
-            .branch(&request)
-            .map(|_| ())
-            .map_err(map_storage_error)
+        )
+    }
+
+    pub(crate) fn fork_branch_at_version(
+        &mut self,
+        branch_id: BranchId,
+        source: BranchId,
+        version: CommitVersion,
+        generation: u64,
+    ) -> EngineResult<PersistenceBranchOutcome> {
+        self.branch_action(
+            branch_id,
+            BranchAction::ForkAtVersion { source, version },
+            Some(StorageBranchGeneration::new(generation)),
+        )
+    }
+
+    pub(crate) fn fork_branch_at_timestamp(
+        &mut self,
+        branch_id: BranchId,
+        source: BranchId,
+        timestamp: Timestamp,
+        generation: u64,
+    ) -> EngineResult<PersistenceBranchOutcome> {
+        self.branch_action(
+            branch_id,
+            BranchAction::ForkAtTimestamp { source, timestamp },
+            Some(StorageBranchGeneration::new(generation)),
+        )
+    }
+
+    pub(crate) fn delete_branch(
+        &mut self,
+        branch_id: BranchId,
+        generation: u64,
+    ) -> EngineResult<PersistenceBranchOutcome> {
+        self.branch_action(
+            branch_id,
+            BranchAction::Delete,
+            Some(StorageBranchGeneration::new(generation)),
+        )
+    }
+
+    fn branch_action(
+        &mut self,
+        branch_id: BranchId,
+        action: BranchAction,
+        generation: Option<StorageBranchGeneration>,
+    ) -> EngineResult<PersistenceBranchOutcome> {
+        let request = BranchRequest::new(branch_id, action, generation);
+        let outcome = self.runtime.branch(&request).map_err(map_storage_error)?;
+        map_branch_outcome(&outcome)
     }
 
     pub(crate) fn commit(&mut self, plan: &CommitPlan) -> EngineResult<CommitOutcome> {
@@ -324,6 +508,62 @@ impl StoragePersistence {
     #[must_use]
     pub(crate) const fn durable(&self) -> bool {
         self.durable
+    }
+}
+
+fn map_branch_outcome(outcome: &StorageBranchOutcome) -> EngineResult<PersistenceBranchOutcome> {
+    let branch = outcome.branch().ok_or_else(|| {
+        EngineError::corruption(
+            "data_loss.engine.branch_catalog",
+            "storage branch operation did not return a branch summary",
+        )
+    })?;
+    Ok(PersistenceBranchOutcome {
+        branch: map_branch_summary(branch)?,
+        generation_before: outcome
+            .generation_before()
+            .map(StorageBranchGeneration::as_u64),
+        generation_after: outcome
+            .generation_after()
+            .map(StorageBranchGeneration::as_u64),
+        source_branch_id: outcome.source_branch_id(),
+        fork_version: outcome.fork_version(),
+        fork_timestamp: outcome.fork_timestamp(),
+        cleanup: outcome.cleanup().map(map_branch_cleanup),
+    })
+}
+
+fn map_branch_summary(summary: StorageBranchSummary) -> EngineResult<PersistenceBranchSummary> {
+    let status = match summary.status() {
+        StorageBranchStatus::Active => PersistenceBranchStatus::Active,
+        StorageBranchStatus::Deleted => PersistenceBranchStatus::Deleted,
+        _ => {
+            return Err(EngineError::incompatible_layout(
+                "failed_precondition.engine.branch_status",
+                "storage branch status is not supported by this engine",
+            ))
+        }
+    };
+    let parent = summary.parent().map(|parent| PersistenceBranchParent {
+        source_branch_id: parent.source_branch_id(),
+        fork_version: parent.fork_version(),
+    });
+    Ok(PersistenceBranchSummary {
+        branch_id: summary.branch_id(),
+        generation: summary.generation().as_u64(),
+        status,
+        parent,
+        created_at: summary.created_at(),
+        deleted_at: summary.deleted_at(),
+        state_revision: summary.state_revision(),
+    })
+}
+
+fn map_branch_cleanup(cleanup: StorageBranchCleanupSummary) -> PersistenceBranchCleanup {
+    PersistenceBranchCleanup {
+        removed_refs: cleanup.removed_refs(),
+        releasable_tables: cleanup.releasable_tables(),
+        protected_tables: cleanup.protected_tables(),
     }
 }
 

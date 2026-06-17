@@ -1,8 +1,8 @@
 //! Control-plane row payloads.
 
-use strata_core_next::BranchId;
+use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
-use crate::branch::catalog::BranchCatalogRecord;
+use crate::branch::catalog::{BranchCatalogRecord, BranchParentRecord, BranchStatus};
 use crate::branch::BranchName;
 use crate::diagnostics::{EngineError, EngineResult};
 
@@ -11,6 +11,7 @@ const IDENTITY_MAGIC: &[u8] = b"strata.engine.identity";
 const REGISTRY_MAGIC: &[u8] = b"strata.engine.registry";
 const CAPABILITY_MAGIC: &[u8] = b"strata.engine.capabilities";
 const INDEX_MAGIC: &[u8] = b"strata.engine.branch-index";
+const DEFAULT_BRANCH_MAGIC: &[u8] = b"strata.engine.branch-default";
 const PENDING_INDEX_MAGIC: &[u8] = b"strata.engine.branch-pending-index";
 const BRANCH_MAGIC: &[u8] = b"strata.engine.branch-record";
 const PENDING_MAGIC: &[u8] = b"strata.engine.branch-pending";
@@ -98,6 +99,19 @@ pub(crate) fn decode_branch_index(bytes: &[u8]) -> EngineResult<Vec<BranchName>>
     decode_name_index(bytes, INDEX_MAGIC, "branch index")
 }
 
+pub(crate) fn encode_default_branch(name: &BranchName) -> Vec<u8> {
+    let mut out = versioned_payload(DEFAULT_BRANCH_MAGIC);
+    write_name(&mut out, name.as_str());
+    out
+}
+
+pub(crate) fn decode_default_branch(bytes: &[u8]) -> EngineResult<BranchName> {
+    let mut cursor = Cursor::new(expect_payload(bytes, DEFAULT_BRANCH_MAGIC)?);
+    let name = BranchName::new(cursor.name("default branch")?)?;
+    cursor.finish("default branch")?;
+    Ok(name)
+}
+
 pub(crate) fn encode_pending_branch_index(names: &[BranchName]) -> EngineResult<Vec<u8>> {
     encode_name_index(PENDING_INDEX_MAGIC, names)
 }
@@ -108,16 +122,7 @@ pub(crate) fn decode_pending_branch_index(bytes: &[u8]) -> EngineResult<Vec<Bran
 
 pub(crate) fn encode_branch_record(record: &BranchCatalogRecord) -> Vec<u8> {
     let mut out = versioned_payload(BRANCH_MAGIC);
-    write_name(&mut out, record.name().as_str());
-    out.extend_from_slice(record.branch_id().as_bytes());
-    out.extend_from_slice(&record.generation().to_be_bytes());
-    match record.source() {
-        Some(source) => {
-            out.push(1);
-            out.extend_from_slice(source.as_bytes());
-        }
-        None => out.push(0),
-    }
+    encode_branch_body(&mut out, record);
     out
 }
 
@@ -127,16 +132,7 @@ pub(crate) fn decode_branch_record(bytes: &[u8]) -> EngineResult<BranchCatalogRe
 
 pub(crate) fn encode_pending_branch_record(record: &BranchCatalogRecord) -> Vec<u8> {
     let mut out = versioned_payload(PENDING_MAGIC);
-    write_name(&mut out, record.name().as_str());
-    out.extend_from_slice(record.branch_id().as_bytes());
-    out.extend_from_slice(&record.generation().to_be_bytes());
-    match record.source() {
-        Some(source) => {
-            out.push(1);
-            out.extend_from_slice(source.as_bytes());
-        }
-        None => out.push(0),
-    }
+    encode_branch_body(&mut out, record);
     out
 }
 
@@ -152,22 +148,86 @@ fn decode_branch_like(
     let mut cursor = Cursor::new(expect_payload(bytes, magic)?);
     let name = BranchName::new(cursor.name(description)?)?;
     let branch_id = cursor.branch_id("branch id")?;
+    let storage_branch_id = cursor.branch_id("storage branch id")?;
     let generation = cursor.u64("branch generation")?;
-    let has_source = cursor.u8("source flag")?;
-    let source = match has_source {
-        0 => None,
-        1 => Some(cursor.branch_id("source branch id")?),
+    let status = match cursor.u8("branch status")? {
+        0 => BranchStatus::Active,
+        1 => BranchStatus::Deleted,
         _ => {
             return Err(EngineError::corruption(
                 "data_loss.engine.branch_catalog",
-                "branch record has an invalid source flag",
+                "branch record has an invalid status",
             ))
         }
     };
+    let parent = decode_parent(&mut cursor, description)?;
+    let created_at = cursor.optional_commit_version("created version")?;
+    let deleted_at = cursor.optional_commit_version("deleted version")?;
+    let state_revision = cursor.u64("state revision")?;
     cursor.finish(description)?;
     Ok(BranchCatalogRecord::new(
-        name, branch_id, generation, source,
+        name,
+        branch_id,
+        storage_branch_id,
+        generation,
+        status,
+        parent,
+        created_at,
+        deleted_at,
+        state_revision,
     ))
+}
+
+fn encode_branch_body(out: &mut Vec<u8>, record: &BranchCatalogRecord) {
+    write_name(out, record.name().as_str());
+    out.extend_from_slice(record.branch_id().as_bytes());
+    out.extend_from_slice(record.storage_branch_id().as_bytes());
+    out.extend_from_slice(&record.generation().to_be_bytes());
+    out.push(match record.status() {
+        BranchStatus::Active => 0,
+        BranchStatus::Deleted => 1,
+    });
+    match record.parent() {
+        Some(parent) => {
+            out.push(1);
+            write_name(out, parent.name().as_str());
+            out.extend_from_slice(parent.branch_id().as_bytes());
+            out.extend_from_slice(&parent.generation().to_be_bytes());
+            out.extend_from_slice(&parent.fork_version().as_u64().to_be_bytes());
+            write_optional_timestamp(out, parent.fork_timestamp());
+        }
+        None => out.push(0),
+    }
+    write_optional_commit_version(out, record.created_at());
+    write_optional_commit_version(out, record.deleted_at());
+    out.extend_from_slice(&record.state_revision().to_be_bytes());
+}
+
+fn decode_parent(
+    cursor: &mut Cursor<'_>,
+    description: &'static str,
+) -> EngineResult<Option<BranchParentRecord>> {
+    match cursor.u8("parent flag")? {
+        0 => Ok(None),
+        1 => {
+            let name = BranchName::new(cursor.name(description)?)?;
+            let branch_id = cursor.branch_id("parent branch id")?;
+            let generation = cursor.u64("parent generation")?;
+            let fork_version = CommitVersion::new(cursor.u64("fork version")?);
+            let fork_timestamp = cursor.optional_timestamp("fork timestamp")?;
+            Ok(Some(BranchParentRecord::new(
+                name,
+                branch_id,
+                generation,
+                fork_version,
+                fork_timestamp,
+            )))
+        }
+        _ => Err(EngineError::corruption(
+            "data_loss.engine.branch_catalog",
+            "branch record has an invalid parent flag",
+        )),
+    }
 }
 
 fn versioned_payload(magic: &[u8]) -> Vec<u8> {
@@ -232,6 +292,26 @@ fn write_name(out: &mut Vec<u8>, name: &str) {
     out.extend_from_slice(name.as_bytes());
 }
 
+fn write_optional_commit_version(out: &mut Vec<u8>, version: Option<CommitVersion>) {
+    match version {
+        Some(version) => {
+            out.push(1);
+            out.extend_from_slice(&version.as_u64().to_be_bytes());
+        }
+        None => out.push(0),
+    }
+}
+
+fn write_optional_timestamp(out: &mut Vec<u8>, timestamp: Option<Timestamp>) {
+    match timestamp {
+        Some(timestamp) => {
+            out.push(1);
+            out.extend_from_slice(&timestamp.as_micros().to_be_bytes());
+        }
+        None => out.push(0),
+    }
+}
+
 struct Cursor<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -262,6 +342,31 @@ impl<'a> Cursor<'a> {
         Ok(u64::from_be_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]))
+    }
+
+    fn optional_commit_version(
+        &mut self,
+        field: &'static str,
+    ) -> EngineResult<Option<CommitVersion>> {
+        match self.u8(field)? {
+            0 => Ok(None),
+            1 => Ok(Some(CommitVersion::new(self.u64(field)?))),
+            _ => Err(EngineError::corruption(
+                "data_loss.engine.control_plane",
+                format!("control-plane row has an invalid optional {field} flag"),
+            )),
+        }
+    }
+
+    fn optional_timestamp(&mut self, field: &'static str) -> EngineResult<Option<Timestamp>> {
+        match self.u8(field)? {
+            0 => Ok(None),
+            1 => Ok(Some(Timestamp::from_micros(self.u64(field)?))),
+            _ => Err(EngineError::corruption(
+                "data_loss.engine.control_plane",
+                format!("control-plane row has an invalid optional {field} flag"),
+            )),
+        }
     }
 
     fn branch_id(&mut self, field: &'static str) -> EngineResult<BranchId> {
@@ -315,7 +420,7 @@ mod tests {
         encode_database_identity, encode_storage_registry, DatabaseIdentityRecord, IDENTITY_MAGIC,
         REGISTRY_MAGIC,
     };
-    use crate::branch::catalog::{BranchCatalogRecord, DEFAULT_BRANCH_ID};
+    use crate::branch::catalog::BranchCatalogRecord;
     use crate::branch::BranchName;
     use crate::diagnostics::EngineErrorClass;
 
@@ -352,12 +457,8 @@ mod tests {
 
     #[test]
     fn branch_record_round_trips() {
-        let record = BranchCatalogRecord::new(
-            BranchName::new("default").expect("valid branch"),
-            DEFAULT_BRANCH_ID,
-            1,
-            None,
-        );
+        let record =
+            BranchCatalogRecord::root(BranchName::new("default").expect("valid branch"), 1);
         let decoded =
             decode_branch_record(&encode_branch_record(&record)).expect("record must decode");
         assert_eq!(decoded, record);

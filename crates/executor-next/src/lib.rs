@@ -16,6 +16,7 @@ pub use error::{ExecutorError, ExecutorErrorClass, ExecutorResult};
 pub use executor::Executor;
 pub use output::Output;
 pub use types::{
-    BatchGetItemResult, BatchItemResult, BatchKvEntry, Bytes, HistoryItem, SampleItem, ScanItem,
-    VersionedValue, DEFAULT_BRANCH, DEFAULT_SPACE,
+    BatchGetItemResult, BatchItemResult, BatchKvEntry, BranchCleanupItem, BranchItem,
+    BranchParentItem, BranchStatus, Bytes, HistoryItem, SampleItem, ScanItem, VersionedValue,
+    DEFAULT_BRANCH, DEFAULT_SPACE,
 };

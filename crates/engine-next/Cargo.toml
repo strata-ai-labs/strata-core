@@ -14,9 +14,9 @@ localfs = ["strata-storage-next/localfs"]
 testkit = []
 
 [dependencies]
-sha2 = { workspace = true }
 strata-core-next = { path = "../core-next" }
 strata-storage-next = { path = "../storage-next", default-features = false }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

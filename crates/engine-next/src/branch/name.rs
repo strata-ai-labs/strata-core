@@ -6,7 +6,7 @@ use crate::diagnostics::{EngineError, EngineResult};
 
 pub(crate) const DEFAULT_BRANCH: &str = "default";
 pub(crate) const SYSTEM_BRANCH: &str = "_system_";
-const MAX_BRANCH_NAME_BYTES: usize = u16::MAX as usize;
+const MAX_BRANCH_NAME_BYTES: usize = 255;
 
 /// Validated product branch name.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -52,6 +52,12 @@ fn validate_branch_name(name: &str) -> EngineResult<()> {
             "branch name must not be empty",
         ));
     }
+    if name.trim().is_empty() {
+        return Err(EngineError::invalid_input(
+            "invalid_argument.engine.branch_name",
+            "branch name must not be whitespace-only",
+        ));
+    }
     if name == SYSTEM_BRANCH || name.starts_with('_') {
         return Err(EngineError::invalid_input(
             "invalid_argument.engine.branch_name_reserved",
@@ -64,10 +70,16 @@ fn validate_branch_name(name: &str) -> EngineResult<()> {
             "branch name is too long",
         ));
     }
-    if name.bytes().any(|byte| byte == 0 || byte == b'\n') {
+    if name.chars().any(char::is_control) {
         return Err(EngineError::invalid_input(
             "invalid_argument.engine.branch_name",
             "branch name contains an unsupported control byte",
+        ));
+    }
+    if crate::branch::catalog::aliases_reserved_branch_identity(name) {
+        return Err(EngineError::invalid_input(
+            "invalid_argument.engine.branch_name",
+            "branch name aliases a reserved branch identity",
         ));
     }
     Ok(())
@@ -87,9 +99,35 @@ mod tests {
 
     #[test]
     fn branch_name_rejects_values_that_cannot_be_length_encoded() {
-        let error = BranchName::new("a".repeat(usize::from(u16::MAX) + 1))
-            .expect_err("oversized branch name must fail");
+        let error = BranchName::new("a".repeat(256)).expect_err("oversized branch name must fail");
         assert_eq!(error.class(), EngineErrorClass::InvalidInput);
         assert_eq!(error.code(), "invalid_argument.engine.branch_name");
+    }
+
+    #[test]
+    fn branch_name_rejects_whitespace_only_names() {
+        let error = BranchName::new(" \t ").expect_err("whitespace branch must fail");
+        assert_eq!(error.class(), EngineErrorClass::InvalidInput);
+        assert_eq!(error.code(), "invalid_argument.engine.branch_name");
+    }
+
+    #[test]
+    fn branch_name_rejects_nil_uuid_alias_for_default() {
+        let error = BranchName::new("00000000-0000-0000-0000-000000000000")
+            .expect_err("default alias must fail");
+        assert_eq!(error.class(), EngineErrorClass::InvalidInput);
+        assert_eq!(error.code(), "invalid_argument.engine.branch_name");
+    }
+
+    #[test]
+    fn branch_name_rejects_uuid_aliases_for_internal_storage_branches() {
+        for rejected in [
+            "01010101-0101-0101-0101-010101010101",
+            "f0f0f0f0-f0f0-f0f0-f0f0-f0f0f0f0f0f0",
+        ] {
+            let error = BranchName::new(rejected).expect_err("reserved alias must fail");
+            assert_eq!(error.class(), EngineErrorClass::InvalidInput);
+            assert_eq!(error.code(), "invalid_argument.engine.branch_name");
+        }
     }
 }

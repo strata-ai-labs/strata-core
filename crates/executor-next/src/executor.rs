@@ -3,18 +3,20 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
-use strata_core_next::Timestamp;
+use strata_core_next::{CommitVersion, Timestamp};
 use strata_engine_next::{
-    api::CommitOutcome, BranchName, CacheOpenOptions, Database, DurableLocalOpenOptions, KvHistory,
-    KvHistoryRow, KvKey, KvSample, KvScanRow, KvValue, KvVersionedValue, ProductSpace,
+    api::CommitOutcome, BranchCleanupSummary, BranchName, BranchStatus as EngineBranchStatus,
+    BranchSummary, CacheOpenOptions, Database, DurableLocalOpenOptions, KvHistory, KvHistoryRow,
+    KvKey, KvSample, KvScanRow, KvValue, KvVersionedValue, ProductSpace,
 };
 
 use crate::command::Command;
 use crate::error::{ExecutorError, ExecutorErrorClass, ExecutorResult};
 use crate::output::Output;
 use crate::types::{
-    BatchGetItemResult, BatchItemResult, BatchKvEntry, Bytes, HistoryItem, SampleItem, ScanItem,
-    VersionedValue, DEFAULT_BRANCH, DEFAULT_SPACE,
+    BatchGetItemResult, BatchItemResult, BatchKvEntry, BranchCleanupItem, BranchItem,
+    BranchParentItem, BranchStatus, Bytes, HistoryItem, SampleItem, ScanItem, VersionedValue,
+    DEFAULT_BRANCH, DEFAULT_SPACE,
 };
 
 /// Serialized command executor backed by an engine database handle.
@@ -38,9 +40,10 @@ impl Executor {
 
     /// Wraps an engine database handle.
     pub fn from_database(database: Database) -> Self {
+        let default_branch = database.default_branch().as_str().to_owned();
         Self {
             database,
-            default_branch: DEFAULT_BRANCH.to_owned(),
+            default_branch,
         }
     }
 
@@ -74,13 +77,30 @@ impl Executor {
         let branch = branch.into();
         let branch = branch_name(Some(branch.as_str()), DEFAULT_BRANCH)?;
         let mut branches = self.database.branches()?;
-        branches.create_from_head(&source, branch)?;
+        branches.fork_current(&source, branch)?;
         Ok(())
     }
 
     /// Executes one serialized command.
     pub fn execute(&mut self, command: Command) -> ExecutorResult<Output> {
         match command {
+            Command::BranchList => self.execute_branch_list(),
+            Command::BranchGet { branch } => self.execute_branch_get(&branch),
+            Command::BranchCreate { branch } => self.execute_branch_create(&branch),
+            Command::BranchForkCurrent { source, branch } => {
+                self.execute_branch_fork_current(&source, &branch)
+            }
+            Command::BranchForkAtVersion {
+                source,
+                branch,
+                version,
+            } => self.execute_branch_fork_at_version(&source, &branch, version),
+            Command::BranchForkAtTimestamp {
+                source,
+                branch,
+                timestamp,
+            } => self.execute_branch_fork_at_timestamp(&source, &branch, timestamp),
+            Command::BranchDelete { branch } => self.execute_branch_delete(&branch),
             Command::KvPut {
                 branch,
                 space,
@@ -155,6 +175,83 @@ impl Executor {
                 count,
             } => self.execute_kv_sample(branch.as_deref(), space.as_deref(), prefix, count),
         }
+    }
+
+    fn execute_branch_list(&mut self) -> ExecutorResult<Output> {
+        let branches = self
+            .database
+            .branches()?
+            .list()?
+            .iter()
+            .map(branch_item)
+            .collect();
+        Ok(Output::Branches(branches))
+    }
+
+    fn execute_branch_get(&mut self, branch: &str) -> ExecutorResult<Output> {
+        let branch = branch_name(Some(branch), DEFAULT_BRANCH)?;
+        let summary = self.database.branches()?.get(&branch)?;
+        Ok(Output::Branch(branch_item(&summary)))
+    }
+
+    fn execute_branch_create(&mut self, branch: &str) -> ExecutorResult<Output> {
+        let branch = branch_name(Some(branch), DEFAULT_BRANCH)?;
+        let outcome = self.database.branches()?.create(branch)?;
+        Ok(Output::Branch(branch_item(outcome.branch())))
+    }
+
+    fn execute_branch_fork_current(
+        &mut self,
+        source: &str,
+        branch: &str,
+    ) -> ExecutorResult<Output> {
+        let source = branch_name(Some(source), DEFAULT_BRANCH)?;
+        let branch = branch_name(Some(branch), DEFAULT_BRANCH)?;
+        let outcome = self.database.branches()?.fork_current(&source, branch)?;
+        Ok(Output::Branch(branch_item(outcome.branch())))
+    }
+
+    fn execute_branch_fork_at_version(
+        &mut self,
+        source: &str,
+        branch: &str,
+        version: u64,
+    ) -> ExecutorResult<Output> {
+        let source = branch_name(Some(source), DEFAULT_BRANCH)?;
+        let branch = branch_name(Some(branch), DEFAULT_BRANCH)?;
+        let outcome = self.database.branches()?.fork_at_version(
+            &source,
+            branch,
+            CommitVersion::new(version),
+        )?;
+        Ok(Output::Branch(branch_item(outcome.branch())))
+    }
+
+    fn execute_branch_fork_at_timestamp(
+        &mut self,
+        source: &str,
+        branch: &str,
+        timestamp: u64,
+    ) -> ExecutorResult<Output> {
+        let source = branch_name(Some(source), DEFAULT_BRANCH)?;
+        let branch = branch_name(Some(branch), DEFAULT_BRANCH)?;
+        let outcome = self.database.branches()?.fork_at_timestamp(
+            &source,
+            branch,
+            Timestamp::from_micros(timestamp),
+        )?;
+        Ok(Output::Branch(branch_item(outcome.branch())))
+    }
+
+    fn execute_branch_delete(&mut self, branch: &str) -> ExecutorResult<Output> {
+        let branch = branch_name(Some(branch), DEFAULT_BRANCH)?;
+        let outcome = self.database.branches()?.delete(&branch)?;
+        Ok(Output::BranchDeleteResult {
+            branch: branch_item(outcome.branch()),
+            generation_before: outcome.generation_before(),
+            generation_after: outcome.generation_after(),
+            cleanup: outcome.cleanup().map(branch_cleanup_item),
+        })
     }
 
     fn execute_kv_put(
@@ -446,6 +543,44 @@ impl Executor {
 }
 
 impl Executor {
+    /// Executes a branch-list command.
+    pub fn branch_list(&mut self) -> ExecutorResult<Output> {
+        self.execute(Command::BranchList)
+    }
+
+    /// Executes a branch-get command.
+    pub fn branch_get(&mut self, branch: impl Into<String>) -> ExecutorResult<Output> {
+        self.execute(Command::BranchGet {
+            branch: branch.into(),
+        })
+    }
+
+    /// Executes a branch-create command.
+    pub fn branch_create(&mut self, branch: impl Into<String>) -> ExecutorResult<Output> {
+        self.execute(Command::BranchCreate {
+            branch: branch.into(),
+        })
+    }
+
+    /// Executes a branch-fork-current command.
+    pub fn branch_fork_current(
+        &mut self,
+        source: impl Into<String>,
+        branch: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::BranchForkCurrent {
+            source: source.into(),
+            branch: branch.into(),
+        })
+    }
+
+    /// Executes a branch-delete command.
+    pub fn branch_delete(&mut self, branch: impl Into<String>) -> ExecutorResult<Output> {
+        self.execute(Command::BranchDelete {
+            branch: branch.into(),
+        })
+    }
+
     /// Executes a default-branch put command.
     pub fn kv_put(
         &mut self,
@@ -618,6 +753,46 @@ fn bytes_from_key(key: &KvKey) -> Bytes {
 
 fn bytes_from_value(value: KvValue) -> Bytes {
     Bytes::from(value.into_bytes())
+}
+
+fn branch_item(summary: &BranchSummary) -> BranchItem {
+    BranchItem::new(
+        summary.name().as_str().to_owned(),
+        summary.branch_id().to_string(),
+        summary.generation(),
+        branch_status(summary.status()),
+        summary.parent().map(|parent| {
+            BranchParentItem::new(
+                parent.name().as_str().to_owned(),
+                parent.branch_id().to_string(),
+                parent.generation(),
+                parent.fork_version().as_u64(),
+                parent.fork_timestamp().map(Timestamp::as_micros),
+            )
+        }),
+        summary.created_at().map(CommitVersion::as_u64),
+        summary.deleted_at().map(CommitVersion::as_u64),
+        summary.state_revision(),
+    )
+}
+
+const fn branch_status(status: EngineBranchStatus) -> BranchStatus {
+    match status {
+        EngineBranchStatus::Active => BranchStatus::Active,
+        EngineBranchStatus::Deleted => BranchStatus::Deleted,
+    }
+}
+
+fn branch_cleanup_item(cleanup: BranchCleanupSummary) -> BranchCleanupItem {
+    BranchCleanupItem::new(
+        usize_to_u64(cleanup.removed_refs()),
+        usize_to_u64(cleanup.releasable_tables()),
+        usize_to_u64(cleanup.protected_tables()),
+    )
+}
+
+fn usize_to_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 fn write_output(key: Bytes, outcome: CommitOutcome) -> Output {

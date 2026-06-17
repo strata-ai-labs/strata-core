@@ -1,5 +1,6 @@
 //! Executor KV behavior tests.
 
+use strata_engine_next::{CacheOpenOptions, Database};
 use strata_executor_next::{
     BatchKvEntry, Bytes, Command, Executor, ExecutorErrorClass, Output, DEFAULT_BRANCH,
 };
@@ -60,6 +61,102 @@ fn branch_and_space_defaults_are_isolated() {
         execute_get_in(&mut executor, None, Some("tenant-a"), "shared"),
         Some(bytes("space-a"))
     );
+}
+
+#[test]
+fn executor_inherits_configured_database_default_branch() {
+    let options = CacheOpenOptions::new()
+        .with_default_branch("main")
+        .expect("valid branch");
+    let database = Database::open_cache(options)
+        .expect("cache database opens")
+        .into_database();
+    let mut executor = Executor::from_database(database);
+
+    assert_eq!(executor.default_branch(), "main");
+    write(&mut executor, None, None, "shared", "main-value");
+    assert_eq!(
+        execute_get(&mut executor, "shared"),
+        Some(bytes("main-value"))
+    );
+
+    let error = executor
+        .execute(Command::KvGet {
+            branch: Some(DEFAULT_BRANCH.to_owned()),
+            space: None,
+            key: bytes("shared"),
+            as_of: None,
+        })
+        .expect_err("literal default branch is absent");
+    assert_eq!(error.class(), ExecutorErrorClass::NotFound);
+}
+
+#[test]
+fn branch_commands_delegate_to_engine_branch_service() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    write(&mut executor, None, None, "shared", "base");
+
+    let created = executor
+        .execute(Command::BranchCreate {
+            branch: "scratch".to_owned(),
+        })
+        .expect("branch create succeeds");
+    let Output::Branch(created) = created else {
+        panic!("branch create output");
+    };
+    assert_eq!(created.name(), "scratch");
+    assert!(created.parent().is_none());
+
+    let forked = executor
+        .execute(Command::BranchForkCurrent {
+            source: DEFAULT_BRANCH.to_owned(),
+            branch: "feature".to_owned(),
+        })
+        .expect("branch fork succeeds");
+    let Output::Branch(forked) = forked else {
+        panic!("branch fork output");
+    };
+    assert_eq!(forked.name(), "feature");
+    assert_eq!(
+        forked.parent().expect("parent facts").name(),
+        DEFAULT_BRANCH
+    );
+    assert_eq!(
+        execute_get_in(&mut executor, Some("feature"), None, "shared"),
+        Some(bytes("base"))
+    );
+
+    let listed = executor
+        .execute(Command::BranchList)
+        .expect("branch list succeeds");
+    let Output::Branches(branches) = listed else {
+        panic!("branch list output");
+    };
+    assert!(branches
+        .iter()
+        .any(|branch| branch.name() == DEFAULT_BRANCH));
+    assert!(branches.iter().any(|branch| branch.name() == "scratch"));
+    assert!(branches.iter().any(|branch| branch.name() == "feature"));
+
+    let deleted = executor
+        .execute(Command::BranchDelete {
+            branch: "scratch".to_owned(),
+        })
+        .expect("branch delete succeeds");
+    let Output::BranchDeleteResult { branch, .. } = deleted else {
+        panic!("branch delete output");
+    };
+    assert_eq!(branch.name(), "scratch");
+
+    let error = executor
+        .execute(Command::KvPut {
+            branch: Some("scratch".to_owned()),
+            space: None,
+            key: bytes("blocked"),
+            value: bytes("blocked"),
+        })
+        .expect_err("deleted branch write fails");
+    assert_eq!(error.class(), ExecutorErrorClass::NotFound);
 }
 
 #[test]

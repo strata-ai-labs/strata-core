@@ -145,6 +145,61 @@ fn kv_service_keeps_storage_requests_in_persistence_modules() {
 }
 
 #[test]
+fn branch_service_keeps_storage_branch_requests_in_persistence_modules() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("branch")
+        .join("service.rs");
+    let text = fs::read_to_string(path).expect("read branch service source");
+    for forbidden in [
+        "strata_storage_next",
+        "BranchRequest",
+        "BranchAction",
+        "StorageRuntime",
+        "StorageBranch",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "branch service constructed storage-specific request details"
+        );
+    }
+}
+
+#[test]
+fn branch_service_does_not_expose_deferred_workflows() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("branch")
+        .join("service.rs");
+    let text = fs::read_to_string(path).expect("read branch service source");
+    for forbidden in [
+        "pub fn merge",
+        "pub fn publish",
+        "pub fn review",
+        "pub fn cherry",
+        "pub fn revert",
+        "pub fn restore",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "branch service exposed deferred workflow `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn branch_catalog_preserves_product_default_id_separate_from_storage_id() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("branch")
+        .join("catalog.rs");
+    let text = fs::read_to_string(path).expect("read branch catalog source");
+    assert!(text.contains("DEFAULT_BRANCH_ID: BranchId = BranchId::from_bytes([0;"));
+    assert!(text.contains("DEFAULT_STORAGE_BRANCH_ID"));
+    assert!(text.contains("storage_branch_id_for_product_branch_id"));
+}
+
+#[test]
 fn persistence_adapter_owns_storage_request_construction_and_error_mapping() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")
