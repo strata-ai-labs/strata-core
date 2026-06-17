@@ -2,6 +2,15 @@
 
 Status: draft
 
+Corrective note:
+`docs/architecture/implementation-plans/M4P/m4p-l8g-cache-mode-lifecycle-policy-implementation-plan.md`
+supersedes the cache-mode closeout interpretation in this plan. The counters
+added here remain useful, but the corrected diagnosis is that storage-next
+cache mode should not inherit source/table lifecycle maintenance, admission
+pressure, background scheduling, flushes, or compaction for ordinary writes.
+Do not continue cache benchmark tuning from this plan until the cache lifecycle
+policy boundary is audited and cleaned up.
+
 Parent implementation plan:
 `docs/architecture/implementation-plans/M4P/m4p-l8-lifecycle-maintenance-parity-implementation-plan.md`
 

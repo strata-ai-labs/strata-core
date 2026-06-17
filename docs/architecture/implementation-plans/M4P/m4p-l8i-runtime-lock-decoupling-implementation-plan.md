@@ -112,7 +112,7 @@ and stop funneling everything through one mutex.
 
 | Group | Work | Exit gate |
 | --- | --- | --- |
-| A. Lock-free admission wait-loop | Pressure as a lock-free atomic snapshot updated by maintenance; foreground parks on a condvar the drain notifies on relief; retry once on relief instead of re-executing the whole commit per slice. | wait-attempts/commit drops from ~65 to low single digits; per-iteration runtime-lock acquisitions 6→≤2; `admission_wait_timeouts == 0` preserved. |
+| A. Lock-free admission wait-loop | ~~Pressure as a lock-free atomic snapshot updated by maintenance; foreground parks on a condvar the drain notifies on relief; retry once on relief instead of re-executing the whole commit per slice.~~ **ABANDONED (2026-06-16) — see Group A detail.** Tried and reverted: park-until-relief made admission churn 11.6× worse with zero wall-clock change; throughput is drain-rate-capped, not wait-loop-capped. | n/a — dead end; not a throughput lever. |
 | B. WAL fsync off the commit lock | Hold the runtime lock only for WAL append (buffered) + in-memory apply; perform fsync off-lock (group commit / background sync), ack only after the record is durable. | No commit holds the runtime lock during fsync; durability + WAL-fsync-failure halt preserved; foreground lock-hold per commit excludes fsync. |
 | C. Off-lock publish writes + per-branch serialization (+ crash consistency) | Split maintenance publish into {lock: pointer swap + sequence reserve} / {off-lock: manifest/checkpoint persist under a per-branch publish lock} / {lock: record}; gate WAL truncation/flush-watermark on durable persist. | Publish holds the runtime lock only for the swap; no durable manifest sequence regression under concurrency; crash-between-swap-and-persist recovers via WAL; recovery byte-identical to synchronous baseline. |
 | D. ArcSwap layout + atomic visible-version | `owned_levels` → `ArcSwap` (publish stores a new `Arc`; reads/commits load lock-free, with derived facts folded into the same `Arc`); visible-version → atomic. | Point/scan reads and the commit's layout read take no runtime lock; layout+facts observed atomically; reads correct under concurrent publish. |
@@ -124,9 +124,19 @@ and stop funneling everything through one mutex.
 Sequenced to bank low-risk wins first, isolate the durability-critical work, and
 keep each step independently measurable against the benchmark.
 
-1. **Group A first (lowest risk, high churn reduction).** No durability change; it
-   only changes how the foreground waits. De-risks the rest by removing the
-   647k-attempt storm so later measurements are clean.
+> **Revision (2026-06-16): Group A is abandoned (see Group A detail for the
+> benchmark).** It was sequenced first as a "low-risk churn reduction," but the
+> measurement showed it makes churn *worse* and yields no wall-clock change because
+> the bottleneck is drain rate, not the wait-loop. The real first lever is the
+> drain-rate work — start at Group B/C. Group A's lock-free pressure cell may still
+> be worth doing later purely as a CPU-churn reduction, but only after a wait that
+> blocks on real lifecycle progress, and it is not on the throughput critical path.
+
+1. ~~**Group A first (lowest risk, high churn reduction).**~~ **Abandoned** — the
+   one-slice-per-call loop is self-throttling; replacing it with internal parking
+   increased `admission_wait_attempts` 11.6× (29k → 342k at 1M) with no throughput
+   gain. The 647k-attempt "storm" is a symptom of drain-rate saturation, not the
+   cause of the gap; it does not need removing first.
 2. **Group B (foreground fsync off-lock).** The single biggest foreground lever.
    Durability-sensitive (ack ordering) but well-bounded; the old engine's group
    commit is the reference.
@@ -146,6 +156,42 @@ crash suite. D: arc-swap field + read-guard plumbing; visible-version atomic).
 ## Group detail
 
 ### A. Lock-free admission wait-loop
+
+> **Outcome: ABANDONED (2026-06-16). Tried, benchmarked, reverted — a dead end.**
+> A park-until-relief rewrite of `background_wait_after_pressure_rejection` (relief
+> gated on `relieved_since(pressure_at_entry)`, internal multi-slice parking instead
+> of one-slice-per-call) was implemented and measured. Same-environment 1M standard
+> load-seq, before vs after:
+>
+> | Metric | Baseline (old wait) | Group A (park-until-relief) |
+> | --- | ---: | ---: |
+> | elapsed | 12.44s | 12.35s (noise) |
+> | `admission_wait_attempts` | 29,360 | **341,576 (11.6× worse)** |
+> | `admission_block_wait_ns` | 0.21s | **1.87s (8.8× worse)** |
+> | `admission_wait_timeouts` | 0 | 0 |
+>
+> **Why it backfired:** the old one-slice-per-call loop was *self-throttling* — the
+> full commit re-execution between parks paced it (~29 parks/commit). Removing that
+> re-execution let the foreground spin back-to-back on cheap parks (~342/commit):
+> `wait_for_progress` returns in ~5.5µs because every park submits a drain closure
+> that completes immediately (executor `tasks_completed` advances), while only ~250
+> *real* maintenance tasks run all load — so the foreground spins ~1,366× per real
+> task, each park still taking ~6 runtime-mutex acquisitions. The premise that
+> "commit re-execution is the cost" was wrong; it was the *governor*.
+> **Wall-clock is unchanged because throughput is capped by the background drain
+> rate and the deliberate admission slowdown (~3.6s of intentional writer pacing),
+> neither of which the wait-loop touches.** A genuinely cheaper wait would need to
+> block on *real* lifecycle progress (a condvar on the lifecycle-completion counter,
+> not the executor drain-closure counter) — the lock-free cell below — and would
+> only cut CPU churn, not wall-clock. Group A is therefore not a throughput lever;
+> the lever is the drain-rate work (Groups C/D). A second hazard found during the
+> attempt: making `relieved_since(entry)` the sole retry trigger reintroduces a
+> spurious-rejection race (pressure relieved in the lock-release→entry-snapshot
+> window, then maintenance idle → relief never fires → 30s watchdog timeout → false
+> rejection), which the old always-re-check-admission loop did not have.
+>
+> The original design sketch is retained below for the record.
+
 - Add a per-branch lock-free pressure cell (small `AtomicU64`/`Arc<PressureCell>`
   of severity rank + L0/frozen/active counts) updated by the maintenance drain in
   its completion hook (`submit_drain`, already runs after each round and fires

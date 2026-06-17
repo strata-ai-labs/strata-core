@@ -2,6 +2,13 @@
 
 Status: draft
 
+Corrective note:
+`docs/architecture/implementation-plans/M4P/m4p-l8g-cache-mode-lifecycle-policy-test-plan.md`
+supersedes the cache-mode benchmark gates in this plan. The visibility and
+counter tests here remain useful, but cache mode must first prove absence of
+source/table lifecycle maintenance, admission pressure, background scheduling,
+flushes, and compaction for ordinary writes.
+
 Implementation plan:
 `docs/architecture/implementation-plans/M4P/m4p-l8f-load-performance-stabilization-implementation-plan.md`
 

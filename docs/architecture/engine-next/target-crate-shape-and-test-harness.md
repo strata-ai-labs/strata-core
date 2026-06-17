@@ -85,7 +85,7 @@ Rules:
    explicitly introduces async.
 4. Panics are bugs. Product failures return typed statuses.
 5. Production code above `persistence/` must not import storage-next directly.
-6. No public API should expose subsystem-instantiation hooks.
+6. No executor-facing engine API should expose subsystem-instantiation hooks.
 7. Optional model/provider work must be explicit and feature-gated.
 
 ## Target Directory Shape
@@ -156,13 +156,16 @@ modules are engine product domains, and the test targets are harness families.
 
 ### `api`
 
-Public engine surface and product DTOs.
+Executor-facing engine contract and engine DTOs. This module is exported for
+executor-next and internal harnesses, but it is not the final public product API
+layer.
 
-Owns open options, handle shape, public data capability handles, branch/time
-DTOs, health DTOs, and product errors.
+Owns open options, handle shape, engine data capability handles, branch/time
+DTOs, health DTOs, and engine errors consumed by executor-next.
 
 Must not own storage keys, WAL/manifest/checkpoint DTOs, data capability
-internals, or background job internals.
+internals, background job internals, executor command DTOs, SDK DTOs, CLI DTOs,
+or IPC wire DTOs.
 
 ### `runtime`
 

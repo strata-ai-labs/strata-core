@@ -162,8 +162,8 @@ decide their priority and expected performance effect.
 | `M4P-L8A` | L8 | Restore automatic maintenance scheduling after mutating commits. | Sustained L9 loads no longer require benchmark-specific manual maintenance to keep source fanout bounded. |
 | `M4P-L8B` | L8 | Restore score-based compaction drain. | L0 and nonzero-level shape remain bounded at 100K, 1M, 5M, and 10M through normal L9 writes. |
 | `M4P-L8C` | L8 | Restore write-admission and pressure policy. | Mutating commits either drive maintenance, slow/stall/reject with typed facts, or document an intentional no-stall V1 policy with bounded-fanout proof. |
-| `M4P-L9A` | L9 | Expose diagnostics that lower layers already own. | L9 reports source shape, source probes, scan cursor setup, maintenance debt, and mode facts without exposing lower-layer table, WAL, or object types. |
-| `M4P-L9B` | L9 | Expose storage-shaped read-set facts. | L9 accepts conflict inputs needed by future engine-next without exposing product transaction sessions. |
+| `M4P-L9A` | L9 | Expose storage-shaped read-set facts. | L9 accepts conflict inputs needed by future engine-next without exposing product transaction sessions. |
+| `M4P-L9B` | L9 | Expose diagnostics that lower layers already own. | L9 reports source shape, source probes, scan cursor setup, maintenance debt, and mode facts without exposing lower-layer table, WAL, or object types. |
 
 ## Audit Coverage Backlog
 
@@ -473,6 +473,17 @@ Exit gate:
 
 ### M4P-L9: Storage API Boundary
 
+Problem statement:
+
+L9 is the storage-next boundary that future engine-next should consume. The old
+engine preserved snapshot-isolation validation with product transaction wrappers
+above storage, while old storage owned the storage-shaped mechanics: snapshot
+read facts, CAS facts, version-bounded reads, mode/runtime configuration, and
+maintenance-facing diagnostics. Storage-next must expose those same mechanics
+without rebuilding product transaction sessions inside storage and without
+letting benchmarks or future production crates reach below the L9 API to hide
+lower-layer gaps.
+
 Scope:
 
 1. Add storage-shaped read-set facts to the public commit API so future
@@ -503,6 +514,280 @@ Storage-next targets:
 - `crates/storage-next/tests/api_conformance.rs`
 - `benchmarks/src/bin/storage_next_l9_scale.rs`
 
+Current status:
+
+- `CommitCondition` already exposes explicit per-key compare-and-set checks.
+  This is necessary but not sufficient: old snapshot isolation also validated
+  read-set entries captured from snapshot reads and scans.
+- `DiagnosticsOutcome` already reports many storage facts, but L9 does not yet
+  guarantee all facts needed to interpret sustained-load shape: source probes,
+  scan cursor setup, maintenance debt, and mode/subset metadata.
+- `StorageOpenOptions` has explicit cache and durable-local modes, but the
+  supported mode matrix and wasm-none subset are not yet a tested contract.
+- `storage_next_l9_scale` uses `StorageRuntime` for normal load/maintenance
+  paths and already has some source guards against explicit load-loop drains;
+  L9 must make that a named gate and remove any remaining lower-layer bypasses.
+- Dependency guards currently protect the storage-next API from exposing lower
+  layer types. They do not yet prove that future production crates above
+  engine-next avoid direct `strata-storage-next` dependencies once engine-next
+  exists.
+
+Mandatory design decisions:
+
+1. **Storage-shaped read facts, not product sessions.** L9 may expose
+   branch/space/key/version facts and commit options, but must not expose
+   transaction handles, primitive names, JSON/event/vector/search concepts, or
+   engine workflow vocabulary.
+2. **Read-set validation is separate from CAS validation.** Existing
+   `CommitCondition` remains the explicit CAS/current-version condition surface.
+   The new read-set surface records snapshot observations from reads and scans.
+   Both participate in commit validation when supplied.
+3. **Scan read facts follow old semantics.** Old `TransactionContext::scan_prefix`
+   tracked the snapshot rows returned by the scan, not a range-lock/phantom
+   predicate. L9 should therefore model scan capture as point read facts for
+   returned rows unless a later engine-next plan deliberately changes isolation.
+4. **Diagnostics summarize storage mechanics without leaking storage internals.**
+   L9 diagnostics may report counts, bytes, durations, modes, source classes,
+   queue debt, and cursor/probe counters. They must not expose table object
+   names, WAL records, manifest snapshots, backend service handles, or lower
+   layer concrete types.
+5. **Mode contracts are explicit.** Cache is volatile and must not perform WAL
+   work. Durable-local standard and durable-local always are both supported
+   native modes with documented durability summaries. Object-durable and
+   distributed modes remain candidate/unsupported unless a later plan promotes
+   them. Wasm-none support is a subset contract, not an implicit fallback mode.
+6. **Benchmarks are API consumers.** Benchmarks must exercise the same public L9
+   open, commit, read, diagnostics, and maintenance APIs that engine-next will
+   use. A benchmark-only lower-layer bypass is a correctness bug.
+7. **Future dependency direction is mechanical.** Until engine-next exists,
+   storage-next conformance proves the intended boundary. Once engine-next
+   exists, ordinary production crates above it must depend on engine-next rather
+   than directly importing `strata-storage-next`.
+
+Implementation plan:
+
+1. **L9-A: Public Read-Set Fact Types**
+   - Add storage-owned fact types in `crates/storage-next/src/api/commit.rs`:
+     `CommitReadFact`, `CommitObservedVersion`, and a small grouping helper if
+     useful, such as `CommitReadSet`.
+   - Fields must stay storage-shaped: `StorageSpaceId`, `StorageKey`, and
+     `CommitVersion`. `CommitVersion::ZERO` continues to represent an absent
+     snapshot observation, matching old validation mechanics.
+   - Add constructors for present and absent observations and accessors for all
+     fields.
+   - Reject duplicate read facts for the same `(storage_space, key)`.
+   - Reject invalid present version zero; zero is only valid for absent.
+   - Keep `CommitCondition` unchanged as the explicit CAS surface.
+   - Add `CommitBatch::with_read_facts(...)` or equivalent builder API that can
+     be combined with existing conditions and options.
+
+2. **L9-B: Commit Runtime Mapping**
+   - Map supplied read facts into the lower commit runtime's read-validation
+     path before writes become visible.
+   - Preserve old first-committer-wins behavior: if the current visible version
+     differs from the observed version, reject the commit with a typed conflict
+     error and no partial visibility.
+   - Validate read facts independently from write duplicate checks. A key may be
+     read and later written; that is the common read-modify-write case.
+   - Preserve CAS behavior and error classification for `CommitCondition`.
+   - Add commit summary/perf counters for read facts checked, read conflicts,
+     CAS facts checked, and CAS conflicts, or confirm existing counters are
+     complete and exported through L9.
+
+3. **L9-C: Read Capture Helpers**
+   - Add optional helper methods on read outcomes or a small API helper that
+     converts `PointReadOutcome`, `ScanReadOutcome`, and `HistoryReadOutcome`
+     rows into `CommitReadFact`s.
+   - Keep helper behavior explicit; reads should not mutate hidden runtime
+     transaction state.
+   - For scans, capture one point read fact per returned snapshot row. Do not
+     add range predicates or phantom checks in this slice.
+   - For absent point reads, expose an absent fact so engine-next can preserve
+     old missing-key conflict detection.
+
+4. **L9-D: Diagnostics Completion**
+   - Extend `DiagnosticsOutcome` and related API structs to report:
+     source-shape facts, source-probe counters, scan cursor setup counters,
+     maintenance debt, queue convergence, WAL/debt facts where supported, and
+     mode/subset metadata.
+   - Keep diagnostic fact state explicit: `Known`, `Unknown`, or `Unsupported`.
+   - Surface cache-mode facts that prove WAL work is unsupported/not-run rather
+     than silently zero because it was not measured.
+   - Surface durable-local policy metadata and close/commit durability summaries
+     needed to compare Standard vs Always.
+   - Keep lower-layer concrete objects private; expose summaries and counters
+     only.
+
+5. **L9-E: Mode And Wasm-None Contract**
+   - Document the supported mode matrix in `crates/storage-next/src/api/mod.rs`
+     and the architecture docs:
+     cache, durable-local standard, durable-local always, unsupported candidate
+     modes, and wasm-none-supported subset.
+   - Ensure cache open does not require localfs or WAL capabilities.
+   - Ensure durable-local opens require a backend/localfs capability and never
+     silently fall back to cache.
+   - Ensure always durability reports stronger sync facts than standard where
+     the backend can prove them.
+   - Add cfg/source guards that the wasm-none-supported subset does not import
+     localfs, threads, `std::time::Instant` control-flow dependencies, or other
+     unavailable native-only pieces through the public cache/read/write API.
+
+6. **L9-F: Benchmark Boundary Cleanup**
+   - Audit `benchmarks/src/bin/storage_next_l9_scale.rs` for calls into
+     `crates/storage-next/src/{branch,commit,lifecycle,table,service,...}` or
+     `testkit` internals on the normal benchmark path.
+   - Keep diagnostic source-shape observation after the timed load loop.
+   - Keep explicit flush/compact/fixed-point drain work behind explicit
+     diagnostic or maintenance flags, never in the normal measured load path.
+   - Ensure result JSON records the L9 diagnostics rather than lower-layer
+     structs.
+   - Remove benchmark-only lower-layer bypasses; if a required fact is missing,
+     add it to L9 diagnostics instead.
+
+7. **L9-G: Dependency Direction Guards**
+   - Keep existing guards that `src/lib.rs` publicly exposes only `api`.
+   - Add a dormant/future-aware source guard: if an `engine-next` crate exists,
+     ordinary production crates above it must not import `strata-storage-next`
+     directly. Allowed exceptions should be explicit integration tests,
+     benchmarks, storage-next itself, migration tools, and engine-next.
+   - Add a guard that API sources do not use old product vocabulary or product
+     transaction/session types.
+   - Add a guard that public API signatures do not expose lower-layer concrete
+     storage-next types.
+
+8. **L9-H: Closeout And Matrix Run**
+   - Run API conformance across supported feature sets.
+   - Run storage-next L9 cache and durable-local standard/always smoke loads
+     through normal APIs.
+   - Run the old-vs-new benchmark matrix only after the API/source guards pass.
+   - Record known deltas as mode facts, not as benchmark exceptions.
+
+Test plan:
+
+1. **Read-Set API Tests**
+   - `CommitReadFact::observed_present` preserves space, key, and version.
+   - `CommitReadFact::observed_absent` maps to the absent/zero observation.
+   - Duplicate read facts in a batch fail with `InvalidArgument`.
+   - Present zero fails with `InvalidArgument`.
+   - Read facts can coexist with mutations for the same key.
+   - Read facts can coexist with CAS conditions without merging the two
+     concepts.
+
+2. **Read-Set Validation Tests**
+   - Present read fact succeeds when current version is unchanged.
+   - Present read fact rejects when another commit advanced the key.
+   - Absent read fact succeeds while the key remains absent.
+   - Absent read fact rejects after another commit creates the key.
+   - Multi-key read set rejects atomically: no mutation from the failed batch is
+     visible after conflict.
+   - Read-modify-write succeeds when the read fact still matches and fails when
+     stale.
+   - CAS-only, read-set-only, and combined CAS/read-set failures classify
+     conflicts distinctly enough for engine-next retry policy.
+
+3. **Read Capture Tests**
+   - Point read of an existing key can produce a present read fact that protects
+     a later write.
+   - Point read miss can produce an absent read fact that protects a later
+     create.
+   - Prefix/range scan capture produces facts for returned rows and no hidden
+     range predicate.
+   - Scan-captured facts detect changes to returned rows before commit.
+   - Scan-captured facts do not reject a concurrent insert outside the returned
+     row set, matching old storage behavior.
+   - History/timestamp helpers, if exposed, create only storage-shaped facts and
+     do not expose engine transaction vocabulary.
+
+4. **Diagnostics Tests**
+   - Cache diagnostics report mode `Cache`, known runtime state, known source
+     shape, known/unsupported WAL facts as appropriate, and no durable-local
+     backend facts.
+   - Durable-local standard diagnostics report durable mode metadata,
+     checkpoint/WAL growth facts, maintenance queue facts, and source layout.
+   - Durable-local always diagnostics report always policy metadata and close or
+     commit durability summaries that differ from cache.
+   - Source-probe counters distinguish active, frozen, owned L0, owned nonzero,
+     inherited L0, and inherited nonzero probes where supported.
+   - Scan cursor setup counters distinguish source setup, table cursor opens,
+     lazy nonzero-level cursor setup, and rows returned.
+   - Maintenance debt reports pending tasks, active tasks, max queue depth,
+     WAL-retention debt, and checkpoint enqueue/coalesce facts.
+   - Unsupported facts use `Unsupported`; missing measurement uses `Unknown`;
+     successful measurement uses `Known`.
+
+5. **Mode Matrix Tests**
+   - `StorageOpenOptions::cache()` opens without backend/localfs and closes
+     without durable sync.
+   - Durable-local standard requires a backend/localfs-capable open path and
+     rejects borrowed/unsupported backend shapes according to the existing
+     policy.
+   - Durable-local always opens, commits, closes, and reports durable sync.
+   - Object-durable and distributed candidate modes fail before runtime
+     construction with `UnsupportedCapability`.
+   - Cache mode does no WAL append, WAL encode, WAL checkpoint, or WAL
+     truncation work on normal mutating commits.
+   - Wasm-none subset has compile/source guards for cache/open/read/write API
+     availability and native-only exclusions.
+
+6. **Benchmark Boundary Tests**
+   - Source guard: timed load loop does not call explicit flush, compact,
+     drain, or diagnostics polling.
+   - Source guard: diagnostic final drain remains opt-in.
+   - Source guard: benchmark normal path imports only public L9 API, benchmark
+     helpers, and standard support crates; no lower-layer storage-next modules.
+   - JSON schema test: result records mode, source shape, source probes, scan
+     setup, maintenance debt, queue convergence, row/byte amplification, and
+     durability facts from L9 diagnostics.
+   - 1M cache smoke run with source-shape diagnostics proves final L0/nonzero
+     shape and queue facts are present without explicit drain work.
+
+7. **Dependency And Vocabulary Guards**
+   - `crates/storage-next/src/lib.rs` exposes `pub mod api` but not lower
+     storage modules.
+   - Public API signatures do not expose lower-layer concrete types.
+   - API source does not import engine/product crates.
+   - API source avoids product primitive vocabulary.
+   - Future guard: if `crates/engine-next` exists, normal production crates
+     above engine-next do not depend on `strata-storage-next` directly.
+
+Verification commands:
+
+```bash
+cargo fmt --all --check
+cargo test -p strata-storage-next --test api_conformance --all-features
+cargo test -p strata-storage-next --test api_source_guard --all-features
+cargo test -p strata-storage-next --test api_properties --all-features
+cargo test -p strata-storage-next --test commit_runtime_properties --all-features
+cargo test --manifest-path benchmarks/Cargo.toml --bin storage-next-l9-scale
+cargo run --release --manifest-path benchmarks/Cargo.toml --bin storage-next-l9-scale -- --scales 1m --engines cache --workloads load-seq --value-bytes 150 --batch-size 1000 --samples 1000 --diagnostic-source-shape
+cargo run --release --manifest-path benchmarks/Cargo.toml --bin storage-next-l9-scale -- --scales 100k,1m,5m,10m --engines cache,standard,always --workloads load-seq --value-bytes 150 --batch-size 1000 --samples 1000 --diagnostic-source-shape
+```
+
+Non-goals:
+
+1. Do not build product transaction sessions in storage-next.
+2. Do not add range-lock or phantom-protection semantics beyond old storage
+   read-set behavior.
+3. Do not expose table objects, WAL records, manifests, lifecycle state
+   machines, backend services, or lower-layer error types through L9.
+4. Do not make object-durable or distributed writer modes production-supported
+   in this slice.
+5. Do not add benchmark-only APIs or lower-layer benchmark bypasses.
+6. Do not fix lower-layer performance by changing L9 semantics.
+
+Stop conditions:
+
+1. If read-set facts require a lower commit-runtime behavior change that cannot
+   be represented as key/version validation, stop and write the L7 owner plan.
+2. If diagnostics need a lower-layer counter that does not exist, add the
+   counter to the owning layer rather than deriving it with scans in L9.
+3. If wasm-none support requires native-only lifecycle behavior for cache mode,
+   stop and split the mode contract before adding cfg patchwork.
+4. If benchmarks need a lower-layer bypass to preserve performance, stop and
+   fix the missing L9 diagnostic or lower-layer behavior.
+5. If engine-next exists and cannot avoid direct storage-next imports, stop and
+   define the engine-next adapter boundary before widening exceptions.
+
 Exit gate:
 
 - Until engine-next exists, L9 conformance and testkit coverage prove the
@@ -510,6 +795,14 @@ Exit gate:
   mechanics through L9 only.
 - L9 old-vs-new benchmarks at 100K, 1M, 5M, and 10M show old-equivalent
   asymptotic source behavior and documented mode facts.
+- Public commit API can express old storage read-set validation and CAS
+  validation separately.
+- Diagnostics expose source shape, source probes, scan cursor setup,
+  maintenance debt, and mode metadata through L9 only.
+- Cache, durable-local standard, durable-local always, and wasm-none-supported
+  subsets have documented behavior and executable conformance tests.
+- Benchmarks use normal L9 APIs only; source guards fail on lower-layer
+  benchmark bypasses or explicit normal-load drains.
 
 ## Performance Proof Gates
 

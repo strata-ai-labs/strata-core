@@ -93,6 +93,14 @@ contention map, the old-engine blueprint, and the leverage-ordered group plan.
    wait slices and fewer per-attempt lock acquisitions — without weakening the
    progress-gated watchdog (the Slice-1 liveness backstop; `admission_wait_timeouts` must
    stay 0).
+   **Update (2026-06-16): attempted in L8I Group A and abandoned.** A park-until-relief
+   rewrite made churn *worse* (1M: `admission_wait_attempts` 29,360 → 341,576, 11.6×) with
+   no wall-clock change, because the old one-slice-per-call loop is self-throttling (the
+   commit re-execution paces it) and throughput is capped by the drain rate + the deliberate
+   admission slowdown, not the wait-loop. The 647k attempts are a *symptom* of drain-rate
+   saturation, not the cause of the gap. The admission wait-loop is not a throughput lever;
+   the lever is items 1–2 (finer-grained locking + off-lock publish). See
+   `m4p-l8i-runtime-lock-decoupling-implementation-plan.md` Group A for the benchmark.
 4. **Per-compaction parallelism.** Shard the Rewrite lane by `(branch, level)` so multiple
    disjoint compactions run concurrently — only worthwhile after the locking work, and
    mainly for multi-level/high-ingest workloads.

@@ -54,6 +54,12 @@ The suite must fail if any change:
 
 ## A — Admission wait-loop (lock-free + condvar)
 
+> **ABANDONED (2026-06-16).** Group A was implemented and reverted as a dead end —
+> park-until-relief made admission churn 11.6× worse with no throughput gain, and the
+> wait-loop is not a throughput lever (the bottleneck is drain rate). See the
+> implementation plan's Group A detail for the benchmark. The tests below are not to
+> be implemented unless Group A is revived purely as a CPU-churn reduction.
+
 Correctness:
 1. Lock-free pressure snapshot equals the value the previous locked
    `storage_pressure_for_branch` would compute, over randomized branch states

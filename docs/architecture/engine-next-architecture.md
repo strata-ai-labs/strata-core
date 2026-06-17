@@ -334,25 +334,28 @@ giant branch operation file.
 
 ## API Bucket
 
-API is the public engine surface consumed by executor, CLI, SDKs,
-intelligence-next, Strata AI, tests, and IPC command handlers.
+API is the executor-facing engine contract consumed by executor-next,
+intelligence-next, tests, and internal engine harnesses. It is not the public
+product/API layer. Executor-next owns the public command/API surface and adapts
+engine outcomes into CLI, SDK, IPC, and product-facing shapes.
 
 It owns:
 
 - `Database` handle shape
 - open options and access modes
 - durable/cache/read-only open APIs
-- product config DTOs
-- public data capability handles
+- engine config DTOs
+- engine data capability handles
 - branch and time-travel command DTOs
 - retrieval request/response DTOs
-- public health/status/report DTOs
-- public error surface
-- serializable command boundary types
+- engine health/status/report DTOs
+- engine error surface consumed by executor-next
 
 It must not own:
 
 - storage keys
+- executor command DTOs
+- SDK/CLI/IPC wire DTOs
 - storage row encodings
 - WAL/manifest/checkpoint DTOs
 - data capability implementation internals
@@ -867,7 +870,7 @@ It owns:
 It must not own:
 
 - data capability semantics
-- public API DTOs
+- engine API DTOs
 - storage internals below L9
 - WAL/manifest/table implementation details
 - product branch merge policy
@@ -1045,7 +1048,7 @@ storage boundary.
 7. Commit observers notify or enqueue; they should not become hidden workflow
    engines.
 8. Runtime opens services; it should not contain data capability business logic.
-9. Public API types should be engine-owned, even when backed by storage facts.
+9. Engine API types should be engine-owned, even when backed by storage facts.
 10. Diagnostics reports facts; it should not decide product behavior.
 
 ## Current Code To Target Bucket Mapping
@@ -1137,8 +1140,8 @@ does not make the lower-layer fact an engine implementation detail.
    moving capability code wholesale.
 8. Data capability conformance tests should be designed before rewriting all
    capability implementations.
-9. Engine public re-exports should be split into product surface and internal
-   implementation surface.
+9. Engine re-exports should expose only the executor-facing contract; the
+   public product/API surface belongs in executor-next.
 10. Data movement should be designed with StrataHub substrate in mind, but sync
     must remain explicit and opt-in.
 
