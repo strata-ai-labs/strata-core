@@ -1,7 +1,7 @@
-//! Old engine cache scale benchmark runner.
+//! Old engine scale benchmark runner.
 //!
-//! This binary mirrors `storage-next-l9-scale` for cache-mode comparison, but
-//! uses the legacy public `stratadb::Strata` API.
+//! This binary mirrors `storage-next-l9-scale` for legacy-engine comparison,
+//! using the public `stratadb::Strata` API.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
@@ -51,7 +51,8 @@ fn main() {
 fn run(config: Config) -> Result<(), BenchmarkError> {
     let mut results = Vec::new();
 
-    eprintln!("old engine cache scale benchmark");
+    eprintln!("old engine scale benchmark");
+    eprintln!("engine: {}", config.engine);
     eprintln!("scales: {}", format_list(&config.scales));
     eprintln!("workloads: {}", format_list(&config.workloads));
     eprintln!(
@@ -65,8 +66,26 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
     eprintln!();
 
     for &scale in &config.scales {
-        eprintln!("== scale={} engine=old-cache ==", format_scale(scale));
-        let db = Strata::cache()?;
+        eprintln!(
+            "== scale={} engine={} ==",
+            format_scale(scale),
+            config.engine
+        );
+        let _tempdir_guard;
+        let db = match config.engine {
+            Engine::Cache => {
+                _tempdir_guard = None;
+                Strata::cache()?
+            }
+            Engine::Standard => {
+                let dir = tempfile::Builder::new()
+                    .prefix("strata-old-standard-scale-")
+                    .tempdir()?;
+                let db = Strata::open(dir.path())?;
+                _tempdir_guard = Some(dir);
+                db
+            }
+        };
 
         let mut loaded = false;
         if config.workloads.contains(&Workload::LoadSeq) || config.needs_loaded_data() {
@@ -347,7 +366,7 @@ fn save_report(config: &Config, report: &BenchmarkReport) -> Result<PathBuf, Ben
     let dir = config.results_dir.clone().unwrap_or_else(|| {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("results")
-            .join("storage-old-cache")
+            .join(config.engine.result_dir())
     });
     std::fs::create_dir_all(&dir)?;
     let commit = report
@@ -478,12 +497,13 @@ fn format_list<T: fmt::Display>(items: &[T]) -> String {
 fn print_help() {
     eprintln!(
         "\
-old engine cache scale benchmark
+old engine scale benchmark
 
 Usage:
   cargo run --manifest-path benchmarks/Cargo.toml --bin storage-old-cache-scale -- [options]
 
 Options:
+  --engine MODE          Engine mode: cache,standard. Default: cache
   --scales LIST          Comma list: 100k,1m,10m,100m. Default: 100k
   --workloads LIST       Comma list: load-seq,point-latest,point-throughput,scan-prefix,scan-range-throughput,branch-fork-current. Default: all
   --value-bytes N        Value size in bytes. Default: 64
@@ -492,7 +512,7 @@ Options:
   --branch-samples N     Branch fork samples. Default: 100
   --scan-limit N         Scan limit. Default: 64
   --seed N               Deterministic sampling seed.
-  --results-dir PATH     JSON output directory. Default: benchmarks/results/storage-old-cache
+  --results-dir PATH     JSON output directory. Default: benchmarks/results/storage-old-ENGINE
   --progress             Print load progress.
   -h, --help             Show this help.
 "
@@ -501,6 +521,7 @@ Options:
 
 #[derive(Clone, Debug)]
 struct Config {
+    engine: Engine,
     scales: Vec<usize>,
     workloads: Vec<Workload>,
     value_bytes: usize,
@@ -516,6 +537,7 @@ struct Config {
 impl Config {
     fn parse(args: impl Iterator<Item = String>) -> Result<Self, CliError> {
         let mut config = Self {
+            engine: Engine::Cache,
             scales: vec![DEFAULT_SCALE],
             workloads: Workload::ALL.to_vec(),
             value_bytes: DEFAULT_VALUE_BYTES,
@@ -533,6 +555,10 @@ impl Config {
         while index < args.len() {
             match args[index].as_str() {
                 "-h" | "--help" => return Err(CliError::Help),
+                "--engine" => {
+                    index += 1;
+                    config.engine = Engine::parse(&value(args.get(index), "--engine")?)?;
+                }
                 "--scales" => {
                     index += 1;
                     config.scales = parse_list(args.get(index), parse_scale)?;
@@ -609,6 +635,42 @@ impl Config {
         self.workloads
             .iter()
             .any(|workload| workload.requires_loaded_data())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Engine {
+    Cache,
+    Standard,
+}
+
+impl Engine {
+    fn parse(value: &str) -> Result<Self, CliError> {
+        match value {
+            "cache" | "old-cache" => Ok(Self::Cache),
+            "standard" | "durable-standard" | "old-standard" => Ok(Self::Standard),
+            _ => Err(CliError::InvalidEngine(value.to_string())),
+        }
+    }
+
+    const fn result_name(self) -> &'static str {
+        match self {
+            Self::Cache => "old-cache",
+            Self::Standard => "old-standard",
+        }
+    }
+
+    const fn result_dir(self) -> &'static str {
+        match self {
+            Self::Cache => "storage-old-cache",
+            Self::Standard => "storage-old-standard",
+        }
+    }
+}
+
+impl fmt::Display for Engine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.result_name())
     }
 }
 
@@ -708,7 +770,10 @@ impl RunResult {
 
     fn into_benchmark_result(self, config: &Config) -> BenchmarkResult {
         let mut parameters = HashMap::new();
-        parameters.insert("engine".to_string(), serde_json::json!("old-cache"));
+        parameters.insert(
+            "engine".to_string(),
+            serde_json::json!(config.engine.result_name()),
+        );
         parameters.insert("scale_keys".to_string(), serde_json::json!(self.scale));
         parameters.insert(
             "value_bytes".to_string(),
@@ -755,7 +820,7 @@ impl RunResult {
         }
 
         BenchmarkResult {
-            benchmark: format!("storage-old-cache/{}", self.workload),
+            benchmark: format!("storage-{}/{}", config.engine.result_name(), self.workload),
             category: CATEGORY.to_string(),
             parameters,
             metrics: self.measurement.into_metrics(),
@@ -937,6 +1002,7 @@ enum CliError {
     MissingValue(&'static str),
     EmptyList(&'static str),
     UnknownFlag(String),
+    InvalidEngine(String),
     InvalidScale(String),
     InvalidWorkload(String),
     InvalidNumber(&'static str),
@@ -949,6 +1015,7 @@ impl fmt::Display for CliError {
             Self::MissingValue(flag) => write!(f, "missing value for {flag}"),
             Self::EmptyList(flag) => write!(f, "{flag} must not be empty"),
             Self::UnknownFlag(flag) => write!(f, "unknown flag {flag}"),
+            Self::InvalidEngine(value) => write!(f, "invalid engine {value}"),
             Self::InvalidScale(value) => write!(f, "invalid scale {value}"),
             Self::InvalidWorkload(value) => write!(f, "invalid workload {value}"),
             Self::InvalidNumber(flag) => write!(f, "invalid numeric value for {flag}"),

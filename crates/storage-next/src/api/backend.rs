@@ -4,6 +4,8 @@ use crate::backend::{memory::MemoryBackend, Backend, BackendHandle};
 
 #[cfg(feature = "localfs")]
 use crate::backend::local_fs::LocalFsBackend;
+#[cfg(all(test, unix, feature = "localfs"))]
+use crate::layout::ObjectLayout;
 #[cfg(feature = "localfs")]
 use std::path::{Path, PathBuf};
 
@@ -70,6 +72,35 @@ impl StorageBackend {
             StorageBackendInner::Memory(backend) => BackendHandle::owned(backend),
             #[cfg(feature = "localfs")]
             StorageBackendInner::LocalFs(backend) => BackendHandle::owned(backend),
+        }
+    }
+
+    /// Arm a targeted publish fault on the branch's table manifest object so the next durable
+    /// manifest publish fails at the manifest fsync. `before_visibility = true` faults before the
+    /// manifest becomes visible (the temp-file sync); `false` faults after it is visible but before
+    /// its durability is confirmed (the parent-directory sync). A memory backend is a no-op (it has
+    /// no fault hook). Used by the off-lock publish durability suite to drive manifest-debt recovery.
+    #[cfg(all(test, unix, feature = "localfs"))]
+    pub(crate) fn inject_manifest_publish_fault(
+        &self,
+        branch_id: strata_core_next::BranchId,
+        before_visibility: bool,
+    ) {
+        let StorageBackendInner::LocalFs(backend) = &self.inner else {
+            return;
+        };
+        let name = ObjectLayout::branch_table_manifest(&branch_id.to_string())
+            .expect("manifest object name")
+            .as_str()
+            .to_owned();
+        if before_visibility {
+            backend
+                .inject_targeted_manifest_fault_before_visibility(name)
+                .expect("arm manifest publish fault");
+        } else {
+            backend
+                .inject_targeted_manifest_fault_visible_unconfirmed(name)
+                .expect("arm manifest publish fault");
         }
     }
 }

@@ -1106,6 +1106,54 @@ fn durable_table_catalog_rejects_manifest_sequence_regress() {
 }
 
 #[test]
+fn durable_table_catalog_reserves_monotonic_sequences_without_double_advance() {
+    let backend = ManifestRecoveryBackend::new();
+    let branch = branch_id(0x3a);
+    let mut catalog = LifecycleDurableTableCatalog::new();
+
+    // Off-lock publish reserves the manifest sequence under the runtime lock; reservations are
+    // strictly increasing and advance the marker once each, so concurrent cross-branch publishes
+    // can never collide on a sequence.
+    assert_eq!(
+        catalog.reserve_manifest_sequence().expect("reserve first"),
+        1
+    );
+    assert_eq!(
+        catalog.reserve_manifest_sequence().expect("reserve second"),
+        2
+    );
+    assert_eq!(catalog.next_manifest_sequence(), 3);
+
+    // Recording the reserved manifest folds in its tables but must NOT re-advance the marker (the
+    // reservation already did). A second advance here would let a later publish reuse a sequence
+    // and regress the durable manifest.
+    let table = publish_manifest_table(
+        &backend,
+        branch,
+        BranchLevel::ZERO,
+        "reserved-publish-table",
+        &[put_row(branch, 40, b"reserved-publish", b"value")],
+    );
+    let manifest = TableManifest::new(
+        branch,
+        None,
+        1,
+        vec![TableManifestLevel::new(BranchLevel::ZERO, vec![table.reference]).expect("level")],
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("manifest");
+    catalog
+        .record_reserved_manifest(&manifest)
+        .expect("record reserved manifest");
+    assert_eq!(
+        catalog.next_manifest_sequence(),
+        3,
+        "record_reserved_manifest must not re-advance the sequence reserved under the lock"
+    );
+}
+
+#[test]
 fn durable_table_catalog_rejects_identity_with_different_facts() {
     let backend = ManifestRecoveryBackend::new();
     let branch = branch_id(0x34);

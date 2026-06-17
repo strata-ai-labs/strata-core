@@ -125,8 +125,12 @@ impl LocalFsDeleteStep {
 #[derive(Debug, Clone)]
 pub(crate) struct LocalFsBackend {
     root: PathBuf,
+    /// Armed publish fault `(step, target_object)`: a `None` target faults the step for any object,
+    /// `Some(name)` faults only that object — so a durability test can fail one specific publish
+    /// (e.g. a branch table manifest). Inlined tuple (not a named type) so this test-only hook adds
+    /// nothing to the production type inventory.
     #[cfg(all(test, unix))]
-    publish_fault: Arc<Mutex<Option<LocalFsPublishStep>>>,
+    publish_fault: Arc<Mutex<Option<(LocalFsPublishStep, Option<String>)>>>,
     #[cfg(all(test, unix))]
     delete_fault: Arc<Mutex<Option<LocalFsDeleteStep>>>,
 }
@@ -229,8 +233,40 @@ impl LocalFsBackend {
                 "local filesystem publish fault state is poisoned",
             )
         })?;
-        *fault = Some(step);
+        *fault = Some((step, None));
         Ok(())
+    }
+
+    #[cfg(all(test, unix))]
+    fn arm_targeted_publish_fault(
+        &self,
+        step: LocalFsPublishStep,
+        target_object: String,
+    ) -> BackendResult<()> {
+        let mut fault = self.publish_fault.lock().map_err(|_| {
+            BackendError::new(
+                BackendErrorKind::Unknown,
+                "local filesystem publish fault state is poisoned",
+            )
+        })?;
+        *fault = Some((step, Some(target_object)));
+        Ok(())
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn inject_targeted_manifest_fault_before_visibility(
+        &self,
+        target_object: String,
+    ) -> BackendResult<()> {
+        self.arm_targeted_publish_fault(LocalFsPublishStep::TemporarySync, target_object)
+    }
+
+    #[cfg(all(test, unix))]
+    pub(crate) fn inject_targeted_manifest_fault_visible_unconfirmed(
+        &self,
+        target_object: String,
+    ) -> BackendResult<()> {
+        self.arm_targeted_publish_fault(LocalFsPublishStep::ParentSync, target_object)
     }
 
     #[cfg(all(test, unix))]
@@ -254,7 +290,11 @@ impl LocalFsBackend {
     }
 
     #[cfg(all(test, unix))]
-    fn injected_publish_fault(&self, step: LocalFsPublishStep) -> Option<BackendError> {
+    fn injected_publish_fault(
+        &self,
+        step: LocalFsPublishStep,
+        name: &ObjectName,
+    ) -> Option<BackendError> {
         let Ok(mut fault) = self.publish_fault.lock() else {
             return Some(BackendError::new(
                 BackendErrorKind::Unknown,
@@ -262,7 +302,13 @@ impl LocalFsBackend {
             ));
         };
 
-        if *fault == Some(step) {
+        let fires = fault.as_ref().is_some_and(|(armed_step, target_object)| {
+            *armed_step == step
+                && target_object
+                    .as_deref()
+                    .is_none_or(|target| target == name.as_str())
+        });
+        if fires {
             *fault = None;
             Some(BackendError::new(
                 BackendErrorKind::Interrupted,
@@ -274,7 +320,11 @@ impl LocalFsBackend {
     }
 
     #[cfg(not(all(test, unix)))]
-    fn injected_publish_fault(&self, _step: LocalFsPublishStep) -> Option<BackendError> {
+    fn injected_publish_fault(
+        &self,
+        _step: LocalFsPublishStep,
+        _name: &ObjectName,
+    ) -> Option<BackendError> {
         let _ = &self.root;
         None
     }
@@ -511,7 +561,8 @@ impl LocalFsBackend {
         final_path: &Path,
         bytes: &[u8],
     ) -> PublishResult<PathBuf> {
-        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::TemporaryCreate) {
+        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::TemporaryCreate, name)
+        {
             return Err(Self::publish_error(
                 name,
                 PublishFailureKind::FailedBeforeVisibility,
@@ -525,7 +576,7 @@ impl LocalFsBackend {
 
         // The temporary object is not reachable by object name. Failures before
         // the final install are therefore classified as before-visibility.
-        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::TemporaryWrite) {
+        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::TemporaryWrite, name) {
             Self::cleanup_temporary_path(&temp_path);
             return Err(Self::publish_error(
                 name,
@@ -543,7 +594,7 @@ impl LocalFsBackend {
             ));
         }
 
-        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::TemporarySync) {
+        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::TemporarySync, name) {
             Self::cleanup_temporary_path(&temp_path);
             return Err(Self::publish_error(
                 name,
@@ -575,7 +626,7 @@ impl LocalFsBackend {
         temp_path: &Path,
         final_path: &Path,
     ) -> PublishResult<()> {
-        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::FinalPublish) {
+        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::FinalPublish, name) {
             Self::cleanup_temporary_path(temp_path);
             let kind = if mode == PublishMode::Replace {
                 PublishFailureKind::VisibilityUnknown
@@ -634,7 +685,7 @@ impl LocalFsBackend {
 
         // The object is visible before the parent directory is synced. A
         // failure here leaves visibility known but durability unconfirmed.
-        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::ParentSync) {
+        if let Some(error) = self.injected_publish_fault(LocalFsPublishStep::ParentSync, name) {
             return Err(Self::publish_error(
                 name,
                 PublishFailureKind::VisibleDurabilityUnconfirmed,
