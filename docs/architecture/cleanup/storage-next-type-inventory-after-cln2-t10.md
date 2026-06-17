@@ -46,7 +46,7 @@ Counts are conservative text matches, not a Rust AST parse.
 |---|---|
 | observability/perf_trace.rs | 6853 |
 | api/runtime.rs | 6107 |
-| api/tests/mod.rs | 5041 |
+| api/tests/mod.rs | 5453 |
 | branch/tests/owned_compaction.rs | 4822 |
 | lifecycle/tests/compaction/mod.rs | 4335 |
 | table/tests/reader.rs | 4018 |
@@ -63,7 +63,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | lifecycle/cache.rs | 2421 |
 | branch/tests/read_view.rs | 2202 |
 | testkit/integration_harness.rs | 2111 |
-| backend/local_fs.rs | 2091 |
+| backend/local_fs.rs | 2099 |
 | lifecycle/tests/table_manifest_recovery.rs | 2074 |
 | lifecycle/tests/flush.rs | 2034 |
 | table/tests/compaction.rs | 2027 |

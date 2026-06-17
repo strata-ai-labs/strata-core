@@ -75,32 +75,49 @@ impl StorageBackend {
         }
     }
 
-    /// Arm a targeted publish fault on the branch's table manifest object so the next durable
-    /// manifest publish fails at the manifest fsync. `before_visibility = true` faults before the
-    /// manifest becomes visible (the temp-file sync); `false` faults after it is visible but before
-    /// its durability is confirmed (the parent-directory sync). A memory backend is a no-op (it has
-    /// no fault hook). Used by the off-lock publish durability suite to drive manifest-debt recovery.
+    /// Arm a targeted publish fault on `object` so its next durable publish fails at the object
+    /// fsync. `before_visibility = true` faults before the object becomes visible (the temp-file
+    /// sync); `false` faults after it is visible but before its durability is confirmed (the
+    /// parent-directory sync). A memory backend is a no-op (it has no fault hook).
+    #[cfg(all(test, unix, feature = "localfs"))]
+    fn inject_targeted_publish_fault(&self, object: String, before_visibility: bool) {
+        let StorageBackendInner::LocalFs(backend) = &self.inner else {
+            return;
+        };
+        if before_visibility {
+            backend
+                .inject_targeted_publish_fault_before_visibility(object)
+                .expect("arm publish fault");
+        } else {
+            backend
+                .inject_targeted_publish_fault_visible_unconfirmed(object)
+                .expect("arm publish fault");
+        }
+    }
+
+    /// Arm a publish fault on the branch's table manifest object. Used by the off-lock publish
+    /// durability suite to drive manifest-debt recovery.
     #[cfg(all(test, unix, feature = "localfs"))]
     pub(crate) fn inject_manifest_publish_fault(
         &self,
         branch_id: strata_core_next::BranchId,
         before_visibility: bool,
     ) {
-        let StorageBackendInner::LocalFs(backend) = &self.inner else {
-            return;
-        };
-        let name = ObjectLayout::branch_table_manifest(&branch_id.to_string())
+        let object = ObjectLayout::branch_table_manifest(&branch_id.to_string())
             .expect("manifest object name")
             .as_str()
             .to_owned();
-        if before_visibility {
-            backend
-                .inject_targeted_manifest_fault_before_visibility(name)
-                .expect("arm manifest publish fault");
-        } else {
-            backend
-                .inject_targeted_manifest_fault_visible_unconfirmed(name)
-                .expect("arm manifest publish fault");
-        }
+        self.inject_targeted_publish_fault(object, before_visibility);
+    }
+
+    /// Arm a publish fault on the checkpoint snapshot object for `snapshot_id`. Used by the
+    /// delta-checkpoint crash-consistency suite to fail the snapshot fsync during a checkpoint.
+    #[cfg(all(test, unix, feature = "localfs"))]
+    pub(crate) fn inject_snapshot_publish_fault(&self, snapshot_id: u64, before_visibility: bool) {
+        let object = ObjectLayout::snapshot(snapshot_id)
+            .expect("snapshot object name")
+            .as_str()
+            .to_owned();
+        self.inject_targeted_publish_fault(object, before_visibility);
     }
 }

@@ -130,6 +130,10 @@ pub(crate) struct LocalFsBackend {
     /// (e.g. a branch table manifest). Inlined tuple (not a named type) so this test-only hook adds
     /// nothing to the production type inventory.
     #[cfg(all(test, unix))]
+    #[allow(
+        clippy::type_complexity,
+        reason = "inlined tuple keeps this test-only fault hook out of the production type inventory"
+    )]
     publish_fault: Arc<Mutex<Option<(LocalFsPublishStep, Option<String>)>>>,
     #[cfg(all(test, unix))]
     delete_fault: Arc<Mutex<Option<LocalFsDeleteStep>>>,
@@ -253,16 +257,20 @@ impl LocalFsBackend {
         Ok(())
     }
 
+    /// Arm a targeted publish fault at the temp-file fsync (before the object becomes visible) for
+    /// `target_object`. Generic over any durable object — table manifest, checkpoint snapshot, etc.
     #[cfg(all(test, unix))]
-    pub(crate) fn inject_targeted_manifest_fault_before_visibility(
+    pub(crate) fn inject_targeted_publish_fault_before_visibility(
         &self,
         target_object: String,
     ) -> BackendResult<()> {
         self.arm_targeted_publish_fault(LocalFsPublishStep::TemporarySync, target_object)
     }
 
+    /// Arm a targeted publish fault at the parent-directory fsync (after the object is visible but
+    /// before its durability is confirmed) for `target_object`.
     #[cfg(all(test, unix))]
-    pub(crate) fn inject_targeted_manifest_fault_visible_unconfirmed(
+    pub(crate) fn inject_targeted_publish_fault_visible_unconfirmed(
         &self,
         target_object: String,
     ) -> BackendResult<()> {
