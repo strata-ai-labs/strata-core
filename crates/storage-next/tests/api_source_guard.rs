@@ -7,6 +7,25 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// The runtime module, split across files. Guards that introspect the runtime
+/// implementation read these as a whole.
+const RUNTIME_FILES: [&str; 7] = [
+    "src/api/runtime/mod.rs",
+    "src/api/runtime/background.rs",
+    "src/api/runtime/data.rs",
+    "src/api/runtime/diagnostics.rs",
+    "src/api/runtime/error.rs",
+    "src/api/runtime/maintenance.rs",
+    "src/api/runtime/open_close.rs",
+];
+
+fn runtime_source(root: &Path) -> String {
+    RUNTIME_FILES
+        .iter()
+        .map(|relative| fs::read_to_string(root.join(relative)).expect("read runtime"))
+        .collect()
+}
+
 #[test]
 fn api_is_the_only_public_storage_next_production_module() {
     let root = common::crate_root();
@@ -194,7 +213,7 @@ fn production_open_paths_do_not_use_storage_open_options_default() {
 #[test]
 fn api_open_local_routes_to_durable_local_without_cache_fallback() {
     let root = common::crate_root();
-    let runtime = fs::read_to_string(root.join("src/api/runtime.rs")).expect("read runtime");
+    let runtime = runtime_source(&root);
     let compact_runtime = runtime.split_whitespace().collect::<String>();
 
     assert!(compact_runtime.contains("pubfnopen_local("));
@@ -321,7 +340,7 @@ fn api_implementation_avoids_architecture_labels() {
 #[test]
 fn api_branch_surface_excludes_product_workflow_terms() {
     let root = common::crate_root();
-    for relative in ["src/api/branch.rs", "src/api/runtime.rs"] {
+    for relative in std::iter::once("src/api/branch.rs").chain(RUNTIME_FILES) {
         let file = root.join(relative);
         let text = fs::read_to_string(&file)
             .expect("read branch API source")

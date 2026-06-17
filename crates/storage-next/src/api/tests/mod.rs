@@ -25,6 +25,18 @@ mod read;
 mod source_guards;
 mod surface;
 
+/// Concatenated source of the split runtime module, for source-introspection guards
+/// that assert on the runtime implementation as a whole.
+const RUNTIME_SOURCE: &str = concat!(
+    include_str!("../runtime/mod.rs"),
+    include_str!("../runtime/background.rs"),
+    include_str!("../runtime/data.rs"),
+    include_str!("../runtime/diagnostics.rs"),
+    include_str!("../runtime/error.rs"),
+    include_str!("../runtime/maintenance.rs"),
+    include_str!("../runtime/open_close.rs"),
+);
+
 fn assert_result_type<T>(result: StorageApiResult<T>) -> StorageApiResult<T> {
     result
 }

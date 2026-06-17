@@ -7,8 +7,8 @@ Counts are conservative text matches, not a Rust AST parse.
 
 | Metric | Count |
 |---|---|
-| Rust files | 353 |
-| Production Rust files | 151 |
+| Rust files | 359 |
+| Production Rust files | 157 |
 | All struct/enum definitions | 1092 |
 | Production struct/enum definitions | 809 |
 | Cleanup-target production definitions | 644 |
@@ -30,7 +30,6 @@ Counts are conservative text matches, not a Rust AST parse.
 | branch/facts.rs | 17 | 1160 |
 | api/read.rs | 16 | 540 |
 | lifecycle/durable/maintenance.rs | 16 | 3860 |
-| api/runtime.rs | 15 | 6107 |
 | branch/state/materialization.rs | 13 | 1355 |
 | lifecycle/background.rs | 13 | 1651 |
 | lifecycle/branch_lifecycle.rs | 13 | 1210 |
@@ -39,13 +38,13 @@ Counts are conservative text matches, not a Rust AST parse.
 | backend/mod.rs | 12 | 893 |
 | lifecycle/cache.rs | 12 | 2421 |
 | api/maintenance.rs | 11 | 587 |
+| lifecycle/facts.rs | 11 | 382 |
 
 ## Files Over 1,500 LOC
 
 | File | LOC |
 |---|---|
 | observability/perf_trace.rs | 6853 |
-| api/runtime.rs | 6107 |
 | branch/tests/owned_compaction.rs | 4822 |
 | lifecycle/tests/compaction/mod.rs | 4335 |
 | table/tests/reader.rs | 4018 |
@@ -53,6 +52,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | lifecycle/durable/maintenance.rs | 3860 |
 | lifecycle/tests/cache.rs | 3666 |
 | lifecycle/tests/durable.rs | 3418 |
+| api/runtime/mod.rs | 3376 |
 | service/manifest.rs | 3334 |
 | service/table.rs | 3272 |
 | lifecycle/compaction.rs | 3058 |
@@ -98,6 +98,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | backend/mod.rs | 6 | 17 |
 | testkit/api/mod.rs | 5 | 14 |
 | format/table/mod.rs | 3 | 13 |
+| api/runtime/mod.rs | 1 | 3 |
 | lib.rs | 2 | 2 |
 
 ## Operation-Family Suffix Counts

@@ -284,7 +284,7 @@ fn commit_runtime_sources_do_not_start_maintenance_work() {
 fn durable_commit_sources_do_not_use_cache_default_options() {
     let durable_source = include_str!("../durable.rs");
     let durable_lifecycle_source = include_str!("../../lifecycle/durable/bootstrap.rs");
-    let api_runtime_source = include_str!("../../api/runtime.rs");
+    let api_runtime_source = include_str!("../../api/runtime/mod.rs");
 
     assert!(!durable_source.contains("CommitBatchOptions::default"));
     assert!(!durable_lifecycle_source.contains("CommitBatchOptions::default"));

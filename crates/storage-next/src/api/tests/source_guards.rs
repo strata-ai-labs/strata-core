@@ -43,7 +43,7 @@ fn source_guard_background_scheduler_is_local_storage_next_port() {
 
 #[test]
 fn source_guard_background_priority_maps_lifecycle_work_by_pressure_cost() {
-    let runtime_source = include_str!("../runtime.rs");
+    let runtime_source = super::RUNTIME_SOURCE;
     let priority_mapping = runtime_source
         .split("const fn background_priority_for_task_request")
         .nth(1)
@@ -75,7 +75,7 @@ fn source_guard_background_priority_maps_lifecycle_work_by_pressure_cost() {
 
 #[test]
 fn source_guard_background_build_runs_before_publish_lock() {
-    let runtime_source = include_str!("../runtime.rs");
+    let runtime_source = super::RUNTIME_SOURCE;
     // The cache drain stays two-phase (volatile mode has no manifest fsync): the unlocked build
     // precedes the single publish lock.
     assert_background_drain_build_before_publish_lock(
@@ -197,7 +197,7 @@ fn assert_durable_background_drain_three_phase_publish(drain_source: &str) {
 
 #[test]
 fn source_guard_background_drain_records_start_and_publish_failures() {
-    let runtime_source = include_str!("../runtime.rs");
+    let runtime_source = super::RUNTIME_SOURCE;
     for (label, source) in [
         (
             "cache",
@@ -309,7 +309,7 @@ fn source_guard_publish_reads_cached_table_summary_not_row_scan() {
 
 #[test]
 fn source_guard_background_controller_uses_executor_trait_and_clock() {
-    let runtime_source = include_str!("../runtime.rs");
+    let runtime_source = super::RUNTIME_SOURCE;
     let controller_block = runtime_source
         .split("struct BackgroundRuntimeController")
         .nth(1)
@@ -334,7 +334,7 @@ fn source_guard_background_controller_uses_executor_trait_and_clock() {
 
 #[test]
 fn source_guard_background_drive_logic_uses_maintenance_clock() {
-    let runtime_source = include_str!("../runtime.rs");
+    let runtime_source = super::RUNTIME_SOURCE;
     for (label, source) in [
         (
             "cache",
@@ -380,7 +380,7 @@ fn source_guard_background_drive_logic_uses_maintenance_clock() {
 
 #[test]
 fn source_guard_pressure_wait_gates_watchdog_reset_on_real_maintenance_progress() {
-    let runtime_source = include_str!("../runtime.rs");
+    let runtime_source = super::RUNTIME_SOURCE;
     let pressure_wait = runtime_source
         .split("fn background_wait_after_pressure_rejection")
         .nth(1)
@@ -406,7 +406,7 @@ fn source_guard_pressure_wait_gates_watchdog_reset_on_real_maintenance_progress(
 
 #[test]
 fn source_guard_close_with_options_documents_background_panic_retry_contract() {
-    let runtime_source = include_str!("../runtime.rs");
+    let runtime_source = super::RUNTIME_SOURCE;
     let close_doc = runtime_source
         .split("pub fn close_with_options")
         .next()
@@ -447,7 +447,7 @@ fn source_guard_maintenance_executor_trait_hides_threading_types() {
 
 #[test]
 fn source_guard_deterministic_inline_maps_to_background_drive_path() {
-    let runtime_source = include_str!("../runtime.rs");
+    let runtime_source = super::RUNTIME_SOURCE;
     let mapping = runtime_source
         .split("const fn map_maintenance_scheduling_policy")
         .nth(1)

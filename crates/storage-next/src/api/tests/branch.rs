@@ -663,7 +663,7 @@ fn branch_delete_last_required_branch_rejects() {
 }
 
 fn branch_api_source() -> String {
-    [include_str!("../branch.rs"), include_str!("../runtime.rs")]
+    [include_str!("../branch.rs"), super::RUNTIME_SOURCE]
         .join("\n")
         .to_ascii_lowercase()
 }
