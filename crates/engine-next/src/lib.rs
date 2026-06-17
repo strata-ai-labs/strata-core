@@ -22,6 +22,7 @@ pub mod testkit;
 pub use api::{
     BranchCreateOutcome, BranchName, BranchService, BranchSummary, CacheOpenOptions, CloseOutcome,
     Database, DatabaseOpenOutcome, DatabaseOpenSummary, DatabaseOpenTarget,
-    DurableLocalOpenOptions, EngineError, EngineErrorClass, EngineResult, KvHistory, KvHistoryRow,
-    KvKey, KvListPage, KvSample, KvScanRow, KvService, KvValue, KvVersionedValue, ProductSpace,
+    DurableLocalOpenOptions, EngineError, EngineErrorClass, EngineResult, KvBatchDeleteOutcome,
+    KvDeleteOutcome, KvHistory, KvHistoryRow, KvKey, KvListPage, KvSample, KvScanRow, KvService,
+    KvValue, KvVersionedValue, ProductSpace,
 };

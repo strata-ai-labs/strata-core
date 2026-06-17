@@ -10,8 +10,8 @@ pub use database::{
     CloseOutcome, Database, DatabaseOpenOutcome, DatabaseOpenSummary, DatabaseOpenTarget,
 };
 pub use kv::{
-    KvHistory, KvHistoryRow, KvKey, KvListPage, KvSample, KvScanRow, KvService, KvValue,
-    KvVersionedValue, ProductSpace,
+    KvBatchDeleteOutcome, KvDeleteOutcome, KvHistory, KvHistoryRow, KvKey, KvListPage, KvSample,
+    KvScanRow, KvService, KvValue, KvVersionedValue, ProductSpace,
 };
 pub use options::{CacheOpenOptions, DurableLocalOpenOptions};
 

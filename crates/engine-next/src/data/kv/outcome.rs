@@ -2,6 +2,8 @@
 
 use strata_core_next::{CommitVersion, Timestamp};
 
+use crate::commit::CommitOutcome;
+
 use super::{KvKey, KvValue};
 
 /// Latest or historical KV value with commit metadata.
@@ -214,6 +216,56 @@ impl KvSample {
     /// Returns sampled rows.
     pub fn rows(&self) -> &[KvScanRow] {
         &self.rows
+    }
+}
+
+/// Delete outcome for one KV key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KvDeleteOutcome {
+    deleted: bool,
+    commit: Option<CommitOutcome>,
+}
+
+impl KvDeleteOutcome {
+    pub(crate) const fn new(deleted: bool, commit: Option<CommitOutcome>) -> Self {
+        Self { deleted, commit }
+    }
+
+    #[must_use]
+    /// Returns true when the selected key existed and was deleted.
+    pub const fn deleted(self) -> bool {
+        self.deleted
+    }
+
+    #[must_use]
+    /// Returns the commit outcome when a delete mutation was committed.
+    pub const fn commit(self) -> Option<CommitOutcome> {
+        self.commit
+    }
+}
+
+/// Delete outcome for a positional KV batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KvBatchDeleteOutcome {
+    deleted: Vec<bool>,
+    commit: Option<CommitOutcome>,
+}
+
+impl KvBatchDeleteOutcome {
+    pub(crate) const fn new(deleted: Vec<bool>, commit: Option<CommitOutcome>) -> Self {
+        Self { deleted, commit }
+    }
+
+    #[must_use]
+    /// Returns per-input-key deleted flags.
+    pub fn deleted(&self) -> &[bool] {
+        &self.deleted
+    }
+
+    #[must_use]
+    /// Returns the commit outcome when at least one delete mutation was committed.
+    pub const fn commit(&self) -> Option<CommitOutcome> {
+        self.commit
     }
 }
 

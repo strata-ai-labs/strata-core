@@ -1,0 +1,692 @@
+//! Executor KV behavior tests.
+
+use strata_executor_next::{
+    BatchKvEntry, Bytes, Command, Executor, ExecutorErrorClass, Output, DEFAULT_BRANCH,
+};
+use tempfile::TempDir;
+
+#[test]
+fn cache_executor_runs_complete_kv_command_suite() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    run_kv_command_suite(&mut executor);
+}
+
+#[test]
+fn durable_executor_reopens_values_lists_and_history() {
+    let temp = TempDir::new().expect("temp dir");
+    let path = temp.path().join("db");
+
+    {
+        let mut executor = Executor::open_durable_local(&path).expect("durable executor opens");
+        run_kv_command_suite(&mut executor);
+        executor.close().expect("durable executor closes");
+    }
+
+    let mut reopened = Executor::open_durable_local(&path).expect("durable executor reopens");
+    assert_eq!(
+        execute_get(&mut reopened, "alpha"),
+        Some(bytes("one-updated"))
+    );
+    assert_eq!(execute_count(&mut reopened, None), 6);
+    assert_history_has_tombstone(&mut reopened, "delete-me");
+}
+
+#[test]
+fn branch_and_space_defaults_are_isolated() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .create_branch_from_head(DEFAULT_BRANCH, "feature")
+        .expect("branch creates");
+
+    write(&mut executor, None, None, "shared", "default-branch");
+    write(
+        &mut executor,
+        Some("feature"),
+        None,
+        "shared",
+        "feature-branch",
+    );
+    write(&mut executor, None, Some("tenant-a"), "shared", "space-a");
+
+    assert_eq!(
+        execute_get(&mut executor, "shared"),
+        Some(bytes("default-branch"))
+    );
+    assert_eq!(
+        execute_get_in(&mut executor, Some("feature"), None, "shared"),
+        Some(bytes("feature-branch"))
+    );
+    assert_eq!(
+        execute_get_in(&mut executor, None, Some("tenant-a"), "shared"),
+        Some(bytes("space-a"))
+    );
+}
+
+#[test]
+fn command_to_output_mapping_is_explicit_for_every_variant() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    write(&mut executor, None, None, "map-a", "one");
+    write(&mut executor, None, None, "map-b", "two");
+
+    let commands = vec![
+        Command::KvPut {
+            branch: None,
+            space: None,
+            key: bytes("map-put"),
+            value: bytes("value"),
+        },
+        Command::KvGet {
+            branch: None,
+            space: None,
+            key: bytes("map-a"),
+            as_of: None,
+        },
+        Command::KvDelete {
+            branch: None,
+            space: None,
+            key: bytes("map-delete-missing"),
+        },
+        Command::KvList {
+            branch: None,
+            space: None,
+            prefix: Some(bytes("map-")),
+            cursor: None,
+            limit: None,
+            as_of: None,
+        },
+        Command::KvScan {
+            branch: None,
+            space: None,
+            start: Some(bytes("map-")),
+            limit: Some(2),
+        },
+        Command::KvBatchPut {
+            branch: None,
+            space: None,
+            entries: vec![BatchKvEntry::new(bytes("map-c"), bytes("three"))],
+        },
+        Command::KvBatchGet {
+            branch: None,
+            space: None,
+            keys: vec![bytes("map-a"), bytes("missing")],
+        },
+        Command::KvBatchDelete {
+            branch: None,
+            space: None,
+            keys: vec![bytes("map-c"), bytes("missing")],
+        },
+        Command::KvBatchExists {
+            branch: None,
+            space: None,
+            keys: vec![bytes("map-a"), bytes("missing")],
+        },
+        Command::KvExists {
+            branch: None,
+            space: None,
+            key: bytes("map-a"),
+        },
+        Command::KvGetv {
+            branch: None,
+            space: None,
+            key: bytes("map-a"),
+        },
+        Command::KvCount {
+            branch: None,
+            space: None,
+            prefix: Some(bytes("map-")),
+        },
+        Command::KvSample {
+            branch: None,
+            space: None,
+            prefix: Some(bytes("map-")),
+            count: Some(1),
+        },
+    ];
+
+    let outputs = commands
+        .into_iter()
+        .map(|command| executor.execute(command).expect("command succeeds"))
+        .collect::<Vec<_>>();
+
+    assert!(matches!(outputs[0], Output::WriteResult { .. }));
+    assert!(matches!(outputs[1], Output::KvVersionedValue(_)));
+    assert!(matches!(outputs[2], Output::DeleteResult { .. }));
+    assert!(matches!(outputs[3], Output::Keys(_)));
+    assert!(matches!(outputs[4], Output::KvScanResult(_)));
+    assert!(matches!(outputs[5], Output::BatchResults(_)));
+    assert!(matches!(outputs[6], Output::BatchGetResults(_)));
+    assert!(matches!(outputs[7], Output::BatchResults(_)));
+    assert!(matches!(outputs[8], Output::BoolList(_)));
+    assert!(matches!(outputs[9], Output::Bool(_)));
+    assert!(matches!(outputs[10], Output::VersionHistory(_)));
+    assert!(matches!(outputs[11], Output::Uint(_)));
+    assert!(matches!(outputs[12], Output::SampleResult { .. }));
+}
+
+#[test]
+fn duplicate_batch_writes_fail_before_partial_application() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let error = executor
+        .execute(Command::KvBatchPut {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchKvEntry::new(bytes("dupe"), bytes("one")),
+                BatchKvEntry::new(bytes("dupe"), bytes("two")),
+            ],
+        })
+        .expect_err("duplicate batch put fails");
+
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert!(execute_get(&mut executor, "dupe").is_none());
+}
+
+#[test]
+fn empty_batches_return_empty_outputs() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    assert_eq!(
+        executor
+            .execute(Command::KvBatchPut {
+                branch: None,
+                space: None,
+                entries: Vec::new(),
+            })
+            .expect("empty batch put succeeds"),
+        Output::BatchResults(Vec::new())
+    );
+    assert_eq!(
+        executor
+            .execute(Command::KvBatchDelete {
+                branch: None,
+                space: None,
+                keys: Vec::new(),
+            })
+            .expect("empty batch delete succeeds"),
+        Output::BatchResults(Vec::new())
+    );
+    assert_eq!(
+        executor
+            .execute(Command::KvBatchGet {
+                branch: None,
+                space: None,
+                keys: Vec::new(),
+            })
+            .expect("empty batch get succeeds"),
+        Output::BatchGetResults(Vec::new())
+    );
+}
+
+#[test]
+fn invalid_batch_items_are_positional_errors() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    let output = executor
+        .execute(Command::KvBatchPut {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchKvEntry::new(Bytes::new(Vec::new()), bytes("bad")),
+                BatchKvEntry::new(bytes("valid"), bytes("good")),
+            ],
+        })
+        .expect("batch put returns positional errors");
+    let Output::BatchResults(results) = output else {
+        panic!("unexpected batch put output: {output:?}");
+    };
+    assert_eq!(results.len(), 2);
+    assert!(!results[0].applied());
+    assert!(results[0].error().is_some());
+    assert!(results[1].applied());
+    assert_eq!(execute_get(&mut executor, "valid"), Some(bytes("good")));
+
+    let output = executor
+        .execute(Command::KvBatchGet {
+            branch: None,
+            space: None,
+            keys: vec![Bytes::new(Vec::new()), bytes("valid")],
+        })
+        .expect("batch get returns positional errors");
+    let Output::BatchGetResults(results) = output else {
+        panic!("unexpected batch get output: {output:?}");
+    };
+    assert_eq!(results.len(), 2);
+    assert!(results[0].error().is_some());
+    assert_eq!(results[1].value(), Some(&bytes("good")));
+
+    let output = executor
+        .execute(Command::KvBatchDelete {
+            branch: None,
+            space: None,
+            keys: vec![Bytes::new(Vec::new()), bytes("valid")],
+        })
+        .expect("batch delete returns positional errors");
+    let Output::BatchResults(results) = output else {
+        panic!("unexpected batch delete output: {output:?}");
+    };
+    assert_eq!(results.len(), 2);
+    assert!(results[0].error().is_some());
+    assert!(results[1].applied());
+    assert!(execute_get(&mut executor, "valid").is_none());
+}
+
+#[test]
+fn batch_commands_validate_branch_before_returning_item_results() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    for command in [
+        Command::KvBatchPut {
+            branch: Some("missing".to_owned()),
+            space: None,
+            entries: Vec::new(),
+        },
+        Command::KvBatchPut {
+            branch: Some("missing".to_owned()),
+            space: None,
+            entries: vec![BatchKvEntry::new(Bytes::new(Vec::new()), bytes("bad"))],
+        },
+        Command::KvBatchGet {
+            branch: Some("missing".to_owned()),
+            space: None,
+            keys: Vec::new(),
+        },
+        Command::KvBatchDelete {
+            branch: Some("missing".to_owned()),
+            space: None,
+            keys: Vec::new(),
+        },
+        Command::KvBatchExists {
+            branch: Some("missing".to_owned()),
+            space: None,
+            keys: Vec::new(),
+        },
+    ] {
+        let error = executor.execute(command).expect_err("missing branch fails");
+        assert_eq!(error.class(), ExecutorErrorClass::NotFound);
+    }
+}
+
+fn run_kv_command_suite(executor: &mut Executor) {
+    let first = write(executor, None, None, "alpha", "one");
+    let second = write(executor, None, None, "alpha", "one-updated");
+    assert!(second.version > first.version);
+
+    write(executor, None, None, "bravo", "two");
+    write(executor, None, None, "prefix-a", "three");
+    write(executor, None, None, "prefix-b", "four");
+    write(executor, None, None, "delete-me", "gone");
+
+    assert_eq!(execute_get(executor, "alpha"), Some(bytes("one-updated")));
+    assert_eq!(
+        execute_get_as_of(executor, "alpha", first.timestamp),
+        Some(bytes("one"))
+    );
+    assert!(execute_exists(executor, "alpha"));
+    assert!(!execute_exists(executor, "missing"));
+
+    assert_eq!(
+        execute_list(executor, Some("prefix-")),
+        vec![bytes("prefix-a"), bytes("prefix-b")]
+    );
+    assert_eq!(
+        execute_list_page(executor, Some("prefix-"), None, 1),
+        (vec![bytes("prefix-a")], true)
+    );
+    assert_eq!(
+        execute_list_as_of(executor, None, first.timestamp),
+        vec![bytes("alpha")]
+    );
+
+    assert_eq!(
+        execute_scan(executor, Some("prefix-"), Some(10)),
+        vec![
+            (bytes("prefix-a"), bytes("three")),
+            (bytes("prefix-b"), bytes("four"))
+        ]
+    );
+
+    batch_put(
+        executor,
+        vec![
+            ("batch-a", "five"),
+            ("batch-b", "six"),
+            ("sample-a", "seven"),
+        ],
+    );
+    assert_eq!(
+        execute_batch_get(executor, vec!["batch-a", "missing", "batch-b"]),
+        vec![Some(bytes("five")), None, Some(bytes("six"))]
+    );
+    assert_eq!(
+        execute_batch_exists(executor, vec!["batch-a", "missing", "batch-b"]),
+        vec![true, false, true]
+    );
+
+    let deleted = execute_delete(executor, "delete-me");
+    assert!(deleted);
+    let missing_deleted = execute_delete(executor, "delete-me");
+    assert!(!missing_deleted);
+    assert_history_has_tombstone(executor, "delete-me");
+
+    assert_eq!(execute_count(executor, Some("batch-")), 2);
+    let sample = execute_sample(executor, Some("batch-"), 1);
+    assert_eq!(sample.0, 2);
+    assert_eq!(sample.1.len(), 1);
+    assert!(sample.1[0].as_slice().starts_with(b"batch-"));
+
+    let results = execute_batch_delete(executor, vec!["batch-a", "missing"]);
+    assert_eq!(results, vec![true, false]);
+    assert!(!execute_exists(executor, "batch-a"));
+}
+
+fn write(
+    executor: &mut Executor,
+    branch: Option<&str>,
+    space: Option<&str>,
+    key: &str,
+    value: &str,
+) -> WriteFacts {
+    match executor
+        .execute(Command::KvPut {
+            branch: branch.map(str::to_owned),
+            space: space.map(str::to_owned),
+            key: bytes(key),
+            value: bytes(value),
+        })
+        .expect("put succeeds")
+    {
+        Output::WriteResult {
+            version, timestamp, ..
+        } => WriteFacts { version, timestamp },
+        output => panic!("unexpected put output: {output:?}"),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WriteFacts {
+    version: u64,
+    timestamp: u64,
+}
+
+fn batch_put(executor: &mut Executor, entries: Vec<(&str, &str)>) {
+    let entries = entries
+        .into_iter()
+        .map(|(key, value)| BatchKvEntry::new(bytes(key), bytes(value)))
+        .collect();
+    match executor
+        .execute(Command::KvBatchPut {
+            branch: None,
+            space: None,
+            entries,
+        })
+        .expect("batch put succeeds")
+    {
+        Output::BatchResults(results) => {
+            assert!(results
+                .iter()
+                .all(strata_executor_next::BatchItemResult::applied));
+        }
+        output => panic!("unexpected batch put output: {output:?}"),
+    }
+}
+
+fn execute_get(executor: &mut Executor, key: &str) -> Option<Bytes> {
+    match executor
+        .execute(Command::KvGet {
+            branch: None,
+            space: None,
+            key: bytes(key),
+            as_of: None,
+        })
+        .expect("get succeeds")
+    {
+        Output::KvVersionedValue(Some(value)) => Some(value.value().clone()),
+        Output::KvVersionedValue(None) => None,
+        output => panic!("unexpected get output: {output:?}"),
+    }
+}
+
+fn execute_get_in(
+    executor: &mut Executor,
+    branch: Option<&str>,
+    space: Option<&str>,
+    key: &str,
+) -> Option<Bytes> {
+    match executor
+        .execute(Command::KvGet {
+            branch: branch.map(str::to_owned),
+            space: space.map(str::to_owned),
+            key: bytes(key),
+            as_of: None,
+        })
+        .expect("get succeeds")
+    {
+        Output::KvVersionedValue(Some(value)) => Some(value.value().clone()),
+        Output::KvVersionedValue(None) => None,
+        output => panic!("unexpected get output: {output:?}"),
+    }
+}
+
+fn execute_get_as_of(executor: &mut Executor, key: &str, as_of: u64) -> Option<Bytes> {
+    match executor
+        .execute(Command::KvGet {
+            branch: None,
+            space: None,
+            key: bytes(key),
+            as_of: Some(as_of),
+        })
+        .expect("historical get succeeds")
+    {
+        Output::KvValue(value) => value,
+        output => panic!("unexpected historical get output: {output:?}"),
+    }
+}
+
+fn execute_delete(executor: &mut Executor, key: &str) -> bool {
+    match executor
+        .execute(Command::KvDelete {
+            branch: None,
+            space: None,
+            key: bytes(key),
+        })
+        .expect("delete succeeds")
+    {
+        Output::DeleteResult { deleted, .. } => deleted,
+        output => panic!("unexpected delete output: {output:?}"),
+    }
+}
+
+fn execute_list(executor: &mut Executor, prefix: Option<&str>) -> Vec<Bytes> {
+    match executor
+        .execute(Command::KvList {
+            branch: None,
+            space: None,
+            prefix: prefix.map(bytes),
+            cursor: None,
+            limit: None,
+            as_of: None,
+        })
+        .expect("list succeeds")
+    {
+        Output::Keys(keys) => keys,
+        output => panic!("unexpected list output: {output:?}"),
+    }
+}
+
+fn execute_list_page(
+    executor: &mut Executor,
+    prefix: Option<&str>,
+    cursor: Option<&str>,
+    limit: u64,
+) -> (Vec<Bytes>, bool) {
+    match executor
+        .execute(Command::KvList {
+            branch: None,
+            space: None,
+            prefix: prefix.map(bytes),
+            cursor: cursor.map(bytes),
+            limit: Some(limit),
+            as_of: None,
+        })
+        .expect("list page succeeds")
+    {
+        Output::KeysPage { keys, has_more, .. } => (keys, has_more),
+        output => panic!("unexpected list page output: {output:?}"),
+    }
+}
+
+fn execute_list_as_of(executor: &mut Executor, prefix: Option<&str>, as_of: u64) -> Vec<Bytes> {
+    match executor
+        .execute(Command::KvList {
+            branch: None,
+            space: None,
+            prefix: prefix.map(bytes),
+            cursor: None,
+            limit: None,
+            as_of: Some(as_of),
+        })
+        .expect("historical list succeeds")
+    {
+        Output::Keys(keys) => keys,
+        output => panic!("unexpected historical list output: {output:?}"),
+    }
+}
+
+fn execute_scan(
+    executor: &mut Executor,
+    start: Option<&str>,
+    limit: Option<u64>,
+) -> Vec<(Bytes, Bytes)> {
+    match executor
+        .execute(Command::KvScan {
+            branch: None,
+            space: None,
+            start: start.map(bytes),
+            limit,
+        })
+        .expect("scan succeeds")
+    {
+        Output::KvScanResult(rows) => rows
+            .into_iter()
+            .take_while(|row| row.key().as_slice().starts_with(b"prefix-"))
+            .map(|row| (row.key().clone(), row.value().clone()))
+            .collect(),
+        output => panic!("unexpected scan output: {output:?}"),
+    }
+}
+
+fn execute_batch_get(executor: &mut Executor, keys: Vec<&str>) -> Vec<Option<Bytes>> {
+    match executor
+        .execute(Command::KvBatchGet {
+            branch: None,
+            space: None,
+            keys: keys.into_iter().map(bytes).collect(),
+        })
+        .expect("batch get succeeds")
+    {
+        Output::BatchGetResults(results) => results
+            .into_iter()
+            .map(|result| result.value().cloned())
+            .collect(),
+        output => panic!("unexpected batch get output: {output:?}"),
+    }
+}
+
+fn execute_batch_delete(executor: &mut Executor, keys: Vec<&str>) -> Vec<bool> {
+    match executor
+        .execute(Command::KvBatchDelete {
+            branch: None,
+            space: None,
+            keys: keys.into_iter().map(bytes).collect(),
+        })
+        .expect("batch delete succeeds")
+    {
+        Output::BatchResults(results) => {
+            results.into_iter().map(|result| result.applied()).collect()
+        }
+        output => panic!("unexpected batch delete output: {output:?}"),
+    }
+}
+
+fn execute_batch_exists(executor: &mut Executor, keys: Vec<&str>) -> Vec<bool> {
+    match executor
+        .execute(Command::KvBatchExists {
+            branch: None,
+            space: None,
+            keys: keys.into_iter().map(bytes).collect(),
+        })
+        .expect("batch exists succeeds")
+    {
+        Output::BoolList(values) => values,
+        output => panic!("unexpected batch exists output: {output:?}"),
+    }
+}
+
+fn execute_exists(executor: &mut Executor, key: &str) -> bool {
+    match executor
+        .execute(Command::KvExists {
+            branch: None,
+            space: None,
+            key: bytes(key),
+        })
+        .expect("exists succeeds")
+    {
+        Output::Bool(value) => value,
+        output => panic!("unexpected exists output: {output:?}"),
+    }
+}
+
+fn execute_count(executor: &mut Executor, prefix: Option<&str>) -> u64 {
+    match executor
+        .execute(Command::KvCount {
+            branch: None,
+            space: None,
+            prefix: prefix.map(bytes),
+        })
+        .expect("count succeeds")
+    {
+        Output::Uint(count) => count,
+        output => panic!("unexpected count output: {output:?}"),
+    }
+}
+
+fn execute_sample(executor: &mut Executor, prefix: Option<&str>, count: u64) -> (u64, Vec<Bytes>) {
+    match executor
+        .execute(Command::KvSample {
+            branch: None,
+            space: None,
+            prefix: prefix.map(bytes),
+            count: Some(count),
+        })
+        .expect("sample succeeds")
+    {
+        Output::SampleResult { total_count, items } => (
+            total_count,
+            items.into_iter().map(|item| item.key().clone()).collect(),
+        ),
+        output => panic!("unexpected sample output: {output:?}"),
+    }
+}
+
+fn assert_history_has_tombstone(executor: &mut Executor, key: &str) {
+    match executor
+        .execute(Command::KvGetv {
+            branch: None,
+            space: None,
+            key: bytes(key),
+        })
+        .expect("history succeeds")
+    {
+        Output::VersionHistory(Some(history)) => assert!(
+            history
+                .iter()
+                .any(strata_executor_next::HistoryItem::is_tombstone),
+            "history should include a tombstone"
+        ),
+        output => panic!("unexpected history output: {output:?}"),
+    }
+}
+
+fn bytes(value: &str) -> Bytes {
+    Bytes::from(value)
+}

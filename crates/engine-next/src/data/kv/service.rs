@@ -15,8 +15,8 @@ use crate::persistence::{
 };
 
 use super::{
-    KvHistory, KvHistoryRow, KvKey, KvListPage, KvSample, KvScanRow, KvValue, KvVersionedValue,
-    ProductSpace,
+    KvBatchDeleteOutcome, KvDeleteOutcome, KvHistory, KvHistoryRow, KvKey, KvListPage, KvSample,
+    KvScanRow, KvValue, KvVersionedValue, ProductSpace,
 };
 
 /// Service for byte-oriented KV operations.
@@ -316,12 +316,14 @@ impl<'a> KvService<'a> {
     }
 
     /// Deletes a KV value if present.
-    pub fn delete(&mut self, key: KvKey) -> EngineResult<CommitOutcome> {
-        self.delete_batch([key])
+    pub fn delete(&mut self, key: KvKey) -> EngineResult<KvDeleteOutcome> {
+        let outcome = self.delete_batch([key])?;
+        let deleted = outcome.deleted().first().copied().unwrap_or(false);
+        Ok(KvDeleteOutcome::new(deleted, outcome.commit()))
     }
 
     /// Deletes multiple KV values in one commit.
-    pub fn delete_batch<I>(&mut self, keys: I) -> EngineResult<CommitOutcome>
+    pub fn delete_batch<I>(&mut self, keys: I) -> EngineResult<KvBatchDeleteOutcome>
     where
         I: IntoIterator<Item = KvKey>,
     {
@@ -329,12 +331,30 @@ impl<'a> KvService<'a> {
         let mut seen = BTreeSet::new();
         let iterator = keys.into_iter();
         let mut mutations = Vec::with_capacity(iterator.size_hint().0);
+        let mut deleted = Vec::with_capacity(iterator.size_hint().0);
         for key in iterator {
             let encoded_key = self.encode_batch_key(key, &mut seen)?;
             let address = RowAddress::new(record.branch_id(), RowClass::Kv, encoded_key);
-            mutations.push(RowMutation::delete(address));
+            let exists = self
+                .persistence
+                .read_row(&address, ReadSelector::Latest)?
+                .is_some_and(|row| !row.is_tombstone());
+            if exists {
+                mutations.push(RowMutation::delete(address));
+            }
+            deleted.push(exists);
         }
-        self.commit_batch(&record, mutations)
+        if deleted.is_empty() {
+            return Err(EngineError::invalid_input(
+                "invalid_argument.engine.kv_batch",
+                "KV batch must contain at least one mutation",
+            ));
+        }
+        if mutations.is_empty() {
+            return Ok(KvBatchDeleteOutcome::new(deleted, None));
+        }
+        let commit = self.commit_batch(&record, mutations)?;
+        Ok(KvBatchDeleteOutcome::new(deleted, Some(commit)))
     }
 
     fn branch_record(&self) -> EngineResult<BranchCatalogRecord> {

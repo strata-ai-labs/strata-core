@@ -33,7 +33,7 @@ fn cache_database_supports_branch_and_kv_workflow() {
             .expect("get succeeds")
             .expect("value");
         assert_eq!(found.as_bytes(), b"value-a");
-        kv.delete(key(b"key-a")).expect("delete succeeds");
+        assert!(kv.delete(key(b"key-a")).expect("delete succeeds").deleted());
         assert!(kv.get(&key(b"key-a")).expect("get succeeds").is_none());
         kv.put(key(b"shared"), value(b"base"))
             .expect("base put succeeds");
@@ -204,8 +204,15 @@ fn kv_edge_cases_are_stable() {
             .get(&key(b"missing"))
             .expect("missing key read succeeds")
             .is_none());
-        kv.delete(key(b"missing"))
-            .expect("delete missing key succeeds");
+        assert!(!kv
+            .delete(key(b"missing"))
+            .expect("delete missing key succeeds")
+            .deleted());
+        assert!(kv
+            .delete(key(b"still-missing"))
+            .expect("delete missing key succeeds")
+            .commit()
+            .is_none());
 
         kv.put(key(b"rewrite"), value(b"first"))
             .expect("first put succeeds");
@@ -292,8 +299,15 @@ fn kv_batch_put_and_delete_are_single_commit_operations() {
     let outcome = kv
         .delete_batch([key(b"batch-a"), key(b"batch-c")])
         .expect("batch delete succeeds");
-    assert_eq!(outcome.put_count(), 0);
-    assert_eq!(outcome.delete_count(), 2);
+    assert_eq!(outcome.deleted(), &[true, true]);
+    let commit = outcome.commit().expect("delete batch committed");
+    assert_eq!(commit.put_count(), 0);
+    assert_eq!(commit.delete_count(), 2);
+    let missing_batch = kv
+        .delete_batch([key(b"batch-missing")])
+        .expect("missing batch delete succeeds");
+    assert_eq!(missing_batch.deleted(), &[false]);
+    assert!(missing_batch.commit().is_none());
     assert!(kv
         .get(&key(b"batch-a"))
         .expect("deleted value read succeeds")
@@ -760,7 +774,11 @@ fn write_alpha_history(kv: &mut KvService<'_>) -> AlphaHistory {
     let second = kv
         .put(alpha.clone(), value(b"second"))
         .expect("second put succeeds");
-    let removed = kv.delete(alpha.clone()).expect("delete commit succeeds");
+    let removed = kv
+        .delete(alpha.clone())
+        .expect("delete commit succeeds")
+        .commit()
+        .expect("delete committed");
     let third = kv
         .put(alpha.clone(), value(b"third"))
         .expect("third put succeeds");
@@ -790,8 +808,12 @@ fn open_database_with_kv_shape() -> (Database, Timestamp) {
             (key(b"bee:001"), value(b"value-b")),
         ])
         .expect("batch put succeeds");
-        kv.delete_batch([key(b"app:000"), key(b"app:000b"), key(b"app:002")])
-            .expect("prefix tombstones succeed");
+        assert_eq!(
+            kv.delete_batch([key(b"app:000"), key(b"app:000b"), key(b"app:002")])
+                .expect("prefix tombstones succeed")
+                .deleted(),
+            &[true, true, true]
+        );
         kv.put(key(b"app:005"), value(b"value-5"))
             .expect("tail put succeeds")
             .timestamp()
@@ -969,6 +991,8 @@ fn assert_delete_history_and_temporal_reads(
 ) -> CommitOutcome {
     assert!(kv.exists(&keys.beta).expect("beta exists succeeds"));
     let beta_delete = kv.delete(keys.beta.clone()).expect("beta delete succeeds");
+    assert!(beta_delete.deleted());
+    let beta_delete = beta_delete.commit().expect("beta delete committed");
     assert_eq!(beta_delete.delete_count(), 1);
     assert!(!kv.exists(&keys.beta).expect("beta missing succeeds"));
     assert!(kv.get(&keys.beta).expect("beta read succeeds").is_none());
