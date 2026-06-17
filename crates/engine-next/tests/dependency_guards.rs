@@ -76,6 +76,7 @@ fn executor_facing_api_does_not_expose_storage_types() {
         root.join("api"),
         root.join("branch"),
         root.join("data").join("kv"),
+        root.join("data").join("json"),
     ];
     let forbidden = [
         "strata_storage_next",
@@ -140,6 +141,36 @@ fn kv_service_keeps_storage_requests_in_persistence_modules() {
         assert!(
             !text.contains(forbidden),
             "KV service constructed storage-specific request details"
+        );
+    }
+}
+
+#[test]
+fn json_service_keeps_storage_requests_in_persistence_modules() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("data")
+        .join("json")
+        .join("service.rs");
+    let text = fs::read_to_string(path).expect("read JSON service source");
+    for forbidden in [
+        "strata_storage_next",
+        "StorageRuntime",
+        "PointReadRequest",
+        "PrefixScanReadRequest",
+        "ScanReadRequest",
+        "CommitBatch",
+        "CommitMutation",
+        "StorageSpaceId",
+        "StorageKey",
+        "StorageValue",
+        "ReadBound",
+        "ReadLimit",
+        "BranchRequest",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "JSON service constructed storage-specific request details"
         );
     }
 }
@@ -330,10 +361,9 @@ fn benchmark_sources_do_not_use_engine_persistence_internals() {
 }
 
 #[test]
-fn product_scope_stays_limited_to_branch_and_kv() {
+fn product_scope_stays_limited_to_branch_kv_and_json() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let forbidden = [
-        "Json",
         "Event",
         "Vector",
         "Graph",

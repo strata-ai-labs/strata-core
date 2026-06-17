@@ -16,6 +16,8 @@ testkit = []
 [dependencies]
 strata-core-next = { path = "../core-next" }
 strata-storage-next = { path = "../storage-next", default-features = false }
+serde = { workspace = true }
+serde_json = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]

@@ -1,21 +1,149 @@
 //! Stable engine row-key encoding.
 
+use crate::data::json::{JsonDocumentId, JsonIndexName};
 use crate::data::kv::{KvKey, ProductSpace};
 use crate::diagnostics::{EngineError, EngineResult};
 
 const KEY_VERSION: u8 = 1;
 const KV_DISCRIMINATOR: u8 = b'k';
+const JSON_DISCRIMINATOR: u8 = b'j';
+const JSON_INDEX_META_DISCRIMINATOR: u8 = b'm';
+const JSON_INDEX_ENTRY_DISCRIMINATOR: u8 = b'i';
 
 pub(crate) fn encode_kv_key(space: &ProductSpace, key: &KvKey) -> Vec<u8> {
     encode_kv_key_bytes(space, key.as_bytes())
 }
 
 pub(crate) fn encode_kv_key_bytes(space: &ProductSpace, key_bytes: &[u8]) -> Vec<u8> {
+    encode_user_key(KV_DISCRIMINATOR, space, key_bytes)
+}
+
+pub(crate) fn encode_json_key(space: &ProductSpace, id: &JsonDocumentId) -> Vec<u8> {
+    encode_user_key(JSON_DISCRIMINATOR, space, id.as_str().as_bytes())
+}
+
+pub(crate) fn encode_json_space_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(JSON_DISCRIMINATOR, space, &[])
+}
+
+pub(crate) fn decode_json_document_id(
+    space: &ProductSpace,
+    encoded: &[u8],
+) -> EngineResult<JsonDocumentId> {
+    let id_bytes = decode_user_key(
+        space,
+        encoded,
+        JSON_DISCRIMINATOR,
+        "data_loss.engine.json_key",
+        "stored JSON row key is not valid for the selected product space",
+    )?;
+    let id = std::str::from_utf8(id_bytes).map_err(|_| {
+        EngineError::corruption(
+            "data_loss.engine.json_key",
+            "stored JSON row key is not valid UTF-8",
+        )
+    })?;
+    JsonDocumentId::new(id).map_err(|_| {
+        EngineError::corruption(
+            "data_loss.engine.json_key",
+            "stored JSON row key is not a valid document id",
+        )
+    })
+}
+
+pub(crate) fn encode_json_index_meta_key(space: &ProductSpace, name: &JsonIndexName) -> Vec<u8> {
+    encode_json_index_key(JSON_INDEX_META_DISCRIMINATOR, space, name, &[])
+}
+
+pub(crate) fn encode_json_index_meta_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(JSON_INDEX_META_DISCRIMINATOR, space, &[])
+}
+
+pub(crate) fn decode_json_index_name(
+    space: &ProductSpace,
+    encoded: &[u8],
+) -> EngineResult<JsonIndexName> {
+    let bytes = decode_user_key(
+        space,
+        encoded,
+        JSON_INDEX_META_DISCRIMINATOR,
+        "data_loss.engine.json_index_key",
+        "stored JSON index metadata key is not valid for the selected product space",
+    )?;
+    if bytes.len() < 2 {
+        return Err(EngineError::corruption(
+            "data_loss.engine.json_index_key",
+            "stored JSON index metadata key is truncated",
+        ));
+    }
+    let name_len = usize::from(u16::from_be_bytes([bytes[0], bytes[1]]));
+    let name_end = 2usize.checked_add(name_len).ok_or_else(|| {
+        EngineError::corruption(
+            "data_loss.engine.json_index_key",
+            "stored JSON index metadata key length overflowed",
+        )
+    })?;
+    if bytes.len() != name_end {
+        return Err(EngineError::corruption(
+            "data_loss.engine.json_index_key",
+            "stored JSON index metadata key has trailing bytes",
+        ));
+    }
+    let name = std::str::from_utf8(&bytes[2..name_end]).map_err(|_| {
+        EngineError::corruption(
+            "data_loss.engine.json_index_key",
+            "stored JSON index metadata key is not valid UTF-8",
+        )
+    })?;
+    JsonIndexName::new(name).map_err(|_| {
+        EngineError::corruption(
+            "data_loss.engine.json_index_key",
+            "stored JSON index metadata key is not a valid index name",
+        )
+    })
+}
+
+pub(crate) fn encode_json_index_entry_key(
+    space: &ProductSpace,
+    name: &JsonIndexName,
+    encoded_value: &[u8],
+    id: &JsonDocumentId,
+) -> Vec<u8> {
+    let mut suffix = Vec::with_capacity(encoded_value.len() + 1 + id.as_str().len());
+    suffix.extend_from_slice(encoded_value);
+    suffix.push(0xff);
+    suffix.extend_from_slice(id.as_str().as_bytes());
+    encode_json_index_key(JSON_INDEX_ENTRY_DISCRIMINATOR, space, name, &suffix)
+}
+
+pub(crate) fn encode_json_index_entry_prefix(
+    space: &ProductSpace,
+    name: &JsonIndexName,
+) -> Vec<u8> {
+    encode_json_index_key(JSON_INDEX_ENTRY_DISCRIMINATOR, space, name, &[])
+}
+
+fn encode_json_index_key(
+    discriminator: u8,
+    space: &ProductSpace,
+    name: &JsonIndexName,
+    suffix: &[u8],
+) -> Vec<u8> {
+    let name_bytes = name.as_str().as_bytes();
+    let name_len = u16::try_from(name_bytes.len()).expect("validated JSON index name length");
+    let mut key = encode_user_key(discriminator, space, &[]);
+    key.extend_from_slice(&name_len.to_be_bytes());
+    key.extend_from_slice(name_bytes);
+    key.extend_from_slice(suffix);
+    key
+}
+
+fn encode_user_key(discriminator: u8, space: &ProductSpace, key_bytes: &[u8]) -> Vec<u8> {
     let space_bytes = space.as_str().as_bytes();
     let space_len = u16::try_from(space_bytes.len()).expect("validated product space length");
     let mut encoded = Vec::with_capacity(4 + space_bytes.len() + key_bytes.len());
     encoded.push(KEY_VERSION);
-    encoded.push(KV_DISCRIMINATOR);
+    encoded.push(discriminator);
     encoded.extend_from_slice(&space_len.to_be_bytes());
     encoded.extend_from_slice(space_bytes);
     encoded.extend_from_slice(key_bytes);
@@ -27,16 +155,28 @@ pub(crate) fn encode_kv_space_prefix(space: &ProductSpace) -> Vec<u8> {
 }
 
 pub(crate) fn decode_kv_key(space: &ProductSpace, encoded: &[u8]) -> EngineResult<KvKey> {
-    let corruption = || {
-        EngineError::corruption(
-            "data_loss.engine.kv_key",
-            "stored KV row key is not valid for the selected product space",
-        )
-    };
+    let key_bytes = decode_user_key(
+        space,
+        encoded,
+        KV_DISCRIMINATOR,
+        "data_loss.engine.kv_key",
+        "stored KV row key is not valid for the selected product space",
+    )?;
+    KvKey::new(key_bytes)
+}
+
+fn decode_user_key<'a>(
+    space: &ProductSpace,
+    encoded: &'a [u8],
+    discriminator: u8,
+    code: &'static str,
+    message: &'static str,
+) -> EngineResult<&'a [u8]> {
+    let corruption = || EngineError::corruption(code, message);
     if encoded.len() < 4 {
         return Err(corruption());
     }
-    if encoded[0] != KEY_VERSION || encoded[1] != KV_DISCRIMINATOR {
+    if encoded[0] != KEY_VERSION || encoded[1] != discriminator {
         return Err(corruption());
     }
     let space_len = usize::from(u16::from_be_bytes([encoded[2], encoded[3]]));
@@ -51,7 +191,7 @@ pub(crate) fn decode_kv_key(space: &ProductSpace, encoded: &[u8]) -> EngineResul
     if key_bytes.is_empty() {
         return Err(corruption());
     }
-    KvKey::new(key_bytes)
+    Ok(key_bytes)
 }
 
 pub(crate) fn database_identity_key() -> Vec<u8> {
@@ -100,9 +240,12 @@ pub(crate) fn branch_pending_key(name: &str) -> Vec<u8> {
 mod tests {
     use super::{
         branch_catalog_key, branch_default_key, branch_index_key, branch_pending_key,
-        database_identity_key, decode_kv_key, encode_kv_key, encode_kv_space_prefix,
+        database_identity_key, decode_json_document_id, decode_json_index_name, decode_kv_key,
+        encode_json_index_entry_key, encode_json_index_entry_prefix, encode_json_index_meta_key,
+        encode_json_key, encode_json_space_prefix, encode_kv_key, encode_kv_space_prefix,
         storage_registry_key,
     };
+    use crate::data::json::{JsonDocumentId, JsonIndexName};
     use crate::data::kv::{KvKey, ProductSpace};
     use crate::diagnostics::EngineErrorClass;
 
@@ -206,6 +349,147 @@ mod tests {
             let error = decode_kv_key(&space, &encoded).expect_err("control row rejected");
             assert_eq!(error.class(), EngineErrorClass::Corruption);
             assert_eq!(error.code(), "data_loss.engine.kv_key");
+        }
+    }
+
+    #[test]
+    fn json_key_encoding_is_deterministic_and_ordered() {
+        let space = ProductSpace::new("users").expect("valid space");
+        let alice = JsonDocumentId::new("alice").expect("valid document id");
+        let bob = JsonDocumentId::new("bob").expect("valid document id");
+
+        assert_eq!(
+            encode_json_key(&space, &alice),
+            b"\x01j\0\x05usersalice".to_vec()
+        );
+        assert!(encode_json_key(&space, &alice) < encode_json_key(&space, &bob));
+    }
+
+    #[test]
+    fn json_key_decoding_preserves_utf8_document_ids() {
+        let space = ProductSpace::new("default").expect("valid space");
+        let id = JsonDocumentId::new("café").expect("valid document id");
+        let decoded =
+            decode_json_document_id(&space, &encode_json_key(&space, &id)).expect("decode");
+        assert_eq!(decoded, id);
+    }
+
+    #[test]
+    fn json_key_space_prefix_is_not_a_valid_document_key() {
+        let space = ProductSpace::new("default").expect("valid space");
+        let error = decode_json_document_id(&space, &encode_json_space_prefix(&space))
+            .expect_err("space prefix rejected");
+        assert_eq!(error.class(), EngineErrorClass::Corruption);
+        assert_eq!(error.code(), "data_loss.engine.json_key");
+    }
+
+    #[test]
+    fn json_key_decoding_rejects_malformed_rows() {
+        let space = ProductSpace::new("default").expect("valid space");
+        for (case, encoded) in [
+            ("truncated-header", vec![1, b'j', 0]),
+            (
+                "unknown-version",
+                vec![
+                    2, b'j', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', b'a',
+                ],
+            ),
+            (
+                "unknown-discriminator",
+                vec![
+                    1, b'x', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', b'a',
+                ],
+            ),
+            (
+                "truncated-space",
+                vec![1, b'j', 0, 8, b'd', b'e', b'f', b'a', b'u', b'l', b't'],
+            ),
+            (
+                "mismatched-space",
+                vec![1, b'j', 0, 5, b'o', b't', b'h', b'e', b'r', b'a'],
+            ),
+            (
+                "invalid-utf8-id",
+                vec![
+                    1, b'j', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0xff,
+                ],
+            ),
+        ] {
+            let error = decode_json_document_id(&space, &encoded).expect_err(case);
+            assert_eq!(error.class(), EngineErrorClass::Corruption);
+            assert_eq!(error.code(), "data_loss.engine.json_key");
+        }
+    }
+
+    #[test]
+    fn json_key_decoding_rejects_kv_and_control_plane_rows() {
+        let space = ProductSpace::new("default").expect("valid space");
+        let kv = encode_kv_key(&space, &KvKey::new(b"alice".as_slice()).expect("valid key"));
+        for encoded in [
+            kv,
+            database_identity_key(),
+            storage_registry_key(),
+            branch_index_key(),
+            branch_default_key(),
+            branch_catalog_key("default"),
+            branch_pending_key("feature"),
+        ] {
+            let error =
+                decode_json_document_id(&space, &encoded).expect_err("non-JSON row rejected");
+            assert_eq!(error.class(), EngineErrorClass::Corruption);
+            assert_eq!(error.code(), "data_loss.engine.json_key");
+        }
+    }
+
+    #[test]
+    fn json_index_keys_are_deterministic_and_decodable() {
+        let space = ProductSpace::new("users").expect("valid space");
+        let name = JsonIndexName::new("by_name").expect("valid index name");
+        let id = JsonDocumentId::new("alice").expect("valid document id");
+
+        assert_eq!(
+            encode_json_index_meta_key(&space, &name),
+            b"\x01m\0\x05users\0\x07by_name".to_vec()
+        );
+        assert_eq!(
+            decode_json_index_name(&space, &encode_json_index_meta_key(&space, &name))
+                .expect("decode"),
+            name
+        );
+        assert_eq!(
+            encode_json_index_entry_prefix(&space, &name),
+            b"\x01i\0\x05users\0\x07by_name".to_vec()
+        );
+        assert_eq!(
+            encode_json_index_entry_key(&space, &name, b"alice", &id),
+            b"\x01i\0\x05users\0\x07by_namealice\xffalice".to_vec()
+        );
+    }
+
+    #[test]
+    fn json_index_name_decoding_rejects_malformed_metadata_keys() {
+        let space = ProductSpace::new("default").expect("valid space");
+        for (case, encoded) in [
+            (
+                "truncated-name-len",
+                vec![1, b'm', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0],
+            ),
+            (
+                "truncated-name",
+                vec![
+                    1, b'm', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 4, b'a',
+                ],
+            ),
+            (
+                "trailing-bytes",
+                vec![
+                    1, b'm', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 1, b'a', b'x',
+                ],
+            ),
+        ] {
+            let error = decode_json_index_name(&space, &encoded).expect_err(case);
+            assert_eq!(error.class(), EngineErrorClass::Corruption);
+            assert_eq!(error.code(), "data_loss.engine.json_index_key");
         }
     }
 

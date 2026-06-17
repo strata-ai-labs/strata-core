@@ -4,11 +4,16 @@ use std::path::PathBuf;
 
 use crate::branch::BranchService;
 use crate::control::{bootstrap_or_load, ControlPlane};
+#[cfg(any(test, feature = "testkit"))]
+use crate::data::json::JsonIndexName;
+use crate::data::json::JsonService;
 use crate::data::kv::{KvService, ProductSpace};
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{
     close_summary_is_durable, PersistenceOpenSummary, PersistenceOpenTarget, StoragePersistence,
 };
+#[cfg(any(test, feature = "testkit"))]
+use crate::persistence::{encode_json_index_entry_prefix, ReadSelector, RowClass};
 
 use super::{BranchName, CacheOpenOptions, DurableLocalOpenOptions};
 
@@ -168,6 +173,57 @@ impl Database {
             branch,
             space,
         ))
+    }
+
+    /// Returns a JSON document service for the selected branch and space.
+    pub fn json(
+        &mut self,
+        branch: BranchName,
+        space: ProductSpace,
+    ) -> EngineResult<JsonService<'_>> {
+        self.require_open()?;
+        self.control.require_healthy()?;
+        Ok(JsonService::new(
+            &mut self.persistence,
+            &mut self.control,
+            branch,
+            space,
+        ))
+    }
+
+    /// Counts visible JSON secondary-index entries for conformance tests.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn json_index_entry_count_for_test(
+        &mut self,
+        branch: BranchName,
+        space: ProductSpace,
+        index: &JsonIndexName,
+    ) -> EngineResult<u64> {
+        self.require_open()?;
+        self.control.require_healthy()?;
+        let record = self
+            .control
+            .lookup_branch(&branch)
+            .cloned()
+            .ok_or_else(|| {
+                EngineError::not_found(
+                    "not_found.engine.branch",
+                    format!("branch `{branch}` does not exist"),
+                )
+            })?;
+        let count = self
+            .persistence
+            .scan_prefix(
+                record.storage_branch_id(),
+                RowClass::JsonIndex,
+                encode_json_index_entry_prefix(&space, index),
+                ReadSelector::Latest,
+                None,
+            )?
+            .into_iter()
+            .filter(|row| !row.is_tombstone())
+            .count();
+        Ok(u64::try_from(count).unwrap_or(u64::MAX))
     }
 
     /// Closes the database handle.

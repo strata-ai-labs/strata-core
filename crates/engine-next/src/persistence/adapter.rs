@@ -386,7 +386,7 @@ impl StoragePersistence {
             .read_point(&point_read_request(address, selector)?)
         {
             Ok(outcome) => outcome,
-            Err(error) if is_before_retained_timestamp_history(&error) => return Ok(None),
+            Err(error) if is_outside_retained_history(&error) => return Ok(None),
             Err(error) if should_fall_back_to_latest(selector, &error) => self
                 .runtime
                 .read_point(&point_read_request(address, ReadSelector::Latest)?)
@@ -438,7 +438,7 @@ impl StoragePersistence {
             limit,
         )?) {
             Ok(outcome) => outcome,
-            Err(error) if is_before_retained_timestamp_history(&error) => return Ok(Vec::new()),
+            Err(error) if is_outside_retained_history(&error) => return Ok(Vec::new()),
             Err(error) if should_fall_back_to_latest(selector, &error) => self
                 .runtime
                 .scan_prefix(&prefix_scan_request(
@@ -480,7 +480,7 @@ impl StoragePersistence {
             limit,
         )?) {
             Ok(outcome) => outcome,
-            Err(error) if is_before_retained_timestamp_history(&error) => return Ok(Vec::new()),
+            Err(error) if is_outside_retained_history(&error) => return Ok(Vec::new()),
             Err(error) if should_fall_back_to_latest(selector, &error) => self
                 .runtime
                 .scan_range(&scan_range_request(
@@ -663,12 +663,16 @@ fn read_limit(limit: Option<usize>) -> EngineResult<Option<ReadLimit>> {
     }
 }
 
-fn is_before_retained_timestamp_history(error: &StorageApiError) -> bool {
-    matches!(
-        error,
-        StorageApiError::TimestampHistoryUnavailable { reason, .. }
-            if *reason == "timestamp is before retained timeline history"
-    )
+fn is_outside_retained_history(error: &StorageApiError) -> bool {
+    match error {
+        StorageApiError::RetainedHistoryUnavailable { reason, .. } => {
+            reason.contains("outside retained") || reason.contains("before retained")
+        }
+        StorageApiError::TimestampHistoryUnavailable { reason, .. } => {
+            reason.contains("before retained") || reason.contains("outside retained")
+        }
+        _ => false,
+    }
 }
 
 fn should_fall_back_to_latest(selector: ReadSelector, error: &StorageApiError) -> bool {

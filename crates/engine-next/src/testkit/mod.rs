@@ -6,6 +6,8 @@ pub use crate::test_support::*;
 pub fn row_class_storage_id_for_test(class: &str) -> Option<u8> {
     let row_class = match class {
         "kv" => crate::persistence::RowClass::Kv,
+        "json" => crate::persistence::RowClass::Json,
+        "json-index" => crate::persistence::RowClass::JsonIndex,
         "branch" => crate::persistence::RowClass::BranchControl,
         "registry" => crate::persistence::RowClass::Registry,
         "identity" => crate::persistence::RowClass::DatasetIdentity,

@@ -3,6 +3,8 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RowClass {
     Kv,
+    Json,
+    JsonIndex,
     BranchControl,
     Registry,
     DatasetIdentity,
@@ -12,6 +14,8 @@ impl RowClass {
     pub(crate) const fn storage_space_id(self) -> u8 {
         match self {
             Self::Kv => 0x20,
+            Self::Json => 0x22,
+            Self::JsonIndex => 0x24,
             Self::BranchControl => 0x30,
             Self::Registry => 0x32,
             Self::DatasetIdentity => 0x34,

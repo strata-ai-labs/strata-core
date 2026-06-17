@@ -12,6 +12,15 @@ fn row_class_assignments_match_registry_contract() {
         0x20
     );
     assert_eq!(
+        strata_engine_next::testkit::row_class_storage_id_for_test("json").expect("known class"),
+        0x22
+    );
+    assert_eq!(
+        strata_engine_next::testkit::row_class_storage_id_for_test("json-index")
+            .expect("known class"),
+        0x24
+    );
+    assert_eq!(
         strata_engine_next::testkit::row_class_storage_id_for_test("branch").expect("known class"),
         0x30
     );
@@ -55,6 +64,14 @@ fn closed_database_rejects_new_operations() {
         ProductSpace::new("default").expect("valid space"),
     ) else {
         panic!("closed handle accepted KV service");
+    };
+    assert_eq!(error.class(), EngineErrorClass::ClosedRuntime);
+
+    let Err(error) = database.json(
+        BranchName::new("default").expect("valid branch"),
+        ProductSpace::new("default").expect("valid space"),
+    ) else {
+        panic!("closed handle accepted JSON service");
     };
     assert_eq!(error.class(), EngineErrorClass::ClosedRuntime);
 }

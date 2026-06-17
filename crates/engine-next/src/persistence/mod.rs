@@ -13,8 +13,11 @@ pub(crate) use adapter::{
 };
 pub(crate) use key::{
     branch_catalog_key, branch_default_key, branch_index_key, branch_pending_index_key,
-    branch_pending_key, capability_registry_key, database_identity_key, decode_kv_key,
-    encode_kv_key, encode_kv_key_bytes, encode_kv_space_prefix, storage_registry_key,
+    branch_pending_key, capability_registry_key, database_identity_key, decode_json_document_id,
+    decode_json_index_name, decode_kv_key, encode_json_index_entry_key,
+    encode_json_index_entry_prefix, encode_json_index_meta_key, encode_json_index_meta_prefix,
+    encode_json_key, encode_json_space_prefix, encode_kv_key, encode_kv_key_bytes,
+    encode_kv_space_prefix, storage_registry_key,
 };
 pub(crate) use plan::CommitPlan;
 pub(crate) use row::{ReadSelector, RowAddress, RowMutation};
