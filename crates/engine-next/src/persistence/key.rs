@@ -95,8 +95,8 @@ pub(crate) fn branch_pending_key(name: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        branch_catalog_key, branch_pending_key, database_identity_key, decode_kv_key,
-        encode_kv_key, encode_kv_space_prefix, storage_registry_key,
+        branch_catalog_key, branch_index_key, branch_pending_key, database_identity_key,
+        decode_kv_key, encode_kv_key, encode_kv_space_prefix, storage_registry_key,
     };
     use crate::data::kv::{KvKey, ProductSpace};
     use crate::diagnostics::EngineErrorClass;
@@ -138,6 +138,14 @@ mod tests {
     }
 
     #[test]
+    fn kv_key_decoding_preserves_ascii_user_key() {
+        let space = ProductSpace::new("users").expect("valid space");
+        let encoded = encode_kv_key(&space, &KvKey::new(b"alice".as_slice()).expect("valid key"));
+        let decoded = decode_kv_key(&space, &encoded).expect("valid encoded key");
+        assert_eq!(decoded.as_bytes(), b"alice");
+    }
+
+    #[test]
     fn kv_key_space_prefix_is_not_a_valid_user_key() {
         let space = ProductSpace::new("default").expect("valid space");
         let error =
@@ -151,6 +159,7 @@ mod tests {
         let space = ProductSpace::new("default").expect("valid space");
         for (case, encoded) in [
             ("truncated-header", vec![1, b'k', 0]),
+            ("truncated-space-length", vec![1, b'k']),
             (
                 "unknown-version",
                 vec![
@@ -173,6 +182,22 @@ mod tests {
             ),
         ] {
             let error = decode_kv_key(&space, &encoded).expect_err(case);
+            assert_eq!(error.class(), EngineErrorClass::Corruption);
+            assert_eq!(error.code(), "data_loss.engine.kv_key");
+        }
+    }
+
+    #[test]
+    fn kv_key_decoding_rejects_control_plane_rows() {
+        let space = ProductSpace::new("default").expect("valid space");
+        for encoded in [
+            database_identity_key(),
+            storage_registry_key(),
+            branch_index_key(),
+            branch_catalog_key("default"),
+            branch_pending_key("feature"),
+        ] {
+            let error = decode_kv_key(&space, &encoded).expect_err("control row rejected");
             assert_eq!(error.class(), EngineErrorClass::Corruption);
             assert_eq!(error.code(), "data_loss.engine.kv_key");
         }

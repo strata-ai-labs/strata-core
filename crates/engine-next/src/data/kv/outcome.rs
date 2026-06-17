@@ -216,3 +216,102 @@ impl KvSample {
         &self.rows
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use strata_core_next::{CommitVersion, Timestamp};
+
+    use super::{KvHistory, KvHistoryRow, KvListPage, KvSample, KvScanRow, KvVersionedValue};
+    use crate::data::kv::{KvKey, KvValue};
+
+    #[test]
+    fn outcome_accessors_return_stored_facts() {
+        let key = key(b"alpha");
+        let value = value(b"value");
+        let version = CommitVersion::new(42);
+        let timestamp = Timestamp::from_micros(1_700);
+
+        let versioned = KvVersionedValue::new(value.clone(), version, timestamp);
+        assert_eq!(versioned.value(), &value);
+        assert_eq!(versioned.version(), version);
+        assert_eq!(versioned.timestamp(), timestamp);
+
+        let scan = KvScanRow::new(key.clone(), value.clone(), version, timestamp);
+        assert_eq!(scan.key(), &key);
+        assert_eq!(scan.value(), &value);
+        assert_eq!(scan.version(), version);
+        assert_eq!(scan.timestamp(), timestamp);
+
+        let history_value = KvHistoryRow::new(Some(value.clone()), false, version, timestamp);
+        assert_eq!(history_value.value(), Some(&value));
+        assert!(!history_value.is_tombstone());
+        assert_eq!(history_value.version(), version);
+        assert_eq!(history_value.timestamp(), timestamp);
+
+        let history_tombstone = KvHistoryRow::new(None, true, CommitVersion::new(43), timestamp);
+        assert_eq!(history_tombstone.value(), None);
+        assert!(history_tombstone.is_tombstone());
+    }
+
+    #[test]
+    fn collection_outcomes_borrow_internal_rows_immutably() {
+        let first = key(b"a");
+        let second = key(b"b");
+        let page = KvListPage::new(
+            vec![first.clone(), second.clone()],
+            true,
+            Some(second.clone()),
+        );
+        let page_keys: &[KvKey] = page.keys();
+        assert_eq!(page_keys, &[first.clone(), second.clone()]);
+        assert!(page.has_more());
+        assert_eq!(page.cursor(), Some(&second));
+
+        let value = value(b"value");
+        let row = KvScanRow::new(
+            first.clone(),
+            value.clone(),
+            CommitVersion::new(7),
+            Timestamp::from_micros(70),
+        );
+        let sample = KvSample::new(3, vec![row.clone()]);
+        let sample_rows: &[KvScanRow] = sample.rows();
+        assert_eq!(sample.total_count(), 3);
+        assert_eq!(sample_rows, &[row]);
+
+        let history_row = KvHistoryRow::new(
+            Some(value),
+            false,
+            CommitVersion::new(8),
+            Timestamp::from_micros(80),
+        );
+        let history = KvHistory::new(vec![history_row.clone()]);
+        let history_rows: &[KvHistoryRow] = history.rows();
+        assert_eq!(history_rows, &[history_row]);
+    }
+
+    #[test]
+    fn outcome_types_are_test_comparable_without_lower_layer_types() {
+        let page = KvListPage::new(vec![key(b"a")], false, None);
+        assert_eq!(page.clone(), page);
+
+        let sample = KvSample::new(
+            1,
+            vec![KvScanRow::new(
+                key(b"a"),
+                value(b"value"),
+                CommitVersion::new(1),
+                Timestamp::from_micros(1),
+            )],
+        );
+        assert_eq!(sample.clone(), sample);
+    }
+
+    fn key(bytes: &[u8]) -> KvKey {
+        KvKey::new(bytes).expect("valid key")
+    }
+
+    fn value(bytes: &[u8]) -> KvValue {
+        KvValue::new(bytes)
+    }
+}

@@ -49,6 +49,14 @@ fn closed_database_rejects_new_operations() {
         panic!("closed handle accepted branch service");
     };
     assert_eq!(error.class(), EngineErrorClass::ClosedRuntime);
+
+    let Err(error) = database.kv(
+        BranchName::new("default").expect("valid branch"),
+        ProductSpace::new("default").expect("valid space"),
+    ) else {
+        panic!("closed handle accepted KV service");
+    };
+    assert_eq!(error.class(), EngineErrorClass::ClosedRuntime);
 }
 
 fn assert_engine_error_is_boundary_shaped(error: &strata_engine_next::EngineError) {

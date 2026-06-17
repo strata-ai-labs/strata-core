@@ -92,6 +92,11 @@ fn cache_database_supports_branch_and_kv_workflow() {
 }
 
 #[test]
+fn kv_contract_runs_in_cache_and_durable_modes() {
+    run_database_modes(exercise_kv_contract);
+}
+
+#[test]
 fn invalid_inputs_return_engine_errors() {
     let error = BranchName::new("_system_").expect_err("reserved branch rejected");
     assert_eq!(error.class(), EngineErrorClass::InvalidInput);
@@ -817,4 +822,387 @@ fn assert_key_bytes(keys: &[KvKey], expected: &[&[u8]]) {
 fn assert_row_key_bytes(rows: &[KvScanRow], expected: &[&[u8]]) {
     let actual: Vec<_> = rows.iter().map(|row| row.key().as_bytes()).collect();
     assert_eq!(actual, expected);
+}
+
+fn run_database_modes(mut exercise: impl FnMut(&mut Database)) {
+    let mut cache = open_cache_database().expect("cache open succeeds");
+    exercise(&mut cache);
+
+    #[cfg(feature = "localfs")]
+    {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("db");
+        let mut durable = open_durable_database(&path).expect("durable open succeeds");
+        exercise(&mut durable);
+        let close = durable.close().expect("durable close succeeds");
+        assert!(close.durable());
+    }
+}
+
+fn exercise_kv_contract(database: &mut Database) {
+    let keys = KvContractKeys::new();
+    let facts = assert_default_kv_contract(database, &keys);
+    assert_empty_space_contract(database);
+    assert_space_isolation_contract(database, &keys);
+    assert_branch_isolation_contract(database, &keys, &facts);
+}
+
+struct KvContractKeys {
+    app_prefix: KvKey,
+    alpha: KvKey,
+    beta: KvKey,
+    missing: KvKey,
+}
+
+impl KvContractKeys {
+    fn new() -> Self {
+        Self {
+            app_prefix: key(b"app:"),
+            alpha: key(b"alpha"),
+            beta: key(b"beta"),
+            missing: key(b"missing"),
+        }
+    }
+}
+
+struct KvContractFacts {
+    alpha_second: CommitOutcome,
+    beta_create: CommitOutcome,
+    beta_delete: CommitOutcome,
+    app_batch: CommitOutcome,
+}
+
+fn assert_default_kv_contract(database: &mut Database, keys: &KvContractKeys) -> KvContractFacts {
+    let mut kv = database
+        .kv(branch("default"), space("default"))
+        .expect("KV service opens");
+    let (alpha_second, beta_create, app_batch) = seed_default_kv(&mut kv, keys);
+    assert_batch_read_contract(&mut kv, keys, &alpha_second);
+    let beta_delete = assert_delete_history_and_temporal_reads(&mut kv, keys, &beta_create);
+    assert_list_page_scan_count_and_sample(&mut kv, keys, &beta_create, &app_batch);
+    KvContractFacts {
+        alpha_second,
+        beta_create,
+        beta_delete,
+        app_batch,
+    }
+}
+
+fn seed_default_kv(
+    kv: &mut KvService<'_>,
+    keys: &KvContractKeys,
+) -> (CommitOutcome, CommitOutcome, CommitOutcome) {
+    let alpha_first = kv
+        .put(keys.alpha.clone(), value(b"one"))
+        .expect("first put succeeds");
+    assert_eq!(alpha_first.put_count(), 1);
+    assert_eq!(alpha_first.delete_count(), 0);
+    assert_eq!(
+        kv.get(&keys.alpha)
+            .expect("latest read succeeds")
+            .expect("alpha exists")
+            .as_bytes(),
+        b"one"
+    );
+    let alpha_versioned = kv
+        .get_versioned(&keys.alpha)
+        .expect("versioned read succeeds")
+        .expect("alpha exists");
+    assert_eq!(alpha_versioned.version(), alpha_first.version());
+    assert_eq!(alpha_versioned.timestamp(), alpha_first.timestamp());
+
+    let beta_create = kv
+        .put(keys.beta.clone(), value(b"beta"))
+        .expect("beta put succeeds");
+    let alpha_second = kv
+        .put(keys.alpha.clone(), value(b"two"))
+        .expect("second put succeeds");
+    let app_batch = kv
+        .put_batch([
+            (key(b"app:001"), value(b"value-1")),
+            (key(b"app:003"), value(b"value-3")),
+            (key(&[0, 1]), value(b"binary")),
+        ])
+        .expect("batch put succeeds");
+    assert_eq!(app_batch.put_count(), 3);
+    assert_eq!(app_batch.delete_count(), 0);
+    (alpha_second, beta_create, app_batch)
+}
+
+fn assert_batch_read_contract(
+    kv: &mut KvService<'_>,
+    keys: &KvContractKeys,
+    alpha_second: &CommitOutcome,
+) {
+    let positional = kv
+        .batch_get(&[keys.alpha.clone(), keys.missing.clone(), keys.alpha.clone()])
+        .expect("batch read succeeds");
+    assert_eq!(positional.len(), 3);
+    assert_eq!(
+        positional[0]
+            .as_ref()
+            .expect("first alpha")
+            .value()
+            .as_bytes(),
+        b"two"
+    );
+    assert!(positional[1].is_none());
+    assert_eq!(
+        positional[2].as_ref().expect("second alpha").version(),
+        alpha_second.version()
+    );
+    assert_eq!(
+        positional[2].as_ref().expect("second alpha").timestamp(),
+        alpha_second.timestamp()
+    );
+    assert_eq!(
+        kv.batch_exists(&[keys.alpha.clone(), keys.missing.clone(), keys.alpha.clone(),])
+            .expect("batch exists succeeds"),
+        vec![true, false, true]
+    );
+}
+
+fn assert_delete_history_and_temporal_reads(
+    kv: &mut KvService<'_>,
+    keys: &KvContractKeys,
+    beta_create: &CommitOutcome,
+) -> CommitOutcome {
+    assert!(kv.exists(&keys.beta).expect("beta exists succeeds"));
+    let beta_delete = kv.delete(keys.beta.clone()).expect("beta delete succeeds");
+    assert_eq!(beta_delete.delete_count(), 1);
+    assert!(!kv.exists(&keys.beta).expect("beta missing succeeds"));
+    assert!(kv.get(&keys.beta).expect("beta read succeeds").is_none());
+    assert_eq!(
+        kv.get_at_version(&keys.beta, beta_create.version())
+            .expect("version read succeeds")
+            .expect("beta existed")
+            .as_bytes(),
+        b"beta"
+    );
+    assert!(kv
+        .get_at_version(&keys.beta, beta_delete.version())
+        .expect("delete version read succeeds")
+        .is_none());
+    assert_eq!(
+        kv.get_at(&keys.beta, beta_create.timestamp())
+            .expect("timestamp read succeeds")
+            .expect("beta existed")
+            .as_bytes(),
+        b"beta"
+    );
+    assert!(kv
+        .get_at(&keys.beta, beta_delete.timestamp())
+        .expect("delete timestamp read succeeds")
+        .is_none());
+    assert_beta_history(kv, keys, &beta_delete);
+    beta_delete
+}
+
+fn assert_beta_history(kv: &mut KvService<'_>, keys: &KvContractKeys, beta_delete: &CommitOutcome) {
+    let beta_history = kv
+        .get_versions(&keys.beta)
+        .expect("history read succeeds")
+        .expect("beta history exists");
+    assert_eq!(beta_history.rows().len(), 2);
+    assert!(beta_history.rows()[0].is_tombstone());
+    assert_eq!(beta_history.rows()[0].version(), beta_delete.version());
+    assert_eq!(
+        beta_history.rows()[1]
+            .value()
+            .expect("beta history value")
+            .as_bytes(),
+        b"beta"
+    );
+    assert!(kv
+        .get_versions(&keys.missing)
+        .expect("missing history read succeeds")
+        .is_none());
+}
+
+fn assert_list_page_scan_count_and_sample(
+    kv: &mut KvService<'_>,
+    keys: &KvContractKeys,
+    beta_create: &CommitOutcome,
+    app_batch: &CommitOutcome,
+) {
+    assert_list_and_page_contract(kv, keys, beta_create, app_batch);
+    assert_scan_contract(kv, app_batch);
+    assert_count_and_sample_contract(kv, keys);
+}
+
+fn assert_list_and_page_contract(
+    kv: &mut KvService<'_>,
+    keys: &KvContractKeys,
+    beta_create: &CommitOutcome,
+    app_batch: &CommitOutcome,
+) {
+    assert_key_bytes(
+        &kv.list(Some(&keys.app_prefix))
+            .expect("prefix list succeeds"),
+        &[b"app:001", b"app:003"],
+    );
+    assert!(kv
+        .list(Some(&key(b"absent:")))
+        .expect("missing prefix list succeeds")
+        .is_empty());
+    assert_key_bytes(
+        &kv.list(Some(&key(&[0]))).expect("binary prefix succeeds"),
+        &[&[0, 1]],
+    );
+    assert!(kv
+        .list_at(Some(&keys.app_prefix), beta_create.timestamp())
+        .expect("early timestamp list succeeds")
+        .is_empty());
+    assert_key_bytes(
+        &kv.list_at(Some(&keys.app_prefix), app_batch.timestamp())
+            .expect("timestamp list succeeds"),
+        &[b"app:001", b"app:003"],
+    );
+
+    let empty_page = kv
+        .list_page(Some(&keys.app_prefix), None, 0)
+        .expect("zero page succeeds");
+    assert!(empty_page.keys().is_empty());
+    assert!(!empty_page.has_more());
+    assert!(empty_page.cursor().is_none());
+
+    let first_page = kv
+        .list_page(Some(&keys.app_prefix), None, 1)
+        .expect("first page succeeds");
+    assert_key_bytes(first_page.keys(), &[b"app:001"]);
+    assert!(first_page.has_more());
+    let second_page = kv
+        .list_page(Some(&keys.app_prefix), first_page.cursor(), 1)
+        .expect("second page succeeds");
+    assert_key_bytes(second_page.keys(), &[b"app:003"]);
+    assert!(!second_page.has_more());
+    assert!(second_page.cursor().is_none());
+}
+
+fn assert_scan_contract(kv: &mut KvService<'_>, app_batch: &CommitOutcome) {
+    let first_row = kv.scan(None, Some(1)).expect("limited scan succeeds");
+    assert_eq!(first_row.len(), 1);
+    assert_eq!(first_row[0].version(), app_batch.version());
+    assert_eq!(first_row[0].timestamp(), app_batch.timestamp());
+    assert_row_key_bytes(
+        &kv.scan_range(Some(&key(b"app:002")), Some(&key(b"app:004")), None)
+            .expect("bounded scan succeeds"),
+        &[b"app:003"],
+    );
+    assert_row_key_bytes(
+        &kv.scan(Some(&key(b"app:002")), Some(1))
+            .expect("between-key scan succeeds"),
+        &[b"app:003"],
+    );
+}
+
+fn assert_count_and_sample_contract(kv: &mut KvService<'_>, keys: &KvContractKeys) {
+    assert_eq!(kv.count(Some(&keys.app_prefix)).expect("count succeeds"), 2);
+    let zero_sample = kv
+        .sample(Some(&keys.app_prefix), 0)
+        .expect("zero sample succeeds");
+    assert_eq!(zero_sample.total_count(), 2);
+    assert!(zero_sample.rows().is_empty());
+    let first_sample = kv
+        .sample(Some(&keys.app_prefix), 1)
+        .expect("sample succeeds");
+    let second_sample = kv
+        .sample(Some(&keys.app_prefix), 1)
+        .expect("repeat sample succeeds");
+    assert_eq!(first_sample, second_sample);
+    assert_eq!(first_sample.rows().len(), 1);
+    assert!(first_sample.rows()[0]
+        .key()
+        .as_bytes()
+        .starts_with(keys.app_prefix.as_bytes()));
+}
+
+fn assert_empty_space_contract(database: &mut Database) {
+    let mut empty = database
+        .kv(branch("default"), space("empty"))
+        .expect("empty space opens");
+    assert_eq!(empty.count(None).expect("empty count succeeds"), 0);
+    let sample = empty.sample(None, 2).expect("empty sample succeeds");
+    assert_eq!(sample.total_count(), 0);
+    assert!(sample.rows().is_empty());
+}
+
+fn assert_space_isolation_contract(database: &mut Database, keys: &KvContractKeys) {
+    let mut other = database
+        .kv(branch("default"), space("other"))
+        .expect("other space opens");
+    other
+        .put(keys.alpha.clone(), value(b"other"))
+        .expect("other space put succeeds");
+    assert_eq!(
+        other
+            .get(&keys.alpha)
+            .expect("other read succeeds")
+            .expect("other value exists")
+            .as_bytes(),
+        b"other"
+    );
+    assert!(other
+        .list(Some(&keys.app_prefix))
+        .expect("other prefix list succeeds")
+        .is_empty());
+}
+
+fn assert_branch_isolation_contract(
+    database: &mut Database,
+    keys: &KvContractKeys,
+    facts: &KvContractFacts,
+) {
+    assert_branch_value(database, "default", "default", b"alpha", b"two");
+    database
+        .branches()
+        .expect("branch service opens")
+        .create_from_head(&branch("default"), branch("feature"))
+        .expect("feature branch succeeds");
+
+    let mut feature = database
+        .kv(branch("feature"), space("default"))
+        .expect("feature KV opens");
+    feature
+        .put(keys.alpha.clone(), value(b"feature"))
+        .expect("feature put succeeds");
+    assert_eq!(
+        feature
+            .get(&keys.alpha)
+            .expect("feature read succeeds")
+            .expect("feature value exists")
+            .as_bytes(),
+        b"feature"
+    );
+    assert_eq!(
+        feature
+            .count(Some(&keys.app_prefix))
+            .expect("feature count succeeds"),
+        2
+    );
+    assert_row_key_bytes(
+        feature
+            .sample(Some(&keys.app_prefix), 2)
+            .expect("feature sample succeeds")
+            .rows(),
+        &[b"app:001", b"app:003"],
+    );
+    assert_eq!(
+        feature
+            .get_versions(&keys.alpha)
+            .expect("feature history succeeds")
+            .expect("feature history exists")
+            .rows()[0]
+            .value()
+            .expect("feature history value")
+            .as_bytes(),
+        b"feature"
+    );
+    assert_eq!(facts.alpha_second.put_count(), 1);
+    assert_eq!(facts.beta_create.put_count(), 1);
+    assert_eq!(facts.beta_delete.delete_count(), 1);
+    assert_eq!(facts.app_batch.put_count(), 3);
+    drop(feature);
+
+    assert_branch_value(database, "default", "default", b"alpha", b"two");
 }
