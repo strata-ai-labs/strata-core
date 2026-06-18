@@ -6,18 +6,26 @@ use std::path::PathBuf;
 use strata_core_next::{CommitVersion, Timestamp};
 use strata_engine_next::{
     api::CommitOutcome, BranchCleanupSummary, BranchName, BranchStatus as EngineBranchStatus,
-    BranchSummary, CacheOpenOptions, Database, DurableLocalOpenOptions, KvHistory, KvHistoryRow,
-    KvKey, KvSample, KvScanRow, KvValue, KvVersionedValue, ProductSpace,
+    BranchSummary, CacheOpenOptions, Database, DurableLocalOpenOptions, JsonDocumentId,
+    JsonGetEntry, JsonHistory, JsonHistoryRow, JsonIndexDefinition as EngineJsonIndexDefinition,
+    JsonIndexName, JsonIndexType as EngineJsonIndexType, JsonListPage, JsonPath,
+    JsonSample as EngineJsonSample, JsonSampleRow, JsonService, JsonSetEntry,
+    JsonValue as EngineJsonValue, JsonVersionedValue as EngineJsonVersionedValue, KvHistory,
+    KvHistoryRow, KvKey, KvSample, KvScanRow, KvValue, KvVersionedValue, ProductSpace,
 };
 
 use crate::command::Command;
 use crate::error::{ExecutorError, ExecutorErrorClass, ExecutorResult};
 use crate::output::Output;
 use crate::types::{
-    BatchGetItemResult, BatchItemResult, BatchKvEntry, BranchCleanupItem, BranchItem,
-    BranchParentItem, BranchStatus, Bytes, HistoryItem, SampleItem, ScanItem, VersionedValue,
-    DEFAULT_BRANCH, DEFAULT_SPACE,
+    BatchGetItemResult, BatchItemResult, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry,
+    BatchKvEntry, BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus, Bytes,
+    HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
+    JsonIndexType, JsonSampleItem, JsonVersionedValue as OutputJsonVersionedValue, SampleItem,
+    ScanItem, VersionedValue, DEFAULT_BRANCH, DEFAULT_SPACE,
 };
+
+const DEFAULT_JSON_LIST_LIMIT: usize = 100;
 
 /// Serialized command executor backed by an engine database handle.
 pub struct Executor {
@@ -174,6 +182,94 @@ impl Executor {
                 prefix,
                 count,
             } => self.execute_kv_sample(branch.as_deref(), space.as_deref(), prefix, count),
+            Command::JsonSet {
+                branch,
+                space,
+                key,
+                path,
+                value,
+            } => self.execute_json_set(branch.as_deref(), space.as_deref(), &key, &path, value),
+            Command::JsonGet {
+                branch,
+                space,
+                key,
+                path,
+                as_of,
+            } => self.execute_json_get(branch.as_deref(), space.as_deref(), &key, &path, as_of),
+            Command::JsonDelete {
+                branch,
+                space,
+                key,
+                path,
+            } => self.execute_json_delete(branch.as_deref(), space.as_deref(), &key, &path),
+            Command::JsonGetv { branch, space, key } => {
+                self.execute_json_getv(branch.as_deref(), space.as_deref(), key)
+            }
+            Command::JsonExists { branch, space, key } => {
+                self.execute_json_exists(branch.as_deref(), space.as_deref(), key)
+            }
+            Command::JsonBatchSet {
+                branch,
+                space,
+                entries,
+            } => self.execute_json_batch_set(branch.as_deref(), space.as_deref(), entries),
+            Command::JsonBatchGet {
+                branch,
+                space,
+                entries,
+            } => self.execute_json_batch_get(branch.as_deref(), space.as_deref(), entries),
+            Command::JsonBatchDelete {
+                branch,
+                space,
+                entries,
+            } => self.execute_json_batch_delete(branch.as_deref(), space.as_deref(), entries),
+            Command::JsonList {
+                branch,
+                space,
+                prefix,
+                cursor,
+                limit,
+                as_of,
+            } => self.execute_json_list(
+                branch.as_deref(),
+                space.as_deref(),
+                prefix,
+                cursor,
+                limit,
+                as_of,
+            ),
+            Command::JsonCount {
+                branch,
+                space,
+                prefix,
+            } => self.execute_json_count(branch.as_deref(), space.as_deref(), prefix),
+            Command::JsonSample {
+                branch,
+                space,
+                prefix,
+                count,
+            } => self.execute_json_sample(branch.as_deref(), space.as_deref(), prefix, count),
+            Command::JsonCreateIndex {
+                branch,
+                space,
+                name,
+                field_path,
+                index_type,
+            } => self.execute_json_create_index(
+                branch.as_deref(),
+                space.as_deref(),
+                name,
+                &field_path,
+                index_type,
+            ),
+            Command::JsonDropIndex {
+                branch,
+                space,
+                name,
+            } => self.execute_json_drop_index(branch.as_deref(), space.as_deref(), name),
+            Command::JsonListIndexes { branch, space } => {
+                self.execute_json_list_indexes(branch.as_deref(), space.as_deref())
+            }
         }
     }
 
@@ -527,6 +623,295 @@ impl Executor {
         Ok(sample_output(&service.sample(prefix.as_ref(), count)?))
     }
 
+    fn execute_json_set(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        key: &str,
+        path: &str,
+        value: serde_json::Value,
+    ) -> ExecutorResult<Output> {
+        let id = json_document_id(key)?;
+        let path = json_path(path)?;
+        let value = json_value(value)?;
+        let mut service = self.json_service(branch, space)?;
+        let outcome = service.set_or_create(id, &path, value)?;
+        Ok(json_write_output(key, outcome.commit()))
+    }
+
+    fn execute_json_get(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        key: &str,
+        path: &str,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let id = json_document_id(key)?;
+        let path = json_path(path)?;
+        let mut service = self.json_service(branch, space)?;
+        if let Some(as_of) = as_of {
+            let value = service.get_at(&id, &path, Timestamp::from_micros(as_of))?;
+            return Ok(Output::JsonValue(value.map(json_value_output)));
+        }
+        Ok(Output::JsonVersionedValue(
+            service
+                .get_versioned(&id, &path)?
+                .as_ref()
+                .map(json_versioned_value),
+        ))
+    }
+
+    fn execute_json_delete(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        key: &str,
+        path: &str,
+    ) -> ExecutorResult<Output> {
+        let id = json_document_id(key)?;
+        let path = json_path(path)?;
+        let mut service = self.json_service(branch, space)?;
+        let outcome = service.delete(id, &path)?;
+        Ok(json_delete_output(key, outcome.deleted(), outcome.commit()))
+    }
+
+    fn execute_json_getv(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        key: String,
+    ) -> ExecutorResult<Output> {
+        let id = json_document_id(key)?;
+        let mut service = self.json_service(branch, space)?;
+        Ok(Output::JsonVersionHistory(
+            service.get_versions(&id)?.as_ref().map(json_history_items),
+        ))
+    }
+
+    fn execute_json_exists(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        key: String,
+    ) -> ExecutorResult<Output> {
+        let id = json_document_id(key)?;
+        let mut service = self.json_service(branch, space)?;
+        Ok(Output::Bool(service.exists(&id)?))
+    }
+
+    fn execute_json_batch_set(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        entries: Vec<BatchJsonEntry>,
+    ) -> ExecutorResult<Output> {
+        let mut service = self.json_service(branch, space)?;
+        if entries.is_empty() {
+            return Ok(Output::JsonBatchResults(Vec::new()));
+        }
+        let mut results = empty_json_batch_results(entries.len());
+        let mut valid_entries = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.into_iter().enumerate() {
+            let (key, path, value) = entry.into_parts();
+            match json_set_entry(key, &path, value) {
+                Ok(entry) => valid_entries.push((index, entry)),
+                Err(error) => {
+                    results[index] = Some(JsonBatchItemResult::failed(error.to_string()));
+                }
+            }
+        }
+        if valid_entries.is_empty() {
+            return Ok(Output::JsonBatchResults(finish_json_batch_results(results)));
+        }
+        let engine_entries = valid_entries
+            .iter()
+            .map(|(_, entry)| entry.clone())
+            .collect::<Vec<_>>();
+        let outcome = service.batch_set_or_create(engine_entries)?;
+        for ((index, _), item) in valid_entries.into_iter().zip(outcome.results()) {
+            results[index] = Some(json_batch_item_result(
+                outcome.commit(),
+                Some(item.document_version()),
+            ));
+        }
+        Ok(Output::JsonBatchResults(finish_json_batch_results(results)))
+    }
+
+    fn execute_json_batch_get(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        entries: Vec<BatchJsonGetEntry>,
+    ) -> ExecutorResult<Output> {
+        let mut service = self.json_service(branch, space)?;
+        if entries.is_empty() {
+            return Ok(Output::JsonBatchGetResults(Vec::new()));
+        }
+        let mut results = empty_json_batch_get_results(entries.len());
+        let mut valid_entries = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.into_iter().enumerate() {
+            let (key, path) = entry.into_parts();
+            match json_get_entry(key, &path) {
+                Ok(entry) => valid_entries.push((index, entry)),
+                Err(error) => {
+                    results[index] = Some(JsonBatchGetItemResult::failed(error.to_string()));
+                }
+            }
+        }
+        if valid_entries.is_empty() {
+            return Ok(Output::JsonBatchGetResults(finish_json_batch_get_results(
+                results,
+            )));
+        }
+        let engine_entries = valid_entries
+            .iter()
+            .map(|(_, entry)| entry.clone())
+            .collect::<Vec<_>>();
+        let values = service.batch_get(&engine_entries)?;
+        for ((index, _), value) in valid_entries.into_iter().zip(values) {
+            results[index] = Some(json_batch_get_result(value));
+        }
+        Ok(Output::JsonBatchGetResults(finish_json_batch_get_results(
+            results,
+        )))
+    }
+
+    fn execute_json_batch_delete(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        entries: Vec<BatchJsonDeleteEntry>,
+    ) -> ExecutorResult<Output> {
+        let mut service = self.json_service(branch, space)?;
+        if entries.is_empty() {
+            return Ok(Output::JsonBatchResults(Vec::new()));
+        }
+        let mut results = empty_json_batch_results(entries.len());
+        let mut valid_entries = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.into_iter().enumerate() {
+            let (key, path) = entry.into_parts();
+            match json_get_entry(key, &path) {
+                Ok(entry) => valid_entries.push((index, entry)),
+                Err(error) => {
+                    results[index] = Some(JsonBatchItemResult::failed(error.to_string()));
+                }
+            }
+        }
+        if valid_entries.is_empty() {
+            return Ok(Output::JsonBatchResults(finish_json_batch_results(results)));
+        }
+        let engine_entries = valid_entries
+            .iter()
+            .map(|(_, entry)| entry.clone())
+            .collect::<Vec<_>>();
+        let outcome = service.batch_delete_entries(engine_entries)?;
+        for ((index, _), deleted) in valid_entries
+            .into_iter()
+            .zip(outcome.deleted().iter().copied())
+        {
+            results[index] = Some(json_batch_item_result(
+                deleted.then(|| outcome.commit()).flatten(),
+                None,
+            ));
+        }
+        Ok(Output::JsonBatchResults(finish_json_batch_results(results)))
+    }
+
+    fn execute_json_list(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        prefix: Option<String>,
+        cursor: Option<String>,
+        limit: Option<u64>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let prefix = optional_json_prefix(prefix)?;
+        let cursor = optional_json_document_id(cursor)?;
+        let limit = optional_limit(limit)?.unwrap_or(DEFAULT_JSON_LIST_LIMIT);
+        let mut service = self.json_service(branch, space)?;
+        let page = if let Some(as_of) = as_of {
+            service.list_at(
+                prefix.as_ref(),
+                cursor.as_ref(),
+                limit,
+                Timestamp::from_micros(as_of),
+            )?
+        } else {
+            service.list(prefix.as_ref(), cursor.as_ref(), limit)?
+        };
+        Ok(json_list_output(&page))
+    }
+
+    fn execute_json_count(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        prefix: Option<String>,
+    ) -> ExecutorResult<Output> {
+        let prefix = optional_json_prefix(prefix)?;
+        let mut service = self.json_service(branch, space)?;
+        Ok(Output::Uint(service.count(prefix.as_ref())?))
+    }
+
+    fn execute_json_sample(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        prefix: Option<String>,
+        count: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let prefix = optional_json_prefix(prefix)?;
+        let count = optional_limit(count)?.unwrap_or(10);
+        let mut service = self.json_service(branch, space)?;
+        Ok(json_sample_output(&service.sample(prefix.as_ref(), count)?))
+    }
+
+    fn execute_json_create_index(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        name: String,
+        field_path: &str,
+        index_type: JsonIndexType,
+    ) -> ExecutorResult<Output> {
+        let name = json_index_name(name)?;
+        let field_path = json_path(field_path)?;
+        let index_type = engine_json_index_type(index_type);
+        let mut service = self.json_service(branch, space)?;
+        let definition = service.create_index(name, field_path, index_type)?;
+        Ok(Output::JsonIndexDefinition(json_index_definition(
+            &definition,
+        )))
+    }
+
+    fn execute_json_drop_index(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        name: String,
+    ) -> ExecutorResult<Output> {
+        let name = json_index_name(name)?;
+        let mut service = self.json_service(branch, space)?;
+        Ok(Output::Bool(service.drop_index(&name)?))
+    }
+
+    fn execute_json_list_indexes(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+    ) -> ExecutorResult<Output> {
+        let mut service = self.json_service(branch, space)?;
+        Ok(Output::JsonIndexList(
+            service
+                .list_indexes()?
+                .iter()
+                .map(json_index_definition)
+                .collect(),
+        ))
+    }
+
     fn kv_service(
         &mut self,
         branch: Option<&str>,
@@ -539,6 +924,20 @@ impl Executor {
             branches.get(&branch)?;
         }
         Ok(self.database.kv(branch, space)?)
+    }
+
+    fn json_service(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+    ) -> ExecutorResult<JsonService<'_>> {
+        let branch = branch_name(branch, &self.default_branch)?;
+        let space = product_space(space)?;
+        {
+            let branches = self.database.branches()?;
+            branches.get(&branch)?;
+        }
+        Ok(self.database.json(branch, space)?)
     }
 }
 
@@ -712,6 +1111,81 @@ impl Executor {
             count,
         })
     }
+
+    /// Executes a default-branch JSON set command.
+    pub fn json_set(
+        &mut self,
+        key: impl Into<String>,
+        path: impl Into<String>,
+        value: serde_json::Value,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::JsonSet {
+            branch: None,
+            space: None,
+            key: key.into(),
+            path: path.into(),
+            value,
+        })
+    }
+
+    /// Executes a default-branch JSON get command.
+    pub fn json_get(
+        &mut self,
+        key: impl Into<String>,
+        path: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::JsonGet {
+            branch: None,
+            space: None,
+            key: key.into(),
+            path: path.into(),
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch JSON delete command.
+    pub fn json_delete(
+        &mut self,
+        key: impl Into<String>,
+        path: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::JsonDelete {
+            branch: None,
+            space: None,
+            key: key.into(),
+            path: path.into(),
+        })
+    }
+
+    /// Executes a default-branch JSON batch set command.
+    pub fn json_batch_set(&mut self, entries: Vec<BatchJsonEntry>) -> ExecutorResult<Output> {
+        self.execute(Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries,
+        })
+    }
+
+    /// Executes a default-branch JSON batch get command.
+    pub fn json_batch_get(&mut self, entries: Vec<BatchJsonGetEntry>) -> ExecutorResult<Output> {
+        self.execute(Command::JsonBatchGet {
+            branch: None,
+            space: None,
+            entries,
+        })
+    }
+
+    /// Executes a default-branch JSON batch delete command.
+    pub fn json_batch_delete(
+        &mut self,
+        entries: Vec<BatchJsonDeleteEntry>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::JsonBatchDelete {
+            branch: None,
+            space: None,
+            entries,
+        })
+    }
 }
 
 fn branch_name(branch: Option<&str>, default: &str) -> ExecutorResult<BranchName> {
@@ -732,6 +1206,66 @@ fn optional_key(key: Option<Bytes>) -> ExecutorResult<Option<KvKey>> {
 
 fn kv_value(value: Bytes) -> KvValue {
     KvValue::new(value.into_vec())
+}
+
+fn json_document_id(key: impl Into<String>) -> ExecutorResult<JsonDocumentId> {
+    JsonDocumentId::new(key).map_err(ExecutorError::from)
+}
+
+fn optional_json_document_id(key: Option<String>) -> ExecutorResult<Option<JsonDocumentId>> {
+    key.map(json_document_id).transpose()
+}
+
+fn optional_json_prefix(key: Option<String>) -> ExecutorResult<Option<JsonDocumentId>> {
+    match key {
+        Some(key) if key.is_empty() => Ok(None),
+        Some(key) => json_document_id(key).map(Some),
+        None => Ok(None),
+    }
+}
+
+fn json_path(path: &str) -> ExecutorResult<JsonPath> {
+    path.parse().map_err(ExecutorError::from)
+}
+
+fn json_value(value: serde_json::Value) -> ExecutorResult<EngineJsonValue> {
+    EngineJsonValue::new(value).map_err(ExecutorError::from)
+}
+
+fn json_index_name(name: String) -> ExecutorResult<JsonIndexName> {
+    JsonIndexName::new(name).map_err(ExecutorError::from)
+}
+
+fn json_set_entry(
+    key: String,
+    path: &str,
+    value: serde_json::Value,
+) -> ExecutorResult<JsonSetEntry> {
+    Ok(JsonSetEntry::new(
+        json_document_id(key)?,
+        json_path(path)?,
+        json_value(value)?,
+    ))
+}
+
+fn json_get_entry(key: String, path: &str) -> ExecutorResult<JsonGetEntry> {
+    Ok(JsonGetEntry::new(json_document_id(key)?, json_path(path)?))
+}
+
+const fn engine_json_index_type(index_type: JsonIndexType) -> EngineJsonIndexType {
+    match index_type {
+        JsonIndexType::Numeric => EngineJsonIndexType::Numeric,
+        JsonIndexType::Tag => EngineJsonIndexType::Tag,
+        JsonIndexType::Text => EngineJsonIndexType::Text,
+    }
+}
+
+const fn output_json_index_type(index_type: EngineJsonIndexType) -> JsonIndexType {
+    match index_type {
+        EngineJsonIndexType::Numeric => JsonIndexType::Numeric,
+        EngineJsonIndexType::Tag => JsonIndexType::Tag,
+        EngineJsonIndexType::Text => JsonIndexType::Text,
+    }
 }
 
 fn optional_limit(limit: Option<u64>) -> ExecutorResult<Option<usize>> {
@@ -879,6 +1413,104 @@ fn sample_output(sample: &KvSample) -> Output {
     }
 }
 
+fn json_write_output(key: &str, outcome: CommitOutcome) -> Output {
+    write_output(Bytes::from(key), outcome)
+}
+
+fn json_delete_output(key: &str, deleted: bool, outcome: Option<CommitOutcome>) -> Output {
+    delete_output(Bytes::from(key), deleted, outcome)
+}
+
+fn json_value_output(value: EngineJsonValue) -> serde_json::Value {
+    value.into_inner()
+}
+
+fn json_versioned_value(value: &EngineJsonVersionedValue) -> OutputJsonVersionedValue {
+    OutputJsonVersionedValue::new(
+        value.value().clone().into_inner(),
+        value.version().as_u64(),
+        value.timestamp().as_micros(),
+        value.document_version(),
+    )
+}
+
+fn json_history_items(history: &JsonHistory) -> Vec<JsonHistoryItem> {
+    history.rows().iter().map(json_history_item).collect()
+}
+
+fn json_history_item(row: &JsonHistoryRow) -> JsonHistoryItem {
+    JsonHistoryItem::new(
+        row.value().map(|value| value.clone().into_inner()),
+        row.version().as_u64(),
+        row.timestamp().as_micros(),
+        row.document_version(),
+        row.is_tombstone(),
+    )
+}
+
+fn json_batch_item_result(
+    outcome: Option<CommitOutcome>,
+    document_version: Option<u64>,
+) -> JsonBatchItemResult {
+    JsonBatchItemResult::new(
+        outcome.map(|outcome| outcome.version().as_u64()),
+        outcome.map(|outcome| outcome.timestamp().as_micros()),
+        document_version,
+    )
+}
+
+fn json_batch_get_result(value: Option<EngineJsonVersionedValue>) -> JsonBatchGetItemResult {
+    match value {
+        Some(value) => JsonBatchGetItemResult::new(
+            Some(value.value().clone().into_inner()),
+            Some(value.version().as_u64()),
+            Some(value.timestamp().as_micros()),
+            Some(value.document_version()),
+        ),
+        None => JsonBatchGetItemResult::new(None, None, None, None),
+    }
+}
+
+fn json_list_output(page: &JsonListPage) -> Output {
+    Output::JsonListResult {
+        keys: page
+            .document_ids()
+            .iter()
+            .map(|id| id.as_str().to_owned())
+            .collect(),
+        has_more: page.has_more(),
+        cursor: page.cursor().map(|cursor| cursor.as_str().to_owned()),
+    }
+}
+
+fn json_sample_output(sample: &EngineJsonSample) -> Output {
+    Output::JsonSampleResult {
+        total_count: sample.total_count(),
+        items: sample.rows().iter().map(json_sample_item).collect(),
+    }
+}
+
+fn json_sample_item(row: &JsonSampleRow) -> JsonSampleItem {
+    JsonSampleItem::new(
+        row.document_id().as_str().to_owned(),
+        row.value().clone().into_inner(),
+        row.version().as_u64(),
+        row.timestamp().as_micros(),
+        row.document_version(),
+    )
+}
+
+fn json_index_definition(definition: &EngineJsonIndexDefinition) -> JsonIndexDefinition {
+    JsonIndexDefinition::new(
+        definition.name().as_str().to_owned(),
+        definition.space().as_str().to_owned(),
+        definition.field_path().to_string(),
+        output_json_index_type(definition.index_type()),
+        definition.created_version(),
+        definition.created_timestamp(),
+    )
+}
+
 fn page_or_keys(
     keys: Vec<KvKey>,
     cursor: Option<&KvKey>,
@@ -929,6 +1561,32 @@ fn finish_batch_get_results(results: Vec<Option<BatchGetItemResult>>) -> Vec<Bat
     results
         .into_iter()
         .map(|result| result.expect("all batch get result slots are filled"))
+        .collect()
+}
+
+fn empty_json_batch_results(len: usize) -> Vec<Option<JsonBatchItemResult>> {
+    std::iter::repeat_with(|| None).take(len).collect()
+}
+
+fn finish_json_batch_results(
+    results: Vec<Option<JsonBatchItemResult>>,
+) -> Vec<JsonBatchItemResult> {
+    results
+        .into_iter()
+        .map(|result| result.expect("all JSON batch result slots are filled"))
+        .collect()
+}
+
+fn empty_json_batch_get_results(len: usize) -> Vec<Option<JsonBatchGetItemResult>> {
+    std::iter::repeat_with(|| None).take(len).collect()
+}
+
+fn finish_json_batch_get_results(
+    results: Vec<Option<JsonBatchGetItemResult>>,
+) -> Vec<JsonBatchGetItemResult> {
+    results
+        .into_iter()
+        .map(|result| result.expect("all JSON batch get result slots are filled"))
         .collect()
 }
 

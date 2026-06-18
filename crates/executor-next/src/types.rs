@@ -1,6 +1,7 @@
 //! Serializable request and response helper types.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Default product branch used when a command omits its branch.
 pub const DEFAULT_BRANCH: &str = "default";
@@ -84,6 +85,451 @@ impl BatchKvEntry {
     /// Consumes the entry.
     pub fn into_parts(self) -> (Bytes, Bytes) {
         (self.key, self.value)
+    }
+}
+
+/// Entry for a batch JSON set.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BatchJsonEntry {
+    key: String,
+    path: String,
+    value: Value,
+}
+
+impl BatchJsonEntry {
+    /// Creates a batch JSON set entry.
+    pub fn new(key: impl Into<String>, path: impl Into<String>, value: Value) -> Self {
+        Self {
+            key: key.into(),
+            path: path.into(),
+            value,
+        }
+    }
+
+    /// Returns the document key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the JSON path.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Returns the JSON value.
+    pub const fn value(&self) -> &Value {
+        &self.value
+    }
+
+    /// Consumes the entry.
+    pub fn into_parts(self) -> (String, String, Value) {
+        (self.key, self.path, self.value)
+    }
+}
+
+/// Entry for a batch JSON get.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BatchJsonGetEntry {
+    key: String,
+    path: String,
+}
+
+impl BatchJsonGetEntry {
+    /// Creates a batch JSON get entry.
+    pub fn new(key: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            path: path.into(),
+        }
+    }
+
+    /// Returns the document key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the JSON path.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Consumes the entry.
+    pub fn into_parts(self) -> (String, String) {
+        (self.key, self.path)
+    }
+}
+
+/// Entry for a batch JSON delete.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct BatchJsonDeleteEntry {
+    key: String,
+    path: String,
+}
+
+impl BatchJsonDeleteEntry {
+    /// Creates a batch JSON delete entry.
+    pub fn new(key: impl Into<String>, path: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            path: path.into(),
+        }
+    }
+
+    /// Returns the document key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the JSON path.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Consumes the entry.
+    pub fn into_parts(self) -> (String, String) {
+        (self.key, self.path)
+    }
+}
+
+/// JSON secondary index kind exposed through the command boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JsonIndexType {
+    /// Numeric field index.
+    Numeric,
+    /// Exact tag/string field index.
+    Tag,
+    /// Lowercase text field index.
+    Text,
+}
+
+/// Stored JSON value with commit metadata.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct JsonVersionedValue {
+    value: Value,
+    version: u64,
+    timestamp: u64,
+    document_version: u64,
+}
+
+impl JsonVersionedValue {
+    /// Creates a JSON versioned value.
+    pub fn new(value: Value, version: u64, timestamp: u64, document_version: u64) -> Self {
+        Self {
+            value,
+            version,
+            timestamp,
+            document_version,
+        }
+    }
+
+    /// Returns the selected JSON value.
+    pub const fn value(&self) -> &Value {
+        &self.value
+    }
+
+    /// Returns the commit version.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Returns the commit timestamp.
+    pub const fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+
+    /// Returns the document version.
+    pub const fn document_version(&self) -> u64 {
+        self.document_version
+    }
+}
+
+/// JSON version-history item.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct JsonHistoryItem {
+    value: Option<Value>,
+    version: u64,
+    timestamp: u64,
+    document_version: Option<u64>,
+    tombstone: bool,
+}
+
+impl JsonHistoryItem {
+    /// Creates a JSON history item.
+    pub fn new(
+        value: Option<Value>,
+        version: u64,
+        timestamp: u64,
+        document_version: Option<u64>,
+        tombstone: bool,
+    ) -> Self {
+        Self {
+            value,
+            version,
+            timestamp,
+            document_version,
+            tombstone,
+        }
+    }
+
+    /// Returns the full document value when this row is not a tombstone.
+    pub const fn value(&self) -> Option<&Value> {
+        self.value.as_ref()
+    }
+
+    /// Returns the commit version.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Returns the commit timestamp.
+    pub const fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+
+    /// Returns the document version, when present.
+    pub const fn document_version(&self) -> Option<u64> {
+        self.document_version
+    }
+
+    /// Returns true when this item represents a delete.
+    pub const fn is_tombstone(&self) -> bool {
+        self.tombstone
+    }
+}
+
+/// Positional JSON batch write/delete result.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JsonBatchItemResult {
+    version: Option<u64>,
+    timestamp: Option<u64>,
+    document_version: Option<u64>,
+    error: Option<String>,
+}
+
+impl JsonBatchItemResult {
+    /// Creates a successful JSON batch result.
+    pub const fn new(
+        version: Option<u64>,
+        timestamp: Option<u64>,
+        document_version: Option<u64>,
+    ) -> Self {
+        Self {
+            version,
+            timestamp,
+            document_version,
+            error: None,
+        }
+    }
+
+    /// Creates a failed JSON batch result.
+    pub fn failed(error: impl Into<String>) -> Self {
+        Self {
+            version: None,
+            timestamp: None,
+            document_version: None,
+            error: Some(error.into()),
+        }
+    }
+
+    /// Returns the commit version, when present.
+    pub const fn version(&self) -> Option<u64> {
+        self.version
+    }
+
+    /// Returns the commit timestamp, when present.
+    pub const fn timestamp(&self) -> Option<u64> {
+        self.timestamp
+    }
+
+    /// Returns the document version, when present.
+    pub const fn document_version(&self) -> Option<u64> {
+        self.document_version
+    }
+
+    /// Returns the item error, when this item failed validation.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+}
+
+/// Positional JSON batch read result.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct JsonBatchGetItemResult {
+    value: Option<Value>,
+    version: Option<u64>,
+    timestamp: Option<u64>,
+    document_version: Option<u64>,
+    error: Option<String>,
+}
+
+impl JsonBatchGetItemResult {
+    /// Creates a JSON batch read result.
+    pub fn new(
+        value: Option<Value>,
+        version: Option<u64>,
+        timestamp: Option<u64>,
+        document_version: Option<u64>,
+    ) -> Self {
+        Self {
+            value,
+            version,
+            timestamp,
+            document_version,
+            error: None,
+        }
+    }
+
+    /// Creates a failed JSON batch read result.
+    pub fn failed(error: impl Into<String>) -> Self {
+        Self {
+            value: None,
+            version: None,
+            timestamp: None,
+            document_version: None,
+            error: Some(error.into()),
+        }
+    }
+
+    /// Returns the selected JSON value, when present.
+    pub const fn value(&self) -> Option<&Value> {
+        self.value.as_ref()
+    }
+
+    /// Returns the commit version, when present.
+    pub const fn version(&self) -> Option<u64> {
+        self.version
+    }
+
+    /// Returns the commit timestamp, when present.
+    pub const fn timestamp(&self) -> Option<u64> {
+        self.timestamp
+    }
+
+    /// Returns the document version, when present.
+    pub const fn document_version(&self) -> Option<u64> {
+        self.document_version
+    }
+
+    /// Returns the item error, when this item failed validation.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+}
+
+/// Sampled JSON document.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct JsonSampleItem {
+    key: String,
+    value: Value,
+    version: u64,
+    timestamp: u64,
+    document_version: u64,
+}
+
+impl JsonSampleItem {
+    /// Creates a sampled JSON document.
+    pub fn new(
+        key: String,
+        value: Value,
+        version: u64,
+        timestamp: u64,
+        document_version: u64,
+    ) -> Self {
+        Self {
+            key,
+            value,
+            version,
+            timestamp,
+            document_version,
+        }
+    }
+
+    /// Returns the document key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the full document value.
+    pub const fn value(&self) -> &Value {
+        &self.value
+    }
+
+    /// Returns the commit version.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Returns the commit timestamp.
+    pub const fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+
+    /// Returns the document version.
+    pub const fn document_version(&self) -> u64 {
+        self.document_version
+    }
+}
+
+/// JSON secondary index definition exposed through the command boundary.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JsonIndexDefinition {
+    name: String,
+    space: String,
+    field_path: String,
+    index_type: JsonIndexType,
+    created_version: u64,
+    created_timestamp: u64,
+}
+
+impl JsonIndexDefinition {
+    /// Creates a JSON index definition.
+    pub fn new(
+        name: String,
+        space: String,
+        field_path: String,
+        index_type: JsonIndexType,
+        created_version: u64,
+        created_timestamp: u64,
+    ) -> Self {
+        Self {
+            name,
+            space,
+            field_path,
+            index_type,
+            created_version,
+            created_timestamp,
+        }
+    }
+
+    /// Returns the index name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the product space.
+    pub fn space(&self) -> &str {
+        &self.space
+    }
+
+    /// Returns the indexed field path.
+    pub fn field_path(&self) -> &str {
+        &self.field_path
+    }
+
+    /// Returns the index kind.
+    pub const fn index_type(&self) -> JsonIndexType {
+        self.index_type
+    }
+
+    /// Returns the creation commit version.
+    pub const fn created_version(&self) -> u64 {
+        self.created_version
+    }
+
+    /// Returns the creation commit timestamp.
+    pub const fn created_timestamp(&self) -> u64 {
+        self.created_timestamp
     }
 }
 

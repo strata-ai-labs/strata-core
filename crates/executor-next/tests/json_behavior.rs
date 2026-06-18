@@ -1,0 +1,1561 @@
+//! Executor JSON command behavior tests.
+
+use serde_json::{json, Value};
+use strata_engine_next::{CacheOpenOptions, Database};
+use strata_executor_next::{
+    BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, Bytes, Command, Executor,
+    ExecutorErrorClass, JsonIndexType, Output, DEFAULT_BRANCH,
+};
+use tempfile::TempDir;
+
+#[test]
+fn cache_executor_runs_complete_json_command_suite() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    run_json_command_suite(&mut executor);
+}
+
+#[test]
+fn durable_executor_reopens_json_documents_history_and_indexes() {
+    let temp = TempDir::new().expect("temp dir");
+    let path = temp.path().join("db");
+
+    {
+        let mut executor = Executor::open_durable_local(&path).expect("durable executor opens");
+        run_json_command_suite(&mut executor);
+        executor.close().expect("durable executor closes");
+    }
+
+    let mut reopened = Executor::open_durable_local(&path).expect("durable executor reopens");
+    assert_eq!(
+        execute_json_get_value(&mut reopened, "doc-alpha", "$.name"),
+        Some(json!("Ada Lovelace"))
+    );
+    assert_eq!(execute_json_count(&mut reopened, Some("doc-")), 4);
+    assert_json_history_has_tombstone(&mut reopened, "doc-delete");
+
+    let Output::JsonIndexList(indexes) = reopened
+        .execute(Command::JsonListIndexes {
+            branch: None,
+            space: None,
+        })
+        .expect("list indexes succeeds")
+    else {
+        panic!("unexpected index list output");
+    };
+    assert_eq!(indexes.len(), 1);
+    assert_eq!(indexes[0].name(), "by-name");
+}
+
+#[test]
+fn json_branch_and_space_defaults_are_isolated() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .create_branch_from_head(DEFAULT_BRANCH, "feature")
+        .expect("branch creates");
+
+    write_json(
+        &mut executor,
+        None,
+        None,
+        "shared",
+        "$",
+        json!({"where": "default"}),
+    );
+    write_json(
+        &mut executor,
+        Some("feature"),
+        None,
+        "shared",
+        "$",
+        json!({"where": "feature"}),
+    );
+    write_json(
+        &mut executor,
+        None,
+        Some("tenant-a"),
+        "shared",
+        "$",
+        json!({"where": "space"}),
+    );
+
+    assert_eq!(
+        execute_json_get_value(&mut executor, "shared", "$.where"),
+        Some(json!("default"))
+    );
+    assert_eq!(
+        execute_json_get_value_in(&mut executor, Some("feature"), None, "shared", "$.where"),
+        Some(json!("feature"))
+    );
+    assert_eq!(
+        execute_json_get_value_in(&mut executor, None, Some("tenant-a"), "shared", "$.where"),
+        Some(json!("space"))
+    );
+    assert_eq!(
+        execute_json_count_in(&mut executor, None, None, Some("shared")),
+        1
+    );
+    assert_eq!(
+        execute_json_count_in(&mut executor, Some("feature"), None, Some("shared")),
+        1
+    );
+    assert_eq!(
+        execute_json_count_in(&mut executor, None, Some("tenant-a"), Some("shared")),
+        1
+    );
+    assert_eq!(
+        execute_json_sample_in(&mut executor, Some("feature"), None, Some("shared"), 1).0,
+        1
+    );
+
+    create_json_index_in(
+        &mut executor,
+        None,
+        Some("tenant-a"),
+        "by-where",
+        "$.where",
+        JsonIndexType::Tag,
+    );
+    assert!(list_json_indexes_in(&mut executor, None, None).is_empty());
+    assert_eq!(
+        list_json_indexes_in(&mut executor, None, Some("tenant-a")).len(),
+        1
+    );
+}
+
+#[test]
+fn json_executor_inherits_configured_database_default_branch() {
+    let options = CacheOpenOptions::new()
+        .with_default_branch("main")
+        .expect("valid branch");
+    let database = Database::open_cache(options)
+        .expect("cache database opens")
+        .into_database();
+    let mut executor = Executor::from_database(database);
+
+    assert_eq!(executor.default_branch(), "main");
+    write_json(
+        &mut executor,
+        None,
+        None,
+        "shared",
+        "$",
+        json!({"where": "main"}),
+    );
+    assert_eq!(
+        execute_json_get_value(&mut executor, "shared", "$.where"),
+        Some(json!("main"))
+    );
+
+    let error = executor
+        .execute(Command::JsonGet {
+            branch: Some(DEFAULT_BRANCH.to_owned()),
+            space: None,
+            key: "shared".to_owned(),
+            path: "$".to_owned(),
+            as_of: None,
+        })
+        .expect_err("literal default branch is absent");
+    assert_eq!(error.class(), ExecutorErrorClass::NotFound);
+}
+
+#[test]
+fn json_edge_contract_runs_in_cache_and_durable_modes() {
+    run_executor_modes(run_json_edge_contract);
+}
+
+#[test]
+fn json_error_contract_runs_in_cache_and_durable_modes() {
+    run_executor_modes(run_json_error_contract);
+}
+
+#[test]
+fn json_large_batch_smoke_uses_batch_commands() {
+    const ROWS: usize = 512;
+    const BATCH: usize = 64;
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    for start in (0..ROWS).step_by(BATCH) {
+        let end = start.saturating_add(BATCH).min(ROWS);
+        let entries = (start..end)
+            .map(|index| {
+                BatchJsonEntry::new(
+                    format!("bulk-{index:04}"),
+                    "$",
+                    json!({"index": index, "group": index % 8}),
+                )
+            })
+            .collect::<Vec<_>>();
+        let Output::JsonBatchResults(results) = executor
+            .execute(Command::JsonBatchSet {
+                branch: None,
+                space: None,
+                entries,
+            })
+            .expect("batch set succeeds")
+        else {
+            panic!("unexpected batch output");
+        };
+        assert_eq!(results.len(), end - start);
+        assert!(results.iter().all(|result| result.version().is_some()));
+    }
+
+    assert_eq!(
+        execute_json_count(&mut executor, Some("bulk-")),
+        ROWS as u64
+    );
+}
+
+#[test]
+fn json_command_to_output_mapping_is_explicit_for_every_variant() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    seed_json_mapping_documents(&mut executor);
+
+    let outputs = json_mapping_commands()
+        .into_iter()
+        .map(|command| executor.execute(command).expect("command succeeds"))
+        .collect::<Vec<_>>();
+
+    assert_json_mapping_outputs(&outputs);
+}
+
+fn seed_json_mapping_documents(executor: &mut Executor) {
+    write_json(
+        executor,
+        None,
+        None,
+        "map-a",
+        "$",
+        json!({"name": "Ada", "active": true}),
+    );
+    write_json(
+        executor,
+        None,
+        None,
+        "map-b",
+        "$",
+        json!({"name": "Grace", "active": true}),
+    );
+}
+
+fn json_mapping_commands() -> Vec<Command> {
+    vec![
+        Command::JsonSet {
+            branch: None,
+            space: None,
+            key: "map-put".to_owned(),
+            path: "$".to_owned(),
+            value: json!({"name": "Lin"}),
+        },
+        Command::JsonGet {
+            branch: None,
+            space: None,
+            key: "map-a".to_owned(),
+            path: "$.name".to_owned(),
+            as_of: None,
+        },
+        Command::JsonDelete {
+            branch: None,
+            space: None,
+            key: "map-delete-missing".to_owned(),
+            path: "$".to_owned(),
+        },
+        Command::JsonGetv {
+            branch: None,
+            space: None,
+            key: "map-a".to_owned(),
+        },
+        Command::JsonExists {
+            branch: None,
+            space: None,
+            key: "map-a".to_owned(),
+        },
+        Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries: vec![BatchJsonEntry::new(
+                "map-c",
+                "$",
+                json!({"name": "Katherine"}),
+            )],
+        },
+        Command::JsonBatchGet {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonGetEntry::new("map-a", "$.name"),
+                BatchJsonGetEntry::new("missing", "$"),
+            ],
+        },
+        Command::JsonBatchDelete {
+            branch: None,
+            space: None,
+            entries: vec![BatchJsonDeleteEntry::new("map-c", "$")],
+        },
+        Command::JsonList {
+            branch: None,
+            space: None,
+            prefix: Some("map-".to_owned()),
+            cursor: None,
+            limit: Some(2),
+            as_of: None,
+        },
+        Command::JsonCount {
+            branch: None,
+            space: None,
+            prefix: Some("map-".to_owned()),
+        },
+        Command::JsonSample {
+            branch: None,
+            space: None,
+            prefix: Some("map-".to_owned()),
+            count: Some(1),
+        },
+        Command::JsonCreateIndex {
+            branch: None,
+            space: None,
+            name: "by-name".to_owned(),
+            field_path: "$.name".to_owned(),
+            index_type: JsonIndexType::Text,
+        },
+        Command::JsonDropIndex {
+            branch: None,
+            space: None,
+            name: "by-name".to_owned(),
+        },
+        Command::JsonListIndexes {
+            branch: None,
+            space: None,
+        },
+    ]
+}
+
+fn assert_json_mapping_outputs(outputs: &[Output]) {
+    assert!(matches!(outputs[0], Output::WriteResult { .. }));
+    assert!(matches!(outputs[1], Output::JsonVersionedValue(_)));
+    assert!(matches!(outputs[2], Output::DeleteResult { .. }));
+    assert!(matches!(outputs[3], Output::JsonVersionHistory(_)));
+    assert!(matches!(outputs[4], Output::Bool(_)));
+    assert!(matches!(outputs[5], Output::JsonBatchResults(_)));
+    assert!(matches!(outputs[6], Output::JsonBatchGetResults(_)));
+    assert!(matches!(outputs[7], Output::JsonBatchResults(_)));
+    assert!(matches!(outputs[8], Output::JsonListResult { .. }));
+    assert!(matches!(outputs[9], Output::Uint(_)));
+    assert!(matches!(outputs[10], Output::JsonSampleResult { .. }));
+    assert!(matches!(outputs[11], Output::JsonIndexDefinition(_)));
+    assert!(matches!(outputs[12], Output::Bool(_)));
+    assert!(matches!(outputs[13], Output::JsonIndexList(_)));
+}
+
+#[test]
+fn json_invalid_batch_items_are_positional_errors() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    let output = executor
+        .execute(Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonEntry::new("", "$", json!({"bad": true})),
+                BatchJsonEntry::new("valid", "$.name", json!("Ada")),
+            ],
+        })
+        .expect("batch set returns positional errors");
+    let Output::JsonBatchResults(results) = output else {
+        panic!("unexpected batch set output: {output:?}");
+    };
+    assert_eq!(results.len(), 2);
+    assert!(results[0].error().is_some());
+    assert!(results[1].version().is_some());
+    assert_eq!(
+        execute_json_get_value(&mut executor, "valid", "$.name"),
+        Some(json!("Ada"))
+    );
+
+    let output = executor
+        .execute(Command::JsonBatchGet {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonGetEntry::new("", "$"),
+                BatchJsonGetEntry::new("valid", "$.name"),
+            ],
+        })
+        .expect("batch get returns positional errors");
+    let Output::JsonBatchGetResults(results) = output else {
+        panic!("unexpected batch get output: {output:?}");
+    };
+    assert_eq!(results.len(), 2);
+    assert!(results[0].error().is_some());
+    assert_eq!(results[1].value(), Some(&json!("Ada")));
+
+    let output = executor
+        .execute(Command::JsonBatchDelete {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonDeleteEntry::new("", "$"),
+                BatchJsonDeleteEntry::new("valid", "$.name"),
+            ],
+        })
+        .expect("batch delete returns positional errors");
+    let Output::JsonBatchResults(results) = output else {
+        panic!("unexpected batch delete output: {output:?}");
+    };
+    assert_eq!(results.len(), 2);
+    assert!(results[0].error().is_some());
+    assert!(results[1].version().is_some());
+    assert_eq!(
+        execute_json_get_value(&mut executor, "valid", "$.name"),
+        None
+    );
+}
+
+#[test]
+fn json_batch_commands_validate_branch_before_item_results() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    for command in [
+        Command::JsonBatchSet {
+            branch: Some("missing".to_owned()),
+            space: None,
+            entries: Vec::new(),
+        },
+        Command::JsonBatchSet {
+            branch: Some("missing".to_owned()),
+            space: None,
+            entries: vec![BatchJsonEntry::new("", "$", json!("bad"))],
+        },
+        Command::JsonBatchGet {
+            branch: Some("missing".to_owned()),
+            space: None,
+            entries: Vec::new(),
+        },
+        Command::JsonBatchDelete {
+            branch: Some("missing".to_owned()),
+            space: None,
+            entries: Vec::new(),
+        },
+    ] {
+        let error = executor.execute(command).expect_err("missing branch fails");
+        assert_eq!(error.class(), ExecutorErrorClass::NotFound);
+    }
+}
+
+fn run_json_edge_contract(executor: &mut Executor) {
+    assert_single_set_get_path_delete_and_exists(executor);
+    assert_json_batch_edges(executor);
+    assert_json_list_count_sample_edges(executor);
+    assert_json_history_edges(executor);
+}
+
+fn assert_single_set_get_path_delete_and_exists(executor: &mut Executor) {
+    let created = write_json(
+        executor,
+        None,
+        None,
+        "edge-doc",
+        "$",
+        json!({"profile": {"name": "Ada"}, "tags": ["math", "logic"]}),
+    );
+    let versioned = execute_json_get_versioned(executor, "edge-doc", "$").expect("document exists");
+    assert_eq!(
+        versioned.value,
+        json!({"profile": {"name": "Ada"}, "tags": ["math", "logic"]})
+    );
+    assert_eq!(versioned.version, created.version);
+    assert_eq!(versioned.timestamp, created.timestamp);
+    assert_eq!(versioned.document_version, 1);
+
+    write_json(
+        executor,
+        None,
+        None,
+        "edge-doc",
+        "$.profile.city",
+        json!("London"),
+    );
+    write_json(
+        executor,
+        None,
+        None,
+        "edge-doc",
+        "$.tags[0]",
+        json!("analysis"),
+    );
+    assert_eq!(
+        execute_json_get_value(executor, "edge-doc", "$.profile.city"),
+        Some(json!("London"))
+    );
+    assert_eq!(
+        execute_json_get_value(executor, "edge-doc", "$.tags[0]"),
+        Some(json!("analysis"))
+    );
+    assert_eq!(
+        execute_json_get_value(executor, "edge-doc", "$"),
+        Some(json!({
+            "profile": {"name": "Ada", "city": "London"},
+            "tags": ["analysis", "logic"]
+        }))
+    );
+
+    assert!(execute_json_delete(executor, "edge-doc", "$.profile.city"));
+    assert_eq!(
+        execute_json_get_value(executor, "edge-doc", "$.profile.city"),
+        None
+    );
+    assert!(execute_json_exists(executor, "edge-doc"));
+    assert_eq!(
+        execute_json_get_value(executor, "edge-doc", "$"),
+        Some(json!({
+            "profile": {"name": "Ada"},
+            "tags": ["analysis", "logic"]
+        }))
+    );
+
+    assert!(execute_json_delete(executor, "edge-doc", "$"));
+    assert!(!execute_json_exists(executor, "edge-doc"));
+    assert_eq!(execute_json_get_value(executor, "edge-doc", "$"), None);
+    assert!(!execute_json_delete(executor, "edge-doc", "$"));
+}
+
+fn assert_json_batch_edges(executor: &mut Executor) {
+    assert_empty_json_batches(executor);
+
+    let Output::JsonBatchResults(results) = executor
+        .execute(Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonEntry::new("batch-dupe", "$", json!({"count": 1})),
+                BatchJsonEntry::new("batch-dupe", "$.count", json!(2)),
+                BatchJsonEntry::new("batch-other", "$", json!({"count": 3})),
+            ],
+        })
+        .expect("duplicate-document batch set succeeds")
+    else {
+        panic!("unexpected batch set output");
+    };
+    assert_eq!(results.len(), 3);
+    assert!(results.iter().all(|result| result.version().is_some()));
+    assert_eq!(results[0].document_version(), Some(1));
+    assert_eq!(results[1].document_version(), Some(2));
+    assert_eq!(
+        execute_json_get_value(executor, "batch-dupe", "$.count"),
+        Some(json!(2))
+    );
+
+    let values = execute_json_batch_get(
+        executor,
+        vec![
+            BatchJsonGetEntry::new("batch-dupe", "$.count"),
+            BatchJsonGetEntry::new("batch-dupe", "$.count"),
+            BatchJsonGetEntry::new("batch-dupe", "$.missing"),
+            BatchJsonGetEntry::new("missing", "$"),
+        ],
+    );
+    assert_eq!(values, vec![Some(json!(2)), Some(json!(2)), None, None]);
+
+    write_json(
+        executor,
+        None,
+        None,
+        "batch-delete",
+        "$",
+        json!({"a": 1, "b": 2}),
+    );
+    let deleted = execute_json_batch_delete(
+        executor,
+        vec![
+            BatchJsonDeleteEntry::new("batch-delete", "$.a"),
+            BatchJsonDeleteEntry::new("batch-delete", "$.missing"),
+            BatchJsonDeleteEntry::new("missing", "$"),
+            BatchJsonDeleteEntry::new("batch-delete", "$"),
+        ],
+    );
+    assert_eq!(deleted, vec![true, false, false, true]);
+    assert_eq!(execute_json_get_value(executor, "batch-delete", "$"), None);
+}
+
+fn assert_empty_json_batches(executor: &mut Executor) {
+    assert_eq!(
+        executor
+            .execute(Command::JsonBatchSet {
+                branch: None,
+                space: None,
+                entries: Vec::new(),
+            })
+            .expect("empty batch set succeeds"),
+        Output::JsonBatchResults(Vec::new())
+    );
+    assert_eq!(
+        executor
+            .execute(Command::JsonBatchGet {
+                branch: None,
+                space: None,
+                entries: Vec::new(),
+            })
+            .expect("empty batch get succeeds"),
+        Output::JsonBatchGetResults(Vec::new())
+    );
+    assert_eq!(
+        executor
+            .execute(Command::JsonBatchDelete {
+                branch: None,
+                space: None,
+                entries: Vec::new(),
+            })
+            .expect("empty batch delete succeeds"),
+        Output::JsonBatchResults(Vec::new())
+    );
+}
+
+fn assert_json_list_count_sample_edges(executor: &mut Executor) {
+    write_json(
+        executor,
+        None,
+        None,
+        "zlist-a",
+        "$",
+        json!({"kind": "keep"}),
+    );
+    write_json(
+        executor,
+        None,
+        None,
+        "zlist-b",
+        "$",
+        json!({"kind": "drop"}),
+    );
+    write_json(
+        executor,
+        None,
+        None,
+        "zlist-c",
+        "$",
+        json!({"kind": "keep"}),
+    );
+    write_json(
+        executor,
+        None,
+        None,
+        "other-a",
+        "$",
+        json!({"kind": "other"}),
+    );
+    create_json_index(executor, "by-kind", "$.kind", JsonIndexType::Tag);
+    assert!(execute_json_delete(executor, "zlist-b", "$"));
+
+    let (first_page, has_more) = execute_json_list(executor, Some("zlist-"), None, 1);
+    assert_eq!(first_page, vec!["zlist-a".to_owned()]);
+    assert!(has_more);
+    let (all_keys, _) = execute_json_list(executor, None, None, 100);
+    assert!(all_keys.contains(&"zlist-a".to_owned()));
+    assert!(all_keys.contains(&"zlist-c".to_owned()));
+    assert!(!all_keys.contains(&"zlist-b".to_owned()));
+    assert!(!all_keys.iter().any(|key| key.contains("by-kind")));
+
+    assert_eq!(execute_json_count(executor, Some("zlist-")), 2);
+    assert!(execute_json_count(executor, None) >= 3);
+
+    let sample = execute_json_sample_items(executor, Some("zlist-"), 1);
+    assert_eq!(sample.0, 2);
+    assert_eq!(sample.1.len(), 1);
+    assert!(sample.1[0].0.starts_with("zlist-"));
+    assert!(sample.1[0].1.is_object());
+}
+
+fn assert_json_history_edges(executor: &mut Executor) {
+    let first = write_json(
+        executor,
+        None,
+        None,
+        "history-edge",
+        "$",
+        json!({"name": "first", "drop": true}),
+    );
+    let second = write_json(
+        executor,
+        None,
+        None,
+        "history-edge",
+        "$.name",
+        json!("second"),
+    );
+    assert!(execute_json_delete(executor, "history-edge", "$.drop"));
+    assert!(execute_json_delete(executor, "history-edge", "$"));
+
+    assert_eq!(
+        execute_json_get_as_of(executor, "history-edge", "$.name", first.timestamp),
+        Some(json!("first"))
+    );
+    assert_eq!(
+        execute_json_get_as_of(executor, "history-edge", "$.name", second.timestamp),
+        Some(json!("second"))
+    );
+    assert_eq!(
+        execute_json_list_as_of(executor, Some("history-"), first.timestamp),
+        vec!["history-edge".to_owned()]
+    );
+
+    let history = execute_json_history(executor, "history-edge");
+    assert_eq!(history.len(), 4);
+    assert!(history[0].is_tombstone());
+    assert_eq!(history[0].document_version(), None);
+    assert_eq!(history[1].document_version(), Some(3));
+    assert_eq!(history[2].document_version(), Some(2));
+    assert_eq!(history[3].document_version(), Some(1));
+    assert!(history
+        .windows(2)
+        .all(|window| window[0].version() > window[1].version()));
+}
+
+fn run_json_error_contract(executor: &mut Executor) {
+    assert_json_command_error_classes(executor);
+    assert_json_batch_item_error_boundaries(executor);
+    assert_closed_handle_rejects_json_commands(executor);
+}
+
+fn assert_json_command_error_classes(executor: &mut Executor) {
+    for command in invalid_input_json_commands() {
+        let error = executor.execute(command).expect_err("command fails");
+        assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+        assert!(error.code().contains(".executor."));
+    }
+
+    for command in missing_branch_json_commands() {
+        let error = executor.execute(command).expect_err("missing branch fails");
+        assert_eq!(error.class(), ExecutorErrorClass::NotFound);
+    }
+}
+
+fn invalid_input_json_commands() -> Vec<Command> {
+    vec![
+        Command::JsonGet {
+            branch: None,
+            space: None,
+            key: String::new(),
+            path: "$".to_owned(),
+            as_of: None,
+        },
+        Command::JsonGet {
+            branch: None,
+            space: None,
+            key: "bad-path".to_owned(),
+            path: "$[".to_owned(),
+            as_of: None,
+        },
+        Command::JsonSet {
+            branch: None,
+            space: None,
+            key: "too-deep".to_owned(),
+            path: "$".to_owned(),
+            value: deeply_nested_json(128),
+        },
+        Command::JsonSet {
+            branch: None,
+            space: None,
+            key: "too-large".to_owned(),
+            path: "$".to_owned(),
+            value: Value::String("x".repeat(16 * 1024 * 1024 + 1)),
+        },
+        Command::JsonSet {
+            branch: None,
+            space: Some(String::new()),
+            key: "bad-space".to_owned(),
+            path: "$".to_owned(),
+            value: json!(true),
+        },
+        Command::JsonSet {
+            branch: None,
+            space: Some("_system_".to_owned()),
+            key: "bad-space".to_owned(),
+            path: "$".to_owned(),
+            value: json!(true),
+        },
+    ]
+}
+
+fn missing_branch_json_commands() -> Vec<Command> {
+    vec![
+        Command::JsonSet {
+            branch: Some("missing".to_owned()),
+            space: None,
+            key: "doc".to_owned(),
+            path: "$".to_owned(),
+            value: json!({}),
+        },
+        Command::JsonDelete {
+            branch: Some("missing".to_owned()),
+            space: None,
+            key: "doc".to_owned(),
+            path: "$".to_owned(),
+        },
+        Command::JsonGet {
+            branch: Some("missing".to_owned()),
+            space: None,
+            key: "doc".to_owned(),
+            path: "$".to_owned(),
+            as_of: None,
+        },
+        Command::JsonList {
+            branch: Some("missing".to_owned()),
+            space: None,
+            prefix: None,
+            cursor: None,
+            limit: Some(1),
+            as_of: None,
+        },
+        Command::JsonCount {
+            branch: Some("missing".to_owned()),
+            space: None,
+            prefix: None,
+        },
+        Command::JsonSample {
+            branch: Some("missing".to_owned()),
+            space: None,
+            prefix: None,
+            count: Some(1),
+        },
+    ]
+}
+
+fn assert_json_batch_item_error_boundaries(executor: &mut Executor) {
+    let Output::JsonBatchResults(results) = executor
+        .execute(Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonEntry::new("bad-path", "$[", json!(true)),
+                BatchJsonEntry::new("bad-value", "$", deeply_nested_json(128)),
+                BatchJsonEntry::new("valid-error-boundary", "$", json!({"ok": true})),
+            ],
+        })
+        .expect("batch set returns positional errors")
+    else {
+        panic!("unexpected batch set output");
+    };
+    assert_eq!(results.len(), 3);
+    assert!(results[0].error().is_some());
+    assert!(results[1].error().is_some());
+    assert!(results[2].version().is_some());
+    assert!(
+        results
+            .iter()
+            .filter_map(strata_executor_next::JsonBatchItemResult::error)
+            .all(error_message_is_public),
+        "batch item errors leaked lower-layer details: {results:?}"
+    );
+}
+
+fn assert_closed_handle_rejects_json_commands(executor: &mut Executor) {
+    executor.close().expect("close succeeds");
+    for command in closed_handle_json_commands() {
+        let error = executor.execute(command).expect_err("closed command fails");
+        assert_eq!(error.class(), ExecutorErrorClass::ClosedHandle);
+    }
+}
+
+fn closed_handle_json_commands() -> Vec<Command> {
+    vec![
+        Command::JsonSet {
+            branch: None,
+            space: None,
+            key: "doc".to_owned(),
+            path: "$".to_owned(),
+            value: json!({}),
+        },
+        Command::JsonGet {
+            branch: None,
+            space: None,
+            key: "doc".to_owned(),
+            path: "$".to_owned(),
+            as_of: None,
+        },
+        Command::JsonDelete {
+            branch: None,
+            space: None,
+            key: "doc".to_owned(),
+            path: "$".to_owned(),
+        },
+        Command::JsonGetv {
+            branch: None,
+            space: None,
+            key: "doc".to_owned(),
+        },
+        Command::JsonExists {
+            branch: None,
+            space: None,
+            key: "doc".to_owned(),
+        },
+        Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries: Vec::new(),
+        },
+        Command::JsonBatchGet {
+            branch: None,
+            space: None,
+            entries: Vec::new(),
+        },
+        Command::JsonBatchDelete {
+            branch: None,
+            space: None,
+            entries: Vec::new(),
+        },
+        Command::JsonList {
+            branch: None,
+            space: None,
+            prefix: None,
+            cursor: None,
+            limit: None,
+            as_of: None,
+        },
+        Command::JsonCount {
+            branch: None,
+            space: None,
+            prefix: None,
+        },
+        Command::JsonSample {
+            branch: None,
+            space: None,
+            prefix: None,
+            count: None,
+        },
+        Command::JsonCreateIndex {
+            branch: None,
+            space: None,
+            name: "by-name".to_owned(),
+            field_path: "$.name".to_owned(),
+            index_type: JsonIndexType::Text,
+        },
+        Command::JsonDropIndex {
+            branch: None,
+            space: None,
+            name: "by-name".to_owned(),
+        },
+        Command::JsonListIndexes {
+            branch: None,
+            space: None,
+        },
+    ]
+}
+
+fn deeply_nested_json(depth: usize) -> Value {
+    let mut value = Value::Null;
+    for _ in 0..depth {
+        value = Value::Array(vec![value]);
+    }
+    value
+}
+
+fn run_json_command_suite(executor: &mut Executor) {
+    let first = seed_json_command_suite(executor);
+    assert_json_read_commands(executor, first.timestamp);
+    assert_json_batch_list_sample_commands(executor, first.timestamp);
+    assert_json_delete_commands(executor);
+    assert_json_index_commands(executor);
+}
+
+fn seed_json_command_suite(executor: &mut Executor) -> WriteFacts {
+    let first = write_json(
+        executor,
+        None,
+        None,
+        "doc-alpha",
+        "$",
+        json!({"name": "Ada", "age": 36, "tags": ["math"]}),
+    );
+    let second = write_json(
+        executor,
+        None,
+        None,
+        "doc-alpha",
+        "$.name",
+        json!("Ada Lovelace"),
+    );
+    assert!(second.version > first.version);
+
+    write_json(
+        executor,
+        None,
+        None,
+        "doc-bravo",
+        "$",
+        json!({"name": "Grace", "age": 37}),
+    );
+    write_json(
+        executor,
+        None,
+        None,
+        "doc-delete",
+        "$",
+        json!({"name": "Delete"}),
+    );
+    first
+}
+
+fn assert_json_read_commands(executor: &mut Executor, first_timestamp: u64) {
+    assert_eq!(
+        execute_json_get_value(executor, "doc-alpha", "$.name"),
+        Some(json!("Ada Lovelace"))
+    );
+    assert_eq!(
+        execute_json_get_as_of(executor, "doc-alpha", "$.name", first_timestamp),
+        Some(json!("Ada"))
+    );
+    assert!(execute_json_exists(executor, "doc-alpha"));
+    assert!(!execute_json_exists(executor, "missing"));
+}
+
+fn assert_json_batch_list_sample_commands(executor: &mut Executor, first_timestamp: u64) {
+    batch_set_json(
+        executor,
+        vec![
+            BatchJsonEntry::new("doc-batch-a", "$", json!({"name": "Katherine"})),
+            BatchJsonEntry::new("doc-batch-b", "$", json!({"name": "Dorothy"})),
+            BatchJsonEntry::new("doc-batch-a", "$.role", json!("lead")),
+        ],
+    );
+    assert_eq!(
+        execute_json_batch_get(
+            executor,
+            vec![
+                BatchJsonGetEntry::new("doc-batch-a", "$.role"),
+                BatchJsonGetEntry::new("missing", "$"),
+                BatchJsonGetEntry::new("doc-batch-b", "$.name"),
+            ],
+        ),
+        vec![Some(json!("lead")), None, Some(json!("Dorothy"))]
+    );
+
+    assert_eq!(
+        execute_json_list(executor, Some("doc-batch-"), None, 1),
+        (vec!["doc-batch-a".to_owned()], true)
+    );
+    assert_eq!(
+        execute_json_list_as_of(executor, Some("doc-"), first_timestamp),
+        vec!["doc-alpha".to_owned()]
+    );
+
+    assert_eq!(execute_json_count(executor, Some("doc-batch-")), 2);
+    let sample = execute_json_sample(executor, Some("doc-batch-"), 1);
+    assert_eq!(sample.0, 2);
+    assert_eq!(sample.1.len(), 1);
+    assert!(sample.1[0].starts_with("doc-batch-"));
+}
+
+fn assert_json_delete_commands(executor: &mut Executor) {
+    let deleted = execute_json_delete(executor, "doc-delete", "$");
+    assert!(deleted);
+    let missing_deleted = execute_json_delete(executor, "doc-delete", "$");
+    assert!(!missing_deleted);
+    assert_json_history_has_tombstone(executor, "doc-delete");
+
+    let delete_results = execute_json_batch_delete(
+        executor,
+        vec![
+            BatchJsonDeleteEntry::new("doc-batch-a", "$.role"),
+            BatchJsonDeleteEntry::new("missing", "$"),
+        ],
+    );
+    assert_eq!(delete_results, vec![true, false]);
+    assert_eq!(
+        execute_json_get_value(executor, "doc-batch-a", "$.role"),
+        None
+    );
+}
+
+fn assert_json_index_commands(executor: &mut Executor) {
+    let definition = create_json_index(executor, "by-name", "$.name", JsonIndexType::Text);
+    assert_eq!(definition.name(), "by-name");
+    assert_eq!(definition.index_type(), JsonIndexType::Text);
+
+    let duplicate = executor
+        .execute(Command::JsonCreateIndex {
+            branch: None,
+            space: None,
+            name: "by-name".to_owned(),
+            field_path: "$.name".to_owned(),
+            index_type: JsonIndexType::Text,
+        })
+        .expect_err("duplicate index fails");
+    assert_eq!(duplicate.class(), ExecutorErrorClass::Conflict);
+
+    create_json_index(executor, "by-age", "$.age", JsonIndexType::Numeric);
+    create_json_index(executor, "by-tag", "$.name", JsonIndexType::Tag);
+
+    let indexes = list_json_indexes(executor);
+    assert_eq!(indexes.len(), 3);
+    assert_json_index(&indexes, "by-name", JsonIndexType::Text);
+    assert_json_index(&indexes, "by-age", JsonIndexType::Numeric);
+    assert_json_index(&indexes, "by-tag", JsonIndexType::Tag);
+
+    assert!(!drop_json_index(executor, "missing"));
+    assert!(drop_json_index(executor, "by-age"));
+    assert!(drop_json_index(executor, "by-tag"));
+
+    let indexes = list_json_indexes(executor);
+    assert_eq!(indexes.len(), 1);
+    assert_json_index(&indexes, "by-name", JsonIndexType::Text);
+}
+
+fn create_json_index(
+    executor: &mut Executor,
+    name: &str,
+    field_path: &str,
+    index_type: JsonIndexType,
+) -> strata_executor_next::JsonIndexDefinition {
+    create_json_index_in(executor, None, None, name, field_path, index_type)
+}
+
+fn create_json_index_in(
+    executor: &mut Executor,
+    branch: Option<&str>,
+    space: Option<&str>,
+    name: &str,
+    field_path: &str,
+    index_type: JsonIndexType,
+) -> strata_executor_next::JsonIndexDefinition {
+    let Output::JsonIndexDefinition(definition) = executor
+        .execute(Command::JsonCreateIndex {
+            branch: branch.map(str::to_owned),
+            space: space.map(str::to_owned),
+            name: name.to_owned(),
+            field_path: field_path.to_owned(),
+            index_type,
+        })
+        .expect("index create succeeds")
+    else {
+        panic!("unexpected index create output");
+    };
+    definition
+}
+
+fn list_json_indexes(executor: &mut Executor) -> Vec<strata_executor_next::JsonIndexDefinition> {
+    list_json_indexes_in(executor, None, None)
+}
+
+fn list_json_indexes_in(
+    executor: &mut Executor,
+    branch: Option<&str>,
+    space: Option<&str>,
+) -> Vec<strata_executor_next::JsonIndexDefinition> {
+    let Output::JsonIndexList(indexes) = executor
+        .execute(Command::JsonListIndexes {
+            branch: branch.map(str::to_owned),
+            space: space.map(str::to_owned),
+        })
+        .expect("index list succeeds")
+    else {
+        panic!("unexpected index list output");
+    };
+    indexes
+}
+
+fn drop_json_index(executor: &mut Executor, name: &str) -> bool {
+    let Output::Bool(existed) = executor
+        .execute(Command::JsonDropIndex {
+            branch: None,
+            space: None,
+            name: name.to_owned(),
+        })
+        .expect("index drop succeeds")
+    else {
+        panic!("unexpected index drop output");
+    };
+    existed
+}
+
+fn assert_json_index(
+    indexes: &[strata_executor_next::JsonIndexDefinition],
+    name: &str,
+    index_type: JsonIndexType,
+) {
+    assert!(
+        indexes
+            .iter()
+            .any(|index| index.name() == name && index.index_type() == index_type),
+        "missing JSON index `{name}` with type {index_type:?}: {indexes:?}"
+    );
+}
+
+fn write_json(
+    executor: &mut Executor,
+    branch: Option<&str>,
+    space: Option<&str>,
+    key: &str,
+    path: &str,
+    value: Value,
+) -> WriteFacts {
+    match executor
+        .execute(Command::JsonSet {
+            branch: branch.map(str::to_owned),
+            space: space.map(str::to_owned),
+            key: key.to_owned(),
+            path: path.to_owned(),
+            value,
+        })
+        .expect("JSON set succeeds")
+    {
+        Output::WriteResult {
+            version, timestamp, ..
+        } => WriteFacts { version, timestamp },
+        output => panic!("unexpected JSON set output: {output:?}"),
+    }
+}
+
+fn run_executor_modes(exercise: fn(&mut Executor)) {
+    let mut cache = Executor::open_cache().expect("cache executor opens");
+    exercise(&mut cache);
+
+    let temp = TempDir::new().expect("temp dir");
+    let path = temp.path().join("db");
+    let mut durable = Executor::open_durable_local(&path).expect("durable executor opens");
+    exercise(&mut durable);
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WriteFacts {
+    version: u64,
+    timestamp: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct VersionedJsonFacts {
+    value: Value,
+    version: u64,
+    timestamp: u64,
+    document_version: u64,
+}
+
+fn batch_set_json(executor: &mut Executor, entries: Vec<BatchJsonEntry>) {
+    match executor
+        .execute(Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries,
+        })
+        .expect("JSON batch set succeeds")
+    {
+        Output::JsonBatchResults(results) => {
+            assert!(results.iter().all(|result| result.version().is_some()));
+        }
+        output => panic!("unexpected JSON batch set output: {output:?}"),
+    }
+}
+
+fn execute_json_get_value(executor: &mut Executor, key: &str, path: &str) -> Option<Value> {
+    execute_json_get_value_in(executor, None, None, key, path)
+}
+
+fn execute_json_get_versioned(
+    executor: &mut Executor,
+    key: &str,
+    path: &str,
+) -> Option<VersionedJsonFacts> {
+    match executor
+        .execute(Command::JsonGet {
+            branch: None,
+            space: None,
+            key: key.to_owned(),
+            path: path.to_owned(),
+            as_of: None,
+        })
+        .expect("JSON get succeeds")
+    {
+        Output::JsonVersionedValue(Some(value)) => Some(VersionedJsonFacts {
+            value: value.value().clone(),
+            version: value.version(),
+            timestamp: value.timestamp(),
+            document_version: value.document_version(),
+        }),
+        Output::JsonVersionedValue(None) => None,
+        output => panic!("unexpected JSON get output: {output:?}"),
+    }
+}
+
+fn execute_json_get_value_in(
+    executor: &mut Executor,
+    branch: Option<&str>,
+    space: Option<&str>,
+    key: &str,
+    path: &str,
+) -> Option<Value> {
+    match executor
+        .execute(Command::JsonGet {
+            branch: branch.map(str::to_owned),
+            space: space.map(str::to_owned),
+            key: key.to_owned(),
+            path: path.to_owned(),
+            as_of: None,
+        })
+        .expect("JSON get succeeds")
+    {
+        Output::JsonVersionedValue(Some(value)) => Some(value.value().clone()),
+        Output::JsonVersionedValue(None) => None,
+        output => panic!("unexpected JSON get output: {output:?}"),
+    }
+}
+
+fn execute_json_get_as_of(
+    executor: &mut Executor,
+    key: &str,
+    path: &str,
+    as_of: u64,
+) -> Option<Value> {
+    match executor
+        .execute(Command::JsonGet {
+            branch: None,
+            space: None,
+            key: key.to_owned(),
+            path: path.to_owned(),
+            as_of: Some(as_of),
+        })
+        .expect("historical JSON get succeeds")
+    {
+        Output::JsonValue(value) => value,
+        output => panic!("unexpected historical JSON get output: {output:?}"),
+    }
+}
+
+fn execute_json_delete(executor: &mut Executor, key: &str, path: &str) -> bool {
+    match executor
+        .execute(Command::JsonDelete {
+            branch: None,
+            space: None,
+            key: key.to_owned(),
+            path: path.to_owned(),
+        })
+        .expect("JSON delete succeeds")
+    {
+        Output::DeleteResult { deleted, .. } => deleted,
+        output => panic!("unexpected JSON delete output: {output:?}"),
+    }
+}
+
+fn execute_json_batch_get(
+    executor: &mut Executor,
+    entries: Vec<BatchJsonGetEntry>,
+) -> Vec<Option<Value>> {
+    match executor
+        .execute(Command::JsonBatchGet {
+            branch: None,
+            space: None,
+            entries,
+        })
+        .expect("JSON batch get succeeds")
+    {
+        Output::JsonBatchGetResults(results) => results
+            .into_iter()
+            .map(|result| result.value().cloned())
+            .collect(),
+        output => panic!("unexpected JSON batch get output: {output:?}"),
+    }
+}
+
+fn execute_json_batch_delete(
+    executor: &mut Executor,
+    entries: Vec<BatchJsonDeleteEntry>,
+) -> Vec<bool> {
+    match executor
+        .execute(Command::JsonBatchDelete {
+            branch: None,
+            space: None,
+            entries,
+        })
+        .expect("JSON batch delete succeeds")
+    {
+        Output::JsonBatchResults(results) => results
+            .into_iter()
+            .map(|result| result.version().is_some())
+            .collect(),
+        output => panic!("unexpected JSON batch delete output: {output:?}"),
+    }
+}
+
+fn execute_json_list(
+    executor: &mut Executor,
+    prefix: Option<&str>,
+    cursor: Option<&str>,
+    limit: u64,
+) -> (Vec<String>, bool) {
+    match executor
+        .execute(Command::JsonList {
+            branch: None,
+            space: None,
+            prefix: prefix.map(str::to_owned),
+            cursor: cursor.map(str::to_owned),
+            limit: Some(limit),
+            as_of: None,
+        })
+        .expect("JSON list succeeds")
+    {
+        Output::JsonListResult { keys, has_more, .. } => (keys, has_more),
+        output => panic!("unexpected JSON list output: {output:?}"),
+    }
+}
+
+fn execute_json_list_as_of(
+    executor: &mut Executor,
+    prefix: Option<&str>,
+    as_of: u64,
+) -> Vec<String> {
+    match executor
+        .execute(Command::JsonList {
+            branch: None,
+            space: None,
+            prefix: prefix.map(str::to_owned),
+            cursor: None,
+            limit: Some(100),
+            as_of: Some(as_of),
+        })
+        .expect("historical JSON list succeeds")
+    {
+        Output::JsonListResult { keys, .. } => keys,
+        output => panic!("unexpected historical JSON list output: {output:?}"),
+    }
+}
+
+fn execute_json_count(executor: &mut Executor, prefix: Option<&str>) -> u64 {
+    execute_json_count_in(executor, None, None, prefix)
+}
+
+fn execute_json_count_in(
+    executor: &mut Executor,
+    branch: Option<&str>,
+    space: Option<&str>,
+    prefix: Option<&str>,
+) -> u64 {
+    match executor
+        .execute(Command::JsonCount {
+            branch: branch.map(str::to_owned),
+            space: space.map(str::to_owned),
+            prefix: prefix.map(str::to_owned),
+        })
+        .expect("JSON count succeeds")
+    {
+        Output::Uint(count) => count,
+        output => panic!("unexpected JSON count output: {output:?}"),
+    }
+}
+
+fn execute_json_sample(
+    executor: &mut Executor,
+    prefix: Option<&str>,
+    count: u64,
+) -> (u64, Vec<String>) {
+    let (total_count, items) = execute_json_sample_items(executor, prefix, count);
+    (
+        total_count,
+        items.into_iter().map(|(key, _value)| key).collect(),
+    )
+}
+
+fn execute_json_sample_in(
+    executor: &mut Executor,
+    branch: Option<&str>,
+    space: Option<&str>,
+    prefix: Option<&str>,
+    count: u64,
+) -> (u64, Vec<String>) {
+    let (total_count, items) = execute_json_sample_items_in(executor, branch, space, prefix, count);
+    (
+        total_count,
+        items.into_iter().map(|(key, _value)| key).collect(),
+    )
+}
+
+fn execute_json_sample_items(
+    executor: &mut Executor,
+    prefix: Option<&str>,
+    count: u64,
+) -> (u64, Vec<(String, Value)>) {
+    execute_json_sample_items_in(executor, None, None, prefix, count)
+}
+
+fn execute_json_sample_items_in(
+    executor: &mut Executor,
+    branch: Option<&str>,
+    space: Option<&str>,
+    prefix: Option<&str>,
+    count: u64,
+) -> (u64, Vec<(String, Value)>) {
+    match executor
+        .execute(Command::JsonSample {
+            branch: branch.map(str::to_owned),
+            space: space.map(str::to_owned),
+            prefix: prefix.map(str::to_owned),
+            count: Some(count),
+        })
+        .expect("JSON sample succeeds")
+    {
+        Output::JsonSampleResult { total_count, items } => (
+            total_count,
+            items
+                .into_iter()
+                .map(|item| (item.key().to_owned(), item.value().clone()))
+                .collect(),
+        ),
+        output => panic!("unexpected JSON sample output: {output:?}"),
+    }
+}
+
+fn execute_json_exists(executor: &mut Executor, key: &str) -> bool {
+    match executor
+        .execute(Command::JsonExists {
+            branch: None,
+            space: None,
+            key: key.to_owned(),
+        })
+        .expect("JSON exists succeeds")
+    {
+        Output::Bool(value) => value,
+        output => panic!("unexpected JSON exists output: {output:?}"),
+    }
+}
+
+fn assert_json_history_has_tombstone(executor: &mut Executor, key: &str) {
+    let history = execute_json_history(executor, key);
+    assert!(history
+        .iter()
+        .any(strata_executor_next::JsonHistoryItem::is_tombstone));
+}
+
+fn execute_json_history(
+    executor: &mut Executor,
+    key: &str,
+) -> Vec<strata_executor_next::JsonHistoryItem> {
+    match executor
+        .execute(Command::JsonGetv {
+            branch: None,
+            space: None,
+            key: key.to_owned(),
+        })
+        .expect("JSON history succeeds")
+    {
+        Output::JsonVersionHistory(Some(history)) => history,
+        output => panic!("unexpected JSON history output: {output:?}"),
+    }
+}
+
+fn error_message_is_public(message: &str) -> bool {
+    ![
+        "strata_storage",
+        "StorageRuntime",
+        "StorageKey",
+        "StorageValue",
+        "RowMutation",
+        "StoragePersistence",
+        "WAL",
+        "Wal",
+        "table",
+        "compaction",
+    ]
+    .iter()
+    .any(|forbidden| message.contains(forbidden))
+}
+
+#[allow(dead_code)]
+fn _bytes(value: &str) -> Bytes {
+    Bytes::from(value)
+}

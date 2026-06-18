@@ -113,9 +113,20 @@ fn convenience_facade_stays_command_shaped() {
 
     assert!(facade.contains("self.execute(Command::KvPut"));
     assert!(facade.contains("self.execute(Command::KvBatchPut"));
+    assert!(facade.contains("self.execute(Command::JsonSet"));
+    assert!(facade.contains("self.execute(Command::JsonGet"));
+    assert!(facade.contains("self.execute(Command::JsonDelete"));
+    assert!(facade.contains("self.execute(Command::JsonBatchSet"));
+    assert!(facade.contains("self.execute(Command::JsonBatchGet"));
+    assert!(facade.contains("self.execute(Command::JsonBatchDelete"));
     assert!(!facade.contains(".kv("));
+    assert!(!facade.contains(".json("));
+    assert!(!facade.contains("json_service("));
     assert!(!facade.contains(".put("));
     assert!(!facade.contains(".put_batch("));
+    assert!(!facade.contains(".set_or_create("));
+    assert!(!facade.contains(".batch_set_or_create("));
+    assert!(!facade.contains(".batch_delete_entries("));
     assert!(!facade.contains(".delete("));
 }
 

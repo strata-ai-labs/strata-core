@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use strata_core_next::{CommitVersion, Timestamp};
 use strata_engine_next::{
     Database, EngineErrorClass, JsonDocumentId, JsonGetEntry, JsonIndexName, JsonIndexType,
-    JsonPath, JsonSetEntry, JsonValue, ProductSpace,
+    JsonPath, JsonService, JsonSetEntry, JsonValue, ProductSpace,
 };
 
 use common::{branch, open_cache_database, open_durable_database, space};
@@ -76,7 +76,7 @@ fn json_branch_isolation_matches_kv_shape() {
             .list(Some(&doc_id("pro")), None, 10)
             .expect("feature list succeeds")
             .document_ids(),
-        &[doc.clone()]
+        std::slice::from_ref(&doc)
     );
     assert_eq!(feature_json.count(None).expect("feature count succeeds"), 1);
     assert_eq!(
@@ -356,7 +356,7 @@ fn json_space_isolation_covers_reads_lists_and_indexes() {
             .list(None, None, 10)
             .expect("list succeeds")
             .document_ids(),
-        &[doc.clone()]
+        std::slice::from_ref(&doc)
     );
     assert_eq!(default_json.count(None).expect("count succeeds"), 1);
     assert_eq!(
@@ -490,66 +490,112 @@ fn json_history_version_timestamp_and_list_at_are_stable() {
         .commit()
         .expect("root delete committed");
 
+    assert_json_version_timestamp_reads(
+        &mut json,
+        &doc,
+        JsonHistoryReadFacts {
+            created_version: created.commit().version(),
+            updated_version: updated.commit().version(),
+            path_deleted_version: path_deleted.version(),
+            root_deleted_version: root_deleted.version(),
+            updated_timestamp: updated.commit().timestamp(),
+            root_deleted_timestamp: root_deleted.timestamp(),
+        },
+    );
+    assert_json_list_at_reads(
+        &mut json,
+        &doc,
+        &other,
+        created.commit().timestamp(),
+        other_created.commit().timestamp(),
+        root_deleted.timestamp(),
+    );
+    assert_json_history_rows(&mut json, &doc);
+}
+
+#[derive(Clone, Copy)]
+struct JsonHistoryReadFacts {
+    created_version: CommitVersion,
+    updated_version: CommitVersion,
+    path_deleted_version: CommitVersion,
+    root_deleted_version: CommitVersion,
+    updated_timestamp: Timestamp,
+    root_deleted_timestamp: Timestamp,
+}
+
+fn assert_json_version_timestamp_reads(
+    json: &mut JsonService<'_>,
+    doc: &JsonDocumentId,
+    facts: JsonHistoryReadFacts,
+) {
     assert_eq!(
-        json.get_at_version(&doc, &path("count"), created.commit().version())
+        json.get_at_version(doc, &path("count"), facts.created_version)
             .expect("version read succeeds")
             .expect("created value")
             .as_inner(),
         &json!(1)
     );
     assert_eq!(
-        json.get_at_version(&doc, &path("count"), updated.commit().version())
+        json.get_at_version(doc, &path("count"), facts.updated_version)
             .expect("version read succeeds")
             .expect("updated value")
             .as_inner(),
         &json!(2)
     );
     assert_eq!(
-        json.get_at_version(&doc, &path("tags[0]"), path_deleted.version())
+        json.get_at_version(doc, &path("tags[0]"), facts.path_deleted_version)
             .expect("version read succeeds")
             .expect("shifted array value")
             .as_inner(),
         &json!("b")
     );
     assert!(json
-        .get_at_version(&doc, &root(), root_deleted.version())
+        .get_at_version(doc, &root(), facts.root_deleted_version)
         .expect("root delete read succeeds")
         .is_none());
-
     assert_eq!(
-        json.get_at(&doc, &path("count"), updated.commit().timestamp())
+        json.get_at(doc, &path("count"), facts.updated_timestamp)
             .expect("timestamp read succeeds")
             .expect("updated value")
             .as_inner(),
         &json!(2)
     );
     assert!(json
-        .get_at(&doc, &root(), root_deleted.timestamp())
+        .get_at(doc, &root(), facts.root_deleted_timestamp)
         .expect("root delete timestamp read succeeds")
         .is_none());
+}
 
+fn assert_json_list_at_reads(
+    json: &mut JsonService<'_>,
+    doc: &JsonDocumentId,
+    other: &JsonDocumentId,
+    created_timestamp: Timestamp,
+    other_created_timestamp: Timestamp,
+    root_deleted_timestamp: Timestamp,
+) {
     let after_doc_create = json
-        .list_at(None, None, 10, created.commit().timestamp())
+        .list_at(None, None, 10, created_timestamp)
         .expect("list at create succeeds");
-    assert_eq!(after_doc_create.document_ids(), &[doc.clone()]);
+    assert_eq!(after_doc_create.document_ids(), std::slice::from_ref(doc));
 
     let after_other_create = json
-        .list_at(None, Some(&doc), 10, other_created.commit().timestamp())
+        .list_at(None, Some(doc), 10, other_created_timestamp)
         .expect("list at other create succeeds");
-    assert_eq!(after_other_create.document_ids(), &[other.clone()]);
+    assert_eq!(
+        after_other_create.document_ids(),
+        std::slice::from_ref(other)
+    );
 
     let after_delete = json
-        .list_at(
-            Some(&doc_id("history:")),
-            None,
-            10,
-            root_deleted.timestamp(),
-        )
+        .list_at(Some(&doc_id("history:")), None, 10, root_deleted_timestamp)
         .expect("list at delete succeeds");
-    assert_eq!(after_delete.document_ids(), &[other]);
+    assert_eq!(after_delete.document_ids(), std::slice::from_ref(other));
+}
 
+fn assert_json_history_rows(json: &mut JsonService<'_>, doc: &JsonDocumentId) {
     let history = json
-        .get_versions(&doc)
+        .get_versions(doc)
         .expect("history succeeds")
         .expect("history exists");
     assert_eq!(history.rows().len(), 4);
@@ -687,7 +733,7 @@ fn json_durable_reopen_preserves_full_surface() {
             .list(None, None, 10)
             .expect("list succeeds")
             .document_ids(),
-        &[keep.clone()]
+        std::slice::from_ref(&keep)
     );
     assert_eq!(default_json.count(None).expect("count succeeds"), 1);
     assert_eq!(
@@ -773,7 +819,7 @@ fn json_index_entries_track_document_mutations() {
     }
     assert_eq!(
         database
-            .json_index_entry_count_for_test(branch("default"), space("default"), &by_name)
+            .json_index_entry_count_for_test(&branch("default"), &space("default"), &by_name)
             .expect("entry count succeeds"),
         2
     );
@@ -791,7 +837,7 @@ fn json_index_entries_track_document_mutations() {
     }
     assert_eq!(
         database
-            .json_index_entry_count_for_test(branch("default"), space("default"), &by_name)
+            .json_index_entry_count_for_test(&branch("default"), &space("default"), &by_name)
             .expect("entry count succeeds"),
         3
     );
@@ -805,7 +851,7 @@ fn json_index_entries_track_document_mutations() {
     }
     assert_eq!(
         database
-            .json_index_entry_count_for_test(branch("default"), space("default"), &by_name)
+            .json_index_entry_count_for_test(&branch("default"), &space("default"), &by_name)
             .expect("entry count succeeds"),
         2
     );
@@ -819,7 +865,7 @@ fn json_index_entries_track_document_mutations() {
     }
     assert_eq!(
         database
-            .json_index_entry_count_for_test(branch("default"), space("default"), &by_name)
+            .json_index_entry_count_for_test(&branch("default"), &space("default"), &by_name)
             .expect("entry count succeeds"),
         1
     );
@@ -832,7 +878,7 @@ fn json_index_entries_track_document_mutations() {
     }
     assert_eq!(
         database
-            .json_index_entry_count_for_test(branch("default"), space("default"), &by_name)
+            .json_index_entry_count_for_test(&branch("default"), &space("default"), &by_name)
             .expect("entry count succeeds"),
         0
     );
@@ -843,122 +889,132 @@ fn exercise_json_contract(database: &mut Database) {
     let other = doc_id("user:2");
     let archived = doc_id("archive:1");
 
-    {
-        let mut json = database
-            .json(branch("default"), space("default"))
-            .expect("JSON service opens");
-        let created = json
-            .create(
-                doc.clone(),
-                json_value(json!({"name": "alice", "count": 1, "tags": ["a", "b"]})),
-            )
-            .expect("create succeeds");
-        assert_eq!(created.document_version(), 1);
+    let mut json = database
+        .json(branch("default"), space("default"))
+        .expect("JSON service opens");
+    exercise_json_single_document_contract(&mut json, &doc);
+    exercise_json_batch_list_index_contract(&mut json, &doc, &other, &archived);
+}
 
-        let duplicate = json
-            .create(doc.clone(), json_value(json!({})))
-            .expect_err("duplicate create rejected");
-        assert_eq!(duplicate.class(), EngineErrorClass::Conflict);
+fn exercise_json_single_document_contract(json: &mut JsonService<'_>, doc: &JsonDocumentId) {
+    let created = json
+        .create(
+            doc.clone(),
+            json_value(json!({"name": "alice", "count": 1, "tags": ["a", "b"]})),
+        )
+        .expect("create succeeds");
+    assert_eq!(created.document_version(), 1);
 
-        let name = json
-            .get(&doc, &path("name"))
-            .expect("path read succeeds")
-            .expect("name exists");
-        assert_eq!(name.as_inner(), &json!("alice"));
+    let duplicate = json
+        .create(doc.clone(), json_value(json!({})))
+        .expect_err("duplicate create rejected");
+    assert_eq!(duplicate.class(), EngineErrorClass::Conflict);
 
-        let updated = json
-            .set(doc.clone(), &path("count"), json_value(json!(2)))
-            .expect("path set succeeds");
-        assert_eq!(updated.document_version(), 2);
+    let name = json
+        .get(doc, &path("name"))
+        .expect("path read succeeds")
+        .expect("name exists");
+    assert_eq!(name.as_inner(), &json!("alice"));
 
-        let versioned = json
-            .get_versioned(&doc, &path("count"))
-            .expect("versioned read succeeds")
-            .expect("value exists");
-        assert_eq!(versioned.value().as_inner(), &json!(2));
-        assert_eq!(versioned.document_version(), 2);
+    let updated = json
+        .set(doc.clone(), &path("count"), json_value(json!(2)))
+        .expect("path set succeeds");
+    assert_eq!(updated.document_version(), 2);
 
-        let history = json
-            .get_versions(&doc)
-            .expect("history succeeds")
-            .expect("history exists");
-        assert_eq!(history.rows().len(), 2);
-        assert_eq!(history.rows()[0].document_version(), Some(2));
+    let versioned = json
+        .get_versioned(doc, &path("count"))
+        .expect("versioned read succeeds")
+        .expect("value exists");
+    assert_eq!(versioned.value().as_inner(), &json!(2));
+    assert_eq!(versioned.document_version(), 2);
 
-        let deleted_path = json
-            .delete(doc.clone(), &path("tags[0]"))
-            .expect("path delete succeeds");
-        assert!(deleted_path.deleted());
-        assert_eq!(
-            json.get(&doc, &path("tags[0]"))
-                .expect("array read succeeds")
-                .expect("first array element")
-                .as_inner(),
-            &json!("b")
-        );
+    let history = json
+        .get_versions(doc)
+        .expect("history succeeds")
+        .expect("history exists");
+    assert_eq!(history.rows().len(), 2);
+    assert_eq!(history.rows()[0].document_version(), Some(2));
 
-        let missing_delete = json
-            .delete(doc_id("missing"), &root())
-            .expect("missing root delete succeeds");
-        assert!(!missing_delete.deleted());
+    let deleted_path = json
+        .delete(doc.clone(), &path("tags[0]"))
+        .expect("path delete succeeds");
+    assert!(deleted_path.deleted());
+    assert_eq!(
+        json.get(doc, &path("tags[0]"))
+            .expect("array read succeeds")
+            .expect("first array element")
+            .as_inner(),
+        &json!("b")
+    );
 
-        let batch = json
-            .batch_set_or_create([
-                JsonSetEntry::new(other.clone(), root(), json_value(json!({"name": "bob"}))),
-                JsonSetEntry::new(archived.clone(), root(), json_value(json!({"name": "old"}))),
-            ])
-            .expect("batch set succeeds");
-        assert_eq!(batch.results().len(), 2);
+    let missing_delete = json
+        .delete(doc_id("missing"), &root())
+        .expect("missing root delete succeeds");
+    assert!(!missing_delete.deleted());
+}
 
-        let batch_get = json
-            .batch_get(&[
-                JsonGetEntry::new(other.clone(), path("name")),
-                JsonGetEntry::new(doc_id("missing"), root()),
-            ])
-            .expect("batch get succeeds");
-        assert_eq!(
-            batch_get[0].as_ref().expect("value").value().as_inner(),
-            &json!("bob")
-        );
-        assert!(batch_get[1].is_none());
+fn exercise_json_batch_list_index_contract(
+    json: &mut JsonService<'_>,
+    doc: &JsonDocumentId,
+    other: &JsonDocumentId,
+    archived: &JsonDocumentId,
+) {
+    let batch = json
+        .batch_set_or_create([
+            JsonSetEntry::new(other.clone(), root(), json_value(json!({"name": "bob"}))),
+            JsonSetEntry::new(archived.clone(), root(), json_value(json!({"name": "old"}))),
+        ])
+        .expect("batch set succeeds");
+    assert_eq!(batch.results().len(), 2);
 
-        let page = json
-            .list(Some(&doc_id("user:")), None, 1)
-            .expect("list succeeds");
-        assert_eq!(page.document_ids(), &[doc.clone()]);
-        assert!(page.has_more());
-        assert_eq!(page.cursor(), Some(&doc));
+    let batch_get = json
+        .batch_get(&[
+            JsonGetEntry::new(other.clone(), path("name")),
+            JsonGetEntry::new(doc_id("missing"), root()),
+        ])
+        .expect("batch get succeeds");
+    assert_eq!(
+        batch_get[0].as_ref().expect("value").value().as_inner(),
+        &json!("bob")
+    );
+    assert!(batch_get[1].is_none());
 
-        assert_eq!(
-            json.count(Some(&doc_id("user:"))).expect("count succeeds"),
-            2
-        );
-        let sample = json
-            .sample(Some(&doc_id("user:")), 1)
-            .expect("sample succeeds");
-        assert_eq!(sample.total_count(), 2);
-        assert_eq!(sample.rows().len(), 1);
+    let page = json
+        .list(Some(&doc_id("user:")), None, 1)
+        .expect("list succeeds");
+    assert_eq!(page.document_ids(), std::slice::from_ref(doc));
+    assert!(page.has_more());
+    assert_eq!(page.cursor(), Some(doc));
 
-        let index = json
-            .create_index(
-                JsonIndexName::new("by_name").expect("valid index"),
-                path("name"),
-                JsonIndexType::Tag,
-            )
-            .expect("index create succeeds");
-        assert_eq!(index.name().as_str(), "by_name");
-        assert_eq!(json.list_indexes().expect("list indexes").len(), 1);
-        assert_eq!(json.count(None).expect("count excludes index rows"), 3);
-        assert!(json
-            .drop_index(&JsonIndexName::new("by_name").expect("valid index"))
-            .expect("drop succeeds"));
-        assert!(json.list_indexes().expect("list indexes").is_empty());
+    assert_eq!(
+        json.count(Some(&doc_id("user:"))).expect("count succeeds"),
+        2
+    );
+    let sample = json
+        .sample(Some(&doc_id("user:")), 1)
+        .expect("sample succeeds");
+    assert_eq!(sample.total_count(), 2);
+    assert_eq!(sample.rows().len(), 1);
 
-        let deleted = json
-            .batch_delete([other.clone(), doc_id("missing")])
-            .expect("batch delete succeeds");
-        assert_eq!(deleted.deleted(), &[true, false]);
-    }
+    let index = json
+        .create_index(
+            JsonIndexName::new("by_name").expect("valid index"),
+            path("name"),
+            JsonIndexType::Tag,
+        )
+        .expect("index create succeeds");
+    assert_eq!(index.name().as_str(), "by_name");
+    assert_eq!(json.list_indexes().expect("list indexes").len(), 1);
+    assert_eq!(json.count(None).expect("count excludes index rows"), 3);
+    assert!(json
+        .drop_index(&JsonIndexName::new("by_name").expect("valid index"))
+        .expect("drop succeeds"));
+    assert!(json.list_indexes().expect("list indexes").is_empty());
+
+    let deleted = json
+        .batch_delete([other.clone(), doc_id("missing")])
+        .expect("batch delete succeeds");
+    assert_eq!(deleted.deleted(), &[true, false]);
 }
 
 fn run_database_modes(exercise: fn(&mut Database)) {

@@ -255,7 +255,7 @@ impl<'a> KvService<'a> {
             return Ok(Vec::new());
         }
         match limit {
-            Some(limit) => self.scan_range_limited(&record, start, end, limit),
+            Some(limit) => self.scan_range_limited(&record, start, &end, limit),
             None => self
                 .persistence
                 .scan_range(
@@ -453,18 +453,18 @@ impl<'a> KvService<'a> {
         &mut self,
         record: &BranchCatalogRecord,
         mut start: Vec<u8>,
-        end: Vec<u8>,
+        end: &[u8],
         limit: usize,
     ) -> EngineResult<Vec<KvScanRow>> {
         let mut visible = Vec::with_capacity(limit.min(KV_SCAN_RAW_PAGE_MIN));
-        while visible.len() < limit && start < end {
+        while visible.len() < limit && start.as_slice() < end {
             let remaining = limit.saturating_sub(visible.len());
             let raw_limit = remaining.clamp(KV_SCAN_RAW_PAGE_MIN, KV_SCAN_RAW_PAGE_MAX);
             let rows = self.persistence.scan_range(
                 record.storage_branch_id(),
                 RowClass::Kv,
                 Some(start.clone()),
-                Some(end.clone()),
+                Some(end.to_owned()),
                 ReadSelector::Latest,
                 Some(raw_limit),
             )?;

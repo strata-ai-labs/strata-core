@@ -195,28 +195,24 @@ impl Database {
     #[cfg(any(test, feature = "testkit"))]
     pub fn json_index_entry_count_for_test(
         &mut self,
-        branch: BranchName,
-        space: ProductSpace,
+        branch: &BranchName,
+        space: &ProductSpace,
         index: &JsonIndexName,
     ) -> EngineResult<u64> {
         self.require_open()?;
         self.control.require_healthy()?;
-        let record = self
-            .control
-            .lookup_branch(&branch)
-            .cloned()
-            .ok_or_else(|| {
-                EngineError::not_found(
-                    "not_found.engine.branch",
-                    format!("branch `{branch}` does not exist"),
-                )
-            })?;
+        let record = self.control.lookup_branch(branch).cloned().ok_or_else(|| {
+            EngineError::not_found(
+                "not_found.engine.branch",
+                format!("branch `{branch}` does not exist"),
+            )
+        })?;
         let count = self
             .persistence
             .scan_prefix(
                 record.storage_branch_id(),
                 RowClass::JsonIndex,
-                encode_json_index_entry_prefix(&space, index),
+                encode_json_index_entry_prefix(space, index),
                 ReadSelector::Latest,
                 None,
             )?

@@ -1,14 +1,17 @@
 //! Executor command and output serialization contract tests.
 
+use serde_json::json;
 use strata_executor_next::{
-    BatchGetItemResult, BatchItemResult, BatchKvEntry, BranchCleanupItem, BranchItem,
-    BranchParentItem, BranchStatus, Bytes, Command, HistoryItem, Output, SampleItem, ScanItem,
+    BatchGetItemResult, BatchItemResult, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry,
+    BatchKvEntry, BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus, Bytes, Command,
+    HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
+    JsonIndexType, JsonSampleItem, JsonVersionedValue, Output, SampleItem, ScanItem,
     VersionedValue,
 };
 
 #[test]
-fn every_kv_command_round_trips_through_json() {
-    for command in all_commands() {
+fn every_command_round_trips_through_json() {
+    for command in command_round_trip_cases() {
         let encoded = serde_json::to_string(&command).expect("command serializes");
         let decoded: Command = serde_json::from_str(&encoded).expect("command deserializes");
         assert_eq!(decoded, command);
@@ -25,7 +28,7 @@ fn every_output_round_trips_through_json() {
 }
 
 #[test]
-fn command_names_cover_every_kv_variant() {
+fn command_names_cover_every_variant() {
     let names = all_commands()
         .into_iter()
         .map(|command| command.name())
@@ -54,11 +57,38 @@ fn command_names_cover_every_kv_variant() {
             "kv_getv",
             "kv_count",
             "kv_sample",
+            "json_set",
+            "json_get",
+            "json_delete",
+            "json_getv",
+            "json_exists",
+            "json_batch_set",
+            "json_batch_get",
+            "json_batch_delete",
+            "json_list",
+            "json_count",
+            "json_sample",
+            "json_create_index",
+            "json_drop_index",
+            "json_list_indexes",
         ]
     );
 }
 
 fn all_commands() -> Vec<Command> {
+    let mut commands = branch_commands();
+    commands.extend(kv_commands());
+    commands.extend(json_commands());
+    commands
+}
+
+fn command_round_trip_cases() -> Vec<Command> {
+    let mut commands = all_commands();
+    commands.extend(json_round_trip_edge_commands());
+    commands
+}
+
+fn branch_commands() -> Vec<Command> {
     vec![
         Command::BranchList,
         Command::BranchGet {
@@ -84,6 +114,11 @@ fn all_commands() -> Vec<Command> {
         Command::BranchDelete {
             branch: "scratch".to_owned(),
         },
+    ]
+}
+
+fn kv_commands() -> Vec<Command> {
+    vec![
         Command::KvPut {
             branch: None,
             space: None,
@@ -159,7 +194,172 @@ fn all_commands() -> Vec<Command> {
     ]
 }
 
+fn json_commands() -> Vec<Command> {
+    vec![
+        Command::JsonSet {
+            branch: None,
+            space: None,
+            key: "doc-a".to_owned(),
+            path: "$.name".to_owned(),
+            value: json!("Ada"),
+        },
+        Command::JsonGet {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            key: "doc-a".to_owned(),
+            path: "$.name".to_owned(),
+            as_of: Some(42),
+        },
+        Command::JsonDelete {
+            branch: None,
+            space: None,
+            key: "doc-a".to_owned(),
+            path: "$.name".to_owned(),
+        },
+        Command::JsonGetv {
+            branch: None,
+            space: None,
+            key: "doc-a".to_owned(),
+        },
+        Command::JsonExists {
+            branch: None,
+            space: None,
+            key: "doc-a".to_owned(),
+        },
+        Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries: vec![BatchJsonEntry::new("doc-a", "$.name", json!("Ada"))],
+        },
+        Command::JsonBatchGet {
+            branch: None,
+            space: None,
+            entries: vec![BatchJsonGetEntry::new("doc-a", "$.name")],
+        },
+        Command::JsonBatchDelete {
+            branch: None,
+            space: None,
+            entries: vec![BatchJsonDeleteEntry::new("doc-a", "$.name")],
+        },
+        Command::JsonList {
+            branch: None,
+            space: None,
+            prefix: Some("doc-".to_owned()),
+            cursor: Some("doc-a".to_owned()),
+            limit: Some(2),
+            as_of: Some(99),
+        },
+        Command::JsonCount {
+            branch: None,
+            space: None,
+            prefix: Some("doc-".to_owned()),
+        },
+        Command::JsonSample {
+            branch: None,
+            space: None,
+            prefix: Some("doc-".to_owned()),
+            count: Some(3),
+        },
+        Command::JsonCreateIndex {
+            branch: None,
+            space: None,
+            name: "by-name".to_owned(),
+            field_path: "$.name".to_owned(),
+            index_type: JsonIndexType::Text,
+        },
+        Command::JsonDropIndex {
+            branch: None,
+            space: None,
+            name: "by-name".to_owned(),
+        },
+        Command::JsonListIndexes {
+            branch: None,
+            space: None,
+        },
+    ]
+}
+
+fn json_round_trip_edge_commands() -> Vec<Command> {
+    vec![
+        Command::JsonSet {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            key: "doc-root".to_owned(),
+            path: "$".to_owned(),
+            value: json!({"name": "Ada", "tags": ["math"], "active": true}),
+        },
+        Command::JsonSet {
+            branch: None,
+            space: None,
+            key: "doc-array".to_owned(),
+            path: "$.tags".to_owned(),
+            value: json!(["a", "b"]),
+        },
+        Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries: Vec::new(),
+        },
+        Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonEntry::new("", "$", json!("bad")),
+                BatchJsonEntry::new("doc-a", "$[", json!({"bad": true})),
+                BatchJsonEntry::new("doc-b", "$.nested", json!({"ok": true})),
+            ],
+        },
+        Command::JsonBatchGet {
+            branch: None,
+            space: None,
+            entries: Vec::new(),
+        },
+        Command::JsonBatchGet {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonGetEntry::new("", "$"),
+                BatchJsonGetEntry::new("doc-a", "$["),
+            ],
+        },
+        Command::JsonBatchDelete {
+            branch: None,
+            space: None,
+            entries: Vec::new(),
+        },
+        Command::JsonBatchDelete {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonDeleteEntry::new("", "$"),
+                BatchJsonDeleteEntry::new("doc-a", "$["),
+            ],
+        },
+        Command::JsonCreateIndex {
+            branch: None,
+            space: None,
+            name: "by-age".to_owned(),
+            field_path: "$.age".to_owned(),
+            index_type: JsonIndexType::Numeric,
+        },
+        Command::JsonCreateIndex {
+            branch: None,
+            space: None,
+            name: "by-tag".to_owned(),
+            field_path: "$.tag".to_owned(),
+            index_type: JsonIndexType::Tag,
+        },
+    ]
+}
+
 fn all_outputs() -> Vec<Output> {
+    let mut outputs = branch_outputs();
+    outputs.extend(kv_outputs());
+    outputs.extend(json_outputs());
+    outputs
+}
+
+fn branch_outputs() -> Vec<Output> {
     vec![
         Output::Branch(branch_item("main")),
         Output::Branches(vec![branch_item("default"), branch_item("main")]),
@@ -169,6 +369,11 @@ fn all_outputs() -> Vec<Output> {
             generation_after: Some(1),
             cleanup: Some(BranchCleanupItem::new(0, 0, 0)),
         },
+    ]
+}
+
+fn kv_outputs() -> Vec<Output> {
+    vec![
         Output::KvValue(Some(bytes("one"))),
         Output::KvValue(None),
         Output::KvVersionedValue(Some(VersionedValue::new(bytes("one"), 1, 10))),
@@ -228,6 +433,59 @@ fn all_outputs() -> Vec<Output> {
     ]
 }
 
+fn json_outputs() -> Vec<Output> {
+    vec![
+        Output::JsonValue(Some(json!({"name": "Ada"}))),
+        Output::JsonValue(None),
+        Output::JsonVersionedValue(Some(JsonVersionedValue::new(
+            json!({"name": "Ada"}),
+            1,
+            10,
+            2,
+        ))),
+        Output::JsonVersionedValue(None),
+        Output::JsonVersionHistory(Some(vec![JsonHistoryItem::new(
+            Some(json!({"name": "Ada"})),
+            1,
+            10,
+            Some(2),
+            false,
+        )])),
+        Output::JsonVersionHistory(Some(vec![JsonHistoryItem::new(None, 2, 20, None, true)])),
+        Output::JsonVersionHistory(None),
+        Output::JsonListResult {
+            keys: vec!["doc-a".to_owned()],
+            has_more: true,
+            cursor: Some("doc-a".to_owned()),
+        },
+        Output::JsonBatchResults(vec![JsonBatchItemResult::new(Some(1), Some(10), Some(2))]),
+        Output::JsonBatchResults(vec![JsonBatchItemResult::failed("invalid document id")]),
+        Output::JsonBatchGetResults(vec![JsonBatchGetItemResult::new(
+            Some(json!("Ada")),
+            Some(1),
+            Some(10),
+            Some(2),
+        )]),
+        Output::JsonBatchGetResults(vec![JsonBatchGetItemResult::failed("invalid document id")]),
+        Output::JsonSampleResult {
+            total_count: 3,
+            items: vec![JsonSampleItem::new(
+                "doc-a".to_owned(),
+                json!({"name": "Ada"}),
+                1,
+                10,
+                2,
+            )],
+        },
+        Output::JsonIndexDefinition(json_index_definition("by-name", JsonIndexType::Text)),
+        Output::JsonIndexList(vec![
+            json_index_definition("by-age", JsonIndexType::Numeric),
+            json_index_definition("by-name", JsonIndexType::Tag),
+            json_index_definition("by-bio", JsonIndexType::Text),
+        ]),
+    ]
+}
+
 fn bytes(value: &str) -> Bytes {
     Bytes::from(value)
 }
@@ -248,5 +506,16 @@ fn branch_item(name: &str) -> BranchItem {
         Some(7),
         None,
         1,
+    )
+}
+
+fn json_index_definition(name: &str, index_type: JsonIndexType) -> JsonIndexDefinition {
+    JsonIndexDefinition::new(
+        name.to_owned(),
+        "default".to_owned(),
+        "name".to_owned(),
+        index_type,
+        1,
+        10,
     )
 }

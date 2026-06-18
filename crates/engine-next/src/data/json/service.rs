@@ -38,6 +38,48 @@ pub struct JsonService<'a> {
     space: ProductSpace,
 }
 
+struct BatchDeleteState {
+    original_value: Option<JsonValue>,
+    current: Option<JsonDocument>,
+    changed: bool,
+}
+
+impl BatchDeleteState {
+    fn existing(document: JsonDocument) -> Self {
+        Self {
+            original_value: Some(document.value().clone()),
+            current: Some(document),
+            changed: false,
+        }
+    }
+
+    const fn missing() -> Self {
+        Self {
+            original_value: None,
+            current: None,
+            changed: false,
+        }
+    }
+
+    fn delete(&mut self, path: &super::JsonPath) -> EngineResult<bool> {
+        if self.current.is_none() {
+            return Ok(false);
+        }
+        if path.is_root() {
+            self.current = None;
+            self.changed = true;
+            return Ok(true);
+        }
+        let document = self.current.as_mut().expect("current document exists");
+        if !delete_at_path(document.value_mut(), path)? {
+            return Ok(false);
+        }
+        document.touch();
+        self.changed = true;
+        Ok(true)
+    }
+}
+
 impl<'a> JsonService<'a> {
     pub(crate) const fn new(
         persistence: &'a mut StoragePersistence,
@@ -71,7 +113,7 @@ impl<'a> JsonService<'a> {
                 "JSON document already exists",
             ));
         }
-        let document = JsonDocument::new(id.clone(), value);
+        let document = JsonDocument::new(id, value);
         let indexes = self.load_indexes(&record)?;
         let mut mutations = Vec::new();
         mutations.push(RowMutation::put(
@@ -80,7 +122,7 @@ impl<'a> JsonService<'a> {
         ));
         mutations.extend(self.index_mutations_for_change(
             &record,
-            &id,
+            document.id(),
             None,
             Some(document.value()),
             &indexes,
@@ -131,7 +173,7 @@ impl<'a> JsonService<'a> {
         let Some(row) = self.persistence.read_row(&address, ReadSelector::Latest)? else {
             return Ok(None);
         };
-        self.versioned_value_from_row(id, path, &row)
+        Self::versioned_value_from_row(id, path, &row)
     }
 
     /// Reads a value at a commit version.
@@ -149,7 +191,7 @@ impl<'a> JsonService<'a> {
         else {
             return Ok(None);
         };
-        self.value_from_row(id, path, &row)
+        Self::value_from_row(id, path, &row)
     }
 
     /// Reads a value at a timestamp.
@@ -167,7 +209,7 @@ impl<'a> JsonService<'a> {
         else {
             return Ok(None);
         };
-        self.value_from_row(id, path, &row)
+        Self::value_from_row(id, path, &row)
     }
 
     /// Reads full document history newest-first.
@@ -178,7 +220,7 @@ impl<'a> JsonService<'a> {
             .persistence
             .read_history(&address, true)?
             .into_iter()
-            .map(|row| self.history_row_from_row(id, &row))
+            .map(|row| Self::history_row_from_row(id, &row))
             .collect::<EngineResult<Vec<_>>>()?;
         Ok((!rows.is_empty()).then(|| JsonHistory::new(rows)))
     }
@@ -193,7 +235,7 @@ impl<'a> JsonService<'a> {
         for entry in entries {
             let address = self.row_address(&record, entry.id());
             let result = match self.persistence.read_row(&address, ReadSelector::Latest)? {
-                Some(row) => self.versioned_value_from_row(entry.id(), entry.path(), &row)?,
+                Some(row) => Self::versioned_value_from_row(entry.id(), entry.path(), &row)?,
                 None => None,
             };
             results.push(result);
@@ -228,7 +270,7 @@ impl<'a> JsonService<'a> {
         if row.is_tombstone() {
             return Ok(JsonDeleteOutcome::new(false, None));
         }
-        let mut document = self.document_from_row(&id, &row)?;
+        let mut document = Self::document_from_row(&id, &row)?;
         let old_value = document.value().clone();
         let deleted = delete_at_path(document.value_mut(), path)?;
         if !deleted {
@@ -253,26 +295,9 @@ impl<'a> JsonService<'a> {
 
     /// Deletes a whole document.
     pub fn delete_document(&mut self, id: JsonDocumentId) -> EngineResult<JsonDeleteOutcome> {
-        let record = self.branch_record()?;
-        let address = self.row_address(&record, &id);
-        let Some(row) = self.persistence.read_row(&address, ReadSelector::Latest)? else {
-            return Ok(JsonDeleteOutcome::new(false, None));
-        };
-        if row.is_tombstone() {
-            return Ok(JsonDeleteOutcome::new(false, None));
-        }
-        let document = self.document_from_row(&id, &row)?;
-        let indexes = self.load_indexes(&record)?;
-        let mut mutations = vec![RowMutation::delete(address)];
-        mutations.extend(self.index_mutations_for_change(
-            &record,
-            &id,
-            Some(document.value()),
-            None,
-            &indexes,
-        ));
-        let commit = self.commit_batch(&record, mutations)?;
-        Ok(JsonDeleteOutcome::new(true, Some(commit)))
+        let outcome = self.batch_delete([id])?;
+        let deleted = outcome.deleted().first().copied().unwrap_or(false);
+        Ok(JsonDeleteOutcome::new(deleted, outcome.commit()))
     }
 
     /// Sets multiple JSON entries in one commit.
@@ -354,7 +379,7 @@ impl<'a> JsonService<'a> {
             let maybe_row = self.persistence.read_row(&address, ReadSelector::Latest)?;
             let exists = maybe_row.as_ref().is_some_and(|row| !row.is_tombstone());
             if let Some(row) = maybe_row.filter(|row| !row.is_tombstone()) {
-                let document = self.document_from_row(&id, &row)?;
+                let document = Self::document_from_row(&id, &row)?;
                 mutations.push(RowMutation::delete(address));
                 mutations.extend(self.index_mutations_for_change(
                     &record,
@@ -369,6 +394,69 @@ impl<'a> JsonService<'a> {
         if deleted.is_empty() {
             return Ok(JsonBatchDeleteOutcome::new(Vec::new(), None));
         }
+        if mutations.is_empty() {
+            return Ok(JsonBatchDeleteOutcome::new(deleted, None));
+        }
+        let commit = self.commit_batch(&record, mutations)?;
+        Ok(JsonBatchDeleteOutcome::new(deleted, Some(commit)))
+    }
+
+    /// Deletes multiple JSON documents or paths in one commit.
+    pub fn batch_delete_entries<I>(&mut self, entries: I) -> EngineResult<JsonBatchDeleteOutcome>
+    where
+        I: IntoIterator<Item = JsonGetEntry>,
+    {
+        let entries = entries.into_iter().collect::<Vec<_>>();
+        if entries.is_empty() {
+            return Ok(JsonBatchDeleteOutcome::new(Vec::new(), None));
+        }
+
+        let record = self.branch_record()?;
+        let indexes = self.load_indexes(&record)?;
+        let mut states: BTreeMap<JsonDocumentId, BatchDeleteState> = BTreeMap::new();
+        let mut deleted = Vec::with_capacity(entries.len());
+
+        for entry in &entries {
+            if !states.contains_key(entry.id()) {
+                let address = self.row_address(&record, entry.id());
+                let state = match self.persistence.read_row(&address, ReadSelector::Latest)? {
+                    Some(row) if !row.is_tombstone() => {
+                        let document = Self::document_from_row(entry.id(), &row)?;
+                        BatchDeleteState::existing(document)
+                    }
+                    _ => BatchDeleteState::missing(),
+                };
+                states.insert(entry.id().clone(), state);
+            }
+
+            let state = states
+                .get_mut(entry.id())
+                .expect("state inserted before deletion");
+            let item_deleted = state.delete(entry.path())?;
+            deleted.push(item_deleted);
+        }
+
+        let mut mutations = Vec::with_capacity(states.len());
+        for (id, state) in states {
+            if !state.changed {
+                continue;
+            }
+            let address = self.row_address(&record, &id);
+            match &state.current {
+                Some(document) => {
+                    mutations.push(RowMutation::put(address, encode_stored_document(document)?));
+                }
+                None => mutations.push(RowMutation::delete(address)),
+            }
+            mutations.extend(self.index_mutations_for_change(
+                &record,
+                &id,
+                state.original_value.as_ref(),
+                state.current.as_ref().map(JsonDocument::value),
+                &indexes,
+            ));
+        }
+
         if mutations.is_empty() {
             return Ok(JsonBatchDeleteOutcome::new(deleted, None));
         }
@@ -485,7 +573,7 @@ impl<'a> JsonService<'a> {
                 continue;
             }
             let id = decode_json_document_id(&self.space, row.key())?;
-            let document = self.document_from_row(&id, &row)?;
+            let document = Self::document_from_row(&id, &row)?;
             if let Some(index_value) = extract_index_value(document.value(), &definition) {
                 mutations.push(RowMutation::put(
                     self.index_entry_address(&record, &name, &index_value, &id),
@@ -553,15 +641,14 @@ impl<'a> JsonService<'a> {
     ) -> EngineResult<JsonWriteOutcome> {
         let record = self.branch_record()?;
         let indexes = self.load_indexes(&record)?;
-        let (document, old_value) =
-            self.apply_set(&record, id.clone(), path, value, create_if_missing)?;
+        let (document, old_value) = self.apply_set(&record, id, path, value, create_if_missing)?;
         let mut mutations = vec![RowMutation::put(
-            self.row_address(&record, &id),
+            self.row_address(&record, document.id()),
             encode_stored_document(&document)?,
         )];
         mutations.extend(self.index_mutations_for_change(
             &record,
-            &id,
+            document.id(),
             old_value.as_ref(),
             Some(document.value()),
             &indexes,
@@ -581,7 +668,7 @@ impl<'a> JsonService<'a> {
         let address = self.row_address(record, &id);
         match self.persistence.read_row(&address, ReadSelector::Latest)? {
             Some(row) if !row.is_tombstone() => {
-                let mut document = self.document_from_row(&id, &row)?;
+                let mut document = Self::document_from_row(&id, &row)?;
                 let old_value = document.value().clone();
                 set_at_path(document.value_mut(), path, value, true)?;
                 document.touch();
@@ -813,7 +900,6 @@ impl<'a> JsonService<'a> {
     }
 
     fn document_from_row(
-        &self,
         id: &JsonDocumentId,
         row: &PersistenceReadRow,
     ) -> EngineResult<JsonDocument> {
@@ -827,7 +913,6 @@ impl<'a> JsonService<'a> {
     }
 
     fn value_from_row(
-        &self,
         id: &JsonDocumentId,
         path: &super::JsonPath,
         row: &PersistenceReadRow,
@@ -835,12 +920,11 @@ impl<'a> JsonService<'a> {
         if row.is_tombstone() {
             return Ok(None);
         }
-        let document = self.document_from_row(id, row)?;
+        let document = Self::document_from_row(id, row)?;
         Ok(get_at_path(document.value(), path))
     }
 
     fn versioned_value_from_row(
-        &self,
         id: &JsonDocumentId,
         path: &super::JsonPath,
         row: &PersistenceReadRow,
@@ -848,7 +932,7 @@ impl<'a> JsonService<'a> {
         if row.is_tombstone() {
             return Ok(None);
         }
-        let document = self.document_from_row(id, row)?;
+        let document = Self::document_from_row(id, row)?;
         Ok(get_at_path(document.value(), path).map(|value| {
             JsonVersionedValue::new(
                 value,
@@ -860,7 +944,6 @@ impl<'a> JsonService<'a> {
     }
 
     fn history_row_from_row(
-        &self,
         id: &JsonDocumentId,
         row: &PersistenceReadRow,
     ) -> EngineResult<JsonHistoryRow> {
@@ -873,7 +956,7 @@ impl<'a> JsonService<'a> {
                 None,
             ));
         }
-        let document = self.document_from_row(id, row)?;
+        let document = Self::document_from_row(id, row)?;
         Ok(JsonHistoryRow::new(
             Some(document.value().clone()),
             false,
@@ -885,7 +968,7 @@ impl<'a> JsonService<'a> {
 
     fn sample_row_from_row(&self, row: &PersistenceReadRow) -> EngineResult<JsonSampleRow> {
         let id = decode_json_document_id(&self.space, row.key())?;
-        let document = self.document_from_row(&id, row)?;
+        let document = Self::document_from_row(&id, row)?;
         Ok(JsonSampleRow::new(
             id,
             document.value().clone(),
