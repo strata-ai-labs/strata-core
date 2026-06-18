@@ -39,7 +39,7 @@ pub(crate) enum AckState {
     Acknowledged,
     #[allow(
         dead_code,
-        reason = "constructed by the WAL-tail / backend-fault crash mechanisms (STH-1 follow-on); an in-doubt commit may or may not survive recovery"
+        reason = "constructed by the backend-fault crash mechanism; an in-doubt commit may or may not survive recovery"
     )]
     InDoubt,
 }
@@ -61,7 +61,7 @@ type CellState = (Option<StorageValue>, CommitVersion);
 pub(crate) struct ExpectedState {
     #[allow(
         dead_code,
-        reason = "read by the WAL-tail damage mechanism (STH-1 follow-on) to choose per-mode suffix tolerance"
+        reason = "retained for future per-mode suffix-tolerance policy; the crash family is currently passed to the verifier explicitly"
     )]
     durability: OracleDurability,
     log: Vec<LoggedCommit>,
@@ -95,7 +95,7 @@ impl ExpectedState {
     /// it; recovery may legitimately reflect this op or not.
     #[allow(
         dead_code,
-        reason = "exercised by unit tests; wired into the WAL-tail / backend-fault crash mechanisms (STH-1 follow-on)"
+        reason = "exercised by unit tests; reserved for the backend-fault crash mechanism"
     )]
     pub(crate) fn record_in_doubt(
         &mut self,

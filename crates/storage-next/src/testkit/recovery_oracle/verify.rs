@@ -21,10 +21,6 @@ use crate::testkit::TestkitError;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CrashFamily {
     ZeroLoss,
-    #[allow(
-        dead_code,
-        reason = "selected by the WAL-tail damage crash mechanism (STH-1 follow-on)"
-    )]
     OnDiskDamage,
 }
 

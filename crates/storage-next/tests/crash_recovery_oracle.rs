@@ -1,6 +1,9 @@
-//! Recovery oracle (STH-1): after a crash at each bounded-exhaustive point in a
-//! seeded durable workload, recovered state must be a prefix of acknowledged
-//! commit history — no acknowledged commit lost, no torn batch, gap, or phantom.
+//! Recovery oracle: after a crash at each bounded-exhaustive point in a seeded
+//! durable workload — a clean drop (zero loss), WAL-tail truncation (a lost
+//! suffix), and WAL byte corruption (must fail loud or recover a clean prefix) —
+//! recovered state must be a prefix of acknowledged commit history: no
+//! acknowledged commit lost beyond the damaged tail, no torn batch, gap, phantom,
+//! and corruption is never silently tolerated.
 
 #![deny(unsafe_code)]
 
@@ -42,6 +45,17 @@ fn recovery_oracle_recovers_prefix_of_acknowledged_history() {
     assert!(
         outcome.drop_cases() > 0 || case_limit == Some(0),
         "no drop cases executed"
+    );
+    // The WAL-tail damage lane first fires on the third case, so any non-trivial
+    // budget must exercise it (the on-disk-damage family is otherwise untested).
+    assert!(
+        outcome.wal_damage_cases() > 0 || case_limit.is_some_and(|limit| limit < 3),
+        "no WAL-tail damage cases executed"
+    );
+    // The byte-corruption lane first fires on the fourth case.
+    assert!(
+        outcome.corruption_cases() > 0 || case_limit.is_some_and(|limit| limit < 4),
+        "no WAL corruption cases executed"
     );
 
     if keep_test_dir {
