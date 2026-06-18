@@ -28,8 +28,12 @@ fn type_inventory_snapshot_is_current() {
             // across the global-lock release, plus BranchPublishGuard serializes the
             // per-branch off-lock fsync. These are the cohesive state needed to move
             // the manifest fsync off the global runtime lock.
+            // +24 more for the Storage Testing Hardening (STH) program's
+            // feature-gated test harnesses (recovery_oracle, fault_sweep, fs_models,
+            // simulation, reordering_backend). These are test-only types; the
+            // production guard below (cleanup-target) is unchanged at 644.
             "--max-all-types",
-            "1092",
+            "1116",
             "--max-cleanup-target-types",
             "644",
         ])
@@ -54,8 +58,12 @@ fn parent_facade_reexports_do_not_regrow() {
             // fsync move off the global runtime lock while synchronous callers stay 2-phase.
             "--max-reexport-names",
             "lifecycle/mod.rs=242",
+            // +11 for the STH program's testkit harness exports (the run_*_harness
+            // entry points + *Outcome types for recovery_oracle / fault_sweep /
+            // fs_models / simulation, plus FsModel / ReorderingBackend) re-exported
+            // from the testkit facade.
             "--max-reexport-names",
-            "testkit/mod.rs=99",
+            "testkit/mod.rs=110",
             "--max-reexport-names",
             "api/mod.rs=104",
             "--max-reexport-names",

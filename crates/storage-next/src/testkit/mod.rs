@@ -42,6 +42,12 @@ mod recovery_oracle;
 mod reordering_backend;
 mod rng;
 mod service_fuzz;
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+mod simulation;
 mod table_runtime;
 
 pub use api::{
@@ -127,6 +133,12 @@ pub use reordering_backend::{FsModel, ReorderingBackend};
 pub use service_fuzz::{
     run_snapshot_service_script, ServiceFuzzViolation, SnapshotServiceFuzzOutcome,
 };
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+pub use simulation::{run_simulation_harness, SimulationOutcome};
 pub use table_runtime::{
     check_table_runtime_compaction_contract, check_table_runtime_cursor_contract,
     check_table_runtime_reader_contract, check_table_runtime_scaffold_contract,

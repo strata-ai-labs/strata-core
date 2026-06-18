@@ -7,9 +7,9 @@ Counts are conservative text matches, not a Rust AST parse.
 
 | Metric | Count |
 |---|---|
-| Rust files | 359 |
+| Rust files | 370 |
 | Production Rust files | 157 |
-| All struct/enum definitions | 1092 |
+| All struct/enum definitions | 1116 |
 | Production struct/enum definitions | 809 |
 | Cleanup-target production definitions | 644 |
 | Public API definitions | 112 |
@@ -31,11 +31,11 @@ Counts are conservative text matches, not a Rust AST parse.
 | api/read.rs | 16 | 540 |
 | lifecycle/durable/maintenance.rs | 16 | 3860 |
 | branch/state/materialization.rs | 13 | 1355 |
-| lifecycle/background.rs | 13 | 1651 |
+| lifecycle/background.rs | 13 | 1659 |
 | lifecycle/branch_lifecycle.rs | 13 | 1210 |
 | testkit/branch_lsm/contracts.rs | 13 | 441 |
 | api/outcome.rs | 12 | 560 |
-| backend/mod.rs | 12 | 893 |
+| backend/mod.rs | 12 | 894 |
 | lifecycle/cache.rs | 12 | 2421 |
 | api/maintenance.rs | 11 | 587 |
 | lifecycle/facts.rs | 11 | 382 |
@@ -52,7 +52,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | lifecycle/durable/maintenance.rs | 3860 |
 | lifecycle/tests/cache.rs | 3666 |
 | lifecycle/tests/durable.rs | 3418 |
-| api/runtime/mod.rs | 3376 |
+| api/runtime/mod.rs | 3395 |
 | service/manifest.rs | 3334 |
 | service/table.rs | 3272 |
 | lifecycle/compaction.rs | 3058 |
@@ -61,8 +61,8 @@ Counts are conservative text matches, not a Rust AST parse.
 | commit/tests/cache.rs | 2503 |
 | lifecycle/cache.rs | 2421 |
 | branch/tests/read_view.rs | 2202 |
-| testkit/integration_harness.rs | 2111 |
-| backend/local_fs.rs | 2099 |
+| testkit/integration_harness.rs | 2103 |
+| backend/local_fs.rs | 2100 |
 | lifecycle/tests/table_manifest_recovery.rs | 2074 |
 | lifecycle/tests/flush.rs | 2034 |
 | table/tests/compaction.rs | 2027 |
@@ -72,7 +72,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | lifecycle/tests/retention.rs | 1913 |
 | table/reader.rs | 1826 |
 | lifecycle/tests/compaction/remaining.rs | 1807 |
-| lifecycle/background.rs | 1651 |
+| lifecycle/background.rs | 1659 |
 | service/wal.rs | 1643 |
 | testkit/commit_runtime.rs | 1631 |
 | lifecycle/maintenance.rs | 1630 |
@@ -88,8 +88,8 @@ Counts are conservative text matches, not a Rust AST parse.
 | File | pub use statements | Approx exported names |
 |---|---|---|
 | lifecycle/mod.rs | 24 | 242 |
+| testkit/mod.rs | 20 | 110 |
 | api/mod.rs | 14 | 104 |
-| testkit/mod.rs | 15 | 99 |
 | format/mod.rs | 15 | 86 |
 | commit/mod.rs | 16 | 80 |
 | table/mod.rs | 11 | 68 |
@@ -100,6 +100,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | format/table/mod.rs | 3 | 13 |
 | api/runtime/mod.rs | 1 | 3 |
 | lib.rs | 2 | 2 |
+| testkit/recovery_oracle/mod.rs | 1 | 2 |
 
 ## Operation-Family Suffix Counts
 
@@ -140,9 +141,9 @@ Counts are conservative text matches, not a Rust AST parse.
 | format/mod.rs | 3 | 1 |
 | format/branch_catalog_manifest.rs | 0 | 4 |
 | backend/mod.rs | 0 | 4 |
+| testkit/recovery_oracle/model.rs | 0 | 3 |
 | service/mod.rs | 3 | 0 |
 | lifecycle/facts.rs | 0 | 3 |
-| branch/error.rs | 0 | 3 |
 
 ## Low-Reference Cleanup Candidates
 

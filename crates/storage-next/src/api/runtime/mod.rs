@@ -2704,6 +2704,25 @@ impl<'a> StorageRuntime<'a> {
         }
     }
 
+    /// Advance the injected manual maintenance clock (deterministic-inline runtimes
+    /// only); returns whether a manual clock was reached. Test / `fault-injection`-only
+    /// — the seam the simulation driver uses to drive time deterministically. Lives in
+    /// the lifetime-generic impl so it is callable on a borrowed-backend runtime.
+    #[cfg(any(test, feature = "fault-injection"))]
+    pub(crate) fn advance_maintenance_clock_for_test(&self, by: std::time::Duration) -> bool {
+        self.advance_maintenance_clock_for_current_runtime(by)
+    }
+
+    #[cfg(any(test, feature = "fault-injection"))]
+    fn advance_maintenance_clock_for_current_runtime(&self, by: std::time::Duration) -> bool {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => slot.advance_maintenance_clock(by),
+            StorageRuntimeInner::Durable(slot) => slot.advance_maintenance_clock(by),
+            StorageRuntimeInner::DurableOwned(slot) => slot.advance_maintenance_clock(by),
+            StorageRuntimeInner::Closed => false,
+        }
+    }
+
     fn background_wait_after_pressure_rejection(
         &mut self,
         error: &LifecycleError,
