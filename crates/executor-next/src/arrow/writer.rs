@@ -107,3 +107,105 @@ fn create_file(path: &Path) -> ExecutorResult<File> {
         ))
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::array::{Int64Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use tempfile::TempDir;
+
+    use crate::arrow::reader::read_file;
+    use crate::ExecutorErrorClass;
+
+    use super::*;
+
+    #[test]
+    fn writes_each_format_and_reads_rows_back() {
+        let dir = TempDir::new().expect("temp dir");
+        for (format, name) in [
+            (ArrowFileFormat::Parquet, "rows.parquet"),
+            (ArrowFileFormat::Csv, "rows.csv"),
+            (ArrowFileFormat::Jsonl, "rows.jsonl"),
+        ] {
+            let path = dir.path().join(name);
+            let batch = sample_batch(&["a", "b"], &[1, 2]);
+            let size = write_file(&path, format, &[batch]).expect("write succeeds");
+            assert!(size > 0);
+
+            let (schema, batches) = read_file(&path, format).expect("read succeeds");
+            assert_eq!(schema.field(0).name(), "key");
+            assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        }
+    }
+
+    #[test]
+    fn writes_multiple_batches_with_one_schema() {
+        let dir = TempDir::new().expect("temp dir");
+        let path = dir.path().join("rows.jsonl");
+        write_file(
+            &path,
+            ArrowFileFormat::Jsonl,
+            &[
+                sample_batch(&["a", "b"], &[1, 2]),
+                sample_batch(&["c", "d"], &[3, 4]),
+            ],
+        )
+        .expect("write succeeds");
+
+        let (_, batches) = read_file(&path, ArrowFileFormat::Jsonl).expect("read succeeds");
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
+    }
+
+    #[test]
+    fn rejects_empty_or_mismatched_batches_with_stable_errors() {
+        let dir = TempDir::new().expect("temp dir");
+        let path = dir.path().join("rows.jsonl");
+        let error = write_file(&path, ArrowFileFormat::Jsonl, &[]).expect_err("empty fails");
+        assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+        assert_eq!(error.code(), "invalid_argument.executor.arrow_empty_export");
+
+        let different_schema = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "other",
+                DataType::Utf8,
+                false,
+            )])),
+            vec![Arc::new(StringArray::from(vec!["x"]))],
+        )
+        .expect("different schema batch");
+        let error = write_file(
+            &path,
+            ArrowFileFormat::Jsonl,
+            &[sample_batch(&["a"], &[1]), different_schema],
+        )
+        .expect_err("mismatched schemas fail");
+        assert_eq!(error.class(), ExecutorErrorClass::Internal);
+        assert_eq!(error.code(), "internal.executor.arrow");
+    }
+
+    #[test]
+    fn creates_nested_output_directories() {
+        let dir = TempDir::new().expect("temp dir");
+        let path = dir.path().join("nested").join("rows.csv");
+        let size = write_file(&path, ArrowFileFormat::Csv, &[sample_batch(&["a"], &[1])])
+            .expect("write succeeds");
+        assert!(size > 0);
+        assert!(path.exists());
+    }
+
+    fn sample_batch(keys: &[&str], values: &[i64]) -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int64, false),
+            ])),
+            vec![
+                Arc::new(StringArray::from(keys.to_vec())),
+                Arc::new(Int64Array::from(values.to_vec())),
+            ],
+        )
+        .expect("sample batch")
+    }
+}

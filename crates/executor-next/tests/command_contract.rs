@@ -195,6 +195,123 @@ fn graph_output_json_uses_stable_tags_and_field_shape() {
 }
 
 #[test]
+fn arrow_command_json_uses_stable_tags_and_field_shape() {
+    let import = Command::ArrowImport {
+        branch: None,
+        space: None,
+        file_path: "input.jsonl".to_owned(),
+        format: None,
+        target: ArrowImportTarget::Vector,
+        key_column: Some("_id".to_owned()),
+        value_column: Some("embedding".to_owned()),
+        collection: Some("docs".to_owned()),
+    };
+    let encoded = serde_json::to_value(&import).expect("command serializes");
+    assert_eq!(encoded["type"], "arrow_import");
+    assert_eq!(encoded["file_path"], "input.jsonl");
+    assert_eq!(encoded["target"], "vector");
+    assert_eq!(encoded["collection"], "docs");
+    assert!(encoded.get("branch").is_none());
+    assert!(encoded.get("space").is_none());
+    assert!(encoded.get("format").is_none());
+    assert_eq!(
+        serde_json::from_value::<Command>(encoded).expect("command deserializes"),
+        import
+    );
+
+    let export = Command::ArrowExport {
+        branch: Some("feature".to_owned()),
+        space: Some("space-a".to_owned()),
+        primitive: ArrowExportPrimitive::Graph,
+        format: ArrowFileFormat::Parquet,
+        path: "graph.parquet".to_owned(),
+        prefix: Some("node-".to_owned()),
+        limit: Some(10),
+        collection: None,
+        graph: Some("deps".to_owned()),
+        event_type: Some("audit.created".to_owned()),
+    };
+    let encoded = serde_json::to_value(&export).expect("command serializes");
+    assert_eq!(encoded["type"], "arrow_export");
+    assert_eq!(encoded["branch"], "feature");
+    assert_eq!(encoded["space"], "space-a");
+    assert_eq!(encoded["primitive"], "graph");
+    assert_eq!(encoded["format"], "parquet");
+    assert_eq!(encoded["path"], "graph.parquet");
+    assert_eq!(encoded["prefix"], "node-");
+    assert_eq!(encoded["limit"], 10);
+    assert_eq!(encoded["graph"], "deps");
+    assert_eq!(encoded["event_type"], "audit.created");
+    assert_eq!(
+        serde_json::from_value::<Command>(encoded).expect("command deserializes"),
+        export
+    );
+
+    assert!(serde_json::from_value::<Command>(json!({
+        "type": "arrow_import",
+        "file_path": "input.csv",
+        "target": "kv",
+        "extra": true,
+    }))
+    .is_err());
+    assert!(serde_json::from_value::<Command>(json!({
+        "type": "arrow_export",
+        "primitive": "kv",
+        "format": "csv",
+        "path": "out.csv",
+        "extra": true,
+    }))
+    .is_err());
+}
+
+#[test]
+fn arrow_output_json_uses_stable_tags_and_field_shape() {
+    let import = Output::ArrowImportResult(ArrowImportResult::new(
+        ArrowImportTarget::Json,
+        "input.csv".to_owned(),
+        0,
+        2,
+        1,
+    ));
+    let encoded = serde_json::to_value(&import).expect("output serializes");
+    assert_eq!(encoded["type"], "arrow_import_result");
+    assert_eq!(encoded["data"]["target"], "json");
+    assert_eq!(encoded["data"]["file_path"], "input.csv");
+    assert_eq!(encoded["data"]["rows_imported"], 0);
+    assert_eq!(encoded["data"]["rows_skipped"], 2);
+    assert_eq!(encoded["data"]["batches_processed"], 1);
+    assert_eq!(
+        serde_json::from_value::<Output>(encoded).expect("output deserializes"),
+        import
+    );
+
+    let export = Output::ArrowExportResult(ArrowExportResult::new(
+        ArrowExportPrimitive::Graph,
+        ArrowFileFormat::Jsonl,
+        vec![
+            "graph_nodes.jsonl".to_owned(),
+            "graph_edges.jsonl".to_owned(),
+        ],
+        0,
+        0,
+    ));
+    let encoded = serde_json::to_value(&export).expect("output serializes");
+    assert_eq!(encoded["type"], "arrow_export_result");
+    assert_eq!(encoded["data"]["primitive"], "graph");
+    assert_eq!(encoded["data"]["format"], "jsonl");
+    assert_eq!(
+        encoded["data"]["paths"],
+        json!(["graph_nodes.jsonl", "graph_edges.jsonl"])
+    );
+    assert_eq!(encoded["data"]["row_count"], 0);
+    assert_eq!(encoded["data"]["size_bytes"], 0);
+    assert_eq!(
+        serde_json::from_value::<Output>(encoded).expect("output deserializes"),
+        export
+    );
+}
+
+#[test]
 fn command_names_cover_every_variant() {
     let names = all_commands()
         .into_iter()
@@ -305,6 +422,7 @@ fn command_round_trip_cases() -> Vec<Command> {
     commands.extend(event_round_trip_edge_commands());
     commands.extend(graph_round_trip_edge_commands());
     commands.extend(graph_binding_target_round_trip_commands());
+    commands.extend(arrow_round_trip_edge_commands());
     commands
 }
 
@@ -824,6 +942,33 @@ fn graph_commands() -> Vec<Command> {
 fn arrow_commands() -> Vec<Command> {
     vec![
         Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: "input.csv".to_owned(),
+            format: None,
+            target: ArrowImportTarget::Json,
+            key_column: None,
+            value_column: None,
+            collection: None,
+        },
+        Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Kv,
+            format: ArrowFileFormat::Csv,
+            path: "kv.csv".to_owned(),
+            prefix: None,
+            limit: None,
+            collection: None,
+            graph: None,
+            event_type: None,
+        },
+    ]
+}
+
+fn arrow_round_trip_edge_commands() -> Vec<Command> {
+    vec![
+        Command::ArrowImport {
             branch: Some("feature".to_owned()),
             space: Some("space-a".to_owned()),
             file_path: "input.parquet".to_owned(),
@@ -832,6 +977,40 @@ fn arrow_commands() -> Vec<Command> {
             key_column: Some("id".to_owned()),
             value_column: Some("payload".to_owned()),
             collection: None,
+        },
+        Command::ArrowImport {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            file_path: "vectors.jsonl".to_owned(),
+            format: Some(ArrowFileFormat::Jsonl),
+            target: ArrowImportTarget::Vector,
+            key_column: Some("_id".to_owned()),
+            value_column: Some("emb".to_owned()),
+            collection: Some("docs".to_owned()),
+        },
+        Command::ArrowExport {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            primitive: ArrowExportPrimitive::Json,
+            format: ArrowFileFormat::Parquet,
+            path: "docs.parquet".to_owned(),
+            prefix: Some("doc-".to_owned()),
+            limit: Some(10),
+            collection: None,
+            graph: None,
+            event_type: None,
+        },
+        Command::ArrowExport {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            primitive: ArrowExportPrimitive::Event,
+            format: ArrowFileFormat::Jsonl,
+            path: "events.jsonl".to_owned(),
+            prefix: None,
+            limit: Some(10),
+            collection: None,
+            graph: None,
+            event_type: Some("audit.created".to_owned()),
         },
         Command::ArrowExport {
             branch: Some("feature".to_owned()),
@@ -843,6 +1022,18 @@ fn arrow_commands() -> Vec<Command> {
             limit: Some(100),
             collection: Some("docs".to_owned()),
             graph: None,
+            event_type: None,
+        },
+        Command::ArrowExport {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            primitive: ArrowExportPrimitive::Graph,
+            format: ArrowFileFormat::Csv,
+            path: "graph.csv".to_owned(),
+            prefix: Some("node-".to_owned()),
+            limit: Some(10),
+            collection: None,
+            graph: Some("deps".to_owned()),
             event_type: None,
         },
     ]
@@ -1595,11 +1786,53 @@ fn graph_write_outputs() -> Vec<Output> {
 fn arrow_outputs() -> Vec<Output> {
     vec![
         Output::ArrowImportResult(ArrowImportResult::new(
+            ArrowImportTarget::Json,
+            "empty.csv".to_owned(),
+            0,
+            0,
+            0,
+        )),
+        Output::ArrowImportResult(ArrowImportResult::new(
             ArrowImportTarget::Kv,
             "input.parquet".to_owned(),
             10,
             1,
             2,
+        )),
+        Output::ArrowImportResult(ArrowImportResult::new(
+            ArrowImportTarget::Vector,
+            "vectors.jsonl".to_owned(),
+            2,
+            1,
+            1,
+        )),
+        Output::ArrowExportResult(ArrowExportResult::new(
+            ArrowExportPrimitive::Kv,
+            ArrowFileFormat::Csv,
+            vec!["kv.csv".to_owned()],
+            0,
+            0,
+        )),
+        Output::ArrowExportResult(ArrowExportResult::new(
+            ArrowExportPrimitive::Json,
+            ArrowFileFormat::Parquet,
+            vec!["docs.parquet".to_owned()],
+            2,
+            1024,
+        )),
+        Output::ArrowExportResult(ArrowExportResult::new(
+            ArrowExportPrimitive::Event,
+            ArrowFileFormat::Jsonl,
+            vec!["events.jsonl".to_owned()],
+            2,
+            512,
+        )),
+        Output::ArrowExportResult(ArrowExportResult::new(
+            ArrowExportPrimitive::Vector,
+            ArrowFileFormat::Jsonl,
+            vec!["vectors.jsonl".to_owned()],
+            2,
+            512,
         )),
         Output::ArrowExportResult(ArrowExportResult::new(
             ArrowExportPrimitive::Graph,

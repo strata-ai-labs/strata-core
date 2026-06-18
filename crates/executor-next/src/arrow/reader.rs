@@ -87,3 +87,73 @@ fn open_file(path: &Path) -> ExecutorResult<File> {
     File::open(path)
         .map_err(|error| io_error(format!("failed to open file '{}': {error}", path.display())))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::array::{Int64Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use tempfile::TempDir;
+
+    use crate::arrow::writer::write_file;
+    use crate::ExecutorErrorClass;
+
+    use super::*;
+
+    #[test]
+    fn reads_each_supported_format_with_schema_and_rows() {
+        let dir = TempDir::new().expect("temp dir");
+        for (format, name) in [
+            (ArrowFileFormat::Parquet, "rows.parquet"),
+            (ArrowFileFormat::Csv, "rows.csv"),
+            (ArrowFileFormat::Jsonl, "rows.jsonl"),
+        ] {
+            let path = dir.path().join(name);
+            write_file(&path, format, &[sample_batch()]).expect("write fixture");
+            let (schema, batches) = read_file(&path, format).expect("read succeeds");
+            assert_eq!(
+                schema
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().as_str())
+                    .collect::<Vec<_>>(),
+                vec!["key", "value"]
+            );
+            assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        }
+    }
+
+    #[test]
+    fn missing_and_malformed_files_have_stable_error_classes() {
+        let dir = TempDir::new().expect("temp dir");
+        let missing = dir.path().join("missing.parquet");
+        let error = read_file(&missing, ArrowFileFormat::Parquet).expect_err("missing file fails");
+        assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+        assert_eq!(
+            error.code(),
+            "invalid_argument.executor.arrow_input_missing"
+        );
+
+        let malformed = dir.path().join("bad.parquet");
+        std::fs::write(&malformed, b"not parquet").expect("write malformed");
+        let error =
+            read_file(&malformed, ArrowFileFormat::Parquet).expect_err("malformed file fails");
+        assert_eq!(error.class(), ExecutorErrorClass::Unavailable);
+        assert_eq!(error.code(), "unavailable.executor.arrow_io");
+    }
+
+    fn sample_batch() -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("key", DataType::Utf8, false),
+                Field::new("value", DataType::Int64, false),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec!["a", "b"])),
+                Arc::new(Int64Array::from(vec![1, 2])),
+            ],
+        )
+        .expect("sample batch")
+    }
+}

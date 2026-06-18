@@ -292,6 +292,41 @@ fn executor_benchmarks_do_not_bypass_commands() {
     }
 }
 
+#[test]
+fn executor_arrow_sources_stay_on_serialized_command_boundary() {
+    let arrow_root = crate_root().join("src/arrow");
+    for file in source_files(&arrow_root) {
+        let text = fs::read_to_string(&file).expect("Arrow source reads");
+        for forbidden in forbidden_arrow_lower_layer_terms() {
+            assert!(
+                !text.contains(forbidden),
+                "{} bypassed executor commands with `{forbidden}`",
+                file.display()
+            );
+        }
+    }
+
+    let import_source =
+        fs::read_to_string(arrow_root.join("import.rs")).expect("Arrow import reads");
+    assert!(import_source.contains("Command::KvBatchPut"));
+    assert!(import_source.contains("Command::JsonBatchSet"));
+    assert!(import_source.contains("Command::VectorBatchUpsert"));
+    assert!(import_source.contains("Command::VectorListCollections"));
+    assert!(import_source.contains("Command::VectorCreateCollection"));
+
+    let export_source =
+        fs::read_to_string(arrow_root.join("export.rs")).expect("Arrow export reads");
+    assert!(export_source.contains("Command::KvList"));
+    assert!(export_source.contains("Command::KvBatchGet"));
+    assert!(export_source.contains("Command::JsonList"));
+    assert!(export_source.contains("Command::JsonGet"));
+    assert!(export_source.contains("Command::EventRange"));
+    assert!(export_source.contains("Command::VectorListKeys"));
+    assert!(export_source.contains("Command::VectorBatchGet"));
+    assert!(export_source.contains("Command::GraphListNodes"));
+    assert!(export_source.contains("Command::GraphNeighbors"));
+}
+
 fn is_executor_benchmark_source(text: &str) -> bool {
     text.contains("strata_executor_next")
         || text.contains("Command::Kv")
@@ -378,6 +413,34 @@ fn forbidden_graph_lower_layer_terms() -> &'static [&'static str] {
         "Sssp",
         "Wcc",
         "Lcc",
+    ]
+}
+
+fn forbidden_arrow_lower_layer_terms() -> &'static [&'static str] {
+    &[
+        "strata_storage_next",
+        "strata-storage-next",
+        "strata_engine_next::data",
+        "StorageRuntime",
+        "CommitBatch",
+        "CommitMutation",
+        "RowMutation",
+        "StorageKey",
+        "StorageValue",
+        "Wal",
+        "TableRuntime",
+        "Lifecycle",
+        "Compaction",
+        "database.",
+        "self.database",
+        ".kv(",
+        ".json(",
+        ".vector(",
+        "kv_service(",
+        "json_service(",
+        "vector_service(",
+        "event_service(",
+        "graph_service(",
     ]
 }
 

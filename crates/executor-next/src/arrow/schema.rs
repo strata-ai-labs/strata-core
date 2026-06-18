@@ -358,6 +358,7 @@ fn cell_to_json(column: &dyn Array, row: usize) -> ExecutorResult<Value> {
         return Ok(Value::Null);
     }
     match column.data_type() {
+        DataType::Null => Ok(Value::Null),
         DataType::Int8 => {
             let array = column.as_any().downcast_ref::<array::Int8Array>().unwrap();
             Ok(serde_json::json!(array.value(row)))
@@ -519,5 +520,369 @@ fn f64_embedding_value_to_f32(value: f64) -> Option<f32> {
         Some(value as f32)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::array::{
+        BinaryArray, BooleanArray, FixedSizeListBuilder, Float32Array, Float32Builder,
+        Float64Array, Float64Builder, Int16Array, Int32Array, Int64Array, Int8Array,
+        LargeBinaryArray, LargeStringArray, ListBuilder, NullArray, StringArray, UInt16Array,
+        UInt32Array, UInt64Array, UInt8Array,
+    };
+    use arrow::datatypes::Field;
+    use base64::Engine;
+    use serde_json::json;
+
+    use crate::ExecutorErrorClass;
+
+    use super::*;
+
+    #[test]
+    fn key_value_and_document_columns_follow_old_detection_order() {
+        let schema = Schema::new(vec![
+            utf8_field("_id"),
+            utf8_field("id"),
+            utf8_field("key"),
+            utf8_field("value"),
+        ]);
+        let mapping =
+            resolve_mapping(&schema, ArrowImportTarget::Kv, None, None).expect("mapping resolves");
+        assert_eq!(mapping.key_idx, 2);
+        assert_eq!(mapping.value_idx, Some(3));
+
+        let schema = Schema::new(vec![
+            utf8_field("_id"),
+            utf8_field("id"),
+            utf8_field("payload"),
+        ]);
+        let mapping = resolve_mapping(&schema, ArrowImportTarget::Kv, Some("id"), Some("payload"))
+            .expect("explicit mapping resolves");
+        assert_eq!(mapping.key_idx, 1);
+        assert_eq!(mapping.value_idx, Some(2));
+
+        for candidate in ["document", "value", "doc", "body"] {
+            let schema = Schema::new(vec![utf8_field("key"), utf8_field(candidate)]);
+            let mapping = resolve_mapping(&schema, ArrowImportTarget::Json, None, None)
+                .expect("json mapping resolves");
+            assert_eq!(mapping.value_idx, Some(1), "{candidate}");
+        }
+    }
+
+    #[test]
+    fn mapping_errors_include_stable_codes_and_available_columns() {
+        let schema = Schema::new(vec![utf8_field("name"), utf8_field("payload")]);
+        let error = resolve_mapping(&schema, ArrowImportTarget::Kv, None, None)
+            .expect_err("missing key fails");
+        assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+        assert_eq!(error.code(), "invalid_argument.executor.arrow_key_column");
+        assert!(error.message().contains("name (Utf8)"));
+
+        let error = resolve_mapping(&schema, ArrowImportTarget::Json, Some("name"), Some("doc"))
+            .expect_err("missing document fails");
+        assert_eq!(error.code(), "invalid_argument.executor.arrow_value_column");
+        assert!(error.message().contains("payload (Utf8)"));
+    }
+
+    #[test]
+    fn kv_mapping_uses_two_column_shortcut_and_extra_object_fallback() {
+        let schema = Schema::new(vec![utf8_field("id"), utf8_field("payload")]);
+        let mapping =
+            resolve_mapping(&schema, ArrowImportTarget::Kv, None, None).expect("mapping resolves");
+        assert_eq!(mapping.key_idx, 0);
+        assert_eq!(mapping.value_idx, Some(1));
+        assert!(mapping.extra_indices.is_empty());
+
+        let schema = Schema::new(vec![
+            utf8_field("id"),
+            utf8_field("name"),
+            Field::new("active", DataType::Boolean, false),
+        ]);
+        let mapping =
+            resolve_mapping(&schema, ArrowImportTarget::Kv, None, None).expect("mapping resolves");
+        assert_eq!(mapping.value_idx, None);
+        assert_eq!(mapping.extra_names, vec!["name", "active"]);
+    }
+
+    #[test]
+    fn bytes_respect_binary_columns_and_exported_base64_encodings() {
+        let encoded_key = base64::engine::general_purpose::STANDARD.encode([0, 255]);
+        let encoded_value = base64::engine::general_purpose::STANDARD.encode([255, 254]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                utf8_field("key"),
+                utf8_field("key_encoding"),
+                utf8_field("value"),
+                utf8_field("value_encoding"),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec![encoded_key])),
+                Arc::new(StringArray::from(vec!["base64"])),
+                Arc::new(StringArray::from(vec![encoded_value])),
+                Arc::new(StringArray::from(vec!["base64"])),
+            ],
+        )
+        .expect("batch");
+        let mapping = resolve_mapping(batch.schema().as_ref(), ArrowImportTarget::Kv, None, None)
+            .expect("mapping resolves");
+        assert_eq!(
+            key_bytes(&batch, &mapping, 0).expect("key"),
+            Some(vec![0, 255])
+        );
+        assert_eq!(
+            value_bytes(&batch, &mapping, 0).expect("value"),
+            vec![255, 254]
+        );
+
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("key", DataType::Binary, false),
+                Field::new("value", DataType::LargeBinary, false),
+            ])),
+            vec![
+                Arc::new(BinaryArray::from(vec![b"k".as_slice()])),
+                Arc::new(LargeBinaryArray::from(vec![b"raw".as_slice()])),
+            ],
+        )
+        .expect("binary batch");
+        let mapping = resolve_mapping(batch.schema().as_ref(), ArrowImportTarget::Kv, None, None)
+            .expect("mapping resolves");
+        assert_eq!(
+            key_bytes(&batch, &mapping, 0).expect("key"),
+            Some(b"k".to_vec())
+        );
+        assert_eq!(
+            value_bytes(&batch, &mapping, 0).expect("value"),
+            b"raw".to_vec()
+        );
+    }
+
+    #[test]
+    fn json_document_and_object_conversion_cover_arrow_scalars() {
+        let batch = scalar_batch();
+        let names = batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>();
+        let indices = (0..batch.num_columns()).collect::<Vec<_>>();
+        let value = row_to_json_object(&batch, 0, &indices, &names).expect("json object");
+        assert_eq!(
+            value,
+            json!({
+                "utf8": "text",
+                "large_utf8": "large",
+                "binary": "Ymlu",
+                "large_binary": "bGFyZ2U=",
+                "int8": -8,
+                "int16": -16,
+                "int32": -32,
+                "int64": -64,
+                "uint8": 8,
+                "uint16": 16,
+                "uint32": 32,
+                "uint64": 64,
+                "float32": 1.5,
+                "float64": 2.5,
+                "bool": true,
+                "null": null,
+            })
+        );
+
+        let document_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![utf8_field("key"), utf8_field("document")])),
+            vec![
+                Arc::new(StringArray::from(vec!["doc-a", "doc-b"])),
+                Arc::new(StringArray::from(vec!["{\"ok\":true}", "not-json"])),
+            ],
+        )
+        .expect("document batch");
+        let mapping = resolve_mapping(
+            document_batch.schema().as_ref(),
+            ArrowImportTarget::Json,
+            None,
+            None,
+        )
+        .expect("mapping resolves");
+        assert_eq!(
+            json_document(&document_batch, &mapping, 0).expect("json document"),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            json_document(&document_batch, &mapping, 1).expect("json document"),
+            json!("not-json")
+        );
+    }
+
+    #[test]
+    fn vector_mapping_accepts_float_lists_and_rejects_other_embedding_shapes() {
+        for candidate in ["embedding", "vector", "embeddings", "emb"] {
+            let schema = Schema::new(vec![
+                utf8_field("key"),
+                Field::new(
+                    candidate,
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        2,
+                    ),
+                    false,
+                ),
+            ]);
+            let mapping = resolve_mapping(&schema, ArrowImportTarget::Vector, None, None)
+                .expect("vector mapping resolves");
+            assert_eq!(mapping.value_idx, Some(1), "{candidate}");
+        }
+
+        let non_list = Schema::new(vec![utf8_field("key"), utf8_field("embedding")]);
+        let error = resolve_mapping(&non_list, ArrowImportTarget::Vector, None, None)
+            .expect_err("non-list embedding fails");
+        assert_eq!(
+            error.code(),
+            "invalid_argument.executor.arrow_embedding_type"
+        );
+
+        let non_float_list = Schema::new(vec![
+            utf8_field("key"),
+            Field::new(
+                "embedding",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                false,
+            ),
+        ]);
+        let error = resolve_mapping(&non_float_list, ArrowImportTarget::Vector, None, None)
+            .expect_err("non-float embedding fails");
+        assert_eq!(
+            error.code(),
+            "invalid_argument.executor.arrow_embedding_type"
+        );
+    }
+
+    #[test]
+    fn vector_embeddings_accept_supported_lists_and_skip_invalid_rows() {
+        let fixed_float64 = fixed_float64_embedding_batch(&[1.0, 2.0, f64::INFINITY, 4.0]);
+        let mapping = resolve_mapping(
+            fixed_float64.schema().as_ref(),
+            ArrowImportTarget::Vector,
+            None,
+            None,
+        )
+        .expect("mapping resolves");
+        assert_eq!(
+            vector_embedding(&fixed_float64, &mapping, 0).expect("embedding"),
+            vec![1.0, 2.0]
+        );
+        assert!(vector_embedding(&fixed_float64, &mapping, 1).is_none());
+
+        let list_float32 = list_float32_embedding_batch();
+        let mapping = resolve_mapping(
+            list_float32.schema().as_ref(),
+            ArrowImportTarget::Vector,
+            None,
+            None,
+        )
+        .expect("mapping resolves");
+        assert_eq!(
+            vector_embedding(&list_float32, &mapping, 0).expect("embedding"),
+            vec![3.0, 4.0]
+        );
+    }
+
+    fn utf8_field(name: &str) -> Field {
+        Field::new(name, DataType::Utf8, false)
+    }
+
+    fn scalar_batch() -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                utf8_field("utf8"),
+                Field::new("large_utf8", DataType::LargeUtf8, false),
+                Field::new("binary", DataType::Binary, false),
+                Field::new("large_binary", DataType::LargeBinary, false),
+                Field::new("int8", DataType::Int8, false),
+                Field::new("int16", DataType::Int16, false),
+                Field::new("int32", DataType::Int32, false),
+                Field::new("int64", DataType::Int64, false),
+                Field::new("uint8", DataType::UInt8, false),
+                Field::new("uint16", DataType::UInt16, false),
+                Field::new("uint32", DataType::UInt32, false),
+                Field::new("uint64", DataType::UInt64, false),
+                Field::new("float32", DataType::Float32, false),
+                Field::new("float64", DataType::Float64, false),
+                Field::new("bool", DataType::Boolean, false),
+                Field::new("null", DataType::Null, true),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec!["text"])),
+                Arc::new(LargeStringArray::from(vec!["large"])),
+                Arc::new(BinaryArray::from(vec![b"bin".as_slice()])),
+                Arc::new(LargeBinaryArray::from(vec![b"large".as_slice()])),
+                Arc::new(Int8Array::from(vec![-8])),
+                Arc::new(Int16Array::from(vec![-16])),
+                Arc::new(Int32Array::from(vec![-32])),
+                Arc::new(Int64Array::from(vec![-64])),
+                Arc::new(UInt8Array::from(vec![8])),
+                Arc::new(UInt16Array::from(vec![16])),
+                Arc::new(UInt32Array::from(vec![32])),
+                Arc::new(UInt64Array::from(vec![64])),
+                Arc::new(Float32Array::from(vec![1.5])),
+                Arc::new(Float64Array::from(vec![2.5])),
+                Arc::new(BooleanArray::from(vec![true])),
+                Arc::new(NullArray::new(1)),
+            ],
+        )
+        .expect("scalar batch")
+    }
+
+    fn fixed_float64_embedding_batch(values: &[f64; 4]) -> RecordBatch {
+        let mut embedding_builder = FixedSizeListBuilder::new(Float64Builder::new(), 2);
+        for value in values {
+            embedding_builder.values().append_value(*value);
+        }
+        embedding_builder.append(true);
+        embedding_builder.append(true);
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                utf8_field("key"),
+                Field::new(
+                    "embedding",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float64, true)),
+                        2,
+                    ),
+                    false,
+                ),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec!["a", "b"])),
+                Arc::new(embedding_builder.finish()),
+            ],
+        )
+        .expect("embedding batch")
+    }
+
+    fn list_float32_embedding_batch() -> RecordBatch {
+        let mut embedding_builder = ListBuilder::new(Float32Builder::new());
+        embedding_builder.values().append_value(3.0);
+        embedding_builder.values().append_value(4.0);
+        embedding_builder.append(true);
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                utf8_field("key"),
+                Field::new(
+                    "embedding",
+                    DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
+                    false,
+                ),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec!["a"])),
+                Arc::new(embedding_builder.finish()),
+            ],
+        )
+        .expect("embedding batch")
     }
 }

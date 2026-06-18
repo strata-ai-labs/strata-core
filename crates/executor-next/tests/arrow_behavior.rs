@@ -3,6 +3,7 @@
 #![cfg(feature = "arrow")]
 
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use arrow::array::{FixedSizeListBuilder, Float32Builder, StringArray};
@@ -11,7 +12,8 @@ use arrow::record_batch::RecordBatch;
 use serde_json::{json, Value};
 use strata_executor_next::{
     ArrowExportPrimitive, ArrowExportResult, ArrowFileFormat, ArrowImportResult, ArrowImportTarget,
-    Bytes, Command, Executor, ExecutorErrorClass, Output,
+    BatchEventEntry, Bytes, Command, Executor, ExecutorErrorClass, GraphBindingPrimitive,
+    GraphBindingTarget, GraphEntityBinding, Output, DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -223,6 +225,211 @@ fn parquet_vector_import_and_export_uses_batch_commands() {
 }
 
 #[test]
+fn arrow_import_export_respects_branch_and_space_isolation() {
+    let dir = TempDir::new().expect("temp dir");
+    let input_path = dir.path().join("scoped.csv");
+    let output_path = dir.path().join("scoped.jsonl");
+    fs::write(&input_path, "key,value\nscoped,visible\n").expect("write csv");
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .execute(Command::BranchForkCurrent {
+            source: DEFAULT_BRANCH.to_owned(),
+            branch: "feature".to_owned(),
+        })
+        .expect("branch fork succeeds");
+
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: Some("feature".to_owned()),
+            space: Some("tenant-a".to_owned()),
+            file_path: input_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Csv),
+            target: ArrowImportTarget::Kv,
+            key_column: Some("key".to_owned()),
+            value_column: Some("value".to_owned()),
+            collection: None,
+        })
+        .expect("scoped import succeeds");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    assert_import_result(&result, ArrowImportTarget::Kv, 1, 0, 1);
+
+    assert_eq!(kv_get(&mut executor, Bytes::from("scoped")), None);
+    assert_eq!(
+        kv_get_in(
+            &mut executor,
+            Some("feature"),
+            Some("tenant-a"),
+            Bytes::from("scoped"),
+        ),
+        Some(b"visible".to_vec())
+    );
+    assert_eq!(
+        kv_get_in(&mut executor, Some("feature"), None, Bytes::from("scoped"),),
+        None
+    );
+
+    let output = executor
+        .execute(Command::ArrowExport {
+            branch: Some("feature".to_owned()),
+            space: Some("tenant-a".to_owned()),
+            primitive: ArrowExportPrimitive::Kv,
+            format: ArrowFileFormat::Jsonl,
+            path: output_path.to_string_lossy().into_owned(),
+            prefix: Some("sc".to_owned()),
+            limit: Some(10),
+            collection: None,
+            graph: None,
+            event_type: None,
+        })
+        .expect("scoped export succeeds");
+    let Output::ArrowExportResult(result) = output else {
+        panic!("unexpected export output");
+    };
+    assert_eq!(result.row_count(), 1);
+    let exported = fs::read_to_string(output_path).expect("read jsonl");
+    assert!(exported.contains("\"key\":\"scoped\""));
+    assert!(exported.contains("\"value\":\"visible\""));
+}
+
+#[test]
+fn durable_arrow_import_survives_reopen_and_exports() {
+    let dir = TempDir::new().expect("temp dir");
+    let db_path = dir.path().join("db");
+    let kv_path = dir.path().join("kv.csv");
+    let json_path = dir.path().join("docs.csv");
+    let vector_path = dir.path().join("vectors.parquet");
+    let export_path = dir.path().join("exported.jsonl");
+    fs::write(&kv_path, "key,value\npersisted,value\n").expect("write kv csv");
+    fs::write(
+        &json_path,
+        "id,document\nuser-a,\"{\"\"name\"\":\"\"Ada\"\"}\"\n",
+    )
+    .expect("write json csv");
+    write_vector_parquet(&vector_path);
+
+    {
+        let mut executor = Executor::open_durable_local(&db_path).expect("durable executor opens");
+        executor
+            .execute(Command::ArrowImport {
+                branch: None,
+                space: None,
+                file_path: kv_path.to_string_lossy().into_owned(),
+                format: Some(ArrowFileFormat::Csv),
+                target: ArrowImportTarget::Kv,
+                key_column: Some("key".to_owned()),
+                value_column: Some("value".to_owned()),
+                collection: None,
+            })
+            .expect("kv import succeeds");
+        executor
+            .execute(Command::ArrowImport {
+                branch: None,
+                space: None,
+                file_path: json_path.to_string_lossy().into_owned(),
+                format: Some(ArrowFileFormat::Csv),
+                target: ArrowImportTarget::Json,
+                key_column: Some("id".to_owned()),
+                value_column: Some("document".to_owned()),
+                collection: None,
+            })
+            .expect("json import succeeds");
+        executor
+            .execute(Command::ArrowImport {
+                branch: None,
+                space: None,
+                file_path: vector_path.to_string_lossy().into_owned(),
+                format: Some(ArrowFileFormat::Parquet),
+                target: ArrowImportTarget::Vector,
+                key_column: None,
+                value_column: None,
+                collection: Some("docs".to_owned()),
+            })
+            .expect("vector import succeeds");
+        executor.close().expect("close succeeds");
+    }
+
+    let mut reopened = Executor::open_durable_local(&db_path).expect("durable executor reopens");
+    assert_eq!(
+        kv_get(&mut reopened, Bytes::from("persisted")),
+        Some(b"value".to_vec())
+    );
+    assert_eq!(
+        json_get(&mut reopened, "user-a"),
+        Some(json!({"name": "Ada"}))
+    );
+    assert_eq!(vector_count(&mut reopened, "docs"), 2);
+    assert_eq!(
+        vector_get_metadata(&mut reopened, "docs", "doc-b"),
+        json!({"kind": "b"})
+    );
+
+    let output = reopened
+        .execute(Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Kv,
+            format: ArrowFileFormat::Jsonl,
+            path: export_path.to_string_lossy().into_owned(),
+            prefix: Some("persist".to_owned()),
+            limit: None,
+            collection: None,
+            graph: None,
+            event_type: None,
+        })
+        .expect("durable export succeeds");
+    let Output::ArrowExportResult(result) = output else {
+        panic!("unexpected export output");
+    };
+    assert_eq!(result.row_count(), 1);
+    assert!(fs::read_to_string(export_path)
+        .expect("read export")
+        .contains("\"key\":\"persisted\""));
+}
+
+#[test]
+fn event_export_writes_filtered_jsonl_without_mutating_log() {
+    let dir = TempDir::new().expect("temp dir");
+    let output_path = dir.path().join("events.jsonl");
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .execute(Command::EventBatchAppend {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchEventEntry::new("audit.created", json!({"id": 1})),
+                BatchEventEntry::new("audit.updated", json!({"id": 1})),
+            ],
+        })
+        .expect("event batch append succeeds");
+
+    let output = executor
+        .execute(Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Event,
+            format: ArrowFileFormat::Jsonl,
+            path: output_path.to_string_lossy().into_owned(),
+            prefix: None,
+            limit: None,
+            collection: None,
+            graph: None,
+            event_type: Some("audit.created".to_owned()),
+        })
+        .expect("event export succeeds");
+    let Output::ArrowExportResult(result) = output else {
+        panic!("unexpected export output");
+    };
+    assert_eq!(result.row_count(), 1);
+    let exported = fs::read_to_string(output_path).expect("read jsonl");
+    assert!(exported.contains("\"event_type\":\"audit.created\""));
+    assert!(!exported.contains("\"event_type\":\"audit.updated\""));
+    assert_eq!(event_len(&mut executor), 2);
+}
+
+#[test]
 fn graph_export_writes_node_and_edge_tables() {
     let dir = TempDir::new().expect("temp dir");
     let output_path = dir.path().join("graph.jsonl");
@@ -253,12 +460,86 @@ fn graph_export_writes_node_and_edge_tables() {
     let edge_path = dir.path().join("graph_edges.jsonl");
     assert!(node_path.exists());
     assert!(edge_path.exists());
-    assert!(fs::read_to_string(node_path)
-        .expect("nodes")
-        .contains("\"node_id\":\"node-a\""));
-    assert!(fs::read_to_string(edge_path)
-        .expect("edges")
-        .contains("\"edge_type\":\"depends_on\""));
+    let nodes = fs::read_to_string(&node_path).expect("nodes");
+    assert!(nodes.contains("\"node_id\":\"node-a\""));
+    assert!(nodes.contains("\\\"key\\\":\\\"doc-a\\\""));
+    let edges = fs::read_to_string(&edge_path).expect("edges");
+    assert!(edges.contains("\"edge_type\":\"depends_on\""));
+}
+
+#[test]
+fn arrow_export_rejects_missing_primitive_options() {
+    let dir = TempDir::new().expect("temp dir");
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    let vector_error = executor
+        .execute(Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Vector,
+            format: ArrowFileFormat::Jsonl,
+            path: dir
+                .path()
+                .join("vectors.jsonl")
+                .to_string_lossy()
+                .into_owned(),
+            prefix: None,
+            limit: None,
+            collection: None,
+            graph: None,
+            event_type: None,
+        })
+        .expect_err("missing vector collection fails");
+    assert_eq!(vector_error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(
+        vector_error.code(),
+        "invalid_argument.executor.arrow_collection"
+    );
+
+    let graph_error = executor
+        .execute(Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Graph,
+            format: ArrowFileFormat::Jsonl,
+            path: dir
+                .path()
+                .join("graph.jsonl")
+                .to_string_lossy()
+                .into_owned(),
+            prefix: None,
+            limit: None,
+            collection: None,
+            graph: None,
+            event_type: None,
+        })
+        .expect_err("missing graph fails");
+    assert_eq!(graph_error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(graph_error.code(), "invalid_argument.executor.arrow_graph");
+}
+
+#[test]
+fn arrow_import_rejects_unknown_format_before_storage_mutation() {
+    let dir = TempDir::new().expect("temp dir");
+    let input_path = dir.path().join("records.arrow");
+    fs::write(&input_path, b"not read").expect("write unknown extension");
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    let error = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: input_path.to_string_lossy().into_owned(),
+            format: None,
+            target: ArrowImportTarget::Kv,
+            key_column: None,
+            value_column: None,
+            collection: None,
+        })
+        .expect_err("unknown format fails");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(error.code(), "invalid_argument.executor.arrow_format");
+    assert!(kv_keys(&mut executor).is_empty());
 }
 
 #[test]
@@ -297,10 +578,36 @@ fn assert_import_result(
 }
 
 fn kv_get(executor: &mut Executor, key: Bytes) -> Option<Vec<u8>> {
+    kv_get_in(executor, None, None, key)
+}
+
+fn kv_keys(executor: &mut Executor) -> Vec<Bytes> {
     let output = executor
-        .execute(Command::KvGet {
+        .execute(Command::KvList {
             branch: None,
             space: None,
+            prefix: None,
+            cursor: None,
+            limit: None,
+            as_of: None,
+        })
+        .expect("kv list succeeds");
+    match output {
+        Output::Keys(keys) | Output::KeysPage { keys, .. } => keys,
+        output => panic!("unexpected kv list output: {output:?}"),
+    }
+}
+
+fn kv_get_in(
+    executor: &mut Executor,
+    branch: Option<&str>,
+    space: Option<&str>,
+    key: Bytes,
+) -> Option<Vec<u8>> {
+    let output = executor
+        .execute(Command::KvGet {
+            branch: branch.map(str::to_owned),
+            space: space.map(str::to_owned),
             key,
             as_of: None,
         })
@@ -312,10 +619,19 @@ fn kv_get(executor: &mut Executor, key: Bytes) -> Option<Vec<u8>> {
 }
 
 fn json_get(executor: &mut Executor, key: &str) -> Option<Value> {
+    json_get_in(executor, None, None, key)
+}
+
+fn json_get_in(
+    executor: &mut Executor,
+    branch: Option<&str>,
+    space: Option<&str>,
+    key: &str,
+) -> Option<Value> {
     let output = executor
         .execute(Command::JsonGet {
-            branch: None,
-            space: None,
+            branch: branch.map(str::to_owned),
+            space: space.map(str::to_owned),
             key: key.to_owned(),
             path: "$".to_owned(),
             as_of: None,
@@ -341,6 +657,20 @@ fn vector_count(executor: &mut Executor, collection: &str) -> u64 {
     count
 }
 
+fn event_len(executor: &mut Executor) -> u64 {
+    let output = executor
+        .execute(Command::EventLen {
+            branch: None,
+            space: None,
+            as_of: None,
+        })
+        .expect("event len succeeds");
+    let Output::EventLength { count } = output else {
+        panic!("unexpected event len output");
+    };
+    count
+}
+
 fn vector_get_metadata(executor: &mut Executor, collection: &str, key: &str) -> Value {
     let output = executor
         .execute(Command::VectorGet {
@@ -357,7 +687,7 @@ fn vector_get_metadata(executor: &mut Executor, collection: &str, key: &str) -> 
     value.data().metadata().cloned().expect("metadata")
 }
 
-fn write_vector_parquet(path: &std::path::Path) {
+fn write_vector_parquet(path: &Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Utf8, false),
         Field::new(
@@ -397,7 +727,10 @@ fn create_graph_fixture(executor: &mut Executor) {
             graph: "deps".to_owned(),
         })
         .expect("graph create succeeds");
-    for (node_id, kind) in [("node-a", "root"), ("node-b", "leaf")] {
+    for (node_id, kind, binding) in [
+        ("node-a", "root", Some(graph_binding("doc-a"))),
+        ("node-b", "leaf", None),
+    ] {
         executor
             .execute(Command::GraphAddNode {
                 branch: None,
@@ -405,7 +738,7 @@ fn create_graph_fixture(executor: &mut Executor) {
                 graph: "deps".to_owned(),
                 node_id: node_id.to_owned(),
                 properties: Some(json!({"kind": kind})),
-                binding: None,
+                binding,
             })
             .expect("node add succeeds");
     }
@@ -421,4 +754,13 @@ fn create_graph_fixture(executor: &mut Executor) {
             properties: Some(json!({"why": "test"})),
         })
         .expect("edge add succeeds");
+}
+
+fn graph_binding(key: &str) -> GraphEntityBinding {
+    GraphEntityBinding::new(GraphBindingTarget::new(
+        GraphBindingPrimitive::Json,
+        None,
+        "docs",
+        key,
+    ))
 }
