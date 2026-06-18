@@ -7,7 +7,9 @@ use crate::backend::local_fs::LocalFsBackend;
 #[cfg(all(test, unix, feature = "localfs"))]
 use crate::layout::ObjectLayout;
 #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
-use crate::testkit::{BackendCall, FaultScript, FaultingBackend};
+use crate::testkit::{
+    BackendCall, FaultScript, FaultingBackend, FsModel, ReorderingBackend, TestkitError,
+};
 #[cfg(feature = "localfs")]
 use std::path::{Path, PathBuf};
 
@@ -23,6 +25,8 @@ enum StorageBackendInner {
     LocalFs(LocalFsBackend),
     #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
     Fault(FaultingBackend<LocalFsBackend>),
+    #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+    Reordering(ReorderingBackend),
 }
 
 impl StorageBackend {
@@ -49,6 +53,8 @@ impl StorageBackend {
             StorageBackendInner::LocalFs(backend) => Some(backend.root()),
             #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
             StorageBackendInner::Fault(backend) => Some(backend.inner().root()),
+            #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+            StorageBackendInner::Reordering(backend) => Some(backend.inner().root()),
         }
     }
 
@@ -81,6 +87,28 @@ impl StorageBackend {
         }
     }
 
+    /// Open a local-filesystem backend that records each object's unsynced
+    /// boundary, so [`Self::reordering_crash`] can materialize a filesystem
+    /// persistence-model crash state. Test / `fault-injection`-only.
+    #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+    #[must_use]
+    pub fn reordering_local_fs(root: impl Into<PathBuf>) -> Self {
+        Self {
+            inner: StorageBackendInner::Reordering(ReorderingBackend::local_fs(root)),
+        }
+    }
+
+    /// Materialize a crash state per the filesystem persistence `model` (seeded) on
+    /// a reordering backend; a no-op (`false`) on other backends. Returns whether
+    /// the on-disk state was actually perturbed.
+    #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+    pub fn reordering_crash(&self, model: FsModel, seed: u64) -> Result<bool, TestkitError> {
+        match &self.inner {
+            StorageBackendInner::Reordering(backend) => backend.crash(model, seed),
+            _ => Ok(false),
+        }
+    }
+
     /// Backend operations observed by a faulting backend (empty for non-faulting
     /// backends), so a sweep can see which operations fired and stop once a target
     /// operation no longer occurs in the workload.
@@ -100,6 +128,8 @@ impl StorageBackend {
             StorageBackendInner::LocalFs(backend) => backend,
             #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
             StorageBackendInner::Fault(backend) => backend,
+            #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+            StorageBackendInner::Reordering(backend) => backend,
         }
     }
 
@@ -117,6 +147,9 @@ impl StorageBackend {
             // path instead of background scheduling.
             #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
             StorageBackendInner::Fault(_) => None,
+            // Also Mutex-backed (records the unsynced boundary), so no owned handle.
+            #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+            StorageBackendInner::Reordering(_) => None,
         }
     }
 
@@ -128,6 +161,8 @@ impl StorageBackend {
             StorageBackendInner::LocalFs(backend) => BackendHandle::owned(backend),
             #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
             StorageBackendInner::Fault(backend) => BackendHandle::owned(backend),
+            #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+            StorageBackendInner::Reordering(backend) => BackendHandle::owned(backend),
         }
     }
 

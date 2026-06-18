@@ -24,10 +24,22 @@ mod commit_runtime_timeline;
 ))]
 mod fault_sweep;
 mod format_fuzz;
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+mod fs_models;
 mod integration_harness;
 mod lifecycle;
 mod quarantine_fuzz;
 mod recovery_oracle;
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+mod reordering_backend;
 mod rng;
 mod service_fuzz;
 mod table_runtime;
@@ -65,6 +77,12 @@ pub use fault_sweep::{run_fault_sweep_harness, FaultSweepOutcome};
 pub use format_fuzz::{
     check_table_format_model_script, decode_format_bytes, FormatDecodeOutcome, FormatDecoder,
 };
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+pub use fs_models::{run_fs_model_harness, FsModelSweepOutcome};
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
 pub use integration_harness::run_localfs_crash_recovery_harness;
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
@@ -100,6 +118,12 @@ pub use lifecycle::{
 pub use quarantine_fuzz::{run_quarantine_service_script, QuarantineServiceFuzzOutcome};
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
 pub use recovery_oracle::{run_recovery_oracle_harness, RecoveryOracleOutcome};
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+pub use reordering_backend::{FsModel, ReorderingBackend};
 pub use service_fuzz::{
     run_snapshot_service_script, ServiceFuzzViolation, SnapshotServiceFuzzOutcome,
 };

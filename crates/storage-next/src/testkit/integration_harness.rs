@@ -61,7 +61,7 @@ const DATABASE_ID: [u8; 16] = [0x9d; 16];
 const CODEC_ID: &str = "identity";
 
 #[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
-mod crash_sim {
+pub(crate) mod crash_sim {
     use super::TestkitError;
     use std::path::{Path, PathBuf};
 
@@ -84,11 +84,7 @@ mod crash_sim {
     /// Truncate a published object to `new_len` bytes. Simulates a fault where
     /// some payload bytes reached the disk but the tail of the publication was
     /// lost (e.g. fsync interrupted partway).
-    #[allow(
-        dead_code,
-        reason = "future service-fault windows reuse this helper to inject partial-write faults; kept here so the helper module exposes a complete set of crash primitives"
-    )]
-    pub(super) fn truncate_object(
+    pub(crate) fn truncate_object(
         root: &Path,
         name: &crate::object::ObjectName,
         new_len: u64,
@@ -105,7 +101,7 @@ mod crash_sim {
     /// Remove the on-disk file backing an object. Simulates a fault where the
     /// object never reached durable storage even though companion state
     /// (manifest/inventory) recorded it.
-    pub(super) fn drop_object_file(
+    pub(crate) fn drop_object_file(
         root: &Path,
         name: &crate::object::ObjectName,
     ) -> Result<(), TestkitError> {
@@ -116,11 +112,7 @@ mod crash_sim {
 
     /// Patch a single byte to simulate a torn write or bit-rot that did not
     /// alter the object length.
-    #[allow(
-        dead_code,
-        reason = "future corruption-window fault routes consume this helper; kept here so the helper module exposes a complete set of crash primitives"
-    )]
-    pub(super) fn corrupt_object_byte(
+    pub(crate) fn corrupt_object_byte(
         root: &Path,
         name: &crate::object::ObjectName,
         offset: u64,
