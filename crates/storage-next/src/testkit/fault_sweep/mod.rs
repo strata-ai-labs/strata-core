@@ -22,36 +22,40 @@ use super::recovery_oracle::workload::{
 };
 use crate::api::{
     CommitBatch, CommitOptions, MaintenanceRequest, MaintenanceScope, MaintenanceTask,
-    StorageBackend, StorageDurabilityPolicy, StorageMaintenanceSchedulingPolicy,
-    StorageOpenOptions, StorageRuntime,
+    StorageApiError, StorageBackend, StorageBudgetPolicy, StorageDurabilityPolicy,
+    StorageMaintenanceSchedulingPolicy, StorageOpenOptions, StorageRuntime,
 };
 use crate::testkit::{
     BackendOperation, FaultKind, FaultMode, FaultRule, FaultScript, TestkitError,
 };
 
-/// Seeds swept by the CI-fast lane (the soak budget is the integration target's
-/// `case_limit`, which caps total cases regardless of this).
-const SWEEP_SEED_BUDGET: u64 = 4;
+/// Default seed count when no case budget is given. With a case budget, seeds
+/// scale freely (bounded only by `case_limit`), so a large
+/// `STRATA_STORAGE_FAULT_CASES` soak explores many seeds, not just these.
+const DEFAULT_SWEEP_SEEDS: u64 = 4;
 /// Commits per workload before the forced checkpoint — small so the bounded
 /// sweep stays cheap while still exercising the durable op set.
 const SWEEP_OP_COUNT: usize = 4;
-/// Candidate write-side backend operations — the ones that can lose or corrupt
-/// acknowledged data. The sweep fails each that the workload actually invokes; the
-/// commit + checkpoint workload exercises append / sync / publish today. Delete,
-/// write, and the conditional ops belong to the deferred-deletion / compaction /
-/// off-lock manifest paths a bounded synchronous workload never reaches — they are
-/// listed so they are swept automatically once a richer workload (a follow-on)
-/// invokes them. Read / list / metadata faults are query-time, not data-loss, and
-/// are exercised incidentally by the open-recovery path.
-const SWEEP_OPS: [BackendOperation; 7] = [
+/// The V1-reachable write-side backend operations — the ones that can lose or
+/// corrupt acknowledged data and that the durable path actually invokes: commit
+/// append + sync, checkpoint/flush publish, and snapshot-pruning delete. The sweep
+/// fails each position the workload reaches.
+///
+/// Deliberately excluded: `WriteObject` (durable path publishes, never
+/// `write_object`; only WAL sidecars use it) and `ConditionalCreate/Update`
+/// (reserved for post-V1 object-durable/distributed backends — V1 publishes via
+/// `publish_object` and these return `UnsupportedOperation`). Read / list /
+/// metadata faults are query-time, not data-loss, and are exercised incidentally
+/// by the open-recovery path.
+const SWEEP_OPS: [BackendOperation; 4] = [
     BackendOperation::AppendObject,
     BackendOperation::SyncObject,
     BackendOperation::PublishObject,
-    BackendOperation::WriteObject,
     BackendOperation::DeleteObject,
-    BackendOperation::ConditionalCreate,
-    BackendOperation::ConditionalUpdate,
 ];
+/// Upper bound on commits driven against the tiny budget before giving up on
+/// provoking back-pressure (the low-memory profile pressures well within this).
+const BUDGET_COMMIT_CAP: usize = 4000;
 
 /// Counters describing a fault-sweep run.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -61,6 +65,7 @@ pub struct FaultSweepOutcome {
     positions_swept: usize,
     once_cases: usize,
     continuously_cases: usize,
+    budget_pressure_cases: usize,
 }
 
 impl FaultSweepOutcome {
@@ -83,6 +88,10 @@ impl FaultSweepOutcome {
     #[must_use]
     pub const fn continuously_cases(&self) -> usize {
         self.continuously_cases
+    }
+    #[must_use]
+    pub const fn budget_pressure_cases(&self) -> usize {
+        self.budget_pressure_cases
     }
 }
 
@@ -134,9 +143,12 @@ fn drive_workload(
         };
         model.record_ack(branch, summary.commit_version(), mutations.clone());
     }
-    // Force a checkpoint so the durable-table / manifest / snapshot publish and
-    // sync ops occur and can be faulted (non-destructive to committed state).
+    // Force maintenance so the durable publish / sync / delete ops occur and can
+    // be faulted (all non-destructive to committed state): two checkpoints publish
+    // two snapshots, then snapshot pruning (retain newest 1) deletes the older one.
     run_maintenance(runtime, branch, MaintenanceTask::Checkpoint);
+    run_maintenance(runtime, branch, MaintenanceTask::Checkpoint);
+    run_maintenance(runtime, branch, MaintenanceTask::SnapshotPruning);
     Ok(())
 }
 
@@ -254,6 +266,92 @@ fn sweep_violation(
     ))
 }
 
+/// Open under the tiny low-memory budget and drive commits until admission applies
+/// back-pressure, then prove the pressure is typed and *recoverable*: it surfaces
+/// as a retryable `StoragePressure`, draining maintenance lets the same commit
+/// through (liveness), and a clean reopen recovers every acknowledged commit.
+/// Returns whether back-pressure actually fired (for non-vacuousness). Any other
+/// commit error, a failed resume, or an oracle violation is a harness error.
+fn run_budget_exhaustion_case(root: &Path, seed: u64) -> Result<bool, TestkitError> {
+    let branch = default_branch();
+    let mut model = ExpectedState::new(OracleDurability::Standard);
+    let workload = generate_workload(seed, BUDGET_COMMIT_CAP);
+    let mut pressured = false;
+    {
+        let backend = StorageBackend::local_fs(root.to_path_buf());
+        let options = StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_budget_policy(StorageBudgetPolicy::LowMemory)
+            .with_maintenance_scheduling_policy(
+                StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+            );
+        let mut runtime = StorageRuntime::open_with_backend(options, &backend)
+            .map_err(|err| TestkitError::new(format!("budget open: {err:?}")))?
+            .into_runtime();
+        for mutations in &workload {
+            let batch = CommitBatch::new(
+                branch,
+                mutations.iter().map(to_commit_mutation).collect(),
+                CommitOptions::default(),
+            )
+            .map_err(|err| TestkitError::new(format!("build batch: {err:?}")))?;
+            match runtime.commit(&batch) {
+                Ok(summary) => {
+                    model.record_ack(branch, summary.commit_version(), mutations.clone());
+                }
+                Err(StorageApiError::StoragePressure { retryable, .. }) => {
+                    if !retryable {
+                        return Err(TestkitError::new(
+                            "storage pressure rejection was not marked retryable",
+                        ));
+                    }
+                    pressured = true;
+                    // Liveness: draining maintenance must let the same commit through.
+                    runtime.drain_maintenance().map_err(|err| {
+                        TestkitError::new(format!("drain after pressure: {err:?}"))
+                    })?;
+                    let summary = runtime.commit(&batch).map_err(|err| {
+                        TestkitError::new(format!("resume commit after drain: {err:?}"))
+                    })?;
+                    model.record_ack(branch, summary.commit_version(), mutations.clone());
+                    break;
+                }
+                Err(other) => {
+                    return Err(TestkitError::new(format!(
+                        "expected typed storage pressure under budget, got {}: {other:?}",
+                        other.code()
+                    )));
+                }
+            }
+        }
+    }
+    // Reopen clean — every acknowledged commit must recover.
+    let backend = StorageBackend::local_fs(root.to_path_buf());
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_maintenance_scheduling_policy(
+                StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+            ),
+        &backend,
+    )
+    .map_err(|err| TestkitError::new(format!("budget verify reopen: {err:?}")))?
+    .into_runtime();
+    let recovered = scan_recovered(
+        &runtime,
+        branch,
+        &oracle_space(),
+        &oracle_prefix_key(),
+        SCAN_LIMIT,
+    )?;
+    if let Some(violation) =
+        classify_recovered(&model, branch, &recovered, CrashFamily::ZeroLoss).err()
+    {
+        return Err(TestkitError::new(format!(
+            "budget exhaustion oracle violation [seed={seed}]: {violation:?}"
+        )));
+    }
+    Ok(pressured)
+}
+
 /// Sweep seeds × every traced backend-op position × {fail-once, fail-continuously},
 /// verifying recovery against the oracle at each. `case_limit` caps the number of
 /// fault cases (for CI budgets); `None` runs the full grid.
@@ -263,7 +361,18 @@ pub fn run_fault_sweep_harness(
 ) -> Result<FaultSweepOutcome, TestkitError> {
     let mut outcome = FaultSweepOutcome::default();
     let mut cases = 0usize;
-    'outer: for seed in 0..SWEEP_SEED_BUDGET {
+    // Seeds scale with the case budget: an uncapped run covers a few seeds, while a
+    // large `case_limit` (soak) explores as many as the budget allows. Seeds stay
+    // `0..N` so any failure still replays from its printed seed.
+    let seed_budget = if case_limit.is_some() {
+        u64::MAX
+    } else {
+        DEFAULT_SWEEP_SEEDS
+    };
+    'outer: for seed in 0..seed_budget {
+        if case_limit.is_some_and(|limit| cases >= limit) {
+            break;
+        }
         outcome.seeds_executed += 1;
         let trace = baseline_trace(&case_dir(root, &format!("baseline-{seed}"))?, seed)?;
         outcome.baseline_ops_traced += trace.len();
@@ -301,6 +410,12 @@ pub fn run_fault_sweep_harness(
                 }
             }
         }
+    }
+    // One budget-exhaustion case: typed, retryable back-pressure that drains and
+    // resumes, with an oracle-valid prefix. Not a per-op sweep (it is admission
+    // control, not a backend op), so it runs once regardless of the case budget.
+    if case_limit != Some(0) && run_budget_exhaustion_case(&case_dir(root, "budget")?, 0)? {
+        outcome.budget_pressure_cases += 1;
     }
     Ok(outcome)
 }
@@ -362,13 +477,15 @@ mod tests {
     fn baseline_traces_durable_ops_so_the_sweep_is_not_vacuous() {
         let dir = tempfile::tempdir().expect("tmp");
         let trace = baseline_trace(dir.path(), 1).expect("baseline");
-        // Pin the operations the commit + checkpoint workload actually exercises so
-        // a change in coverage is visible, not silent. Delete / write / conditional
-        // need a richer workload (see SWEEP_OPS) and are intentionally not asserted.
+        // Pin the operations the commit + checkpoint + prune workload exercises so a
+        // change in coverage is visible, not silent. Delete must appear — it proves
+        // snapshot pruning issued a backend delete (see SWEEP_OPS for what is
+        // deliberately out of V1 scope).
         for expected in [
             BackendOperation::AppendObject,
             BackendOperation::SyncObject,
             BackendOperation::PublishObject,
+            BackendOperation::DeleteObject,
         ] {
             assert!(
                 trace
@@ -407,6 +524,22 @@ mod tests {
         assert!(
             outcome.continuously_cases() > 0,
             "no fail-continuously cases"
+        );
+        assert!(
+            outcome.budget_pressure_cases() > 0,
+            "budget-exhaustion case did not apply back-pressure"
+        );
+    }
+
+    #[test]
+    fn budget_exhaustion_pressures_then_drains_and_resumes() {
+        let dir = tempfile::tempdir().expect("tmp");
+        // The helper asserts the rejection is a retryable StoragePressure, that
+        // draining maintenance lets the commit through, and that recovery holds.
+        let pressured = run_budget_exhaustion_case(dir.path(), 0).expect("budget case");
+        assert!(
+            pressured,
+            "low-memory budget never applied back-pressure; raise the load or lower the budget"
         );
     }
 

@@ -49,6 +49,10 @@ fn fault_sweep_recovers_prefix_of_acknowledged_history() {
         outcome.positions_swept() > 0 || case_limit == Some(0),
         "no fault positions swept"
     );
+    assert!(
+        outcome.budget_pressure_cases() > 0 || case_limit == Some(0),
+        "budget-exhaustion case did not apply back-pressure"
+    );
 
     if keep_test_dir {
         if let Some(tempdir) = tempdir {
@@ -56,4 +60,33 @@ fn fault_sweep_recovers_prefix_of_acknowledged_history() {
             let _ = tempdir.keep();
         }
     }
+}
+
+/// Soak: a deep sweep over many seeds — the genuine bug-hunt run. `#[ignore]` by
+/// default; `STRATA_STORAGE_FAULT_CASES` sets the depth.
+#[cfg(all(
+    feature = "fault-injection",
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+#[ignore = "soak: deep multi-seed fault sweep; run with --ignored (raise STRATA_STORAGE_FAULT_CASES)"]
+#[test]
+fn fault_sweep_soak_deepens_across_many_seeds() {
+    let case_limit = common::fault_case_limit()
+        .unwrap_or_else(|error| panic!("invalid fault sweep environment: {error}"));
+    let tempdir = tempfile::tempdir().expect("temp fault sweep soak root");
+
+    let outcome = strata_storage_next::testkit::run_fault_sweep_harness(
+        tempdir.path(),
+        case_limit.or(Some(20_000)),
+    )
+    .expect("fault sweep soak");
+
+    assert!(outcome.positions_swept() > 0, "soak swept no positions");
+    // The point of seed scaling: the soak must explore beyond the CI seed budget.
+    assert!(
+        outcome.seeds_executed() > 4,
+        "soak did not deepen beyond the default seed budget (got {} seeds)",
+        outcome.seeds_executed()
+    );
 }
