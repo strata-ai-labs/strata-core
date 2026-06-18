@@ -75,7 +75,7 @@ The executor crate must restore this complete KV command surface:
 | Command | Inputs | Output |
 | --- | --- | --- |
 | `KvPut` | branch?, space?, key, value | `WriteResult` |
-| `KvGet` | branch?, space?, key, as_of? | `MaybeVersioned` or `Maybe` |
+| `KvGet` | branch?, space?, key, as_of? | `KvVersionedValue` or `KvValue` |
 | `KvDelete` | branch?, space?, key | `DeleteResult` |
 | `KvList` | branch?, space?, prefix?, cursor?, limit?, as_of? | `Keys` or `KeysPage` |
 | `KvScan` | branch?, space?, start?, limit? | `KvScanResult` |
@@ -116,7 +116,7 @@ The executor crate must restore this complete KV command surface:
 
 - Add a `Command` enum containing the full KV command set.
 - Add an `Output` enum containing only the variants needed by branch + KV:
-  `Maybe`, `MaybeVersioned`, `VersionHistory`, `Keys`, `KeysPage`,
+  `KvValue`, `KvVersionedValue`, `VersionHistory`, `Keys`, `KeysPage`,
   `WriteResult`, `DeleteResult`, `KvScanResult`, `BatchResults`,
   `BatchGetResults`, `Bool`, `BoolList`, `Uint`, and `SampleResult`.
 - Add `Command::name()` as an exhaustive match.
@@ -145,8 +145,10 @@ inside `strata-engine-next` and must not expose storage request types.
 - Writes:
   - preserve `put`, `put_batch`, `delete`, and `delete_batch`
   - define duplicate-key behavior explicitly for all batch write commands
+  - return engine-owned delete existence facts from delete operations so
+    executor delete outputs do not read before deleting
 - Add public outcome structs for versioned values, scan rows, history rows, and
-  pages.
+  pages, plus delete outcome structs for single and batch deletes.
 
 ### 5. Executor Handle
 
@@ -156,6 +158,9 @@ inside `strata-engine-next` and must not expose storage request types.
 - Resolve branch/space defaults before creating an engine KV service.
 - Convert executor wire bytes into engine `KvKey` and `KvValue`.
 - Convert engine outcomes into executor outputs.
+- Preserve old executor batch shape: empty batch commands return empty outputs
+  and invalid batch items produce positional item errors where the command can
+  still apply valid items.
 
 ### 6. KV Command Delegation
 

@@ -59,6 +59,740 @@ impl From<&str> for Bytes {
     }
 }
 
+/// Vector distance metric exposed through the command boundary.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorDistanceMetric {
+    /// Cosine similarity.
+    #[default]
+    Cosine,
+    /// Euclidean similarity.
+    Euclidean,
+    /// Raw dot product.
+    DotProduct,
+}
+
+/// Scalar value used by vector metadata filters.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type", content = "value")]
+pub enum VectorScalar {
+    /// JSON null.
+    Null,
+    /// Boolean scalar.
+    Bool(bool),
+    /// Numeric scalar.
+    Number(f64),
+    /// String scalar.
+    String(String),
+}
+
+impl From<bool> for VectorScalar {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+
+impl From<i32> for VectorScalar {
+    fn from(value: i32) -> Self {
+        Self::Number(f64::from(value))
+    }
+}
+
+impl From<f64> for VectorScalar {
+    fn from(value: f64) -> Self {
+        Self::Number(value)
+    }
+}
+
+impl From<&str> for VectorScalar {
+    fn from(value: &str) -> Self {
+        Self::String(value.to_owned())
+    }
+}
+
+/// Vector metadata filter operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VectorFilterOp {
+    /// Top-level equality.
+    Eq,
+}
+
+/// One vector metadata filter condition.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VectorFilterCondition {
+    field: String,
+    op: VectorFilterOp,
+    value: VectorScalar,
+}
+
+impl VectorFilterCondition {
+    /// Creates a vector metadata filter condition.
+    pub fn new(field: impl Into<String>, op: VectorFilterOp, value: VectorScalar) -> Self {
+        Self {
+            field: field.into(),
+            op,
+            value,
+        }
+    }
+
+    /// Creates an equality condition.
+    pub fn eq(field: impl Into<String>, value: impl Into<VectorScalar>) -> Self {
+        Self::new(field, VectorFilterOp::Eq, value.into())
+    }
+
+    /// Returns the metadata field.
+    pub fn field(&self) -> &str {
+        &self.field
+    }
+
+    /// Returns the filter operation.
+    pub const fn op(&self) -> VectorFilterOp {
+        self.op
+    }
+
+    /// Returns the comparison value.
+    pub const fn value(&self) -> &VectorScalar {
+        &self.value
+    }
+
+    /// Consumes the condition.
+    pub fn into_parts(self) -> (String, VectorFilterOp, VectorScalar) {
+        (self.field, self.op, self.value)
+    }
+}
+
+/// AND-composed vector metadata filter.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct VectorMetadataFilter {
+    conditions: Vec<VectorFilterCondition>,
+}
+
+impl VectorMetadataFilter {
+    /// Creates a vector metadata filter.
+    pub fn new(conditions: Vec<VectorFilterCondition>) -> Self {
+        Self { conditions }
+    }
+
+    /// Returns filter conditions.
+    pub fn conditions(&self) -> &[VectorFilterCondition] {
+        &self.conditions
+    }
+
+    /// Consumes the filter.
+    pub fn into_conditions(self) -> Vec<VectorFilterCondition> {
+        self.conditions
+    }
+}
+
+/// One vector batch upsert entry.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BatchVectorEntry {
+    key: String,
+    vector: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<Value>,
+}
+
+impl BatchVectorEntry {
+    /// Creates a vector batch upsert entry.
+    pub fn new(key: impl Into<String>, vector: Vec<f32>, metadata: Option<Value>) -> Self {
+        Self {
+            key: key.into(),
+            vector,
+            metadata,
+        }
+    }
+
+    /// Returns the vector key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the embedding.
+    pub fn vector(&self) -> &[f32] {
+        &self.vector
+    }
+
+    /// Returns optional metadata.
+    pub const fn metadata(&self) -> Option<&Value> {
+        self.metadata.as_ref()
+    }
+
+    /// Consumes the entry.
+    pub fn into_parts(self) -> (String, Vec<f32>, Option<Value>) {
+        (self.key, self.vector, self.metadata)
+    }
+}
+
+/// Event range direction exposed through the command boundary.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventRangeDirection {
+    /// Increasing sequence or timestamp order.
+    #[default]
+    Forward,
+    /// Decreasing sequence or timestamp order.
+    Reverse,
+}
+
+/// One event batch append entry.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BatchEventEntry {
+    event_type: String,
+    payload: Value,
+}
+
+impl BatchEventEntry {
+    /// Creates an event batch append entry.
+    pub fn new(event_type: impl Into<String>, payload: Value) -> Self {
+        Self {
+            event_type: event_type.into(),
+            payload,
+        }
+    }
+
+    /// Returns the event type.
+    pub fn event_type(&self) -> &str {
+        &self.event_type
+    }
+
+    /// Returns the event payload.
+    pub const fn payload(&self) -> &Value {
+        &self.payload
+    }
+
+    /// Consumes the entry.
+    pub fn into_parts(self) -> (String, Value) {
+        (self.event_type, self.payload)
+    }
+}
+
+/// Event record payload and chain facts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EventData {
+    sequence: u64,
+    event_type: String,
+    payload: Value,
+    timestamp: u64,
+    previous_hash: String,
+    hash: String,
+}
+
+impl EventData {
+    /// Creates an event record.
+    pub fn new(
+        sequence: u64,
+        event_type: String,
+        payload: Value,
+        timestamp: u64,
+        previous_hash: String,
+        hash: String,
+    ) -> Self {
+        Self {
+            sequence,
+            event_type,
+            payload,
+            timestamp,
+            previous_hash,
+            hash,
+        }
+    }
+
+    /// Returns the event sequence.
+    pub const fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Returns the event type.
+    pub fn event_type(&self) -> &str {
+        &self.event_type
+    }
+
+    /// Returns the event payload.
+    pub const fn payload(&self) -> &Value {
+        &self.payload
+    }
+
+    /// Returns the event append timestamp.
+    pub const fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+
+    /// Returns the previous event hash as lowercase hex.
+    pub fn previous_hash(&self) -> &str {
+        &self.previous_hash
+    }
+
+    /// Returns this event hash as lowercase hex.
+    pub fn hash(&self) -> &str {
+        &self.hash
+    }
+}
+
+/// Event record with commit metadata.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EventVersionedData {
+    event: EventData,
+    version: u64,
+    timestamp: u64,
+}
+
+impl EventVersionedData {
+    /// Creates a versioned event record.
+    pub fn new(event: EventData, version: u64, timestamp: u64) -> Self {
+        Self {
+            event,
+            version,
+            timestamp,
+        }
+    }
+
+    /// Returns the event record.
+    pub const fn event(&self) -> &EventData {
+        &self.event
+    }
+
+    /// Returns the commit version.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Returns the commit timestamp.
+    pub const fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+}
+
+/// Positional event batch append result.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EventBatchAppendItemResult {
+    sequence: Option<u64>,
+    event_type: Option<String>,
+    version: Option<u64>,
+    timestamp: Option<u64>,
+    error: Option<String>,
+}
+
+impl EventBatchAppendItemResult {
+    /// Creates an event batch append result.
+    pub fn new(
+        sequence: Option<u64>,
+        event_type: Option<String>,
+        version: Option<u64>,
+        timestamp: Option<u64>,
+    ) -> Self {
+        Self {
+            sequence,
+            event_type,
+            version,
+            timestamp,
+            error: None,
+        }
+    }
+
+    /// Creates a failed event batch append result.
+    pub fn failed(error: impl Into<String>) -> Self {
+        Self {
+            sequence: None,
+            event_type: None,
+            version: None,
+            timestamp: None,
+            error: Some(error.into()),
+        }
+    }
+
+    /// Returns the assigned sequence for successful items.
+    pub const fn sequence(&self) -> Option<u64> {
+        self.sequence
+    }
+
+    /// Returns the event type for successful items.
+    pub fn event_type(&self) -> Option<&str> {
+        self.event_type.as_deref()
+    }
+
+    /// Returns the commit version for successful items.
+    pub const fn version(&self) -> Option<u64> {
+        self.version
+    }
+
+    /// Returns the commit timestamp for successful items.
+    pub const fn timestamp(&self) -> Option<u64> {
+        self.timestamp
+    }
+
+    /// Returns the item error when validation failed.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+}
+
+/// Event hash-chain verification result.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct EventChainVerification {
+    is_valid: bool,
+    length: u64,
+    first_invalid: Option<u64>,
+    error: Option<String>,
+}
+
+impl EventChainVerification {
+    /// Creates an event chain verification result.
+    pub fn new(
+        is_valid: bool,
+        length: u64,
+        first_invalid: Option<u64>,
+        error: Option<String>,
+    ) -> Self {
+        Self {
+            is_valid,
+            length,
+            first_invalid,
+            error,
+        }
+    }
+
+    /// Returns true when the visible event log is dense and hash-linked.
+    pub const fn is_valid(&self) -> bool {
+        self.is_valid
+    }
+
+    /// Returns the checked event count.
+    pub const fn length(&self) -> u64 {
+        self.length
+    }
+
+    /// Returns the first invalid sequence, if any.
+    pub const fn first_invalid(&self) -> Option<u64> {
+        self.first_invalid
+    }
+
+    /// Returns the verification error, if any.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+}
+
+/// Vector collection facts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VectorCollectionInfo {
+    name: String,
+    dimension: u64,
+    metric: VectorDistanceMetric,
+    count: u64,
+}
+
+impl VectorCollectionInfo {
+    /// Creates vector collection facts.
+    pub fn new(name: String, dimension: u64, metric: VectorDistanceMetric, count: u64) -> Self {
+        Self {
+            name,
+            dimension,
+            metric,
+            count,
+        }
+    }
+
+    /// Returns the collection name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the embedding dimension.
+    pub const fn dimension(&self) -> u64 {
+        self.dimension
+    }
+
+    /// Returns the distance metric.
+    pub const fn metric(&self) -> VectorDistanceMetric {
+        self.metric
+    }
+
+    /// Returns the visible vector count.
+    pub const fn count(&self) -> u64 {
+        self.count
+    }
+}
+
+/// Vector value payload.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VectorData {
+    embedding: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<Value>,
+}
+
+impl VectorData {
+    /// Creates a vector value payload.
+    pub fn new(embedding: Vec<f32>, metadata: Option<Value>) -> Self {
+        Self {
+            embedding,
+            metadata,
+        }
+    }
+
+    /// Returns the embedding.
+    pub fn embedding(&self) -> &[f32] {
+        &self.embedding
+    }
+
+    /// Returns optional metadata.
+    pub const fn metadata(&self) -> Option<&Value> {
+        self.metadata.as_ref()
+    }
+}
+
+/// Vector value with commit metadata.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VectorVersionedData {
+    key: String,
+    data: VectorData,
+    version: u64,
+    timestamp: u64,
+    vector_revision: u64,
+}
+
+impl VectorVersionedData {
+    /// Creates a versioned vector value.
+    pub fn new(
+        key: String,
+        data: VectorData,
+        version: u64,
+        timestamp: u64,
+        vector_revision: u64,
+    ) -> Self {
+        Self {
+            key,
+            data,
+            version,
+            timestamp,
+            vector_revision,
+        }
+    }
+
+    /// Returns the vector key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the vector payload.
+    pub const fn data(&self) -> &VectorData {
+        &self.data
+    }
+
+    /// Returns the commit version.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Returns the commit timestamp.
+    pub const fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+
+    /// Returns the vector revision.
+    pub const fn vector_revision(&self) -> u64 {
+        self.vector_revision
+    }
+}
+
+/// Vector history item.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VectorHistoryItem {
+    key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    data: Option<VectorData>,
+    version: u64,
+    timestamp: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vector_revision: Option<u64>,
+    tombstone: bool,
+}
+
+impl VectorHistoryItem {
+    /// Creates a vector history item.
+    pub fn new(
+        key: String,
+        data: Option<VectorData>,
+        version: u64,
+        timestamp: u64,
+        vector_revision: Option<u64>,
+        tombstone: bool,
+    ) -> Self {
+        Self {
+            key,
+            data,
+            version,
+            timestamp,
+            vector_revision,
+            tombstone,
+        }
+    }
+
+    /// Returns the vector key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns vector data when this item is not a tombstone.
+    pub const fn data(&self) -> Option<&VectorData> {
+        self.data.as_ref()
+    }
+
+    /// Returns the commit version.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Returns the commit timestamp.
+    pub const fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+
+    /// Returns the vector revision when present.
+    pub const fn vector_revision(&self) -> Option<u64> {
+        self.vector_revision
+    }
+
+    /// Returns true for delete tombstones.
+    pub const fn is_tombstone(&self) -> bool {
+        self.tombstone
+    }
+}
+
+/// One vector search match.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VectorMatch {
+    key: String,
+    score: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata: Option<Value>,
+}
+
+impl VectorMatch {
+    /// Creates a vector search match.
+    pub fn new(key: String, score: f32, metadata: Option<Value>) -> Self {
+        Self {
+            key,
+            score,
+            metadata,
+        }
+    }
+
+    /// Returns the vector key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Returns the score.
+    pub const fn score(&self) -> f32 {
+        self.score
+    }
+
+    /// Returns optional metadata.
+    pub const fn metadata(&self) -> Option<&Value> {
+        self.metadata.as_ref()
+    }
+}
+
+/// Positional vector batch write/delete result.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VectorBatchItemResult {
+    applied: bool,
+    version: Option<u64>,
+    timestamp: Option<u64>,
+    vector_revision: Option<u64>,
+    error: Option<String>,
+}
+
+impl VectorBatchItemResult {
+    /// Creates a vector batch result.
+    pub const fn new(
+        applied: bool,
+        version: Option<u64>,
+        timestamp: Option<u64>,
+        vector_revision: Option<u64>,
+    ) -> Self {
+        Self {
+            applied,
+            version,
+            timestamp,
+            vector_revision,
+            error: None,
+        }
+    }
+
+    /// Creates a failed vector batch result.
+    pub fn failed(error: impl Into<String>) -> Self {
+        Self {
+            applied: false,
+            version: None,
+            timestamp: None,
+            vector_revision: None,
+            error: Some(error.into()),
+        }
+    }
+
+    /// Returns true when this item changed a visible row.
+    pub const fn applied(&self) -> bool {
+        self.applied
+    }
+
+    /// Returns the commit version when present.
+    pub const fn version(&self) -> Option<u64> {
+        self.version
+    }
+
+    /// Returns the commit timestamp when present.
+    pub const fn timestamp(&self) -> Option<u64> {
+        self.timestamp
+    }
+
+    /// Returns the vector revision when present.
+    pub const fn vector_revision(&self) -> Option<u64> {
+        self.vector_revision
+    }
+
+    /// Returns the item error when validation failed.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+}
+
+/// Positional vector batch read result.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VectorBatchGetItemResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    value: Option<VectorVersionedData>,
+    error: Option<String>,
+}
+
+impl VectorBatchGetItemResult {
+    /// Creates a vector batch read result.
+    pub const fn new(value: Option<VectorVersionedData>) -> Self {
+        Self { value, error: None }
+    }
+
+    /// Creates a failed vector batch read result.
+    pub fn failed(error: impl Into<String>) -> Self {
+        Self {
+            value: None,
+            error: Some(error.into()),
+        }
+    }
+
+    /// Returns the value when present.
+    pub const fn value(&self) -> Option<&VectorVersionedData> {
+        self.value.as_ref()
+    }
+
+    /// Returns the item error when validation failed.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+}
+
 /// Entry for a batch KV write.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BatchKvEntry {

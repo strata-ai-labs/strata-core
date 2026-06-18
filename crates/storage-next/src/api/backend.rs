@@ -6,6 +6,8 @@ use crate::backend::{memory::MemoryBackend, Backend, BackendHandle};
 use crate::backend::local_fs::LocalFsBackend;
 #[cfg(all(test, unix, feature = "localfs"))]
 use crate::layout::ObjectLayout;
+#[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+use crate::testkit::{BackendCall, FaultScript, FaultingBackend};
 #[cfg(feature = "localfs")]
 use std::path::{Path, PathBuf};
 
@@ -19,6 +21,8 @@ enum StorageBackendInner {
     Memory(MemoryBackend),
     #[cfg(feature = "localfs")]
     LocalFs(LocalFsBackend),
+    #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+    Fault(FaultingBackend<LocalFsBackend>),
 }
 
 impl StorageBackend {
@@ -43,6 +47,49 @@ impl StorageBackend {
         match &self.inner {
             StorageBackendInner::Memory(_) => None,
             StorageBackendInner::LocalFs(backend) => Some(backend.root()),
+            #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+            StorageBackendInner::Fault(backend) => Some(backend.inner().root()),
+        }
+    }
+
+    /// Open a local-filesystem backend wrapped in a deterministic fault injector.
+    /// The runtime opens on this exactly as it would on [`Self::local_fs`], but the
+    /// `script` fails chosen backend operations — the substrate for systematic
+    /// fault-injection sweeps. Test / `fault-injection`-only.
+    #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+    #[must_use]
+    pub fn faulting_local_fs(root: impl Into<PathBuf>, script: FaultScript) -> Self {
+        Self {
+            inner: StorageBackendInner::Fault(FaultingBackend::new(
+                LocalFsBackend::new(root),
+                script,
+            )),
+        }
+    }
+
+    /// Open a local-filesystem backend with a cumulative write-byte quota: once
+    /// exceeded, every write returns `NoSpace` — a deterministic disk-full
+    /// (ENOSPC) simulation. Test / `fault-injection`-only.
+    #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+    #[must_use]
+    pub fn faulting_local_fs_with_quota(root: impl Into<PathBuf>, byte_quota: u64) -> Self {
+        Self {
+            inner: StorageBackendInner::Fault(
+                FaultingBackend::new(LocalFsBackend::new(root), FaultScript::empty())
+                    .with_byte_quota(byte_quota),
+            ),
+        }
+    }
+
+    /// Backend operations observed by a faulting backend (empty for non-faulting
+    /// backends), so a sweep can see which operations fired and stop once a target
+    /// operation no longer occurs in the workload.
+    #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+    #[must_use]
+    pub fn fault_calls(&self) -> Vec<BackendCall> {
+        match &self.inner {
+            StorageBackendInner::Fault(backend) => backend.calls(),
+            _ => Vec::new(),
         }
     }
 
@@ -51,6 +98,8 @@ impl StorageBackend {
             StorageBackendInner::Memory(backend) => backend,
             #[cfg(feature = "localfs")]
             StorageBackendInner::LocalFs(backend) => backend,
+            #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+            StorageBackendInner::Fault(backend) => backend,
         }
     }
 
@@ -63,6 +112,11 @@ impl StorageBackend {
         match &self.inner {
             StorageBackendInner::Memory(_) => None,
             StorageBackendInner::LocalFs(backend) => Some(BackendHandle::owned(backend.clone())),
+            // A faulting backend holds a Mutex and cannot be cloned, so it has no
+            // owned handle; sweeps open it via the borrowed (evaluate-and-enqueue)
+            // path instead of background scheduling.
+            #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+            StorageBackendInner::Fault(_) => None,
         }
     }
 
@@ -72,6 +126,8 @@ impl StorageBackend {
             StorageBackendInner::Memory(backend) => BackendHandle::owned(backend),
             #[cfg(feature = "localfs")]
             StorageBackendInner::LocalFs(backend) => BackendHandle::owned(backend),
+            #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
+            StorageBackendInner::Fault(backend) => BackendHandle::owned(backend),
         }
     }
 

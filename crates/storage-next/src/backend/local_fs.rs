@@ -1104,6 +1104,7 @@ fn map_io_error(error: &std::io::Error) -> BackendError {
             BackendErrorKind::Corruption
         }
         std::io::ErrorKind::InvalidInput => BackendErrorKind::InvalidObjectName,
+        std::io::ErrorKind::StorageFull => BackendErrorKind::NoSpace,
         _ => BackendErrorKind::Unknown,
     };
     BackendError::new(kind, error.to_string())

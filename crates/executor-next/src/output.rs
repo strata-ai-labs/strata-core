@@ -4,9 +4,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::types::{
-    BatchGetItemResult, BatchItemResult, BranchCleanupItem, BranchItem, Bytes, HistoryItem,
+    BatchGetItemResult, BatchItemResult, BranchCleanupItem, BranchItem, Bytes,
+    EventBatchAppendItemResult, EventChainVerification, EventVersionedData, HistoryItem,
     JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
-    JsonSampleItem, JsonVersionedValue, SampleItem, ScanItem, VersionedValue,
+    JsonSampleItem, JsonVersionedValue, SampleItem, ScanItem, VectorBatchGetItemResult,
+    VectorBatchItemResult, VectorCollectionInfo, VectorHistoryItem, VectorMatch,
+    VectorVersionedData, VersionedValue,
 };
 
 /// Successful executor output.
@@ -118,4 +121,123 @@ pub enum Output {
     JsonIndexDefinition(JsonIndexDefinition),
     /// JSON secondary index definitions.
     JsonIndexList(Vec<JsonIndexDefinition>),
+    /// Vector write acknowledgement.
+    VectorWriteResult {
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+        /// Commit version.
+        version: u64,
+        /// Commit timestamp.
+        timestamp: u64,
+        /// Product vector revision.
+        vector_revision: u64,
+    },
+    /// Vector metadata update acknowledgement.
+    VectorMetadataUpdateResult {
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+        /// True when a visible vector was updated.
+        updated: bool,
+        /// Commit version when an update was applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        /// Commit timestamp when an update was applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
+        /// Product vector revision when an update was applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vector_revision: Option<u64>,
+    },
+    /// Vector delete acknowledgement.
+    VectorDeleteResult {
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+        /// True when a visible vector was deleted.
+        deleted: bool,
+        /// Commit version when a delete was applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        /// Commit timestamp when a delete was applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
+    },
+    /// Vector bulk delete acknowledgement.
+    VectorBulkDeleteResult {
+        /// Collection name.
+        collection: String,
+        /// Number of visible vectors deleted.
+        deleted_count: u64,
+        /// Commit version when deletes were applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        /// Commit timestamp when deletes were applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
+    },
+    /// Optional vector value.
+    VectorData(Option<VectorVersionedData>),
+    /// Full vector history.
+    VectorVersionHistory(Option<Vec<VectorHistoryItem>>),
+    /// Vector search matches.
+    VectorMatches(Vec<VectorMatch>),
+    /// Paginated vector key list.
+    VectorKeyPage {
+        /// Keys in this page.
+        keys: Vec<String>,
+        /// True when another page is available.
+        has_more: bool,
+        /// Cursor for the next page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+    },
+    /// Vector collection list.
+    VectorCollectionList(Vec<VectorCollectionInfo>),
+    /// Positional vector batch write results.
+    VectorBatchUpsertResults(Vec<VectorBatchItemResult>),
+    /// Positional vector batch read results.
+    VectorBatchGetResults(Vec<VectorBatchGetItemResult>),
+    /// Positional vector batch delete results.
+    VectorBatchDeleteResults(Vec<VectorBatchItemResult>),
+    /// Event append acknowledgement.
+    EventAppendResult {
+        /// Assigned sequence.
+        sequence: u64,
+        /// Appended event type.
+        event_type: String,
+        /// Commit version.
+        version: u64,
+        /// Commit timestamp.
+        timestamp: u64,
+    },
+    /// Optional event record.
+    EventRecord(Option<EventVersionedData>),
+    /// Event records.
+    EventRecords(Vec<EventVersionedData>),
+    /// Event log length.
+    EventLength {
+        /// Visible event count.
+        count: u64,
+    },
+    /// Event type list.
+    EventTypeList(Vec<String>),
+    /// Paginated event range.
+    EventRangeResult {
+        /// Events in this page.
+        events: Vec<EventVersionedData>,
+        /// True when another page is available.
+        has_more: bool,
+        /// Sequence cursor for the next page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<u64>,
+    },
+    /// Positional event batch append results.
+    EventBatchAppendResults(Vec<EventBatchAppendItemResult>),
+    /// Event hash-chain verification result.
+    EventChainVerification(EventChainVerification),
 }

@@ -11,26 +11,23 @@
 //! faults are layered on later. `run_one` is the reusable unit the rest of the
 //! hardening program composes.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use strata_core_next::BranchId;
 
-use super::model::{ExpectedState, OracleDurability, RecordedMutation};
+use super::model::{ExpectedState, OracleDurability};
 use super::verify::{classify_recovered, scan_recovered, CrashFamily, RecoveryOracleViolation};
+use super::workload::{
+    default_branch, generate_workload, oracle_prefix_key, oracle_space, to_commit_mutation,
+    SCAN_LIMIT,
+};
 use crate::api::{
-    CommitBatch, CommitMutation, CommitOptions, StorageBackend, StorageDurabilityPolicy,
-    StorageKey, StorageOpenOptions, StorageRuntime, StorageSpaceId, StorageValue,
+    CommitBatch, CommitOptions, StorageBackend, StorageDurabilityPolicy, StorageOpenOptions,
+    StorageRuntime,
 };
 use crate::testkit::rng::SplitMix64;
 use crate::testkit::TestkitError;
 
-/// Shared non-empty key prefix for every workload key, so the verifier can
-/// enumerate the full live state with one prefix scan (empty keys are rejected).
-const ORACLE_PREFIX: u8 = 0x6f;
-/// Small key space — the small-scope hypothesis keeps crash enumeration cheap.
-const KEY_SPACE: u8 = 8;
-const SCAN_LIMIT: usize = 4096;
 /// Bounded-exhaustive workload length per seed (≤ a few ops after `fsync`).
 const OP_COUNT: usize = 5;
 const SEED_BUDGET: u64 = 32;
@@ -44,21 +41,6 @@ const WAL_TRUNCATE_MAX: u8 = 64;
 /// Salt mixing the seed for the WAL byte-corruption offset, independent of the
 /// workload and truncation draws yet deterministic and replayable per seed.
 const WAL_CORRUPT_SALT: u64 = 0x4259_5445_524f_5421;
-
-fn oracle_space() -> StorageSpaceId {
-    StorageSpaceId::new(vec![0x20]).expect("oracle space")
-}
-fn oracle_prefix_key() -> StorageKey {
-    StorageKey::new(vec![ORACLE_PREFIX]).expect("oracle prefix")
-}
-fn oracle_key(index: u8) -> StorageKey {
-    StorageKey::new(vec![ORACLE_PREFIX, index]).expect("oracle key")
-}
-
-/// The runtime's default branch (`DEFAULT_BRANCH_ID`), created on open.
-fn default_branch() -> BranchId {
-    BranchId::from_bytes([0x01; BranchId::BYTE_LEN])
-}
 
 /// How a case crashes the workload, and therefore how its recovery is judged.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -95,54 +77,6 @@ pub(crate) enum DriverError {
 impl From<TestkitError> for DriverError {
     fn from(err: TestkitError) -> Self {
         DriverError::Harness(err)
-    }
-}
-
-/// Deterministic workload: each op is a commit of 1..=3 unique-key put/delete
-/// mutations over the small key space, a pure function of `(seed, op_count)`.
-fn generate_workload(seed: u64, op_count: usize) -> Vec<Vec<RecordedMutation>> {
-    let mut rng = SplitMix64::new(seed);
-    let mut ops = Vec::with_capacity(op_count);
-    for _ in 0..op_count {
-        let mutation_count = 1 + usize::from(rng.gen_u8_below(3));
-        let mut mutations = Vec::with_capacity(mutation_count);
-        let mut used: BTreeSet<u8> = BTreeSet::new();
-        for _ in 0..mutation_count {
-            let mut index = rng.gen_u8_below(KEY_SPACE);
-            while !used.insert(index) {
-                index = (index + 1) % KEY_SPACE;
-            }
-            if rng.gen_bool() {
-                let value = rng.gen_u8_below(255);
-                mutations.push(RecordedMutation::Put {
-                    space: oracle_space(),
-                    key: oracle_key(index),
-                    value: StorageValue::new(vec![value]),
-                });
-            } else {
-                mutations.push(RecordedMutation::Delete {
-                    space: oracle_space(),
-                    key: oracle_key(index),
-                });
-            }
-        }
-        ops.push(mutations);
-    }
-    ops
-}
-
-fn to_commit_mutation(mutation: &RecordedMutation) -> CommitMutation {
-    match mutation {
-        RecordedMutation::Put { space, key, value } => CommitMutation::Put {
-            storage_space: space.clone(),
-            key: key.clone(),
-            value: value.clone(),
-            ttl: None,
-        },
-        RecordedMutation::Delete { space, key } => CommitMutation::Delete {
-            storage_space: space.clone(),
-            key: key.clone(),
-        },
     }
 }
 
@@ -522,7 +456,9 @@ pub fn run_recovery_oracle_harness(
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::RecordedMutation;
     use super::super::verify::RecoveredState;
+    use super::super::workload::oracle_key;
     use super::*;
     use crate::api::{
         StorageApiError, StorageApiErrorClass, StorageApiLowerLayer, StorageApiResult,

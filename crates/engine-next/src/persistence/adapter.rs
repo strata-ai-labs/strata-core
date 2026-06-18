@@ -182,6 +182,17 @@ impl PersistenceReadRow {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(key: Vec<u8>, value: Option<Vec<u8>>, tombstone: bool) -> Self {
+        Self {
+            key,
+            value,
+            commit_version: CommitVersion::new(1),
+            commit_timestamp: Timestamp::from_micros(1),
+            tombstone,
+        }
+    }
+
     pub(crate) fn key(&self) -> &[u8] {
         &self.key
     }

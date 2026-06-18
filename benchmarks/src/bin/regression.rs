@@ -364,8 +364,7 @@ fn run_branch_strata(iterations: usize, large_merge_keys: usize) -> SuiteResult 
     let (diff_p50, diff_p95, diff_p99) = percentiles_us(&mut diff_lat);
     let (delete_p50, delete_p95, delete_p99) = percentiles_us(&mut delete_lat);
     let (merge_s_p50, merge_s_p95, merge_s_p99) = percentiles_us(&mut merge_small_lat);
-    let (materialize_p50, materialize_p95, materialize_p99) =
-        percentiles_us(&mut materialize_lat);
+    let (materialize_p50, materialize_p95, materialize_p99) = percentiles_us(&mut materialize_lat);
 
     let mut metrics = HashMap::new();
     metrics.insert("create_p50_us".into(), create_p50);
@@ -1030,10 +1029,7 @@ fn main() {
             "  merge_s p50: {:.1} us",
             result.metrics["merge_small_p50_us"]
         );
-        eprintln!(
-            "  merge_l    : {:.1} us",
-            result.metrics["merge_large_us"]
-        );
+        eprintln!("  merge_l    : {:.1} us", result.metrics["merge_large_us"]);
         eprintln!("  delete  p50: {:.1} us", result.metrics["delete_p50_us"]);
         eprintln!(
             "  materialize p50: {:.1} us",

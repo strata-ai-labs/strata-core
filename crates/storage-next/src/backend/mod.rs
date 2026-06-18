@@ -351,6 +351,7 @@ pub(crate) enum BackendErrorKind {
     Interrupted,
     MetadataMismatch,
     Corruption,
+    NoSpace,
     Unknown,
 }
 

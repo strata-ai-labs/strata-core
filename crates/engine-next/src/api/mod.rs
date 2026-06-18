@@ -2,6 +2,7 @@
 
 mod branch;
 mod database;
+mod event;
 mod json;
 mod kv;
 mod options;
@@ -13,6 +14,12 @@ pub use branch::{
 };
 pub use database::{
     CloseOutcome, Database, DatabaseOpenOutcome, DatabaseOpenSummary, DatabaseOpenTarget,
+};
+pub use event::{
+    EventAppendOutcome, EventBatchAppendEntry, EventBatchAppendItemOutcome,
+    EventBatchAppendOutcome, EventChainVerification, EventLength, EventPayload,
+    EventRangeDirection, EventRangePage, EventSequence, EventService, EventType, EventTypeList,
+    EventVersionedRecord,
 };
 pub use json::{
     JsonBatchDeleteOutcome, JsonBatchSetItemOutcome, JsonBatchSetOutcome, JsonDeleteOutcome,

@@ -17,11 +17,11 @@ use strata_benchmarks::schema::{
 use strata_storage_next::api::{
     BranchAction, BranchGeneration, BranchId, BranchRequest, CommitBatch, CommitMutation,
     CommitOptions, DiagnosticsFactState, DiagnosticsRequest, DiagnosticsScope,
-    DiagnosticsSourceLayoutReport, MaintenanceQueueSummary, MaintenanceRequest,
-    MaintenanceScope, MaintenanceSummary, MaintenanceSummaryStatus, MaintenanceTask,
-    PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit, ScanRange, ScanReadOutcome,
-    ScanReadRequest, StorageApiError, StorageApiResult, StorageDurabilityPolicy, StorageKey,
-    StorageOpenOutcome, StorageRuntime, StorageSpaceId, StorageValue,
+    DiagnosticsSourceLayoutReport, MaintenanceQueueSummary, MaintenanceRequest, MaintenanceScope,
+    MaintenanceSummary, MaintenanceSummaryStatus, MaintenanceTask, PointReadRequest,
+    PrefixScanReadRequest, ReadBound, ReadLimit, ScanRange, ScanReadOutcome, ScanReadRequest,
+    StorageApiError, StorageApiResult, StorageDurabilityPolicy, StorageKey, StorageOpenOutcome,
+    StorageRuntime, StorageSpaceId, StorageValue,
 };
 use strata_storage_next::perf_trace::{self, StoragePerfSnapshot};
 use tempfile::TempDir;
@@ -2579,10 +2579,14 @@ fn source_shape_metrics_json(
 ) -> serde_json::Value {
     let logical_write_rows = scale as u64;
     let logical_write_bytes = logical_write_rows.saturating_mul(value_bytes);
-    let compaction_row_amplification =
-        ratio_json(perf_trace.lifecycle_compaction_input_rows(), logical_write_rows);
-    let compaction_byte_amplification =
-        ratio_json(perf_trace.lifecycle_compaction_input_bytes(), logical_write_bytes);
+    let compaction_row_amplification = ratio_json(
+        perf_trace.lifecycle_compaction_input_rows(),
+        logical_write_rows,
+    );
+    let compaction_byte_amplification = ratio_json(
+        perf_trace.lifecycle_compaction_input_bytes(),
+        logical_write_bytes,
+    );
     let point_source_probes = perf_trace
         .point_active_probes()
         .saturating_add(perf_trace.point_frozen_probes())
@@ -2743,8 +2747,8 @@ fn source_shape_metrics_json(
         perf_trace.lifecycle_wal_checkpoint_coalesced_events(),
         |trace| trace.wal_checkpoint_coalesced_events,
     );
-    let checkpoint_executions =
-        load_phase_trace.map_or(perf_trace.lifecycle_checkpoint_executions(), |trace| {
+    let checkpoint_executions = load_phase_trace
+        .map_or(perf_trace.lifecycle_checkpoint_executions(), |trace| {
             trace.checkpoint_executions
         });
     let wal_truncation_deleted_segments = load_phase_trace.map_or(
@@ -2930,10 +2934,7 @@ fn source_shape_metrics_json(
     field!("diagnostic_polls", diagnostic_polls);
     field!("logical_write_rows", logical_write_rows);
     field!("logical_write_bytes", logical_write_bytes);
-    field!(
-        "compaction_row_amplification",
-        compaction_row_amplification
-    );
+    field!("compaction_row_amplification", compaction_row_amplification);
     field!(
         "compaction_byte_amplification",
         compaction_byte_amplification
@@ -3581,16 +3582,13 @@ impl LoadPhaseTrace {
         self.maintenance_deferred_tasks =
             perf_trace.lifecycle_post_commit_maintenance_tasks_deferred();
         if perf_trace.lifecycle_wal_retention_samples() > 0 {
-            self.wal_retained_bytes_last =
-                Some(perf_trace.lifecycle_wal_retained_bytes_last());
+            self.wal_retained_bytes_last = Some(perf_trace.lifecycle_wal_retained_bytes_last());
             self.wal_retained_segments_last =
                 Some(perf_trace.lifecycle_wal_retained_segments_last());
             self.wal_retained_bytes_max = Some(perf_trace.lifecycle_wal_retained_bytes_max());
-            self.wal_retained_segments_max =
-                Some(perf_trace.lifecycle_wal_retained_segments_max());
+            self.wal_retained_segments_max = Some(perf_trace.lifecycle_wal_retained_segments_max());
         }
-        self.wal_checkpoint_enqueue_events =
-            perf_trace.lifecycle_wal_checkpoint_enqueue_events();
+        self.wal_checkpoint_enqueue_events = perf_trace.lifecycle_wal_checkpoint_enqueue_events();
         self.wal_checkpoint_coalesced_events =
             perf_trace.lifecycle_wal_checkpoint_coalesced_events();
         self.checkpoint_executions = perf_trace.lifecycle_checkpoint_executions();
@@ -3598,8 +3596,7 @@ impl LoadPhaseTrace {
             perf_trace.lifecycle_wal_truncation_deleted_segments();
         self.wal_truncation_protected_segments =
             perf_trace.lifecycle_wal_truncation_protected_segments();
-        self.wal_truncation_failed_segments =
-            perf_trace.lifecycle_wal_truncation_failed_segments();
+        self.wal_truncation_failed_segments = perf_trace.lifecycle_wal_truncation_failed_segments();
     }
 }
 
@@ -3901,10 +3898,9 @@ mod tests {
         assert!(!default_config.diagnostic_source_shape);
         assert!(!default_config.diagnostic_final_drain);
 
-        let load_only_config = Config::parse(
-            ["--workloads".to_string(), "load-seq".to_string()].into_iter(),
-        )
-        .expect("load-only config");
+        let load_only_config =
+            Config::parse(["--workloads".to_string(), "load-seq".to_string()].into_iter())
+                .expect("load-only config");
         assert!(!load_only_config.diagnostic_source_shape);
         assert!(!load_only_config.diagnostic_final_drain);
         assert!(!load_only_config.should_prepare_loaded_source_shape());
@@ -4082,10 +4078,7 @@ mod tests {
         assert_eq!(metrics["logical_write_rows"].as_u64(), Some(1_000));
         assert_eq!(metrics["logical_write_bytes"].as_u64(), Some(64_000));
         assert_eq!(metrics["compaction_row_amplification"].as_f64(), Some(0.0));
-        assert_eq!(
-            metrics["compaction_byte_amplification"].as_f64(),
-            Some(0.0)
-        );
+        assert_eq!(metrics["compaction_byte_amplification"].as_f64(), Some(0.0));
         assert_eq!(metrics["assumptions"]["operation_count"].as_u64(), Some(5));
         assert_eq!(
             metrics["assumptions"]["known_compaction_mode_values"]
@@ -4193,23 +4186,14 @@ mod tests {
         assert_eq!(metrics["wal_retention_limit_bytes"].as_u64(), Some(1_000));
         assert_eq!(metrics["wal_retention_limit_segments"].as_u64(), Some(8));
         assert_eq!(metrics["wal_checkpoint_enqueue_events"].as_u64(), Some(1));
-        assert_eq!(
-            metrics["wal_checkpoint_coalesced_events"].as_u64(),
-            Some(2)
-        );
+        assert_eq!(metrics["wal_checkpoint_coalesced_events"].as_u64(), Some(2));
         assert_eq!(metrics["checkpoint_executions"].as_u64(), Some(3));
-        assert_eq!(
-            metrics["wal_truncation_deleted_segments"].as_u64(),
-            Some(4)
-        );
+        assert_eq!(metrics["wal_truncation_deleted_segments"].as_u64(), Some(4));
         assert_eq!(
             metrics["wal_truncation_protected_segments"].as_u64(),
             Some(5)
         );
-        assert_eq!(
-            metrics["wal_truncation_failed_segments"].as_u64(),
-            Some(6)
-        );
+        assert_eq!(metrics["wal_truncation_failed_segments"].as_u64(), Some(6));
         assert_eq!(
             metrics["automatic_maintenance_ms_per_million_rows"].as_f64(),
             Some(4.0)
@@ -4393,23 +4377,14 @@ mod tests {
         assert_eq!(metrics["wal_retention_limit_bytes"].as_u64(), Some(512));
         assert_eq!(metrics["wal_retention_limit_segments"].as_u64(), Some(4));
         assert_eq!(metrics["wal_checkpoint_enqueue_events"].as_u64(), Some(2));
-        assert_eq!(
-            metrics["wal_checkpoint_coalesced_events"].as_u64(),
-            Some(3)
-        );
+        assert_eq!(metrics["wal_checkpoint_coalesced_events"].as_u64(), Some(3));
         assert_eq!(metrics["checkpoint_executions"].as_u64(), Some(4));
-        assert_eq!(
-            metrics["wal_truncation_deleted_segments"].as_u64(),
-            Some(5)
-        );
+        assert_eq!(metrics["wal_truncation_deleted_segments"].as_u64(), Some(5));
         assert_eq!(
             metrics["wal_truncation_protected_segments"].as_u64(),
             Some(6)
         );
-        assert_eq!(
-            metrics["wal_truncation_failed_segments"].as_u64(),
-            Some(7)
-        );
+        assert_eq!(metrics["wal_truncation_failed_segments"].as_u64(), Some(7));
         assert_eq!(
             metrics["automatic_maintenance_ms_per_million_rows"].as_f64(),
             Some(2.5)

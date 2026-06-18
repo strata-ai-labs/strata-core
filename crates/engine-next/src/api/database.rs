@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use crate::branch::BranchService;
 use crate::control::{bootstrap_or_load, ControlPlane};
+use crate::data::event::EventService;
 #[cfg(any(test, feature = "testkit"))]
 use crate::data::json::JsonIndexName;
 use crate::data::json::JsonService;
@@ -201,6 +202,22 @@ impl Database {
         self.require_open()?;
         self.control.require_healthy()?;
         Ok(VectorService::new(
+            &mut self.persistence,
+            &mut self.control,
+            branch,
+            space,
+        ))
+    }
+
+    /// Returns an event log service for the selected branch and space.
+    pub fn event(
+        &mut self,
+        branch: BranchName,
+        space: ProductSpace,
+    ) -> EngineResult<EventService<'_>> {
+        self.require_open()?;
+        self.control.require_healthy()?;
+        Ok(EventService::new(
             &mut self.persistence,
             &mut self.control,
             branch,

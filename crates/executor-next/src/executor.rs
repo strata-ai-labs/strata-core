@@ -6,26 +6,51 @@ use std::path::PathBuf;
 use strata_core_next::{CommitVersion, Timestamp};
 use strata_engine_next::{
     api::CommitOutcome, BranchCleanupSummary, BranchName, BranchStatus as EngineBranchStatus,
-    BranchSummary, CacheOpenOptions, Database, DurableLocalOpenOptions, JsonDocumentId,
-    JsonGetEntry, JsonHistory, JsonHistoryRow, JsonIndexDefinition as EngineJsonIndexDefinition,
-    JsonIndexName, JsonIndexType as EngineJsonIndexType, JsonListPage, JsonPath,
-    JsonSample as EngineJsonSample, JsonSampleRow, JsonService, JsonSetEntry,
-    JsonValue as EngineJsonValue, JsonVersionedValue as EngineJsonVersionedValue, KvHistory,
-    KvHistoryRow, KvKey, KvSample, KvScanRow, KvValue, KvVersionedValue, ProductSpace,
+    BranchSummary, CacheOpenOptions, Database, DurableLocalOpenOptions,
+    EventAppendOutcome as EngineEventAppendOutcome,
+    EventBatchAppendEntry as EngineEventBatchAppendEntry,
+    EventBatchAppendItemOutcome as EngineEventBatchAppendItemOutcome,
+    EventChainVerification as EngineEventChainVerification, EventPayload as EngineEventPayload,
+    EventRangeDirection as EngineEventRangeDirection, EventRangePage as EngineEventRangePage,
+    EventSequence as EngineEventSequence, EventService, EventType as EngineEventType,
+    EventVersionedRecord as EngineEventVersionedRecord, JsonDocumentId, JsonGetEntry, JsonHistory,
+    JsonHistoryRow, JsonIndexDefinition as EngineJsonIndexDefinition, JsonIndexName,
+    JsonIndexType as EngineJsonIndexType, JsonListPage, JsonPath, JsonSample as EngineJsonSample,
+    JsonSampleRow, JsonService, JsonSetEntry, JsonValue as EngineJsonValue,
+    JsonVersionedValue as EngineJsonVersionedValue, KvHistory, KvHistoryRow, KvKey, KvSample,
+    KvScanRow, KvValue, KvVersionedValue, ProductSpace,
+    VectorBulkDeleteOutcome as EngineVectorBulkDeleteOutcome,
+    VectorCollectionInfo as EngineVectorCollectionInfo,
+    VectorCollectionName as EngineVectorCollectionName, VectorConfig as EngineVectorConfig,
+    VectorDistanceMetric as EngineVectorDistanceMetric, VectorEmbedding as EngineVectorEmbedding,
+    VectorEntry as EngineVectorEntry, VectorFilter as EngineVectorFilter,
+    VectorFilterCondition as EngineVectorFilterCondition, VectorFilterOp as EngineVectorFilterOp,
+    VectorHistory as EngineVectorHistory, VectorHistoryRow as EngineVectorHistoryRow,
+    VectorKey as EngineVectorKey, VectorKeyPage as EngineVectorKeyPage,
+    VectorMetadata as EngineVectorMetadata, VectorMetadataPatch as EngineVectorMetadataPatch,
+    VectorScalar as EngineVectorScalar, VectorSearchMatch as EngineVectorSearchMatch,
+    VectorService, VectorUpsertEntry as EngineVectorUpsertEntry,
+    VectorVersionedEntry as EngineVectorVersionedEntry,
 };
 
 use crate::command::Command;
 use crate::error::{ExecutorError, ExecutorErrorClass, ExecutorResult};
 use crate::output::Output;
 use crate::types::{
-    BatchGetItemResult, BatchItemResult, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry,
-    BatchKvEntry, BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus, Bytes,
-    HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
-    JsonIndexType, JsonSampleItem, JsonVersionedValue as OutputJsonVersionedValue, SampleItem,
-    ScanItem, VersionedValue, DEFAULT_BRANCH, DEFAULT_SPACE,
+    BatchEventEntry, BatchGetItemResult, BatchItemResult, BatchJsonDeleteEntry, BatchJsonEntry,
+    BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry, BranchCleanupItem, BranchItem,
+    BranchParentItem, BranchStatus, Bytes, EventBatchAppendItemResult,
+    EventChainVerification as OutputEventChainVerification, EventData, EventRangeDirection,
+    EventVersionedData, HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
+    JsonIndexDefinition, JsonIndexType, JsonSampleItem,
+    JsonVersionedValue as OutputJsonVersionedValue, SampleItem, ScanItem, VectorBatchGetItemResult,
+    VectorBatchItemResult, VectorCollectionInfo as OutputVectorCollectionInfo, VectorData,
+    VectorDistanceMetric, VectorFilterOp, VectorHistoryItem, VectorMatch, VectorMetadataFilter,
+    VectorScalar, VectorVersionedData, VersionedValue, DEFAULT_BRANCH, DEFAULT_SPACE,
 };
 
 const DEFAULT_JSON_LIST_LIMIT: usize = 100;
+const DEFAULT_VECTOR_LIST_LIMIT: usize = 100;
 
 /// Serialized command executor backed by an engine database handle.
 pub struct Executor {
@@ -269,6 +294,277 @@ impl Executor {
             } => self.execute_json_drop_index(branch.as_deref(), space.as_deref(), name),
             Command::JsonListIndexes { branch, space } => {
                 self.execute_json_list_indexes(branch.as_deref(), space.as_deref())
+            }
+            Command::VectorCreateCollection {
+                branch,
+                space,
+                collection,
+                dimension,
+                metric,
+            } => self.execute_vector_create_collection(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+                dimension,
+                metric,
+            ),
+            Command::VectorDeleteCollection {
+                branch,
+                space,
+                collection,
+            } => self.execute_vector_delete_collection(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+            ),
+            Command::VectorListCollections { branch, space } => {
+                self.execute_vector_list_collections(branch.as_deref(), space.as_deref())
+            }
+            Command::VectorCollectionStats {
+                branch,
+                space,
+                collection,
+            } => self.execute_vector_collection_stats(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+            ),
+            Command::VectorCount {
+                branch,
+                space,
+                collection,
+            } => self.execute_vector_count(branch.as_deref(), space.as_deref(), collection),
+            Command::VectorUpsert {
+                branch,
+                space,
+                collection,
+                key,
+                vector,
+                metadata,
+            } => self.execute_vector_upsert(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+                key,
+                vector,
+                metadata,
+            ),
+            Command::VectorGet {
+                branch,
+                space,
+                collection,
+                key,
+                as_of,
+            } => {
+                self.execute_vector_get(branch.as_deref(), space.as_deref(), collection, key, as_of)
+            }
+            Command::VectorGetv {
+                branch,
+                space,
+                collection,
+                key,
+            } => self.execute_vector_getv(branch.as_deref(), space.as_deref(), collection, key),
+            Command::VectorExists {
+                branch,
+                space,
+                collection,
+                key,
+            } => self.execute_vector_exists(branch.as_deref(), space.as_deref(), collection, key),
+            Command::VectorListKeys {
+                branch,
+                space,
+                collection,
+                prefix,
+                cursor,
+                limit,
+            } => self.execute_vector_list_keys(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+                prefix,
+                cursor,
+                limit,
+            ),
+            Command::VectorUpdateMetadata {
+                branch,
+                space,
+                collection,
+                key,
+                patch,
+            } => self.execute_vector_update_metadata(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+                key,
+                patch,
+            ),
+            Command::VectorDelete {
+                branch,
+                space,
+                collection,
+                key,
+            } => self.execute_vector_delete(branch.as_deref(), space.as_deref(), collection, key),
+            Command::VectorDeleteByFilter {
+                branch,
+                space,
+                collection,
+                filter,
+            } => self.execute_vector_delete_by_filter(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+                filter,
+            ),
+            Command::VectorDeleteAll {
+                branch,
+                space,
+                collection,
+            } => self.execute_vector_delete_all(branch.as_deref(), space.as_deref(), collection),
+            Command::VectorQuery {
+                branch,
+                space,
+                collection,
+                query,
+                k,
+                filter,
+                as_of,
+            } => self.execute_vector_query(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+                query,
+                k,
+                filter,
+                as_of,
+            ),
+            Command::VectorBatchUpsert {
+                branch,
+                space,
+                collection,
+                entries,
+            } => self.execute_vector_batch_upsert(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+                entries,
+            ),
+            Command::VectorBatchGet {
+                branch,
+                space,
+                collection,
+                keys,
+            } => {
+                self.execute_vector_batch_get(branch.as_deref(), space.as_deref(), collection, keys)
+            }
+            Command::VectorBatchDelete {
+                branch,
+                space,
+                collection,
+                keys,
+            } => self.execute_vector_batch_delete(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+                keys,
+            ),
+            Command::EventBatchAppend {
+                branch,
+                space,
+                entries,
+            } => self.execute_event_batch_append(branch.as_deref(), space.as_deref(), entries),
+            Command::EventAppend {
+                branch,
+                space,
+                event_type,
+                payload,
+            } => {
+                self.execute_event_append(branch.as_deref(), space.as_deref(), event_type, payload)
+            }
+            Command::EventGet {
+                branch,
+                space,
+                sequence,
+                as_of,
+            } => self.execute_event_get(branch.as_deref(), space.as_deref(), sequence, as_of),
+            Command::EventExists {
+                branch,
+                space,
+                sequence,
+            } => self.execute_event_exists(branch.as_deref(), space.as_deref(), sequence),
+            Command::EventGetByType {
+                branch,
+                space,
+                event_type,
+                limit,
+                after_sequence,
+                as_of,
+            } => self.execute_event_get_by_type(
+                branch.as_deref(),
+                space.as_deref(),
+                event_type,
+                limit,
+                after_sequence,
+                as_of,
+            ),
+            Command::EventLen {
+                branch,
+                space,
+                as_of,
+            } => self.execute_event_len(branch.as_deref(), space.as_deref(), as_of),
+            Command::EventRange {
+                branch,
+                space,
+                start_seq,
+                end_seq,
+                limit,
+                direction,
+                event_type,
+            } => self.execute_event_range(
+                branch.as_deref(),
+                space.as_deref(),
+                start_seq,
+                end_seq,
+                limit,
+                direction,
+                event_type,
+            ),
+            Command::EventRangeByTime {
+                branch,
+                space,
+                start_ts,
+                end_ts,
+                limit,
+                direction,
+                event_type,
+            } => self.execute_event_range_by_time(
+                branch.as_deref(),
+                space.as_deref(),
+                start_ts,
+                end_ts,
+                limit,
+                direction,
+                event_type,
+            ),
+            Command::EventListTypes {
+                branch,
+                space,
+                as_of,
+            } => self.execute_event_list_types(branch.as_deref(), space.as_deref(), as_of),
+            Command::EventList {
+                branch,
+                space,
+                event_type,
+                limit,
+                as_of,
+            } => self.execute_event_list(
+                branch.as_deref(),
+                space.as_deref(),
+                event_type,
+                limit,
+                as_of,
+            ),
+            Command::EventVerifyChain { branch, space } => {
+                self.execute_event_verify_chain(branch.as_deref(), space.as_deref())
             }
         }
     }
@@ -912,6 +1208,577 @@ impl Executor {
         ))
     }
 
+    fn execute_vector_create_collection(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        dimension: u64,
+        metric: VectorDistanceMetric,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let config = EngineVectorConfig::new(
+            required_usize(
+                dimension,
+                "invalid_argument.executor.vector_dimension",
+                "vector dimension does not fit this platform",
+            )?,
+            engine_vector_metric(metric),
+        )?;
+        let mut service = self.vector_service(branch, space)?;
+        Ok(Output::VectorCollectionList(vec![vector_collection_info(
+            &service.create_collection(collection, config)?,
+        )]))
+    }
+
+    fn execute_vector_delete_collection(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let mut service = self.vector_service(branch, space)?;
+        Ok(Output::Bool(service.delete_collection(&collection)?))
+    }
+
+    fn execute_vector_list_collections(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+    ) -> ExecutorResult<Output> {
+        let mut service = self.vector_service(branch, space)?;
+        Ok(Output::VectorCollectionList(
+            service
+                .list_collections()?
+                .iter()
+                .map(vector_collection_info)
+                .collect(),
+        ))
+    }
+
+    fn execute_vector_collection_stats(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let mut service = self.vector_service(branch, space)?;
+        let Some(info) = service.collection_info(&collection)? else {
+            return Err(ExecutorError::not_found(
+                "not_found.executor.vector_collection",
+                "vector collection does not exist",
+            ));
+        };
+        Ok(Output::VectorCollectionList(vec![vector_collection_info(
+            &info,
+        )]))
+    }
+
+    fn execute_vector_count(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let mut service = self.vector_service(branch, space)?;
+        Ok(Output::Uint(service.count(&collection)?))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_vector_upsert(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        key: String,
+        vector: Vec<f32>,
+        metadata: Option<serde_json::Value>,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let key = vector_key(key)?;
+        let embedding = vector_embedding(vector)?;
+        let metadata = optional_vector_metadata(metadata)?;
+        let mut service = self.vector_service(branch, space)?;
+        let outcome = service.upsert(collection.clone(), key.clone(), embedding, metadata)?;
+        Ok(vector_write_output(
+            &collection,
+            &key,
+            outcome.commit(),
+            outcome.vector_revision(),
+        ))
+    }
+
+    fn execute_vector_get(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        key: String,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let key = vector_key(key)?;
+        let mut service = self.vector_service(branch, space)?;
+        let value = if let Some(as_of) = as_of {
+            service.get_at(&collection, &key, Timestamp::from_micros(as_of))?
+        } else {
+            service.get_versioned(&collection, &key)?
+        };
+        Ok(Output::VectorData(
+            value.as_ref().map(vector_versioned_data),
+        ))
+    }
+
+    fn execute_vector_getv(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        key: String,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let key = vector_key(key)?;
+        let mut service = self.vector_service(branch, space)?;
+        Ok(Output::VectorVersionHistory(
+            service
+                .history(&collection, &key)?
+                .as_ref()
+                .map(|history| vector_history_items(&key, history)),
+        ))
+    }
+
+    fn execute_vector_exists(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        key: String,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let key = vector_key(key)?;
+        let mut service = self.vector_service(branch, space)?;
+        Ok(Output::Bool(service.exists(&collection, &key)?))
+    }
+
+    fn execute_vector_list_keys(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        prefix: Option<String>,
+        cursor: Option<String>,
+        limit: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let prefix = optional_vector_key(prefix)?;
+        let cursor = optional_vector_key(cursor)?;
+        let limit = optional_limit(limit)?.unwrap_or(DEFAULT_VECTOR_LIST_LIMIT);
+        let mut service = self.vector_service(branch, space)?;
+        Ok(vector_key_page_output(&service.list_keys(
+            &collection,
+            prefix.as_ref(),
+            cursor.as_ref(),
+            limit,
+        )?))
+    }
+
+    fn execute_vector_update_metadata(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        key: String,
+        patch: serde_json::Value,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let key = vector_key(key)?;
+        let patch = vector_metadata_patch(patch)?;
+        let mut service = self.vector_service(branch, space)?;
+        let outcome = service.update_metadata(&collection, key.clone(), &patch)?;
+        Ok(Output::VectorMetadataUpdateResult {
+            collection: collection.as_str().to_owned(),
+            key: outcome.key().as_str().to_owned(),
+            updated: outcome.updated(),
+            version: outcome.commit().map(|outcome| outcome.version().as_u64()),
+            timestamp: outcome
+                .commit()
+                .map(|outcome| outcome.timestamp().as_micros()),
+            vector_revision: outcome.vector_revision(),
+        })
+    }
+
+    fn execute_vector_delete(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        key: String,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let key = vector_key(key)?;
+        let mut service = self.vector_service(branch, space)?;
+        let outcome = service.delete(&collection, key)?;
+        Ok(Output::VectorDeleteResult {
+            collection: collection.as_str().to_owned(),
+            key: outcome.key().as_str().to_owned(),
+            deleted: outcome.deleted(),
+            version: outcome.commit().map(|outcome| outcome.version().as_u64()),
+            timestamp: outcome
+                .commit()
+                .map(|outcome| outcome.timestamp().as_micros()),
+        })
+    }
+
+    fn execute_vector_delete_by_filter(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        filter: VectorMetadataFilter,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let filter = vector_filter(filter)?;
+        let mut service = self.vector_service(branch, space)?;
+        let outcome = service.delete_by_filter(&collection, &filter)?;
+        Ok(vector_bulk_delete_output(&collection, outcome))
+    }
+
+    fn execute_vector_delete_all(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let mut service = self.vector_service(branch, space)?;
+        let outcome = service.delete_all(&collection)?;
+        Ok(vector_bulk_delete_output(&collection, outcome))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_vector_query(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        query: Vec<f32>,
+        k: u64,
+        filter: Option<VectorMetadataFilter>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let query = vector_embedding(query)?;
+        let k = required_usize(
+            k,
+            "invalid_argument.executor.vector_limit",
+            "vector match limit does not fit this platform",
+        )?;
+        let filter = filter.map(vector_filter).transpose()?;
+        let mut service = self.vector_service(branch, space)?;
+        let result = if let Some(as_of) = as_of {
+            service.query_at(
+                &collection,
+                &query,
+                k,
+                filter.as_ref(),
+                Timestamp::from_micros(as_of),
+            )?
+        } else {
+            service.query(&collection, &query, k, filter.as_ref())?
+        };
+        Ok(Output::VectorMatches(
+            result.matches().iter().map(vector_match).collect(),
+        ))
+    }
+
+    fn execute_vector_batch_upsert(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        entries: Vec<BatchVectorEntry>,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let entries = entries
+            .into_iter()
+            .map(vector_upsert_entry)
+            .collect::<ExecutorResult<Vec<_>>>()?;
+        let mut service = self.vector_service(branch, space)?;
+        let outcome = service.batch_upsert(&collection, &entries)?;
+        Ok(Output::VectorBatchUpsertResults(
+            outcome
+                .vector_revisions()
+                .iter()
+                .copied()
+                .map(|revision| vector_batch_item_result(true, outcome.commit(), Some(revision)))
+                .collect(),
+        ))
+    }
+
+    fn execute_vector_batch_get(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        keys: Vec<String>,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let keys = keys
+            .into_iter()
+            .map(vector_key)
+            .collect::<ExecutorResult<Vec<_>>>()?;
+        let mut service = self.vector_service(branch, space)?;
+        let outcome = service.batch_get(&collection, &keys)?;
+        Ok(Output::VectorBatchGetResults(
+            outcome
+                .entries()
+                .iter()
+                .map(|entry| {
+                    VectorBatchGetItemResult::new(entry.as_ref().map(vector_versioned_data))
+                })
+                .collect(),
+        ))
+    }
+
+    fn execute_vector_batch_delete(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        keys: Vec<String>,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let keys = keys
+            .into_iter()
+            .map(vector_key)
+            .collect::<ExecutorResult<Vec<_>>>()?;
+        let mut service = self.vector_service(branch, space)?;
+        let outcome = service.batch_delete(&collection, &keys)?;
+        Ok(Output::VectorBatchDeleteResults(
+            outcome
+                .deleted()
+                .iter()
+                .copied()
+                .map(|deleted| {
+                    vector_batch_item_result(
+                        deleted,
+                        deleted.then(|| outcome.commit()).flatten(),
+                        None,
+                    )
+                })
+                .collect(),
+        ))
+    }
+
+    fn execute_event_batch_append(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        entries: Vec<BatchEventEntry>,
+    ) -> ExecutorResult<Output> {
+        let entries = entries
+            .into_iter()
+            .map(event_batch_entry)
+            .collect::<Vec<_>>();
+        let mut service = self.event_service(branch, space)?;
+        let outcome = service.batch_append(entries)?;
+        Ok(Output::EventBatchAppendResults(
+            outcome
+                .items()
+                .iter()
+                .map(event_batch_append_item_result)
+                .collect(),
+        ))
+    }
+
+    fn execute_event_append(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        event_type: String,
+        payload: serde_json::Value,
+    ) -> ExecutorResult<Output> {
+        let event_type = engine_event_type(event_type)?;
+        let payload = event_payload(payload)?;
+        let mut service = self.event_service(branch, space)?;
+        Ok(event_append_output(&service.append(event_type, payload)?))
+    }
+
+    fn execute_event_get(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        sequence: u64,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let sequence = event_sequence(sequence);
+        let mut service = self.event_service(branch, space)?;
+        let record = if let Some(as_of) = as_of {
+            service.get_at(sequence, Timestamp::from_micros(as_of))?
+        } else {
+            service.get(sequence)?
+        };
+        Ok(Output::EventRecord(
+            record.as_ref().map(event_versioned_data),
+        ))
+    }
+
+    fn execute_event_exists(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        sequence: u64,
+    ) -> ExecutorResult<Output> {
+        let sequence = event_sequence(sequence);
+        let mut service = self.event_service(branch, space)?;
+        Ok(Output::Bool(service.exists(sequence)?))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_event_get_by_type(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        event_type: String,
+        limit: Option<u64>,
+        after_sequence: Option<u64>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let event_type = engine_event_type(event_type)?;
+        let limit = optional_limit(limit)?;
+        let after_sequence = after_sequence.map(event_sequence);
+        let mut service = self.event_service(branch, space)?;
+        let records = if let Some(as_of) = as_of {
+            service.get_by_type_at(
+                &event_type,
+                Timestamp::from_micros(as_of),
+                after_sequence,
+                limit,
+            )?
+        } else {
+            service.get_by_type(&event_type, after_sequence, limit)?
+        };
+        Ok(Output::EventRecords(event_records(&records)))
+    }
+
+    fn execute_event_len(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let mut service = self.event_service(branch, space)?;
+        let count = if let Some(as_of) = as_of {
+            service.len_at(Timestamp::from_micros(as_of))?.count()
+        } else {
+            service.len()?.count()
+        };
+        Ok(Output::EventLength { count })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_event_range(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        start_seq: u64,
+        end_seq: Option<u64>,
+        limit: Option<u64>,
+        direction: EventRangeDirection,
+        event_type: Option<String>,
+    ) -> ExecutorResult<Output> {
+        let end_seq = end_seq.map(event_sequence);
+        let limit = optional_limit(limit)?;
+        let direction = engine_event_direction(direction);
+        let event_type = optional_engine_event_type(event_type)?;
+        let mut service = self.event_service(branch, space)?;
+        let page = service.range(
+            event_sequence(start_seq),
+            end_seq,
+            limit,
+            direction,
+            event_type.as_ref(),
+        )?;
+        Ok(event_range_output(&page))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_event_range_by_time(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        start_ts: u64,
+        end_ts: Option<u64>,
+        limit: Option<u64>,
+        direction: EventRangeDirection,
+        event_type: Option<String>,
+    ) -> ExecutorResult<Output> {
+        let end_ts = end_ts.map(Timestamp::from_micros);
+        let limit = optional_limit(limit)?;
+        let direction = engine_event_direction(direction);
+        let event_type = optional_engine_event_type(event_type)?;
+        let mut service = self.event_service(branch, space)?;
+        let page = service.range_by_time(
+            Timestamp::from_micros(start_ts),
+            end_ts,
+            limit,
+            direction,
+            event_type.as_ref(),
+        )?;
+        Ok(event_range_output(&page))
+    }
+
+    fn execute_event_list_types(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let mut service = self.event_service(branch, space)?;
+        let types = if let Some(as_of) = as_of {
+            service.list_types_at(Timestamp::from_micros(as_of))?
+        } else {
+            service.list_types()?
+        };
+        Ok(Output::EventTypeList(
+            types
+                .event_types()
+                .iter()
+                .map(|event_type| event_type.as_str().to_owned())
+                .collect(),
+        ))
+    }
+
+    fn execute_event_list(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        event_type: Option<String>,
+        limit: Option<u64>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let event_type = optional_engine_event_type(event_type)?;
+        let limit = optional_limit(limit)?;
+        let as_of = as_of.map(Timestamp::from_micros);
+        let mut service = self.event_service(branch, space)?;
+        let records = service.list(event_type.as_ref(), limit, as_of)?;
+        Ok(Output::EventRecords(event_records(&records)))
+    }
+
+    fn execute_event_verify_chain(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+    ) -> ExecutorResult<Output> {
+        let mut service = self.event_service(branch, space)?;
+        Ok(Output::EventChainVerification(event_chain_verification(
+            &service.verify_chain()?,
+        )))
+    }
+
     fn kv_service(
         &mut self,
         branch: Option<&str>,
@@ -938,6 +1805,34 @@ impl Executor {
             branches.get(&branch)?;
         }
         Ok(self.database.json(branch, space)?)
+    }
+
+    fn vector_service(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+    ) -> ExecutorResult<VectorService<'_>> {
+        let branch = branch_name(branch, &self.default_branch)?;
+        let space = product_space(space)?;
+        {
+            let branches = self.database.branches()?;
+            branches.get(&branch)?;
+        }
+        Ok(self.database.vector(branch, space)?)
+    }
+
+    fn event_service(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+    ) -> ExecutorResult<EventService<'_>> {
+        let branch = branch_name(branch, &self.default_branch)?;
+        let space = product_space(space)?;
+        {
+            let branches = self.database.branches()?;
+            branches.get(&branch)?;
+        }
+        Ok(self.database.event(branch, space)?)
     }
 }
 
@@ -1186,6 +2081,396 @@ impl Executor {
             entries,
         })
     }
+
+    /// Executes a default-branch vector collection-create command.
+    pub fn vector_create_collection(
+        &mut self,
+        collection: impl Into<String>,
+        dimension: u64,
+        metric: VectorDistanceMetric,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorCreateCollection {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+            dimension,
+            metric,
+        })
+    }
+
+    /// Executes a default-branch vector collection-delete command.
+    pub fn vector_delete_collection(
+        &mut self,
+        collection: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorDeleteCollection {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+        })
+    }
+
+    /// Executes a default-branch vector collection-list command.
+    pub fn vector_list_collections(&mut self) -> ExecutorResult<Output> {
+        self.execute(Command::VectorListCollections {
+            branch: None,
+            space: None,
+        })
+    }
+
+    /// Executes a default-branch vector collection-stats command.
+    pub fn vector_collection_stats(
+        &mut self,
+        collection: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorCollectionStats {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+        })
+    }
+
+    /// Executes a default-branch vector count command.
+    pub fn vector_count(&mut self, collection: impl Into<String>) -> ExecutorResult<Output> {
+        self.execute(Command::VectorCount {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+        })
+    }
+
+    /// Executes a default-branch vector upsert command.
+    pub fn vector_upsert(
+        &mut self,
+        collection: impl Into<String>,
+        key: impl Into<String>,
+        vector: Vec<f32>,
+        metadata: Option<serde_json::Value>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorUpsert {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+            key: key.into(),
+            vector,
+            metadata,
+        })
+    }
+
+    /// Executes a default-branch vector get command.
+    pub fn vector_get(
+        &mut self,
+        collection: impl Into<String>,
+        key: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorGet {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+            key: key.into(),
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch vector history command.
+    pub fn vector_getv(
+        &mut self,
+        collection: impl Into<String>,
+        key: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorGetv {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+            key: key.into(),
+        })
+    }
+
+    /// Executes a default-branch vector exists command.
+    pub fn vector_exists(
+        &mut self,
+        collection: impl Into<String>,
+        key: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorExists {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+            key: key.into(),
+        })
+    }
+
+    /// Executes a default-branch vector key-list command.
+    pub fn vector_list_keys(
+        &mut self,
+        collection: impl Into<String>,
+        prefix: Option<String>,
+        cursor: Option<String>,
+        limit: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorListKeys {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+            prefix,
+            cursor,
+            limit,
+        })
+    }
+
+    /// Executes a default-branch vector metadata-update command.
+    pub fn vector_update_metadata(
+        &mut self,
+        collection: impl Into<String>,
+        key: impl Into<String>,
+        patch: serde_json::Value,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorUpdateMetadata {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+            key: key.into(),
+            patch,
+        })
+    }
+
+    /// Executes a default-branch vector delete command.
+    pub fn vector_delete(
+        &mut self,
+        collection: impl Into<String>,
+        key: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorDelete {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+            key: key.into(),
+        })
+    }
+
+    /// Executes a default-branch vector filtered-delete command.
+    pub fn vector_delete_by_filter(
+        &mut self,
+        collection: impl Into<String>,
+        filter: VectorMetadataFilter,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorDeleteByFilter {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+            filter,
+        })
+    }
+
+    /// Executes a default-branch vector delete-all command.
+    pub fn vector_delete_all(&mut self, collection: impl Into<String>) -> ExecutorResult<Output> {
+        self.execute(Command::VectorDeleteAll {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+        })
+    }
+
+    /// Executes a default-branch vector query command.
+    pub fn vector_query(
+        &mut self,
+        collection: impl Into<String>,
+        query: Vec<f32>,
+        k: u64,
+        filter: Option<VectorMetadataFilter>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorQuery {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+            query,
+            k,
+            filter,
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch vector batch-upsert command.
+    pub fn vector_batch_upsert(
+        &mut self,
+        collection: impl Into<String>,
+        entries: Vec<BatchVectorEntry>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorBatchUpsert {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+            entries,
+        })
+    }
+
+    /// Executes a default-branch vector batch-get command.
+    pub fn vector_batch_get(
+        &mut self,
+        collection: impl Into<String>,
+        keys: Vec<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorBatchGet {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+            keys,
+        })
+    }
+
+    /// Executes a default-branch vector batch-delete command.
+    pub fn vector_batch_delete(
+        &mut self,
+        collection: impl Into<String>,
+        keys: Vec<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorBatchDelete {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+            keys,
+        })
+    }
+
+    /// Executes a default-branch event batch-append command.
+    pub fn event_batch_append(&mut self, entries: Vec<BatchEventEntry>) -> ExecutorResult<Output> {
+        self.execute(Command::EventBatchAppend {
+            branch: None,
+            space: None,
+            entries,
+        })
+    }
+
+    /// Executes a default-branch event append command.
+    pub fn event_append(
+        &mut self,
+        event_type: impl Into<String>,
+        payload: serde_json::Value,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::EventAppend {
+            branch: None,
+            space: None,
+            event_type: event_type.into(),
+            payload,
+        })
+    }
+
+    /// Executes a default-branch event get command.
+    pub fn event_get(&mut self, sequence: u64) -> ExecutorResult<Output> {
+        self.execute(Command::EventGet {
+            branch: None,
+            space: None,
+            sequence,
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch event exists command.
+    pub fn event_exists(&mut self, sequence: u64) -> ExecutorResult<Output> {
+        self.execute(Command::EventExists {
+            branch: None,
+            space: None,
+            sequence,
+        })
+    }
+
+    /// Executes a default-branch event type-filter command.
+    pub fn event_get_by_type(
+        &mut self,
+        event_type: impl Into<String>,
+        limit: Option<u64>,
+        after_sequence: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::EventGetByType {
+            branch: None,
+            space: None,
+            event_type: event_type.into(),
+            limit,
+            after_sequence,
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch event length command.
+    pub fn event_len(&mut self) -> ExecutorResult<Output> {
+        self.execute(Command::EventLen {
+            branch: None,
+            space: None,
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch event sequence-range command.
+    pub fn event_range(
+        &mut self,
+        start_seq: u64,
+        end_seq: Option<u64>,
+        limit: Option<u64>,
+        direction: EventRangeDirection,
+        event_type: Option<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::EventRange {
+            branch: None,
+            space: None,
+            start_seq,
+            end_seq,
+            limit,
+            direction,
+            event_type,
+        })
+    }
+
+    /// Executes a default-branch event timestamp-range command.
+    pub fn event_range_by_time(
+        &mut self,
+        start_ts: u64,
+        end_ts: Option<u64>,
+        limit: Option<u64>,
+        direction: EventRangeDirection,
+        event_type: Option<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::EventRangeByTime {
+            branch: None,
+            space: None,
+            start_ts,
+            end_ts,
+            limit,
+            direction,
+            event_type,
+        })
+    }
+
+    /// Executes a default-branch event type-list command.
+    pub fn event_list_types(&mut self) -> ExecutorResult<Output> {
+        self.execute(Command::EventListTypes {
+            branch: None,
+            space: None,
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch event list command.
+    pub fn event_list(
+        &mut self,
+        event_type: Option<String>,
+        limit: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::EventList {
+            branch: None,
+            space: None,
+            event_type,
+            limit,
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch event chain-verify command.
+    pub fn event_verify_chain(&mut self) -> ExecutorResult<Output> {
+        self.execute(Command::EventVerifyChain {
+            branch: None,
+            space: None,
+        })
+    }
 }
 
 fn branch_name(branch: Option<&str>, default: &str) -> ExecutorResult<BranchName> {
@@ -1279,6 +2564,10 @@ fn optional_limit(limit: Option<u64>) -> ExecutorResult<Option<usize>> {
             })
         })
         .transpose()
+}
+
+fn required_usize(value: u64, code: &'static str, message: &'static str) -> ExecutorResult<usize> {
+    usize::try_from(value).map_err(|_| ExecutorError::invalid_input(code, message))
 }
 
 fn bytes_from_key(key: &KvKey) -> Bytes {
@@ -1508,6 +2797,313 @@ fn json_index_definition(definition: &EngineJsonIndexDefinition) -> JsonIndexDef
         output_json_index_type(definition.index_type()),
         definition.created_version(),
         definition.created_timestamp(),
+    )
+}
+
+fn vector_collection(name: String) -> ExecutorResult<EngineVectorCollectionName> {
+    EngineVectorCollectionName::new(name).map_err(ExecutorError::from)
+}
+
+fn vector_key(key: String) -> ExecutorResult<EngineVectorKey> {
+    EngineVectorKey::new(key).map_err(ExecutorError::from)
+}
+
+fn optional_vector_key(key: Option<String>) -> ExecutorResult<Option<EngineVectorKey>> {
+    key.map(vector_key).transpose()
+}
+
+fn vector_embedding(vector: Vec<f32>) -> ExecutorResult<EngineVectorEmbedding> {
+    EngineVectorEmbedding::new(vector).map_err(ExecutorError::from)
+}
+
+fn optional_vector_metadata(
+    metadata: Option<serde_json::Value>,
+) -> ExecutorResult<Option<EngineVectorMetadata>> {
+    metadata
+        .map(EngineVectorMetadata::new)
+        .transpose()
+        .map_err(ExecutorError::from)
+}
+
+fn vector_metadata_patch(value: serde_json::Value) -> ExecutorResult<EngineVectorMetadataPatch> {
+    EngineVectorMetadataPatch::new(value).map_err(ExecutorError::from)
+}
+
+const fn engine_vector_metric(metric: VectorDistanceMetric) -> EngineVectorDistanceMetric {
+    match metric {
+        VectorDistanceMetric::Cosine => EngineVectorDistanceMetric::Cosine,
+        VectorDistanceMetric::Euclidean => EngineVectorDistanceMetric::Euclidean,
+        VectorDistanceMetric::DotProduct => EngineVectorDistanceMetric::DotProduct,
+    }
+}
+
+const fn output_vector_metric(metric: EngineVectorDistanceMetric) -> VectorDistanceMetric {
+    match metric {
+        EngineVectorDistanceMetric::Cosine => VectorDistanceMetric::Cosine,
+        EngineVectorDistanceMetric::Euclidean => VectorDistanceMetric::Euclidean,
+        EngineVectorDistanceMetric::DotProduct => VectorDistanceMetric::DotProduct,
+    }
+}
+
+fn engine_vector_scalar(value: VectorScalar) -> EngineVectorScalar {
+    match value {
+        VectorScalar::Null => EngineVectorScalar::Null,
+        VectorScalar::Bool(value) => EngineVectorScalar::Bool(value),
+        VectorScalar::Number(value) => EngineVectorScalar::Number(value),
+        VectorScalar::String(value) => EngineVectorScalar::String(value),
+    }
+}
+
+const fn engine_vector_filter_op(op: VectorFilterOp) -> EngineVectorFilterOp {
+    match op {
+        VectorFilterOp::Eq => EngineVectorFilterOp::Eq,
+    }
+}
+
+fn vector_filter(filter: VectorMetadataFilter) -> ExecutorResult<EngineVectorFilter> {
+    let conditions = filter
+        .into_conditions()
+        .into_iter()
+        .map(|condition| {
+            let (field, op, value) = condition.into_parts();
+            EngineVectorFilterCondition::new(
+                field,
+                engine_vector_filter_op(op),
+                engine_vector_scalar(value),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(EngineVectorFilter::from_conditions(conditions))
+}
+
+fn vector_upsert_entry(entry: BatchVectorEntry) -> ExecutorResult<EngineVectorUpsertEntry> {
+    let (key, vector, metadata) = entry.into_parts();
+    Ok(EngineVectorUpsertEntry::new(
+        vector_key(key)?,
+        vector_embedding(vector)?,
+        optional_vector_metadata(metadata)?,
+    ))
+}
+
+fn vector_collection_info(info: &EngineVectorCollectionInfo) -> OutputVectorCollectionInfo {
+    OutputVectorCollectionInfo::new(
+        info.name().as_str().to_owned(),
+        usize_to_u64(info.config().dimension()),
+        output_vector_metric(info.config().metric()),
+        info.count(),
+    )
+}
+
+fn vector_data(entry: &EngineVectorEntry) -> VectorData {
+    VectorData::new(
+        entry.embedding().as_slice().to_vec(),
+        entry.metadata().map(|metadata| metadata.as_inner().clone()),
+    )
+}
+
+fn vector_versioned_data(entry: &EngineVectorVersionedEntry) -> VectorVersionedData {
+    VectorVersionedData::new(
+        entry.key().as_str().to_owned(),
+        vector_data(entry.entry()),
+        entry.version().as_u64(),
+        entry.timestamp().as_micros(),
+        entry.vector_revision(),
+    )
+}
+
+fn vector_history_items(
+    key: &EngineVectorKey,
+    history: &EngineVectorHistory,
+) -> Vec<VectorHistoryItem> {
+    history
+        .rows()
+        .iter()
+        .map(|row| vector_history_item(key, row))
+        .collect()
+}
+
+fn vector_history_item(key: &EngineVectorKey, row: &EngineVectorHistoryRow) -> VectorHistoryItem {
+    VectorHistoryItem::new(
+        key.as_str().to_owned(),
+        row.entry().map(vector_data),
+        row.version().as_u64(),
+        row.timestamp().as_micros(),
+        row.vector_revision(),
+        row.is_tombstone(),
+    )
+}
+
+fn vector_match(value: &EngineVectorSearchMatch) -> VectorMatch {
+    VectorMatch::new(
+        value.entry().key().as_str().to_owned(),
+        value.score(),
+        value
+            .entry()
+            .metadata()
+            .map(|metadata| metadata.as_inner().clone()),
+    )
+}
+
+fn vector_key_page_output(page: &EngineVectorKeyPage) -> Output {
+    Output::VectorKeyPage {
+        keys: page
+            .keys()
+            .iter()
+            .map(|key| key.as_str().to_owned())
+            .collect(),
+        has_more: page.has_more(),
+        cursor: page.cursor().map(|cursor| cursor.as_str().to_owned()),
+    }
+}
+
+fn vector_write_output(
+    collection: &EngineVectorCollectionName,
+    key: &EngineVectorKey,
+    outcome: CommitOutcome,
+    vector_revision: u64,
+) -> Output {
+    Output::VectorWriteResult {
+        collection: collection.as_str().to_owned(),
+        key: key.as_str().to_owned(),
+        version: outcome.version().as_u64(),
+        timestamp: outcome.timestamp().as_micros(),
+        vector_revision,
+    }
+}
+
+fn vector_bulk_delete_output(
+    collection: &EngineVectorCollectionName,
+    outcome: EngineVectorBulkDeleteOutcome,
+) -> Output {
+    Output::VectorBulkDeleteResult {
+        collection: collection.as_str().to_owned(),
+        deleted_count: outcome.deleted_count(),
+        version: outcome.commit().map(|outcome| outcome.version().as_u64()),
+        timestamp: outcome
+            .commit()
+            .map(|outcome| outcome.timestamp().as_micros()),
+    }
+}
+
+fn vector_batch_item_result(
+    applied: bool,
+    outcome: Option<CommitOutcome>,
+    vector_revision: Option<u64>,
+) -> VectorBatchItemResult {
+    VectorBatchItemResult::new(
+        applied,
+        outcome.map(|outcome| outcome.version().as_u64()),
+        outcome.map(|outcome| outcome.timestamp().as_micros()),
+        vector_revision,
+    )
+}
+
+fn engine_event_type(event_type: String) -> ExecutorResult<EngineEventType> {
+    EngineEventType::new(event_type).map_err(ExecutorError::from)
+}
+
+fn optional_engine_event_type(
+    event_type: Option<String>,
+) -> ExecutorResult<Option<EngineEventType>> {
+    event_type.map(engine_event_type).transpose()
+}
+
+fn event_payload(payload: serde_json::Value) -> ExecutorResult<EngineEventPayload> {
+    EngineEventPayload::new(payload).map_err(ExecutorError::from)
+}
+
+const fn event_sequence(sequence: u64) -> EngineEventSequence {
+    EngineEventSequence::new(sequence)
+}
+
+fn event_batch_entry(entry: BatchEventEntry) -> EngineEventBatchAppendEntry {
+    let (event_type, payload) = entry.into_parts();
+    EngineEventBatchAppendEntry::from_raw(event_type, payload)
+}
+
+const fn engine_event_direction(direction: EventRangeDirection) -> EngineEventRangeDirection {
+    match direction {
+        EventRangeDirection::Forward => EngineEventRangeDirection::Forward,
+        EventRangeDirection::Reverse => EngineEventRangeDirection::Reverse,
+    }
+}
+
+fn event_append_output(outcome: &EngineEventAppendOutcome) -> Output {
+    let commit = outcome.commit();
+    Output::EventAppendResult {
+        sequence: outcome.sequence().as_u64(),
+        event_type: outcome.event_type().as_str().to_owned(),
+        version: commit.version().as_u64(),
+        timestamp: commit.timestamp().as_micros(),
+    }
+}
+
+fn event_records(records: &[EngineEventVersionedRecord]) -> Vec<EventVersionedData> {
+    records.iter().map(event_versioned_data).collect()
+}
+
+fn event_versioned_data(record: &EngineEventVersionedRecord) -> EventVersionedData {
+    EventVersionedData::new(
+        event_data(record),
+        record.version().as_u64(),
+        record.commit_timestamp().as_micros(),
+    )
+}
+
+fn event_data(record: &EngineEventVersionedRecord) -> EventData {
+    EventData::new(
+        record.sequence().as_u64(),
+        record.event_type().as_str().to_owned(),
+        record.payload().as_inner().clone(),
+        record.timestamp().as_micros(),
+        hash_hex(record.previous_hash()),
+        hash_hex(record.hash()),
+    )
+}
+
+fn hash_hex(hash: [u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(hash.len().saturating_mul(2));
+    for byte in hash {
+        output.push(char::from(HEX[usize::from(byte >> 4)]));
+        output.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    output
+}
+
+fn event_range_output(page: &EngineEventRangePage) -> Output {
+    Output::EventRangeResult {
+        events: event_records(page.events()),
+        has_more: page.has_more(),
+        cursor: page.cursor().map(EngineEventSequence::as_u64),
+    }
+}
+
+fn event_batch_append_item_result(
+    item: &EngineEventBatchAppendItemOutcome,
+) -> EventBatchAppendItemResult {
+    if let Some(error) = item.error_message() {
+        return EventBatchAppendItemResult::failed(error);
+    }
+    EventBatchAppendItemResult::new(
+        item.sequence().map(EngineEventSequence::as_u64),
+        item.event_type()
+            .map(|event_type| event_type.as_str().to_owned()),
+        item.commit_version().map(CommitVersion::as_u64),
+        item.commit_timestamp().map(Timestamp::as_micros),
+    )
+}
+
+fn event_chain_verification(
+    verification: &EngineEventChainVerification,
+) -> OutputEventChainVerification {
+    OutputEventChainVerification::new(
+        verification.is_valid(),
+        verification.length(),
+        verification
+            .first_invalid()
+            .map(EngineEventSequence::as_u64),
+        verification.error_message().map(str::to_owned),
     )
 }
 

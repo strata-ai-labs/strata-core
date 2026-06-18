@@ -63,6 +63,11 @@ impl ExecutorError {
         Self::new(ExecutorErrorClass::InvalidInput, code, false, message)
     }
 
+    /// Creates a not-found error.
+    pub fn not_found(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::new(ExecutorErrorClass::NotFound, code, false, message)
+    }
+
     /// Returns the stable class.
     pub const fn class(&self) -> ExecutorErrorClass {
         self.class

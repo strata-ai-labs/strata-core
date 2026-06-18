@@ -91,6 +91,20 @@ fn executor_sources_do_not_name_lower_layer_types() {
 }
 
 #[test]
+fn executor_event_sources_do_not_own_event_product_behavior() {
+    for file in source_files(&crate_root().join("src")) {
+        let text = fs::read_to_string(&file).expect("source reads");
+        for forbidden in forbidden_event_lower_layer_terms() {
+            assert!(
+                !text.contains(forbidden),
+                "{} leaked forbidden event lower-layer term `{forbidden}`",
+                file.display()
+            );
+        }
+    }
+}
+
+#[test]
 fn command_and_output_are_serde_serializable() {
     let command_source =
         fs::read_to_string(crate_root().join("src/command.rs")).expect("command reads");
@@ -106,10 +120,10 @@ fn command_and_output_are_serde_serializable() {
 #[test]
 fn convenience_facade_stays_command_shaped() {
     let source = fs::read_to_string(crate_root().join("src/executor.rs")).expect("executor reads");
-    let facade = source
-        .split("impl Executor {")
-        .nth(2)
-        .expect("convenience impl is present");
+    let facade_start = source
+        .find("pub fn branch_list")
+        .expect("convenience facade is present");
+    let facade = &source[facade_start..];
 
     assert!(facade.contains("self.execute(Command::KvPut"));
     assert!(facade.contains("self.execute(Command::KvBatchPut"));
@@ -119,15 +133,57 @@ fn convenience_facade_stays_command_shaped() {
     assert!(facade.contains("self.execute(Command::JsonBatchSet"));
     assert!(facade.contains("self.execute(Command::JsonBatchGet"));
     assert!(facade.contains("self.execute(Command::JsonBatchDelete"));
+    assert!(facade.contains("self.execute(Command::VectorCreateCollection"));
+    assert!(facade.contains("self.execute(Command::VectorUpsert"));
+    assert!(facade.contains("self.execute(Command::VectorGet"));
+    assert!(facade.contains("self.execute(Command::VectorQuery"));
+    assert!(facade.contains("self.execute(Command::VectorBatchUpsert"));
+    assert!(facade.contains("self.execute(Command::VectorBatchGet"));
+    assert!(facade.contains("self.execute(Command::VectorBatchDelete"));
+    assert!(facade.contains("self.execute(Command::EventBatchAppend"));
+    assert!(facade.contains("self.execute(Command::EventAppend"));
+    assert!(facade.contains("self.execute(Command::EventGet"));
+    assert!(facade.contains("self.execute(Command::EventExists"));
+    assert!(facade.contains("self.execute(Command::EventGetByType"));
+    assert!(facade.contains("self.execute(Command::EventLen"));
+    assert!(facade.contains("self.execute(Command::EventRange"));
+    assert!(facade.contains("self.execute(Command::EventRangeByTime"));
+    assert!(facade.contains("self.execute(Command::EventListTypes"));
+    assert!(facade.contains("self.execute(Command::EventList"));
+    assert!(facade.contains("self.execute(Command::EventVerifyChain"));
     assert!(!facade.contains(".kv("));
     assert!(!facade.contains(".json("));
+    assert!(!facade.contains(".vector("));
+    assert!(!facade.contains(".event("));
     assert!(!facade.contains("json_service("));
+    assert!(!facade.contains("vector_service("));
+    assert!(!facade.contains("event_service("));
     assert!(!facade.contains(".put("));
     assert!(!facade.contains(".put_batch("));
     assert!(!facade.contains(".set_or_create("));
     assert!(!facade.contains(".batch_set_or_create("));
     assert!(!facade.contains(".batch_delete_entries("));
+    assert!(!facade.contains(".batch_upsert("));
+    assert!(!facade.contains(".query("));
+    assert!(!facade.contains(".append("));
+    assert!(!facade.contains(".batch_append("));
     assert!(!facade.contains(".delete("));
+}
+
+#[test]
+fn event_batch_append_handler_uses_engine_batch_api() {
+    let source = fs::read_to_string(crate_root().join("src/executor.rs")).expect("executor reads");
+    let handler = source
+        .split("fn execute_event_batch_append")
+        .nth(1)
+        .expect("event batch handler is present")
+        .split("fn execute_event_append")
+        .next()
+        .expect("event append handler follows batch handler");
+
+    assert!(handler.contains(".batch_append("));
+    assert!(!handler.contains("execute_event_append"));
+    assert!(!handler.contains(".append("));
 }
 
 #[test]
@@ -155,18 +211,17 @@ fn executor_benchmarks_do_not_bypass_commands() {
     }
 
     for file in source_files(&benchmark_root) {
-        let name = file
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("benchmark source has a file name");
-        if !name.contains("executor") {
+        let text = fs::read_to_string(&file).expect("benchmark source reads");
+        if !is_executor_benchmark_source(&text) {
             continue;
         }
 
-        let text = fs::read_to_string(&file).expect("benchmark source reads");
         assert!(
-            text.contains("Command::KvBatchPut"),
-            "{} must use the serialized batch-put command",
+            text.contains("Command::KvBatchPut")
+                || text.contains("Command::JsonBatchSet")
+                || text.contains("Command::VectorBatchUpsert")
+                || text.contains("Command::EventBatchAppend"),
+            "{} must use serialized executor batch commands",
             file.display()
         );
         for forbidden in [
@@ -185,6 +240,14 @@ fn executor_benchmarks_do_not_bypass_commands() {
     }
 }
 
+fn is_executor_benchmark_source(text: &str) -> bool {
+    text.contains("strata_executor_next")
+        || text.contains("Command::Kv")
+        || text.contains("Command::Json")
+        || text.contains("Command::Vector")
+        || text.contains("Command::Event")
+}
+
 fn forbidden_lower_layer_terms() -> &'static [&'static str] {
     &[
         "strata-storage-next",
@@ -201,6 +264,38 @@ fn forbidden_lower_layer_terms() -> &'static [&'static str] {
         "Lifecycle",
         "Compaction",
         "storage_api",
+    ]
+}
+
+fn forbidden_event_lower_layer_terms() -> &'static [&'static str] {
+    &[
+        "compute_event_hash",
+        "EventRecordEnvelope",
+        "EventLogMetadata",
+        "EventHash",
+        "encode_event_record",
+        "decode_event_record",
+        "encode_event_metadata",
+        "decode_event_metadata",
+        "event_raw_rows",
+        "event_rows(",
+        "event_address",
+        "type_index_address",
+        "metadata_address",
+        "StoragePersistence",
+        "PersistenceReadRow",
+        "RowMutation",
+        "RowAddress",
+        "ReadSelector",
+        "CommitPlan",
+        "sha2",
+        "Sha256",
+        "shadow_embedding",
+        "embedding_runtime",
+        "export_hook",
+        "ExportService",
+        "SearchIndex",
+        "search_index",
     ]
 }
 

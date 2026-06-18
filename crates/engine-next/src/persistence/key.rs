@@ -1,5 +1,6 @@
 //! Stable engine row-key encoding.
 
+use crate::data::event::{EventSequence, EventType};
 use crate::data::json::{JsonDocumentId, JsonIndexName};
 use crate::data::kv::{KvKey, ProductSpace};
 use crate::data::vector::{VectorCollectionName, VectorKey};
@@ -12,6 +13,9 @@ const JSON_INDEX_META_DISCRIMINATOR: u8 = b'm';
 const JSON_INDEX_ENTRY_DISCRIMINATOR: u8 = b'i';
 const VECTOR_COLLECTION_DISCRIMINATOR: u8 = b'c';
 const VECTOR_ENTRY_DISCRIMINATOR: u8 = b'v';
+const EVENT_RECORD_DISCRIMINATOR: u8 = b'e';
+const EVENT_META_DISCRIMINATOR: u8 = b'E';
+const EVENT_TYPE_INDEX_DISCRIMINATOR: u8 = b't';
 
 pub(crate) fn encode_kv_key(space: &ProductSpace, key: &KvKey) -> Vec<u8> {
     encode_kv_key_bytes(space, key.as_bytes())
@@ -226,6 +230,105 @@ pub(crate) fn decode_vector_key(
     Ok((collection, key))
 }
 
+pub(crate) fn encode_event_key(space: &ProductSpace, sequence: EventSequence) -> Vec<u8> {
+    encode_user_key(
+        EVENT_RECORD_DISCRIMINATOR,
+        space,
+        &sequence.as_u64().to_be_bytes(),
+    )
+}
+
+pub(crate) fn decode_event_key_sequence(
+    space: &ProductSpace,
+    encoded: &[u8],
+) -> EngineResult<EventSequence> {
+    let bytes = decode_user_key(
+        space,
+        encoded,
+        EVENT_RECORD_DISCRIMINATOR,
+        "data_loss.engine.event_key",
+        "stored event row key is not valid for the selected product space",
+    )?;
+    decode_event_sequence_suffix(bytes, "data_loss.engine.event_key")
+}
+
+pub(crate) fn encode_event_space_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(EVENT_RECORD_DISCRIMINATOR, space, &[])
+}
+
+pub(crate) fn encode_event_meta_key(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(EVENT_META_DISCRIMINATOR, space, b"meta")
+}
+
+pub(crate) fn encode_event_type_index_key(
+    space: &ProductSpace,
+    event_type: &EventType,
+    sequence: EventSequence,
+) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, event_type.as_str());
+    suffix.extend_from_slice(&sequence.as_u64().to_be_bytes());
+    encode_user_key(EVENT_TYPE_INDEX_DISCRIMINATOR, space, &suffix)
+}
+
+#[cfg(test)]
+fn encode_event_type_index_prefix(space: &ProductSpace, event_type: &EventType) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, event_type.as_str());
+    encode_user_key(EVENT_TYPE_INDEX_DISCRIMINATOR, space, &suffix)
+}
+
+#[cfg(test)]
+fn decode_event_sequence(space: &ProductSpace, encoded: &[u8]) -> EngineResult<EventSequence> {
+    decode_event_type_index_key(space, encoded).map(|(_, sequence)| sequence)
+}
+
+#[cfg(test)]
+fn decode_event_type_index_key(
+    space: &ProductSpace,
+    encoded: &[u8],
+) -> EngineResult<(EventType, EventSequence)> {
+    let bytes = decode_user_key(
+        space,
+        encoded,
+        EVENT_TYPE_INDEX_DISCRIMINATOR,
+        "data_loss.engine.event_index_key",
+        "stored event type index row key is not valid for the selected product space",
+    )?;
+    let (event_type, rest) = decode_length_prefixed_text(
+        bytes,
+        "data_loss.engine.event_index_key",
+        "stored event type index row key is missing an event type",
+    )?;
+    let event_type = EventType::new(event_type).map_err(|_| {
+        EngineError::corruption(
+            "data_loss.engine.event_index_key",
+            "stored event type index row key contains an invalid event type",
+        )
+    })?;
+    if rest.len() != 8 {
+        return Err(EngineError::corruption(
+            "data_loss.engine.event_index_key",
+            "stored event type index row key has an invalid sequence length",
+        ));
+    }
+    let sequence = decode_event_sequence_suffix(rest, "data_loss.engine.event_index_key")?;
+    Ok((event_type, sequence))
+}
+
+fn decode_event_sequence_suffix(bytes: &[u8], code: &'static str) -> EngineResult<EventSequence> {
+    if bytes.len() != 8 {
+        return Err(EngineError::corruption(
+            code,
+            "stored event row key has an invalid sequence length",
+        ));
+    }
+    let sequence = u64::from_be_bytes(bytes.try_into().map_err(|_| {
+        EngineError::corruption(code, "stored event row key sequence is malformed")
+    })?);
+    Ok(EventSequence::new(sequence))
+}
+
 fn encode_json_index_key(
     discriminator: u8,
     space: &ProductSpace,
@@ -372,13 +475,17 @@ pub(crate) fn branch_pending_key(name: &str) -> Vec<u8> {
 mod tests {
     use super::{
         branch_catalog_key, branch_default_key, branch_index_key, branch_pending_key,
-        database_identity_key, decode_json_document_id, decode_json_index_name, decode_kv_key,
-        decode_vector_collection_name, decode_vector_key, encode_json_index_entry_key,
+        database_identity_key, decode_event_key_sequence, decode_event_sequence,
+        decode_event_type_index_key, decode_json_document_id, decode_json_index_name,
+        decode_kv_key, decode_vector_collection_name, decode_vector_key, encode_event_key,
+        encode_event_meta_key, encode_event_space_prefix, encode_event_type_index_key,
+        encode_event_type_index_prefix, encode_json_index_entry_key,
         encode_json_index_entry_prefix, encode_json_index_meta_key, encode_json_key,
         encode_json_space_prefix, encode_kv_key, encode_kv_space_prefix,
         encode_vector_collection_entry_prefix, encode_vector_collection_key,
         encode_vector_collection_prefix, encode_vector_key, storage_registry_key,
     };
+    use crate::data::event::{EventSequence, EventType};
     use crate::data::json::{JsonDocumentId, JsonIndexName};
     use crate::data::kv::{KvKey, ProductSpace};
     use crate::data::vector::{VectorCollectionName, VectorKey};
@@ -625,6 +732,161 @@ mod tests {
             let error = decode_json_index_name(&space, &encoded).expect_err(case);
             assert_eq!(error.class(), EngineErrorClass::Corruption);
             assert_eq!(error.code(), "data_loss.engine.json_index_key");
+        }
+    }
+
+    #[test]
+    fn event_keys_are_deterministic_and_ordered() {
+        let space = ProductSpace::new("default").expect("valid space");
+        let event_type = EventType::new("order.created").expect("valid event type");
+        assert_eq!(
+            encode_event_key(&space, EventSequence::new(7)),
+            b"\x01e\0\x07default\0\0\0\0\0\0\0\x07".to_vec()
+        );
+        assert_eq!(
+            encode_event_meta_key(&space),
+            b"\x01E\0\x07defaultmeta".to_vec()
+        );
+        assert_eq!(
+            encode_event_type_index_prefix(&space, &event_type),
+            b"\x01t\0\x07default\0\rorder.created".to_vec()
+        );
+        let index = encode_event_type_index_key(&space, &event_type, EventSequence::new(7));
+        assert_eq!(
+            decode_event_type_index_key(&space, &index).expect("decode index key"),
+            (event_type, EventSequence::new(7))
+        );
+        assert_eq!(
+            decode_event_key_sequence(&space, &encode_event_key(&space, EventSequence::new(7)))
+                .expect("decode event key"),
+            EventSequence::new(7)
+        );
+        assert!(
+            encode_event_key(&space, EventSequence::new(7))
+                < encode_event_key(&space, EventSequence::new(8))
+        );
+        assert!(
+            encode_event_space_prefix(&space) < encode_event_key(&space, EventSequence::new(0))
+        );
+    }
+
+    #[test]
+    fn event_key_decoding_preserves_separators_and_boundary_type_names() {
+        let space = ProductSpace::new("default").expect("valid space");
+        for event_type in [
+            EventType::new("order/created:tenant.one").expect("valid event type"),
+            EventType::new("e".repeat(256)).expect("valid event type"),
+        ] {
+            let encoded = encode_event_type_index_key(&space, &event_type, EventSequence::new(42));
+            assert_eq!(
+                decode_event_type_index_key(&space, &encoded).expect("decode index key"),
+                (event_type, EventSequence::new(42))
+            );
+        }
+    }
+
+    #[test]
+    fn event_key_decoding_rejects_malformed_rows() {
+        let space = ProductSpace::new("default").expect("valid space");
+        for (case, encoded, code, decode_type_index) in [
+            (
+                "event-truncated-header",
+                vec![1, b'e', 0],
+                "data_loss.engine.event_key",
+                false,
+            ),
+            (
+                "event-unknown-version",
+                vec![
+                    2, b'e', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 0, 0, 0, 0, 0, 0, 0,
+                ],
+                "data_loss.engine.event_key",
+                false,
+            ),
+            (
+                "event-unknown-discriminator",
+                vec![
+                    1, b'x', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 0, 0, 0, 0, 0, 0, 0,
+                ],
+                "data_loss.engine.event_key",
+                false,
+            ),
+            (
+                "event-truncated-sequence",
+                vec![1, b'e', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0],
+                "data_loss.engine.event_key",
+                false,
+            ),
+            (
+                "index-truncated-type-length",
+                vec![1, b't', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0],
+                "data_loss.engine.event_index_key",
+                true,
+            ),
+            (
+                "index-truncated-type",
+                vec![
+                    1, b't', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 4, b'a',
+                ],
+                "data_loss.engine.event_index_key",
+                true,
+            ),
+            (
+                "index-invalid-utf8",
+                vec![
+                    1, b't', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 1, 0xff, 0, 0, 0,
+                    0, 0, 0, 0, 1,
+                ],
+                "data_loss.engine.event_index_key",
+                true,
+            ),
+            (
+                "index-invalid-event-type",
+                vec![
+                    1, b't', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 1, b' ', 0, 0, 0,
+                    0, 0, 0, 0, 1,
+                ],
+                "data_loss.engine.event_index_key",
+                true,
+            ),
+            (
+                "index-truncated-sequence",
+                vec![
+                    1, b't', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 1, b'a', 0,
+                ],
+                "data_loss.engine.event_index_key",
+                true,
+            ),
+        ] {
+            let error = if decode_type_index {
+                decode_event_sequence(&space, &encoded).expect_err(case)
+            } else {
+                decode_event_key_sequence(&space, &encoded).expect_err(case)
+            };
+            assert_eq!(error.class(), EngineErrorClass::Corruption);
+            assert_eq!(error.code(), code);
+        }
+    }
+
+    #[test]
+    fn event_key_decoding_rejects_other_row_families() {
+        let space = ProductSpace::new("default").expect("valid space");
+        let kv = encode_kv_key(&space, &KvKey::new(b"event".as_slice()).expect("valid key"));
+        let json = encode_json_key(
+            &space,
+            &JsonDocumentId::new("event").expect("valid document id"),
+        );
+        let vector = encode_vector_key(
+            &space,
+            &VectorCollectionName::new("docs").expect("valid collection"),
+            &VectorKey::new("event").expect("valid key"),
+        );
+
+        for encoded in [kv, json, vector] {
+            let error =
+                decode_event_key_sequence(&space, &encoded).expect_err("non-event row rejected");
+            assert_eq!(error.class(), EngineErrorClass::Corruption);
+            assert_eq!(error.code(), "data_loss.engine.event_key");
         }
     }
 

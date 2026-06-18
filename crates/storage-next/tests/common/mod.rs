@@ -15,6 +15,7 @@ use std::time::Duration;
 
 pub(crate) const BACKEND_ENV: &str = "STRATA_STORAGE_TEST_BACKEND";
 pub(crate) const CRASH_CASES_ENV: &str = "STRATA_STORAGE_CRASH_CASES";
+pub(crate) const FAULT_CASES_ENV: &str = "STRATA_STORAGE_FAULT_CASES";
 pub(crate) const KEEP_TEST_DIR_ENV: &str = "STRATA_STORAGE_KEEP_TEST_DIR";
 pub(crate) const STRESS_SECONDS_ENV: &str = "STRATA_STORAGE_STRESS_SECONDS";
 pub(crate) const STRESS_SEED_ENV: &str = "STRATA_STORAGE_STRESS_SEED";
@@ -69,6 +70,10 @@ pub(crate) fn test_root_override() -> Result<Option<PathBuf>, HarnessConfigError
 
 pub(crate) fn crash_case_limit() -> Result<Option<usize>, HarnessConfigError> {
     parse_env_usize(CRASH_CASES_ENV)
+}
+
+pub(crate) fn fault_case_limit() -> Result<Option<usize>, HarnessConfigError> {
+    parse_env_usize(FAULT_CASES_ENV)
 }
 
 pub(crate) fn stress_seed() -> Result<Option<u64>, HarnessConfigError> {

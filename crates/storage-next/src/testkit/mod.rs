@@ -17,6 +17,12 @@ mod commit_runtime_outcome;
 mod commit_runtime_runner;
 mod commit_runtime_script;
 mod commit_runtime_timeline;
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+mod fault_sweep;
 mod format_fuzz;
 mod integration_harness;
 mod lifecycle;
@@ -50,6 +56,12 @@ pub use commit_runtime_runner::{
     check_commit_runtime_timeline_contract, check_commit_runtime_timeline_script_contract,
     CommitRuntimeAssuranceOutcome,
 };
+#[cfg(all(
+    any(test, feature = "fault-injection"),
+    feature = "localfs",
+    not(target_arch = "wasm32")
+))]
+pub use fault_sweep::{run_fault_sweep_harness, FaultSweepOutcome};
 pub use format_fuzz::{
     check_table_format_model_script, decode_format_bytes, FormatDecodeOutcome, FormatDecoder,
 };
@@ -222,6 +234,7 @@ mod fault {
         Interrupted,
         MetadataMismatch,
         Corruption,
+        NoSpace,
         Unknown,
     }
 
@@ -240,9 +253,19 @@ mod fault {
                 Self::Interrupted => BackendErrorKind::Interrupted,
                 Self::MetadataMismatch => BackendErrorKind::MetadataMismatch,
                 Self::Corruption => BackendErrorKind::Corruption,
+                Self::NoSpace => BackendErrorKind::NoSpace,
                 Self::Unknown => BackendErrorKind::Unknown,
             }
         }
+    }
+
+    /// Whether a fault rule fires only on its target call, or on that call and
+    /// every subsequent matching call (the fail-once vs fail-continuously sweep).
+    #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+    pub enum FaultMode {
+        #[default]
+        Once,
+        Continuously,
     }
 
     /// One deterministic backend fault.
@@ -251,18 +274,31 @@ mod fault {
         operation: BackendOperation,
         call_number: NonZeroU64,
         kind: FaultKind,
+        mode: FaultMode,
     }
 
     impl FaultRule {
+        /// A fail-once rule: fires on exactly the `call_number`-th matching call.
         pub const fn new(
             operation: BackendOperation,
             call_number: NonZeroU64,
             kind: FaultKind,
         ) -> Self {
+            Self::with_mode(operation, call_number, kind, FaultMode::Once)
+        }
+
+        /// A rule with an explicit fail-once / fail-continuously mode.
+        pub const fn with_mode(
+            operation: BackendOperation,
+            call_number: NonZeroU64,
+            kind: FaultKind,
+            mode: FaultMode,
+        ) -> Self {
             Self {
                 operation,
                 call_number,
                 kind,
+                mode,
             }
         }
 
@@ -276,6 +312,10 @@ mod fault {
 
         pub const fn kind(&self) -> FaultKind {
             self.kind
+        }
+
+        pub const fn mode(&self) -> FaultMode {
+            self.mode
         }
     }
 
@@ -299,7 +339,13 @@ mod fault {
         fn fault_for(&self, operation: BackendOperation, call_number: u64) -> Option<FaultKind> {
             self.rules
                 .iter()
-                .find(|rule| rule.operation == operation && rule.call_number.get() == call_number)
+                .find(|rule| {
+                    rule.operation == operation
+                        && match rule.mode {
+                            FaultMode::Once => rule.call_number.get() == call_number,
+                            FaultMode::Continuously => call_number >= rule.call_number.get(),
+                        }
+                })
                 .map(FaultRule::kind)
         }
     }
@@ -326,6 +372,8 @@ mod fault {
         script: FaultScript,
         calls: Vec<BackendCall>,
         operation_counts: HashMap<BackendOperation, u64>,
+        byte_quota: Option<u64>,
+        bytes_consumed: u64,
     }
 
     impl FaultState {
@@ -334,6 +382,8 @@ mod fault {
                 script,
                 calls: Vec::new(),
                 operation_counts: HashMap::new(),
+                byte_quota: None,
+                bytes_consumed: 0,
             }
         }
 
@@ -346,6 +396,16 @@ mod fault {
                 call_number,
             });
             self.script.fault_for(operation, call_number)
+        }
+
+        /// Charge `len` write bytes against the optional disk-space quota,
+        /// returning `NoSpace` once the cumulative total exceeds it.
+        fn account_bytes(&mut self, len: usize) -> Option<FaultKind> {
+            let quota = self.byte_quota?;
+            self.bytes_consumed = self
+                .bytes_consumed
+                .saturating_add(u64::try_from(len).unwrap_or(u64::MAX));
+            (self.bytes_consumed > quota).then_some(FaultKind::NoSpace)
         }
     }
 
@@ -363,6 +423,16 @@ mod fault {
                 inner,
                 state: Mutex::new(FaultState::new(script)),
             }
+        }
+
+        /// Bound cumulative write bytes: once exceeded, every write op returns
+        /// `NoSpace` — a deterministic disk-full (ENOSPC) simulation.
+        #[must_use]
+        pub fn with_byte_quota(self, quota: u64) -> Self {
+            if let Ok(mut state) = self.state.lock() {
+                state.byte_quota = Some(quota);
+            }
+            self
         }
 
         /// Returns the wrapped backend handle.
@@ -402,6 +472,28 @@ mod fault {
                 )
             })
         }
+
+        /// Charge `len` write bytes against the disk-space quota (if any).
+        fn charge_bytes(&self, len: usize) -> Result<(), FaultKind> {
+            let fault = self
+                .state
+                .lock()
+                .map_or(Some(FaultKind::Unknown), |mut state| {
+                    state.account_bytes(len)
+                });
+            fault.map_or(Ok(()), Err)
+        }
+
+        /// Observe a write operation and charge its bytes against the quota.
+        fn observe_write(&self, operation: BackendOperation, len: usize) -> BackendResult<()> {
+            self.observe(operation)?;
+            self.charge_bytes(len).map_err(|kind| {
+                BackendError::new(
+                    kind.backend_kind(),
+                    format!("test quota exhausted for {operation}"),
+                )
+            })
+        }
     }
 
     impl<B: Backend> Backend for FaultingBackend<B> {
@@ -420,7 +512,7 @@ mod fault {
         }
 
         fn write_object(&self, name: &ObjectName, bytes: &[u8]) -> BackendResult<BackendMetadata> {
-            self.observe(BackendOperation::WriteObject)?;
+            self.observe_write(BackendOperation::WriteObject, bytes.len())?;
             self.inner.write_object(name, bytes)
         }
 
@@ -440,12 +532,21 @@ mod fault {
             self.inner.object_metadata(name)
         }
 
+        // Forwarded but not fault-targeted: the single-writer lock is acquired at
+        // open and is not one of the swept I/O operations.
+        fn acquire_writer_lock(
+            &self,
+            name: &ObjectName,
+        ) -> BackendResult<crate::backend::BackendWriterGuard> {
+            self.inner.acquire_writer_lock(name)
+        }
+
         fn append_object(
             &self,
             name: &ObjectName,
             bytes: &[u8],
         ) -> BackendResult<crate::backend::BackendAppend> {
-            self.observe(BackendOperation::AppendObject)?;
+            self.observe_write(BackendOperation::AppendObject, bytes.len())?;
             self.inner.append_object(name, bytes)
         }
 
@@ -459,7 +560,7 @@ mod fault {
             name: &ObjectName,
             bytes: &[u8],
         ) -> BackendResult<BackendMetadata> {
-            self.observe(BackendOperation::ConditionalCreate)?;
+            self.observe_write(BackendOperation::ConditionalCreate, bytes.len())?;
             self.inner.conditional_create(name, bytes)
         }
 
@@ -469,7 +570,7 @@ mod fault {
             expected: &BackendFence,
             bytes: &[u8],
         ) -> BackendResult<BackendMetadata> {
-            self.observe(BackendOperation::ConditionalUpdate)?;
+            self.observe_write(BackendOperation::ConditionalUpdate, bytes.len())?;
             self.inner.conditional_update(name, expected, bytes)
         }
 
@@ -479,20 +580,20 @@ mod fault {
             bytes: &[u8],
             mode: PublishMode,
         ) -> PublishResult<PublishOutcome> {
+            let publish_fault = |kind: FaultKind, reason: &str| {
+                PublishError::new(
+                    name.clone(),
+                    PublishFailureKind::FailedBeforeVisibility,
+                    BackendError::new(
+                        kind.backend_kind(),
+                        format!("{reason} for {}", BackendOperation::PublishObject),
+                    ),
+                )
+            };
             self.before_operation(BackendOperation::PublishObject)
-                .map_err(|kind| {
-                    PublishError::new(
-                        name.clone(),
-                        PublishFailureKind::FailedBeforeVisibility,
-                        BackendError::new(
-                            kind.backend_kind(),
-                            format!(
-                                "test fault injected for {}",
-                                BackendOperation::PublishObject
-                            ),
-                        ),
-                    )
-                })?;
+                .map_err(|kind| publish_fault(kind, "test fault injected"))?;
+            self.charge_bytes(bytes.len())
+                .map_err(|kind| publish_fault(kind, "test quota exhausted"))?;
             self.inner.publish_object(name, bytes, mode)
         }
     }
@@ -543,6 +644,21 @@ mod fault {
             backend.write_object(&name, b"abc").expect("write");
             assert_backend_error_kind(backend.read_object(&name), BackendErrorKind::Unavailable);
             assert_eq!(backend.read_object(&name).expect("second read"), b"abc");
+        }
+
+        #[test]
+        fn byte_quota_returns_no_space_once_exceeded() {
+            let backend =
+                FaultingBackend::new(MemoryBackend::new(), FaultScript::empty()).with_byte_quota(8);
+            let name = object_name("fault/quota");
+            // The quota is the maximum allowed: 5 + 3 = 8 bytes fit; the next exceeds it.
+            backend
+                .write_object(&name, b"01234")
+                .expect("first write within quota");
+            backend
+                .write_object(&name, b"567")
+                .expect("second write reaches the quota");
+            assert_backend_error_kind(backend.write_object(&name, b"8"), BackendErrorKind::NoSpace);
         }
 
         #[test]
@@ -626,7 +742,7 @@ mod fault {
 
 #[cfg(any(test, feature = "fault-injection"))]
 pub use fault::{
-    BackendCall, BackendOperation, FaultKind, FaultRule, FaultScript, FaultingBackend,
+    BackendCall, BackendOperation, FaultKind, FaultMode, FaultRule, FaultScript, FaultingBackend,
 };
 
 #[cfg(test)]

@@ -4,7 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::types::{
-    BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, Bytes, JsonIndexType,
+    BatchEventEntry, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry,
+    BatchVectorEntry, Bytes, EventRangeDirection, JsonIndexType, VectorDistanceMetric,
+    VectorMetadataFilter,
 };
 
 /// Serializable executor command.
@@ -402,6 +404,419 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
     },
+    /// Creates a vector collection.
+    VectorCreateCollection {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Embedding dimension.
+        dimension: u64,
+        /// Distance metric.
+        metric: VectorDistanceMetric,
+    },
+    /// Deletes a vector collection.
+    VectorDeleteCollection {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+    },
+    /// Lists vector collections.
+    VectorListCollections {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
+    /// Reads vector collection facts.
+    VectorCollectionStats {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+    },
+    /// Counts visible vectors in one collection.
+    VectorCount {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+    },
+    /// Upserts one vector.
+    VectorUpsert {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+        /// Dense embedding.
+        vector: Vec<f32>,
+        /// Optional metadata.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metadata: Option<Value>,
+    },
+    /// Reads one vector.
+    VectorGet {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+        /// Optional timestamp in microseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Reads full vector history.
+    VectorGetv {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+    },
+    /// Checks whether one vector exists.
+    VectorExists {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+    },
+    /// Lists vector keys.
+    VectorListKeys {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Optional key prefix.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefix: Option<String>,
+        /// Optional key cursor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+        /// Optional item limit. Defaults to 100.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
+    },
+    /// Updates vector metadata.
+    VectorUpdateMetadata {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+        /// Top-level metadata patch.
+        patch: Value,
+    },
+    /// Deletes one vector.
+    VectorDelete {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+    },
+    /// Deletes vectors matching a metadata filter.
+    VectorDeleteByFilter {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Metadata filter.
+        filter: VectorMetadataFilter,
+    },
+    /// Deletes all visible vectors in one collection.
+    VectorDeleteAll {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+    },
+    /// Runs exact vector search.
+    VectorQuery {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Query embedding.
+        query: Vec<f32>,
+        /// Maximum number of matches.
+        k: u64,
+        /// Optional metadata filter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<VectorMetadataFilter>,
+        /// Optional timestamp in microseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Upserts multiple vectors.
+    VectorBatchUpsert {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Entries to write.
+        entries: Vec<BatchVectorEntry>,
+    },
+    /// Reads multiple vectors.
+    VectorBatchGet {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Keys to read.
+        keys: Vec<String>,
+    },
+    /// Deletes multiple vectors.
+    VectorBatchDelete {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Keys to delete.
+        keys: Vec<String>,
+    },
+    /// Appends multiple events in one engine commit.
+    EventBatchAppend {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Events to append.
+        entries: Vec<BatchEventEntry>,
+    },
+    /// Appends one event.
+    EventAppend {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Event type.
+        event_type: String,
+        /// Event payload.
+        payload: Value,
+    },
+    /// Reads one event by sequence.
+    EventGet {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Event sequence.
+        sequence: u64,
+        /// Optional timestamp in microseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Checks whether one event sequence exists.
+    EventExists {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Event sequence.
+        sequence: u64,
+    },
+    /// Reads events by type.
+    EventGetByType {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Event type.
+        event_type: String,
+        /// Optional item limit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
+        /// Optional exclusive sequence cursor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_sequence: Option<u64>,
+        /// Optional timestamp in microseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Counts visible events.
+    EventLen {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Optional timestamp in microseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Reads an event sequence range.
+    EventRange {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Inclusive start sequence.
+        start_seq: u64,
+        /// Optional exclusive end sequence.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end_seq: Option<u64>,
+        /// Optional item limit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
+        /// Result ordering.
+        direction: EventRangeDirection,
+        /// Optional event type filter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event_type: Option<String>,
+    },
+    /// Reads an event timestamp range.
+    EventRangeByTime {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Inclusive start timestamp in microseconds.
+        start_ts: u64,
+        /// Optional inclusive end timestamp in microseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end_ts: Option<u64>,
+        /// Optional item limit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
+        /// Result ordering.
+        direction: EventRangeDirection,
+        /// Optional event type filter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event_type: Option<String>,
+    },
+    /// Lists event types.
+    EventListTypes {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Optional timestamp in microseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Lists events.
+    EventList {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Optional event type filter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event_type: Option<String>,
+        /// Optional item limit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
+        /// Optional timestamp in microseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Verifies visible event density and hash linkage.
+    EventVerifyChain {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+    },
 }
 
 impl Command {
@@ -442,6 +857,35 @@ impl Command {
             Self::JsonCreateIndex { .. } => "json_create_index",
             Self::JsonDropIndex { .. } => "json_drop_index",
             Self::JsonListIndexes { .. } => "json_list_indexes",
+            Self::VectorCreateCollection { .. } => "vector_create_collection",
+            Self::VectorDeleteCollection { .. } => "vector_delete_collection",
+            Self::VectorListCollections { .. } => "vector_list_collections",
+            Self::VectorCollectionStats { .. } => "vector_collection_stats",
+            Self::VectorCount { .. } => "vector_count",
+            Self::VectorUpsert { .. } => "vector_upsert",
+            Self::VectorGet { .. } => "vector_get",
+            Self::VectorGetv { .. } => "vector_getv",
+            Self::VectorExists { .. } => "vector_exists",
+            Self::VectorListKeys { .. } => "vector_list_keys",
+            Self::VectorUpdateMetadata { .. } => "vector_update_metadata",
+            Self::VectorDelete { .. } => "vector_delete",
+            Self::VectorDeleteByFilter { .. } => "vector_delete_by_filter",
+            Self::VectorDeleteAll { .. } => "vector_delete_all",
+            Self::VectorQuery { .. } => "vector_query",
+            Self::VectorBatchUpsert { .. } => "vector_batch_upsert",
+            Self::VectorBatchGet { .. } => "vector_batch_get",
+            Self::VectorBatchDelete { .. } => "vector_batch_delete",
+            Self::EventBatchAppend { .. } => "event_batch_append",
+            Self::EventAppend { .. } => "event_append",
+            Self::EventGet { .. } => "event_get",
+            Self::EventExists { .. } => "event_exists",
+            Self::EventGetByType { .. } => "event_get_by_type",
+            Self::EventLen { .. } => "event_len",
+            Self::EventRange { .. } => "event_range",
+            Self::EventRangeByTime { .. } => "event_range_by_time",
+            Self::EventListTypes { .. } => "event_list_types",
+            Self::EventList { .. } => "event_list",
+            Self::EventVerifyChain { .. } => "event_verify_chain",
         }
     }
 }

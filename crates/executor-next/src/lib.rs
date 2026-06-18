@@ -16,9 +16,13 @@ pub use error::{ExecutorError, ExecutorErrorClass, ExecutorResult};
 pub use executor::Executor;
 pub use output::Output;
 pub use types::{
-    BatchGetItemResult, BatchItemResult, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry,
-    BatchKvEntry, BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus, Bytes,
-    HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
-    JsonIndexType, JsonSampleItem, JsonVersionedValue, SampleItem, ScanItem, VersionedValue,
-    DEFAULT_BRANCH, DEFAULT_SPACE,
+    BatchEventEntry, BatchGetItemResult, BatchItemResult, BatchJsonDeleteEntry, BatchJsonEntry,
+    BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry, BranchCleanupItem, BranchItem,
+    BranchParentItem, BranchStatus, Bytes, EventBatchAppendItemResult, EventChainVerification,
+    EventData, EventRangeDirection, EventVersionedData, HistoryItem, JsonBatchGetItemResult,
+    JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition, JsonIndexType, JsonSampleItem,
+    JsonVersionedValue, SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult,
+    VectorCollectionInfo, VectorData, VectorDistanceMetric, VectorFilterCondition, VectorFilterOp,
+    VectorHistoryItem, VectorMatch, VectorMetadataFilter, VectorScalar, VectorVersionedData,
+    VersionedValue, DEFAULT_BRANCH, DEFAULT_SPACE,
 };

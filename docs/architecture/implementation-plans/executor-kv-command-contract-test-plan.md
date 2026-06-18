@@ -103,16 +103,25 @@ KV operations and that it remains a thin delegator over engine APIs.
    - Execute one `KvBatchPut` with multiple entries.
    - Assert every result has a version and no error.
    - Read each key back.
+   - Assert empty batch put returns `BatchResults([])`.
+   - Assert invalid batch put items return positional item errors without
+     preventing valid items from applying.
    - Assert duplicate-key behavior matches the engine contract.
 
 9. **Batch Get**
    - Batch get existing and missing keys.
    - Assert positional results preserve input order.
    - Assert missing keys produce empty value fields, not command failure.
+   - Assert invalid batch get keys return positional item errors.
 
 10. **Batch Delete**
     - Delete existing and missing keys.
     - Assert positional results preserve input order.
+    - Assert empty batch delete returns `BatchResults([])`.
+    - Assert invalid batch delete keys return positional item errors without
+      preventing valid deletes from applying.
+    - Assert executor delete outputs use engine delete outcome facts rather than
+      executor-side read-before-delete logic.
     - Assert embedding or side-effect hooks, when present, run only for deleted
       keys.
 
@@ -163,8 +172,8 @@ KV operations and that it remains a thin delegator over engine APIs.
 
 1. **Invalid Key**
    - Empty key fails with executor invalid-input class.
-   - Batch commands report invalid item errors positionally when the old
-     contract expects per-item errors.
+   - Batch put/get/delete commands report invalid item errors positionally when
+     the old contract expects per-item errors.
 
 2. **Invalid Space**
    - Reserved or empty space fails with executor invalid-input class.
@@ -190,6 +199,8 @@ KV operations and that it remains a thin delegator over engine APIs.
   names.
 - Benchmark loaders must use executor `Command::KvBatchPut`.
 - Command and output modules must stay serde-serializable.
+- Output vocabulary uses KV-specific `KvValue` and `KvVersionedValue` rather
+  than generic optional-value names.
 - No command variant may be added without command-name and output-mapping tests.
 
 ## Verification Commands
