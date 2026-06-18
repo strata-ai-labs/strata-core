@@ -3,6 +3,7 @@
 mod branch;
 mod database;
 mod event;
+mod graph;
 mod json;
 mod kv;
 mod options;
@@ -20,6 +21,14 @@ pub use event::{
     EventBatchAppendOutcome, EventChainVerification, EventLength, EventPayload,
     EventRangeDirection, EventRangePage, EventSequence, EventService, EventType, EventTypeList,
     EventVersionedRecord,
+};
+pub use graph::{
+    GraphBatchOpOutcome, GraphBatchOperation, GraphBatchWrite, GraphBatchWriteOutcome,
+    GraphBinding, GraphBindingPage, GraphBindingPrimitive, GraphBindingTarget, GraphDeleteOutcome,
+    GraphDirection, GraphEdge, GraphEdgeData, GraphEdgeType, GraphEdgeWriteOutcome,
+    GraphEntityBinding, GraphInfo, GraphName, GraphNamePage, GraphNeighbor, GraphNeighborPage,
+    GraphNode, GraphNodeData, GraphNodeId, GraphNodePage, GraphProperties, GraphService,
+    GraphWriteOutcome,
 };
 pub use json::{
     JsonBatchDeleteOutcome, JsonBatchSetItemOutcome, JsonBatchSetOutcome, JsonDeleteOutcome,

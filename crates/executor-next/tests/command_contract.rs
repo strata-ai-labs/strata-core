@@ -2,10 +2,14 @@
 
 use serde_json::{json, Value};
 use strata_executor_next::{
+    ArrowExportPrimitive, ArrowExportResult, ArrowFileFormat, ArrowImportResult, ArrowImportTarget,
     BatchEventEntry, BatchGetItemResult, BatchItemResult, BatchJsonDeleteEntry, BatchJsonEntry,
     BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry, BranchCleanupItem, BranchItem,
     BranchParentItem, BranchStatus, Bytes, Command, EventBatchAppendItemResult,
-    EventChainVerification, EventData, EventRangeDirection, EventVersionedData, HistoryItem,
+    EventChainVerification, EventData, EventRangeDirection, EventVersionedData,
+    GraphBatchItemResult, GraphBatchOperation, GraphBindingHit, GraphBindingPrimitive,
+    GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEdgeDataOutput, GraphEntityBinding,
+    GraphInfoData, GraphNeighborHit, GraphNodeData, GraphNodeDataOutput, HistoryItem,
     JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
     JsonIndexType, JsonSampleItem, JsonVersionedValue, Output, SampleItem, ScanItem,
     VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorData,
@@ -108,6 +112,89 @@ fn event_output_json_uses_stable_tags_and_field_shape() {
 }
 
 #[test]
+fn graph_command_json_uses_stable_tags_and_field_shape() {
+    let command = Command::GraphAddNode {
+        branch: None,
+        space: None,
+        graph: "deps".to_owned(),
+        node_id: "node-a".to_owned(),
+        properties: Some(json!({"kind": "root"})),
+        binding: Some(graph_binding()),
+    };
+    let encoded = serde_json::to_value(&command).expect("command serializes");
+    assert_eq!(
+        encoded,
+        json!({
+            "type": "graph_add_node",
+            "graph": "deps",
+            "node_id": "node-a",
+            "properties": {"kind": "root"},
+            "binding": {
+                "target": {
+                    "primitive": "json",
+                    "branch": "feature",
+                    "space": "docs",
+                    "key": "doc-a",
+                }
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<Command>(encoded).expect("command deserializes"),
+        command
+    );
+
+    let explicit = Command::GraphNeighbors {
+        branch: Some("feature".to_owned()),
+        space: Some("space-a".to_owned()),
+        graph: "deps".to_owned(),
+        node_id: "node-a".to_owned(),
+        direction: GraphDirection::Both,
+        edge_type: Some("depends_on".to_owned()),
+        cursor: Some("cursor".to_owned()),
+        limit: Some(5),
+    };
+    let explicit_json = serde_json::to_value(&explicit).expect("command serializes");
+    assert_eq!(explicit_json["type"], "graph_neighbors");
+    assert_eq!(explicit_json["branch"], "feature");
+    assert_eq!(explicit_json["space"], "space-a");
+    assert_eq!(explicit_json["direction"], "both");
+    assert_eq!(explicit_json["edge_type"], "depends_on");
+
+    let unknown_field = json!({
+        "type": "graph_create",
+        "graph": "deps",
+        "extra": true,
+    });
+    assert!(serde_json::from_value::<Command>(unknown_field).is_err());
+}
+
+#[test]
+fn graph_output_json_uses_stable_tags_and_field_shape() {
+    let output = Output::GraphNeighborPage {
+        neighbors: vec![GraphNeighborHit::new(
+            graph_node_output("deps", "node-b"),
+            graph_edge_output("deps", "node-a", "depends_on", "node-b"),
+            GraphDirection::Outgoing,
+        )],
+        has_more: false,
+        cursor: None,
+    };
+    let encoded = serde_json::to_value(&output).expect("output serializes");
+    assert_eq!(encoded["type"], "graph_neighbor_page");
+    assert_eq!(encoded["data"]["neighbors"][0]["direction"], "outgoing");
+    assert_eq!(encoded["data"]["neighbors"][0]["node"]["node_id"], "node-b");
+    assert_eq!(
+        encoded["data"]["neighbors"][0]["edge"]["edge_type"],
+        "depends_on"
+    );
+    assert_eq!(
+        serde_json::from_value::<Output>(encoded).expect("output deserializes"),
+        output
+    );
+}
+
+#[test]
 fn command_names_cover_every_variant() {
     let names = all_commands()
         .into_iter()
@@ -180,6 +267,22 @@ fn command_names_cover_every_variant() {
             "event_list_types",
             "event_list",
             "event_verify_chain",
+            "graph_create",
+            "graph_delete",
+            "graph_list",
+            "graph_get_meta",
+            "graph_add_node",
+            "graph_get_node",
+            "graph_remove_node",
+            "graph_list_nodes",
+            "graph_add_edge",
+            "graph_get_edge",
+            "graph_remove_edge",
+            "graph_neighbors",
+            "graph_bindings_for_entity",
+            "graph_batch_write",
+            "arrow_import",
+            "arrow_export",
         ]
     );
 }
@@ -190,6 +293,8 @@ fn all_commands() -> Vec<Command> {
     commands.extend(json_commands());
     commands.extend(vector_commands());
     commands.extend(event_commands());
+    commands.extend(graph_commands());
+    commands.extend(arrow_commands());
     commands
 }
 
@@ -198,6 +303,8 @@ fn command_round_trip_cases() -> Vec<Command> {
     commands.extend(json_round_trip_edge_commands());
     commands.extend(vector_round_trip_edge_commands());
     commands.extend(event_round_trip_edge_commands());
+    commands.extend(graph_round_trip_edge_commands());
+    commands.extend(graph_binding_target_round_trip_commands());
     commands
 }
 
@@ -610,6 +717,137 @@ fn event_commands() -> Vec<Command> {
     ]
 }
 
+#[allow(clippy::too_many_lines)]
+fn graph_commands() -> Vec<Command> {
+    vec![
+        Command::GraphCreate {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+        },
+        Command::GraphDelete {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+        },
+        Command::GraphList {
+            branch: None,
+            space: None,
+            cursor: Some("deps".to_owned()),
+            limit: Some(5),
+        },
+        Command::GraphGetMeta {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+        },
+        Command::GraphAddNode {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            graph: "deps".to_owned(),
+            node_id: "node-a".to_owned(),
+            properties: Some(json!({"kind": "root"})),
+            binding: Some(graph_binding()),
+        },
+        Command::GraphGetNode {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            node_id: "node-a".to_owned(),
+        },
+        Command::GraphRemoveNode {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            node_id: "node-a".to_owned(),
+        },
+        Command::GraphListNodes {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            prefix: Some("node-".to_owned()),
+            cursor: Some("node-a".to_owned()),
+            limit: Some(5),
+        },
+        Command::GraphAddEdge {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            src: "node-a".to_owned(),
+            edge_type: "depends_on".to_owned(),
+            dst: "node-b".to_owned(),
+            weight: Some(2.5),
+            properties: Some(json!({"source": "test"})),
+        },
+        Command::GraphGetEdge {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            src: "node-a".to_owned(),
+            edge_type: "depends_on".to_owned(),
+            dst: "node-b".to_owned(),
+        },
+        Command::GraphRemoveEdge {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            src: "node-a".to_owned(),
+            edge_type: "depends_on".to_owned(),
+            dst: "node-b".to_owned(),
+        },
+        Command::GraphNeighbors {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            node_id: "node-a".to_owned(),
+            direction: GraphDirection::Outgoing,
+            edge_type: Some("depends_on".to_owned()),
+            cursor: None,
+            limit: Some(5),
+        },
+        Command::GraphBindingsForEntity {
+            branch: None,
+            space: None,
+            target: graph_binding_target(),
+            cursor: None,
+            limit: Some(5),
+        },
+        Command::GraphBatchWrite {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            operations: Vec::new(),
+        },
+    ]
+}
+
+fn arrow_commands() -> Vec<Command> {
+    vec![
+        Command::ArrowImport {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            file_path: "input.parquet".to_owned(),
+            format: Some(ArrowFileFormat::Parquet),
+            target: ArrowImportTarget::Kv,
+            key_column: Some("id".to_owned()),
+            value_column: Some("payload".to_owned()),
+            collection: None,
+        },
+        Command::ArrowExport {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            primitive: ArrowExportPrimitive::Vector,
+            format: ArrowFileFormat::Jsonl,
+            path: "output.jsonl".to_owned(),
+            prefix: Some("doc-".to_owned()),
+            limit: Some(100),
+            collection: Some("docs".to_owned()),
+            graph: None,
+            event_type: None,
+        },
+    ]
+}
+
 fn json_round_trip_edge_commands() -> Vec<Command> {
     vec![
         Command::JsonSet {
@@ -831,12 +1069,112 @@ fn event_round_trip_edge_commands() -> Vec<Command> {
     ]
 }
 
+fn graph_round_trip_edge_commands() -> Vec<Command> {
+    vec![
+        Command::GraphCreate {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            graph: "wide".to_owned(),
+        },
+        Command::GraphAddNode {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            graph: "wide".to_owned(),
+            node_id: "node-empty".to_owned(),
+            properties: Some(json!({})),
+            binding: None,
+        },
+        Command::GraphAddEdge {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            graph: "wide".to_owned(),
+            src: "node-a".to_owned(),
+            edge_type: "relates_to".to_owned(),
+            dst: "node-b".to_owned(),
+            weight: None,
+            properties: None,
+        },
+        Command::GraphNeighbors {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            graph: "wide".to_owned(),
+            node_id: "node-a".to_owned(),
+            direction: GraphDirection::Incoming,
+            edge_type: None,
+            cursor: Some("cursor".to_owned()),
+            limit: Some(0),
+        },
+        Command::GraphNeighbors {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            graph: "wide".to_owned(),
+            node_id: "node-a".to_owned(),
+            direction: GraphDirection::Both,
+            edge_type: Some("relates_to".to_owned()),
+            cursor: None,
+            limit: Some(1),
+        },
+        Command::GraphBatchWrite {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            graph: "wide".to_owned(),
+            operations: vec![
+                GraphBatchOperation::UpsertNode {
+                    node_id: "node-a".to_owned(),
+                    data: GraphNodeData::new(None, Some(graph_binding())),
+                },
+                GraphBatchOperation::DeleteNode {
+                    node_id: "node-old".to_owned(),
+                },
+                GraphBatchOperation::UpsertEdge {
+                    src: "node-a".to_owned(),
+                    edge_type: "relates_to".to_owned(),
+                    dst: "node-b".to_owned(),
+                    data: GraphEdgeData::new(Some(1.25), Some(json!({"batch": true}))),
+                },
+                GraphBatchOperation::DeleteEdge {
+                    src: "node-a".to_owned(),
+                    edge_type: "relates_to".to_owned(),
+                    dst: "node-b".to_owned(),
+                },
+            ],
+        },
+    ]
+}
+
+fn graph_binding_target_round_trip_commands() -> Vec<Command> {
+    [
+        GraphBindingPrimitive::Kv,
+        GraphBindingPrimitive::Json,
+        GraphBindingPrimitive::Vector,
+        GraphBindingPrimitive::Event,
+        GraphBindingPrimitive::Graph,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, primitive)| Command::GraphBindingsForEntity {
+        branch: Some("feature".to_owned()),
+        space: Some("space-a".to_owned()),
+        target: GraphBindingTarget::new(
+            primitive,
+            (index % 2 == 0).then(|| "entity-branch".to_owned()),
+            "entity-space",
+            format!("entity-{index}"),
+        ),
+        cursor: Some(format!("cursor-{index}")),
+        limit: Some(10),
+    })
+    .collect()
+}
+
 fn all_outputs() -> Vec<Output> {
     let mut outputs = branch_outputs();
     outputs.extend(kv_outputs());
     outputs.extend(json_outputs());
     outputs.extend(vector_outputs());
     outputs.extend(event_outputs());
+    outputs.extend(graph_outputs());
+    outputs.extend(arrow_outputs());
     outputs
 }
 
@@ -1102,6 +1440,180 @@ fn event_outputs() -> Vec<Output> {
     ]
 }
 
+fn graph_outputs() -> Vec<Output> {
+    let mut outputs = graph_read_outputs();
+    outputs.extend(graph_write_outputs());
+    outputs
+}
+
+fn graph_read_outputs() -> Vec<Output> {
+    vec![
+        Output::GraphInfo(GraphInfoData::new("deps".to_owned(), 2, 1, 1, 10, 4, 40)),
+        Output::GraphInfoResult(Some(GraphInfoData::new(
+            "deps".to_owned(),
+            2,
+            1,
+            1,
+            10,
+            4,
+            40,
+        ))),
+        Output::GraphInfoResult(None),
+        Output::GraphNamePage {
+            graphs: vec!["deps".to_owned()],
+            has_more: true,
+            cursor: Some("deps".to_owned()),
+        },
+        Output::GraphNamePage {
+            graphs: Vec::new(),
+            has_more: false,
+            cursor: None,
+        },
+        Output::GraphNodeResult(Some(graph_node_output("deps", "node-a"))),
+        Output::GraphNodeResult(None),
+        Output::GraphNodePage {
+            nodes: vec![graph_node_output("deps", "node-a")],
+            has_more: true,
+            cursor: Some("node-a".to_owned()),
+        },
+        Output::GraphNodePage {
+            nodes: Vec::new(),
+            has_more: false,
+            cursor: None,
+        },
+        Output::GraphEdgeResult(Some(graph_edge_output(
+            "deps",
+            "node-a",
+            "depends_on",
+            "node-b",
+        ))),
+        Output::GraphEdgeResult(None),
+        Output::GraphNeighborPage {
+            neighbors: vec![GraphNeighborHit::new(
+                graph_node_output("deps", "node-b"),
+                graph_edge_output("deps", "node-a", "depends_on", "node-b"),
+                GraphDirection::Outgoing,
+            )],
+            has_more: false,
+            cursor: None,
+        },
+        Output::GraphNeighborPage {
+            neighbors: vec![GraphNeighborHit::new(
+                graph_node_output("deps", "node-a"),
+                graph_edge_output("deps", "node-a", "depends_on", "node-b"),
+                GraphDirection::Incoming,
+            )],
+            has_more: true,
+            cursor: Some("incoming:node-a".to_owned()),
+        },
+        Output::GraphBindingPage {
+            bindings: vec![GraphBindingHit::new(
+                "deps".to_owned(),
+                "node-a".to_owned(),
+                graph_binding(),
+                2,
+                20,
+            )],
+            has_more: false,
+            cursor: None,
+        },
+        Output::GraphBindingPage {
+            bindings: Vec::new(),
+            has_more: false,
+            cursor: None,
+        },
+    ]
+}
+
+fn graph_write_outputs() -> Vec<Output> {
+    vec![
+        Output::GraphNodeWriteResult {
+            graph: "deps".to_owned(),
+            node_id: "node-a".to_owned(),
+            created: true,
+            version: 2,
+            timestamp: 20,
+        },
+        Output::GraphNodeWriteResult {
+            graph: "deps".to_owned(),
+            node_id: "node-a".to_owned(),
+            created: false,
+            version: 3,
+            timestamp: 30,
+        },
+        Output::GraphEdgeWriteResult {
+            graph: "deps".to_owned(),
+            src: "node-a".to_owned(),
+            edge_type: "depends_on".to_owned(),
+            dst: "node-b".to_owned(),
+            created: true,
+            version: 3,
+            timestamp: 30,
+        },
+        Output::GraphEdgeWriteResult {
+            graph: "deps".to_owned(),
+            src: "node-a".to_owned(),
+            edge_type: "depends_on".to_owned(),
+            dst: "node-b".to_owned(),
+            created: false,
+            version: 4,
+            timestamp: 40,
+        },
+        Output::GraphDeleteResult {
+            graph: "deps".to_owned(),
+            node_id: Some("node-a".to_owned()),
+            src: None,
+            edge_type: None,
+            dst: None,
+            deleted: true,
+            version: Some(4),
+            timestamp: Some(40),
+        },
+        Output::GraphDeleteResult {
+            graph: "deps".to_owned(),
+            node_id: None,
+            src: Some("node-a".to_owned()),
+            edge_type: Some("depends_on".to_owned()),
+            dst: Some("node-b".to_owned()),
+            deleted: false,
+            version: None,
+            timestamp: None,
+        },
+        Output::GraphBatchWriteResult {
+            graph: "deps".to_owned(),
+            results: vec![
+                GraphBatchItemResult::new(0, "upsert_node", Some(true), None, Some(5), Some(50)),
+                GraphBatchItemResult::new(1, "delete_edge", None, Some(false), None, None),
+                GraphBatchItemResult::failed(2, "upsert_edge", "invalid graph edge"),
+            ],
+            version: Some(5),
+            timestamp: Some(50),
+        },
+    ]
+}
+
+fn arrow_outputs() -> Vec<Output> {
+    vec![
+        Output::ArrowImportResult(ArrowImportResult::new(
+            ArrowImportTarget::Kv,
+            "input.parquet".to_owned(),
+            10,
+            1,
+            2,
+        )),
+        Output::ArrowExportResult(ArrowExportResult::new(
+            ArrowExportPrimitive::Graph,
+            ArrowFileFormat::Parquet,
+            vec![
+                "graph_nodes.parquet".to_owned(),
+                "graph_edges.parquet".to_owned(),
+            ],
+            11,
+            1024,
+        )),
+    ]
+}
+
 fn bytes(value: &str) -> Bytes {
     Bytes::from(value)
 }
@@ -1153,5 +1665,42 @@ fn json_index_definition(name: &str, index_type: JsonIndexType) -> JsonIndexDefi
         index_type,
         1,
         10,
+    )
+}
+
+fn graph_binding_target() -> GraphBindingTarget {
+    GraphBindingTarget::new(
+        GraphBindingPrimitive::Json,
+        Some("feature".to_owned()),
+        "docs",
+        "doc-a",
+    )
+}
+
+fn graph_binding() -> GraphEntityBinding {
+    GraphEntityBinding::new(graph_binding_target())
+}
+
+fn graph_node_output(graph: &str, node_id: &str) -> GraphNodeDataOutput {
+    GraphNodeDataOutput::new(
+        graph.to_owned(),
+        node_id.to_owned(),
+        Some(json!({"kind": "node"})),
+        Some(graph_binding()),
+        2,
+        20,
+    )
+}
+
+fn graph_edge_output(graph: &str, src: &str, edge_type: &str, dst: &str) -> GraphEdgeDataOutput {
+    GraphEdgeDataOutput::new(
+        graph.to_owned(),
+        src.to_owned(),
+        edge_type.to_owned(),
+        dst.to_owned(),
+        2.5,
+        Some(json!({"kind": "edge"})),
+        3,
+        30,
     )
 }

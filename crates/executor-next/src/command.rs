@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::types::{
-    BatchEventEntry, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry,
-    BatchVectorEntry, Bytes, EventRangeDirection, JsonIndexType, VectorDistanceMetric,
-    VectorMetadataFilter,
+    ArrowExportPrimitive, ArrowFileFormat, ArrowImportTarget, BatchEventEntry,
+    BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry, Bytes,
+    EventRangeDirection, GraphBatchOperation, GraphBindingTarget, GraphDirection,
+    GraphEntityBinding, JsonIndexType, VectorDistanceMetric, VectorMetadataFilter,
 };
 
 /// Serializable executor command.
@@ -817,6 +818,285 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
     },
+    /// Creates a graph.
+    GraphCreate {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+    },
+    /// Deletes a graph and its visible graph rows.
+    GraphDelete {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+    },
+    /// Lists graphs.
+    GraphList {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Optional exclusive graph cursor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+        /// Optional item limit. Defaults to 100.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
+    },
+    /// Reads graph metadata.
+    GraphGetMeta {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+    },
+    /// Adds or replaces a graph node.
+    GraphAddNode {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Node id.
+        node_id: String,
+        /// Optional node properties.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        properties: Option<Value>,
+        /// Optional entity binding.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        binding: Option<GraphEntityBinding>,
+    },
+    /// Reads a graph node.
+    GraphGetNode {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Node id.
+        node_id: String,
+    },
+    /// Deletes a graph node and incident edges.
+    GraphRemoveNode {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Node id.
+        node_id: String,
+    },
+    /// Lists graph nodes.
+    GraphListNodes {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Optional node id prefix.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefix: Option<String>,
+        /// Optional exclusive node id cursor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+        /// Optional item limit. Defaults to 100.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
+    },
+    /// Adds or replaces a graph edge.
+    GraphAddEdge {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Source node id.
+        src: String,
+        /// Edge type.
+        edge_type: String,
+        /// Destination node id.
+        dst: String,
+        /// Optional edge weight. Defaults to 1.0.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weight: Option<f64>,
+        /// Optional edge properties.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        properties: Option<Value>,
+    },
+    /// Reads a graph edge.
+    GraphGetEdge {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Source node id.
+        src: String,
+        /// Edge type.
+        edge_type: String,
+        /// Destination node id.
+        dst: String,
+    },
+    /// Deletes a graph edge.
+    GraphRemoveEdge {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Source node id.
+        src: String,
+        /// Edge type.
+        edge_type: String,
+        /// Destination node id.
+        dst: String,
+    },
+    /// Lists neighboring graph nodes.
+    GraphNeighbors {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Node id.
+        node_id: String,
+        /// Traversal direction.
+        direction: GraphDirection,
+        /// Optional edge type filter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edge_type: Option<String>,
+        /// Optional exclusive cursor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+        /// Optional item limit. Defaults to 100.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
+    },
+    /// Lists graph nodes bound to one entity target.
+    GraphBindingsForEntity {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Entity target to search for.
+        target: GraphBindingTarget,
+        /// Optional exclusive cursor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+        /// Optional item limit. Defaults to 100.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
+    },
+    /// Applies graph mutations in one engine commit.
+    GraphBatchWrite {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Batch operations.
+        operations: Vec<GraphBatchOperation>,
+    },
+    /// Imports an Arrow-compatible file into a product primitive.
+    ArrowImport {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Input file path.
+        file_path: String,
+        /// Input file format. Defaults to extension detection.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<ArrowFileFormat>,
+        /// Product primitive to import into.
+        target: ArrowImportTarget,
+        /// Optional key column override.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key_column: Option<String>,
+        /// Optional value, document, or embedding column override.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value_column: Option<String>,
+        /// Target vector collection for vector imports.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        collection: Option<String>,
+    },
+    /// Exports a product primitive to an Arrow-compatible file.
+    ArrowExport {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Product primitive to export.
+        primitive: ArrowExportPrimitive,
+        /// Output file format.
+        format: ArrowFileFormat,
+        /// Output file path. Graph exports derive node and edge file names from this path.
+        path: String,
+        /// Optional key, document, vector-key, or node-id prefix.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prefix: Option<String>,
+        /// Optional row limit.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
+        /// Target vector collection for vector exports.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        collection: Option<String>,
+        /// Target graph for graph exports.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        graph: Option<String>,
+        /// Optional event type filter for event exports.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event_type: Option<String>,
+    },
 }
 
 impl Command {
@@ -886,6 +1166,22 @@ impl Command {
             Self::EventListTypes { .. } => "event_list_types",
             Self::EventList { .. } => "event_list",
             Self::EventVerifyChain { .. } => "event_verify_chain",
+            Self::GraphCreate { .. } => "graph_create",
+            Self::GraphDelete { .. } => "graph_delete",
+            Self::GraphList { .. } => "graph_list",
+            Self::GraphGetMeta { .. } => "graph_get_meta",
+            Self::GraphAddNode { .. } => "graph_add_node",
+            Self::GraphGetNode { .. } => "graph_get_node",
+            Self::GraphRemoveNode { .. } => "graph_remove_node",
+            Self::GraphListNodes { .. } => "graph_list_nodes",
+            Self::GraphAddEdge { .. } => "graph_add_edge",
+            Self::GraphGetEdge { .. } => "graph_get_edge",
+            Self::GraphRemoveEdge { .. } => "graph_remove_edge",
+            Self::GraphNeighbors { .. } => "graph_neighbors",
+            Self::GraphBindingsForEntity { .. } => "graph_bindings_for_entity",
+            Self::GraphBatchWrite { .. } => "graph_batch_write",
+            Self::ArrowImport { .. } => "arrow_import",
+            Self::ArrowExport { .. } => "arrow_export",
         }
     }
 }

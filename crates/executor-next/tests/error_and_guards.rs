@@ -123,7 +123,10 @@ fn convenience_facade_stays_command_shaped() {
     let facade_start = source
         .find("pub fn branch_list")
         .expect("convenience facade is present");
-    let facade = &source[facade_start..];
+    let facade_end = source[facade_start..]
+        .find("\n}\n\nfn branch_name")
+        .expect("convenience facade ends before helper functions");
+    let facade = &source[facade_start..facade_start + facade_end];
 
     assert!(facade.contains("self.execute(Command::KvPut"));
     assert!(facade.contains("self.execute(Command::KvBatchPut"));
@@ -151,13 +154,29 @@ fn convenience_facade_stays_command_shaped() {
     assert!(facade.contains("self.execute(Command::EventListTypes"));
     assert!(facade.contains("self.execute(Command::EventList"));
     assert!(facade.contains("self.execute(Command::EventVerifyChain"));
+    assert!(facade.contains("self.execute(Command::GraphCreate"));
+    assert!(facade.contains("self.execute(Command::GraphDelete"));
+    assert!(facade.contains("self.execute(Command::GraphList"));
+    assert!(facade.contains("self.execute(Command::GraphGetMeta"));
+    assert!(facade.contains("self.execute(Command::GraphAddNode"));
+    assert!(facade.contains("self.execute(Command::GraphGetNode"));
+    assert!(facade.contains("self.execute(Command::GraphRemoveNode"));
+    assert!(facade.contains("self.execute(Command::GraphListNodes"));
+    assert!(facade.contains("self.execute(Command::GraphAddEdge"));
+    assert!(facade.contains("self.execute(Command::GraphGetEdge"));
+    assert!(facade.contains("self.execute(Command::GraphRemoveEdge"));
+    assert!(facade.contains("self.execute(Command::GraphNeighbors"));
+    assert!(facade.contains("self.execute(Command::GraphBindingsForEntity"));
+    assert!(facade.contains("self.execute(Command::GraphBatchWrite"));
     assert!(!facade.contains(".kv("));
     assert!(!facade.contains(".json("));
     assert!(!facade.contains(".vector("));
     assert!(!facade.contains(".event("));
+    assert!(!facade.contains(".graph("));
     assert!(!facade.contains("json_service("));
     assert!(!facade.contains("vector_service("));
     assert!(!facade.contains("event_service("));
+    assert!(!facade.contains("graph_service("));
     assert!(!facade.contains(".put("));
     assert!(!facade.contains(".put_batch("));
     assert!(!facade.contains(".set_or_create("));
@@ -168,6 +187,8 @@ fn convenience_facade_stays_command_shaped() {
     assert!(!facade.contains(".append("));
     assert!(!facade.contains(".batch_append("));
     assert!(!facade.contains(".delete("));
+    assert!(!facade.contains(".create_graph("));
+    assert!(!facade.contains(".batch_write("));
 }
 
 #[test]
@@ -204,6 +225,34 @@ fn source_contract_uses_kv_specific_value_outputs() {
 }
 
 #[test]
+fn executor_graph_sources_do_not_own_graph_storage_behavior() {
+    for file in source_files(&crate_root().join("src")) {
+        let text = fs::read_to_string(&file).expect("source reads");
+        for forbidden in forbidden_graph_lower_layer_terms() {
+            assert!(
+                !text.contains(forbidden),
+                "{} leaked forbidden graph lower-layer term `{forbidden}`",
+                file.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn executor_graph_surface_excludes_deferred_old_commands() {
+    for file in source_files(&crate_root().join("src")) {
+        let text = fs::read_to_string(&file).expect("source reads");
+        for forbidden in excluded_graph_command_names() {
+            assert!(
+                !text.contains(forbidden),
+                "{} exposed deferred graph command `{forbidden}`",
+                file.display()
+            );
+        }
+    }
+}
+
+#[test]
 fn executor_benchmarks_do_not_bypass_commands() {
     let benchmark_root = workspace_root().join("benchmarks/src/bin");
     if !benchmark_root.exists() {
@@ -220,7 +269,10 @@ fn executor_benchmarks_do_not_bypass_commands() {
             text.contains("Command::KvBatchPut")
                 || text.contains("Command::JsonBatchSet")
                 || text.contains("Command::VectorBatchUpsert")
-                || text.contains("Command::EventBatchAppend"),
+                || text.contains("Command::EventBatchAppend")
+                || text.contains("Command::GraphBatchWrite")
+                || text.contains("Command::ArrowImport")
+                || text.contains("Command::ArrowExport"),
             "{} must use serialized executor batch commands",
             file.display()
         );
@@ -246,6 +298,8 @@ fn is_executor_benchmark_source(text: &str) -> bool {
         || text.contains("Command::Json")
         || text.contains("Command::Vector")
         || text.contains("Command::Event")
+        || text.contains("Command::Graph")
+        || text.contains("Command::Arrow")
 }
 
 fn forbidden_lower_layer_terms() -> &'static [&'static str] {
@@ -296,6 +350,59 @@ fn forbidden_event_lower_layer_terms() -> &'static [&'static str] {
         "ExportService",
         "SearchIndex",
         "search_index",
+    ]
+}
+
+fn forbidden_graph_lower_layer_terms() -> &'static [&'static str] {
+    &[
+        "strata_engine_next::data::graph",
+        "strata_engine::graph",
+        "GraphMetadataRecord",
+        "GraphNodeRecord",
+        "GraphEdgeRecord",
+        "GraphBindingRecord",
+        "encode_graph_",
+        "decode_graph_",
+        "graph_metadata_row",
+        "node_rows(",
+        "edge_rows(",
+        "reverse_edge_rows(",
+        "binding_rows_for_space",
+        "binding_address",
+        "node_address",
+        "edge_address",
+        "reverse_edge_address",
+        "Ontology",
+        "Pagerank",
+        "Cdlp",
+        "Sssp",
+        "Wcc",
+        "Lcc",
+    ]
+}
+
+fn excluded_graph_command_names() -> &'static [&'static str] {
+    &[
+        "GraphBulkInsert",
+        "GraphBfs",
+        "GraphDefineObjectType",
+        "GraphGetObjectType",
+        "GraphListObjectTypes",
+        "GraphDeleteObjectType",
+        "GraphDefineLinkType",
+        "GraphGetLinkType",
+        "GraphListLinkTypes",
+        "GraphDeleteLinkType",
+        "GraphFreezeOntology",
+        "GraphOntologyStatus",
+        "GraphOntologySummary",
+        "GraphListOntologyTypes",
+        "GraphNodesByType",
+        "GraphWcc",
+        "GraphCdlp",
+        "GraphPagerank",
+        "GraphLcc",
+        "GraphSssp",
     ]
 }
 

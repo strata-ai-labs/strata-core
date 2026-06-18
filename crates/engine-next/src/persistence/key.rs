@@ -1,6 +1,9 @@
 //! Stable engine row-key encoding.
 
 use crate::data::event::{EventSequence, EventType};
+use crate::data::graph::{
+    GraphBindingPrimitive, GraphBindingTarget, GraphEdgeType, GraphName, GraphNodeId,
+};
 use crate::data::json::{JsonDocumentId, JsonIndexName};
 use crate::data::kv::{KvKey, ProductSpace};
 use crate::data::vector::{VectorCollectionName, VectorKey};
@@ -16,6 +19,11 @@ const VECTOR_ENTRY_DISCRIMINATOR: u8 = b'v';
 const EVENT_RECORD_DISCRIMINATOR: u8 = b'e';
 const EVENT_META_DISCRIMINATOR: u8 = b'E';
 const EVENT_TYPE_INDEX_DISCRIMINATOR: u8 = b't';
+const GRAPH_METADATA_DISCRIMINATOR: u8 = b'g';
+const GRAPH_NODE_DISCRIMINATOR: u8 = b'n';
+const GRAPH_EDGE_DISCRIMINATOR: u8 = b'o';
+const GRAPH_REVERSE_EDGE_DISCRIMINATOR: u8 = b'r';
+const GRAPH_BINDING_INDEX_DISCRIMINATOR: u8 = b'b';
 
 pub(crate) fn encode_kv_key(space: &ProductSpace, key: &KvKey) -> Vec<u8> {
     encode_kv_key_bytes(space, key.as_bytes())
@@ -271,6 +279,264 @@ pub(crate) fn encode_event_type_index_key(
     encode_user_key(EVENT_TYPE_INDEX_DISCRIMINATOR, space, &suffix)
 }
 
+pub(crate) fn encode_graph_metadata_key(space: &ProductSpace, graph: &GraphName) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, graph.as_str());
+    encode_user_key(GRAPH_METADATA_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_graph_metadata_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(GRAPH_METADATA_DISCRIMINATOR, space, &[])
+}
+
+pub(crate) fn decode_graph_metadata_key(
+    space: &ProductSpace,
+    encoded: &[u8],
+) -> EngineResult<GraphName> {
+    let bytes = decode_user_key(
+        space,
+        encoded,
+        GRAPH_METADATA_DISCRIMINATOR,
+        "data_loss.engine.graph_key",
+        "stored graph metadata row key is not valid for the selected product space",
+    )?;
+    let (graph, rest) = decode_length_prefixed_text(
+        bytes,
+        "data_loss.engine.graph_key",
+        "stored graph metadata row key is missing a graph name",
+    )?;
+    if !rest.is_empty() {
+        return Err(EngineError::corruption(
+            "data_loss.engine.graph_key",
+            "stored graph metadata row key has trailing bytes",
+        ));
+    }
+    GraphName::new(graph).map_err(|_| {
+        EngineError::corruption(
+            "data_loss.engine.graph_key",
+            "stored graph metadata row key contains an invalid graph name",
+        )
+    })
+}
+
+pub(crate) fn encode_graph_node_key(
+    space: &ProductSpace,
+    graph: &GraphName,
+    node_id: &GraphNodeId,
+) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, graph.as_str());
+    encode_length_prefixed_text(&mut suffix, node_id.as_str());
+    encode_user_key(GRAPH_NODE_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_graph_node_prefix(space: &ProductSpace, graph: &GraphName) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, graph.as_str());
+    encode_user_key(GRAPH_NODE_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn decode_graph_node_key(
+    space: &ProductSpace,
+    encoded: &[u8],
+) -> EngineResult<(GraphName, GraphNodeId)> {
+    let bytes = decode_user_key(
+        space,
+        encoded,
+        GRAPH_NODE_DISCRIMINATOR,
+        "data_loss.engine.graph_node_key",
+        "stored graph node row key is not valid for the selected product space",
+    )?;
+    let (graph, rest) = decode_length_prefixed_text(
+        bytes,
+        "data_loss.engine.graph_node_key",
+        "stored graph node row key is missing a graph name",
+    )?;
+    let (node_id, rest) = decode_length_prefixed_text(
+        rest,
+        "data_loss.engine.graph_node_key",
+        "stored graph node row key is missing a node id",
+    )?;
+    if !rest.is_empty() {
+        return Err(EngineError::corruption(
+            "data_loss.engine.graph_node_key",
+            "stored graph node row key has trailing bytes",
+        ));
+    }
+    Ok((
+        GraphName::new(graph).map_err(|_| {
+            EngineError::corruption(
+                "data_loss.engine.graph_node_key",
+                "stored graph node row key contains an invalid graph name",
+            )
+        })?,
+        GraphNodeId::new(node_id).map_err(|_| {
+            EngineError::corruption(
+                "data_loss.engine.graph_node_key",
+                "stored graph node row key contains an invalid node id",
+            )
+        })?,
+    ))
+}
+
+pub(crate) fn encode_graph_edge_key(
+    space: &ProductSpace,
+    graph: &GraphName,
+    src: &GraphNodeId,
+    edge_type: &GraphEdgeType,
+    dst: &GraphNodeId,
+) -> Vec<u8> {
+    encode_graph_edge_like_key(GRAPH_EDGE_DISCRIMINATOR, space, graph, src, edge_type, dst)
+}
+
+pub(crate) fn encode_graph_edge_prefix(space: &ProductSpace, graph: &GraphName) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, graph.as_str());
+    encode_user_key(GRAPH_EDGE_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_graph_outgoing_edge_prefix(
+    space: &ProductSpace,
+    graph: &GraphName,
+    src: &GraphNodeId,
+) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, graph.as_str());
+    encode_length_prefixed_text(&mut suffix, src.as_str());
+    encode_user_key(GRAPH_EDGE_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn decode_graph_edge_key(
+    space: &ProductSpace,
+    encoded: &[u8],
+) -> EngineResult<(GraphName, GraphNodeId, GraphEdgeType, GraphNodeId)> {
+    decode_graph_edge_like_key(
+        space,
+        encoded,
+        GRAPH_EDGE_DISCRIMINATOR,
+        "data_loss.engine.graph_edge_key",
+        "stored graph edge row key is not valid for the selected product space",
+    )
+}
+
+pub(crate) fn encode_graph_reverse_edge_key(
+    space: &ProductSpace,
+    graph: &GraphName,
+    dst: &GraphNodeId,
+    edge_type: &GraphEdgeType,
+    src: &GraphNodeId,
+) -> Vec<u8> {
+    encode_graph_edge_like_key(
+        GRAPH_REVERSE_EDGE_DISCRIMINATOR,
+        space,
+        graph,
+        dst,
+        edge_type,
+        src,
+    )
+}
+
+pub(crate) fn encode_graph_reverse_edge_prefix(space: &ProductSpace, graph: &GraphName) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, graph.as_str());
+    encode_user_key(GRAPH_REVERSE_EDGE_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_graph_incoming_edge_prefix(
+    space: &ProductSpace,
+    graph: &GraphName,
+    dst: &GraphNodeId,
+) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, graph.as_str());
+    encode_length_prefixed_text(&mut suffix, dst.as_str());
+    encode_user_key(GRAPH_REVERSE_EDGE_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn decode_graph_reverse_edge_key(
+    space: &ProductSpace,
+    encoded: &[u8],
+) -> EngineResult<(GraphName, GraphNodeId, GraphEdgeType, GraphNodeId)> {
+    decode_graph_edge_like_key(
+        space,
+        encoded,
+        GRAPH_REVERSE_EDGE_DISCRIMINATOR,
+        "data_loss.engine.graph_reverse_edge_key",
+        "stored graph reverse edge row key is not valid for the selected product space",
+    )
+}
+
+pub(crate) fn encode_graph_binding_space_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(GRAPH_BINDING_INDEX_DISCRIMINATOR, space, &[])
+}
+
+pub(crate) fn encode_graph_binding_target_prefix(
+    space: &ProductSpace,
+    target: &GraphBindingTarget,
+) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_graph_binding_target_suffix(&mut suffix, target);
+    encode_user_key(GRAPH_BINDING_INDEX_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_graph_binding_key(
+    space: &ProductSpace,
+    target: &GraphBindingTarget,
+    graph: &GraphName,
+    node_id: &GraphNodeId,
+) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_graph_binding_target_suffix(&mut suffix, target);
+    encode_length_prefixed_text(&mut suffix, graph.as_str());
+    encode_length_prefixed_text(&mut suffix, node_id.as_str());
+    encode_user_key(GRAPH_BINDING_INDEX_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn decode_graph_binding_key(
+    space: &ProductSpace,
+    encoded: &[u8],
+) -> EngineResult<(GraphBindingTarget, GraphName, GraphNodeId)> {
+    let bytes = decode_user_key(
+        space,
+        encoded,
+        GRAPH_BINDING_INDEX_DISCRIMINATOR,
+        "data_loss.engine.graph_binding_key",
+        "stored graph binding row key is not valid for the selected product space",
+    )?;
+    let (target, rest) = decode_graph_binding_target_suffix(bytes)?;
+    let (graph, rest) = decode_length_prefixed_text(
+        rest,
+        "data_loss.engine.graph_binding_key",
+        "stored graph binding row key is missing a graph name",
+    )?;
+    let (node_id, rest) = decode_length_prefixed_text(
+        rest,
+        "data_loss.engine.graph_binding_key",
+        "stored graph binding row key is missing a node id",
+    )?;
+    if !rest.is_empty() {
+        return Err(EngineError::corruption(
+            "data_loss.engine.graph_binding_key",
+            "stored graph binding row key has trailing bytes",
+        ));
+    }
+    Ok((
+        target,
+        GraphName::new(graph).map_err(|_| {
+            EngineError::corruption(
+                "data_loss.engine.graph_binding_key",
+                "stored graph binding row key contains an invalid graph name",
+            )
+        })?,
+        GraphNodeId::new(node_id).map_err(|_| {
+            EngineError::corruption(
+                "data_loss.engine.graph_binding_key",
+                "stored graph binding row key contains an invalid node id",
+            )
+        })?,
+    ))
+}
+
 #[cfg(test)]
 fn encode_event_type_index_prefix(space: &ProductSpace, event_type: &EventType) -> Vec<u8> {
     let mut suffix = Vec::new();
@@ -342,6 +608,129 @@ fn encode_json_index_key(
     key.extend_from_slice(name_bytes);
     key.extend_from_slice(suffix);
     key
+}
+
+fn encode_graph_edge_like_key(
+    discriminator: u8,
+    space: &ProductSpace,
+    graph: &GraphName,
+    first: &GraphNodeId,
+    edge_type: &GraphEdgeType,
+    second: &GraphNodeId,
+) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, graph.as_str());
+    encode_length_prefixed_text(&mut suffix, first.as_str());
+    encode_length_prefixed_text(&mut suffix, edge_type.as_str());
+    encode_length_prefixed_text(&mut suffix, second.as_str());
+    encode_user_key(discriminator, space, &suffix)
+}
+
+fn decode_graph_edge_like_key(
+    space: &ProductSpace,
+    encoded: &[u8],
+    discriminator: u8,
+    code: &'static str,
+    message: &'static str,
+) -> EngineResult<(GraphName, GraphNodeId, GraphEdgeType, GraphNodeId)> {
+    let bytes = decode_user_key(space, encoded, discriminator, code, message)?;
+    let (graph, rest) =
+        decode_length_prefixed_text(bytes, code, "stored graph edge row key is missing a graph")?;
+    let (first, rest) =
+        decode_length_prefixed_text(rest, code, "stored graph edge row key is missing a node id")?;
+    let (edge_type, rest) = decode_length_prefixed_text(
+        rest,
+        code,
+        "stored graph edge row key is missing an edge type",
+    )?;
+    let (second, rest) =
+        decode_length_prefixed_text(rest, code, "stored graph edge row key is missing a node id")?;
+    if !rest.is_empty() {
+        return Err(EngineError::corruption(
+            code,
+            "stored graph edge row key has trailing bytes",
+        ));
+    }
+    Ok((
+        GraphName::new(graph).map_err(|_| {
+            EngineError::corruption(code, "stored graph edge key contains an invalid graph name")
+        })?,
+        GraphNodeId::new(first).map_err(|_| {
+            EngineError::corruption(code, "stored graph edge key contains an invalid node id")
+        })?,
+        GraphEdgeType::new(edge_type).map_err(|_| {
+            EngineError::corruption(code, "stored graph edge key contains an invalid edge type")
+        })?,
+        GraphNodeId::new(second).map_err(|_| {
+            EngineError::corruption(code, "stored graph edge key contains an invalid node id")
+        })?,
+    ))
+}
+
+fn encode_graph_binding_target_suffix(output: &mut Vec<u8>, target: &GraphBindingTarget) {
+    encode_length_prefixed_text(output, target.primitive().as_str());
+    encode_length_prefixed_text(output, target.branch().map_or("", |branch| branch.as_str()));
+    encode_length_prefixed_text(output, target.space().as_str());
+    encode_length_prefixed_text(output, target.key());
+}
+
+fn decode_graph_binding_target_suffix(bytes: &[u8]) -> EngineResult<(GraphBindingTarget, &[u8])> {
+    let (primitive, rest) = decode_length_prefixed_text(
+        bytes,
+        "data_loss.engine.graph_binding_key",
+        "stored graph binding row key is missing primitive kind",
+    )?;
+    let primitive = match primitive {
+        "kv" => GraphBindingPrimitive::Kv,
+        "json" => GraphBindingPrimitive::Json,
+        "vector" => GraphBindingPrimitive::Vector,
+        "event" => GraphBindingPrimitive::Event,
+        "graph" => GraphBindingPrimitive::Graph,
+        _ => {
+            return Err(EngineError::corruption(
+                "data_loss.engine.graph_binding_key",
+                "stored graph binding row key contains an unknown primitive kind",
+            ));
+        }
+    };
+    let (branch, rest) = decode_length_prefixed_text(
+        rest,
+        "data_loss.engine.graph_binding_key",
+        "stored graph binding row key is missing branch",
+    )?;
+    let branch = if branch.is_empty() {
+        None
+    } else {
+        Some(crate::branch::BranchName::new(branch).map_err(|_| {
+            EngineError::corruption(
+                "data_loss.engine.graph_binding_key",
+                "stored graph binding row key contains an invalid branch",
+            )
+        })?)
+    };
+    let (space, rest) = decode_length_prefixed_text(
+        rest,
+        "data_loss.engine.graph_binding_key",
+        "stored graph binding row key is missing bound space",
+    )?;
+    let space = ProductSpace::new(space).map_err(|_| {
+        EngineError::corruption(
+            "data_loss.engine.graph_binding_key",
+            "stored graph binding row key contains an invalid bound space",
+        )
+    })?;
+    let (key, rest) = decode_length_prefixed_text(
+        rest,
+        "data_loss.engine.graph_binding_key",
+        "stored graph binding row key is missing bound key",
+    )?;
+    let target = GraphBindingTarget::new(primitive, branch, space, key).map_err(|_| {
+        EngineError::corruption(
+            "data_loss.engine.graph_binding_key",
+            "stored graph binding row key contains an invalid target",
+        )
+    })?;
+    Ok((target, rest))
 }
 
 fn encode_length_prefixed_text(output: &mut Vec<u8>, value: &str) {
@@ -476,16 +865,24 @@ mod tests {
     use super::{
         branch_catalog_key, branch_default_key, branch_index_key, branch_pending_key,
         database_identity_key, decode_event_key_sequence, decode_event_sequence,
-        decode_event_type_index_key, decode_json_document_id, decode_json_index_name,
-        decode_kv_key, decode_vector_collection_name, decode_vector_key, encode_event_key,
-        encode_event_meta_key, encode_event_space_prefix, encode_event_type_index_key,
-        encode_event_type_index_prefix, encode_json_index_entry_key,
+        decode_event_type_index_key, decode_graph_binding_key, decode_graph_edge_key,
+        decode_graph_metadata_key, decode_graph_node_key, decode_graph_reverse_edge_key,
+        decode_json_document_id, decode_json_index_name, decode_kv_key,
+        decode_vector_collection_name, decode_vector_key, encode_event_key, encode_event_meta_key,
+        encode_event_space_prefix, encode_event_type_index_key, encode_event_type_index_prefix,
+        encode_graph_binding_key, encode_graph_binding_target_prefix, encode_graph_edge_key,
+        encode_graph_edge_prefix, encode_graph_metadata_key, encode_graph_metadata_prefix,
+        encode_graph_node_key, encode_graph_node_prefix, encode_graph_reverse_edge_key,
+        encode_graph_reverse_edge_prefix, encode_json_index_entry_key,
         encode_json_index_entry_prefix, encode_json_index_meta_key, encode_json_key,
         encode_json_space_prefix, encode_kv_key, encode_kv_space_prefix,
         encode_vector_collection_entry_prefix, encode_vector_collection_key,
         encode_vector_collection_prefix, encode_vector_key, storage_registry_key,
     };
     use crate::data::event::{EventSequence, EventType};
+    use crate::data::graph::{
+        GraphBindingPrimitive, GraphBindingTarget, GraphEdgeType, GraphName, GraphNodeId,
+    };
     use crate::data::json::{JsonDocumentId, JsonIndexName};
     use crate::data::kv::{KvKey, ProductSpace};
     use crate::data::vector::{VectorCollectionName, VectorKey};
@@ -1055,6 +1452,241 @@ mod tests {
                 .code(),
             "data_loss.engine.kv_key"
         );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn graph_keys_are_deterministic_and_decodable() {
+        let space = ProductSpace::new("users").expect("valid space");
+        let graph = GraphName::new("deps").expect("valid graph");
+        let src = GraphNodeId::new("doc").expect("valid source");
+        let dst = GraphNodeId::new("chunk").expect("valid destination");
+        let edge_type = GraphEdgeType::new("contains").expect("valid edge type");
+        let target = GraphBindingTarget::new(
+            GraphBindingPrimitive::Json,
+            None,
+            ProductSpace::new("docs").expect("valid bound space"),
+            "doc-1",
+        )
+        .expect("valid target");
+
+        assert_eq!(
+            encode_graph_metadata_key(&space, &graph),
+            b"\x01g\0\x05users\0\x04deps".to_vec()
+        );
+        assert_eq!(
+            encode_graph_metadata_prefix(&space),
+            b"\x01g\0\x05users".to_vec()
+        );
+        assert_eq!(
+            decode_graph_metadata_key(&space, &encode_graph_metadata_key(&space, &graph))
+                .expect("decode graph"),
+            graph
+        );
+
+        assert_eq!(
+            encode_graph_node_key(&space, &graph, &src),
+            b"\x01n\0\x05users\0\x04deps\0\x03doc".to_vec()
+        );
+        assert_eq!(
+            encode_graph_node_prefix(&space, &graph),
+            b"\x01n\0\x05users\0\x04deps".to_vec()
+        );
+        assert_eq!(
+            decode_graph_node_key(&space, &encode_graph_node_key(&space, &graph, &src))
+                .expect("decode node"),
+            (graph.clone(), src.clone())
+        );
+
+        let edge_key = encode_graph_edge_key(&space, &graph, &src, &edge_type, &dst);
+        assert_eq!(
+            decode_graph_edge_key(&space, &edge_key).expect("decode edge"),
+            (graph.clone(), src.clone(), edge_type.clone(), dst.clone())
+        );
+        assert_eq!(
+            encode_graph_edge_prefix(&space, &graph),
+            b"\x01o\0\x05users\0\x04deps".to_vec()
+        );
+
+        let reverse_key = encode_graph_reverse_edge_key(&space, &graph, &dst, &edge_type, &src);
+        assert_eq!(
+            decode_graph_reverse_edge_key(&space, &reverse_key).expect("decode reverse edge"),
+            (graph.clone(), dst, edge_type, src.clone())
+        );
+        assert_eq!(
+            encode_graph_reverse_edge_prefix(&space, &graph),
+            b"\x01r\0\x05users\0\x04deps".to_vec()
+        );
+
+        let binding_key = encode_graph_binding_key(&space, &target, &graph, &src);
+        assert_eq!(
+            decode_graph_binding_key(&space, &binding_key).expect("decode binding"),
+            (target.clone(), graph.clone(), src.clone())
+        );
+        assert!(binding_key.starts_with(&encode_graph_binding_target_prefix(&space, &target)));
+
+        let max_graph = GraphName::new("g".repeat(256)).expect("max graph");
+        let max_src = GraphNodeId::new("s".repeat(1024)).expect("max source");
+        let max_dst = GraphNodeId::new("d".repeat(1024)).expect("max destination");
+        let max_edge_type = GraphEdgeType::new("e".repeat(256)).expect("max edge type");
+        let max_target = GraphBindingTarget::new(
+            GraphBindingPrimitive::Graph,
+            None,
+            ProductSpace::new("bound").expect("valid bound space"),
+            "b".repeat(1024),
+        )
+        .expect("max binding target");
+
+        assert_eq!(
+            decode_graph_metadata_key(&space, &encode_graph_metadata_key(&space, &max_graph))
+                .expect("decode max graph"),
+            max_graph
+        );
+        assert_eq!(
+            decode_graph_node_key(&space, &encode_graph_node_key(&space, &max_graph, &max_src))
+                .expect("decode max node"),
+            (max_graph.clone(), max_src.clone())
+        );
+        assert_eq!(
+            decode_graph_edge_key(
+                &space,
+                &encode_graph_edge_key(&space, &max_graph, &max_src, &max_edge_type, &max_dst,)
+            )
+            .expect("decode max edge"),
+            (
+                max_graph.clone(),
+                max_src.clone(),
+                max_edge_type.clone(),
+                max_dst.clone()
+            )
+        );
+        assert_eq!(
+            decode_graph_reverse_edge_key(
+                &space,
+                &encode_graph_reverse_edge_key(
+                    &space,
+                    &max_graph,
+                    &max_dst,
+                    &max_edge_type,
+                    &max_src,
+                )
+            )
+            .expect("decode max reverse edge"),
+            (max_graph.clone(), max_dst, max_edge_type, max_src.clone())
+        );
+        assert_eq!(
+            decode_graph_binding_key(
+                &space,
+                &encode_graph_binding_key(&space, &max_target, &max_graph, &max_src)
+            )
+            .expect("decode max binding"),
+            (max_target, max_graph, max_src)
+        );
+    }
+
+    #[test]
+    fn graph_key_decoding_rejects_malformed_rows() {
+        let space = ProductSpace::new("default").expect("valid space");
+        for (case, encoded, code) in [
+            (
+                "metadata-truncated-graph",
+                vec![
+                    1, b'g', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 4, b'd',
+                ],
+                "data_loss.engine.graph_key",
+            ),
+            (
+                "node-truncated-node",
+                vec![
+                    1, b'n', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 4, b'd', b'e',
+                    b'p', b's', 0,
+                ],
+                "data_loss.engine.graph_node_key",
+            ),
+            (
+                "edge-truncated-type",
+                vec![
+                    1, b'o', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 4, b'd', b'e',
+                    b'p', b's', 0, 3, b'd', b'o', b'c', 0,
+                ],
+                "data_loss.engine.graph_edge_key",
+            ),
+            (
+                "reverse-truncated-type",
+                vec![
+                    1, b'r', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 4, b'd', b'e',
+                    b'p', b's', 0, 5, b'c', b'h', b'u', b'n', b'k', 0,
+                ],
+                "data_loss.engine.graph_reverse_edge_key",
+            ),
+            (
+                "binding-unknown-primitive",
+                vec![
+                    1, b'b', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 7, b'u', b'n',
+                    b'k', b'n', b'o', b'w', b'n',
+                ],
+                "data_loss.engine.graph_binding_key",
+            ),
+        ] {
+            let error = match code {
+                "data_loss.engine.graph_key" => {
+                    decode_graph_metadata_key(&space, &encoded).expect_err(case)
+                }
+                "data_loss.engine.graph_node_key" => {
+                    decode_graph_node_key(&space, &encoded).expect_err(case)
+                }
+                "data_loss.engine.graph_edge_key" => {
+                    decode_graph_edge_key(&space, &encoded).expect_err(case)
+                }
+                "data_loss.engine.graph_reverse_edge_key" => {
+                    decode_graph_reverse_edge_key(&space, &encoded).expect_err(case)
+                }
+                "data_loss.engine.graph_binding_key" => {
+                    decode_graph_binding_key(&space, &encoded).expect_err(case)
+                }
+                _ => unreachable!(),
+            };
+            assert_eq!(error.class(), EngineErrorClass::Corruption);
+            assert_eq!(error.code(), code);
+        }
+    }
+
+    #[test]
+    fn graph_key_decoding_rejects_wrong_family_version_and_utf8() {
+        let space = ProductSpace::new("default").expect("valid space");
+        let graph = GraphName::new("deps").expect("valid graph");
+        let kv_key = KvKey::new(b"deps".as_slice()).expect("valid KV key");
+        let json_id = JsonDocumentId::new("doc").expect("valid JSON id");
+        let vector_collection = VectorCollectionName::new("vectors").expect("valid collection");
+
+        let mut wrong_version = encode_graph_metadata_key(&space, &graph);
+        wrong_version[0] = 2;
+        let error =
+            decode_graph_metadata_key(&space, &wrong_version).expect_err("version rejected");
+        assert_eq!(error.class(), EngineErrorClass::Corruption);
+        assert_eq!(error.code(), "data_loss.engine.graph_key");
+
+        for (case, wrong_family) in [
+            ("kv", encode_kv_key(&space, &kv_key)),
+            ("json", encode_json_key(&space, &json_id)),
+            ("event", encode_event_key(&space, EventSequence::new(1))),
+            (
+                "vector",
+                encode_vector_collection_key(&space, &vector_collection),
+            ),
+            ("control", storage_registry_key()),
+        ] {
+            let error = decode_graph_metadata_key(&space, &wrong_family).expect_err(case);
+            assert_eq!(error.class(), EngineErrorClass::Corruption, "{case}");
+            assert_eq!(error.code(), "data_loss.engine.graph_key", "{case}");
+        }
+
+        let invalid_utf8 = vec![
+            1, b'g', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 1, 0xff,
+        ];
+        let error = decode_graph_metadata_key(&space, &invalid_utf8).expect_err("UTF-8 rejected");
+        assert_eq!(error.class(), EngineErrorClass::Corruption);
+        assert_eq!(error.code(), "data_loss.engine.graph_key");
     }
 
     #[test]

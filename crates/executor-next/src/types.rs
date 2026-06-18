@@ -59,6 +59,155 @@ impl From<&str> for Bytes {
     }
 }
 
+/// Arrow file format selected for import/export.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArrowFileFormat {
+    /// Apache Parquet.
+    #[default]
+    Parquet,
+    /// Comma-separated values with a header row.
+    Csv,
+    /// Line-delimited JSON objects.
+    Jsonl,
+}
+
+/// Product primitive targeted by Arrow import.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArrowImportTarget {
+    /// Import rows into the KV primitive.
+    Kv,
+    /// Import rows into the JSON primitive.
+    Json,
+    /// Import rows into a vector collection.
+    Vector,
+}
+
+/// Product primitive selected by Arrow export.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArrowExportPrimitive {
+    /// Export the KV primitive.
+    Kv,
+    /// Export the JSON primitive.
+    Json,
+    /// Export the event primitive.
+    Event,
+    /// Export one vector collection.
+    Vector,
+    /// Export one graph as node and edge files.
+    Graph,
+}
+
+/// Arrow import summary.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArrowImportResult {
+    target: ArrowImportTarget,
+    file_path: String,
+    rows_imported: u64,
+    rows_skipped: u64,
+    batches_processed: u64,
+}
+
+impl ArrowImportResult {
+    /// Creates an Arrow import summary.
+    pub fn new(
+        target: ArrowImportTarget,
+        file_path: String,
+        rows_imported: u64,
+        rows_skipped: u64,
+        batches_processed: u64,
+    ) -> Self {
+        Self {
+            target,
+            file_path,
+            rows_imported,
+            rows_skipped,
+            batches_processed,
+        }
+    }
+
+    /// Returns the imported primitive.
+    pub const fn target(&self) -> ArrowImportTarget {
+        self.target
+    }
+
+    /// Returns the input file path.
+    pub fn file_path(&self) -> &str {
+        &self.file_path
+    }
+
+    /// Returns imported row count.
+    pub const fn rows_imported(&self) -> u64 {
+        self.rows_imported
+    }
+
+    /// Returns skipped row count.
+    pub const fn rows_skipped(&self) -> u64 {
+        self.rows_skipped
+    }
+
+    /// Returns processed batch count.
+    pub const fn batches_processed(&self) -> u64 {
+        self.batches_processed
+    }
+}
+
+/// Arrow export summary.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArrowExportResult {
+    primitive: ArrowExportPrimitive,
+    format: ArrowFileFormat,
+    paths: Vec<String>,
+    row_count: u64,
+    size_bytes: u64,
+}
+
+impl ArrowExportResult {
+    /// Creates an Arrow export summary.
+    pub fn new(
+        primitive: ArrowExportPrimitive,
+        format: ArrowFileFormat,
+        paths: Vec<String>,
+        row_count: u64,
+        size_bytes: u64,
+    ) -> Self {
+        Self {
+            primitive,
+            format,
+            paths,
+            row_count,
+            size_bytes,
+        }
+    }
+
+    /// Returns the exported primitive.
+    pub const fn primitive(&self) -> ArrowExportPrimitive {
+        self.primitive
+    }
+
+    /// Returns the written file format.
+    pub const fn format(&self) -> ArrowFileFormat {
+        self.format
+    }
+
+    /// Returns output paths.
+    pub fn paths(&self) -> &[String] {
+        &self.paths
+    }
+
+    /// Returns exported row count.
+    pub const fn row_count(&self) -> u64 {
+        self.row_count
+    }
+
+    /// Returns total output size in bytes.
+    pub const fn size_bytes(&self) -> u64 {
+        self.size_bytes
+    }
+}
+
 /// Vector distance metric exposed through the command boundary.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -265,6 +414,610 @@ impl BatchEventEntry {
     /// Consumes the entry.
     pub fn into_parts(self) -> (String, Value) {
         (self.event_type, self.payload)
+    }
+}
+
+/// Graph neighbor traversal direction.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphDirection {
+    /// Outgoing edges from the selected node.
+    #[default]
+    Outgoing,
+    /// Incoming edges into the selected node.
+    Incoming,
+    /// Incoming and outgoing edges.
+    Both,
+}
+
+/// Product primitive kind used by graph entity bindings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphBindingPrimitive {
+    /// KV primitive.
+    Kv,
+    /// JSON primitive.
+    Json,
+    /// Vector primitive.
+    Vector,
+    /// Event primitive.
+    Event,
+    /// Graph primitive.
+    Graph,
+}
+
+/// Typed product identity attached to a graph node.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphBindingTarget {
+    primitive: GraphBindingPrimitive,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    branch: Option<String>,
+    space: String,
+    key: String,
+}
+
+impl GraphBindingTarget {
+    /// Creates a graph binding target.
+    pub fn new(
+        primitive: GraphBindingPrimitive,
+        branch: Option<String>,
+        space: impl Into<String>,
+        key: impl Into<String>,
+    ) -> Self {
+        Self {
+            primitive,
+            branch,
+            space: space.into(),
+            key: key.into(),
+        }
+    }
+
+    /// Returns the primitive kind.
+    pub const fn primitive(&self) -> GraphBindingPrimitive {
+        self.primitive
+    }
+
+    /// Returns the optional target branch.
+    pub fn branch(&self) -> Option<&str> {
+        self.branch.as_deref()
+    }
+
+    /// Returns the target product space.
+    pub fn space(&self) -> &str {
+        &self.space
+    }
+
+    /// Returns the target key.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Consumes the target.
+    pub fn into_parts(self) -> (GraphBindingPrimitive, Option<String>, String, String) {
+        (self.primitive, self.branch, self.space, self.key)
+    }
+}
+
+/// Node-to-entity binding.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphEntityBinding {
+    target: GraphBindingTarget,
+}
+
+impl GraphEntityBinding {
+    /// Creates a graph entity binding.
+    pub const fn new(target: GraphBindingTarget) -> Self {
+        Self { target }
+    }
+
+    /// Returns the bound target.
+    pub const fn target(&self) -> &GraphBindingTarget {
+        &self.target
+    }
+
+    /// Consumes the binding.
+    pub fn into_target(self) -> GraphBindingTarget {
+        self.target
+    }
+}
+
+/// Graph node input payload.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct GraphNodeData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    properties: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    binding: Option<GraphEntityBinding>,
+}
+
+impl GraphNodeData {
+    /// Creates graph node data.
+    pub const fn new(properties: Option<Value>, binding: Option<GraphEntityBinding>) -> Self {
+        Self {
+            properties,
+            binding,
+        }
+    }
+
+    /// Returns optional node properties.
+    pub const fn properties(&self) -> Option<&Value> {
+        self.properties.as_ref()
+    }
+
+    /// Returns optional entity binding.
+    pub const fn binding(&self) -> Option<&GraphEntityBinding> {
+        self.binding.as_ref()
+    }
+
+    /// Consumes the payload.
+    pub fn into_parts(self) -> (Option<Value>, Option<GraphEntityBinding>) {
+        (self.properties, self.binding)
+    }
+}
+
+/// Graph edge input payload.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct GraphEdgeData {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    weight: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    properties: Option<Value>,
+}
+
+impl GraphEdgeData {
+    /// Creates graph edge data.
+    pub const fn new(weight: Option<f64>, properties: Option<Value>) -> Self {
+        Self { weight, properties }
+    }
+
+    /// Returns optional edge weight.
+    pub const fn weight(&self) -> Option<f64> {
+        self.weight
+    }
+
+    /// Returns optional edge properties.
+    pub const fn properties(&self) -> Option<&Value> {
+        self.properties.as_ref()
+    }
+
+    /// Consumes the payload.
+    pub fn into_parts(self) -> (Option<f64>, Option<Value>) {
+        (self.weight, self.properties)
+    }
+}
+
+/// One graph batch write operation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum GraphBatchOperation {
+    /// Upserts one node.
+    UpsertNode {
+        /// Node id.
+        node_id: String,
+        /// Node payload.
+        data: GraphNodeData,
+    },
+    /// Deletes one node and incident edges.
+    DeleteNode {
+        /// Node id.
+        node_id: String,
+    },
+    /// Upserts one edge.
+    UpsertEdge {
+        /// Source node id.
+        src: String,
+        /// Edge type.
+        edge_type: String,
+        /// Destination node id.
+        dst: String,
+        /// Edge payload.
+        data: GraphEdgeData,
+    },
+    /// Deletes one edge.
+    DeleteEdge {
+        /// Source node id.
+        src: String,
+        /// Edge type.
+        edge_type: String,
+        /// Destination node id.
+        dst: String,
+    },
+}
+
+/// Serializable graph metadata.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphInfoData {
+    graph: String,
+    node_count: u64,
+    edge_count: u64,
+    created_version: u64,
+    created_timestamp: u64,
+    updated_version: u64,
+    updated_timestamp: u64,
+}
+
+impl GraphInfoData {
+    /// Creates graph metadata output.
+    pub const fn new(
+        graph: String,
+        node_count: u64,
+        edge_count: u64,
+        created_version: u64,
+        created_timestamp: u64,
+        updated_version: u64,
+        updated_timestamp: u64,
+    ) -> Self {
+        Self {
+            graph,
+            node_count,
+            edge_count,
+            created_version,
+            created_timestamp,
+            updated_version,
+            updated_timestamp,
+        }
+    }
+
+    /// Returns the graph name.
+    pub fn graph(&self) -> &str {
+        &self.graph
+    }
+
+    /// Returns visible node count.
+    pub const fn node_count(&self) -> u64 {
+        self.node_count
+    }
+
+    /// Returns visible edge count.
+    pub const fn edge_count(&self) -> u64 {
+        self.edge_count
+    }
+
+    /// Returns metadata creation version.
+    pub const fn created_version(&self) -> u64 {
+        self.created_version
+    }
+
+    /// Returns metadata creation timestamp.
+    pub const fn created_timestamp(&self) -> u64 {
+        self.created_timestamp
+    }
+
+    /// Returns latest graph-state update version.
+    pub const fn updated_version(&self) -> u64 {
+        self.updated_version
+    }
+
+    /// Returns latest graph-state update timestamp.
+    pub const fn updated_timestamp(&self) -> u64 {
+        self.updated_timestamp
+    }
+}
+
+/// Serializable graph node output.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphNodeDataOutput {
+    graph: String,
+    node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    properties: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    binding: Option<GraphEntityBinding>,
+    version: u64,
+    timestamp: u64,
+}
+
+impl GraphNodeDataOutput {
+    /// Creates graph node output.
+    pub const fn new(
+        graph: String,
+        node_id: String,
+        properties: Option<Value>,
+        binding: Option<GraphEntityBinding>,
+        version: u64,
+        timestamp: u64,
+    ) -> Self {
+        Self {
+            graph,
+            node_id,
+            properties,
+            binding,
+            version,
+            timestamp,
+        }
+    }
+
+    /// Returns the graph name.
+    pub fn graph(&self) -> &str {
+        &self.graph
+    }
+
+    /// Returns the node id.
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    /// Returns optional properties.
+    pub const fn properties(&self) -> Option<&Value> {
+        self.properties.as_ref()
+    }
+
+    /// Returns optional entity binding.
+    pub const fn binding(&self) -> Option<&GraphEntityBinding> {
+        self.binding.as_ref()
+    }
+
+    /// Returns commit version.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Returns commit timestamp.
+    pub const fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+}
+
+/// Serializable graph edge output.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphEdgeDataOutput {
+    graph: String,
+    src: String,
+    edge_type: String,
+    dst: String,
+    weight: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    properties: Option<Value>,
+    version: u64,
+    timestamp: u64,
+}
+
+impl GraphEdgeDataOutput {
+    /// Creates graph edge output.
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new(
+        graph: String,
+        src: String,
+        edge_type: String,
+        dst: String,
+        weight: f64,
+        properties: Option<Value>,
+        version: u64,
+        timestamp: u64,
+    ) -> Self {
+        Self {
+            graph,
+            src,
+            edge_type,
+            dst,
+            weight,
+            properties,
+            version,
+            timestamp,
+        }
+    }
+
+    /// Returns the graph name.
+    pub fn graph(&self) -> &str {
+        &self.graph
+    }
+
+    /// Returns the source node id.
+    pub fn src(&self) -> &str {
+        &self.src
+    }
+
+    /// Returns the edge type.
+    pub fn edge_type(&self) -> &str {
+        &self.edge_type
+    }
+
+    /// Returns the destination node id.
+    pub fn dst(&self) -> &str {
+        &self.dst
+    }
+
+    /// Returns the edge weight.
+    pub const fn weight(&self) -> f64 {
+        self.weight
+    }
+
+    /// Returns optional properties.
+    pub const fn properties(&self) -> Option<&Value> {
+        self.properties.as_ref()
+    }
+
+    /// Returns commit version.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Returns commit timestamp.
+    pub const fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+}
+
+/// Serializable graph neighbor hit.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphNeighborHit {
+    node: GraphNodeDataOutput,
+    edge: GraphEdgeDataOutput,
+    direction: GraphDirection,
+}
+
+impl GraphNeighborHit {
+    /// Creates a graph neighbor hit.
+    pub const fn new(
+        node: GraphNodeDataOutput,
+        edge: GraphEdgeDataOutput,
+        direction: GraphDirection,
+    ) -> Self {
+        Self {
+            node,
+            edge,
+            direction,
+        }
+    }
+
+    /// Returns the neighboring node.
+    pub const fn node(&self) -> &GraphNodeDataOutput {
+        &self.node
+    }
+
+    /// Returns the connecting edge.
+    pub const fn edge(&self) -> &GraphEdgeDataOutput {
+        &self.edge
+    }
+
+    /// Returns which direction produced the hit.
+    pub const fn direction(&self) -> GraphDirection {
+        self.direction
+    }
+}
+
+/// Serializable graph entity binding hit.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphBindingHit {
+    graph: String,
+    node_id: String,
+    binding: GraphEntityBinding,
+    version: u64,
+    timestamp: u64,
+}
+
+impl GraphBindingHit {
+    /// Creates a graph binding hit.
+    pub const fn new(
+        graph: String,
+        node_id: String,
+        binding: GraphEntityBinding,
+        version: u64,
+        timestamp: u64,
+    ) -> Self {
+        Self {
+            graph,
+            node_id,
+            binding,
+            version,
+            timestamp,
+        }
+    }
+
+    /// Returns the graph name.
+    pub fn graph(&self) -> &str {
+        &self.graph
+    }
+
+    /// Returns the node id.
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    /// Returns the entity binding.
+    pub const fn binding(&self) -> &GraphEntityBinding {
+        &self.binding
+    }
+
+    /// Returns commit version.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Returns commit timestamp.
+    pub const fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+}
+
+/// Positional graph batch write result.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphBatchItemResult {
+    operation_index: u64,
+    operation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    created: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deleted: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    timestamp: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl GraphBatchItemResult {
+    /// Creates a successful graph batch item result.
+    pub fn new(
+        operation_index: u64,
+        operation: impl Into<String>,
+        created: Option<bool>,
+        deleted: Option<bool>,
+        version: Option<u64>,
+        timestamp: Option<u64>,
+    ) -> Self {
+        Self {
+            operation_index,
+            operation: operation.into(),
+            created,
+            deleted,
+            version,
+            timestamp,
+            error: None,
+        }
+    }
+
+    /// Creates a failed graph batch item result.
+    pub fn failed(
+        operation_index: u64,
+        operation: impl Into<String>,
+        error: impl Into<String>,
+    ) -> Self {
+        Self {
+            operation_index,
+            operation: operation.into(),
+            created: None,
+            deleted: None,
+            version: None,
+            timestamp: None,
+            error: Some(error.into()),
+        }
+    }
+
+    /// Returns the input operation index.
+    pub const fn operation_index(&self) -> u64 {
+        self.operation_index
+    }
+
+    /// Returns the operation kind.
+    pub fn operation(&self) -> &str {
+        &self.operation
+    }
+
+    /// Returns create/update fact.
+    pub const fn created(&self) -> Option<bool> {
+        self.created
+    }
+
+    /// Returns delete/no-op fact.
+    pub const fn deleted(&self) -> Option<bool> {
+        self.deleted
+    }
+
+    /// Returns commit version when present.
+    pub const fn version(&self) -> Option<u64> {
+        self.version
+    }
+
+    /// Returns commit timestamp when present.
+    pub const fn timestamp(&self) -> Option<u64> {
+        self.timestamp
+    }
+
+    /// Returns item error when present.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
     }
 }
 

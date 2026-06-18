@@ -4,12 +4,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::types::{
-    BatchGetItemResult, BatchItemResult, BranchCleanupItem, BranchItem, Bytes,
-    EventBatchAppendItemResult, EventChainVerification, EventVersionedData, HistoryItem,
-    JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
-    JsonSampleItem, JsonVersionedValue, SampleItem, ScanItem, VectorBatchGetItemResult,
-    VectorBatchItemResult, VectorCollectionInfo, VectorHistoryItem, VectorMatch,
-    VectorVersionedData, VersionedValue,
+    ArrowExportResult, ArrowImportResult, BatchGetItemResult, BatchItemResult, BranchCleanupItem,
+    BranchItem, Bytes, EventBatchAppendItemResult, EventChainVerification, EventVersionedData,
+    GraphBatchItemResult, GraphBindingHit, GraphEdgeDataOutput, GraphInfoData, GraphNeighborHit,
+    GraphNodeDataOutput, HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
+    JsonIndexDefinition, JsonSampleItem, JsonVersionedValue, SampleItem, ScanItem,
+    VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorHistoryItem,
+    VectorMatch, VectorVersionedData, VersionedValue,
 };
 
 /// Successful executor output.
@@ -240,4 +241,124 @@ pub enum Output {
     EventBatchAppendResults(Vec<EventBatchAppendItemResult>),
     /// Event hash-chain verification result.
     EventChainVerification(EventChainVerification),
+    /// Graph metadata after create.
+    GraphInfo(GraphInfoData),
+    /// Optional graph metadata.
+    GraphInfoResult(Option<GraphInfoData>),
+    /// Paginated graph name list.
+    GraphNamePage {
+        /// Graphs in this page.
+        graphs: Vec<String>,
+        /// True when another page is available.
+        has_more: bool,
+        /// Cursor for the next page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+    },
+    /// Optional graph node.
+    GraphNodeResult(Option<GraphNodeDataOutput>),
+    /// Paginated graph node list.
+    GraphNodePage {
+        /// Nodes in this page.
+        nodes: Vec<GraphNodeDataOutput>,
+        /// True when another page is available.
+        has_more: bool,
+        /// Cursor for the next page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+    },
+    /// Optional graph edge.
+    GraphEdgeResult(Option<GraphEdgeDataOutput>),
+    /// Paginated graph neighbor list.
+    GraphNeighborPage {
+        /// Neighbor hits in this page.
+        neighbors: Vec<GraphNeighborHit>,
+        /// True when another page is available.
+        has_more: bool,
+        /// Cursor for the next page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+    },
+    /// Paginated graph binding list.
+    GraphBindingPage {
+        /// Binding hits in this page.
+        bindings: Vec<GraphBindingHit>,
+        /// True when another page is available.
+        has_more: bool,
+        /// Cursor for the next page.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+    },
+    /// Graph node write acknowledgement.
+    GraphNodeWriteResult {
+        /// Graph name.
+        graph: String,
+        /// Node id.
+        node_id: String,
+        /// True when the node did not previously exist.
+        created: bool,
+        /// Commit version.
+        version: u64,
+        /// Commit timestamp.
+        timestamp: u64,
+    },
+    /// Graph edge write acknowledgement.
+    GraphEdgeWriteResult {
+        /// Graph name.
+        graph: String,
+        /// Source node id.
+        src: String,
+        /// Edge type.
+        edge_type: String,
+        /// Destination node id.
+        dst: String,
+        /// True when the edge did not previously exist.
+        created: bool,
+        /// Commit version.
+        version: u64,
+        /// Commit timestamp.
+        timestamp: u64,
+    },
+    /// Graph delete acknowledgement.
+    GraphDeleteResult {
+        /// Graph name.
+        graph: String,
+        /// Deleted node id for node deletes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_id: Option<String>,
+        /// Deleted edge source for edge deletes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        src: Option<String>,
+        /// Deleted edge type for edge deletes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edge_type: Option<String>,
+        /// Deleted edge destination for edge deletes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dst: Option<String>,
+        /// True when a visible graph fact was deleted.
+        deleted: bool,
+        /// Commit version when a delete was applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        /// Commit timestamp when a delete was applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
+    },
+    /// Graph batch write acknowledgement.
+    GraphBatchWriteResult {
+        /// Graph name.
+        graph: String,
+        /// Positional operation results.
+        results: Vec<GraphBatchItemResult>,
+        /// Commit version when mutations were applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        /// Commit timestamp when mutations were applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
+    },
+    /// Arrow import summary.
+    ArrowImportResult(ArrowImportResult),
+    /// Arrow export summary.
+    ArrowExportResult(ArrowExportResult),
 }

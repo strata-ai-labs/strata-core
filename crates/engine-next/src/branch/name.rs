@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use serde::{Deserialize, Deserializer, Serialize};
+
 use crate::diagnostics::{EngineError, EngineResult};
 
 pub(crate) const DEFAULT_BRANCH: &str = "default";
@@ -9,7 +11,8 @@ pub(crate) const SYSTEM_BRANCH: &str = "_system_";
 const MAX_BRANCH_NAME_BYTES: usize = 255;
 
 /// Validated product branch name.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize)]
+#[serde(transparent)]
 pub struct BranchName(String);
 
 impl BranchName {
@@ -36,6 +39,15 @@ impl TryFrom<&str> for BranchName {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         Self::new(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for BranchName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
 

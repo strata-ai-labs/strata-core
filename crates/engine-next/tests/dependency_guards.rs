@@ -79,6 +79,7 @@ fn executor_facing_api_does_not_expose_storage_types() {
         root.join("data").join("json"),
         root.join("data").join("vector"),
         root.join("data").join("event"),
+        root.join("data").join("graph"),
     ];
     let forbidden = [
         "strata_storage_next",
@@ -235,6 +236,70 @@ fn event_service_keeps_storage_requests_in_persistence_modules() {
             "event service constructed storage-specific request details"
         );
     }
+}
+
+#[test]
+fn graph_service_keeps_storage_requests_in_persistence_modules() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("data")
+        .join("graph")
+        .join("service.rs");
+    let text = fs::read_to_string(path).expect("read graph service source");
+    for forbidden in [
+        "strata_storage_next",
+        "StorageRuntime",
+        "PointReadRequest",
+        "PrefixScanReadRequest",
+        "ScanReadRequest",
+        "CommitBatch",
+        "CommitMutation",
+        "StorageSpaceId",
+        "StorageKey",
+        "StorageValue",
+        "ReadBound",
+        "ReadLimit",
+        "BranchRequest",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "graph service constructed storage-specific request details"
+        );
+    }
+}
+
+#[test]
+fn graph_core_does_not_expose_deferred_graph_surface() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let roots = [root.join("api"), root.join("data").join("graph")];
+    let forbidden = [
+        "Ontology",
+        "Wcc",
+        "Cdlp",
+        "Pagerank",
+        "PageRank",
+        "Lcc",
+        "Sssp",
+        "Bfs",
+        "SemanticMerge",
+        "BranchDag",
+        "Boost",
+    ];
+    let offenders: Vec<_> = roots
+        .into_iter()
+        .flat_map(|root| rust_files(&root))
+        .filter_map(|path| {
+            let text = fs::read_to_string(&path).expect("read source file");
+            forbidden
+                .iter()
+                .any(|token| text.contains(token))
+                .then_some(path)
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "graph core exposed deferred graph surface: {offenders:?}"
+    );
 }
 
 #[test]
@@ -423,10 +488,9 @@ fn benchmark_sources_do_not_use_engine_persistence_internals() {
 }
 
 #[test]
-fn product_scope_stays_limited_to_branch_kv_json_vector_and_event() {
+fn product_scope_stays_limited_to_current_primitives() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let forbidden = [
-        "Graph",
         "Retrieval",
         "Ipc",
         "Export",

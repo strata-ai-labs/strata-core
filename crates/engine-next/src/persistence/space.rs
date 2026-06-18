@@ -1,6 +1,6 @@
 //! Engine row classes and storage-space assignments.
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) enum RowClass {
     Kv,
     Json,
@@ -10,6 +10,11 @@ pub(crate) enum RowClass {
     Event,
     EventMetadata,
     EventIndex,
+    GraphMetadata,
+    GraphNode,
+    GraphEdge,
+    GraphReverseEdge,
+    GraphBindingIndex,
     BranchControl,
     Registry,
     DatasetIdentity,
@@ -29,6 +34,11 @@ impl RowClass {
             Self::BranchControl => 0x30,
             Self::Registry => 0x32,
             Self::DatasetIdentity => 0x34,
+            Self::GraphMetadata => 0x36,
+            Self::GraphNode => 0x38,
+            Self::GraphEdge => 0x3a,
+            Self::GraphReverseEdge => 0x3c,
+            Self::GraphBindingIndex => 0x3e,
         }
     }
 }

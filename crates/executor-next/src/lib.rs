@@ -5,6 +5,8 @@
 #![allow(clippy::struct_field_names)]
 #![allow(clippy::too_many_lines)]
 
+#[cfg(feature = "arrow")]
+mod arrow;
 pub mod command;
 pub mod error;
 pub mod executor;
@@ -16,13 +18,17 @@ pub use error::{ExecutorError, ExecutorErrorClass, ExecutorResult};
 pub use executor::Executor;
 pub use output::Output;
 pub use types::{
+    ArrowExportPrimitive, ArrowExportResult, ArrowFileFormat, ArrowImportResult, ArrowImportTarget,
     BatchEventEntry, BatchGetItemResult, BatchItemResult, BatchJsonDeleteEntry, BatchJsonEntry,
     BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry, BranchCleanupItem, BranchItem,
     BranchParentItem, BranchStatus, Bytes, EventBatchAppendItemResult, EventChainVerification,
-    EventData, EventRangeDirection, EventVersionedData, HistoryItem, JsonBatchGetItemResult,
-    JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition, JsonIndexType, JsonSampleItem,
-    JsonVersionedValue, SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult,
-    VectorCollectionInfo, VectorData, VectorDistanceMetric, VectorFilterCondition, VectorFilterOp,
-    VectorHistoryItem, VectorMatch, VectorMetadataFilter, VectorScalar, VectorVersionedData,
-    VersionedValue, DEFAULT_BRANCH, DEFAULT_SPACE,
+    EventData, EventRangeDirection, EventVersionedData, GraphBatchItemResult, GraphBatchOperation,
+    GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget, GraphDirection, GraphEdgeData,
+    GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData, GraphNeighborHit, GraphNodeData,
+    GraphNodeDataOutput, HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
+    JsonIndexDefinition, JsonIndexType, JsonSampleItem, JsonVersionedValue, SampleItem, ScanItem,
+    VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorData,
+    VectorDistanceMetric, VectorFilterCondition, VectorFilterOp, VectorHistoryItem, VectorMatch,
+    VectorMetadataFilter, VectorScalar, VectorVersionedData, VersionedValue, DEFAULT_BRANCH,
+    DEFAULT_SPACE,
 };

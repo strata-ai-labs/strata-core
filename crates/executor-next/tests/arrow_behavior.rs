@@ -1,0 +1,424 @@
+//! Executor Arrow import/export behavior tests.
+
+#![cfg(feature = "arrow")]
+
+use std::fs;
+use std::sync::Arc;
+
+use arrow::array::{FixedSizeListBuilder, Float32Builder, StringArray};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::record_batch::RecordBatch;
+use serde_json::{json, Value};
+use strata_executor_next::{
+    ArrowExportPrimitive, ArrowExportResult, ArrowFileFormat, ArrowImportResult, ArrowImportTarget,
+    Bytes, Command, Executor, ExecutorErrorClass, Output,
+};
+use tempfile::TempDir;
+
+#[test]
+fn arrow_commands_round_trip_through_json() {
+    let import = Command::ArrowImport {
+        branch: Some("feature".to_owned()),
+        space: Some("space-a".to_owned()),
+        file_path: "input.csv".to_owned(),
+        format: Some(ArrowFileFormat::Csv),
+        target: ArrowImportTarget::Json,
+        key_column: Some("id".to_owned()),
+        value_column: Some("document".to_owned()),
+        collection: None,
+    };
+    let encoded = serde_json::to_value(&import).expect("command serializes");
+    assert_eq!(encoded["type"], "arrow_import");
+    assert_eq!(encoded["format"], "csv");
+    assert_eq!(encoded["target"], "json");
+    assert_eq!(
+        serde_json::from_value::<Command>(encoded).expect("command deserializes"),
+        import
+    );
+
+    let output = Output::ArrowExportResult(ArrowExportResult::new(
+        ArrowExportPrimitive::Kv,
+        ArrowFileFormat::Jsonl,
+        vec!["out.jsonl".to_owned()],
+        2,
+        100,
+    ));
+    let encoded = serde_json::to_value(&output).expect("output serializes");
+    assert_eq!(encoded["type"], "arrow_export_result");
+    assert_eq!(encoded["data"]["primitive"], "kv");
+    assert_eq!(encoded["data"]["format"], "jsonl");
+}
+
+#[test]
+fn csv_kv_import_and_jsonl_export_round_trip_bytes() {
+    let dir = TempDir::new().expect("temp dir");
+    let input_path = dir.path().join("kv.csv");
+    let output_path = dir.path().join("kv.jsonl");
+    fs::write(
+        &input_path,
+        "key,key_encoding,value,value_encoding\nplain,utf8,value,utf8\n//4=,base64,AP8=,base64\n",
+    )
+    .expect("write csv");
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: input_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Csv),
+            target: ArrowImportTarget::Kv,
+            key_column: None,
+            value_column: None,
+            collection: None,
+        })
+        .expect("kv import succeeds");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    assert_import_result(&result, ArrowImportTarget::Kv, 2, 0, 1);
+
+    assert_eq!(
+        kv_get(&mut executor, Bytes::from("plain")),
+        Some(b"value".to_vec())
+    );
+    assert_eq!(
+        kv_get(&mut executor, Bytes::from(vec![0xff, 0xfe])),
+        Some(vec![0x00, 0xff])
+    );
+
+    let output = executor
+        .execute(Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Kv,
+            format: ArrowFileFormat::Jsonl,
+            path: output_path.to_string_lossy().into_owned(),
+            prefix: None,
+            limit: None,
+            collection: None,
+            graph: None,
+            event_type: None,
+        })
+        .expect("kv export succeeds");
+    let Output::ArrowExportResult(result) = output else {
+        panic!("unexpected export output");
+    };
+    assert_eq!(result.primitive(), ArrowExportPrimitive::Kv);
+    assert_eq!(result.row_count(), 2);
+    assert_eq!(
+        result.paths(),
+        &[output_path.to_string_lossy().into_owned()]
+    );
+    assert!(result.size_bytes() > 0);
+
+    let lines = fs::read_to_string(&output_path).expect("read jsonl");
+    assert!(lines.contains("\"key_encoding\":\"base64\""));
+    assert!(lines.contains("\"value_encoding\":\"base64\""));
+}
+
+#[test]
+fn csv_json_import_and_jsonl_export_preserve_documents() {
+    let dir = TempDir::new().expect("temp dir");
+    let input_path = dir.path().join("docs.csv");
+    let output_path = dir.path().join("docs.jsonl");
+    fs::write(
+        &input_path,
+        "id,document\nuser-a,\"{\"\"name\"\":\"\"Ada\"\",\"\"rank\"\":1}\"\nuser-b,\"{\"\"name\"\":\"\"Bob\"\"}\"\n",
+    )
+    .expect("write csv");
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: input_path.to_string_lossy().into_owned(),
+            format: None,
+            target: ArrowImportTarget::Json,
+            key_column: Some("id".to_owned()),
+            value_column: Some("document".to_owned()),
+            collection: None,
+        })
+        .expect("json import succeeds");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    assert_import_result(&result, ArrowImportTarget::Json, 2, 0, 1);
+    assert_eq!(
+        json_get(&mut executor, "user-a"),
+        Some(json!({"name": "Ada", "rank": 1}))
+    );
+
+    executor
+        .execute(Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Json,
+            format: ArrowFileFormat::Jsonl,
+            path: output_path.to_string_lossy().into_owned(),
+            prefix: Some("user-".to_owned()),
+            limit: Some(1),
+            collection: None,
+            graph: None,
+            event_type: None,
+        })
+        .expect("json export succeeds");
+    let exported = fs::read_to_string(&output_path).expect("read jsonl");
+    assert!(exported.contains("\"key\":\"user-a\""));
+    assert!(!exported.contains("\"key\":\"user-b\""));
+    assert!(exported.contains("\\\"name\\\":\\\"Ada\\\""));
+}
+
+#[test]
+fn parquet_vector_import_and_export_uses_batch_commands() {
+    let dir = TempDir::new().expect("temp dir");
+    let input_path = dir.path().join("vectors.parquet");
+    let output_path = dir.path().join("vectors.parquet");
+    write_vector_parquet(&input_path);
+
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let output = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: input_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Parquet),
+            target: ArrowImportTarget::Vector,
+            key_column: None,
+            value_column: None,
+            collection: Some("docs".to_owned()),
+        })
+        .expect("vector import succeeds");
+    let Output::ArrowImportResult(result) = output else {
+        panic!("unexpected import output");
+    };
+    assert_import_result(&result, ArrowImportTarget::Vector, 2, 0, 1);
+
+    assert_eq!(vector_count(&mut executor, "docs"), 2);
+    assert_eq!(
+        vector_get_metadata(&mut executor, "docs", "doc-a"),
+        json!({"kind": "a"})
+    );
+
+    let output = executor
+        .execute(Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Vector,
+            format: ArrowFileFormat::Parquet,
+            path: output_path.to_string_lossy().into_owned(),
+            prefix: Some("doc-".to_owned()),
+            limit: None,
+            collection: Some("docs".to_owned()),
+            graph: None,
+            event_type: None,
+        })
+        .expect("vector export succeeds");
+    let Output::ArrowExportResult(result) = output else {
+        panic!("unexpected export output");
+    };
+    assert_eq!(result.row_count(), 2);
+    assert!(output_path.exists());
+}
+
+#[test]
+fn graph_export_writes_node_and_edge_tables() {
+    let dir = TempDir::new().expect("temp dir");
+    let output_path = dir.path().join("graph.jsonl");
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    create_graph_fixture(&mut executor);
+
+    let output = executor
+        .execute(Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Graph,
+            format: ArrowFileFormat::Jsonl,
+            path: output_path.to_string_lossy().into_owned(),
+            prefix: None,
+            limit: None,
+            collection: None,
+            graph: Some("deps".to_owned()),
+            event_type: None,
+        })
+        .expect("graph export succeeds");
+    let Output::ArrowExportResult(result) = output else {
+        panic!("unexpected export output");
+    };
+    assert_eq!(result.primitive(), ArrowExportPrimitive::Graph);
+    assert_eq!(result.row_count(), 3);
+    assert_eq!(result.paths().len(), 2);
+    let node_path = dir.path().join("graph_nodes.jsonl");
+    let edge_path = dir.path().join("graph_edges.jsonl");
+    assert!(node_path.exists());
+    assert!(edge_path.exists());
+    assert!(fs::read_to_string(node_path)
+        .expect("nodes")
+        .contains("\"node_id\":\"node-a\""));
+    assert!(fs::read_to_string(edge_path)
+        .expect("edges")
+        .contains("\"edge_type\":\"depends_on\""));
+}
+
+#[test]
+fn missing_input_is_reported_before_arrow_feature_work() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let error = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: "definitely-missing.csv".to_owned(),
+            format: Some(ArrowFileFormat::Csv),
+            target: ArrowImportTarget::Kv,
+            key_column: None,
+            value_column: None,
+            collection: None,
+        })
+        .expect_err("missing input fails");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(
+        error.code(),
+        "invalid_argument.executor.arrow_input_missing"
+    );
+}
+
+fn assert_import_result(
+    result: &ArrowImportResult,
+    target: ArrowImportTarget,
+    rows_imported: u64,
+    rows_skipped: u64,
+    batches_processed: u64,
+) {
+    assert_eq!(result.target(), target);
+    assert_eq!(result.rows_imported(), rows_imported);
+    assert_eq!(result.rows_skipped(), rows_skipped);
+    assert_eq!(result.batches_processed(), batches_processed);
+}
+
+fn kv_get(executor: &mut Executor, key: Bytes) -> Option<Vec<u8>> {
+    let output = executor
+        .execute(Command::KvGet {
+            branch: None,
+            space: None,
+            key,
+            as_of: None,
+        })
+        .expect("kv get succeeds");
+    let Output::KvVersionedValue(value) = output else {
+        panic!("unexpected kv get output");
+    };
+    value.map(|value| value.value().as_slice().to_vec())
+}
+
+fn json_get(executor: &mut Executor, key: &str) -> Option<Value> {
+    let output = executor
+        .execute(Command::JsonGet {
+            branch: None,
+            space: None,
+            key: key.to_owned(),
+            path: "$".to_owned(),
+            as_of: None,
+        })
+        .expect("json get succeeds");
+    let Output::JsonVersionedValue(value) = output else {
+        panic!("unexpected json get output");
+    };
+    value.map(|value| value.value().clone())
+}
+
+fn vector_count(executor: &mut Executor, collection: &str) -> u64 {
+    let output = executor
+        .execute(Command::VectorCount {
+            branch: None,
+            space: None,
+            collection: collection.to_owned(),
+        })
+        .expect("vector count succeeds");
+    let Output::Uint(count) = output else {
+        panic!("unexpected vector count output");
+    };
+    count
+}
+
+fn vector_get_metadata(executor: &mut Executor, collection: &str, key: &str) -> Value {
+    let output = executor
+        .execute(Command::VectorGet {
+            branch: None,
+            space: None,
+            collection: collection.to_owned(),
+            key: key.to_owned(),
+            as_of: None,
+        })
+        .expect("vector get succeeds");
+    let Output::VectorData(Some(value)) = output else {
+        panic!("unexpected vector get output");
+    };
+    value.data().metadata().cloned().expect("metadata")
+}
+
+fn write_vector_parquet(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Utf8, false),
+        Field::new(
+            "embedding",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+            false,
+        ),
+        Field::new("kind", DataType::Utf8, false),
+    ]));
+    let mut embedding_builder = FixedSizeListBuilder::new(Float32Builder::new(), 2);
+    for value in [1.0, 0.0, 0.0, 1.0] {
+        embedding_builder.values().append_value(value);
+    }
+    embedding_builder.append(true);
+    embedding_builder.append(true);
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["doc-a", "doc-b"])),
+            Arc::new(embedding_builder.finish()),
+            Arc::new(StringArray::from(vec!["a", "b"])),
+        ],
+    )
+    .expect("record batch");
+    let file = std::fs::File::create(path).expect("create parquet");
+    let mut writer =
+        parquet::arrow::ArrowWriter::try_new(file, schema, None).expect("create parquet writer");
+    writer.write(&batch).expect("write parquet batch");
+    writer.close().expect("close parquet writer");
+}
+
+fn create_graph_fixture(executor: &mut Executor) {
+    executor
+        .execute(Command::GraphCreate {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+        })
+        .expect("graph create succeeds");
+    for (node_id, kind) in [("node-a", "root"), ("node-b", "leaf")] {
+        executor
+            .execute(Command::GraphAddNode {
+                branch: None,
+                space: None,
+                graph: "deps".to_owned(),
+                node_id: node_id.to_owned(),
+                properties: Some(json!({"kind": kind})),
+                binding: None,
+            })
+            .expect("node add succeeds");
+    }
+    executor
+        .execute(Command::GraphAddEdge {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            src: "node-a".to_owned(),
+            edge_type: "depends_on".to_owned(),
+            dst: "node-b".to_owned(),
+            weight: Some(2.5),
+            properties: Some(json!({"why": "test"})),
+        })
+        .expect("edge add succeeds");
+}

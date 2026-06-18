@@ -13,7 +13,23 @@ use strata_engine_next::{
     EventChainVerification as EngineEventChainVerification, EventPayload as EngineEventPayload,
     EventRangeDirection as EngineEventRangeDirection, EventRangePage as EngineEventRangePage,
     EventSequence as EngineEventSequence, EventService, EventType as EngineEventType,
-    EventVersionedRecord as EngineEventVersionedRecord, JsonDocumentId, JsonGetEntry, JsonHistory,
+    EventVersionedRecord as EngineEventVersionedRecord,
+    GraphBatchOpOutcome as EngineGraphBatchOpOutcome,
+    GraphBatchOperation as EngineGraphBatchOperation, GraphBatchWrite as EngineGraphBatchWrite,
+    GraphBatchWriteOutcome as EngineGraphBatchWriteOutcome, GraphBinding as EngineGraphBinding,
+    GraphBindingPage as EngineGraphBindingPage,
+    GraphBindingPrimitive as EngineGraphBindingPrimitive,
+    GraphBindingTarget as EngineGraphBindingTarget, GraphDeleteOutcome as EngineGraphDeleteOutcome,
+    GraphDirection as EngineGraphDirection, GraphEdge as EngineGraphEdge,
+    GraphEdgeData as EngineGraphEdgeData, GraphEdgeType as EngineGraphEdgeType,
+    GraphEdgeWriteOutcome as EngineGraphEdgeWriteOutcome,
+    GraphEntityBinding as EngineGraphEntityBinding, GraphInfo as EngineGraphInfo,
+    GraphName as EngineGraphName, GraphNamePage as EngineGraphNamePage,
+    GraphNeighbor as EngineGraphNeighbor, GraphNeighborPage as EngineGraphNeighborPage,
+    GraphNode as EngineGraphNode, GraphNodeData as EngineGraphNodeData,
+    GraphNodeId as EngineGraphNodeId, GraphNodePage as EngineGraphNodePage,
+    GraphProperties as EngineGraphProperties, GraphService,
+    GraphWriteOutcome as EngineGraphWriteOutcome, JsonDocumentId, JsonGetEntry, JsonHistory,
     JsonHistoryRow, JsonIndexDefinition as EngineJsonIndexDefinition, JsonIndexName,
     JsonIndexType as EngineJsonIndexType, JsonListPage, JsonPath, JsonSample as EngineJsonSample,
     JsonSampleRow, JsonService, JsonSetEntry, JsonValue as EngineJsonValue,
@@ -37,11 +53,14 @@ use crate::command::Command;
 use crate::error::{ExecutorError, ExecutorErrorClass, ExecutorResult};
 use crate::output::Output;
 use crate::types::{
-    BatchEventEntry, BatchGetItemResult, BatchItemResult, BatchJsonDeleteEntry, BatchJsonEntry,
-    BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry, BranchCleanupItem, BranchItem,
-    BranchParentItem, BranchStatus, Bytes, EventBatchAppendItemResult,
-    EventChainVerification as OutputEventChainVerification, EventData, EventRangeDirection,
-    EventVersionedData, HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
+    ArrowExportPrimitive, ArrowFileFormat, ArrowImportTarget, BatchEventEntry, BatchGetItemResult,
+    BatchItemResult, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry,
+    BatchVectorEntry, BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus, Bytes,
+    EventBatchAppendItemResult, EventChainVerification as OutputEventChainVerification, EventData,
+    EventRangeDirection, EventVersionedData, GraphBatchItemResult, GraphBatchOperation,
+    GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget, GraphDirection, GraphEdgeData,
+    GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData, GraphNeighborHit, GraphNodeData,
+    GraphNodeDataOutput, HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
     JsonIndexDefinition, JsonIndexType, JsonSampleItem,
     JsonVersionedValue as OutputJsonVersionedValue, SampleItem, ScanItem, VectorBatchGetItemResult,
     VectorBatchItemResult, VectorCollectionInfo as OutputVectorCollectionInfo, VectorData,
@@ -51,6 +70,7 @@ use crate::types::{
 
 const DEFAULT_JSON_LIST_LIMIT: usize = 100;
 const DEFAULT_VECTOR_LIST_LIMIT: usize = 100;
+const DEFAULT_GRAPH_LIST_LIMIT: usize = 100;
 
 /// Serialized command executor backed by an engine database handle.
 pub struct Executor {
@@ -566,6 +586,205 @@ impl Executor {
             Command::EventVerifyChain { branch, space } => {
                 self.execute_event_verify_chain(branch.as_deref(), space.as_deref())
             }
+            Command::GraphCreate {
+                branch,
+                space,
+                graph,
+            } => self.execute_graph_create(branch.as_deref(), space.as_deref(), graph),
+            Command::GraphDelete {
+                branch,
+                space,
+                graph,
+            } => self.execute_graph_delete(branch.as_deref(), space.as_deref(), graph),
+            Command::GraphList {
+                branch,
+                space,
+                cursor,
+                limit,
+            } => self.execute_graph_list(branch.as_deref(), space.as_deref(), cursor, limit),
+            Command::GraphGetMeta {
+                branch,
+                space,
+                graph,
+            } => self.execute_graph_get_meta(branch.as_deref(), space.as_deref(), graph),
+            Command::GraphAddNode {
+                branch,
+                space,
+                graph,
+                node_id,
+                properties,
+                binding,
+            } => self.execute_graph_add_node(
+                branch.as_deref(),
+                space.as_deref(),
+                graph,
+                node_id,
+                properties,
+                binding,
+            ),
+            Command::GraphGetNode {
+                branch,
+                space,
+                graph,
+                node_id,
+            } => self.execute_graph_get_node(branch.as_deref(), space.as_deref(), graph, node_id),
+            Command::GraphRemoveNode {
+                branch,
+                space,
+                graph,
+                node_id,
+            } => {
+                self.execute_graph_remove_node(branch.as_deref(), space.as_deref(), graph, node_id)
+            }
+            Command::GraphListNodes {
+                branch,
+                space,
+                graph,
+                prefix,
+                cursor,
+                limit,
+            } => self.execute_graph_list_nodes(
+                branch.as_deref(),
+                space.as_deref(),
+                graph,
+                prefix,
+                cursor,
+                limit,
+            ),
+            Command::GraphAddEdge {
+                branch,
+                space,
+                graph,
+                src,
+                edge_type,
+                dst,
+                weight,
+                properties,
+            } => self.execute_graph_add_edge(
+                branch.as_deref(),
+                space.as_deref(),
+                graph,
+                src,
+                edge_type,
+                dst,
+                weight,
+                properties,
+            ),
+            Command::GraphGetEdge {
+                branch,
+                space,
+                graph,
+                src,
+                edge_type,
+                dst,
+            } => self.execute_graph_get_edge(
+                branch.as_deref(),
+                space.as_deref(),
+                graph,
+                src,
+                edge_type,
+                dst,
+            ),
+            Command::GraphRemoveEdge {
+                branch,
+                space,
+                graph,
+                src,
+                edge_type,
+                dst,
+            } => self.execute_graph_remove_edge(
+                branch.as_deref(),
+                space.as_deref(),
+                graph,
+                src,
+                edge_type,
+                dst,
+            ),
+            Command::GraphNeighbors {
+                branch,
+                space,
+                graph,
+                node_id,
+                direction,
+                edge_type,
+                cursor,
+                limit,
+            } => self.execute_graph_neighbors(
+                branch.as_deref(),
+                space.as_deref(),
+                graph,
+                node_id,
+                direction,
+                edge_type,
+                cursor.as_deref(),
+                limit,
+            ),
+            Command::GraphBindingsForEntity {
+                branch,
+                space,
+                target,
+                cursor,
+                limit,
+            } => self.execute_graph_bindings_for_entity(
+                branch.as_deref(),
+                space.as_deref(),
+                target,
+                cursor.as_deref(),
+                limit,
+            ),
+            Command::GraphBatchWrite {
+                branch,
+                space,
+                graph,
+                operations,
+            } => self.execute_graph_batch_write(
+                branch.as_deref(),
+                space.as_deref(),
+                graph,
+                operations,
+            ),
+            Command::ArrowImport {
+                branch,
+                space,
+                file_path,
+                format,
+                target,
+                key_column,
+                value_column,
+                collection,
+            } => self.execute_arrow_import(
+                branch.as_deref(),
+                space.as_deref(),
+                file_path,
+                format,
+                target,
+                key_column.as_deref(),
+                value_column.as_deref(),
+                collection.as_deref(),
+            ),
+            Command::ArrowExport {
+                branch,
+                space,
+                primitive,
+                format,
+                path,
+                prefix,
+                limit,
+                collection,
+                graph,
+                event_type,
+            } => self.execute_arrow_export(
+                branch.as_deref(),
+                space.as_deref(),
+                primitive,
+                format,
+                path,
+                prefix.as_deref(),
+                limit,
+                collection,
+                graph,
+                event_type,
+            ),
         }
     }
 
@@ -1779,6 +1998,280 @@ impl Executor {
         )))
     }
 
+    fn execute_graph_create(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(Output::GraphInfo(graph_info_data(
+            &service.create_graph(graph)?,
+        )))
+    }
+
+    fn execute_graph_delete(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_delete_output(
+            &service.delete_graph(&graph)?,
+            None,
+            None,
+            None,
+            None,
+        ))
+    }
+
+    fn execute_graph_list(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        cursor: Option<String>,
+        limit: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let cursor = optional_graph_name(cursor)?;
+        let limit = optional_limit(limit)?.unwrap_or(DEFAULT_GRAPH_LIST_LIMIT);
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_name_page_output(
+            &service.list_graphs(cursor.as_ref(), limit)?,
+        ))
+    }
+
+    fn execute_graph_get_meta(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(Output::GraphInfoResult(
+            service.graph_info(&graph)?.as_ref().map(graph_info_data),
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_graph_add_node(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        node_id: String,
+        properties: Option<serde_json::Value>,
+        binding: Option<GraphEntityBinding>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let node_id = graph_node_id(node_id)?;
+        let data = engine_graph_node_data(GraphNodeData::new(properties, binding))?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_node_write_output(
+            &service.upsert_node(&graph, node_id, data)?,
+        ))
+    }
+
+    fn execute_graph_get_node(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        node_id: String,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let node_id = graph_node_id(node_id)?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(Output::GraphNodeResult(
+            service
+                .get_node(&graph, &node_id)?
+                .as_ref()
+                .map(graph_node_data_output),
+        ))
+    }
+
+    fn execute_graph_remove_node(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        node_id: String,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let node_id = graph_node_id(node_id)?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_delete_output(
+            &service.delete_node(&graph, &node_id)?,
+            Some(node_id.as_str().to_owned()),
+            None,
+            None,
+            None,
+        ))
+    }
+
+    fn execute_graph_list_nodes(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        prefix: Option<String>,
+        cursor: Option<String>,
+        limit: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let prefix = optional_graph_node_id(prefix)?;
+        let cursor = optional_graph_node_id(cursor)?;
+        let limit = optional_limit(limit)?.unwrap_or(DEFAULT_GRAPH_LIST_LIMIT);
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_node_page_output(&service.list_nodes(
+            &graph,
+            prefix.as_ref(),
+            cursor.as_ref(),
+            limit,
+        )?))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_graph_add_edge(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        src: String,
+        edge_type: String,
+        dst: String,
+        weight: Option<f64>,
+        properties: Option<serde_json::Value>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let src = graph_node_id(src)?;
+        let edge_type = graph_edge_type(edge_type)?;
+        let dst = graph_node_id(dst)?;
+        let data = engine_graph_edge_data(GraphEdgeData::new(weight, properties))?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_edge_write_output(
+            &service.upsert_edge(&graph, src, edge_type, dst, data)?,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_graph_get_edge(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        src: String,
+        edge_type: String,
+        dst: String,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let src = graph_node_id(src)?;
+        let edge_type = graph_edge_type(edge_type)?;
+        let dst = graph_node_id(dst)?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(Output::GraphEdgeResult(
+            service
+                .get_edge(&graph, &src, &edge_type, &dst)?
+                .as_ref()
+                .map(graph_edge_data_output),
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_graph_remove_edge(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        src: String,
+        edge_type: String,
+        dst: String,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let src = graph_node_id(src)?;
+        let edge_type = graph_edge_type(edge_type)?;
+        let dst = graph_node_id(dst)?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_delete_output(
+            &service.delete_edge(&graph, &src, &edge_type, &dst)?,
+            None,
+            Some(src.as_str().to_owned()),
+            Some(edge_type.as_str().to_owned()),
+            Some(dst.as_str().to_owned()),
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_graph_neighbors(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        node_id: String,
+        direction: GraphDirection,
+        edge_type: Option<String>,
+        cursor: Option<&str>,
+        limit: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let node_id = graph_node_id(node_id)?;
+        let direction = engine_graph_direction(direction);
+        let edge_type = optional_graph_edge_type(edge_type)?;
+        let limit = optional_limit(limit)?.unwrap_or(DEFAULT_GRAPH_LIST_LIMIT);
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_neighbor_page_output(&service.neighbors(
+            &graph,
+            &node_id,
+            direction,
+            edge_type.as_ref(),
+            cursor,
+            limit,
+        )?))
+    }
+
+    fn execute_graph_bindings_for_entity(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        target: GraphBindingTarget,
+        cursor: Option<&str>,
+        limit: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let target = engine_graph_binding_target(target)?;
+        let limit = optional_limit(limit)?.unwrap_or(DEFAULT_GRAPH_LIST_LIMIT);
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_binding_page_output(
+            &service.bindings_for_entity(&target, cursor, limit)?,
+        ))
+    }
+
+    fn execute_graph_batch_write(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        operations: Vec<GraphBatchOperation>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let operation_names = operations
+            .iter()
+            .map(graph_batch_operation_name)
+            .collect::<Vec<_>>();
+        let operations = operations
+            .into_iter()
+            .map(engine_graph_batch_operation)
+            .collect::<ExecutorResult<Vec<_>>>()?;
+        let batch = EngineGraphBatchWrite::new(operations);
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_batch_write_output(
+            &service.batch_write(&graph, &batch)?,
+            &operation_names,
+        ))
+    }
+
     fn kv_service(
         &mut self,
         branch: Option<&str>,
@@ -1834,6 +2327,115 @@ impl Executor {
         }
         Ok(self.database.event(branch, space)?)
     }
+
+    fn graph_service(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+    ) -> ExecutorResult<GraphService<'_>> {
+        let branch = branch_name(branch, &self.default_branch)?;
+        let space = product_space(space)?;
+        {
+            let branches = self.database.branches()?;
+            branches.get(&branch)?;
+        }
+        Ok(self.database.graph(branch, space)?)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "arrow")]
+    fn execute_arrow_import(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        file_path: String,
+        format: Option<ArrowFileFormat>,
+        target: ArrowImportTarget,
+        key_column: Option<&str>,
+        value_column: Option<&str>,
+        collection: Option<&str>,
+    ) -> ExecutorResult<Output> {
+        crate::arrow::import::import_file(
+            self,
+            branch,
+            space,
+            file_path,
+            format,
+            target,
+            key_column,
+            value_column,
+            collection,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[cfg(not(feature = "arrow"))]
+    fn execute_arrow_import(
+        &mut self,
+        _branch: Option<&str>,
+        _space: Option<&str>,
+        file_path: String,
+        _format: Option<ArrowFileFormat>,
+        _target: ArrowImportTarget,
+        _key_column: Option<&str>,
+        _value_column: Option<&str>,
+        _collection: Option<&str>,
+    ) -> ExecutorResult<Output> {
+        if !std::path::Path::new(&file_path).exists() {
+            return Err(ExecutorError::invalid_input(
+                "invalid_argument.executor.arrow_input_missing",
+                format!("file not found: '{file_path}'"),
+            ));
+        }
+        Err(arrow_feature_disabled())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[cfg(feature = "arrow")]
+    fn execute_arrow_export(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        primitive: ArrowExportPrimitive,
+        format: ArrowFileFormat,
+        path: String,
+        prefix: Option<&str>,
+        limit: Option<u64>,
+        collection: Option<String>,
+        graph: Option<String>,
+        event_type: Option<String>,
+    ) -> ExecutorResult<Output> {
+        crate::arrow::export::export_file(
+            self, branch, space, primitive, format, path, prefix, limit, collection, graph,
+            event_type,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[cfg(not(feature = "arrow"))]
+    fn execute_arrow_export(
+        &mut self,
+        _branch: Option<&str>,
+        _space: Option<&str>,
+        _primitive: ArrowExportPrimitive,
+        _format: ArrowFileFormat,
+        _path: String,
+        _prefix: Option<&str>,
+        _limit: Option<u64>,
+        _collection: Option<String>,
+        _graph: Option<String>,
+        _event_type: Option<String>,
+    ) -> ExecutorResult<Output> {
+        Err(arrow_feature_disabled())
+    }
+}
+
+#[cfg(not(feature = "arrow"))]
+fn arrow_feature_disabled() -> ExecutorError {
+    ExecutorError::invalid_input(
+        "invalid_argument.executor.arrow_feature_disabled",
+        "Arrow import/export requires the executor arrow feature",
+    )
 }
 
 impl Executor {
@@ -2471,6 +3073,222 @@ impl Executor {
             space: None,
         })
     }
+
+    /// Executes a default-branch graph-create command.
+    pub fn graph_create(&mut self, graph: impl Into<String>) -> ExecutorResult<Output> {
+        self.execute(Command::GraphCreate {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+        })
+    }
+
+    /// Executes a default-branch graph-delete command.
+    pub fn graph_delete(&mut self, graph: impl Into<String>) -> ExecutorResult<Output> {
+        self.execute(Command::GraphDelete {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+        })
+    }
+
+    /// Executes a default-branch graph-list command.
+    pub fn graph_list(
+        &mut self,
+        cursor: Option<String>,
+        limit: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphList {
+            branch: None,
+            space: None,
+            cursor,
+            limit,
+        })
+    }
+
+    /// Executes a default-branch graph-metadata command.
+    pub fn graph_get_meta(&mut self, graph: impl Into<String>) -> ExecutorResult<Output> {
+        self.execute(Command::GraphGetMeta {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+        })
+    }
+
+    /// Executes a default-branch graph node upsert command.
+    pub fn graph_add_node(
+        &mut self,
+        graph: impl Into<String>,
+        node_id: impl Into<String>,
+        properties: Option<serde_json::Value>,
+        binding: Option<GraphEntityBinding>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphAddNode {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            node_id: node_id.into(),
+            properties,
+            binding,
+        })
+    }
+
+    /// Executes a default-branch graph node get command.
+    pub fn graph_get_node(
+        &mut self,
+        graph: impl Into<String>,
+        node_id: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphGetNode {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            node_id: node_id.into(),
+        })
+    }
+
+    /// Executes a default-branch graph node delete command.
+    pub fn graph_remove_node(
+        &mut self,
+        graph: impl Into<String>,
+        node_id: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphRemoveNode {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            node_id: node_id.into(),
+        })
+    }
+
+    /// Executes a default-branch graph node-list command.
+    pub fn graph_list_nodes(
+        &mut self,
+        graph: impl Into<String>,
+        prefix: Option<String>,
+        cursor: Option<String>,
+        limit: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphListNodes {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            prefix,
+            cursor,
+            limit,
+        })
+    }
+
+    /// Executes a default-branch graph edge upsert command.
+    #[allow(clippy::too_many_arguments)]
+    pub fn graph_add_edge(
+        &mut self,
+        graph: impl Into<String>,
+        src: impl Into<String>,
+        edge_type: impl Into<String>,
+        dst: impl Into<String>,
+        weight: Option<f64>,
+        properties: Option<serde_json::Value>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphAddEdge {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            src: src.into(),
+            edge_type: edge_type.into(),
+            dst: dst.into(),
+            weight,
+            properties,
+        })
+    }
+
+    /// Executes a default-branch graph edge get command.
+    pub fn graph_get_edge(
+        &mut self,
+        graph: impl Into<String>,
+        src: impl Into<String>,
+        edge_type: impl Into<String>,
+        dst: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphGetEdge {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            src: src.into(),
+            edge_type: edge_type.into(),
+            dst: dst.into(),
+        })
+    }
+
+    /// Executes a default-branch graph edge delete command.
+    pub fn graph_remove_edge(
+        &mut self,
+        graph: impl Into<String>,
+        src: impl Into<String>,
+        edge_type: impl Into<String>,
+        dst: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphRemoveEdge {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            src: src.into(),
+            edge_type: edge_type.into(),
+            dst: dst.into(),
+        })
+    }
+
+    /// Executes a default-branch graph neighbors command.
+    pub fn graph_neighbors(
+        &mut self,
+        graph: impl Into<String>,
+        node_id: impl Into<String>,
+        direction: GraphDirection,
+        edge_type: Option<String>,
+        cursor: Option<String>,
+        limit: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphNeighbors {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            node_id: node_id.into(),
+            direction,
+            edge_type,
+            cursor,
+            limit,
+        })
+    }
+
+    /// Executes a default-branch graph binding lookup command.
+    pub fn graph_bindings_for_entity(
+        &mut self,
+        target: GraphBindingTarget,
+        cursor: Option<String>,
+        limit: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphBindingsForEntity {
+            branch: None,
+            space: None,
+            target,
+            cursor,
+            limit,
+        })
+    }
+
+    /// Executes a default-branch graph batch write command.
+    pub fn graph_batch_write(
+        &mut self,
+        graph: impl Into<String>,
+        operations: Vec<GraphBatchOperation>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphBatchWrite {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            operations,
+        })
+    }
 }
 
 fn branch_name(branch: Option<&str>, default: &str) -> ExecutorResult<BranchName> {
@@ -3104,6 +3922,363 @@ fn event_chain_verification(
             .first_invalid()
             .map(EngineEventSequence::as_u64),
         verification.error_message().map(str::to_owned),
+    )
+}
+
+fn graph_name(name: String) -> ExecutorResult<EngineGraphName> {
+    EngineGraphName::new(name).map_err(ExecutorError::from)
+}
+
+fn optional_graph_name(name: Option<String>) -> ExecutorResult<Option<EngineGraphName>> {
+    name.map(graph_name).transpose()
+}
+
+fn graph_node_id(node_id: String) -> ExecutorResult<EngineGraphNodeId> {
+    EngineGraphNodeId::new(node_id).map_err(ExecutorError::from)
+}
+
+fn optional_graph_node_id(node_id: Option<String>) -> ExecutorResult<Option<EngineGraphNodeId>> {
+    node_id.map(graph_node_id).transpose()
+}
+
+fn graph_edge_type(edge_type: String) -> ExecutorResult<EngineGraphEdgeType> {
+    EngineGraphEdgeType::new(edge_type).map_err(ExecutorError::from)
+}
+
+fn optional_graph_edge_type(
+    edge_type: Option<String>,
+) -> ExecutorResult<Option<EngineGraphEdgeType>> {
+    edge_type.map(graph_edge_type).transpose()
+}
+
+fn engine_graph_properties(
+    properties: Option<serde_json::Value>,
+) -> ExecutorResult<Option<EngineGraphProperties>> {
+    properties
+        .map(EngineGraphProperties::new)
+        .transpose()
+        .map_err(ExecutorError::from)
+}
+
+fn engine_graph_node_data(data: GraphNodeData) -> ExecutorResult<EngineGraphNodeData> {
+    let (properties, binding) = data.into_parts();
+    Ok(EngineGraphNodeData::new(
+        engine_graph_properties(properties)?,
+        binding.map(engine_graph_entity_binding).transpose()?,
+    ))
+}
+
+fn engine_graph_edge_data(data: GraphEdgeData) -> ExecutorResult<EngineGraphEdgeData> {
+    let (weight, properties) = data.into_parts();
+    let properties = engine_graph_properties(properties)?;
+    if let Some(weight) = weight {
+        return EngineGraphEdgeData::new(weight, properties).map_err(ExecutorError::from);
+    }
+    Ok(EngineGraphEdgeData::default_weight(properties))
+}
+
+const fn engine_graph_direction(direction: GraphDirection) -> EngineGraphDirection {
+    match direction {
+        GraphDirection::Outgoing => EngineGraphDirection::Outgoing,
+        GraphDirection::Incoming => EngineGraphDirection::Incoming,
+        GraphDirection::Both => EngineGraphDirection::Both,
+    }
+}
+
+const fn output_graph_direction(direction: EngineGraphDirection) -> GraphDirection {
+    match direction {
+        EngineGraphDirection::Outgoing => GraphDirection::Outgoing,
+        EngineGraphDirection::Incoming => GraphDirection::Incoming,
+        EngineGraphDirection::Both => GraphDirection::Both,
+    }
+}
+
+const fn engine_graph_binding_primitive(
+    primitive: GraphBindingPrimitive,
+) -> EngineGraphBindingPrimitive {
+    match primitive {
+        GraphBindingPrimitive::Kv => EngineGraphBindingPrimitive::Kv,
+        GraphBindingPrimitive::Json => EngineGraphBindingPrimitive::Json,
+        GraphBindingPrimitive::Vector => EngineGraphBindingPrimitive::Vector,
+        GraphBindingPrimitive::Event => EngineGraphBindingPrimitive::Event,
+        GraphBindingPrimitive::Graph => EngineGraphBindingPrimitive::Graph,
+    }
+}
+
+const fn output_graph_binding_primitive(
+    primitive: EngineGraphBindingPrimitive,
+) -> GraphBindingPrimitive {
+    match primitive {
+        EngineGraphBindingPrimitive::Kv => GraphBindingPrimitive::Kv,
+        EngineGraphBindingPrimitive::Json => GraphBindingPrimitive::Json,
+        EngineGraphBindingPrimitive::Vector => GraphBindingPrimitive::Vector,
+        EngineGraphBindingPrimitive::Event => GraphBindingPrimitive::Event,
+        EngineGraphBindingPrimitive::Graph => GraphBindingPrimitive::Graph,
+    }
+}
+
+fn engine_graph_binding_target(
+    target: GraphBindingTarget,
+) -> ExecutorResult<EngineGraphBindingTarget> {
+    let (primitive, branch, space, key) = target.into_parts();
+    let branch = branch
+        .as_deref()
+        .map(|branch| branch_name(Some(branch), DEFAULT_BRANCH))
+        .transpose()?;
+    let space = product_space(Some(&space))?;
+    EngineGraphBindingTarget::new(
+        engine_graph_binding_primitive(primitive),
+        branch,
+        space,
+        key,
+    )
+    .map_err(ExecutorError::from)
+}
+
+fn engine_graph_entity_binding(
+    binding: GraphEntityBinding,
+) -> ExecutorResult<EngineGraphEntityBinding> {
+    Ok(EngineGraphEntityBinding::new(engine_graph_binding_target(
+        binding.into_target(),
+    )?))
+}
+
+fn engine_graph_batch_operation(
+    operation: GraphBatchOperation,
+) -> ExecutorResult<EngineGraphBatchOperation> {
+    match operation {
+        GraphBatchOperation::UpsertNode { node_id, data } => {
+            Ok(EngineGraphBatchOperation::UpsertNode {
+                node_id: graph_node_id(node_id)?,
+                data: engine_graph_node_data(data)?,
+            })
+        }
+        GraphBatchOperation::DeleteNode { node_id } => Ok(EngineGraphBatchOperation::DeleteNode {
+            node_id: graph_node_id(node_id)?,
+        }),
+        GraphBatchOperation::UpsertEdge {
+            src,
+            edge_type,
+            dst,
+            data,
+        } => Ok(EngineGraphBatchOperation::UpsertEdge {
+            src: graph_node_id(src)?,
+            edge_type: graph_edge_type(edge_type)?,
+            dst: graph_node_id(dst)?,
+            data: engine_graph_edge_data(data)?,
+        }),
+        GraphBatchOperation::DeleteEdge {
+            src,
+            edge_type,
+            dst,
+        } => Ok(EngineGraphBatchOperation::DeleteEdge {
+            src: graph_node_id(src)?,
+            edge_type: graph_edge_type(edge_type)?,
+            dst: graph_node_id(dst)?,
+        }),
+    }
+}
+
+const fn graph_batch_operation_name(operation: &GraphBatchOperation) -> &'static str {
+    match operation {
+        GraphBatchOperation::UpsertNode { .. } => "upsert_node",
+        GraphBatchOperation::DeleteNode { .. } => "delete_node",
+        GraphBatchOperation::UpsertEdge { .. } => "upsert_edge",
+        GraphBatchOperation::DeleteEdge { .. } => "delete_edge",
+    }
+}
+
+fn output_graph_binding_target(target: &EngineGraphBindingTarget) -> GraphBindingTarget {
+    GraphBindingTarget::new(
+        output_graph_binding_primitive(target.primitive()),
+        target.branch().map(|branch| branch.as_str().to_owned()),
+        target.space().as_str().to_owned(),
+        target.key().to_owned(),
+    )
+}
+
+fn output_graph_entity_binding(binding: &EngineGraphEntityBinding) -> GraphEntityBinding {
+    GraphEntityBinding::new(output_graph_binding_target(binding.target()))
+}
+
+fn graph_info_data(info: &EngineGraphInfo) -> GraphInfoData {
+    GraphInfoData::new(
+        info.name().as_str().to_owned(),
+        info.node_count(),
+        info.edge_count(),
+        info.created_version().as_u64(),
+        info.created_timestamp().as_micros(),
+        info.updated_version().as_u64(),
+        info.updated_timestamp().as_micros(),
+    )
+}
+
+fn graph_node_data_output(node: &EngineGraphNode) -> GraphNodeDataOutput {
+    GraphNodeDataOutput::new(
+        node.graph().as_str().to_owned(),
+        node.node_id().as_str().to_owned(),
+        node.data()
+            .properties()
+            .map(|properties| properties.as_inner().clone()),
+        node.data().binding().map(output_graph_entity_binding),
+        node.version().as_u64(),
+        node.timestamp().as_micros(),
+    )
+}
+
+fn graph_edge_data_output(edge: &EngineGraphEdge) -> GraphEdgeDataOutput {
+    GraphEdgeDataOutput::new(
+        edge.graph().as_str().to_owned(),
+        edge.src().as_str().to_owned(),
+        edge.edge_type().as_str().to_owned(),
+        edge.dst().as_str().to_owned(),
+        edge.data().weight(),
+        edge.data()
+            .properties()
+            .map(|properties| properties.as_inner().clone()),
+        edge.version().as_u64(),
+        edge.timestamp().as_micros(),
+    )
+}
+
+fn graph_neighbor_hit(neighbor: &EngineGraphNeighbor) -> GraphNeighborHit {
+    GraphNeighborHit::new(
+        graph_node_data_output(neighbor.node()),
+        graph_edge_data_output(neighbor.edge()),
+        output_graph_direction(neighbor.direction()),
+    )
+}
+
+fn graph_binding_hit(binding: &EngineGraphBinding) -> GraphBindingHit {
+    GraphBindingHit::new(
+        binding.graph().as_str().to_owned(),
+        binding.node_id().as_str().to_owned(),
+        output_graph_entity_binding(binding.binding()),
+        binding.version().as_u64(),
+        binding.timestamp().as_micros(),
+    )
+}
+
+fn graph_name_page_output(page: &EngineGraphNamePage) -> Output {
+    Output::GraphNamePage {
+        graphs: page
+            .graphs()
+            .iter()
+            .map(|graph| graph.as_str().to_owned())
+            .collect(),
+        has_more: page.has_more(),
+        cursor: page.cursor().map(|cursor| cursor.as_str().to_owned()),
+    }
+}
+
+fn graph_node_page_output(page: &EngineGraphNodePage) -> Output {
+    Output::GraphNodePage {
+        nodes: page.nodes().iter().map(graph_node_data_output).collect(),
+        has_more: page.has_more(),
+        cursor: page.cursor().map(|cursor| cursor.as_str().to_owned()),
+    }
+}
+
+fn graph_neighbor_page_output(page: &EngineGraphNeighborPage) -> Output {
+    Output::GraphNeighborPage {
+        neighbors: page.neighbors().iter().map(graph_neighbor_hit).collect(),
+        has_more: page.has_more(),
+        cursor: page.cursor().map(str::to_owned),
+    }
+}
+
+fn graph_binding_page_output(page: &EngineGraphBindingPage) -> Output {
+    Output::GraphBindingPage {
+        bindings: page.bindings().iter().map(graph_binding_hit).collect(),
+        has_more: page.has_more(),
+        cursor: page.cursor().map(str::to_owned),
+    }
+}
+
+fn graph_node_write_output(outcome: &EngineGraphWriteOutcome) -> Output {
+    let commit = outcome.commit();
+    Output::GraphNodeWriteResult {
+        graph: outcome.graph().as_str().to_owned(),
+        node_id: outcome.node_id().as_str().to_owned(),
+        created: outcome.created(),
+        version: commit.version().as_u64(),
+        timestamp: commit.timestamp().as_micros(),
+    }
+}
+
+fn graph_edge_write_output(outcome: &EngineGraphEdgeWriteOutcome) -> Output {
+    let commit = outcome.commit();
+    Output::GraphEdgeWriteResult {
+        graph: outcome.graph().as_str().to_owned(),
+        src: outcome.src().as_str().to_owned(),
+        edge_type: outcome.edge_type().as_str().to_owned(),
+        dst: outcome.dst().as_str().to_owned(),
+        created: outcome.created(),
+        version: commit.version().as_u64(),
+        timestamp: commit.timestamp().as_micros(),
+    }
+}
+
+fn graph_delete_output(
+    outcome: &EngineGraphDeleteOutcome,
+    node_id: Option<String>,
+    src: Option<String>,
+    edge_type: Option<String>,
+    dst: Option<String>,
+) -> Output {
+    Output::GraphDeleteResult {
+        graph: outcome.graph().as_str().to_owned(),
+        node_id,
+        src,
+        edge_type,
+        dst,
+        deleted: outcome.deleted(),
+        version: outcome.commit().map(|commit| commit.version().as_u64()),
+        timestamp: outcome
+            .commit()
+            .map(|commit| commit.timestamp().as_micros()),
+    }
+}
+
+fn graph_batch_write_output(
+    outcome: &EngineGraphBatchWriteOutcome,
+    operation_names: &[&'static str],
+) -> Output {
+    let version = outcome.commit().map(|commit| commit.version().as_u64());
+    let timestamp = outcome
+        .commit()
+        .map(|commit| commit.timestamp().as_micros());
+    Output::GraphBatchWriteResult {
+        graph: outcome.graph().as_str().to_owned(),
+        results: outcome
+            .results()
+            .iter()
+            .map(|item| graph_batch_item_result(item, operation_names, version, timestamp))
+            .collect(),
+        version,
+        timestamp,
+    }
+}
+
+fn graph_batch_item_result(
+    item: &EngineGraphBatchOpOutcome,
+    operation_names: &[&'static str],
+    version: Option<u64>,
+    timestamp: Option<u64>,
+) -> GraphBatchItemResult {
+    let operation_index = usize_to_u64(item.operation_index());
+    let operation = operation_names
+        .get(item.operation_index())
+        .copied()
+        .unwrap_or("unknown");
+    let applied = item.created_flag().is_some() || item.deleted_flag() == Some(true);
+    GraphBatchItemResult::new(
+        operation_index,
+        operation,
+        item.created_flag(),
+        item.deleted_flag(),
+        applied.then_some(version).flatten(),
+        applied.then_some(timestamp).flatten(),
     )
 }
 

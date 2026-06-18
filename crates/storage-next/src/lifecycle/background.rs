@@ -63,6 +63,11 @@ pub(crate) trait MaintenanceClock: Send + Sync {
     fn now(&self) -> MaintenanceInstant;
 
     fn sleep(&self, duration: Duration);
+
+    /// Advance simulated time without blocking. The manual clock moves its elapsed
+    /// counter; the real clock is a deliberate no-op (an explicit advance must never
+    /// block a background runtime). Distinct from `sleep`, which the real clock honors.
+    fn advance(&self, duration: Duration);
 }
 
 #[derive(Debug)]
@@ -86,22 +91,16 @@ impl MaintenanceClock for RealMaintenanceClock {
     fn sleep(&self, duration: Duration) {
         std::thread::sleep(duration);
     }
+
+    fn advance(&self, _duration: Duration) {
+        // Real time advances on its own; an explicit advance is a no-op so it can
+        // never block a background runtime running on the real clock.
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ManualMaintenanceClock {
     elapsed_nanos: Arc<AtomicU64>,
-}
-
-impl ManualMaintenanceClock {
-    pub(crate) fn advance(&self, duration: Duration) {
-        let nanos = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
-        self.elapsed_nanos
-            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
-                Some(current.saturating_add(nanos))
-            })
-            .expect("manual maintenance clock update is infallible");
-    }
 }
 
 impl MaintenanceClock for ManualMaintenanceClock {
@@ -113,6 +112,15 @@ impl MaintenanceClock for ManualMaintenanceClock {
 
     fn sleep(&self, duration: Duration) {
         self.advance(duration);
+    }
+
+    fn advance(&self, duration: Duration) {
+        let nanos = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
+        self.elapsed_nanos
+            .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
+                Some(current.saturating_add(nanos))
+            })
+            .expect("manual maintenance clock update is infallible");
     }
 }
 

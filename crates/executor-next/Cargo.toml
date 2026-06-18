@@ -10,11 +10,15 @@ publish = false
 description = "Serializable command boundary for the rebuilt engine"
 
 [features]
-default = ["localfs"]
+default = ["localfs", "arrow"]
+arrow = ["dep:arrow", "dep:base64", "dep:parquet"]
 localfs = ["strata-engine-next/localfs"]
 testkit = ["strata-engine-next/testkit"]
 
 [dependencies]
+arrow = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+parquet = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }
 serde_json = { workspace = true }

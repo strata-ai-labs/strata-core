@@ -1,12 +1,15 @@
 //! KV input types.
 
+use serde::{Deserialize, Deserializer, Serialize};
+
 use crate::branch::SYSTEM_BRANCH;
 use crate::diagnostics::{EngineError, EngineResult};
 
 const MAX_PRODUCT_SPACE_BYTES: usize = u16::MAX as usize;
 
 /// Product KV space name.
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize)]
+#[serde(transparent)]
 pub struct ProductSpace(String);
 
 impl ProductSpace {
@@ -52,6 +55,15 @@ impl TryFrom<&str> for ProductSpace {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         Self::new(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for ProductSpace {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
 

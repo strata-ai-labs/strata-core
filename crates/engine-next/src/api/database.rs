@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crate::branch::BranchService;
 use crate::control::{bootstrap_or_load, ControlPlane};
 use crate::data::event::EventService;
+use crate::data::graph::GraphService;
 #[cfg(any(test, feature = "testkit"))]
 use crate::data::json::JsonIndexName;
 use crate::data::json::JsonService;
@@ -218,6 +219,22 @@ impl Database {
         self.require_open()?;
         self.control.require_healthy()?;
         Ok(EventService::new(
+            &mut self.persistence,
+            &mut self.control,
+            branch,
+            space,
+        ))
+    }
+
+    /// Returns a graph core service for the selected branch and space.
+    pub fn graph(
+        &mut self,
+        branch: BranchName,
+        space: ProductSpace,
+    ) -> EngineResult<GraphService<'_>> {
+        self.require_open()?;
+        self.control.require_healthy()?;
+        Ok(GraphService::new(
             &mut self.persistence,
             &mut self.control,
             branch,
