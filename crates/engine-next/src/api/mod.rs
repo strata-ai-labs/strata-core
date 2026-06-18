@@ -5,6 +5,7 @@ mod database;
 mod json;
 mod kv;
 mod options;
+mod vector;
 
 pub use branch::{
     BranchCleanupSummary, BranchCreateOutcome, BranchDeleteOutcome, BranchParentSummary,
@@ -24,6 +25,15 @@ pub use kv::{
     KvScanRow, KvService, KvValue, KvVersionedValue, ProductSpace,
 };
 pub use options::{CacheOpenOptions, DurableLocalOpenOptions};
+pub use vector::{
+    VectorBatchDeleteOutcome, VectorBatchGetOutcome, VectorBatchUpsertOutcome,
+    VectorBulkDeleteOutcome, VectorCollectionInfo, VectorCollectionName, VectorConfig,
+    VectorDeleteOutcome, VectorDistanceMetric, VectorEmbedding, VectorEntry, VectorFilter,
+    VectorFilterCondition, VectorFilterOp, VectorHistory, VectorHistoryRow, VectorKey,
+    VectorKeyPage, VectorMetadata, VectorMetadataPatch, VectorMetadataUpdateOutcome, VectorScalar,
+    VectorSearchMatch, VectorSearchResult, VectorService, VectorUpsertEntry, VectorVersionedEntry,
+    VectorWriteOutcome,
+};
 
 pub use crate::branch::{BranchName, BranchService};
 pub use crate::commit::CommitOutcome;

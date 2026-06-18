@@ -8,6 +8,7 @@ use crate::control::{bootstrap_or_load, ControlPlane};
 use crate::data::json::JsonIndexName;
 use crate::data::json::JsonService;
 use crate::data::kv::{KvService, ProductSpace};
+use crate::data::vector::VectorService;
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{
     close_summary_is_durable, PersistenceOpenSummary, PersistenceOpenTarget, StoragePersistence,
@@ -184,6 +185,22 @@ impl Database {
         self.require_open()?;
         self.control.require_healthy()?;
         Ok(JsonService::new(
+            &mut self.persistence,
+            &mut self.control,
+            branch,
+            space,
+        ))
+    }
+
+    /// Returns a vector service for the selected branch and space.
+    pub fn vector(
+        &mut self,
+        branch: BranchName,
+        space: ProductSpace,
+    ) -> EngineResult<VectorService<'_>> {
+        self.require_open()?;
+        self.control.require_healthy()?;
+        Ok(VectorService::new(
             &mut self.persistence,
             &mut self.control,
             branch,

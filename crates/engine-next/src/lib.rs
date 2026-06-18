@@ -29,5 +29,11 @@ pub use api::{
     JsonPath, JsonPathSegment, JsonSample, JsonSampleRow, JsonService, JsonSetEntry, JsonValue,
     JsonVersionedValue, JsonWriteOutcome, KvBatchDeleteOutcome, KvDeleteOutcome, KvHistory,
     KvHistoryRow, KvKey, KvListPage, KvSample, KvScanRow, KvService, KvValue, KvVersionedValue,
-    ProductSpace,
+    ProductSpace, VectorBatchDeleteOutcome, VectorBatchGetOutcome, VectorBatchUpsertOutcome,
+    VectorBulkDeleteOutcome, VectorCollectionInfo, VectorCollectionName, VectorConfig,
+    VectorDeleteOutcome, VectorDistanceMetric, VectorEmbedding, VectorEntry, VectorFilter,
+    VectorFilterCondition, VectorFilterOp, VectorHistory, VectorHistoryRow, VectorKey,
+    VectorKeyPage, VectorMetadata, VectorMetadataPatch, VectorMetadataUpdateOutcome, VectorScalar,
+    VectorSearchMatch, VectorSearchResult, VectorService, VectorUpsertEntry, VectorVersionedEntry,
+    VectorWriteOutcome,
 };

@@ -2,6 +2,7 @@
 
 use crate::data::json::{JsonDocumentId, JsonIndexName};
 use crate::data::kv::{KvKey, ProductSpace};
+use crate::data::vector::{VectorCollectionName, VectorKey};
 use crate::diagnostics::{EngineError, EngineResult};
 
 const KEY_VERSION: u8 = 1;
@@ -9,6 +10,8 @@ const KV_DISCRIMINATOR: u8 = b'k';
 const JSON_DISCRIMINATOR: u8 = b'j';
 const JSON_INDEX_META_DISCRIMINATOR: u8 = b'm';
 const JSON_INDEX_ENTRY_DISCRIMINATOR: u8 = b'i';
+const VECTOR_COLLECTION_DISCRIMINATOR: u8 = b'c';
+const VECTOR_ENTRY_DISCRIMINATOR: u8 = b'v';
 
 pub(crate) fn encode_kv_key(space: &ProductSpace, key: &KvKey) -> Vec<u8> {
     encode_kv_key_bytes(space, key.as_bytes())
@@ -123,6 +126,106 @@ pub(crate) fn encode_json_index_entry_prefix(
     encode_json_index_key(JSON_INDEX_ENTRY_DISCRIMINATOR, space, name, &[])
 }
 
+pub(crate) fn encode_vector_collection_key(
+    space: &ProductSpace,
+    collection: &VectorCollectionName,
+) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, collection.as_str());
+    encode_user_key(VECTOR_COLLECTION_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_vector_collection_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(VECTOR_COLLECTION_DISCRIMINATOR, space, &[])
+}
+
+pub(crate) fn decode_vector_collection_name(
+    space: &ProductSpace,
+    encoded: &[u8],
+) -> EngineResult<VectorCollectionName> {
+    let bytes = decode_user_key(
+        space,
+        encoded,
+        VECTOR_COLLECTION_DISCRIMINATOR,
+        "data_loss.engine.vector_collection_key",
+        "stored vector collection row key is not valid for the selected product space",
+    )?;
+    let (collection, rest) = decode_length_prefixed_text(
+        bytes,
+        "data_loss.engine.vector_collection_key",
+        "stored vector collection row key is truncated",
+    )?;
+    if !rest.is_empty() {
+        return Err(EngineError::corruption(
+            "data_loss.engine.vector_collection_key",
+            "stored vector collection row key has trailing bytes",
+        ));
+    }
+    VectorCollectionName::new(collection).map_err(|_| {
+        EngineError::corruption(
+            "data_loss.engine.vector_collection_key",
+            "stored vector collection row key contains an invalid collection name",
+        )
+    })
+}
+
+pub(crate) fn encode_vector_key(
+    space: &ProductSpace,
+    collection: &VectorCollectionName,
+    key: &VectorKey,
+) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, collection.as_str());
+    suffix.extend_from_slice(key.as_str().as_bytes());
+    encode_user_key(VECTOR_ENTRY_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_vector_collection_entry_prefix(
+    space: &ProductSpace,
+    collection: &VectorCollectionName,
+) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, collection.as_str());
+    encode_user_key(VECTOR_ENTRY_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn decode_vector_key(
+    space: &ProductSpace,
+    encoded: &[u8],
+) -> EngineResult<(VectorCollectionName, VectorKey)> {
+    let bytes = decode_user_key(
+        space,
+        encoded,
+        VECTOR_ENTRY_DISCRIMINATOR,
+        "data_loss.engine.vector_key",
+        "stored vector row key is not valid for the selected product space",
+    )?;
+    let (collection, rest) = decode_length_prefixed_text(
+        bytes,
+        "data_loss.engine.vector_key",
+        "stored vector row key is missing a collection name",
+    )?;
+    let key = std::str::from_utf8(rest).map_err(|_| {
+        EngineError::corruption(
+            "data_loss.engine.vector_key",
+            "stored vector row key contains a non-UTF-8 vector key",
+        )
+    })?;
+    let collection = VectorCollectionName::new(collection).map_err(|_| {
+        EngineError::corruption(
+            "data_loss.engine.vector_key",
+            "stored vector row key contains an invalid collection name",
+        )
+    })?;
+    let key = VectorKey::new(key).map_err(|_| {
+        EngineError::corruption(
+            "data_loss.engine.vector_key",
+            "stored vector row key contains an invalid vector key",
+        )
+    })?;
+    Ok((collection, key))
+}
+
 fn encode_json_index_key(
     discriminator: u8,
     space: &ProductSpace,
@@ -136,6 +239,35 @@ fn encode_json_index_key(
     key.extend_from_slice(name_bytes);
     key.extend_from_slice(suffix);
     key
+}
+
+fn encode_length_prefixed_text(output: &mut Vec<u8>, value: &str) {
+    let value_bytes = value.as_bytes();
+    let value_len = u16::try_from(value_bytes.len()).expect("validated vector key field length");
+    output.extend_from_slice(&value_len.to_be_bytes());
+    output.extend_from_slice(value_bytes);
+}
+
+fn decode_length_prefixed_text<'a>(
+    bytes: &'a [u8],
+    code: &'static str,
+    message: &'static str,
+) -> EngineResult<(&'a str, &'a [u8])> {
+    if bytes.len() < 2 {
+        return Err(EngineError::corruption(code, message));
+    }
+    let value_len = usize::from(u16::from_be_bytes([bytes[0], bytes[1]]));
+    let value_start = 2usize;
+    let value_end = value_start
+        .checked_add(value_len)
+        .ok_or_else(|| EngineError::corruption(code, "stored vector row key length overflowed"))?;
+    if bytes.len() < value_end {
+        return Err(EngineError::corruption(code, message));
+    }
+    let value = std::str::from_utf8(&bytes[value_start..value_end]).map_err(|_| {
+        EngineError::corruption(code, "stored vector row key field is not valid UTF-8")
+    })?;
+    Ok((value, &bytes[value_end..]))
 }
 
 fn encode_user_key(discriminator: u8, space: &ProductSpace, key_bytes: &[u8]) -> Vec<u8> {
@@ -241,12 +373,15 @@ mod tests {
     use super::{
         branch_catalog_key, branch_default_key, branch_index_key, branch_pending_key,
         database_identity_key, decode_json_document_id, decode_json_index_name, decode_kv_key,
-        encode_json_index_entry_key, encode_json_index_entry_prefix, encode_json_index_meta_key,
-        encode_json_key, encode_json_space_prefix, encode_kv_key, encode_kv_space_prefix,
-        storage_registry_key,
+        decode_vector_collection_name, decode_vector_key, encode_json_index_entry_key,
+        encode_json_index_entry_prefix, encode_json_index_meta_key, encode_json_key,
+        encode_json_space_prefix, encode_kv_key, encode_kv_space_prefix,
+        encode_vector_collection_entry_prefix, encode_vector_collection_key,
+        encode_vector_collection_prefix, encode_vector_key, storage_registry_key,
     };
     use crate::data::json::{JsonDocumentId, JsonIndexName};
     use crate::data::kv::{KvKey, ProductSpace};
+    use crate::data::vector::{VectorCollectionName, VectorKey};
     use crate::diagnostics::EngineErrorClass;
 
     #[test]
@@ -491,6 +626,173 @@ mod tests {
             assert_eq!(error.class(), EngineErrorClass::Corruption);
             assert_eq!(error.code(), "data_loss.engine.json_index_key");
         }
+    }
+
+    #[test]
+    fn vector_collection_keys_are_deterministic_and_decodable() {
+        let space = ProductSpace::new("users").expect("valid space");
+        let collection = VectorCollectionName::new("docs").expect("valid collection");
+
+        assert_eq!(
+            encode_vector_collection_key(&space, &collection),
+            b"\x01c\0\x05users\0\x04docs".to_vec()
+        );
+        assert_eq!(
+            decode_vector_collection_name(
+                &space,
+                &encode_vector_collection_key(&space, &collection)
+            )
+            .expect("decode"),
+            collection
+        );
+        assert_eq!(
+            encode_vector_collection_prefix(&space),
+            b"\x01c\0\x05users".to_vec()
+        );
+    }
+
+    #[test]
+    fn vector_entry_keys_preserve_public_key_order() {
+        let space = ProductSpace::new("users").expect("valid space");
+        let collection = VectorCollectionName::new("docs").expect("valid collection");
+        let keys = ["a", "aa", "ab", "b", "ba"];
+        let mut encoded = keys
+            .iter()
+            .map(|key| {
+                encode_vector_key(
+                    &space,
+                    &collection,
+                    &VectorKey::new(*key).expect("valid key"),
+                )
+            })
+            .collect::<Vec<_>>();
+        encoded.sort();
+        let decoded = encoded
+            .iter()
+            .map(|key| {
+                decode_vector_key(&space, key)
+                    .expect("decode")
+                    .1
+                    .as_str()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(decoded, keys);
+        assert_eq!(
+            encode_vector_collection_entry_prefix(&space, &collection),
+            b"\x01v\0\x05users\0\x04docs".to_vec()
+        );
+    }
+
+    #[test]
+    fn vector_key_decoding_preserves_separators_and_empty_keys() {
+        let space = ProductSpace::new("default").expect("valid space");
+        let collection = VectorCollectionName::new("docs").expect("valid collection");
+        for key in ["", "doc/1", "nested/path/key"] {
+            let key = VectorKey::new(key).expect("valid key");
+            let (decoded_collection, decoded_key) =
+                decode_vector_key(&space, &encode_vector_key(&space, &collection, &key))
+                    .expect("decode");
+            assert_eq!(decoded_collection, collection);
+            assert_eq!(decoded_key, key);
+        }
+    }
+
+    #[test]
+    fn vector_key_decoding_rejects_malformed_rows() {
+        let space = ProductSpace::new("default").expect("valid space");
+        for (case, encoded, code) in [
+            (
+                "collection-truncated-header",
+                vec![1, b'c', 0],
+                "data_loss.engine.vector_collection_key",
+            ),
+            (
+                "collection-truncated-name-length",
+                vec![1, b'c', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0],
+                "data_loss.engine.vector_collection_key",
+            ),
+            (
+                "collection-truncated-name",
+                vec![
+                    1, b'c', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 4, b'd',
+                ],
+                "data_loss.engine.vector_collection_key",
+            ),
+            (
+                "collection-trailing-bytes",
+                vec![
+                    1, b'c', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 1, b'd', b'x',
+                ],
+                "data_loss.engine.vector_collection_key",
+            ),
+            (
+                "entry-truncated-collection",
+                vec![
+                    1, b'v', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 4, b'd',
+                ],
+                "data_loss.engine.vector_key",
+            ),
+            (
+                "entry-invalid-key-utf8",
+                vec![
+                    1, b'v', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 4, b'd', b'o',
+                    b'c', b's', 0xff,
+                ],
+                "data_loss.engine.vector_key",
+            ),
+            (
+                "unknown-version",
+                vec![
+                    2, b'v', 0, 7, b'd', b'e', b'f', b'a', b'u', b'l', b't', 0, 4, b'd', b'o',
+                    b'c', b's', b'a',
+                ],
+                "data_loss.engine.vector_key",
+            ),
+        ] {
+            let error = if code == "data_loss.engine.vector_collection_key" {
+                decode_vector_collection_name(&space, &encoded).expect_err(case)
+            } else {
+                decode_vector_key(&space, &encoded).expect_err(case)
+            };
+            assert_eq!(error.class(), EngineErrorClass::Corruption);
+            assert_eq!(error.code(), code);
+        }
+    }
+
+    #[test]
+    fn vector_decoding_rejects_other_row_families() {
+        let space = ProductSpace::new("default").expect("valid space");
+        let collection = VectorCollectionName::new("docs").expect("valid collection");
+        let vector = encode_vector_key(
+            &space,
+            &collection,
+            &VectorKey::new("doc").expect("valid key"),
+        );
+        let kv = encode_kv_key(&space, &KvKey::new(b"doc".as_slice()).expect("valid key"));
+        let json = encode_json_key(
+            &space,
+            &JsonDocumentId::new("doc").expect("valid document id"),
+        );
+
+        assert_eq!(
+            decode_vector_key(&space, &kv)
+                .expect_err("KV row rejected")
+                .code(),
+            "data_loss.engine.vector_key"
+        );
+        assert_eq!(
+            decode_vector_key(&space, &json)
+                .expect_err("JSON row rejected")
+                .code(),
+            "data_loss.engine.vector_key"
+        );
+        assert_eq!(
+            decode_kv_key(&space, &vector)
+                .expect_err("vector row rejected")
+                .code(),
+            "data_loss.engine.kv_key"
+        );
     }
 
     #[test]
