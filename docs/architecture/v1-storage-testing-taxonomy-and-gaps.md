@@ -107,31 +107,35 @@ The honest picture has moved. As of June 12 the system was "strong in
 state-space, near-zero in time, scale, and oracle-verified recovery." It has
 since **crossed into time and become simulation-capable**: the closed-loop
 endurance suite (class 8) and the deterministic-simulation substrate (class 9)
-both landed. The frontier is now narrower and sharper: **oracle-verified
-recovery, systematic fault sweeps, failure-during-failure, write-ordering /
-torn-write realism, and the discipline layer.**
+both landed. Since then the **recovery oracle (4), systematic fault sweeps (5),
+and FS-assumption enumeration (10)** have all landed (STH-1 / STH-2 / STH-3). The
+frontier is now narrower and sharper: **failure-during-failure (6), the
+write-ordering watchdog (the residual of class 3), the deterministic-simulation
+sweep driver (9), and the discipline / process layer (11 / 12).**
 
 | Class | Status | Evidence (verified 2026-06-17) |
 |---|---|---|
 | 1. Contract | ✅ Strong | 8 property suites (~93 cases) with model-parity oracles (`src/testkit/api/{model,commit,branch,maintenance,diagnostics}.rs`, branch-LSM reference); ~348 source-guard/closeout checks; 2 conformance suites |
 | 2. Differential | 🟡 Partial | Model-parity *is* differential vs. a reference model. No cross-engine and no config-sweep differential (e.g. cache-vs-durable logical-equivalence) |
-| 3. Crash/durability | 🟡 Partial | 8 crash windows + 19 service-fault routes cover *chosen* transitions. Torn-write/truncate primitives exist but are dormant (`corrupt_object_byte`, `truncate_object` are `#[allow(dead_code)]`). Missing: reordering/tearing backend wired in, write-ordering watchdog, swept (not enumerated) crash points |
-| 4. Recovery oracle | ❌ Missing | Per-transition recovery is verified (~70 cases in `lifecycle/tests/recovery.rs`), but that is class-3 coverage. The defining technique — a shadow expected-state model asserting recovery is a *prefix of acknowledged history* under *random* kill points — does not exist. The commit-runtime model is commit-time only |
+| 3. Crash/durability | 🟡 Partial *(advanced)* | 8 crash windows + 19 service-fault routes cover *chosen* transitions; STH-3 wired the reordering/tearing backend into the durable path (the torn-write/truncate primitives are now **activated**, not dormant) and added the FS-model enumeration (see class 10), and STH-2 *swept* (not just enumerated) the backend-op crash points. Remaining for ✅: the write-ordering watchdog (assert no dependent publish precedes its WAL sync) — STH-3 slice 3b, deferred to land with the format work |
+| 4. Recovery oracle | ✅ Strong *(was ❌)* | STH-1 landed the shadow expected-state model (`testkit/recovery_oracle::{model, verify, workload}`): a durable workload records every acknowledged + in-doubt commit, and `classify_recovered` proves the reopened database is a *prefix of acknowledged history* — typed `LostAck`/`Phantom`/`TornBatch`/`Gap` violations, with `CrashFamily::{ZeroLoss, OnDiskDamage}` separating zero-loss from on-disk-damage kills. Crash mechanisms: clean `Drop`, `WalTruncate`, `WalCorruptByte` (`tests/crash_recovery_oracle.rs`). It is the reusable recovery post-condition for STH-2 (fault sweeps) and STH-3 (FS models). Per-transition recovery (~70 cases in `lifecycle/tests/recovery.rs`) remains the fine-step regression subset |
 | 5. Error-path sweeps | ✅ Strong *(was 🟡)* | STH-2 systematic sweep (`testkit/fault_sweep`): a baseline trace drives "fail the Nth backend op, verify via the STH-1 recovery oracle, increment N" over the V1-reachable ops `{append, sync, publish, delete}`, fail-once *and* fail-continuously; plus disk-full (NoSpace position sweep + byte-quota, WAL uncertain-commit recovery) and budget/memory exhaustion (`LowMemory` → retryable `StoragePressure` → drain → resume), each oracle-verified. Seeds scale with the case budget for a deep `#[ignore]` soak; the 19 enumerated windows remain as the fine-step regression subset. Post-V1 (unreachable in V1, durable path publishes via `publish_object`): `ConditionalCreate/Update`, `WriteObject`; deferred compaction-input deletion → STH-5 |
 | 6. Failure-during-failure | ❌ Missing | Recovery tests and fault tests are separate paths; nothing injects a fault *during* recovery, compaction, or checkpoint |
 | 7. Hostile input | ✅ Strong | 28 fuzz targets (13 decoders + 15 state machines) with corpora; 39 golden vectors; deliberate XOR bit-flip corruption tests (`table/tests/reader.rs`) and corrupt-log/corrupt-snapshot recovery cases |
 | 8. Trajectory/liveness | ✅ Strong *(was ❌)* | `api/tests/background_scale.rs` runs closed-loop sustained load against a real `StorageRuntime` with thresholds scaled ~1000× (`scaled_closed_loop_test_profile`, ~4 MB budget). Asserts: commits never permanently fail, queue drains (`pending==0`, `queue_full==0`), WAL bounded (peak ≤16 / final ≤4 segments, ≤128 KB), shape converges (L0 ≤3). `stress.rs` still drives only service scripts — its role is now superseded for liveness |
 | 9. Deterministic simulation | 🟡 Partial *(was ❌)* | The retrofit landed: `trait MaintenanceExecutor` + `Arc<dyn MaintenanceExecutor>`, `InlineMaintenanceExecutor`/`ThreadedMaintenanceExecutor`, `MaintenanceClock`/`ManualMaintenanceClock`. `DeterministicInline` now drives the *production* `Background` path (no worker threads); replay-identical and threaded-vs-inline parity are proven; decision/admission timing is fully behind the clock. Missing: a *seeded sweep driver* over interleavings + fault combinations, replay-on-failure seed capture, and clock injection for the residual perf-trace duration measurements |
-| 10. FS-assumption enumeration | ❌ Missing | No ALICE-style enumeration over rename/append persistence models. Prime suspect for the vanishing-WAL-segment incident |
+| 10. FS-assumption enumeration | ✅ Strong *(was ❌)* | STH-3 `ReorderingBackend` (`testkit/reordering_backend.rs`) records each object's unsynced boundary and materializes all four FS persistence models — ordered+atomic loss of the unsynced tail, reordered/partial appends, garbage (torn) unsynced tail, split rename (vanished publish) — on the real files via the now-activated `truncate_object` / `corrupt_object_byte` / `drop_object_file` primitives. `testkit/fs_models` sweeps seed × model × crash point × {Standard, Always}, each oracle-verified: `Always` loses nothing under any model; `Standard` recovers a clean prefix; a torn tail is fail-loud or a clean prefix, never silently wrong (`tests/fs_persistence_models.rs`, seed-scaled `#[ignore]` soak). No vanishing-WAL incident is on record — only the generic missing-object fallback |
 | 11. Coverage/mutation | ❌ Missing | CI runs fmt/clippy/deny/feature-powerset/test/build only. No coverage gate, no mutation testing |
 | 12. Memory safety | 🟡 Partial | `#![deny(unsafe_code)]` (`src/lib.rs:11`) + Rust cover most. No Miri, no sanitizer (ASAN/TSAN/UBSAN) CI, no per-test leak assertions |
 
 Reading of the map: storage-next has **world-class state-space correctness**
 (classes 1, 7, format stability), **now-strong trajectory coverage** (class 8),
-and a **simulation substrate that is built but not yet exploited** (class 9).
-The remaining exposure is concentrated in **oracle-verified recovery (4)**,
-**systematic and resource-exhaustion fault injection (5)**, **compound failure
-(6)**, **durability realism (3/10)**, and the **process gates (11/12)**.
+**oracle-verified recovery (4), systematic and resource-exhaustion fault
+injection (5), and durability realism via FS-model enumeration (10)**, and a
+**simulation substrate that is built but not yet fully exploited** (class 9).
+The remaining exposure is concentrated in **compound failure (6)**, the
+**write-ordering watchdog (the residual of class 3)**, the **simulation sweep
+driver (9)**, and the **process gates (11/12)**.
 
 ### What changed since the last audit (and why principle 8 exists)
 
@@ -143,9 +147,15 @@ The remaining exposure is concentrated in **oracle-verified recovery (4)**,
   exists in `background_scale.rs`.
 - **Class 4 was rated "Partial."** Sharpened to **Missing**: per-transition
   recovery exists but the *defining* oracle does not, and rating a class by
-  adjacent coverage is exactly how a map starts to lie.
+  adjacent coverage is exactly how a map starts to lie. **Since closed by STH-1**
+  (the prefix-of-acknowledged-history oracle) — now ✅.
 - The old priorities list is therefore stale at the top (its #5 is done, its #1
   is done). Re-derived priorities are below.
+- **The STH program then closed the recovery + fault + FS-realism frontier
+  (2026-06):** STH-1 landed the recovery oracle (class 4 → ✅), STH-2 the
+  systematic fault sweeps (class 5 → ✅), and STH-3 the reordering/tearing backend
+  + FS-model enumeration (class 10 → ✅; class 3 advanced — residual is the
+  write-ordering watchdog, STH-3 slice 3b).
 
 ### Calibrated against the gold standard (2026-06-17)
 
@@ -278,14 +288,14 @@ from the live map.
 |---|---|---|
 | 1 Contract | ✅ | Every public operation has a model-parity oracle; source guards lock the D4 surface. *(held)* |
 | 2 Differential | 🟡 | Config-sweep differential: cache vs. durable (and budget/scheduling variants) produce identical logical results on the same workload; plus metamorphic oracles needing no reference engine (NoREC/TLP-style — e.g. prefix-scan == ∪ of point-reads, read@V == replay-to-V) |
-| 3 Crash | 🟡 | Reordering/tearing `Backend` wrapper wired into the crash harness; write-ordering watchdog asserts WAL sync precedes dependent writes; crash states *bounded-exhaustively* enumerated for short durable sequences (≤3 ops post-`fsync`), randomly swept for the tail |
-| 4 Recovery oracle | ❌ | Shadow expected-state model; after a kill at a *random* (and bounded-exhaustive) point, recovered state is a verified prefix of acknowledged history, across every durable operation; plus a *self-contained structural integrity check* (the `integrity_check` analog) that validates on-disk invariants without the workload model |
-| 5 Error sweep | 🟡 | "Fail backend op N, sweep N, `integrity_check` each" over all 8 steps; plus ENOSPC and budget-exhaustion modes |
+| 3 Crash | 🟡 | Reordering/tearing `Backend` wrapper wired in (STH-3, done); crash states *bounded-exhaustively* enumerated for short durable sequences (≤3 ops post-`fsync`), randomly swept for the tail. **Residual:** the write-ordering watchdog asserting WAL sync precedes dependent writes (STH-3 slice 3b) |
+| 4 Recovery oracle | ✅ | Shadow expected-state model landed (STH-1): after a kill at a *random* / bounded-exhaustive point, recovered state is a verified prefix of acknowledged history across every durable operation. *(Follow-on: a self-contained structural integrity-check analog validating on-disk invariants without the workload model.)* |
+| 5 Error sweep | ✅ | "Fail backend op N, sweep N, verify via the recovery oracle each" over the V1-reachable steps, fail-once + continuously, plus ENOSPC and budget-exhaustion modes — landed (STH-2) |
 | 6 Failure-during-failure | ❌ | Fault injected during recovery, compaction, and checkpoint; integrity and the recovery oracle still hold |
 | 7 Hostile input | ✅ | Every decoder + state machine fuzzed continuously; structure-aware DB-file fuzzing; corruption corpus grows with every find. *(held; make continuous)* |
 | 8 Liveness | ✅ | Closed-loop endurance per mode and per maintenance kind, with bounded-resource + progress assertions, in CI seconds. *(held; broaden coverage)* |
 | 9 DST | 🟡 | Seeded interleaving + fault-combination driver over the production path; replay-on-failure; nightly long-seed soak |
-| 10 FS-assumption | ❌ | ALICE-style enumeration over rename/append persistence models on the durable path |
+| 10 FS-assumption | ✅ | ALICE-style enumeration over rename/append persistence models on the durable path — landed (STH-3): ordered+atomic, reordered/partial appends, garbage torn tail, split rename, each oracle-verified across crash points and durability modes |
 | 11 Coverage/mutation | ❌ | **100% MC/DC on the durable core** (format/WAL/recovery/commit — the code where a missed branch loses data), enabled by `testcase!`/`always!`/`never!` macros and running the suite three ways (release / debug-assert / coverage) with identical results; line/branch coverage on outer layers; mutation testing kills a committed-threshold fraction of mutants; all merge-blocking |
 | 12 Memory safety | 🟡 | Miri on the unsafe-free core in CI; sanitizer job over backend/FFI; leak assertion per integration test |
 
@@ -295,14 +305,21 @@ These priorities are executed by the **Storage Testing Hardening (STH)** program
 a sequenced series of implementation plans, one per gap, each driving a class to
 its exit bar: `docs/architecture/implementation-plans/storage-testing/README.md`.
 
-1. **Recovery oracle (class 4).** The deepest remaining correctness hole now that
+**Progress (2026-06):** priorities 1 (class 4) and 2 (class 5) are **done**, and
+priority 4 is **partial** (reordering backend + FS-model enumeration done, class 10
+→ ✅; the write-ordering watchdog is the residual). The live frontier is now
+**priority 3 (DST sweep driver, class 9), the priority-4 residual (write-ordering
+watchdog), priority 5 (failure-during-failure, class 6), and priority 6 (discipline
+gates, classes 11 / 12).**
+
+1. **Recovery oracle (class 4). ✅ Done — STH-1.** The deepest remaining correctness hole now that
    liveness has landed. Build a shadow expected-state model on top of the existing
    crash harness and assert prefix-of-acknowledged-history under kill points that
    are bounded-exhaustive for short durable sequences and random for the tail; pair
    it with a self-contained structural integrity check usable without the model.
    This is the technique that catches silent recovery holes — the one bug class
    where "it reopened" hides real data loss.
-2. **Error-injection sweeps (class 5).** Generalize the 19 enumerated windows and
+2. **Error-injection sweeps (class 5). ✅ Done — STH-2.** Generalize the 19 enumerated windows and
    8 backend steps into "fail op N, sweep N, verify integrity each time." The
    seams already exist; this is mostly a loop. Add disk-full (ENOSPC) and
    budget-exhaustion modes.
@@ -311,12 +328,14 @@ its exit bar: `docs/architecture/implementation-plans/storage-testing/README.md`
    advancement, and fault combinations against the production path; capture and
    replay seeds. Highest ceiling in the taxonomy; the foundation is already paid
    for.
-4. **Torn-write / reordering backend + write-ordering watchdog (classes 3, 10).**
-   A `Backend` wrapper modeling an OS write cache (reorders unsynced writes,
-   tears them, fills unsynced regions with garbage) wired into the crash harness,
-   plus the watchdog asserting WAL sync precedes dependent writes. Activates the
-   dormant `corrupt_object_byte`/`truncate_object` primitives. The instrumentation
-   most likely to explain the vanishing-WAL-segment incident.
+4. **Torn-write / reordering backend + write-ordering watchdog (classes 3, 10). 🟡 Partial — STH-3.**
+   The reordering/tearing `Backend` wrapper (reorders unsynced writes, tears them,
+   fills unsynced regions with garbage) and the FS-model enumeration **landed**
+   (slices 3a/3c; class 10 → ✅), activating the `corrupt_object_byte` /
+   `truncate_object` primitives. **Residual:** the watchdog asserting WAL sync
+   precedes dependent writes (slice 3b), which closes class 3. (No vanishing-WAL-
+   segment incident is on record — only the generic missing-object fallback; see
+   the correction in the STH-3 plan.)
 5. **Failure-during-failure (class 6).** Compose the now-rich fault and crash
    harnesses: inject a fault during recovery/compaction/checkpoint and assert the
    recovery oracle from priority 1 still holds.
