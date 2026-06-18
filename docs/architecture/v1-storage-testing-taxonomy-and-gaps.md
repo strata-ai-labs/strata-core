@@ -123,7 +123,7 @@ sweep driver (9), and the discipline / process layer (11 / 12).**
 | 6. Failure-during-failure | ❌ Missing | Recovery tests and fault tests are separate paths; nothing injects a fault *during* recovery, compaction, or checkpoint |
 | 7. Hostile input | ✅ Strong | 28 fuzz targets (13 decoders + 15 state machines) with corpora; 39 golden vectors; deliberate XOR bit-flip corruption tests (`table/tests/reader.rs`) and corrupt-log/corrupt-snapshot recovery cases |
 | 8. Trajectory/liveness | ✅ Strong *(was ❌)* | `api/tests/background_scale.rs` runs closed-loop sustained load against a real `StorageRuntime` with thresholds scaled ~1000× (`scaled_closed_loop_test_profile`, ~4 MB budget). Asserts: commits never permanently fail, queue drains (`pending==0`, `queue_full==0`), WAL bounded (peak ≤16 / final ≤4 segments, ≤128 KB), shape converges (L0 ≤3). `stress.rs` still drives only service scripts — its role is now superseded for liveness |
-| 9. Deterministic simulation | 🟡 Partial *(was ❌)* | The retrofit landed: `trait MaintenanceExecutor` + `Arc<dyn MaintenanceExecutor>`, `InlineMaintenanceExecutor`/`ThreadedMaintenanceExecutor`, `MaintenanceClock`/`ManualMaintenanceClock`. `DeterministicInline` now drives the *production* `Background` path (no worker threads); replay-identical and threaded-vs-inline parity are proven; decision/admission timing is fully behind the clock. Missing: a *seeded sweep driver* over interleavings + fault combinations, replay-on-failure seed capture, and clock injection for the residual perf-trace duration measurements |
+| 9. Deterministic simulation | 🟡 Partial *(advanced)* | The retrofit landed (`MaintenanceExecutor`/`InlineMaintenanceExecutor`, `MaintenanceClock`/`ManualMaintenanceClock`); `DeterministicInline` drives the *production* `Background` path with no worker threads, replay-identical and threaded-vs-inline parity proven. STH-4 (4b+4d) then built the **seeded sweep driver** (`testkit/simulation`): client-op × maintenance-cadence × clock interleavings over the production path, each step safety- (recovery oracle) + liveness-checked, with bit-exact replay-on-failure (the `same_seed_replays_bit_exact` guard) + a seed-scaled `#[ignore]` soak. Remaining for ✅: the **fault-combination dimension** (STH-4 slice 4c — the seed also schedules a crash; oracle switches live → crash-family). Residual perf-trace clock injection (4a) is descoped (not state-affecting) |
 | 10. FS-assumption enumeration | ✅ Strong *(was ❌)* | STH-3 `ReorderingBackend` (`testkit/reordering_backend.rs`) records each object's unsynced boundary and materializes all four FS persistence models — ordered+atomic loss of the unsynced tail, reordered/partial appends, garbage (torn) unsynced tail, split rename (vanished publish) — on the real files via the now-activated `truncate_object` / `corrupt_object_byte` / `drop_object_file` primitives. `testkit/fs_models` sweeps seed × model × crash point × {Standard, Always}, each oracle-verified: `Always` loses nothing under any model; `Standard` recovers a clean prefix; a torn tail is fail-loud or a clean prefix, never silently wrong (`tests/fs_persistence_models.rs`, seed-scaled `#[ignore]` soak). No vanishing-WAL incident is on record — only the generic missing-object fallback |
 | 11. Coverage/mutation | ❌ Missing | CI runs fmt/clippy/deny/feature-powerset/test/build only. No coverage gate, no mutation testing |
 | 12. Memory safety | 🟡 Partial | `#![deny(unsafe_code)]` (`src/lib.rs:11`) + Rust cover most. No Miri, no sanitizer (ASAN/TSAN/UBSAN) CI, no per-test leak assertions |
@@ -134,8 +134,9 @@ Reading of the map: storage-next has **world-class state-space correctness**
 injection (5), and durability realism via FS-model enumeration (10)**, and a
 **simulation substrate that is built but not yet fully exploited** (class 9).
 The remaining exposure is concentrated in **compound failure (6)**, the
-**write-ordering watchdog (the residual of class 3)**, the **simulation sweep
-driver (9)**, and the **process gates (11/12)**.
+**write-ordering watchdog (the residual of class 3)**, the **fault-combination
+dimension of the simulation driver (the residual of class 9)**, and the **process
+gates (11/12)**.
 
 ### What changed since the last audit (and why principle 8 exists)
 
@@ -156,6 +157,10 @@ driver (9)**, and the **process gates (11/12)**.
   systematic fault sweeps (class 5 → ✅), and STH-3 the reordering/tearing backend
   + FS-model enumeration (class 10 → ✅; class 3 advanced — residual is the
   write-ordering watchdog, STH-3 slice 3b).
+- **STH-4 (4b+4d) then built the deterministic-simulation sweep driver** over the
+  production path — seeded client-op × maintenance-cadence × clock interleavings,
+  oracle- + liveness-checked each step, bit-exact replay + soak (class 9 advanced;
+  residual is the fault-combination dimension, STH-4 slice 4c).
 
 ### Calibrated against the gold standard (2026-06-17)
 
@@ -294,7 +299,7 @@ from the live map.
 | 6 Failure-during-failure | ❌ | Fault injected during recovery, compaction, and checkpoint; integrity and the recovery oracle still hold |
 | 7 Hostile input | ✅ | Every decoder + state machine fuzzed continuously; structure-aware DB-file fuzzing; corruption corpus grows with every find. *(held; make continuous)* |
 | 8 Liveness | ✅ | Closed-loop endurance per mode and per maintenance kind, with bounded-resource + progress assertions, in CI seconds. *(held; broaden coverage)* |
-| 9 DST | 🟡 | Seeded interleaving + fault-combination driver over the production path; replay-on-failure; nightly long-seed soak |
+| 9 DST | 🟡 | Seeded interleaving + fault-combination driver over the production path; replay-on-failure; nightly long-seed soak. Interleaving driver + replay + soak landed (STH-4 4b+4d); **residual:** the fault-combination dimension (4c) |
 | 10 FS-assumption | ✅ | ALICE-style enumeration over rename/append persistence models on the durable path — landed (STH-3): ordered+atomic, reordered/partial appends, garbage torn tail, split rename, each oracle-verified across crash points and durability modes |
 | 11 Coverage/mutation | ❌ | **100% MC/DC on the durable core** (format/WAL/recovery/commit — the code where a missed branch loses data), enabled by `testcase!`/`always!`/`never!` macros and running the suite three ways (release / debug-assert / coverage) with identical results; line/branch coverage on outer layers; mutation testing kills a committed-threshold fraction of mutants; all merge-blocking |
 | 12 Memory safety | 🟡 | Miri on the unsafe-free core in CI; sanitizer job over backend/FFI; leak assertion per integration test |
@@ -323,11 +328,13 @@ gates, classes 11 / 12).**
    8 backend steps into "fail op N, sweep N, verify integrity each time." The
    seams already exist; this is mostly a loop. Add disk-full (ENOSPC) and
    budget-exhaustion modes.
-3. **DST sweep driver (class 9).** Build the seeded explorer over the now-landed
-   inline-executor + manual-clock substrate: randomize task ordering, clock
-   advancement, and fault combinations against the production path; capture and
-   replay seeds. Highest ceiling in the taxonomy; the foundation is already paid
-   for.
+3. **DST sweep driver (class 9). 🟡 Partial — STH-4.** The seeded explorer over the
+   inline-executor + manual-clock substrate **landed** (4b+4d): client-op ×
+   maintenance-cadence × clock interleavings against the production path, each step
+   oracle- + liveness-checked, with bit-exact replay + a seed-scaled soak (one
+   testkit clock hook; `run_next`→`drain` under deterministic-inline; Default
+   budget). **Residual:** the fault-combination dimension (4c — the seed also
+   schedules a crash via the STH-2/STH-3 backends), which closes class 9.
 4. **Torn-write / reordering backend + write-ordering watchdog (classes 3, 10). 🟡 Partial — STH-3.**
    The reordering/tearing `Backend` wrapper (reorders unsynced writes, tears them,
    fills unsynced regions with garbage) and the FS-model enumeration **landed**

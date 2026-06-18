@@ -1,7 +1,7 @@
 # STH-4 Implementation Plan: Deterministic Simulation Driver (DST)
 
-Status: draft
-Charter class: 9 — Rare-interleaving / fault-combination bugs (🟡 Partial → ✅)
+Status: **4b + 4d implemented (2026-06-18)**; 4c deferred; 4a descoped. See "As-built" below.
+Charter class: 9 — Rare-interleaving / fault-combination bugs (🟡 Partial → advanced; full ✅ awaits 4c fault dimension)
 Companion: `docs/architecture/v1-storage-testing-taxonomy-and-gaps.md`
 Depends on: **STH-1** (safety oracle), **STH-2** (fault dimension). Substrate already landed.
 
@@ -57,6 +57,17 @@ failures replay; the soak runs. Not measured by harness size.
 | 4c | Fault-combination dimension | Compose the STH-2 fault backend into the sim; the seed also schedules faults; recovery oracle holds across combinations |
 | 4d | Seed capture/replay + soak | Failures print the seed; a seed replays the exact trajectory; CI smoke (bounded seeds) + nightly `#[ignore]` soak (100k+ seeds) |
 
+## As-built (2026-06-18)
+
+**Delivered: 4b + 4d** (`src/testkit/simulation/{mod.rs, driver.rs}` + `tests/simulation_smoke.rs`) plus one testkit clock hook. Deferred: 4c. Descoped: 4a.
+
+- **One production-tree change — the clock hook.** `MaintenanceClock` gained `advance(&self, Duration)` (`ManualMaintenanceClock` → real advance; `RealMaintenanceClock` → **no-op**, so it can never block a threaded runtime), and `StorageRuntime::advance_maintenance_clock_for_test(Duration) -> bool` routes through the existing slot dispatch. Gated `#[cfg(any(test, feature="fault-injection"))]`, `pub(crate)`, behavioral name — compiled out of release. The runtime hook lives in the lifetime-generic `impl<'a> StorageRuntime<'a>` (not the `<'static>` block) so it is callable on a borrowed-backend runtime.
+- **4b driver.** Opens durable on an **owned** `local_fs` backend under `DeterministicInline` (the production `Background` path, inline executor + manual clock, no worker threads). A seeded `SplitMix64` drives a step loop over {commit, drain-maintenance, enqueue flush/checkpoint/snapshot-pruning, advance-clock, no-op}. **Per-step safety** reuses the recovery oracle under `ZeroLoss` (a clean backend has nothing in-doubt, so the live scan must equal `model.live_state_at(last_acked)` exactly) — asserted after *every* step, catching any maintenance that transiently corrupts visible state. **Liveness:** no maintenance failure per step; at quiesce the queue drains to empty, admission is not blocked, and the oracle still holds.
+- **Key substrate finding (corrected from the draft pseudocode):** under `DeterministicInline` the inline executor owns the maintenance queue, so `run_next_maintenance` serves the *empty manual queue* (returns `None`); enqueued work is driven by **`drain_maintenance`**. The interleaving knob is therefore *when enqueued maintenance is drained relative to client commits*, crossed with seeded clock advancement — faithful production scheduling, no task-reorder hook, no false positives. The budget is **Default** (the `LowMemory` profile's 16 KB frozen-mutable pool starves maintenance — `StorageBudgetExceeded` on rotation — and is not a realistic interleaving regime).
+- **4d replay + soak.** `SimFacts` (`Clone+Debug+PartialEq`, excludes all timing numbers) captures the action trace, commit versions, queue trajectory, maintenance-completed, and final live state; the in-module `same_seed_replays_bit_exact` test is the determinism guard. `run_simulation_harness(root, case_limit)` scales seeds with the case budget; `tests/simulation_smoke.rs` is the CI-fast smoke + an `#[ignore]` soak honoring `STRATA_STORAGE_FAULT_CASES`. Non-vacuousness asserted: maintenance completed > 0 and the manual clock advanced > 0.
+- **4a descoped.** The residual `Instant::now()` are perf-trace *durations* only — not state-affecting — and `SimFacts` excludes timing numbers, so replay is bit-exact without routing them through the clock. Revisit only if a future fact asserts on timing.
+- **4c deferred — the fault/crash dimension.** Compose the STH-2 fault backend / STH-3 reordering backend (borrowed `EvaluateAndEnqueue` path, no manual clock there) so the seed also schedules a crash; the oracle switches from `ZeroLoss` (live) to the crash family (post-crash prefix). This closes class 9; it is the next slice.
+
 ## Implementation detail
 
 ### 4a — Finish clock injection (`src/lifecycle/...`)
@@ -106,8 +117,18 @@ CI runs a bounded seed budget in seconds; nightly runs the soak.
 
 ## Exit gate
 
-- Seeded driver sweeps interleavings + fault combinations over the production
-  path; every step safety- and liveness-checked.
-- Failures replay bit-exact from a printed seed; nightly soak runs.
-- Residual clock injection complete (state *and* timing reproducible).
-- Charter class 9 flips 🟡 → ✅ with this plan as evidence.
+**Met by 4b + 4d (2026-06-18):**
+- Seeded driver sweeps client-op × maintenance-cadence × clock interleavings over
+  the production path; every step safety- (recovery oracle, `ZeroLoss`) and
+  liveness-checked. Failures replay bit-exact from a printed seed (the
+  `same_seed_replays_bit_exact` determinism guard); CI-fast smoke + `#[ignore]`
+  soak. clippy `--all-features --all-targets -D warnings` + fmt clean; full `--lib`
+  + STH-1/2/3 integration targets stay green.
+- **Charter class 9 advances** (interleaving driver + replay + soak landed).
+
+**Outstanding (closes class 9):**
+- **4c fault-combination dimension** — the seed also schedules a crash via the
+  STH-2/STH-3 backends; the oracle switches live → crash-family. Class 9 stays 🟡
+  until 4c lands.
+- 4a residual clock injection — descoped (perf-trace durations only; not needed for
+  replay; revisit only if a fact asserts on timing numbers).
