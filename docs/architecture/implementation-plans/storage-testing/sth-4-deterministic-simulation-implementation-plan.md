@@ -1,7 +1,7 @@
 # STH-4 Implementation Plan: Deterministic Simulation Driver (DST)
 
-Status: **4b + 4d implemented (2026-06-18)**; 4c deferred; 4a descoped. See "As-built" below.
-Charter class: 9 — Rare-interleaving / fault-combination bugs (🟡 Partial → advanced; full ✅ awaits 4c fault dimension)
+Status: **4b + 4c + 4d implemented (2026-06-18)**; 4a descoped. Class 9 **stays open** — 4c's DST immediately surfaced a silent durability bug (see "As-built" + the finding doc); class 9 closes when the engine fix lands and the fault-simulation soak runs clean.
+Charter class: 9 — Rare-interleaving / fault-combination bugs (🟡 Partial → advanced; full ✅ blocked on the durability bug the DST found)
 Companion: `docs/architecture/v1-storage-testing-taxonomy-and-gaps.md`
 Depends on: **STH-1** (safety oracle), **STH-2** (fault dimension). Substrate already landed.
 
@@ -66,7 +66,7 @@ failures replay; the soak runs. Not measured by harness size.
 - **Key substrate finding (corrected from the draft pseudocode):** under `DeterministicInline` the inline executor owns the maintenance queue, so `run_next_maintenance` serves the *empty manual queue* (returns `None`); enqueued work is driven by **`drain_maintenance`**. The interleaving knob is therefore *when enqueued maintenance is drained relative to client commits*, crossed with seeded clock advancement — faithful production scheduling, no task-reorder hook, no false positives. The budget is **Default** (the `LowMemory` profile's 16 KB frozen-mutable pool starves maintenance — `StorageBudgetExceeded` on rotation — and is not a realistic interleaving regime).
 - **4d replay + soak.** `SimFacts` (`Clone+Debug+PartialEq`, excludes all timing numbers) captures the action trace, commit versions, queue trajectory, maintenance-completed, and final live state; the in-module `same_seed_replays_bit_exact` test is the determinism guard. `run_simulation_harness(root, case_limit)` scales seeds with the case budget; `tests/simulation_smoke.rs` is the CI-fast smoke + an `#[ignore]` soak honoring `STRATA_STORAGE_FAULT_CASES`. Non-vacuousness asserted: maintenance completed > 0 and the manual clock advanced > 0.
 - **4a descoped.** The residual `Instant::now()` are perf-trace *durations* only — not state-affecting — and `SimFacts` excludes timing numbers, so replay is bit-exact without routing them through the clock. Revisit only if a future fact asserts on timing.
-- **4c deferred — the fault/crash dimension.** Compose the STH-2 fault backend / STH-3 reordering backend (borrowed `EvaluateAndEnqueue` path, no manual clock there) so the seed also schedules a crash; the oracle switches from `ZeroLoss` (live) to the crash family (post-crash prefix). This closes class 9; it is the next slice.
+- **4c — the fault/crash dimension** (`src/testkit/simulation/faults.rs` + `tests/simulation_faults.rs`). Crosses the seeded interleaving (commits + maintenance drained at a sim-chosen cadence, on the borrowed `EvaluateAndEnqueue` path) with two crash substrates: a seed-chosen **STH-2 backend-op fault** (op × call-number × Once/Continuously × Unavailable/NoSpace — verified loss-free, the faulted commit in-doubt) and a seed-chosen **STH-3 power-loss crash** (FsModel × crash point × durability — `Always` loses nothing, `Standard` a clean prefix, garbage tail fail-loud-or-prefix). The interleaving exercises all four fault ops (snapshot-pruning drives the `DeleteObject` fault) and all four FS models, each oracle-verified. `run_fault_simulation_harness` runs one fault + one crash case per seed; seed-scaled `#[ignore]` soak. **The DST immediately did its job: the soak found a silent durability bug** — a `PublishObject` NoSpace fault during a batched `[Checkpoint, Flush]` drain truncates the WAL past a snapshot whose publish failed, so a clean reopen recovers nothing (the failure is swallowed; the drain returns `Ok`). Captured as a `#[ignore]` failing-then-fixed regression (`regression_publish_fault_during_checkpoint_flush_loses_no_data`) + a triage write-up (`sth-4-finding-checkpoint-flush-publish-fault.md`). **Class 9 stays open** until that engine bug is fixed (a separate `/audit-fix` slice) and the soak runs clean.
 
 ## Implementation detail
 
@@ -117,18 +117,22 @@ CI runs a bounded seed budget in seconds; nightly runs the soak.
 
 ## Exit gate
 
-**Met by 4b + 4d (2026-06-18):**
+**Delivered by 4b + 4c + 4d (2026-06-18):**
 - Seeded driver sweeps client-op × maintenance-cadence × clock interleavings over
-  the production path; every step safety- (recovery oracle, `ZeroLoss`) and
-  liveness-checked. Failures replay bit-exact from a printed seed (the
-  `same_seed_replays_bit_exact` determinism guard); CI-fast smoke + `#[ignore]`
-  soak. clippy `--all-features --all-targets -D warnings` + fmt clean; full `--lib`
-  + STH-1/2/3 integration targets stay green.
-- **Charter class 9 advances** (interleaving driver + replay + soak landed).
+  the production path (4b); the fault-combination dimension crosses it with the
+  STH-2/STH-3 fault and crash substrates (4c); every step safety- (recovery oracle)
+  and liveness-checked, with bit-exact replay (the `same_seed_replays_bit_exact`
+  determinism guard) + CI-fast smoke + `#[ignore]` soaks (4d). clippy
+  `--all-features --all-targets -D warnings` + fmt clean; full `--lib` + the STH-1/2/3
+  integration targets stay green.
 
-**Outstanding (closes class 9):**
-- **4c fault-combination dimension** — the seed also schedules a crash via the
-  STH-2/STH-3 backends; the oracle switches live → crash-family. Class 9 stays 🟡
-  until 4c lands.
-- 4a residual clock injection — descoped (perf-trace durations only; not needed for
-  replay; revisit only if a fact asserts on timing numbers).
+**Blocking class 9 (the DST did its job):**
+- The 4c fault soak surfaced a **silent durability bug** — a `PublishObject` NoSpace
+  fault during a batched `[Checkpoint, Flush]` drain silently loses committed data.
+  Captured as a failing-then-fixed `#[ignore]` regression + a triage write-up
+  (`sth-4-finding-checkpoint-flush-publish-fault.md`). **Class 9 closes when that
+  engine bug is fixed (a separate `/audit-fix` slice) and the fault soak runs clean.**
+
+**Descoped:**
+- 4a residual clock injection — perf-trace durations only; not needed for replay;
+  revisit only if a fact asserts on timing numbers.
