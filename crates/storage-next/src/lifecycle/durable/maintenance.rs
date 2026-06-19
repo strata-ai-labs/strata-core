@@ -10,8 +10,8 @@ use crate::format::TableManifest;
 use crate::lifecycle::checkpoint::{
     branch_checkpoint_flush_boundary, checkpoint_durable_rows_with_budget,
     checkpoint_durable_runtime_with_budget,
-    checkpoint_request_from_maintenance_task_with_snapshot_id, persist_flush_watermark,
-    persist_flush_watermark_with_table_manifest_proof, truncate_wal,
+    checkpoint_request_from_maintenance_task_with_snapshot_id, non_seeded_branch_has_durable_base,
+    persist_flush_watermark, persist_flush_watermark_with_table_manifest_proof, truncate_wal,
     wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
     LifecycleCheckpointRequest, LifecycleFlushWatermarkOutcome, LifecycleFlushWatermarkProof,
     LifecycleTableManifestFlushCoverageProof, LifecycleWalTruncationOutcome,
@@ -833,6 +833,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             &self.guard_set,
             || self.visible.visible_version(),
             request,
+            self.initial_branch_id,
             Some(&self.budget),
         )
     }
@@ -1470,6 +1471,23 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 MaintenanceOutcomeStatus::Deferred,
             )
             .with_reason("checkpoint deferred: outstanding table-manifest publish debt");
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+            return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+        }
+        // Multi-branch durability guard: defer when a branch other than the recovery-seeded
+        // branch holds a durable table-manifest base. Recovery rebuilds non-seeded branches from a
+        // global snapshot delta plus their per-branch table manifest, never replaying the WAL below
+        // the snapshot watermark for them, so a snapshot taken over such a branch would recover a
+        // non-contiguous gap if a crash later dropped that branch's manifest (the seeded-only
+        // orphan detector cannot see it). The per-branch fix that lifts this guard is tracked in
+        // multi-branch-orphaned-delta-recovery-gap.md.
+        if non_seeded_branch_has_durable_base(&self.branch_catalog, self.initial_branch_id)? {
+            let outcome = MaintenanceOutcome::new(
+                crate::lifecycle::MaintenanceTaskKind::Checkpoint,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason("checkpoint deferred: non-seeded branch holds a durable table base");
             let outcome = self.maintenance.finish_started(task, outcome, false)?;
             self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
             return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
@@ -2993,6 +3011,7 @@ impl MaintenanceTaskRunner for DurableCheckpointMaintenanceRunner<'_, '_> {
             self.guard_set,
             || self.visible.visible_version(),
             &request,
+            self.initial_branch_id,
             Some(self.budget),
         )?;
         if let Some(snapshot_id) = outcome.snapshot_id() {

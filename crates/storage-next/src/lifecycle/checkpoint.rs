@@ -57,6 +57,10 @@ pub(crate) struct LifecycleCheckpointOutcome {
 pub(crate) enum LifecycleCheckpointStatus {
     Completed,
     DeferredNoVisibleRows,
+    /// Deferred by the multi-branch durability guard: a branch other than the recovery-seeded
+    /// branch holds a durable table-manifest base, so recording a snapshot would risk a
+    /// non-contiguous recovery gap for that branch (see `non_seeded_branch_has_durable_base`).
+    DeferredNonSeededBranchBase,
     SnapshotPublishedManifestNotUpdated,
     SnapshotVisibilityUncertain,
     FlushWatermarkFailed,
@@ -259,6 +263,13 @@ impl LifecycleCheckpointOutcome {
         }
     }
 
+    fn deferred_non_seeded_branch_base(request: &LifecycleCheckpointRequest) -> Self {
+        Self {
+            status: LifecycleCheckpointStatus::DeferredNonSeededBranchBase,
+            ..Self::deferred(request)
+        }
+    }
+
     fn completed(
         request: &LifecycleCheckpointRequest,
         watermark: CommitVersion,
@@ -388,7 +399,10 @@ impl LifecycleCheckpointOutcome {
     pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
         let status = match self.status {
             LifecycleCheckpointStatus::Completed => MaintenanceOutcomeStatus::Completed,
-            LifecycleCheckpointStatus::DeferredNoVisibleRows => MaintenanceOutcomeStatus::Deferred,
+            LifecycleCheckpointStatus::DeferredNoVisibleRows
+            | LifecycleCheckpointStatus::DeferredNonSeededBranchBase => {
+                MaintenanceOutcomeStatus::Deferred
+            }
             LifecycleCheckpointStatus::SnapshotPublishedManifestNotUpdated
             | LifecycleCheckpointStatus::SnapshotVisibilityUncertain
             | LifecycleCheckpointStatus::FlushWatermarkFailed => MaintenanceOutcomeStatus::Failed,
@@ -424,6 +438,9 @@ impl LifecycleCheckpointOutcome {
             LifecycleCheckpointStatus::Completed => None,
             LifecycleCheckpointStatus::DeferredNoVisibleRows => {
                 Some("checkpoint has no visible rows to publish")
+            }
+            LifecycleCheckpointStatus::DeferredNonSeededBranchBase => {
+                Some("checkpoint deferred: non-seeded branch holds a durable table base")
             }
             LifecycleCheckpointStatus::SnapshotPublishedManifestNotUpdated => {
                 Some("checkpoint snapshot published before manifest update failed")
@@ -1055,6 +1072,14 @@ pub(crate) fn branch_durable_commit_versions_at_or_below(
 /// (owned-level) commit at or below `visible_version`, or `None` when the branch has no durable
 /// owned rows under the watermark (a full, self-contained snapshot needs no base). Recorded
 /// with the snapshot facts so recovery can require the table-manifest base.
+///
+/// Callers fold this into a single global `flushed_through` (max across branches) — correct for a
+/// single flushing branch. Multiple branches can flush, and combined with the seeded-branch-only
+/// orphan check in `recovery.rs` a crash dropping a non-seeded branch's table manifest would
+/// recover a gap. That is guarded upstream: the checkpoint defers while any non-seeded branch holds
+/// a durable base (`non_seeded_branch_has_durable_base`), so no such snapshot is recorded. The
+/// per-branch fix that lifts the guard (a durable per-branch flushed-branch set + per-branch
+/// recovery, re-enabling the global fold) is tracked in multi-branch-orphaned-delta-recovery-gap.md.
 pub(crate) fn branch_checkpoint_flush_boundary(
     branch: &BranchLocalState,
     visible_version: CommitVersion,
@@ -1353,9 +1378,15 @@ pub(crate) fn checkpoint_durable_runtime_with_budget(
     guard_set: &CommitBranchGuardSet,
     read_visible_version: impl FnOnce() -> CommitVersion,
     request: &LifecycleCheckpointRequest,
+    seeded_branch_id: BranchId,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
     request.validate()?;
+    if non_seeded_branch_has_durable_base(branch_catalog, seeded_branch_id)? {
+        return Ok(LifecycleCheckpointOutcome::deferred_non_seeded_branch_base(
+            request,
+        ));
+    }
     // The request's `branch_id` is informational — it identifies the
     // branch whose maintenance task triggered the checkpoint. The
     // encoder reads rows from every active branch in the catalog so
@@ -1386,6 +1417,33 @@ pub(crate) fn checkpoint_durable_runtime_with_budget(
             Ok((combined, has_durable_rows, flush_boundary))
         },
     )
+}
+
+/// A checkpoint must defer when a branch other than the recovery-seeded branch holds a durable
+/// table-manifest base. Recovery rebuilds non-seeded branches from a global snapshot delta plus
+/// their per-branch table manifest, and never replays the WAL below the snapshot watermark for
+/// them, so a snapshot taken while such a branch has a base would recover a non-contiguous gap if
+/// a crash later dropped that branch's manifest — the seeded-only orphan detector cannot see it.
+/// Deferring leaves those rows in the WAL/memtable until the configuration is recoverable again.
+/// The per-branch fix that lifts this guard (a durable per-branch flushed-branch set + per-branch
+/// recovery) is tracked in multi-branch-orphaned-delta-recovery-gap.md.
+pub(crate) fn non_seeded_branch_has_durable_base(
+    branch_catalog: &crate::lifecycle::LifecycleBranchCatalog,
+    seeded_branch_id: BranchId,
+) -> LifecycleResult<bool> {
+    for descriptor in branch_catalog.list_branches(false) {
+        if descriptor.branch_id() == seeded_branch_id {
+            continue;
+        }
+        if branch_catalog
+            .branch_state(descriptor.branch_id())?
+            .owned_table_count()
+            > 0
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(crate) fn checkpoint_durable_rows_with_budget(

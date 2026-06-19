@@ -42,6 +42,15 @@ pub(crate) struct LifecycleDurableTableCatalog {
     // manifest does not cover, so a checkpoint must defer rather than advance the WAL-replay
     // floor past them. In-memory bookkeeping only — recovery rebuilds the catalog via
     // `record_manifest`, which clears it, so a reopen always starts settled (`false`).
+    //
+    // Catalog-global, not per-branch — correct for a single flushing branch (the regime the
+    // fault soak exercises). Multiple branches can flush (the maintenance coverage scan in
+    // `durable/maintenance.rs` enqueues flush per-branch under pressure), so branch B's
+    // `record_manifest` could clear the flag branch A's install set, masking branch A's debt from
+    // the checkpoint defer. The multi-branch checkpoint guard covers this in practice — a checkpoint
+    // also defers while any non-seeded branch holds a durable base, and a branch carrying publish
+    // debt owns exactly such a base, so the masked-debt snapshot is not recorded. A per-branch debt
+    // set is the deferred precise fix; see multi-branch-orphaned-delta-recovery-gap.md.
     manifest_publish_pending: bool,
 }
 

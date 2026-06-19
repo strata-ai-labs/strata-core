@@ -2319,6 +2319,156 @@ fn recovery_checkpoint_multi_branch_rows_round_trip() {
     assert_eq!(extra_row.row().value(), b"extra-value");
 }
 
+// Guard regression for the multi-branch orphaned-delta recovery gap: the seed-155 orphan detector
+// only consults the SEEDED branch, so a snapshot taken while a NON-seeded branch holds a durable
+// table-manifest base would recover a non-contiguous gap if a crash dropped that branch's manifest
+// (recovery rebuilds non-seeded branches from {snapshot delta + per-branch manifest} without
+// replaying the WAL below the snapshot watermark). The guard makes the checkpoint DEFER in that
+// configuration, so the rows stay in the WAL and a full replay recovers every branch cleanly even
+// after the manifest is dropped. The per-branch fix that lifts the guard (a durable per-branch
+// flushed-branch set + per-branch recovery, re-enabling the checkpoint) is tracked in
+// docs/architecture/implementation-plans/storage-testing/multi-branch-orphaned-delta-recovery-gap.md.
+#[allow(
+    clippy::too_many_lines,
+    reason = "multi-branch durability scenario: two branches flushed, checkpoint defers, crash, reopen-and-verify"
+)]
+#[test]
+fn multi_branch_checkpoint_defers_so_lost_non_seeded_manifest_recovers_cleanly() {
+    // Multi-branch durability: both branches flush (owned tables + per-branch table manifests),
+    // each then takes an active delta. A checkpoint is requested, but because the non-seeded
+    // branch holds a durable base the checkpoint DEFERS (the multi-branch guard) — no snapshot is
+    // recorded that would advance the WAL-replay floor past the non-seeded base. A crash then
+    // drops the non-seeded branch's table manifest. Recovery replays the full WAL and recovers
+    // both branches' rows cleanly: no gap, no loss.
+    use crate::lifecycle::{
+        FlushTableIdentitySeed, FlushTableObjectId, LifecycleCheckpointRequest,
+    };
+    let backend = RecoveryTestBackend::new();
+    let initial = branch_id(0x39);
+    let extra = branch_id(0x49);
+    let guard =
+        || CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation"));
+    let flush_req = |branch, seed: &str, object: &str| {
+        FlushFrozenRequest::new(
+            branch,
+            None,
+            FlushTableIdentitySeed::new(seed).expect("seed"),
+            FlushTableObjectId::new(object).expect("object id"),
+        )
+        .expect("flush request")
+    };
+
+    {
+        let mut shell =
+            assemble_shell(lossy_open_plan(), initial, &backend).expect("durable shell");
+        let request =
+            LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+        let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect("recovery outcome");
+        let mut runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+        runtime
+            .create_branch(
+                extra,
+                CommitBranchGeneration::new(1).expect("generation"),
+                Some(CommitVersion::new(2)),
+            )
+            .expect("create extra branch");
+
+        // Seeded branch: base -> rotate -> flush (owned + manifest, KEPT) -> active delta. Its
+        // manifest survives, so the orphan detector sees a present seeded stage and stands down.
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(initial, b"initial-base", b"initial-base-value"),
+                guard(),
+            )
+            .expect("commit initial base");
+        runtime
+            .rotate_active_for_maintenance()
+            .expect("rotate initial");
+        runtime
+            .flush_frozen(&flush_req(initial, "initial-seed", "initial-object"))
+            .expect("flush initial");
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(initial, b"initial-delta", b"initial-delta-value"),
+                guard(),
+            )
+            .expect("commit initial delta");
+
+        // Non-seeded branch: base -> rotate -> flush (owned + manifest, to be DROPPED) -> delta.
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(extra, b"extra-base", b"extra-base-value"),
+                guard(),
+            )
+            .expect("commit extra base");
+        runtime
+            .rotate_active_for_branch_for_maintenance(extra)
+            .expect("rotate extra");
+        runtime
+            .flush_frozen(&flush_req(extra, "extra-seed", "extra-object"))
+            .expect("flush extra");
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(extra, b"extra-delta", b"extra-delta-value"),
+                guard(),
+            )
+            .expect("commit extra delta");
+
+        let checkpoint_request =
+            LifecycleCheckpointRequest::new(initial, 1, Timestamp::from_micros(9_500))
+                .expect("checkpoint request");
+        let outcome = runtime
+            .checkpoint(&checkpoint_request)
+            .expect("checkpoint runs");
+        // The multi-branch guard fires: the non-seeded branch holds a durable base, so the
+        // checkpoint defers rather than recording a snapshot recovery could not undo.
+        assert_eq!(
+            outcome.status(),
+            crate::lifecycle::LifecycleCheckpointStatus::DeferredNonSeededBranchBase
+        );
+    }
+
+    // Crash: drop ONLY the non-seeded branch's table manifest.
+    let extra_manifest = crate::layout::ObjectLayout::branch_table_manifest(&extra.to_string())
+        .expect("extra manifest layout");
+    backend
+        .delete_object(&extra_manifest)
+        .expect("drop extra manifest");
+
+    let mut shell = assemble_shell(lossy_open_plan(), initial, &backend).expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+    let extra_state = runtime
+        .branch_catalog()
+        .branch_state(extra)
+        .expect("extra branch state");
+    let extra_view = extra_state.capture_read_view().expect("extra view");
+    let base_present = extra_view
+        .latest(&physical_key(extra, b"extra-base"))
+        .expect("read extra-base")
+        .is_some();
+    let delta_present = extra_view
+        .latest(&physical_key(extra, b"extra-delta"))
+        .expect("read extra-delta")
+        .is_some();
+    // The deferred checkpoint left every commit in the WAL, so a full replay recovers the
+    // non-seeded branch completely even though its table manifest was dropped: both the flushed
+    // base and the later delta are present, with no gap.
+    assert!(
+        base_present && delta_present,
+        "non-seeded branch did not recover cleanly after its manifest was dropped \
+         (base_present={base_present}, delta_present={delta_present})",
+    );
+}
+
 #[test]
 fn recovery_rebuilds_inherited_layers() {
     // Open a durable runtime, commit + rotate + flush a row to the seeded
