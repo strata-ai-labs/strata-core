@@ -7,6 +7,9 @@ Guarantees, Failures, V1 Decision, Cleanup, and Notes.
 Focused direction for versioning and time travel lives in
 `docs/product/strata-v1-versioning-time-travel.md`.
 
+CLI, SDK, first-time setup, cache mode, and local AI user experience lives in
+`docs/product/strata-v1-cli-sdk-experience.md`.
+
 Expanded pathway groups:
 
 1. `docs/product/pathways/runtime-and-portability.md`

@@ -38,7 +38,8 @@ Focused product direction documents:
 1. `docs/product/strata-v1-branching-direction.md`
 2. `docs/product/strata-v1-graph-relationship-layer.md`
 3. `docs/product/strata-v1-versioning-time-travel.md`
-4. `docs/product/stratahub-product-direction.md`
+4. `docs/product/strata-v1-cli-sdk-experience.md`
+5. `docs/product/stratahub-product-direction.md`
 
 Pathway expansions:
 
