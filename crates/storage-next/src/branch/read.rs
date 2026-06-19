@@ -579,6 +579,12 @@ impl BranchOwnedTable {
     pub(crate) fn reader(&self) -> &ImmutableTableReader<'static> {
         &self.reader
     }
+
+    /// Approximate resident bytes for this owned table. The materialized reader holds the whole
+    /// table object in memory, so its encoded byte count is the in-RAM footprint.
+    pub(crate) const fn approximate_size_bytes(&self) -> u64 {
+        self.reader.byte_count()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

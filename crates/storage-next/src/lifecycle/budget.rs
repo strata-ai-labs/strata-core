@@ -44,6 +44,7 @@ use crate::commit::{
 };
 use crate::row::StorageRow;
 use crate::table::{TableBlockCache, TableCacheConfig, TableRow};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use strata_core_next::{CommitVersion, Timestamp};
 
@@ -133,6 +134,12 @@ pub(crate) struct StorageBudgetSnapshot {
 pub(crate) struct StorageBudgetLedger {
     budget: StorageRuntimeBudget,
     state: Arc<Mutex<StorageBudgetCounters>>,
+    // Database-wide runtime memory contribution (memtables + resident owned tables + block cache,
+    // summed across all branches), refreshed by the maintenance loop. Shared across ledger clones
+    // so the per-branch commit-admission path can read a database-wide total. The ledger `state`
+    // above holds only the in-flight operation reservations; the global total is their sum plus
+    // this value (see `total_used_bytes`).
+    runtime_total_bytes: Arc<AtomicU64>,
 }
 
 type StorageBudgetCounters = ([u64; POOL_COUNT], [u64; POOL_COUNT]);
@@ -515,11 +522,49 @@ impl StorageBudgetLedger {
         Ok(Self {
             budget,
             state: Arc::new(Mutex::new(empty_budget_counters())),
+            runtime_total_bytes: Arc::new(AtomicU64::new(0)),
         })
     }
 
     pub(crate) const fn budget(&self) -> StorageRuntimeBudget {
         self.budget
+    }
+
+    /// Record the database-wide runtime memory contribution (memtables + resident owned tables +
+    /// block cache, summed across all branches). The maintenance loop refreshes this so the
+    /// per-branch commit-admission path can consult a database-wide total.
+    pub(crate) fn set_runtime_total_bytes(&self, bytes: u64) {
+        self.runtime_total_bytes.store(bytes, Ordering::Relaxed);
+    }
+
+    pub(crate) fn runtime_total_bytes(&self) -> u64 {
+        self.runtime_total_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Database-wide live Strata-owned bytes: the ledger-charged pools (in-flight operation
+    /// reservations) plus the last-recorded runtime contribution. The basis for the global budget.
+    pub(crate) fn total_used_bytes(&self) -> u64 {
+        let ledger_bytes = {
+            let state = self
+                .state
+                .lock()
+                .map_or_else(|poisoned| *poisoned.into_inner(), |guard| *guard);
+            state
+                .0
+                .iter()
+                .fold(0u64, |total, &bytes| total.saturating_add(bytes))
+        };
+        ledger_bytes.saturating_add(self.runtime_total_bytes())
+    }
+
+    /// Database-wide memory pressure: the live total against the configured total budget.
+    pub(crate) fn global_pressure(&self) -> StorageBudgetPressureSeverity {
+        global_total_pressure_severity(self.total_used_bytes(), self.budget.total_bytes())
+    }
+
+    /// Whether admitting `additional_bytes` would push the database-wide total over the budget.
+    pub(crate) fn would_exceed_total(&self, additional_bytes: u64) -> bool {
+        self.total_used_bytes().saturating_add(additional_bytes) > self.budget.total_bytes()
     }
 
     pub(crate) fn reserve(
@@ -1107,6 +1152,34 @@ fn pressure_severity(usage: StorageBudgetUsage) -> StorageBudgetPressureSeverity
     } else {
         StorageBudgetPressureSeverity::Normal
     }
+}
+
+/// Database-wide memory pressure: maps the live total against the total budget to a severity,
+/// mirroring the per-pool tiers in [`pressure_severity`]. Over budget blocks mutating admission;
+/// at or above the high-water mark defers optional work so maintenance can reclaim before the cap
+/// is reached.
+fn global_total_pressure_severity(used: u64, limit: u64) -> StorageBudgetPressureSeverity {
+    if limit == 0 || used == 0 {
+        return StorageBudgetPressureSeverity::Normal;
+    }
+    if used > limit {
+        return StorageBudgetPressureSeverity::RejectMutatingAdmission;
+    }
+    let high_water = limit.saturating_mul(4) / 5;
+    if used >= high_water {
+        StorageBudgetPressureSeverity::DeferOptionalMaintenance
+    } else {
+        StorageBudgetPressureSeverity::Normal
+    }
+}
+
+/// Approximate resident bytes a single branch contributes to the database memory total: its active
+/// and frozen memtables plus its durable owned-table readers.
+pub(crate) fn branch_resident_bytes(branch: &BranchLocalState) -> u64 {
+    branch
+        .active_byte_count()
+        .saturating_add(branch.frozen_byte_count())
+        .saturating_add(branch.owned_table_byte_count())
 }
 
 const fn require_nonzero(field: &'static str, value: u64) -> LifecycleResult<()> {

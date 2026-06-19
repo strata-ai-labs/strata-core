@@ -275,6 +275,14 @@ impl TableBlockCache {
             .enabled
     }
 
+    /// Total bytes currently resident across all shards. Folded into the database-wide memory
+    /// total so cached blocks count against the budget.
+    pub(crate) fn current_bytes(&self) -> u64 {
+        self.shards.iter().fold(0u64, |total, shard| {
+            total.saturating_add(u64::try_from(shard.lock_state().bytes).unwrap_or(u64::MAX))
+        })
+    }
+
     pub(crate) fn get(&self, key: &TableBlockCacheKey) -> Option<Arc<[u8]>> {
         let mut state = self.shard_for_key(key).lock_state();
         let bytes = state.entries.get(key).cloned();

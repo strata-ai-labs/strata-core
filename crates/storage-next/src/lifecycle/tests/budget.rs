@@ -55,6 +55,74 @@ fn storage_budget_builds_optional_shared_table_block_cache() {
 }
 
 #[test]
+fn database_total_sums_ledger_reservations_and_runtime_contribution() {
+    let ledger = crate::lifecycle::StorageBudgetLedger::new(
+        StorageRuntimeBudget::scaled_closed_loop_test_profile(),
+    )
+    .expect("ledger");
+    assert_eq!(ledger.total_used_bytes(), 0);
+
+    // An in-flight operation reservation charges the ledger and shows in the global total.
+    let reservation = ledger
+        .reserve(StorageBudgetPool::TableReader, 1_000, 1, "reader")
+        .expect("reserve reader");
+    assert_eq!(ledger.total_used_bytes(), 1_000);
+
+    // The database-wide runtime contribution (memtables + resident readers + cache) adds on top.
+    ledger.set_runtime_total_bytes(5_000);
+    assert_eq!(ledger.total_used_bytes(), 6_000);
+
+    // Releasing the reservation drops its bytes; the runtime contribution remains.
+    drop(reservation);
+    assert_eq!(ledger.total_used_bytes(), 5_000);
+}
+
+#[test]
+fn global_pressure_escalates_as_the_database_total_approaches_budget() {
+    use crate::lifecycle::StorageBudgetPressureSeverity;
+    let budget = StorageRuntimeBudget::scaled_closed_loop_test_profile();
+    let total = budget.total_bytes();
+    let ledger = crate::lifecycle::StorageBudgetLedger::new(budget).expect("ledger");
+
+    ledger.set_runtime_total_bytes(total / 2);
+    assert_eq!(
+        ledger.global_pressure(),
+        StorageBudgetPressureSeverity::Normal
+    );
+
+    // At or above the 80% high-water mark, optional work defers so maintenance can reclaim.
+    ledger.set_runtime_total_bytes(total.saturating_mul(4) / 5);
+    assert_eq!(
+        ledger.global_pressure(),
+        StorageBudgetPressureSeverity::DeferOptionalMaintenance
+    );
+
+    // Over budget, mutating admission is rejected.
+    ledger.set_runtime_total_bytes(total + 1);
+    assert_eq!(
+        ledger.global_pressure(),
+        StorageBudgetPressureSeverity::RejectMutatingAdmission
+    );
+}
+
+#[test]
+fn would_exceed_total_projects_the_requested_increment() {
+    let budget = StorageRuntimeBudget::scaled_closed_loop_test_profile();
+    let total = budget.total_bytes();
+    let ledger = crate::lifecycle::StorageBudgetLedger::new(budget).expect("ledger");
+
+    ledger.set_runtime_total_bytes(total);
+    assert!(
+        !ledger.would_exceed_total(0),
+        "exactly at budget is allowed"
+    );
+    assert!(
+        ledger.would_exceed_total(1),
+        "one byte over budget is refused"
+    );
+}
+
+#[test]
 fn storage_budget_rejects_zero_mandatory_active_pool() {
     let parts = StorageRuntimeBudgetParts {
         active_mutable_bytes: 0,

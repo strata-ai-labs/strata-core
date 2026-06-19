@@ -104,6 +104,8 @@ pub struct DiagnosticsBudgetUsage {
 pub struct DiagnosticsBudgetReport {
     state: DiagnosticsFactState,
     total_limit_bytes: Option<u64>,
+    total_used_bytes: Option<u64>,
+    global_pressure: DiagnosticsBudgetPressure,
     usages: Vec<DiagnosticsBudgetUsage>,
 }
 
@@ -402,10 +404,17 @@ impl DiagnosticsBudgetUsage {
 
 impl DiagnosticsBudgetReport {
     #[must_use]
-    pub(crate) fn known(total_limit_bytes: u64, usages: Vec<DiagnosticsBudgetUsage>) -> Self {
+    pub(crate) fn known(
+        total_limit_bytes: u64,
+        total_used_bytes: u64,
+        global_pressure: DiagnosticsBudgetPressure,
+        usages: Vec<DiagnosticsBudgetUsage>,
+    ) -> Self {
         Self {
             state: DiagnosticsFactState::Known,
             total_limit_bytes: Some(total_limit_bytes),
+            total_used_bytes: Some(total_used_bytes),
+            global_pressure,
             usages,
         }
     }
@@ -415,6 +424,8 @@ impl DiagnosticsBudgetReport {
         Self {
             state: DiagnosticsFactState::Unknown,
             total_limit_bytes: None,
+            total_used_bytes: None,
+            global_pressure: DiagnosticsBudgetPressure::Normal,
             usages: Vec::new(),
         }
     }
@@ -427,6 +438,19 @@ impl DiagnosticsBudgetReport {
     #[must_use]
     pub const fn total_limit_bytes(&self) -> Option<u64> {
         self.total_limit_bytes
+    }
+
+    /// Live database-wide Strata-owned bytes: memtables, resident owned-table readers, the block
+    /// cache, and in-flight operation reservations summed across branches. `None` when unknown.
+    #[must_use]
+    pub const fn total_used_bytes(&self) -> Option<u64> {
+        self.total_used_bytes
+    }
+
+    /// Database-wide memory pressure derived from the live total against the configured budget.
+    #[must_use]
+    pub const fn global_pressure(&self) -> DiagnosticsBudgetPressure {
+        self.global_pressure
     }
 
     #[must_use]

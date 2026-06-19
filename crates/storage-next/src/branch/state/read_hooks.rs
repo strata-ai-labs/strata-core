@@ -105,6 +105,18 @@ impl BranchLocalState {
         })
     }
 
+    /// Approximate resident bytes held by this branch's durable owned tables. Whole-object readers
+    /// materialize each table in memory, so this is the dominant steady-state read footprint and
+    /// must be counted toward the database memory total.
+    pub(crate) fn owned_table_byte_count(&self) -> u64 {
+        self.owned_levels
+            .iter()
+            .flatten()
+            .fold(0u64, |total, table| {
+                total.saturating_add(table.approximate_size_bytes())
+            })
+    }
+
     pub(crate) fn owned_table_count(&self) -> usize {
         self.owned_levels.iter().map(Vec::len).sum()
     }

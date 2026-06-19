@@ -1,7 +1,7 @@
 //! Cache-mode lifecycle runtime.
 
 use super::{
-    branch_config_with_storage_budget,
+    branch_config_with_storage_budget, branch_resident_bytes,
     compaction::{
         begin_cache_materialization_build, bind_materialization_task_for_enqueue,
         collect_storage_pressure_with_budget, compact_cache_branch_to_fixed_point_with_policy,
@@ -43,8 +43,9 @@ use super::{
     LifecycleWriteAdmissionOutcome, MaintenanceCancelOutcome, MaintenanceEnqueueOutcome,
     MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
     MaintenanceTaskId, MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner,
-    MaintenanceTaskScope, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot, StorageMode,
-    StorageOpenDisposition, StorageOpenOutcome, StorageOpenPlan, StorageRuntimeBudget,
+    MaintenanceTaskScope, RecoveryHealth, StorageBudgetLedger, StorageBudgetPressureSeverity,
+    StorageBudgetSnapshot, StorageMode, StorageOpenDisposition, StorageOpenOutcome,
+    StorageOpenPlan, StorageRuntimeBudget,
 };
 use crate::backend::Backend;
 use crate::branch::config::BranchRuntimeConfig;
@@ -453,11 +454,38 @@ impl<S> LifecycleCacheRuntime<S> {
     }
 
     pub(crate) fn budget_snapshot(&self) -> StorageBudgetSnapshot {
+        self.refresh_runtime_memory_total();
         let branch = self
             .branch_catalog
             .branch_state(self.initial_branch_id)
             .expect("seeded branch is always present in the catalog");
         snapshot_with_runtime_usage(&self.budget, branch, self.maintenance.status())
+    }
+
+    /// Recompute and record the database-wide runtime memory total for cache mode: resident bytes
+    /// (memtables plus owned-table readers) across active branches. Cache mode holds no durable
+    /// block cache, so there is no cache term.
+    fn refresh_runtime_memory_total(&self) {
+        let resident =
+            self.branch_catalog
+                .list_branches(false)
+                .iter()
+                .fold(0u64, |total, descriptor| {
+                    self.branch_catalog
+                        .branch_state(descriptor.branch_id())
+                        .map_or(total, |branch| {
+                            total.saturating_add(branch_resident_bytes(branch))
+                        })
+                });
+        self.budget.set_runtime_total_bytes(resident);
+    }
+
+    pub(crate) fn budget_total_used_bytes(&self) -> u64 {
+        self.budget.total_used_bytes()
+    }
+
+    pub(crate) fn budget_global_pressure(&self) -> StorageBudgetPressureSeverity {
+        self.budget.global_pressure()
     }
 
     pub(crate) const fn capability_outcome(&self) -> &LifecycleCapabilityOutcome {

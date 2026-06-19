@@ -1287,6 +1287,37 @@ fn frozen_cache_runtime(
     runtime
 }
 
+#[test]
+fn durable_global_total_reflects_committed_resident_bytes() {
+    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
+    let branch = branch_id(0x71);
+    let mut runtime = open_durable_runtime(branch, &backend, StorageRuntimeBudget::default());
+    assert_eq!(
+        runtime.budget_total_used_bytes(),
+        0,
+        "a fresh database holds no Strata-owned memory"
+    );
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(
+                branch,
+                physical_key(branch, b"global-total"),
+                vec![0x44; 4096],
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit");
+
+    // Refreshing the database-wide total (the diagnostics path does this) counts the committed
+    // rows toward the global memory budget — proving the runtime-summed accounting end to end.
+    let _ = runtime.budget_snapshot();
+    assert!(
+        runtime.budget_total_used_bytes() > 0,
+        "committed rows count toward the global memory total"
+    );
+}
+
 fn open_cache_runtime(
     branch: BranchId,
     budget: StorageRuntimeBudget,

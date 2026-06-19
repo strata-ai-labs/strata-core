@@ -567,6 +567,14 @@ impl<'a> TableObjectService<'a> {
         self
     }
 
+    /// Bytes currently resident in the block cache, or 0 when no cache is installed. Folded into
+    /// the database-wide memory total so cached blocks count against the budget.
+    pub(crate) fn block_cache_resident_bytes(&self) -> u64 {
+        self.block_cache
+            .as_ref()
+            .map_or(0, |cache| cache.current_bytes())
+    }
+
     pub(crate) fn publish_create(
         &self,
         branch_id: &str,

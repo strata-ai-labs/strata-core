@@ -990,7 +990,11 @@ impl<'a> StorageRuntime<'a> {
                 runtime.maintenance_status(),
                 slot.background_stats(),
             )),
-            map_budget_report(&runtime.budget_snapshot()),
+            map_budget_report(
+                &runtime.budget_snapshot(),
+                runtime.budget_total_used_bytes(),
+                runtime.budget_global_pressure(),
+            ),
             diagnostics_pressure_report(
                 runtime.branch_catalog(),
                 branch_id,
@@ -1038,7 +1042,11 @@ impl<'a> StorageRuntime<'a> {
                 runtime.maintenance_status(),
                 slot.background_stats(),
             )),
-            map_budget_report(&runtime.budget_snapshot()),
+            map_budget_report(
+                &runtime.budget_snapshot(),
+                runtime.budget_total_used_bytes(),
+                runtime.budget_global_pressure(),
+            ),
             diagnostics_pressure_report(
                 runtime.branch_catalog(),
                 branch_id,

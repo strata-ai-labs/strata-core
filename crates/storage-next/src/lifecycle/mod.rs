@@ -57,7 +57,7 @@ pub(crate) use branch_lifecycle::{
     reason = "storage budget exports define the local surface for budget enforcement"
 )]
 pub(crate) use budget::{
-    branch_config_with_storage_budget, estimate_commit_batch_active_bytes,
+    branch_config_with_storage_budget, branch_resident_bytes, estimate_commit_batch_active_bytes,
     projected_commit_rotation_would_exceed_frozen_budget, require_generated_artifact_budget,
     require_maintenance_enqueue_budget, require_manifest_catalog_budget, require_rotate_budget,
     require_table_reader_budget, snapshot_with_runtime_usage,

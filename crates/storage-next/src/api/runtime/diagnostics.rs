@@ -217,7 +217,11 @@ pub(super) const fn map_diagnostics_recovery_fault_kind(
     }
 }
 
-pub(super) fn map_budget_report(snapshot: &StorageBudgetSnapshot) -> DiagnosticsBudgetReport {
+pub(super) fn map_budget_report(
+    snapshot: &StorageBudgetSnapshot,
+    total_used_bytes: u64,
+    global_pressure: StorageBudgetPressureSeverity,
+) -> DiagnosticsBudgetReport {
     let usages = snapshot
         .usages()
         .iter()
@@ -232,7 +236,12 @@ pub(super) fn map_budget_report(snapshot: &StorageBudgetSnapshot) -> Diagnostics
             )
         })
         .collect();
-    DiagnosticsBudgetReport::known(snapshot.budget().total_bytes(), usages)
+    DiagnosticsBudgetReport::known(
+        snapshot.budget().total_bytes(),
+        total_used_bytes,
+        map_budget_pressure(global_pressure),
+        usages,
+    )
 }
 
 pub(super) const fn map_budget_pool(pool: StorageBudgetPool) -> DiagnosticsBudgetPool {

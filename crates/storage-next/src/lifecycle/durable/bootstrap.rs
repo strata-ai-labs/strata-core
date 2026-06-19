@@ -17,15 +17,16 @@ use crate::commit::{
 };
 use crate::format::WalRecord;
 use crate::lifecycle::{
-    estimate_commit_batch_active_bytes, maintenance_ready_for_recovery_health,
-    projected_commit_rotation_would_exceed_frozen_budget, BudgetedCommitBranch,
-    LifecycleBranchCatalog, LifecycleDurableTableCatalog, LifecycleError,
+    branch_resident_bytes, estimate_commit_batch_active_bytes,
+    maintenance_ready_for_recovery_health, projected_commit_rotation_would_exceed_frozen_budget,
+    BudgetedCommitBranch, LifecycleBranchCatalog, LifecycleDurableTableCatalog, LifecycleError,
     LifecycleMaintenanceExecutor, LifecycleOperationKind, LifecycleRecoveryOutcome,
     LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
     LifecycleStoragePressureReason, LifecycleStoragePressureSeverity, LifecycleTransitionTrigger,
     LifecycleWalGrowthOutcome, LifecycleWalGrowthTrigger, LifecycleWriteAdmissionOutcome,
-    RecoveryExclusivityToken, RecoveryHealth, StorageBudgetLedger, StorageBudgetSnapshot,
-    StorageMode, StorageOpenOutcome, StorageOpenPlan,
+    RecoveryExclusivityToken, RecoveryHealth, StorageBudgetLedger, StorageBudgetPool,
+    StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageMode, StorageOpenOutcome,
+    StorageOpenPlan,
 };
 use crate::observability::perf_trace;
 use crate::row::PhysicalKey;
@@ -468,6 +469,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         reason = "durable budget facts are consumed by integration and closeout slices"
     )]
     pub(crate) fn budget_snapshot(&self) -> StorageBudgetSnapshot {
+        // Refresh the database-wide total so diagnostics report a current global figure alongside
+        // the per-pool snapshot.
+        self.refresh_runtime_memory_total();
         let branch = self
             .branch_catalog
             .branch_state(self.initial_branch_id)
@@ -477,6 +481,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             branch,
             self.maintenance.status(),
         )
+    }
+
+    pub(crate) fn budget_total_used_bytes(&self) -> u64 {
+        self.budget.total_used_bytes()
+    }
+
+    pub(crate) fn budget_global_pressure(&self) -> StorageBudgetPressureSeverity {
+        self.budget.global_pressure()
     }
 
     pub(crate) const fn bootstrap_report(&self) -> &LifecycleRecoveryBootstrapReport {
@@ -592,6 +604,23 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         batch: &CommitBatch,
     ) -> LifecycleResult<()> {
         let incoming_active_bytes = estimate_commit_batch_active_bytes(batch)?;
+        // Database-wide memory budget. Whole-object readers materialize resident tables in memory,
+        // so refresh the global total and refuse the commit before any visible mutation when it
+        // would push the database over its memory budget. The dataset cannot exceed the memory
+        // envelope until lazy block reads make reads incremental.
+        self.refresh_runtime_memory_total();
+        if self.budget.would_exceed_total(incoming_active_bytes) {
+            return Err(LifecycleError::StorageBudgetExceeded {
+                pool: StorageBudgetPool::ActiveMutable,
+                requested_bytes: incoming_active_bytes,
+                used_bytes: self.budget.total_used_bytes(),
+                limit_bytes: self.budget.budget().total_bytes(),
+                requested_count: 0,
+                used_count: 0,
+                limit_count: None,
+                reason: "commit would exceed the database memory budget",
+            });
+        }
         let branch = self
             .branch_catalog
             .branch_state(branch_id)
@@ -610,6 +639,27 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             });
         }
         Ok(())
+    }
+
+    /// Recompute and record the database-wide runtime memory total: the resident bytes of every
+    /// active branch (memtables plus owned-table readers) plus the block cache. The
+    /// commit-admission path and diagnostics read this so a per-branch check can reason about the
+    /// whole database against `budget.total_bytes()`.
+    pub(crate) fn refresh_runtime_memory_total(&self) {
+        let resident =
+            self.branch_catalog
+                .list_branches(false)
+                .iter()
+                .fold(0u64, |total, descriptor| {
+                    self.branch_catalog
+                        .branch_state(descriptor.branch_id())
+                        .map_or(total, |branch| {
+                            total.saturating_add(branch_resident_bytes(branch))
+                        })
+                });
+        let cache = self.services.table_object().block_cache_resident_bytes();
+        self.budget
+            .set_runtime_total_bytes(resident.saturating_add(cache));
     }
 
     #[cfg(any(test, feature = "testkit"))]
