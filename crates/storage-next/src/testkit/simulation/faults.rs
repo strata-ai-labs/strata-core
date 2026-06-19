@@ -690,6 +690,28 @@ mod tests {
         );
     }
 
+    /// Regression for a power-loss recovery gap the STH-4 DST surfaced (see
+    /// `docs/architecture/implementation-plans/storage-testing/sth-4-finding-splitrename-power-loss-gap.md`):
+    /// under Standard durability, a `SplitRename` crash that drops the table-manifest
+    /// base of a *delta* checkpoint leaves recovery installing the orphaned delta (only
+    /// the post-flush commit) — a non-prefix `Gap` — instead of falling back to a clean
+    /// prefix as the `split_rename_falls_back_to_the_log_without_loss` contract requires.
+    /// Deterministic repro: crash seed 155 (Standard / SplitRename / crash_index 15).
+    /// `#[ignore]` until the engine fix lands: the snapshot's delta base floor must be
+    /// recorded durably so recovery can require the table-manifest base and recover a
+    /// clean prefix when it is lost. Un-ignore to verify the fix.
+    #[ignore = "known recovery bug: SplitRename dropping a delta checkpoint's table-manifest base yields a Gap; un-ignore when fixed"]
+    #[test]
+    fn regression_split_rename_power_loss_recovers_clean_prefix() {
+        let dir = tempfile::tempdir().expect("tmp");
+        let run = run_one_crash_case(dir.path(), 155).expect("crash case");
+        assert!(
+            run.violation.is_none(),
+            "SplitRename dropping a delta checkpoint's table-manifest base must recover a \
+             clean prefix, not a gap: {run:?}"
+        );
+    }
+
     #[test]
     fn power_loss_during_interleaving_is_oracle_valid() {
         let dir = tempfile::tempdir().expect("tmp");
