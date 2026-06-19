@@ -466,6 +466,29 @@ fn kv_history_returns_newest_first_rows_with_tombstones() {
 }
 
 #[test]
+fn kv_first_write_in_new_space_hides_control_rows_from_commit_counts() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut kv = database
+        .kv(branch("default"), space("tenant"))
+        .expect("tenant KV service opens");
+
+    let outcome = kv
+        .put(key(b"first"), value(b"value"))
+        .expect("first tenant put succeeds");
+    assert_eq!(outcome.put_count(), 1);
+    assert_eq!(outcome.delete_count(), 0);
+
+    let batch = kv
+        .put_batch([
+            (key(b"second"), value(b"value-2")),
+            (key(b"third"), value(b"value-3")),
+        ])
+        .expect("tenant batch put succeeds");
+    assert_eq!(batch.put_count(), 2);
+    assert_eq!(batch.delete_count(), 0);
+}
+
+#[test]
 fn kv_batch_reads_and_exists_are_positional() {
     let mut database = open_cache_database().expect("cache open succeeds");
     let mut kv = database

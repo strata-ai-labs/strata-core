@@ -324,6 +324,92 @@ fn branch_service_keeps_storage_branch_requests_in_persistence_modules() {
 }
 
 #[test]
+fn raw_control_key_helpers_stay_inside_control_and_persistence() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let roots = [
+        root.join("api"),
+        root.join("branch"),
+        root.join("data").join("kv"),
+        root.join("data").join("json"),
+        root.join("data").join("vector"),
+        root.join("data").join("event"),
+        root.join("data").join("graph"),
+    ];
+    let forbidden = [
+        "database_identity_key",
+        "local_instance_identity_key",
+        "storage_registry_key",
+        "capability_registry_key",
+        "migration_registry_key",
+        "branch_index_key",
+        "branch_default_key",
+        "branch_catalog_key",
+        "branch_pending_index_key",
+        "branch_pending_key",
+        "space_index_key",
+        "space_catalog_key",
+        "reserved_space_key",
+        "RowClass::SpaceControl",
+    ];
+    let offenders: Vec<_> = roots
+        .into_iter()
+        .flat_map(|root| rust_files(&root))
+        .filter_map(|path| {
+            let text = fs::read_to_string(&path).expect("read source file");
+            forbidden
+                .iter()
+                .any(|token| text.contains(token))
+                .then_some(path)
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "raw control key helpers escaped control/persistence modules: {offenders:?}"
+    );
+}
+
+#[test]
+fn core_control_does_not_define_deferred_row_families() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let files = [
+        manifest.join("src").join("persistence").join("space.rs"),
+        manifest.join("src").join("control").join("records.rs"),
+        manifest.join("src").join("control").join("bootstrap.rs"),
+        manifest.join("src").join("control").join("space.rs"),
+    ];
+    let forbidden = [
+        "Recipe",
+        "Search",
+        "Retrieval",
+        "Shadow",
+        "Derived",
+        "ManifestCache",
+        "QueryCache",
+        "PromptCache",
+        "RowClass::Recipe",
+        "RowClass::Search",
+        "RowClass::Retrieval",
+        "RowClass::Shadow",
+        "RowClass::Derived",
+        "RowClass::Cache",
+    ];
+    let offenders: Vec<_> = files
+        .into_iter()
+        .filter_map(|path| {
+            let text = fs::read_to_string(&path).expect("read core control source");
+            forbidden
+                .iter()
+                .any(|token| text.contains(token))
+                .then_some(path)
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "core control introduced deferred row families: {offenders:?}"
+    );
+}
+
+#[test]
 fn branch_service_does_not_expose_deferred_workflows() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")

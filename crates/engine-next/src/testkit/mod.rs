@@ -14,6 +14,7 @@ pub fn row_class_storage_id_for_test(class: &str) -> Option<u8> {
         "graph-reverse-edge" => crate::persistence::RowClass::GraphReverseEdge,
         "graph-binding" => crate::persistence::RowClass::GraphBindingIndex,
         "branch" => crate::persistence::RowClass::BranchControl,
+        "space-control" => crate::persistence::RowClass::SpaceControl,
         "registry" => crate::persistence::RowClass::Registry,
         "identity" => crate::persistence::RowClass::DatasetIdentity,
         _ => return None,

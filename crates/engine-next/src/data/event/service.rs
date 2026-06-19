@@ -515,18 +515,37 @@ impl<'a> EventService<'a> {
         record: &BranchCatalogRecord,
         mutations: Vec<RowMutation>,
     ) -> EngineResult<CommitOutcome> {
+        let mut mutations = mutations;
         if mutations.is_empty() {
             return Err(EngineError::invalid_input(
                 "invalid_argument.engine.event_batch",
                 "event batch must contain at least one mutation",
             ));
         }
+        let user_put_count = mutations
+            .iter()
+            .filter(|mutation| mutation.is_put())
+            .count();
+        let user_delete_count = mutations
+            .iter()
+            .filter(|mutation| mutation.is_delete())
+            .count();
+        let mut space_mutations =
+            self.control
+                .space_registration_mutations(self.persistence, record, &self.space)?;
+        if !space_mutations.is_empty() {
+            space_mutations.extend(mutations);
+            mutations = space_mutations;
+        }
         let plan = CommitPlan::new(
             record.storage_branch_id(),
             mutations,
             Some(record.generation()),
         );
-        self.persistence.commit(&plan)
+        Ok(self
+            .persistence
+            .commit(&plan)?
+            .with_counts(user_put_count, user_delete_count))
     }
 }
 

@@ -18,7 +18,7 @@ use crate::persistence::{
 #[cfg(any(test, feature = "testkit"))]
 use crate::persistence::{encode_json_index_entry_prefix, ReadSelector, RowClass};
 
-use super::{BranchName, CacheOpenOptions, DurableLocalOpenOptions};
+use super::{BranchName, CacheOpenOptions, ControlDiagnostics, DurableLocalOpenOptions};
 
 /// Explicit storage target used to open a database.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -240,6 +240,15 @@ impl Database {
             branch,
             space,
         ))
+    }
+
+    /// Returns typed core control-plane diagnostics.
+    pub fn control_diagnostics(
+        &mut self,
+        branch: Option<&BranchName>,
+    ) -> EngineResult<ControlDiagnostics> {
+        self.require_open()?;
+        Ok(self.control.diagnostics(&mut self.persistence, branch))
     }
 
     /// Counts visible JSON secondary-index entries for conformance tests.

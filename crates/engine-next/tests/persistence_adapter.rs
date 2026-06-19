@@ -25,6 +25,11 @@ fn row_class_assignments_match_registry_contract() {
         0x30
     );
     assert_eq!(
+        strata_engine_next::testkit::row_class_storage_id_for_test("space-control")
+            .expect("known class"),
+        0x31
+    );
+    assert_eq!(
         strata_engine_next::testkit::row_class_storage_id_for_test("registry")
             .expect("known class"),
         0x32

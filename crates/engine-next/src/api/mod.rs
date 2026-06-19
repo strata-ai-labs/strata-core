@@ -1,6 +1,7 @@
 //! Executor-facing engine API.
 
 mod branch;
+mod control;
 mod database;
 mod event;
 mod graph;
@@ -13,6 +14,7 @@ pub use branch::{
     BranchCleanupSummary, BranchCreateOutcome, BranchDeleteOutcome, BranchParentSummary,
     BranchStatus, BranchSummary,
 };
+pub use control::{ControlDiagnostics, ControlHealthStatus, SpaceCatalogDiagnostics};
 pub use database::{
     CloseOutcome, Database, DatabaseOpenOutcome, DatabaseOpenSummary, DatabaseOpenTarget,
 };

@@ -29,6 +29,16 @@ impl CommitOutcome {
         }
     }
 
+    pub(crate) const fn with_counts(self, put_count: usize, delete_count: usize) -> Self {
+        Self {
+            version: self.version,
+            timestamp: self.timestamp,
+            put_count,
+            delete_count,
+            durable: self.durable,
+        }
+    }
+
     #[must_use]
     /// Returns the committed version.
     pub const fn version(self) -> CommitVersion {

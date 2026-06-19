@@ -26,7 +26,9 @@ pub(crate) use key::{
     encode_json_index_entry_prefix, encode_json_index_meta_key, encode_json_index_meta_prefix,
     encode_json_key, encode_json_space_prefix, encode_kv_key, encode_kv_key_bytes,
     encode_kv_space_prefix, encode_vector_collection_entry_prefix, encode_vector_collection_key,
-    encode_vector_collection_prefix, encode_vector_key, storage_registry_key,
+    encode_vector_collection_prefix, encode_vector_key, local_instance_identity_key,
+    migration_registry_key, reserved_space_key, space_catalog_key, space_index_key,
+    storage_registry_key,
 };
 pub(crate) use plan::CommitPlan;
 pub(crate) use row::{ReadSelector, RowAddress, RowMutation};

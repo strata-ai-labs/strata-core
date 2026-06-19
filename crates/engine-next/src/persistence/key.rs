@@ -822,12 +822,20 @@ pub(crate) fn database_identity_key() -> Vec<u8> {
     b"\x01identity".to_vec()
 }
 
+pub(crate) fn local_instance_identity_key() -> Vec<u8> {
+    b"\x01identity:local-instance".to_vec()
+}
+
 pub(crate) fn storage_registry_key() -> Vec<u8> {
     b"\x01registry:storage-spaces".to_vec()
 }
 
 pub(crate) fn capability_registry_key() -> Vec<u8> {
     b"\x01registry:capabilities".to_vec()
+}
+
+pub(crate) fn migration_registry_key() -> Vec<u8> {
+    b"\x01registry:migrations".to_vec()
 }
 
 pub(crate) fn branch_index_key() -> Vec<u8> {
@@ -860,24 +868,48 @@ pub(crate) fn branch_pending_key(name: &str) -> Vec<u8> {
     key
 }
 
+pub(crate) fn space_index_key() -> Vec<u8> {
+    b"\x01space:index".to_vec()
+}
+
+pub(crate) fn space_catalog_key(name: &str) -> Vec<u8> {
+    let name_len = u16::try_from(name.len()).expect("validated product space length");
+    let mut key = Vec::with_capacity(9 + name.len());
+    key.extend_from_slice(b"\x01space:");
+    key.extend_from_slice(&name_len.to_be_bytes());
+    key.extend_from_slice(name.as_bytes());
+    key
+}
+
+pub(crate) fn reserved_space_key(name: &str) -> Vec<u8> {
+    let name_len = u16::try_from(name.len()).expect("validated reserved space length");
+    let mut key = Vec::with_capacity(18 + name.len());
+    key.extend_from_slice(b"\x01space:reserved:");
+    key.extend_from_slice(&name_len.to_be_bytes());
+    key.extend_from_slice(name.as_bytes());
+    key
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         branch_catalog_key, branch_default_key, branch_index_key, branch_pending_key,
-        database_identity_key, decode_event_key_sequence, decode_event_sequence,
-        decode_event_type_index_key, decode_graph_binding_key, decode_graph_edge_key,
-        decode_graph_metadata_key, decode_graph_node_key, decode_graph_reverse_edge_key,
-        decode_json_document_id, decode_json_index_name, decode_kv_key,
-        decode_vector_collection_name, decode_vector_key, encode_event_key, encode_event_meta_key,
-        encode_event_space_prefix, encode_event_type_index_key, encode_event_type_index_prefix,
-        encode_graph_binding_key, encode_graph_binding_target_prefix, encode_graph_edge_key,
-        encode_graph_edge_prefix, encode_graph_metadata_key, encode_graph_metadata_prefix,
-        encode_graph_node_key, encode_graph_node_prefix, encode_graph_reverse_edge_key,
-        encode_graph_reverse_edge_prefix, encode_json_index_entry_key,
-        encode_json_index_entry_prefix, encode_json_index_meta_key, encode_json_key,
-        encode_json_space_prefix, encode_kv_key, encode_kv_space_prefix,
+        capability_registry_key, database_identity_key, decode_event_key_sequence,
+        decode_event_sequence, decode_event_type_index_key, decode_graph_binding_key,
+        decode_graph_edge_key, decode_graph_metadata_key, decode_graph_node_key,
+        decode_graph_reverse_edge_key, decode_json_document_id, decode_json_index_name,
+        decode_kv_key, decode_vector_collection_name, decode_vector_key, encode_event_key,
+        encode_event_meta_key, encode_event_space_prefix, encode_event_type_index_key,
+        encode_event_type_index_prefix, encode_graph_binding_key,
+        encode_graph_binding_target_prefix, encode_graph_edge_key, encode_graph_edge_prefix,
+        encode_graph_metadata_key, encode_graph_metadata_prefix, encode_graph_node_key,
+        encode_graph_node_prefix, encode_graph_reverse_edge_key, encode_graph_reverse_edge_prefix,
+        encode_json_index_entry_key, encode_json_index_entry_prefix, encode_json_index_meta_key,
+        encode_json_key, encode_json_space_prefix, encode_kv_key, encode_kv_space_prefix,
         encode_vector_collection_entry_prefix, encode_vector_collection_key,
-        encode_vector_collection_prefix, encode_vector_key, storage_registry_key,
+        encode_vector_collection_prefix, encode_vector_key, local_instance_identity_key,
+        migration_registry_key, reserved_space_key, space_catalog_key, space_index_key,
+        storage_registry_key,
     };
     use crate::data::event::{EventSequence, EventType};
     use crate::data::graph::{
@@ -979,11 +1011,17 @@ mod tests {
         let space = ProductSpace::new("default").expect("valid space");
         for encoded in [
             database_identity_key(),
+            local_instance_identity_key(),
             storage_registry_key(),
+            capability_registry_key(),
+            migration_registry_key(),
             branch_index_key(),
             branch_default_key(),
             branch_catalog_key("default"),
             branch_pending_key("feature"),
+            space_index_key(),
+            space_catalog_key("default"),
+            reserved_space_key("_system_"),
         ] {
             let error = decode_kv_key(&space, &encoded).expect_err("control row rejected");
             assert_eq!(error.class(), EngineErrorClass::Corruption);
@@ -1067,11 +1105,17 @@ mod tests {
         for encoded in [
             kv,
             database_identity_key(),
+            local_instance_identity_key(),
             storage_registry_key(),
+            capability_registry_key(),
+            migration_registry_key(),
             branch_index_key(),
             branch_default_key(),
             branch_catalog_key("default"),
             branch_pending_key("feature"),
+            space_index_key(),
+            space_catalog_key("default"),
+            reserved_space_key("_system_"),
         ] {
             let error =
                 decode_json_document_id(&space, &encoded).expect_err("non-JSON row rejected");
@@ -1693,9 +1737,22 @@ mod tests {
     fn control_row_keys_are_deterministic() {
         assert_eq!(database_identity_key(), b"\x01identity".to_vec());
         assert_eq!(
+            local_instance_identity_key(),
+            b"\x01identity:local-instance".to_vec()
+        );
+        assert_eq!(
             storage_registry_key(),
             b"\x01registry:storage-spaces".to_vec()
         );
+        assert_eq!(
+            capability_registry_key(),
+            b"\x01registry:capabilities".to_vec()
+        );
+        assert_eq!(
+            migration_registry_key(),
+            b"\x01registry:migrations".to_vec()
+        );
+        assert_eq!(branch_index_key(), b"\x01branch:index".to_vec());
         assert_eq!(branch_default_key(), b"\x01branch:default".to_vec());
         assert_eq!(
             branch_catalog_key("default"),
@@ -1704,6 +1761,15 @@ mod tests {
         assert_eq!(
             branch_pending_key("feature"),
             b"\x01branch:pending:\0\x07feature".to_vec()
+        );
+        assert_eq!(space_index_key(), b"\x01space:index".to_vec());
+        assert_eq!(
+            space_catalog_key("default"),
+            b"\x01space:\0\x07default".to_vec()
+        );
+        assert_eq!(
+            reserved_space_key("_system_"),
+            b"\x01space:reserved:\0\x08_system_".to_vec()
         );
     }
 }

@@ -4,20 +4,28 @@ use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 use crate::branch::catalog::{BranchCatalogRecord, BranchParentRecord, BranchStatus};
 use crate::branch::BranchName;
+use crate::data::kv::ProductSpace;
 use crate::diagnostics::{EngineError, EngineResult};
 
 const PAYLOAD_VERSION: u8 = 1;
 const IDENTITY_MAGIC: &[u8] = b"strata.engine.identity";
+const LOCAL_INSTANCE_MAGIC: &[u8] = b"strata.engine.local-instance";
 const REGISTRY_MAGIC: &[u8] = b"strata.engine.registry";
 const CAPABILITY_MAGIC: &[u8] = b"strata.engine.capabilities";
+const MIGRATION_MAGIC: &[u8] = b"strata.engine.migrations";
 const INDEX_MAGIC: &[u8] = b"strata.engine.branch-index";
 const DEFAULT_BRANCH_MAGIC: &[u8] = b"strata.engine.branch-default";
 const PENDING_INDEX_MAGIC: &[u8] = b"strata.engine.branch-pending-index";
 const BRANCH_MAGIC: &[u8] = b"strata.engine.branch-record";
 const PENDING_MAGIC: &[u8] = b"strata.engine.branch-pending";
+const SPACE_INDEX_MAGIC: &[u8] = b"strata.engine.space-index";
+const SPACE_MAGIC: &[u8] = b"strata.engine.space-record";
+const RESERVED_SPACE_MAGIC: &[u8] = b"strata.engine.reserved-space";
 const LAYOUT_VERSION: u16 = 1;
 const REGISTRY_VERSION: u16 = 1;
 const KV_CAPABILITY_VERSION: u16 = 1;
+const MIGRATION_REGISTRY_VERSION: u16 = 1;
+const CORE_CONTROL_STORAGE_SPACE_IDS: &[u8] = &[0x30, 0x31, 0x32, 0x34];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DatabaseIdentityRecord {
@@ -51,10 +59,29 @@ pub(crate) fn decode_database_identity(bytes: &[u8]) -> EngineResult<DatabaseIde
     Ok(DatabaseIdentityRecord { layout_version })
 }
 
+pub(crate) fn encode_local_instance_identity(record: &DatabaseIdentityRecord) -> Vec<u8> {
+    let mut out = versioned_payload(LOCAL_INSTANCE_MAGIC);
+    out.extend_from_slice(&record.layout_version.to_be_bytes());
+    out
+}
+
+pub(crate) fn decode_local_instance_identity(bytes: &[u8]) -> EngineResult<DatabaseIdentityRecord> {
+    let mut cursor = Cursor::new(expect_payload(bytes, LOCAL_INSTANCE_MAGIC)?);
+    let layout_version = cursor.u16("local instance identity layout version")?;
+    cursor.finish("local instance identity")?;
+    if layout_version != LAYOUT_VERSION {
+        return Err(EngineError::incompatible_layout(
+            "failed_precondition.engine.layout_version",
+            "local instance identity layout version is not supported",
+        ));
+    }
+    Ok(DatabaseIdentityRecord { layout_version })
+}
+
 pub(crate) fn encode_storage_registry() -> Vec<u8> {
     let mut out = versioned_payload(REGISTRY_MAGIC);
     out.extend_from_slice(&REGISTRY_VERSION.to_be_bytes());
-    out.extend_from_slice(&[0x20, 0x30, 0x32, 0x34]);
+    out.extend_from_slice(CORE_CONTROL_STORAGE_SPACE_IDS);
     out
 }
 
@@ -62,7 +89,7 @@ pub(crate) fn decode_storage_registry(bytes: &[u8]) -> EngineResult<()> {
     let mut cursor = Cursor::new(expect_payload(bytes, REGISTRY_MAGIC)?);
     let version = cursor.u16("storage registry version")?;
     let ids = cursor.remaining();
-    if version != REGISTRY_VERSION || ids != [0x20, 0x30, 0x32, 0x34] {
+    if version != REGISTRY_VERSION || ids != CORE_CONTROL_STORAGE_SPACE_IDS {
         return Err(EngineError::incompatible_layout(
             "failed_precondition.engine.storage_registry",
             "storage-space registry is not supported",
@@ -86,6 +113,25 @@ pub(crate) fn decode_capability_registry(bytes: &[u8]) -> EngineResult<()> {
         return Err(EngineError::incompatible_layout(
             "failed_precondition.engine.capability_registry",
             "capability registry does not advertise KV support",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn encode_migration_registry() -> Vec<u8> {
+    let mut out = versioned_payload(MIGRATION_MAGIC);
+    out.extend_from_slice(&MIGRATION_REGISTRY_VERSION.to_be_bytes());
+    out
+}
+
+pub(crate) fn decode_migration_registry(bytes: &[u8]) -> EngineResult<()> {
+    let mut cursor = Cursor::new(expect_payload(bytes, MIGRATION_MAGIC)?);
+    let version = cursor.u16("migration registry version")?;
+    cursor.finish("migration registry")?;
+    if version != MIGRATION_REGISTRY_VERSION {
+        return Err(EngineError::incompatible_layout(
+            "failed_precondition.engine.migration_registry",
+            "migration registry is not supported",
         ));
     }
     Ok(())
@@ -138,6 +184,86 @@ pub(crate) fn encode_pending_branch_record(record: &BranchCatalogRecord) -> Vec<
 
 pub(crate) fn decode_pending_branch_record(bytes: &[u8]) -> EngineResult<BranchCatalogRecord> {
     decode_branch_like(bytes, PENDING_MAGIC, "pending branch record")
+}
+
+pub(crate) fn encode_space_index(spaces: &[ProductSpace]) -> EngineResult<Vec<u8>> {
+    let count = u16::try_from(spaces.len()).map_err(|_| {
+        EngineError::invalid_input(
+            "invalid_argument.engine.space_catalog",
+            "space catalog contains too many entries",
+        )
+    })?;
+    let mut out = versioned_payload(SPACE_INDEX_MAGIC);
+    out.extend_from_slice(&count.to_be_bytes());
+    for space in spaces {
+        write_name(&mut out, space.as_str());
+    }
+    Ok(out)
+}
+
+pub(crate) fn decode_space_index(bytes: &[u8]) -> EngineResult<Vec<ProductSpace>> {
+    let mut cursor = Cursor::new(expect_payload(bytes, SPACE_INDEX_MAGIC)?);
+    let count = usize::from(cursor.u16("space index")?);
+    let mut spaces = Vec::with_capacity(count);
+    for _ in 0..count {
+        let name = cursor.name("space index")?;
+        spaces.push(ProductSpace::new(name).map_err(|_| {
+            EngineError::corruption(
+                "data_loss.engine.space_catalog",
+                "space index contains an invalid product space",
+            )
+        })?);
+    }
+    cursor.finish("space index")?;
+    for window in spaces.windows(2) {
+        if window[0] >= window[1] {
+            return Err(EngineError::corruption(
+                "data_loss.engine.space_catalog",
+                "space index entries must be sorted and unique",
+            ));
+        }
+    }
+    Ok(spaces)
+}
+
+pub(crate) fn encode_space_record(space: &ProductSpace) -> Vec<u8> {
+    let mut out = versioned_payload(SPACE_MAGIC);
+    write_name(&mut out, space.as_str());
+    out
+}
+
+pub(crate) fn decode_space_record(bytes: &[u8]) -> EngineResult<ProductSpace> {
+    let mut cursor = Cursor::new(expect_payload(bytes, SPACE_MAGIC)?);
+    let name = cursor.name("space record")?;
+    let space = ProductSpace::new(name).map_err(|_| {
+        EngineError::corruption(
+            "data_loss.engine.space_catalog",
+            "space record contains an invalid product space",
+        )
+    })?;
+    cursor.finish("space record")?;
+    Ok(space)
+}
+
+pub(crate) fn encode_reserved_system_space() -> Vec<u8> {
+    let mut out = versioned_payload(RESERVED_SPACE_MAGIC);
+    write_name(&mut out, crate::control::space::SYSTEM_SPACE);
+    out.push(0);
+    out
+}
+
+pub(crate) fn decode_reserved_system_space(bytes: &[u8]) -> EngineResult<()> {
+    let mut cursor = Cursor::new(expect_payload(bytes, RESERVED_SPACE_MAGIC)?);
+    let name = cursor.name("reserved space")?;
+    let user_managed = cursor.u8("reserved space user-managed flag")?;
+    cursor.finish("reserved space")?;
+    if name != crate::control::space::SYSTEM_SPACE || user_managed != 0 {
+        return Err(EngineError::corruption(
+            "data_loss.engine.space_catalog",
+            "reserved system space facts are invalid",
+        ));
+    }
+    Ok(())
 }
 
 fn decode_branch_like(
@@ -415,13 +541,18 @@ impl<'a> Cursor<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        decode_branch_index, decode_branch_record, decode_database_identity,
+        decode_branch_index, decode_branch_record, decode_capability_registry,
+        decode_database_identity, decode_local_instance_identity, decode_migration_registry,
+        decode_reserved_system_space, decode_space_index, decode_space_record,
         decode_storage_registry, encode_branch_index, encode_branch_record,
-        encode_database_identity, encode_storage_registry, DatabaseIdentityRecord, IDENTITY_MAGIC,
-        REGISTRY_MAGIC,
+        encode_capability_registry, encode_database_identity, encode_local_instance_identity,
+        encode_migration_registry, encode_reserved_system_space, encode_space_index,
+        encode_space_record, encode_storage_registry, DatabaseIdentityRecord, CAPABILITY_MAGIC,
+        CORE_CONTROL_STORAGE_SPACE_IDS, IDENTITY_MAGIC, MIGRATION_MAGIC, REGISTRY_MAGIC,
     };
     use crate::branch::catalog::BranchCatalogRecord;
     use crate::branch::BranchName;
+    use crate::data::kv::ProductSpace;
     use crate::diagnostics::EngineErrorClass;
 
     #[test]
@@ -446,6 +577,14 @@ mod tests {
     }
 
     #[test]
+    fn local_instance_identity_round_trips() {
+        let record = DatabaseIdentityRecord::current();
+        let decoded = decode_local_instance_identity(&encode_local_instance_identity(&record))
+            .expect("local identity decodes");
+        assert_eq!(decoded, record);
+    }
+
+    #[test]
     fn storage_registry_rejects_unknown_future_version() {
         let mut payload = encode_storage_registry();
         let offset = REGISTRY_MAGIC.len() + 2;
@@ -453,6 +592,43 @@ mod tests {
         let error = decode_storage_registry(&payload).expect_err("future registry must fail");
         assert_eq!(error.class(), EngineErrorClass::IncompatibleLayout);
         assert_eq!(error.code(), "failed_precondition.engine.storage_registry");
+    }
+
+    #[test]
+    fn capability_registry_round_trips_and_rejects_unknown_future_version() {
+        decode_capability_registry(&encode_capability_registry()).expect("capabilities decode");
+
+        let mut payload = encode_capability_registry();
+        let offset = CAPABILITY_MAGIC.len() + 2;
+        payload[offset..offset + 2].copy_from_slice(&2_u16.to_be_bytes());
+        let error =
+            decode_capability_registry(&payload).expect_err("future capabilities must fail");
+        assert_eq!(error.class(), EngineErrorClass::IncompatibleLayout);
+        assert_eq!(
+            error.code(),
+            "failed_precondition.engine.capability_registry"
+        );
+    }
+
+    #[test]
+    fn migration_registry_round_trips_and_rejects_unknown_future_version() {
+        decode_migration_registry(&encode_migration_registry()).expect("migrations decode");
+
+        let mut payload = encode_migration_registry();
+        let offset = MIGRATION_MAGIC.len() + 2;
+        payload[offset..offset + 2].copy_from_slice(&2_u16.to_be_bytes());
+        let error = decode_migration_registry(&payload).expect_err("future migrations must fail");
+        assert_eq!(error.class(), EngineErrorClass::IncompatibleLayout);
+        assert_eq!(
+            error.code(),
+            "failed_precondition.engine.migration_registry"
+        );
+    }
+
+    #[test]
+    fn storage_registry_records_core_control_ids() {
+        assert_eq!(CORE_CONTROL_STORAGE_SPACE_IDS, &[0x30, 0x31, 0x32, 0x34]);
+        decode_storage_registry(&encode_storage_registry()).expect("registry decodes");
     }
 
     #[test]
@@ -481,5 +657,56 @@ mod tests {
         payload.push(0xff);
         let error = decode_branch_index(&payload).expect_err("trailing bytes must fail");
         assert_eq!(error.class(), EngineErrorClass::Corruption);
+    }
+
+    #[test]
+    fn space_index_round_trips_sorted_spaces() {
+        let spaces = [
+            ProductSpace::new("default").expect("valid space"),
+            ProductSpace::new("tenant").expect("valid space"),
+        ];
+        let decoded =
+            decode_space_index(&encode_space_index(&spaces).expect("space index encodes"))
+                .expect("space index decodes");
+        assert_eq!(decoded, spaces);
+    }
+
+    #[test]
+    fn space_index_rejects_unsorted_or_duplicate_spaces() {
+        let default = ProductSpace::new("default").expect("valid space");
+        let tenant = ProductSpace::new("tenant").expect("valid space");
+
+        for spaces in [[tenant, default.clone()], [default.clone(), default]] {
+            let error = decode_space_index(&encode_space_index(&spaces).expect("encoded"))
+                .expect_err("malformed space index rejected");
+            assert_eq!(error.class(), EngineErrorClass::Corruption);
+            assert_eq!(error.code(), "data_loss.engine.space_catalog");
+        }
+    }
+
+    #[test]
+    fn space_record_round_trips() {
+        let space = ProductSpace::new("default").expect("valid space");
+        let decoded =
+            decode_space_record(&encode_space_record(&space)).expect("space record decodes");
+        assert_eq!(decoded, space);
+    }
+
+    #[test]
+    fn reserved_system_space_record_round_trips() {
+        decode_reserved_system_space(&encode_reserved_system_space())
+            .expect("reserved system space decodes");
+    }
+
+    #[test]
+    fn reserved_system_space_record_rejects_user_managed_system_space() {
+        let mut payload = encode_reserved_system_space();
+        let flag = payload.last_mut().expect("reserved flag present");
+        *flag = 1;
+
+        let error = decode_reserved_system_space(&payload)
+            .expect_err("user-managed reserved system space must fail");
+        assert_eq!(error.class(), EngineErrorClass::Corruption);
+        assert_eq!(error.code(), "data_loss.engine.space_catalog");
     }
 }

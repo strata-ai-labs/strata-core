@@ -140,7 +140,7 @@ fn fork_current_from_empty_source_still_reports_parent() {
     assert_eq!(parent.name().as_str(), "default");
     assert_eq!(parent.branch_id().as_bytes(), &[0; 16]);
     assert_eq!(parent.generation(), 1);
-    assert_eq!(parent.fork_version(), CommitVersion::ZERO);
+    assert!(parent.fork_version() >= CommitVersion::new(1));
 
     database
         .kv(branch("default"), space("default"))
