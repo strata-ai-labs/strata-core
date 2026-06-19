@@ -16,15 +16,22 @@
 //!    hold the budget after the call returns.
 //!
 //! V1 production paths use admission checks for the `TableReader`,
-//! `GeneratedArtifact`, and `ManifestCatalog` pools. Whole-object readers,
-//! generated artifacts, and manifest catalog bytes are admitted in a
-//! single check against the configured pool limit; once the call returns
-//! the ledger usage for those pools stays at zero. This bounds any single
-//! allocation but does not track cumulative usage across concurrent
-//! flushes, compactions, or recoveries. Block-range RAII reservations are
-//! deferred until whole-object reads are replaced by lazy block reads;
-//! those code paths will switch from `check_available` to `reserve`, and
-//! the existing ledger contract carries over without changes.
+//! `GeneratedArtifact`, and `ManifestCatalog` pools: each whole-object reader,
+//! generated artifact, or manifest-catalog allocation is admitted in a single
+//! check against its pool limit, and the ledger usage for those pools stays at
+//! zero after the call. This per-allocation admission is intentional, not a
+//! stopgap. The cumulative, steady-state cost those allocations represent is
+//! already captured by the database-wide runtime total (resident owned-table
+//! readers via [`branch_resident_bytes`] plus memtables and the block cache; see
+//! [`StorageBudgetLedger::total_used_bytes`]), so charging them cumulatively to
+//! the ledger would double-count: a flush / rewrite / recovery "artifact" or
+//! "reader" becomes a resident owned table the runtime total already counts
+//! (flush even checks the same bytes under both the artifact and reader pools).
+//! The only genuinely-transient buffers (checkpoint snapshot, manifest encode)
+//! are maintenance / durability relief operations that must not be refused
+//! against the global total, or they could block the very work that reclaims
+//! memory. RAII reservations remain the mechanism for future lazy-block-reader
+//! ranges, whose reserved bytes are not otherwise resident.
 //!
 //! `ActiveMutable`, `FrozenMutable`, and `MaintenanceQueue` usage are
 //! reported by [`snapshot_with_runtime_usage`] from runtime state — the

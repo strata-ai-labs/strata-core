@@ -1318,6 +1318,79 @@ fn durable_global_total_reflects_committed_resident_bytes() {
     );
 }
 
+#[test]
+fn multi_branch_combined_resident_over_budget_refuses_commit() {
+    // total_bytes is just above active_mutable_bytes, so a single branch can never exceed the
+    // global total through its own active pool — only two branches' combined resident can. This is
+    // the case the single-branch admission path cannot reach.
+    let mut parts = budget_parts(64 * 1024);
+    parts.table_reader_bytes = 1024;
+    parts.frozen_mutable_bytes = 1024;
+    parts.generated_artifact_bytes = 1024;
+    parts.total_bytes = pool_sum(parts);
+    let budget = StorageRuntimeBudget::from_parts(parts).expect("budget");
+
+    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
+    let branch_a = branch_id(0x72);
+    let branch_b = branch_id(0x73);
+    let mut runtime = open_durable_runtime(branch_a, &backend, budget);
+    runtime
+        .create_branch(
+            branch_b,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create branch b");
+
+    // Each commit (~48 KiB) stays under active_mutable (64 KiB), so neither branch trips its own
+    // per-branch admission or rotates; but the two branches' combined resident exceeds the total.
+    let value = vec![0x55; 48 * 1024];
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch_a, physical_key(branch_a, b"a"), value.clone()),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("branch a commit fits the per-branch and global budget");
+
+    // Branch B's commit fits its own active pool but pushes the database-wide total over budget,
+    // so the global admission refuses it before any visible mutation.
+    let error = runtime
+        .execute_durable_commit(
+            durable_put_batch(branch_b, physical_key(branch_b, b"b"), value),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect_err("branch b commit exceeds the database memory budget");
+    assert_eq!(error.code(), "resource_exhausted.lifecycle.storage_budget");
+
+    // Refusal is before mutation: branch A's value survives, branch B's never became visible.
+    let view_a = runtime
+        .branch_catalog()
+        .branch_state(branch_a)
+        .expect("branch a state")
+        .capture_read_view()
+        .expect("branch a view");
+    assert!(
+        view_a
+            .latest(&physical_key(branch_a, b"a"))
+            .expect("read a")
+            .is_some(),
+        "branch A's committed value survives the refused branch-B commit"
+    );
+    let view_b = runtime
+        .branch_catalog()
+        .branch_state(branch_b)
+        .expect("branch b state")
+        .capture_read_view()
+        .expect("branch b view");
+    assert!(
+        view_b
+            .latest(&physical_key(branch_b, b"b"))
+            .expect("read b")
+            .is_none(),
+        "the refused branch-B commit left no visible state"
+    );
+}
+
 fn open_cache_runtime(
     branch: BranchId,
     budget: StorageRuntimeBudget,

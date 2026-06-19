@@ -291,10 +291,15 @@ This is the central mechanism and the main correction over the prior draft.
 1. **One database-local ledger.** Every Strata-owned pool charges the same
    per-database `StorageBudgetLedger`. The global total is the sum of pool
    usage. No process-global state.
-2. **All pools charge cumulatively.** Replace `check_available` on the
-   `TableReader`, `GeneratedArtifact`, and `ManifestCatalog` pools with RAII
-   `reserve` so their bytes stay charged for the lifetime of the live object.
-   This is the difference between bounding one allocation and bounding memory.
+2. **The total is runtime-summed; per-allocation admission stays.** The global
+   total blends the ledger-charged pools with the database-wide runtime total
+   (resident owned-table readers + memtables + block cache). The `TableReader`,
+   `GeneratedArtifact`, and `ManifestCatalog` `check_available` calls remain
+   single-allocation admission: Phase 1b found their allocations either become
+   resident owned tables already counted by the runtime total (converting would
+   double-count — flush checks the same bytes under both the artifact and reader
+   pools) or are maintenance/relief buffers that must not be refused on the global
+   total. RAII `reserve` stays reserved for future lazy-block-reader ranges.
 3. **Eviction keeps evictable pools under cap.** The table/block read cache
    evicts (port the old CLOCK discipline, database-local) so it never exceeds
    its pool budget; pinned entries are exempt and counted.
@@ -311,10 +316,12 @@ This is the central mechanism and the main correction over the prior draft.
 
 ## Storage-Next Work
 
-1. **Convert the three per-allocation pools to cumulative reservations.**
-   `TableReader`, `GeneratedArtifact`, `ManifestCatalog` charge the ledger via
-   RAII `reserve` and release on drop. This is the load-bearing change; without
-   it the global budget is undercounted.
+1. **Keep per-allocation admission for the transient pools (not a conversion).**
+   `TableReader`, `GeneratedArtifact`, and `ManifestCatalog` stay on
+   `check_available`. Their cumulative cost is captured by the runtime total
+   (resident readers + memtables + block cache), so the RAII conversion was found
+   redundant (it double-counts resident outputs) and dropped in Phase 1b. The
+   load-bearing change is the runtime total + admission, not per-pool charging.
 
 2. **Add database-local eviction for evictable pools.** The read cache evicts to
    stay under its pool budget; usage is a true running value, not zero-after-call.
@@ -421,9 +428,10 @@ users to run low-level maintenance.
 Engine + storage only; storage first because it is the contract the planner
 targets.
 
-1. **Storage global enforcement.** Convert the three pools to cumulative
-   reservations; add read-cache eviction; wire the global pressure tracker.
-   (Makes the budget real before exposing it.)
+1. **Storage global enforcement.** Add the runtime-summed database-wide total and
+   wire it into commit admission (refuse over-budget before mutation). The block
+   cache already evicts via its own LRU; the per-allocation pool checks stay as
+   admission. (Makes the budget real before exposing it.)
 2. **Storage public budget API.** Public resolved-byte type, boundary
    validation, and diagnostics. Keep lifecycle internals private.
 3. **Storage cache + policy correction.** Cache obeys resolved budget; remove the
