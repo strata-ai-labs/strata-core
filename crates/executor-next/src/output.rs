@@ -361,4 +361,40 @@ pub enum Output {
     ArrowImportResult(ArrowImportResult),
     /// Arrow export summary.
     ArrowExportResult(ArrowExportResult),
+    /// Inference model list.
+    #[cfg(feature = "inference")]
+    InferenceModels(Vec<strata_inference_next::ModelInfo>),
+    /// Inference model pull output.
+    #[cfg(feature = "inference")]
+    InferenceModelPulled(strata_inference_next::PullModelOutput),
+    /// Inference capability facts.
+    #[cfg(feature = "inference")]
+    InferenceCapability(strata_inference_next::InferenceCapability),
+    /// Inference generation output.
+    #[cfg(feature = "inference")]
+    InferenceGeneration(strata_inference_next::GenerateResponse),
+    /// Inference token ids.
+    #[cfg(feature = "inference")]
+    InferenceTokenIds(Vec<u32>),
+    /// Inference detokenized text.
+    #[cfg(feature = "inference")]
+    InferenceText(String),
+    /// Inference embedding vector.
+    #[cfg(feature = "inference")]
+    InferenceEmbedding(Vec<f32>),
+    /// Inference batch embedding output.
+    #[cfg(feature = "inference")]
+    InferenceEmbeddings(strata_inference_next::EmbedResponse),
+    /// Inference ranking output.
+    #[cfg(feature = "inference")]
+    InferenceRanking(strata_inference_next::RankResponse),
+    /// Inference unload result.
+    #[cfg(feature = "inference")]
+    InferenceUnloadResult {
+        /// True when a cached entry was removed.
+        unloaded: bool,
+    },
+    /// Inference runtime cache diagnostics.
+    #[cfg(feature = "inference")]
+    InferenceCacheStatus(strata_inference_next::ModelCacheStatus),
 }

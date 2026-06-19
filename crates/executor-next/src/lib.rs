@@ -17,6 +17,15 @@ pub use command::Command;
 pub use error::{ExecutorError, ExecutorErrorClass, ExecutorResult};
 pub use executor::Executor;
 pub use output::Output;
+#[cfg(feature = "inference")]
+pub use strata_inference_next::{
+    EmbedRequest as InferenceEmbedRequest, EmbedResponse as InferenceEmbedResponse,
+    GenerateRequest as InferenceGenerateRequest, GenerateResponse as InferenceGenerateResponse,
+    InferenceCapability, InferenceRuntime, InferenceRuntimeConfig,
+    ModelCacheStatus as InferenceModelCacheStatus, ModelInfo as InferenceModelInfo,
+    PullModelOutput as InferencePullModelOutput, RankRequest as InferenceRankRequest,
+    RankResponse as InferenceRankResponse,
+};
 pub use types::{
     ArrowExportPrimitive, ArrowExportResult, ArrowFileFormat, ArrowImportResult, ArrowImportTarget,
     BatchEventEntry, BatchGetItemResult, BatchItemResult, BatchJsonDeleteEntry, BatchJsonEntry,

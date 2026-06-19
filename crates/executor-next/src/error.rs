@@ -111,6 +111,34 @@ impl From<EngineError> for ExecutorError {
     }
 }
 
+#[cfg(feature = "inference")]
+impl From<strata_inference_next::InferenceError> for ExecutorError {
+    fn from(value: strata_inference_next::InferenceError) -> Self {
+        let class = match value.class() {
+            strata_inference_next::InferenceErrorClass::InvalidInput => {
+                ExecutorErrorClass::InvalidInput
+            }
+            strata_inference_next::InferenceErrorClass::NotFound => ExecutorErrorClass::NotFound,
+            strata_inference_next::InferenceErrorClass::Unavailable => {
+                ExecutorErrorClass::Unavailable
+            }
+            strata_inference_next::InferenceErrorClass::Retryable => {
+                ExecutorErrorClass::Unavailable
+            }
+            strata_inference_next::InferenceErrorClass::Corruption => {
+                ExecutorErrorClass::Corruption
+            }
+            strata_inference_next::InferenceErrorClass::Internal => ExecutorErrorClass::Internal,
+        };
+        Self::new(
+            class,
+            value.code(),
+            value.retryable(),
+            value.public_message(),
+        )
+    }
+}
+
 impl fmt::Display for ExecutorError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}: {}", self.code, self.message)

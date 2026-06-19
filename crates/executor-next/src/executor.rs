@@ -76,6 +76,8 @@ const DEFAULT_GRAPH_LIST_LIMIT: usize = 100;
 pub struct Executor {
     database: Database,
     default_branch: String,
+    #[cfg(feature = "inference")]
+    inference: strata_inference_next::InferenceRuntime,
 }
 
 impl Executor {
@@ -97,7 +99,20 @@ impl Executor {
         Self {
             database,
             default_branch,
+            #[cfg(feature = "inference")]
+            inference: strata_inference_next::InferenceRuntime::default(),
         }
+    }
+
+    /// Replaces the inference runtime handle used by inference commands.
+    #[cfg(feature = "inference")]
+    #[must_use]
+    pub fn with_inference_runtime(
+        mut self,
+        inference: strata_inference_next::InferenceRuntime,
+    ) -> Self {
+        self.inference = inference;
+        self
     }
 
     /// Sets the default branch used when commands omit their branch.
@@ -785,6 +800,78 @@ impl Executor {
                 graph,
                 event_type,
             ),
+            #[cfg(feature = "inference")]
+            Command::InferenceModelsList => {
+                Ok(Output::InferenceModels(self.inference.list_models()))
+            }
+            #[cfg(feature = "inference")]
+            Command::InferenceModelsLocal => {
+                Ok(Output::InferenceModels(self.inference.list_local_models()))
+            }
+            #[cfg(feature = "inference")]
+            Command::InferenceModelsPull { model } => self
+                .inference
+                .pull_model(&model)
+                .map(Output::InferenceModelPulled)
+                .map_err(ExecutorError::from),
+            #[cfg(feature = "inference")]
+            Command::InferenceModelCapability { model } => self
+                .inference
+                .capability(&model)
+                .map(Output::InferenceCapability)
+                .map_err(ExecutorError::from),
+            #[cfg(feature = "inference")]
+            Command::InferenceGenerate { model, request } => self
+                .inference
+                .generate(&model, &request)
+                .map(Output::InferenceGeneration)
+                .map_err(ExecutorError::from),
+            #[cfg(feature = "inference")]
+            Command::InferenceTokenize {
+                model,
+                text,
+                add_special,
+            } => self
+                .inference
+                .tokenize(&model, &text, add_special)
+                .map(Output::InferenceTokenIds)
+                .map_err(ExecutorError::from),
+            #[cfg(feature = "inference")]
+            Command::InferenceDetokenize { model, ids } => self
+                .inference
+                .detokenize(&model, &ids)
+                .map(Output::InferenceText)
+                .map_err(ExecutorError::from),
+            #[cfg(feature = "inference")]
+            Command::InferenceEmbed { model, request } => self
+                .inference
+                .embed(&model, &request)
+                .map(Output::InferenceEmbedding)
+                .map_err(ExecutorError::from),
+            #[cfg(feature = "inference")]
+            Command::InferenceEmbedBatch { model, texts } => self
+                .inference
+                .embed_batch(&model, &texts)
+                .map(Output::InferenceEmbeddings)
+                .map_err(ExecutorError::from),
+            #[cfg(feature = "inference")]
+            Command::InferenceRank { model, request } => self
+                .inference
+                .rank(&model, &request)
+                .map(Output::InferenceRanking)
+                .map_err(ExecutorError::from),
+            #[cfg(feature = "inference")]
+            Command::InferenceUnload { model } => self
+                .inference
+                .unload(model.as_deref())
+                .map(|unloaded| Output::InferenceUnloadResult { unloaded })
+                .map_err(ExecutorError::from),
+            #[cfg(feature = "inference")]
+            Command::InferenceCacheStatus => self
+                .inference
+                .cache_status()
+                .map(Output::InferenceCacheStatus)
+                .map_err(ExecutorError::from),
         }
     }
 

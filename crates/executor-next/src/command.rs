@@ -1097,6 +1097,85 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         event_type: Option<String>,
     },
+    /// Lists catalog models known to the inference runtime.
+    #[cfg(feature = "inference")]
+    InferenceModelsList,
+    /// Lists locally available inference models.
+    #[cfg(feature = "inference")]
+    InferenceModelsLocal,
+    /// Pulls an inference model into the local model directory.
+    #[cfg(feature = "inference")]
+    InferenceModelsPull {
+        /// Model spec or catalog name.
+        model: String,
+    },
+    /// Returns capability facts for one inference model spec.
+    #[cfg(feature = "inference")]
+    InferenceModelCapability {
+        /// Model spec.
+        model: String,
+    },
+    /// Generates text with an inference model.
+    #[cfg(feature = "inference")]
+    InferenceGenerate {
+        /// Model spec.
+        model: String,
+        /// Generation request.
+        request: strata_inference_next::GenerateRequest,
+    },
+    /// Tokenizes text with a local inference model.
+    #[cfg(feature = "inference")]
+    InferenceTokenize {
+        /// Model spec.
+        model: String,
+        /// Text to tokenize.
+        text: String,
+        /// Whether to add special tokens.
+        #[serde(default)]
+        add_special: bool,
+    },
+    /// Detokenizes token ids with a local inference model.
+    #[cfg(feature = "inference")]
+    InferenceDetokenize {
+        /// Model spec.
+        model: String,
+        /// Token ids.
+        ids: Vec<u32>,
+    },
+    /// Embeds one text with an inference model.
+    #[cfg(feature = "inference")]
+    InferenceEmbed {
+        /// Model spec.
+        model: String,
+        /// Embedding request.
+        request: strata_inference_next::EmbedRequest,
+    },
+    /// Embeds multiple texts with an inference model.
+    #[cfg(feature = "inference")]
+    InferenceEmbedBatch {
+        /// Model spec.
+        model: String,
+        /// Ordered texts to embed.
+        texts: Vec<String>,
+    },
+    /// Ranks passages against a query with an inference model.
+    #[cfg(feature = "inference")]
+    InferenceRank {
+        /// Model spec.
+        model: String,
+        /// Ranking request.
+        request: strata_inference_next::RankRequest,
+    },
+    /// Unloads one cached inference model, or all cached models when omitted.
+    #[cfg(feature = "inference")]
+    InferenceUnload {
+        /// Optional model spec.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
+    /// Returns inference runtime cache diagnostics.
+    #[cfg(feature = "inference")]
+    InferenceCacheStatus,
 }
 
 impl Command {
@@ -1182,6 +1261,30 @@ impl Command {
             Self::GraphBatchWrite { .. } => "graph_batch_write",
             Self::ArrowImport { .. } => "arrow_import",
             Self::ArrowExport { .. } => "arrow_export",
+            #[cfg(feature = "inference")]
+            Self::InferenceModelsList => "inference_models_list",
+            #[cfg(feature = "inference")]
+            Self::InferenceModelsLocal => "inference_models_local",
+            #[cfg(feature = "inference")]
+            Self::InferenceModelsPull { .. } => "inference_models_pull",
+            #[cfg(feature = "inference")]
+            Self::InferenceModelCapability { .. } => "inference_model_capability",
+            #[cfg(feature = "inference")]
+            Self::InferenceGenerate { .. } => "inference_generate",
+            #[cfg(feature = "inference")]
+            Self::InferenceTokenize { .. } => "inference_tokenize",
+            #[cfg(feature = "inference")]
+            Self::InferenceDetokenize { .. } => "inference_detokenize",
+            #[cfg(feature = "inference")]
+            Self::InferenceEmbed { .. } => "inference_embed",
+            #[cfg(feature = "inference")]
+            Self::InferenceEmbedBatch { .. } => "inference_embed_batch",
+            #[cfg(feature = "inference")]
+            Self::InferenceRank { .. } => "inference_rank",
+            #[cfg(feature = "inference")]
+            Self::InferenceUnload { .. } => "inference_unload",
+            #[cfg(feature = "inference")]
+            Self::InferenceCacheStatus => "inference_cache_status",
         }
     }
 }

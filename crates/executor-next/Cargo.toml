@@ -12,6 +12,11 @@ description = "Serializable command boundary for the rebuilt engine"
 [features]
 default = ["localfs", "arrow"]
 arrow = ["dep:arrow", "dep:base64", "dep:parquet"]
+inference = ["dep:strata-inference-next"]
+inference-anthropic = ["inference"]
+inference-google = ["inference"]
+inference-local = ["inference", "strata-inference-next/local"]
+inference-openai = ["inference"]
 localfs = ["strata-engine-next/localfs"]
 testkit = ["strata-engine-next/testkit"]
 
@@ -24,6 +29,7 @@ serde_bytes = { workspace = true }
 serde_json = { workspace = true }
 strata-core-next = { path = "../core-next" }
 strata-engine-next = { path = "../engine-next", default-features = false }
+strata-inference-next = { path = "../inference-next", optional = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
