@@ -705,7 +705,13 @@ fn recovery_loads_checkpoint_installs_rows_and_packages_only_wal_tail() {
         &backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
-            .with_recovery_facts(1, Some(3), Some(5), Some(CommitVersion::new(2)))
+            // Full self-contained snapshot at watermark 3 (no flush base): `flushed_through`
+            // stays None. The WAL record at commit 2 is superseded by the snapshot watermark,
+            // not by a flushed table-manifest base. Recovery of a delta checkpoint over a
+            // table-manifest base (where `flushed_through` is set) is covered by the
+            // flush-watermark tests; a set `flushed_through` with the base absent is the
+            // orphaned-delta case covered by the SplitRename regression.
+            .with_recovery_facts(1, Some(3), Some(5), None)
             .expect("database root facts"),
     );
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)

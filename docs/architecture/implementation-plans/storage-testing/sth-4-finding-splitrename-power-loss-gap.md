@@ -1,6 +1,6 @@
 # STH-4 finding: power-loss recovery `Gap` under SplitRename (seed 155)
 
-**Status:** root cause **proven** (2026-06-19) + captured as a standing `#[ignore]` regression (`regression_split_rename_power_loss_recovers_clean_prefix`). **The fix is a durable-invariant redesign**, not a surgical patch — see "Why a clean fix is a durable-invariant change". Class 9 stays open on it.
+**Status:** ✅ **RESOLVED** (2026-06-19) — fix landed; the regression is un-ignored and green for the deterministic repro, and the 3000-seed fault soak now runs clean end-to-end. See "Resolution".
 **Found by:** STH-4 fault-simulation soak (`fault_simulation_soak_deepens_across_many_seeds`) after the seed-74 publish-fault fix landed, at `STRATA_STORAGE_FAULT_CASES=3000`. The soak now clears seeds 0–154 (including 74) and fails at **seed 155**.
 **Severity:** **high** (provisional) — recovery returns a *non-contiguous* committed history (`Gap`), which is a phantom-class violation, not a tolerated prefix loss.
 **Relationship to the publish-fault fix:** **independent / pre-existing.** Seed 155 is a power-loss crash case (`run_one_crash_case`) on a reordering backend with **no injected backend fault**, so the checkpoint-defer fix (which only fires on table-manifest publish debt) is inert on this path. Fixing seed 74 merely let the soak run far enough to reach it.
@@ -50,19 +50,24 @@ The discriminator is the snapshot's **delta base floor** (the commit boundary be
 
 So a correct fix requires recording the snapshot's base floor durably (a new manifest semantic, designed around the frozen format and the proof-gated flush-watermark invariant) **plus** the recovery change: when the base floor `F > 0` and the table manifest covering `[1..F]` is absent, the delta is orphaned → recover the WAL-contiguous prefix from v1 (empty here) + record `DataLoss`. This entangles the checkpoint flush-watermark semantics, the manifest recovery facts, recovery reconciliation, and golden vectors — a dedicated slice, not a surgical patch.
 
+## Resolution (2026-06-19)
+
+Implemented as a two-half write + recovery change reusing the existing in-format `flushed_through_commit_id` (a value change, **no format change**, so golden vectors are untouched):
+
+- **Write-side** (`lifecycle/checkpoint.rs`, `service/{checkpoint,manifest}.rs`): a delta checkpoint records its base floor `F` — the durable owned-table covered_max via `branch_checkpoint_flush_boundary` — **atomically with the snapshot facts** in `persist_snapshot_facts_with_flush_boundary` (monotonic, never regressing a higher recorded watermark). A full, self-contained snapshot records `None`. The atomic single write closes the crash window a separate follow-up write would have left.
+- **Recovery-side** (`lifecycle/recovery.rs`): when the table-manifest base is absent and the snapshot is a delta — its recorded base floor is **strictly below** the snapshot watermark, **or** the snapshot carries **no rows of its own** — the delta is orphaned. Recovery discards it, replays only the WAL prefix contiguous from v1 (a scoped contiguity guard; empty here), and records `RecoveryFaultKind::MissingTableManifestBase` → `DataLoss`. A self-contained full snapshot (watermark == base floor, with its own rows) is left untouched — the precision that avoids discarding healthy full snapshots (a false positive caught and fixed during implementation).
+
+Tests: `regression_split_rename_power_loss_recovers_clean_prefix` un-ignored + green; `delta_checkpoint_records_flush_boundary_not_visible_version` and `full_checkpoint_leaves_flush_boundary_unset` pin the write-side contract; full `--lib` (3101) + the crash / fs-model / recovery integration targets green; **the 3000-seed fault soak runs clean end-to-end**; clippy `--all-features --all-targets -D warnings` + fmt + default/no-default builds clean.
+
 ## Repro
 
 ```bash
-# Standing regression (deterministic single seed) — un-ignore when fixed:
+# Deterministic single-seed regression (now green; the standing guard):
 cargo test -p strata-storage-next --features fault-injection,localfs --lib \
-  regression_split_rename_power_loss_recovers_clean_prefix -- --ignored
+  regression_split_rename_power_loss_recovers_clean_prefix
 
-# Full soak — deterministically fails at seed 155:
+# Full soak — now clean end-to-end (was: failed at seed 155):
 STRATA_STORAGE_FAULT_CASES=3000 cargo test -p strata-storage-next \
   --features fault-injection,localfs --test simulation_faults -- --ignored \
   fault_simulation_soak_deepens_across_many_seeds
 ```
-
-## Next
-
-Own slice (mirror the seed-74 discipline, now with the design work scoped above): record the snapshot's delta base floor durably, add the recovery requirement + WAL-contiguity guard so recovery yields a clean prefix, un-ignore `regression_split_rename_power_loss_recovers_clean_prefix`, and re-run the fault soak to confirm it runs clean end-to-end. Until then, **class 9 stays open.**

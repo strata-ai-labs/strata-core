@@ -123,6 +123,7 @@ pub(crate) struct CheckpointRequest {
     snapshot_watermark: CommitVersion,
     created_at: Timestamp,
     sections: Vec<SnapshotSection>,
+    flushed_through_base: Option<CommitVersion>,
 }
 
 impl CheckpointRequest {
@@ -143,7 +144,25 @@ impl CheckpointRequest {
             snapshot_watermark,
             created_at,
             sections,
+            flushed_through_base: None,
         }
+    }
+
+    /// The base floor (highest durably-flushed commit) the checkpoint snapshot is a delta
+    /// over, when the snapshot carries only rows above a durable table-manifest base; `None`
+    /// for a self-contained full snapshot. Recorded with the snapshot facts so recovery can
+    /// require the base.
+    #[must_use]
+    pub(crate) const fn with_flushed_through_base(
+        mut self,
+        flushed_through_base: Option<CommitVersion>,
+    ) -> Self {
+        self.flushed_through_base = flushed_through_base;
+        self
+    }
+
+    pub(crate) const fn flushed_through_base(&self) -> Option<CommitVersion> {
+        self.flushed_through_base
     }
 }
 
@@ -252,6 +271,9 @@ impl<'a> CheckpointService<'a> {
     ) -> CheckpointServiceResult<CheckpointWrite> {
         validate_request(&request)?;
         let manifest = self.validate_manifest_identity(&request)?;
+        // Capture the delta base floor before the snapshot publish consumes `request`'s
+        // owned fields; it is recorded with the snapshot facts below.
+        let flushed_through_base = request.flushed_through_base();
 
         // Recovery must know the WAL segment that remains active before any
         // snapshot can shorten replay. A failure here leaves the published
@@ -285,9 +307,10 @@ impl<'a> CheckpointService<'a> {
         // no-visible failure leaves an orphan snapshot; an uncertain publish
         // requires callers to reload recovery facts before classifying state.
         self.manifest
-            .persist_snapshot_facts(
+            .persist_snapshot_facts_with_flush_boundary(
                 published_snapshot.snapshot_id(),
                 published_snapshot.snapshot_watermark(),
+                flushed_through_base,
             )
             .map_err(|source| final_manifest_failure(published_snapshot.clone(), source))?;
 

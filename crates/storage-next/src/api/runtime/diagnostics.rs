@@ -171,6 +171,7 @@ pub(super) const fn map_failed_diagnostics_recovery_class(
         | RecoveryFaultKind::MissingManifestObject
         | RecoveryFaultKind::MissingSnapshotObject
         | RecoveryFaultKind::MissingTableObject
+        | RecoveryFaultKind::MissingTableManifestBase
         | RecoveryFaultKind::InheritedLayerLoss
         | RecoveryFaultKind::QuarantineInventoryMismatch
         | RecoveryFaultKind::TimelineMismatch => DiagnosticsRecoveryClass::Corruption,
@@ -200,7 +201,11 @@ pub(super) const fn map_diagnostics_recovery_fault_kind(
         RecoveryFaultKind::MissingSnapshotObject => {
             DiagnosticsRecoveryFaultKind::MissingSnapshotObject
         }
-        RecoveryFaultKind::MissingTableObject => DiagnosticsRecoveryFaultKind::MissingTableObject,
+        RecoveryFaultKind::MissingTableObject | RecoveryFaultKind::MissingTableManifestBase => {
+            // A lost table-manifest base is a missing durable table artifact; report it under
+            // the existing table-object diagnostic class rather than expanding the D4 surface.
+            DiagnosticsRecoveryFaultKind::MissingTableObject
+        }
         RecoveryFaultKind::InheritedLayerLoss => DiagnosticsRecoveryFaultKind::InheritedLayerLoss,
         RecoveryFaultKind::NoManifestFallback => DiagnosticsRecoveryFaultKind::NoManifestFallback,
         RecoveryFaultKind::IoFailure => DiagnosticsRecoveryFaultKind::IoFailure,

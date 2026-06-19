@@ -257,6 +257,72 @@ fn checkpoint_recovery_round_trip_after_frozen_flush() {
 }
 
 #[test]
+fn delta_checkpoint_records_flush_boundary_not_visible_version() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x2e);
+    let mut runtime = open_runtime(branch, &backend);
+    // The first commit is flushed into a durable owned table (the base, commit 1)...
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"flushed", b"first"),
+            generation_guard(),
+        )
+        .expect("first commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+    runtime
+        .flush_frozen(&flush_request(branch))
+        .expect("flush frozen");
+    // ...while the second commit stays active, so the checkpoint snapshot is a bounded delta
+    // over the flush boundary (commit 1).
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"active", b"second"),
+            generation_guard(),
+        )
+        .expect("second commit");
+    let request =
+        LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(13)).expect("request");
+
+    let outcome = runtime.checkpoint(&request).expect("checkpoint");
+
+    assert_eq!(outcome.checkpoint_watermark(), Some(CommitVersion::new(2)));
+    let manifest = DatabaseManifestService::new(&backend)
+        .load_required()
+        .expect("manifest");
+    assert_eq!(manifest.snapshot_watermark(), Some(2));
+    // The delta base floor is the flush boundary (commit 1), NOT the snapshot watermark
+    // (commit 2). Recording the watermark would hide that the snapshot needs the
+    // table-manifest base for [1..1], letting a lost base recover an orphaned delta.
+    assert_eq!(
+        manifest.flushed_through_commit_id(),
+        Some(CommitVersion::new(1))
+    );
+}
+
+#[test]
+fn full_checkpoint_leaves_flush_boundary_unset() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0x2d);
+    let mut runtime = open_runtime(branch, &backend);
+    // No flush: the checkpoint snapshot is full and self-contained, so it records no base.
+    runtime
+        .execute_durable_commit(durable_batch(branch, b"only", b"value"), generation_guard())
+        .expect("commit");
+    let request =
+        LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(13)).expect("request");
+
+    runtime.checkpoint(&request).expect("checkpoint");
+
+    let manifest = DatabaseManifestService::new(&backend)
+        .load_required()
+        .expect("manifest");
+    assert_eq!(manifest.snapshot_watermark(), Some(1));
+    assert_eq!(manifest.flushed_through_commit_id(), None);
+}
+
+#[test]
 fn checkpoint_with_truncation_does_not_truncate_after_partial_checkpoint() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x30);

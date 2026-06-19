@@ -8,7 +8,8 @@ use crate::commit::{
 };
 use crate::format::TableManifest;
 use crate::lifecycle::checkpoint::{
-    checkpoint_durable_rows_with_budget, checkpoint_durable_runtime_with_budget,
+    branch_checkpoint_flush_boundary, checkpoint_durable_rows_with_budget,
+    checkpoint_durable_runtime_with_budget,
     checkpoint_request_from_maintenance_task_with_snapshot_id, persist_flush_watermark,
     persist_flush_watermark_with_table_manifest_proof, truncate_wal,
     wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
@@ -152,6 +153,7 @@ pub(crate) enum DurableBackgroundMaintenanceBuilt {
         visible_version: CommitVersion,
         rows: Vec<crate::row::StorageRow>,
         has_durable_rows: bool,
+        flush_boundary: Option<CommitVersion>,
     },
     WalTruncation {
         task: MaintenanceTask,
@@ -212,8 +214,14 @@ impl DurableBackgroundMaintenanceBuild<'_> {
             } => {
                 let mut rows = Vec::new();
                 let mut has_durable_rows = false;
+                let mut flush_boundary: Option<CommitVersion> = None;
                 for branch in &branches {
                     has_durable_rows |= branch.owned_table_count() > 0;
+                    if let Some(boundary) =
+                        branch_checkpoint_flush_boundary(branch, visible_version)
+                    {
+                        flush_boundary = Some(flush_boundary.map_or(boundary, |f| f.max(boundary)));
+                    }
                     let mut branch_rows = branch
                         .checkpoint_rows(visible_version)
                         .map_err(branch_error)?;
@@ -225,6 +233,7 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                     visible_version,
                     rows,
                     has_durable_rows,
+                    flush_boundary,
                 })
             }
             Self::WalTruncation { task, proof, wal } => {
@@ -1587,6 +1596,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 visible_version,
                 rows,
                 has_durable_rows,
+                flush_boundary,
             } => {
                 let checkpoint = checkpoint_durable_rows_with_budget(
                     &self.services,
@@ -1594,6 +1604,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                     visible_version,
                     &rows,
                     has_durable_rows,
+                    flush_boundary,
                     Some(&self.budget),
                 );
                 let outcome = match checkpoint {

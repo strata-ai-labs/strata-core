@@ -46,6 +46,7 @@ pub(crate) enum RecoveryFaultKind {
     MissingManifestObject,
     MissingSnapshotObject,
     MissingTableObject,
+    MissingTableManifestBase,
     InheritedLayerLoss,
     NoManifestFallback,
     IoFailure,

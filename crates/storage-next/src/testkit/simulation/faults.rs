@@ -696,11 +696,10 @@ mod tests {
     /// base of a *delta* checkpoint leaves recovery installing the orphaned delta (only
     /// the post-flush commit) — a non-prefix `Gap` — instead of falling back to a clean
     /// prefix as the `split_rename_falls_back_to_the_log_without_loss` contract requires.
-    /// Deterministic repro: crash seed 155 (Standard / SplitRename / crash_index 15).
-    /// `#[ignore]` until the engine fix lands: the snapshot's delta base floor must be
-    /// recorded durably so recovery can require the table-manifest base and recover a
-    /// clean prefix when it is lost. Un-ignore to verify the fix.
-    #[ignore = "known recovery bug: SplitRename dropping a delta checkpoint's table-manifest base yields a Gap; un-ignore when fixed"]
+    /// Deterministic repro: crash seed 155 (Standard / `SplitRename` / `crash_index` 15). The fix
+    /// records the snapshot's delta base floor durably (`flushed_through_commit_id`) so recovery
+    /// can require the table-manifest base and, when it is lost, discards the orphaned delta and
+    /// recovers a clean prefix (empty here) recorded as `DataLoss` rather than a gap.
     #[test]
     fn regression_split_rename_power_loss_recovers_clean_prefix() {
         let dir = tempfile::tempdir().expect("tmp");

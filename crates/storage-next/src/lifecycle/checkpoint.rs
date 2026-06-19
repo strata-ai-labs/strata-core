@@ -1051,6 +1051,19 @@ pub(crate) fn branch_durable_commit_versions_at_or_below(
     versions
 }
 
+/// The base floor a checkpoint snapshot deltas over for `branch`: the highest durably-flushed
+/// (owned-level) commit at or below `visible_version`, or `None` when the branch has no durable
+/// owned rows under the watermark (a full, self-contained snapshot needs no base). Recorded
+/// with the snapshot facts so recovery can require the table-manifest base.
+pub(crate) fn branch_checkpoint_flush_boundary(
+    branch: &BranchLocalState,
+    visible_version: CommitVersion,
+) -> Option<CommitVersion> {
+    branch_durable_commit_versions_at_or_below(branch, visible_version)
+        .into_iter()
+        .max()
+}
+
 pub(crate) fn branch_durable_rows_cover_interval(
     branch: &BranchLocalState,
     checkpoint_watermark: CommitVersion,
@@ -1322,7 +1335,8 @@ pub(crate) fn checkpoint_durable_branch_with_budget(
             let rows = branch
                 .checkpoint_rows(visible_version)
                 .map_err(branch_error)?;
-            Ok((rows, branch.owned_table_count() > 0))
+            let flush_boundary = branch_checkpoint_flush_boundary(branch, visible_version);
+            Ok((rows, branch.owned_table_count() > 0, flush_boundary))
         },
     )
 }
@@ -1357,15 +1371,19 @@ pub(crate) fn checkpoint_durable_runtime_with_budget(
             let active_descriptors = branch_catalog.list_branches(false);
             let mut combined = Vec::new();
             let mut has_durable_rows = false;
+            let mut flush_boundary: Option<CommitVersion> = None;
             for descriptor in &active_descriptors {
                 let branch = branch_catalog.branch_state(descriptor.branch_id())?;
                 has_durable_rows |= branch.owned_table_count() > 0;
+                if let Some(boundary) = branch_checkpoint_flush_boundary(branch, visible_version) {
+                    flush_boundary = Some(flush_boundary.map_or(boundary, |f| f.max(boundary)));
+                }
                 let mut rows = branch
                     .checkpoint_rows(visible_version)
                     .map_err(branch_error)?;
                 combined.append(&mut rows);
             }
-            Ok((combined, has_durable_rows))
+            Ok((combined, has_durable_rows, flush_boundary))
         },
     )
 }
@@ -1376,6 +1394,7 @@ pub(crate) fn checkpoint_durable_rows_with_budget(
     visible_version: CommitVersion,
     rows: &[crate::row::StorageRow],
     has_durable_rows: bool,
+    flush_boundary: Option<CommitVersion>,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
     request.validate()?;
@@ -1386,6 +1405,7 @@ pub(crate) fn checkpoint_durable_rows_with_budget(
         budget,
         rows,
         has_durable_rows,
+        flush_boundary,
     )
 }
 
@@ -1395,7 +1415,13 @@ fn publish_checkpoint(
     read_visible_version: impl FnOnce() -> CommitVersion,
     request: &LifecycleCheckpointRequest,
     budget: Option<&StorageBudgetLedger>,
-    collect_rows: impl FnOnce(CommitVersion) -> LifecycleResult<(Vec<crate::row::StorageRow>, bool)>,
+    collect_rows: impl FnOnce(
+        CommitVersion,
+    ) -> LifecycleResult<(
+        Vec<crate::row::StorageRow>,
+        bool,
+        Option<CommitVersion>,
+    )>,
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
     let quiesce = guard_set.try_begin_quiesce().map_err(commit_error)?;
     let visible_version = read_visible_version();
@@ -1403,10 +1429,11 @@ fn publish_checkpoint(
         drop(quiesce);
         return Ok(LifecycleCheckpointOutcome::deferred(request));
     }
-    // `collect_rows` returns the delta rows and whether any checkpointed branch
-    // has durable owned-level rows under the watermark (so an empty delta still
-    // advances the snapshot watermark instead of deferring).
-    let (rows, has_durable_rows) = collect_rows(visible_version)?;
+    // `collect_rows` returns the delta rows, whether any checkpointed branch has durable
+    // owned-level rows under the watermark (so an empty delta still advances the snapshot
+    // watermark instead of deferring), and the snapshot's base floor (the highest durably
+    // flushed commit it deltas over, `None` for a self-contained full snapshot).
+    let (rows, has_durable_rows, flush_boundary) = collect_rows(visible_version)?;
     drop(quiesce);
     publish_checkpoint_rows(
         services,
@@ -1415,6 +1442,7 @@ fn publish_checkpoint(
         budget,
         &rows,
         has_durable_rows,
+        flush_boundary,
     )
 }
 
@@ -1425,6 +1453,7 @@ fn publish_checkpoint_rows(
     budget: Option<&StorageBudgetLedger>,
     rows: &[crate::row::StorageRow],
     has_durable_rows: bool,
+    flush_boundary: Option<CommitVersion>,
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
     // The checkpoint snapshot is a bounded delta (active + frozen rows). An empty
     // delta does NOT mean "nothing to checkpoint": when the branch has durable
@@ -1454,7 +1483,8 @@ fn publish_checkpoint_rows(
         visible_version,
         request.created_at(),
         sections,
-    );
+    )
+    .with_flushed_through_base(flush_boundary);
     let mut outcome = match services.checkpoint().checkpoint(service_request) {
         Ok(write) => {
             perf_trace::record_lifecycle_checkpoint_execution();

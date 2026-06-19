@@ -339,6 +339,22 @@ impl ManifestService<'_, DATABASE_MANIFEST_SERVICE> {
         snapshot_id: u64,
         snapshot_watermark: CommitVersion,
     ) -> ManifestServiceResult<DatabaseManifestWrite> {
+        self.persist_snapshot_facts_with_flush_boundary(snapshot_id, snapshot_watermark, None)
+    }
+
+    /// Records the snapshot facts and, when the checkpoint snapshot is a delta over a durable
+    /// table-manifest base, the base floor it sits on (`flushed_through_base` = the highest
+    /// durably-flushed commit). Recording the base floor in the SAME manifest write keeps
+    /// `snapshot_watermark` from outrunning its anchored base: a later recovery that finds the
+    /// base missing can then tell the snapshot is an orphaned delta rather than a self-contained
+    /// snapshot. A `None` base preserves the current flushed-through fact — a full, self-contained
+    /// snapshot needs no base.
+    pub(crate) fn persist_snapshot_facts_with_flush_boundary(
+        &self,
+        snapshot_id: u64,
+        snapshot_watermark: CommitVersion,
+        flushed_through_base: Option<CommitVersion>,
+    ) -> ManifestServiceResult<DatabaseManifestWrite> {
         let object = database_manifest_object()?;
         if snapshot_id == 0 {
             return Err(ManifestServiceError::InvalidRecoveryFact {
@@ -356,11 +372,19 @@ impl ManifestService<'_, DATABASE_MANIFEST_SERVICE> {
         }
 
         let current = self.load_required()?;
-        // Snapshot facts are a pair: the durable snapshot object id and the
-        // commit watermark it covers. They are updated together while the WAL
-        // and flush facts remain unchanged.
+        // Snapshot facts are a pair: the durable snapshot object id and the commit watermark
+        // it covers. They are updated together with the active WAL segment unchanged. The
+        // flush fact is advanced to the snapshot's base floor (monotonic — a higher recorded
+        // watermark never regresses) when the snapshot is a delta, else preserved.
         let active_wal_segment = current.active_wal_segment();
-        let flushed_through_commit_id = current.flushed_through_commit_id();
+        let flushed_through_commit_id = match flushed_through_base {
+            Some(base) => Some(
+                current
+                    .flushed_through_commit_id()
+                    .map_or(base, |recorded| recorded.max(base)),
+            ),
+            None => current.flushed_through_commit_id(),
+        };
         let updated = current
             .with_recovery_facts(
                 active_wal_segment,

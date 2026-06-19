@@ -118,9 +118,41 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
             &mut faults,
             request.max_faults(),
         )?;
-        let replay_start =
-            trusted_replay_start(checkpoint.trusted_watermark(), trusted_flush_watermark);
-        let wal = self.recover_wal(request, replay_start, &mut faults)?;
+        // A delta checkpoint records the durable table-manifest base floor it sits on
+        // (`flushed_through_commit_id`). The snapshot is an orphaned delta — needing a base
+        // that is now missing — when the recorded base floor sits strictly below the snapshot
+        // watermark (rows above the floor are in the snapshot; the base below it is gone), or
+        // when the snapshot carries no rows of its own (everything was flushed into the base).
+        // A self-contained full snapshot (watermark == floor, with its own rows) needs no base
+        // and is left alone. Trusting an orphaned delta's watermark would install a
+        // non-contiguous gap, so recover only the WAL-contiguous prefix instead (empty when the
+        // base is unrecoverable).
+        let orphaned_delta = match (
+            checkpoint.trusted_watermark(),
+            self.shell.assembly_facts().manifest_flush_watermark(),
+        ) {
+            (Some(snapshot_watermark), Some(flush_watermark)) if table_manifest_stage.is_none() => {
+                flush_watermark < snapshot_watermark
+                    || recovered_branch
+                        .as_ref()
+                        .is_some_and(BranchLocalState::is_empty)
+            }
+            _ => false,
+        };
+        if orphaned_delta {
+            push_fault(
+                &mut faults,
+                request.max_faults(),
+                RecoveryFaultKind::MissingTableManifestBase,
+                "delta checkpoint table-manifest base is missing",
+            )?;
+        }
+        let replay_start = if orphaned_delta {
+            CommitVersion::ZERO
+        } else {
+            trusted_replay_start(checkpoint.trusted_watermark(), trusted_flush_watermark)
+        };
+        let wal = self.recover_wal(request, replay_start, orphaned_delta, &mut faults)?;
         let health = recovery_health_from_faults(request, faults)?;
         match (recovered_branch, table_manifest_stage) {
             (Some(recovered_branch), Some(stage)) => {
@@ -148,6 +180,11 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                         .append_committed_rows_atomically(delta)
                         .map_err(branch_error)?;
                 }
+            }
+            (Some(_), None) if orphaned_delta => {
+                // The snapshot is a delta whose durable table-manifest base was lost; discard
+                // it. The WAL-contiguous prefix (empty when the base is unrecoverable) is
+                // replayed onto the empty branch state by the caller.
             }
             (Some(recovered_branch), None) => {
                 *self.shell.branch_state_mut() = recovered_branch;
@@ -265,6 +302,7 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
         &mut self,
         request: &LifecycleRecoveryRequest,
         replay_start: CommitVersion,
+        require_contiguous: bool,
         faults: &mut Vec<RecoveryFault>,
     ) -> LifecycleResult<LifecycleRecoveredWal> {
         let read = self
@@ -298,9 +336,29 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
             None => None,
         };
 
+        let mut records = read.records().to_vec();
+        if require_contiguous {
+            // Recovering past a lost table-manifest base: keep only the run of commit versions
+            // contiguous from `replay_start + 1`, dropping any orphaned tail above the first
+            // gap. Replaying a tail that sits above the unrecoverable base would reintroduce
+            // the very gap recovery is avoiding.
+            let present: std::collections::BTreeSet<u64> = records
+                .iter()
+                .map(|record| record.commit_version().as_u64())
+                .collect();
+            let mut upper = replay_start.as_u64();
+            while upper
+                .checked_add(1)
+                .is_some_and(|next| present.contains(&next))
+            {
+                upper += 1;
+            }
+            records.retain(|record| record.commit_version().as_u64() <= upper);
+        }
+
         Ok(LifecycleRecoveredWal {
             replay_start,
-            records: read.records().to_vec(),
+            records,
             truncation,
             repair,
         })
@@ -880,6 +938,7 @@ fn degradation_class_for_faults(faults: &[RecoveryFault]) -> RecoveryDegradation
             RecoveryFaultKind::CorruptManifest
                 | RecoveryFaultKind::MissingSnapshotObject
                 | RecoveryFaultKind::MissingTableObject
+                | RecoveryFaultKind::MissingTableManifestBase
                 | RecoveryFaultKind::InheritedLayerLoss
                 | RecoveryFaultKind::NoManifestFallback
                 | RecoveryFaultKind::WalTailRepairFailed

@@ -29,7 +29,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | service/wal.rs | 18 | 1643 |
 | branch/facts.rs | 17 | 1160 |
 | api/read.rs | 16 | 540 |
-| lifecycle/durable/maintenance.rs | 16 | 3860 |
+| lifecycle/durable/maintenance.rs | 16 | 3902 |
 | branch/state/materialization.rs | 13 | 1355 |
 | lifecycle/background.rs | 13 | 1659 |
 | lifecycle/branch_lifecycle.rs | 13 | 1210 |
@@ -49,15 +49,15 @@ Counts are conservative text matches, not a Rust AST parse.
 | lifecycle/tests/compaction/mod.rs | 4335 |
 | table/tests/reader.rs | 4018 |
 | branch/read.rs | 3922 |
-| lifecycle/durable/maintenance.rs | 3860 |
+| lifecycle/durable/maintenance.rs | 3902 |
 | lifecycle/tests/cache.rs | 3666 |
 | lifecycle/tests/durable.rs | 3418 |
 | api/runtime/mod.rs | 3395 |
-| service/manifest.rs | 3334 |
+| service/manifest.rs | 3358 |
 | service/table.rs | 3272 |
 | lifecycle/compaction.rs | 3058 |
 | commit/tests/durable.rs | 3013 |
-| lifecycle/tests/recovery.rs | 3007 |
+| lifecycle/tests/recovery.rs | 3013 |
 | commit/tests/cache.rs | 2503 |
 | lifecycle/cache.rs | 2421 |
 | branch/tests/read_view.rs | 2202 |
@@ -68,7 +68,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | table/tests/compaction.rs | 2027 |
 | lifecycle/tests/compaction/publication_plan.rs | 1990 |
 | branch/state/compaction.rs | 1958 |
-| lifecycle/checkpoint.rs | 1915 |
+| lifecycle/checkpoint.rs | 1945 |
 | lifecycle/tests/retention.rs | 1913 |
 | table/reader.rs | 1826 |
 | lifecycle/tests/compaction/remaining.rs | 1807 |
