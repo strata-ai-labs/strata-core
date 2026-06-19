@@ -432,15 +432,15 @@ mod tests {
 
     /// Regression for a silent durability bug the STH-4 DST surfaced (see
     /// `docs/architecture/implementation-plans/storage-testing/sth-4-finding-checkpoint-flush-publish-fault.md`):
-    /// a `PublishObject` `NoSpace` fault during a batched `[Checkpoint, Flush]` drain
-    /// truncates the WAL past a snapshot whose publish failed, so a clean strict
-    /// reopen recovers **nothing** — yet every commit and every `drain_maintenance`
-    /// returned `Ok`. Minimal deterministic repro: 4 puts, checkpoint, 4 puts, then a
-    /// batched `[Checkpoint, Flush]` with the fault swept across publish positions.
-    /// `#[ignore]` until the engine durability path is fixed (gate WAL truncation on a
-    /// durably-published snapshot + stop swallowing the publish failure); un-ignore to
-    /// verify the fix.
-    #[ignore = "known durability bug: publish fault during checkpoint+flush silently loses committed data; un-ignore when the engine is fixed"]
+    /// a `PublishObject` `NoSpace` fault during a batched `[Checkpoint, Flush]` drain left
+    /// the flush's L0 table installed in-memory with its manifest unpublished, while the
+    /// checkpoint still advanced the WAL-replay floor past those rows — so a clean strict
+    /// reopen recovered **nothing**, yet every commit and every `drain_maintenance` returned
+    /// `Ok`. The fix defers a checkpoint while a table-manifest publish is outstanding, so the
+    /// floor never moves past rows no durable manifest covers and the WAL still replays them.
+    /// Minimal deterministic repro: 4 puts, checkpoint, 4 puts, then a batched
+    /// `[Checkpoint, Flush]` with the fault swept across publish positions; every position
+    /// that opens must recover all acknowledged commits.
     #[test]
     fn regression_publish_fault_during_checkpoint_flush_loses_no_data() {
         use crate::api::{
@@ -472,7 +472,7 @@ mod tests {
         };
 
         // Sweep the faulted publish position; every position that opens must recover
-        // all acknowledged commits (no silent loss). Today position 7 recovers 0.
+        // all acknowledged commits (no silent loss).
         for fault_publish in 3u64..=11 {
             let dir = tempfile::tempdir().expect("tmp");
             let backend = StorageBackend::faulting_local_fs(
@@ -544,6 +544,136 @@ mod tests {
                  (recovered {recovered} of {acked} acknowledged commits)"
             );
         }
+    }
+
+    /// Non-regression companion to the checkpoint-defer fix: a *single transient*
+    /// table-manifest publish failure must defer the checkpoint (so no rows are stranded),
+    /// and once a later flush republishes the manifest the debt clears and the checkpoint
+    /// resumes — the defer is self-healing, not a permanent halt — with no acknowledged
+    /// commit ever lost. Guards against the fix over-correcting into a stuck checkpoint.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "multi-phase durability scenario: fault, defer, heal, reopen-and-verify"
+    )]
+    #[test]
+    fn transient_manifest_publish_failure_defers_then_resumes_checkpoint() {
+        use crate::api::{
+            CommitBatch, CommitMutation, CommitOptions, MaintenanceRequest, MaintenanceScope,
+            MaintenanceSummaryStatus, MaintenanceTask, StorageBackend, StorageDurabilityPolicy,
+            StorageMaintenanceSchedulingPolicy, StorageOpenOptions, StorageRuntime, StorageValue,
+        };
+        use crate::testkit::recovery_oracle::verify::scan_recovered;
+        use crate::testkit::recovery_oracle::workload::{
+            default_branch, oracle_key, oracle_prefix_key, oracle_space, SCAN_LIMIT,
+        };
+        use crate::testkit::{BackendOperation, FaultKind, FaultMode, FaultRule, FaultScript};
+        use std::num::NonZeroU64;
+
+        let branch = default_branch();
+        let put = |rt: &mut StorageRuntime<'_>, index: u8| {
+            let batch = CommitBatch::new(
+                branch,
+                vec![CommitMutation::Put {
+                    storage_space: oracle_space(),
+                    key: oracle_key(index),
+                    value: StorageValue::new(vec![index]),
+                    ttl: None,
+                }],
+                CommitOptions::default(),
+            )
+            .expect("batch");
+            rt.commit(&batch).is_ok()
+        };
+        let enqueue = |rt: &mut StorageRuntime<'_>, task| {
+            let _ = rt.enqueue_maintenance(&MaintenanceRequest::new(
+                task,
+                MaintenanceScope::Branch(branch),
+            ));
+        };
+        let checkpoint_with_status = |summary: &crate::api::MaintenanceDrainSummary, status| {
+            summary.outcomes().iter().any(|outcome| {
+                outcome.task() == MaintenanceTask::Checkpoint && outcome.status() == status
+            })
+        };
+
+        let dir = tempfile::tempdir().expect("tmp");
+        // Publish #7 is the batched drain's flush manifest publish (the same destructive
+        // position the regression pins); `Once` makes it transient so a later flush heals it.
+        let backend = StorageBackend::faulting_local_fs(
+            dir.path().to_path_buf(),
+            FaultScript::new([FaultRule::with_mode(
+                BackendOperation::PublishObject,
+                NonZeroU64::new(7).expect("non-zero"),
+                FaultKind::NoSpace,
+                FaultMode::Once,
+            )]),
+        );
+        let mut acked = 0u8;
+        {
+            let mut rt = StorageRuntime::open_with_backend(
+                StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always)
+                    .with_maintenance_scheduling_policy(
+                        StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                    ),
+                &backend,
+            )
+            .expect("open faulting")
+            .into_runtime();
+            for index in 0u8..4 {
+                acked += u8::from(put(&mut rt, index));
+            }
+            enqueue(&mut rt, MaintenanceTask::Checkpoint);
+            let _ = rt.drain_maintenance();
+            for index in 4u8..8 {
+                acked += u8::from(put(&mut rt, index));
+            }
+            // Batched drain: the flush manifest publish faults (debt), so the checkpoint defers.
+            enqueue(&mut rt, MaintenanceTask::Checkpoint);
+            enqueue(&mut rt, MaintenanceTask::Flush);
+            let deferred = rt.drain_maintenance().expect("drain");
+            assert!(
+                checkpoint_with_status(&deferred, MaintenanceSummaryStatus::Deferred),
+                "checkpoint did not defer while a table-manifest publish was outstanding: {deferred:?}"
+            );
+            // A later flush republishes the manifest (the `Once` fault is spent) → debt clears.
+            for index in 8u8..12 {
+                acked += u8::from(put(&mut rt, index));
+            }
+            enqueue(&mut rt, MaintenanceTask::Flush);
+            let _ = rt.drain_maintenance();
+            // The checkpoint now resumes rather than staying stuck.
+            enqueue(&mut rt, MaintenanceTask::Checkpoint);
+            let resumed = rt.drain_maintenance().expect("drain");
+            assert!(
+                checkpoint_with_status(&resumed, MaintenanceSummaryStatus::Completed),
+                "checkpoint did not resume after the manifest debt cleared: {resumed:?}"
+            );
+        }
+        let reopen = StorageBackend::local_fs(dir.path().to_path_buf());
+        let runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+                .with_maintenance_scheduling_policy(
+                    StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+                ),
+            &reopen,
+        )
+        .expect("clean reopen")
+        .into_runtime();
+        let recovered = scan_recovered(
+            &runtime,
+            branch,
+            &oracle_space(),
+            &oracle_prefix_key(),
+            SCAN_LIMIT,
+        )
+        .expect("scan")
+        .len();
+        assert_eq!(
+            recovered,
+            usize::from(acked),
+            "transient manifest publish failure lost acknowledged data \
+             (recovered {recovered} of {acked})"
+        );
     }
 
     #[test]

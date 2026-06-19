@@ -36,6 +36,13 @@ pub(crate) struct LifecycleDurableTableCatalog {
     entries: BTreeMap<String, LifecycleDurableTableCatalogEntry>,
     objects: BTreeMap<String, String>,
     next_manifest_sequence: u64,
+    // Set when a table is installed in-memory (`record_table`) and cleared when a manifest is
+    // durably recorded (`record_manifest` / `record_reserved_manifest`). A manifest publish
+    // that fails leaves this set: the in-memory branch state then owns L0 rows the durable
+    // manifest does not cover, so a checkpoint must defer rather than advance the WAL-replay
+    // floor past them. In-memory bookkeeping only — recovery rebuilds the catalog via
+    // `record_manifest`, which clears it, so a reopen always starts settled (`false`).
+    manifest_publish_pending: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -66,6 +73,7 @@ impl LifecycleDurableTableCatalog {
             entries: BTreeMap::new(),
             objects: BTreeMap::new(),
             next_manifest_sequence: 1,
+            manifest_publish_pending: false,
         }
     }
 
@@ -115,6 +123,9 @@ impl LifecycleDurableTableCatalog {
         }
         self.objects.insert(object_key, key.clone());
         self.entries.insert(key, entry);
+        // A new table is installed in-memory; the durable manifest no longer covers every
+        // owned L0 row until the next successful manifest publish records it.
+        self.manifest_publish_pending = true;
         Ok(())
     }
 
@@ -132,6 +143,8 @@ impl LifecycleDurableTableCatalog {
                 source: None,
             },
         )?;
+        // The manifest is durably recorded: the catalog and the durable manifest agree again.
+        self.manifest_publish_pending = false;
         Ok(())
     }
 
@@ -143,7 +156,10 @@ impl LifecycleDurableTableCatalog {
         &mut self,
         manifest: &TableManifest,
     ) -> LifecycleResult<()> {
-        self.record_manifest_tables(manifest)
+        self.record_manifest_tables(manifest)?;
+        // The off-lock publish is confirmed durable: clear the pending-manifest debt.
+        self.manifest_publish_pending = false;
+        Ok(())
     }
 
     fn record_manifest_tables(&mut self, manifest: &TableManifest) -> LifecycleResult<()> {
@@ -219,6 +235,14 @@ impl LifecycleDurableTableCatalog {
 
     pub(crate) fn entry_count(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Whether a table has been installed in-memory without a subsequent successful manifest
+    /// publish — i.e. the durable manifest does not yet cover every owned L0 row. A checkpoint
+    /// must defer while this holds so it cannot advance the WAL-replay floor past rows a clean
+    /// reopen could not recover.
+    pub(crate) const fn has_outstanding_manifest_debt(&self) -> bool {
+        self.manifest_publish_pending
     }
 
     pub(crate) fn object_count(&self) -> usize {

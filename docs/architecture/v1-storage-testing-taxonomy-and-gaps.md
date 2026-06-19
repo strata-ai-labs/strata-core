@@ -123,7 +123,7 @@ sweep driver (9), and the discipline / process layer (11 / 12).**
 | 6. Failure-during-failure | ❌ Missing | Recovery tests and fault tests are separate paths; nothing injects a fault *during* recovery, compaction, or checkpoint |
 | 7. Hostile input | ✅ Strong | 28 fuzz targets (13 decoders + 15 state machines) with corpora; 39 golden vectors; deliberate XOR bit-flip corruption tests (`table/tests/reader.rs`) and corrupt-log/corrupt-snapshot recovery cases |
 | 8. Trajectory/liveness | ✅ Strong *(was ❌)* | `api/tests/background_scale.rs` runs closed-loop sustained load against a real `StorageRuntime` with thresholds scaled ~1000× (`scaled_closed_loop_test_profile`, ~4 MB budget). Asserts: commits never permanently fail, queue drains (`pending==0`, `queue_full==0`), WAL bounded (peak ≤16 / final ≤4 segments, ≤128 KB), shape converges (L0 ≤3). `stress.rs` still drives only service scripts — its role is now superseded for liveness |
-| 9. Deterministic simulation | 🟡 Partial *(advanced)* | The retrofit landed (`MaintenanceExecutor`/`InlineMaintenanceExecutor`, `MaintenanceClock`/`ManualMaintenanceClock`); `DeterministicInline` drives the *production* `Background` path with no worker threads, replay-identical and threaded-vs-inline parity proven. STH-4 (4b+4c+4d) then built the **seeded sweep driver** (`testkit/simulation`): client-op × maintenance-cadence × clock interleavings over the production path crossed with the fault-combination dimension (STH-2/STH-3 fault + crash substrates), each step safety- (recovery oracle) + liveness-checked, bit-exact replay (the `same_seed_replays_bit_exact` guard) + seed-scaled `#[ignore]` soaks. **The DST immediately found a silent durability bug** (a `PublishObject` NoSpace fault during a batched `[Checkpoint, Flush]` drain truncates the WAL past a failed snapshot publish → reopen recovers nothing, failure swallowed); captured as a failing-then-fixed regression + a triage write-up. Remaining for ✅: **fix that engine durability bug** (separate `/audit-fix`) and re-run the fault soak clean. Residual perf-trace clock injection (4a) is descoped |
+| 9. Deterministic simulation | 🟡 Partial *(advanced)* | The retrofit landed (`MaintenanceExecutor`/`InlineMaintenanceExecutor`, `MaintenanceClock`/`ManualMaintenanceClock`); `DeterministicInline` drives the *production* `Background` path with no worker threads, replay-identical and threaded-vs-inline parity proven. STH-4 (4b+4c+4d) then built the **seeded sweep driver** (`testkit/simulation`): client-op × maintenance-cadence × clock interleavings over the production path crossed with the fault-combination dimension (STH-2/STH-3 fault + crash substrates), each step safety- (recovery oracle) + liveness-checked, bit-exact replay (the `same_seed_replays_bit_exact` guard) + seed-scaled `#[ignore]` soaks. **The DST found two durability bugs.** (1) A publish fault during a batched `[Checkpoint, Flush]` drain advanced the WAL-replay floor past rows whose table manifest never published → reopen recovered nothing — **fixed (2026-06-18):** a checkpoint defers on outstanding table-manifest publish debt; regression un-ignored + green. (2) With that fixed the soak progressed and surfaced a *separate, pre-existing* power-loss `Gap` at seed 155 (SplitRename/Standard, no injected fault) — open, own slice. Remaining for ✅: **fix the seed-155 bug** and re-run the fault soak clean end-to-end. Residual perf-trace clock injection (4a) is descoped |
 | 10. FS-assumption enumeration | ✅ Strong *(was ❌)* | STH-3 `ReorderingBackend` (`testkit/reordering_backend.rs`) records each object's unsynced boundary and materializes all four FS persistence models — ordered+atomic loss of the unsynced tail, reordered/partial appends, garbage (torn) unsynced tail, split rename (vanished publish) — on the real files via the now-activated `truncate_object` / `corrupt_object_byte` / `drop_object_file` primitives. `testkit/fs_models` sweeps seed × model × crash point × {Standard, Always}, each oracle-verified: `Always` loses nothing under any model; `Standard` recovers a clean prefix; a torn tail is fail-loud or a clean prefix, never silently wrong (`tests/fs_persistence_models.rs`, seed-scaled `#[ignore]` soak). No vanishing-WAL incident is on record — only the generic missing-object fallback |
 | 11. Coverage/mutation | ❌ Missing | CI runs fmt/clippy/deny/feature-powerset/test/build only. No coverage gate, no mutation testing |
 | 12. Memory safety | 🟡 Partial | `#![deny(unsafe_code)]` (`src/lib.rs:11`) + Rust cover most. No Miri, no sanitizer (ASAN/TSAN/UBSAN) CI, no per-test leak assertions |
@@ -160,10 +160,12 @@ gates (11/12)**.
 - **STH-4 (4b+4c+4d) then built the deterministic-simulation sweep driver** over the
   production path — seeded client-op × maintenance-cadence × clock interleavings
   crossed with the fault-combination dimension, oracle- + liveness-checked each step,
-  bit-exact replay + soak. **The DST immediately found a silent durability bug** (a
-  publish fault during a batched checkpoint+flush drain loses committed data),
-  captured as a failing-then-fixed regression; class 9 stays open until that engine
-  bug is fixed (`/audit-fix`).
+  bit-exact replay + soak. **The DST found two durability bugs.** (1) A publish fault
+  during a batched checkpoint+flush drain lost committed data — **fixed (2026-06-18):**
+  a checkpoint defers on outstanding table-manifest publish debt; regression un-ignored
+  + green. (2) With that fixed the soak progressed and surfaced a *separate, pre-existing*
+  power-loss `Gap` at seed 155 (SplitRename/Standard, no injected fault). Class 9 stays
+  open until the seed-155 bug is fixed (own slice) and the soak runs clean end-to-end.
 
 ### Calibrated against the gold standard (2026-06-17)
 
@@ -302,7 +304,7 @@ from the live map.
 | 6 Failure-during-failure | ❌ | Fault injected during recovery, compaction, and checkpoint; integrity and the recovery oracle still hold |
 | 7 Hostile input | ✅ | Every decoder + state machine fuzzed continuously; structure-aware DB-file fuzzing; corruption corpus grows with every find. *(held; make continuous)* |
 | 8 Liveness | ✅ | Closed-loop endurance per mode and per maintenance kind, with bounded-resource + progress assertions, in CI seconds. *(held; broaden coverage)* |
-| 9 DST | 🟡 | Seeded interleaving + fault-combination driver over the production path; replay-on-failure; nightly long-seed soak. Full driver landed (STH-4 4b+4c+4d) **and found a silent durability bug** (publish fault during checkpoint+flush loses committed data; captured as a regression); **residual:** the engine `/audit-fix` + a clean soak |
+| 9 DST | 🟡 | Seeded interleaving + fault-combination driver over the production path; replay-on-failure; nightly long-seed soak. Full driver landed (STH-4 4b+4c+4d) **and found two durability bugs**: a publish fault during checkpoint+flush (**fixed** — checkpoint defers on table-manifest debt) and, once that was fixed, a separate power-loss `Gap` at seed 155 (open); **residual:** fix seed 155 + a clean end-to-end soak |
 | 10 FS-assumption | ✅ | ALICE-style enumeration over rename/append persistence models on the durable path — landed (STH-3): ordered+atomic, reordered/partial appends, garbage torn tail, split rename, each oracle-verified across crash points and durability modes |
 | 11 Coverage/mutation | ❌ | **100% MC/DC on the durable core** (format/WAL/recovery/commit — the code where a missed branch loses data), enabled by `testcase!`/`always!`/`never!` macros and running the suite three ways (release / debug-assert / coverage) with identical results; line/branch coverage on outer layers; mutation testing kills a committed-threshold fraction of mutants; all merge-blocking |
 | 12 Memory safety | 🟡 | Miri on the unsafe-free core in CI; sanitizer job over backend/FFI; leak assertion per integration test |
@@ -335,11 +337,13 @@ gates, classes 11 / 12).**
    the inline-executor + manual-clock substrate **landed** (4b+4c+4d): client-op ×
    maintenance-cadence × clock interleavings crossed with the fault-combination
    dimension (STH-2/STH-3 fault + crash substrates), each step oracle- +
-   liveness-checked, with bit-exact replay + seed-scaled soaks. **The DST found a
-   silent durability bug** (publish fault during a batched checkpoint+flush drain
-   loses committed data; captured as a regression + triage doc). **Residual:** fix
-   that engine bug (a separate `/audit-fix`) and re-run the fault soak clean — which
-   closes class 9.
+   liveness-checked, with bit-exact replay + seed-scaled soaks. **The DST found two
+   durability bugs:** (1) a publish fault during a batched checkpoint+flush drain lost
+   committed data — **fixed** (checkpoint defers on table-manifest publish debt;
+   regression un-ignored + green); (2) with that fixed, the soak surfaced a separate,
+   pre-existing power-loss `Gap` at seed 155 (SplitRename/Standard, no injected fault).
+   **Residual:** fix the seed-155 bug (its own slice) and re-run the fault soak clean
+   end-to-end — which closes class 9.
 4. **Torn-write / reordering backend + write-ordering watchdog (classes 3, 10). 🟡 Partial — STH-3.**
    The reordering/tearing `Backend` wrapper (reorders unsynced writes, tears them,
    fills unsynced regions with garbage) and the FS-model enumeration **landed**

@@ -1370,6 +1370,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
+        let manifest_debt = self.table_catalog.has_outstanding_manifest_debt();
         let maintenance = &mut self.maintenance;
         let branch_catalog = &self.branch_catalog;
         let initial_branch_id = self.initial_branch_id;
@@ -1391,6 +1392,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             created_at,
             next_snapshot_id,
             budget,
+            manifest_debt,
         };
         maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::Checkpoint
@@ -1445,6 +1447,23 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                     .branch_state(descriptor.branch_id())?
                     .clone(),
             );
+        }
+        // A checkpoint advances the WAL-replay floor (active WAL segment) trusting that
+        // every flushed table is covered by a durably-published table manifest. An off-lock
+        // flush/rewrite that incurred reserved-manifest debt (its manifest publish failed)
+        // left a reserved manifest sequence unpublished; snapshotting over it would advance
+        // the floor past rows no durable manifest covers, silently losing them on recovery.
+        // Defer until a later flush republishes the manifest in-process (clearing the debt),
+        // after which a later checkpoint proceeds. The deferral advances no durable state.
+        if self.table_catalog.has_outstanding_manifest_debt() {
+            let outcome = MaintenanceOutcome::new(
+                crate::lifecycle::MaintenanceTaskKind::Checkpoint,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason("checkpoint deferred: outstanding table-manifest publish debt");
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+            return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
         }
         Ok(Some(DurableBackgroundMaintenanceStep::Build(Box::new(
             DurableBackgroundMaintenanceBuild::Checkpoint {
@@ -2930,10 +2949,22 @@ struct DurableCheckpointMaintenanceRunner<'a, 'b> {
     created_at: Timestamp,
     next_snapshot_id: &'a mut u64,
     budget: &'a crate::lifecycle::StorageBudgetLedger,
+    manifest_debt: bool,
 }
 
 impl MaintenanceTaskRunner for DurableCheckpointMaintenanceRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
+        // A table-manifest publish is outstanding: the in-memory branch state owns L0 rows the
+        // durable manifest does not yet cover. A checkpoint advances the WAL-replay floor, so
+        // running it now could strand those rows below a snapshot a clean reopen cannot recover.
+        // Defer until a successful manifest publish clears the debt.
+        if self.manifest_debt {
+            return Ok(MaintenanceOutcome::new(
+                crate::lifecycle::MaintenanceTaskKind::Checkpoint,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason("checkpoint deferred: outstanding table-manifest publish debt"));
+        }
         // The maintenance task may not be branch-scoped (checkpoint is
         // a global operation in this catalog-aware path); fall back to
         // the seeded branch_id for request identification when the task
