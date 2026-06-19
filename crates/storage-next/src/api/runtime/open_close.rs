@@ -13,15 +13,22 @@ use super::{
 
 /// The storage budget a fresh open uses when no test override is supplied.
 ///
-/// Cache mode is volatile: it never flushes mutable state to table sources, so
-/// it carries no source-table memory budget and grows with the working set
-/// until host memory is exhausted, like an in-memory cache. Durable modes use
-/// the configured budget policy.
-pub(super) fn default_open_storage_budget(options: &StorageOpenOptions) -> StorageRuntimeBudget {
-    match options.mode() {
+/// An explicit `memory_budget`, when set, takes precedence and bounds both cache and durable opens
+/// (storage derives its per-pool split from the total). Otherwise: cache mode is volatile — it
+/// never flushes mutable state to table sources, so it carries no source-table memory budget and
+/// grows with the working set until host memory is exhausted, like an in-memory cache — while
+/// durable modes use the configured budget policy.
+pub(super) fn default_open_storage_budget(
+    options: &StorageOpenOptions,
+) -> StorageApiResult<StorageRuntimeBudget> {
+    if let Some(memory_budget) = options.memory_budget() {
+        return StorageRuntimeBudget::from_total_bytes(memory_budget.bytes())
+            .map_err(map_lifecycle_error);
+    }
+    Ok(match options.mode() {
         StorageMode::Cache => StorageRuntimeBudget::unlimited(),
         _ => map_budget_policy(options.budget_policy()),
-    }
+    })
 }
 
 pub(super) fn lifecycle_plan(options: StorageOpenOptions) -> StorageApiResult<StorageOpenPlan> {
@@ -53,11 +60,12 @@ pub(super) fn lifecycle_plan(options: StorageOpenOptions) -> StorageApiResult<St
         .map_err(map_lifecycle_error)?;
     }
     #[cfg(test)]
-    let storage_budget = options
-        .storage_budget_for_test()
-        .unwrap_or_else(|| default_open_storage_budget(&options));
+    let storage_budget = match options.storage_budget_for_test() {
+        Some(budget) => budget,
+        None => default_open_storage_budget(&options)?,
+    };
     #[cfg(not(test))]
-    let storage_budget = default_open_storage_budget(&options);
+    let storage_budget = default_open_storage_budget(&options)?;
     config = config
         .with_storage_budget(storage_budget)
         .map_err(map_lifecycle_error)?;

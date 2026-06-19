@@ -72,7 +72,8 @@ pub use maintenance::{
 };
 pub use options::{
     StorageBackgroundMaintenanceOptions, StorageBudgetPolicy, StorageDurabilityPolicy,
-    StorageMaintenanceSchedulingPolicy, StorageMode, StorageOpenOptions, StorageWalGrowthPolicy,
+    StorageMaintenanceSchedulingPolicy, StorageMemoryBudget, StorageMode, StorageOpenOptions,
+    StorageWalGrowthPolicy,
 };
 pub use outcome::{
     CommitAdmissionPressureReason, CommitAdmissionPressureSeverity, CommitAdmissionStatus,

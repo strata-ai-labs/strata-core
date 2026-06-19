@@ -44,6 +44,35 @@ pub enum StorageBudgetPolicy {
     LowMemory,
 }
 
+/// Minimum supported explicit storage memory budget. Below this the derived per-pool split would
+/// leave a pool too small to be usable; real profiles sit far above it.
+const MIN_STORAGE_MEMORY_BUDGET_BYTES: u64 = 1024 * 1024;
+
+/// An explicit storage memory budget, in bytes: the total memory storage may use for its caches,
+/// mutable tables, table readers, and maintenance buffers. Storage derives its internal per-pool
+/// split from this total. Construct with [`StorageMemoryBudget::new`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(transparent)]
+pub struct StorageMemoryBudget(u64);
+
+impl StorageMemoryBudget {
+    /// Create a budget from a total byte count, rejecting values below the minimum supported size.
+    pub fn new(total_bytes: u64) -> StorageApiResult<Self> {
+        if total_bytes < MIN_STORAGE_MEMORY_BUDGET_BYTES {
+            return Err(StorageApiError::InvalidArgument {
+                field: "memory_budget",
+                reason: "storage memory budget is below the minimum supported size",
+            });
+        }
+        Ok(Self(total_bytes))
+    }
+
+    #[must_use]
+    pub const fn bytes(self) -> u64 {
+        self.0
+    }
+}
+
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StorageWalGrowthPolicy {
@@ -70,6 +99,7 @@ pub struct StorageOpenOptions {
     mode: StorageMode,
     strict_recovery: bool,
     budget_policy: StorageBudgetPolicy,
+    memory_budget: Option<StorageMemoryBudget>,
     wal_growth_policy: StorageWalGrowthPolicy,
     maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy,
     background_maintenance: StorageBackgroundMaintenanceOptions,
@@ -181,6 +211,7 @@ impl StorageOpenOptions {
             mode: StorageMode::Cache,
             strict_recovery: true,
             budget_policy: StorageBudgetPolicy::Default,
+            memory_budget: None,
             wal_growth_policy: StorageWalGrowthPolicy::Default,
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
@@ -205,6 +236,7 @@ impl StorageOpenOptions {
             mode: StorageMode::DurableLocal { policy },
             strict_recovery: true,
             budget_policy: StorageBudgetPolicy::Default,
+            memory_budget: None,
             wal_growth_policy: StorageWalGrowthPolicy::Default,
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
@@ -220,6 +252,7 @@ impl StorageOpenOptions {
             mode: StorageMode::ObjectDurableCandidate,
             strict_recovery: true,
             budget_policy: StorageBudgetPolicy::Default,
+            memory_budget: None,
             wal_growth_policy: StorageWalGrowthPolicy::Default,
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
@@ -235,6 +268,7 @@ impl StorageOpenOptions {
             mode: StorageMode::DistributedCandidate,
             strict_recovery: true,
             budget_policy: StorageBudgetPolicy::Default,
+            memory_budget: None,
             wal_growth_policy: StorageWalGrowthPolicy::Default,
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
@@ -253,6 +287,14 @@ impl StorageOpenOptions {
     #[must_use]
     pub const fn with_budget_policy(mut self, budget_policy: StorageBudgetPolicy) -> Self {
         self.budget_policy = budget_policy;
+        self
+    }
+
+    /// Set an explicit storage memory budget. When set it takes precedence over `budget_policy`
+    /// and bounds both cache and durable opens.
+    #[must_use]
+    pub const fn with_memory_budget(mut self, memory_budget: StorageMemoryBudget) -> Self {
+        self.memory_budget = Some(memory_budget);
         self
     }
 
@@ -382,6 +424,11 @@ impl StorageOpenOptions {
     #[must_use]
     pub const fn budget_policy(&self) -> StorageBudgetPolicy {
         self.budget_policy
+    }
+
+    #[must_use]
+    pub const fn memory_budget(&self) -> Option<StorageMemoryBudget> {
+        self.memory_budget
     }
 
     #[must_use]

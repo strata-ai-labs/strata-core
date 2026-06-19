@@ -209,6 +209,32 @@ impl StorageRuntimeBudget {
         Ok(budget)
     }
 
+    /// Derive a budget from a single storage total by scaling the default profile's per-pool
+    /// proportions, so the pools-sum-within-total invariant and the small reserve are preserved.
+    /// Count limits keep their defaults. Callers must reject totals so small a pool would round to
+    /// zero (the public `StorageMemoryBudget` enforces a minimum); `validate` is the backstop.
+    pub(crate) fn from_total_bytes(total_bytes: u64) -> LifecycleResult<Self> {
+        let scale = |default_pool: u64| -> u64 {
+            let scaled = u128::from(total_bytes) * u128::from(default_pool)
+                / u128::from(DEFAULT_TOTAL_BYTES);
+            // A pool is at most the whole total, so `scaled <= total_bytes` and never truncates.
+            u64::try_from(scaled).unwrap_or(u64::MAX)
+        };
+        Self::from_parts(StorageRuntimeBudgetParts {
+            total_bytes,
+            block_cache_bytes: scale(DEFAULT_BLOCK_CACHE_BYTES),
+            table_reader_bytes: scale(DEFAULT_TABLE_READER_BYTES),
+            active_mutable_bytes: scale(DEFAULT_ACTIVE_MUTABLE_BYTES),
+            frozen_mutable_bytes: scale(DEFAULT_FROZEN_MUTABLE_BYTES),
+            maintenance_queue_bytes: scale(DEFAULT_MAINTENANCE_QUEUE_BYTES),
+            generated_artifact_bytes: scale(DEFAULT_GENERATED_ARTIFACT_BYTES),
+            manifest_catalog_bytes: scale(DEFAULT_MANIFEST_CATALOG_BYTES),
+            max_open_readers: DEFAULT_MAX_OPEN_READERS,
+            max_frozen_tables: DEFAULT_MAX_FROZEN_TABLES,
+            max_pending_maintenance_tasks: DEFAULT_MAX_PENDING_MAINTENANCE_TASKS,
+        })
+    }
+
     /// An effectively-unlimited budget for volatile (cache) storage.
     ///
     /// Cache mode never flushes mutable state to table sources as product

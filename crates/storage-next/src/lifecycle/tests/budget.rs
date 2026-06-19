@@ -123,6 +123,37 @@ fn would_exceed_total_projects_the_requested_increment() {
 }
 
 #[test]
+fn from_total_bytes_at_default_total_matches_default() {
+    let default = StorageRuntimeBudget::default();
+    let derived = StorageRuntimeBudget::from_total_bytes(default.total_bytes()).expect("derive");
+    assert_eq!(
+        derived, default,
+        "deriving from the default total reproduces the default split"
+    );
+}
+
+#[test]
+fn from_total_bytes_scales_pools_proportionally() {
+    let default = StorageRuntimeBudget::default();
+    let quarter = default.total_bytes() / 4;
+    let derived = StorageRuntimeBudget::from_total_bytes(quarter).expect("derive");
+
+    assert_eq!(derived.total_bytes(), quarter);
+    assert_eq!(
+        derived.pool_limit_bytes(StorageBudgetPool::BlockCache),
+        default.pool_limit_bytes(StorageBudgetPool::BlockCache) / 4,
+        "pools scale proportionally with the total"
+    );
+    // from_parts validated the sum-within-total invariant; confirm every pool stayed nonzero.
+    for pool in StorageBudgetPool::ALL {
+        assert!(
+            derived.pool_limit_bytes(pool) > 0,
+            "derived pool {pool:?} must be nonzero"
+        );
+    }
+}
+
+#[test]
 fn storage_budget_rejects_zero_mandatory_active_pool() {
     let parts = StorageRuntimeBudgetParts {
         active_mutable_bytes: 0,

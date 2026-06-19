@@ -280,6 +280,48 @@ fn diagnostics_reports_memory_budget_limits() {
     assert!(usage(report.budget(), DiagnosticsBudgetPool::TableReader).limit_bytes() > 0);
 }
 
+#[test]
+fn storage_memory_budget_rejects_below_minimum() {
+    let error = StorageMemoryBudget::new(1024).expect_err("sub-minimum budget rejected");
+    assert_eq!(error.code(), "invalid_argument.storage_api.argument");
+    assert!(
+        StorageMemoryBudget::new(1024 * 1024).is_ok(),
+        "a 1 MiB budget is accepted"
+    );
+}
+
+#[test]
+fn cache_open_with_explicit_memory_budget_is_bounded() {
+    let budget = StorageMemoryBudget::new(64 * 1024 * 1024).expect("budget");
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache().with_memory_budget(budget))
+        .expect("open cache with explicit budget")
+        .into_runtime();
+
+    let report = diagnostics(&runtime);
+    assert_eq!(
+        report.budget().total_limit_bytes(),
+        Some(64 * 1024 * 1024),
+        "an explicit budget bounds cache instead of leaving it unlimited"
+    );
+}
+
+#[cfg(feature = "localfs")]
+#[test]
+fn durable_open_with_explicit_memory_budget_reflects_it() {
+    let budget = StorageMemoryBudget::new(64 * 1024 * 1024).expect("budget");
+    let backend = StorageBackend::local_fs(temp_dir_for_api_test("budget-explicit-durable"));
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_memory_budget(budget),
+        Box::leak(Box::new(backend)),
+    )
+    .expect("open durable with explicit budget")
+    .into_runtime();
+
+    let report = diagnostics(&runtime);
+    assert_eq!(report.budget().total_limit_bytes(), Some(64 * 1024 * 1024));
+}
+
 #[ignore = "L8G: cache has no background/inline maintenance executor or source-shape admission; durable executor/admission coverage is owned by L8H"]
 #[test]
 fn diagnostics_reports_background_scheduler_facts() {
