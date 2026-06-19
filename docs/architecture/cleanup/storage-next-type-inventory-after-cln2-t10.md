@@ -7,9 +7,9 @@ Counts are conservative text matches, not a Rust AST parse.
 
 | Metric | Count |
 |---|---|
-| Rust files | 370 |
+| Rust files | 371 |
 | Production Rust files | 157 |
-| All struct/enum definitions | 1116 |
+| All struct/enum definitions | 1120 |
 | Production struct/enum definitions | 809 |
 | Cleanup-target production definitions | 644 |
 | Public API definitions | 112 |
@@ -88,7 +88,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | File | pub use statements | Approx exported names |
 |---|---|---|
 | lifecycle/mod.rs | 24 | 242 |
-| testkit/mod.rs | 20 | 110 |
+| testkit/mod.rs | 20 | 112 |
 | api/mod.rs | 14 | 104 |
 | format/mod.rs | 15 | 86 |
 | commit/mod.rs | 16 | 80 |
@@ -100,6 +100,7 @@ Counts are conservative text matches, not a Rust AST parse.
 | format/table/mod.rs | 3 | 13 |
 | api/runtime/mod.rs | 1 | 3 |
 | lib.rs | 2 | 2 |
+| testkit/simulation/mod.rs | 1 | 2 |
 | testkit/recovery_oracle/mod.rs | 1 | 2 |
 
 ## Operation-Family Suffix Counts

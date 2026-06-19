@@ -13,11 +13,14 @@
 //! actually emit. The fault/crash dimension is a separate slice.
 
 mod driver;
+mod faults;
 
 use std::path::{Path, PathBuf};
 
 use crate::testkit::TestkitError;
 use driver::run_one_sim;
+
+pub use faults::{run_fault_simulation_harness, SimulationFaultOutcome};
 
 /// Default seed count with no case budget. A case budget lets seeds scale freely,
 /// so a large soak explores many seeds, not just these.

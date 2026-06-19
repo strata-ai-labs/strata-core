@@ -138,7 +138,9 @@ pub use service_fuzz::{
     feature = "localfs",
     not(target_arch = "wasm32")
 ))]
-pub use simulation::{run_simulation_harness, SimulationOutcome};
+pub use simulation::{
+    run_fault_simulation_harness, run_simulation_harness, SimulationFaultOutcome, SimulationOutcome,
+};
 pub use table_runtime::{
     check_table_runtime_compaction_contract, check_table_runtime_cursor_contract,
     check_table_runtime_reader_contract, check_table_runtime_scaffold_contract,
