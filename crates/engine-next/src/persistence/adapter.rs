@@ -9,10 +9,13 @@ use strata_storage_next::api::{
     BranchGeneration as StorageBranchGeneration, BranchOutcome as StorageBranchOutcome,
     BranchRequest, BranchStatus as StorageBranchStatus, BranchSummary as StorageBranchSummary,
     CommitBatch, CommitDurabilitySummary, CommitMutation, CommitOptions, HistoryReadRequest,
-    PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit, ScanRange, ScanReadRequest,
-    StorageApiError, StorageApiErrorClass, StorageCloseSummary, StorageKey, StorageOpenDisposition,
-    StorageReadRow, StorageRuntime, StorageRuntimeState, StorageSpaceId, StorageValue,
+    ImmutableSourceScanReadRequest, PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit,
+    ScanRange, ScanReadRequest, StorageApiError, StorageApiErrorClass, StorageCloseSummary,
+    StorageImmutableSource, StorageKey, StorageOpenDisposition, StorageReadRow, StorageRuntime,
+    StorageRuntimeState, StorageSpaceId, StorageValue,
 };
+#[cfg(any(test, feature = "testkit"))]
+use strata_storage_next::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
 
 use crate::branch::catalog::{DEFAULT_BRANCH_GENERATION, SYSTEM_BRANCH_ID};
 use crate::commit::CommitOutcome;
@@ -211,6 +214,52 @@ impl PersistenceReadRow {
 
     pub(crate) const fn is_tombstone(&self) -> bool {
         self.tombstone
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PersistenceImmutableSource {
+    source_id: String,
+    source_branch_id: BranchId,
+    source_generation: CommitVersion,
+    fork_version_cap: Option<CommitVersion>,
+    rows: Vec<PersistenceReadRow>,
+}
+
+impl PersistenceImmutableSource {
+    fn from_storage(source: &StorageImmutableSource) -> Self {
+        Self {
+            source_id: source.source_id().to_owned(),
+            source_branch_id: source.source_branch_id(),
+            source_generation: source.source_generation(),
+            fork_version_cap: source.fork_version_cap(),
+            rows: source
+                .rows()
+                .iter()
+                .map(PersistenceReadRow::from_storage)
+                .collect(),
+        }
+    }
+
+    pub(crate) fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
+    pub(crate) const fn source_branch_id(&self) -> BranchId {
+        self.source_branch_id
+    }
+
+    pub(crate) const fn source_generation(&self) -> CommitVersion {
+        self.source_generation
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn fork_version_cap(&self) -> Option<CommitVersion> {
+        self.fork_version_cap
+    }
+
+    pub(crate) fn rows(&self) -> &[PersistenceReadRow] {
+        &self.rows
     }
 }
 
@@ -512,8 +561,61 @@ impl StoragePersistence {
             .collect())
     }
 
+    pub(crate) fn scan_immutable_sources(
+        &mut self,
+        branch_id: BranchId,
+        row_class: RowClass,
+        start: Option<Vec<u8>>,
+        end: Option<Vec<u8>>,
+        selector: ReadSelector,
+    ) -> EngineResult<Vec<PersistenceImmutableSource>> {
+        let outcome = match self
+            .runtime
+            .scan_immutable_sources(&immutable_source_scan_request(
+                branch_id,
+                row_class,
+                start.clone(),
+                end.clone(),
+                selector,
+            )?) {
+            Ok(outcome) => outcome,
+            Err(error) if is_outside_retained_history(&error) => return Ok(Vec::new()),
+            Err(error) if should_fall_back_to_latest(selector, &error) => self
+                .runtime
+                .scan_immutable_sources(&immutable_source_scan_request(
+                    branch_id,
+                    row_class,
+                    start,
+                    end,
+                    ReadSelector::Latest,
+                )?)
+                .map_err(map_storage_error)?,
+            Err(error) => return Err(map_storage_error(error)),
+        };
+        Ok(outcome
+            .sources()
+            .iter()
+            .map(PersistenceImmutableSource::from_storage)
+            .collect())
+    }
+
     pub(crate) fn close(&mut self) -> EngineResult<StorageCloseSummary> {
         self.runtime.close().map_err(map_storage_error)
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn flush_branch_for_test(&mut self, branch_id: BranchId) -> EngineResult<usize> {
+        self.runtime
+            .maintenance(&MaintenanceRequest::new(
+                MaintenanceTask::Flush,
+                MaintenanceScope::Branch(branch_id),
+            ))
+            .map_err(map_storage_error)?;
+        let summary = self
+            .runtime
+            .drain_maintenance()
+            .map_err(map_storage_error)?;
+        Ok(summary.drained_tasks().saturating_add(1))
     }
 
     #[must_use]
@@ -656,6 +758,26 @@ fn scan_range_request(
         range,
         storage_read_bound(selector),
         limit,
+    ))
+}
+
+fn immutable_source_scan_request(
+    branch_id: BranchId,
+    row_class: RowClass,
+    start: Option<Vec<u8>>,
+    end: Option<Vec<u8>>,
+    selector: ReadSelector,
+) -> EngineResult<ImmutableSourceScanReadRequest> {
+    let range = ScanRange::new(
+        start.map(storage_key_from_bytes).transpose()?,
+        end.map(storage_key_from_bytes).transpose()?,
+    )
+    .map_err(map_storage_error)?;
+    Ok(ImmutableSourceScanReadRequest::new(
+        branch_id,
+        storage_space_for_class(row_class)?,
+        range,
+        storage_read_bound(selector),
     ))
 }
 

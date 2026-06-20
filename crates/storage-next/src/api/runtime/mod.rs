@@ -59,18 +59,18 @@ use super::{
     DiagnosticsStoragePressureReason, DiagnosticsStoragePressureReport,
     DiagnosticsStoragePressureSeverity, DiagnosticsTableReachabilityReport,
     DiagnosticsTimelineReport, DiagnosticsWalGrowthReport, HistoryReadOutcome, HistoryReadRequest,
-    MaintenanceDrainSummary, MaintenanceQueueSummary, MaintenanceReasonClass, MaintenanceRequest,
-    MaintenanceScope, MaintenanceSummary, MaintenanceSummaryStatus, MaintenanceTask,
-    MaintenanceWalGrowthStatus, MaintenanceWalGrowthSummary, MaintenanceWalGrowthTrigger,
-    PointReadOutcome, PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit,
-    RecoveryHealthSummary, ScanReadOutcome, ScanReadRequest, StorageApiError, StorageApiErrorClass,
-    StorageApiLowerLayer, StorageApiResult, StorageBackend, StorageBackgroundMaintenanceOptions,
-    StorageBudgetPolicy, StorageCloseSummary, StorageDurabilityPolicy, StorageKey,
-    StorageMaintenanceSchedulingPolicy, StorageMode, StorageOpenDisposition, StorageOpenOptions,
-    StorageOpenOutcome, StorageOpenSummary, StorageReadRow, StorageRuntimeState, StorageSpaceId,
-    StorageValue, StorageWalGrowthPolicy, TimelineBoundsOutcome, TimelineBoundsRequest,
-    TimestampLookupMiss, TimestampLookupOutcome, TimestampLookupRequest, VersionLookupOutcome,
-    VersionLookupRequest,
+    ImmutableSourceScanReadOutcome, ImmutableSourceScanReadRequest, MaintenanceDrainSummary,
+    MaintenanceQueueSummary, MaintenanceReasonClass, MaintenanceRequest, MaintenanceScope,
+    MaintenanceSummary, MaintenanceSummaryStatus, MaintenanceTask, MaintenanceWalGrowthStatus,
+    MaintenanceWalGrowthSummary, MaintenanceWalGrowthTrigger, PointReadOutcome, PointReadRequest,
+    PrefixScanReadRequest, ReadBound, ReadLimit, RecoveryHealthSummary, ScanReadOutcome,
+    ScanReadRequest, StorageApiError, StorageApiErrorClass, StorageApiLowerLayer, StorageApiResult,
+    StorageBackend, StorageBackgroundMaintenanceOptions, StorageBudgetPolicy, StorageCloseSummary,
+    StorageDurabilityPolicy, StorageKey, StorageMaintenanceSchedulingPolicy, StorageMode,
+    StorageOpenDisposition, StorageOpenOptions, StorageOpenOutcome, StorageOpenSummary,
+    StorageReadRow, StorageRuntimeState, StorageSpaceId, StorageValue, StorageWalGrowthPolicy,
+    TimelineBoundsOutcome, TimelineBoundsRequest, TimestampLookupMiss, TimestampLookupOutcome,
+    TimestampLookupRequest, VersionLookupOutcome, VersionLookupRequest,
 };
 use crate::api::outcome::StorageCloseEffects;
 use parking_lot::{Mutex as ParkingMutex, MutexGuard as ParkingMutexGuard};
@@ -91,9 +91,10 @@ use background::{
 };
 
 use data::{
-    flush_request_for_boundary, map_api_commit_batch, map_commit_summary, map_scan_rows,
-    map_storage_space, physical_key, read_row_from_storage, read_row_from_storage_if_visible,
-    require_version_retained, resolve_read_bound, visible_tombstone_at_bound,
+    flush_request_for_boundary, map_api_commit_batch, map_commit_summary, map_immutable_sources,
+    map_scan_rows, map_storage_space, physical_key, read_row_from_storage,
+    read_row_from_storage_if_visible, require_version_retained, resolve_read_bound,
+    visible_tombstone_at_bound,
 };
 use diagnostics::{
     branch_for_diagnostics_scope, branch_generation_or_default, current_visible,
@@ -1334,6 +1335,40 @@ impl<'a> StorageRuntime<'a> {
             request.limit(),
             resolved.selected_timestamp,
         )
+    }
+
+    pub fn scan_immutable_sources(
+        &self,
+        request: &ImmutableSourceScanReadRequest,
+    ) -> StorageApiResult<ImmutableSourceScanReadOutcome> {
+        let storage_space = map_storage_space(request.storage_space())?;
+        let bounds = BranchScanBounds::range(
+            request.branch_id(),
+            API_PHYSICAL_SPACE,
+            storage_space,
+            request
+                .range()
+                .start()
+                .map_or(BranchUserKeyBound::Unbounded, |key| {
+                    BranchUserKeyBound::included(key.as_bytes())
+                }),
+            request
+                .range()
+                .end()
+                .map_or(BranchUserKeyBound::Unbounded, |key| {
+                    BranchUserKeyBound::excluded(key.as_bytes())
+                }),
+        )
+        .map_err(branch_error)?;
+        let view = self.read_view_for_branch(request.branch_id())?;
+        let resolved = resolve_read_bound(&view, request.bound())?;
+        let sources = view
+            .scan_immutable_sources(&bounds, resolved.branch_bound)
+            .map_err(branch_error)?;
+        Ok(ImmutableSourceScanReadOutcome::new(map_immutable_sources(
+            &sources,
+            resolved.selected_timestamp,
+        )?))
     }
 
     pub fn lookup_version_at_or_before_timestamp(

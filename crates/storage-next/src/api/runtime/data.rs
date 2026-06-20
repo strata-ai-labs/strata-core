@@ -11,6 +11,8 @@ use super::{
     StorageKey, StorageReadRow, StorageRow, StorageSpaceId, StorageValue, Timestamp,
     API_PHYSICAL_SPACE, COMMIT_TIMELINE_SPACE,
 };
+use crate::api::StorageImmutableSource;
+use crate::branch::read::BranchImmutableRowSource;
 
 pub(super) fn map_commit_summary(
     outcome: &crate::commit::CommitOutcome,
@@ -236,6 +238,33 @@ pub(super) fn map_scan_rows<'a>(
         }
     }
     Ok(ScanReadOutcome::new(mapped))
+}
+
+pub(super) fn map_immutable_sources(
+    sources: &[BranchImmutableRowSource],
+    selected_timestamp: Option<Timestamp>,
+) -> StorageApiResult<Vec<StorageImmutableSource>> {
+    let mut mapped = Vec::with_capacity(sources.len());
+    for source in sources {
+        let mut rows = Vec::new();
+        for row in source.rows() {
+            if let Some(read_row) = read_row_from_storage_if_visible(row.row(), selected_timestamp)?
+            {
+                rows.push(read_row);
+            }
+        }
+        if rows.is_empty() {
+            continue;
+        }
+        mapped.push(StorageImmutableSource::new(
+            source.source_id().to_owned(),
+            source.source_branch_id(),
+            source.source_generation(),
+            source.fork_version_cap(),
+            rows,
+        ));
+    }
+    Ok(mapped)
 }
 
 pub(super) fn require_version_retained(

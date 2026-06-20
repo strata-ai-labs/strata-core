@@ -223,7 +223,6 @@ impl ControlPlane {
     }
 
     pub(crate) fn space_registration_mutations(
-        &self,
         persistence: &mut StoragePersistence,
         record: &BranchCatalogRecord,
         space: &crate::data::kv::ProductSpace,

@@ -2,7 +2,14 @@
 
 mod common;
 
+#[cfg(feature = "testkit")]
+use std::collections::BTreeSet;
+
 use serde_json::{json, Map, Value};
+#[cfg(feature = "testkit")]
+use strata_core_next::BranchId;
+#[cfg(feature = "testkit")]
+use strata_engine_next::testkit::{VectorIndexDiagnostics, VectorIndexPolicy};
 use strata_engine_next::{
     Database, EngineErrorClass, VectorCollectionName, VectorConfig, VectorDistanceMetric,
     VectorEmbedding, VectorFilter, VectorFilterCondition, VectorKey, VectorMetadata,
@@ -11,925 +18,27 @@ use strata_engine_next::{
 
 use common::{branch, open_cache_database, open_durable_database, space};
 
-#[test]
-fn vector_contract_runs_in_cache_and_durable_modes() {
-    run_database_modes(exercise_vector_contract);
-}
+#[path = "engine_vector/core.rs"]
+mod vector_core;
 
-#[test]
-fn vector_collection_lifecycle_and_counts_run_in_cache_and_durable_modes() {
-    run_database_modes(exercise_vector_collection_lifecycle);
-}
-
-#[test]
-fn vector_metadata_patch_contract_runs_in_cache_and_durable_modes() {
-    run_database_modes(exercise_vector_metadata_patch_contract);
-}
-
-#[test]
-fn vector_batch_contracts_run_in_cache_and_durable_modes() {
-    run_database_modes(exercise_vector_batch_contracts);
-}
-
-#[test]
-fn vector_bulk_delete_contracts_run_in_cache_and_durable_modes() {
-    run_database_modes(exercise_vector_bulk_delete_contracts);
-}
-
-#[test]
-fn vector_exact_search_metrics_run_in_cache_and_durable_modes() {
-    run_database_modes(exercise_vector_exact_search_metrics);
-}
-
-#[test]
-fn vector_timestamp_reads_track_overwrite_filter_and_delete() {
-    run_database_modes(exercise_vector_timestamp_reads);
-}
-
-#[test]
-fn vector_branch_and_space_isolation_match_other_primitives() {
-    let mut database = open_cache_database().expect("cache open succeeds");
-    {
-        let mut vectors = vector_service(&mut database, "default", "default");
-        vectors
-            .create_collection(collection("docs"), config(2, VectorDistanceMetric::Cosine))
-            .expect("collection create succeeds");
-        vectors
-            .upsert(
-                collection("docs"),
-                vector_key("shared"),
-                embedding([1.0, 0.0]),
-                Some(metadata(json!({"branch": "default"}))),
-            )
-            .expect("base upsert succeeds");
-    }
-
-    database
-        .branches()
-        .expect("branch service opens")
-        .fork_current(&branch("default"), branch("feature"))
-        .expect("branch fork succeeds");
-
-    {
-        let mut feature = vector_service(&mut database, "feature", "default");
-        let inherited = feature
-            .get(&collection("docs"), &vector_key("shared"))
-            .expect("read inherited vector succeeds")
-            .expect("inherited vector exists");
-        assert_eq!(
-            inherited.metadata().expect("metadata").as_inner(),
-            &json!({"branch": "default"})
-        );
-        feature
-            .upsert(
-                collection("docs"),
-                vector_key("shared"),
-                embedding([0.0, 1.0]),
-                Some(metadata(json!({"branch": "feature"}))),
-            )
-            .expect("feature upsert succeeds");
-    }
-
-    let mut default_vectors = vector_service(&mut database, "default", "default");
-    assert_eq!(
-        default_vectors
-            .get(&collection("docs"), &vector_key("shared"))
-            .expect("default read succeeds")
-            .expect("default vector exists")
-            .metadata()
-            .expect("metadata")
-            .as_inner(),
-        &json!({"branch": "default"})
-    );
-    drop(default_vectors);
-
-    let mut feature_vectors = vector_service(&mut database, "feature", "default");
-    assert_eq!(
-        feature_vectors
-            .get(&collection("docs"), &vector_key("shared"))
-            .expect("feature read succeeds")
-            .expect("feature vector exists")
-            .metadata()
-            .expect("metadata")
-            .as_inner(),
-        &json!({"branch": "feature"})
-    );
-    drop(feature_vectors);
-
-    let mut other_space = vector_service(&mut database, "default", "other");
-    other_space
-        .create_collection(
-            collection("docs"),
-            config(2, VectorDistanceMetric::DotProduct),
-        )
-        .expect("other-space collection create succeeds");
-    assert_eq!(
-        other_space
-            .collection_info(&collection("docs"))
-            .expect("info succeeds")
-            .expect("info exists")
-            .config()
-            .metric(),
-        VectorDistanceMetric::DotProduct
-    );
-}
-
-#[test]
-fn vector_branch_destructive_operations_stay_isolated() {
-    let mut database = open_cache_database().expect("cache open succeeds");
-    let collection = collection("docs");
-    {
-        let mut vectors = vector_service(&mut database, "default", "default");
-        vectors
-            .create_collection(collection.clone(), config(2, VectorDistanceMetric::Cosine))
-            .expect("collection create succeeds");
-        vectors
-            .batch_upsert(
-                &collection,
-                &[
-                    upsert("shared", [1.0, 0.0], json!({"kind": "keep"})),
-                    upsert("delete", [0.0, 1.0], json!({"kind": "keep"})),
-                    upsert("filter", [0.5, 0.5], json!({"kind": "remove"})),
-                    upsert("all", [0.25, 0.75], json!({"kind": "keep"})),
-                ],
-            )
-            .expect("batch upsert succeeds");
-    }
-    database
-        .branches()
-        .expect("branch service opens")
-        .fork_current(&branch("default"), branch("feature"))
-        .expect("branch fork succeeds");
-
-    {
-        let mut feature = vector_service(&mut database, "feature", "default");
-        feature
-            .update_metadata(
-                &collection,
-                vector_key("shared"),
-                &patch(json!({"patched": true})),
-            )
-            .expect("metadata patch succeeds");
-        assert!(feature
-            .delete(&collection, vector_key("delete"))
-            .expect("delete succeeds")
-            .deleted());
-        assert_eq!(
-            feature
-                .delete_by_filter(&collection, &filter_eq("kind", "remove"))
-                .expect("filtered delete succeeds")
-                .deleted_count(),
-            1
-        );
-        assert_eq!(feature.count(&collection).expect("count succeeds"), 2);
-        assert_eq!(
-            feature
-                .delete_all(&collection)
-                .expect("delete all succeeds")
-                .deleted_count(),
-            2
-        );
-        assert_eq!(feature.count(&collection).expect("count succeeds"), 0);
-        assert!(feature
-            .delete_collection(&collection)
-            .expect("collection delete succeeds"));
-        assert!(feature
-            .collection_info(&collection)
-            .expect("info succeeds")
-            .is_none());
-    }
-
-    let mut parent = vector_service(&mut database, "default", "default");
-    assert_eq!(parent.count(&collection).expect("parent count succeeds"), 4);
-    assert_eq!(
-        parent
-            .get(&collection, &vector_key("shared"))
-            .expect("parent read succeeds")
-            .expect("parent value exists")
-            .metadata()
-            .expect("metadata")
-            .as_inner(),
-        &json!({"kind": "keep"})
-    );
-    assert!(parent
-        .get(&collection, &vector_key("delete"))
-        .expect("parent read succeeds")
-        .is_some());
-    assert!(parent
-        .get(&collection, &vector_key("filter"))
-        .expect("parent read succeeds")
-        .is_some());
-}
-
-#[test]
-fn vector_space_destructive_operations_stay_isolated() {
-    let mut database = open_cache_database().expect("cache open succeeds");
-    let collection = collection("docs");
-    {
-        let mut default_space = vector_service(&mut database, "default", "default");
-        default_space
-            .create_collection(collection.clone(), config(2, VectorDistanceMetric::Cosine))
-            .expect("collection create succeeds");
-        default_space
-            .batch_upsert(
-                &collection,
-                &[
-                    upsert("shared", [1.0, 0.0], json!({"space": "default"})),
-                    upsert("keep", [0.0, 1.0], json!({"kind": "keep"})),
-                ],
-            )
-            .expect("batch upsert succeeds");
-    }
-    {
-        let mut other_space = vector_service(&mut database, "default", "other");
-        other_space
-            .create_collection(
-                collection.clone(),
-                config(2, VectorDistanceMetric::DotProduct),
-            )
-            .expect("collection create succeeds");
-        other_space
-            .batch_upsert(
-                &collection,
-                &[
-                    upsert("shared", [0.0, 1.0], json!({"space": "other"})),
-                    upsert("remove", [1.0, 0.0], json!({"kind": "remove"})),
-                ],
-            )
-            .expect("batch upsert succeeds");
-        assert_eq!(
-            other_space
-                .delete_by_filter(&collection, &filter_eq("kind", "remove"))
-                .expect("filtered delete succeeds")
-                .deleted_count(),
-            1
-        );
-        assert!(other_space
-            .delete_collection(&collection)
-            .expect("collection delete succeeds"));
-    }
-
-    let mut default_space = vector_service(&mut database, "default", "default");
-    assert_eq!(default_space.count(&collection).expect("count succeeds"), 2);
-    assert_eq!(
-        default_space
-            .collection_info(&collection)
-            .expect("info succeeds")
-            .expect("collection exists")
-            .config()
-            .metric(),
-        VectorDistanceMetric::Cosine
-    );
-    assert_eq!(
-        default_space
-            .get(&collection, &vector_key("shared"))
-            .expect("read succeeds")
-            .expect("value exists")
-            .metadata()
-            .expect("metadata")
-            .as_inner(),
-        &json!({"space": "default"})
-    );
-}
-
-#[test]
-fn vector_durable_reopen_preserves_collections_entries_and_history() {
-    let tempdir = tempfile::tempdir().expect("tempdir");
-    let collection = collection("durable");
-    let key = vector_key("doc-1");
-    let delete_timestamp;
-
-    {
-        let mut database = open_durable_database(tempdir.path()).expect("durable open succeeds");
-        let mut vectors = database
-            .vector(branch("default"), space("default"))
-            .expect("vector service opens");
-        vectors
-            .create_collection(
-                collection.clone(),
-                config(2, VectorDistanceMetric::Euclidean),
-            )
-            .expect("collection create succeeds");
-        vectors
-            .upsert(
-                collection.clone(),
-                key.clone(),
-                embedding([1.0, 0.0]),
-                Some(metadata(json!({"stage": "created"}))),
-            )
-            .expect("first upsert succeeds");
-        let updated = vectors
-            .upsert(
-                collection.clone(),
-                key.clone(),
-                embedding([0.0, 1.0]),
-                Some(metadata(json!({"stage": "updated"}))),
-            )
-            .expect("second upsert succeeds");
-        assert_eq!(updated.vector_revision(), 2);
-        delete_timestamp = vectors
-            .delete(&collection, vector_key("missing"))
-            .expect("missing delete succeeds")
-            .commit()
-            .unwrap_or_else(|| updated.commit())
-            .timestamp();
-        drop(vectors);
-        database.close().expect("close succeeds");
-    }
-
-    let mut reopened = open_durable_database(tempdir.path()).expect("reopen succeeds");
-    let mut vectors = reopened
-        .vector(branch("default"), space("default"))
-        .expect("vector service opens");
-    let info = vectors
-        .collection_info(&collection)
-        .expect("info succeeds")
-        .expect("collection exists");
-    assert_eq!(info.config().metric(), VectorDistanceMetric::Euclidean);
-    assert_eq!(info.count(), 1);
-    assert_eq!(
-        vectors
-            .get(&collection, &key)
-            .expect("read succeeds")
-            .expect("entry exists")
-            .embedding()
-            .as_slice(),
-        &[0.0, 1.0]
-    );
-    let history = vectors
-        .history(&collection, &key)
-        .expect("history succeeds")
-        .expect("history exists");
-    assert_eq!(history.rows().len(), 2);
-    assert_eq!(history.rows()[0].vector_revision(), Some(2));
-    assert_eq!(history.rows()[1].vector_revision(), Some(1));
-    assert_eq!(
-        vectors
-            .query_at(
-                &collection,
-                &embedding([0.0, 1.0]),
-                10,
-                None,
-                delete_timestamp
-            )
-            .expect("timestamp query succeeds")
-            .matches()
-            .len(),
-        1
-    );
-}
-
-#[test]
-fn vector_durable_reopen_preserves_collection_delete() {
-    let tempdir = tempfile::tempdir().expect("tempdir");
-    let collection = collection("deleted");
-    let key = vector_key("doc-1");
-
-    {
-        let mut database = open_durable_database(tempdir.path()).expect("durable open succeeds");
-        let mut vectors = vector_service(&mut database, "default", "default");
-        vectors
-            .create_collection(collection.clone(), config(2, VectorDistanceMetric::Cosine))
-            .expect("collection create succeeds");
-        vectors
-            .upsert(
-                collection.clone(),
-                key.clone(),
-                embedding([1.0, 0.0]),
-                Some(metadata(json!({"stage": "before-delete"}))),
-            )
-            .expect("upsert succeeds");
-        assert!(vectors
-            .delete_collection(&collection)
-            .expect("collection delete succeeds"));
-        assert!(vectors
-            .collection_info(&collection)
-            .expect("latest info succeeds")
-            .is_none());
-        drop(vectors);
-        database.close().expect("close succeeds");
-    }
-
-    let mut reopened = open_durable_database(tempdir.path()).expect("reopen succeeds");
-    let mut vectors = vector_service(&mut reopened, "default", "default");
-    assert!(vectors
-        .collection_info(&collection)
-        .expect("info succeeds")
-        .is_none());
-    assert_eq!(
-        vectors
-            .count(&collection)
-            .expect_err("deleted collection count rejected")
-            .code(),
-        "not_found.engine.vector_collection"
-    );
-    assert_eq!(
-        vectors
-            .query(&collection, &embedding([1.0, 0.0]), 1, None)
-            .expect_err("deleted collection query rejected")
-            .code(),
-        "not_found.engine.vector_collection"
-    );
-    let history = vectors
-        .history(&collection, &key)
-        .expect("history succeeds")
-        .expect("history exists");
-    assert!(history.rows()[0].is_tombstone());
-    assert_eq!(history.rows()[1].vector_revision(), Some(1));
-    drop(vectors);
-    reopened.close().expect("close succeeds");
-}
-
-#[test]
-fn vector_durable_reopen_preserves_branch_and_space_isolation() {
-    let tempdir = tempfile::tempdir().expect("tempdir");
-    let collection = collection("docs");
-    {
-        let mut database = open_durable_database(tempdir.path()).expect("durable open succeeds");
-        {
-            let mut vectors = vector_service(&mut database, "default", "default");
-            vectors
-                .create_collection(collection.clone(), config(2, VectorDistanceMetric::Cosine))
-                .expect("collection create succeeds");
-            vectors
-                .upsert(
-                    collection.clone(),
-                    vector_key("shared"),
-                    embedding([1.0, 0.0]),
-                    Some(metadata(json!({"branch": "default"}))),
-                )
-                .expect("upsert succeeds");
-        }
-        database
-            .branches()
-            .expect("branch service opens")
-            .fork_current(&branch("default"), branch("feature"))
-            .expect("branch fork succeeds");
-        {
-            let mut feature = vector_service(&mut database, "feature", "default");
-            feature
-                .upsert(
-                    collection.clone(),
-                    vector_key("feature-only"),
-                    embedding([0.0, 1.0]),
-                    Some(metadata(json!({"branch": "feature"}))),
-                )
-                .expect("feature upsert succeeds");
-        }
-        {
-            let mut other_space = vector_service(&mut database, "default", "other");
-            other_space
-                .create_collection(
-                    collection.clone(),
-                    config(2, VectorDistanceMetric::Euclidean),
-                )
-                .expect("space collection create succeeds");
-            other_space
-                .upsert(
-                    collection.clone(),
-                    vector_key("shared"),
-                    embedding([0.0, 1.0]),
-                    Some(metadata(json!({"space": "other"}))),
-                )
-                .expect("space upsert succeeds");
-        }
-        database.close().expect("close succeeds");
-    }
-
-    let mut reopened = open_durable_database(tempdir.path()).expect("reopen succeeds");
-    let mut default_vectors = vector_service(&mut reopened, "default", "default");
-    assert_eq!(
-        default_vectors
-            .get(&collection, &vector_key("shared"))
-            .expect("default read succeeds")
-            .expect("default vector exists")
-            .metadata()
-            .expect("metadata")
-            .as_inner(),
-        &json!({"branch": "default"})
-    );
-    assert!(default_vectors
-        .get(&collection, &vector_key("feature-only"))
-        .expect("default read succeeds")
-        .is_none());
-    drop(default_vectors);
-
-    let mut feature_vectors = vector_service(&mut reopened, "feature", "default");
-    assert!(feature_vectors
-        .get(&collection, &vector_key("shared"))
-        .expect("feature inherited read succeeds")
-        .is_some());
-    assert!(feature_vectors
-        .get(&collection, &vector_key("feature-only"))
-        .expect("feature read succeeds")
-        .is_some());
-    drop(feature_vectors);
-
-    let mut other_space = vector_service(&mut reopened, "default", "other");
-    assert_eq!(
-        other_space
-            .collection_info(&collection)
-            .expect("space info succeeds")
-            .expect("space collection exists")
-            .config()
-            .metric(),
-        VectorDistanceMetric::Euclidean
-    );
-    assert_eq!(
-        other_space
-            .get(&collection, &vector_key("shared"))
-            .expect("space read succeeds")
-            .expect("space value exists")
-            .metadata()
-            .expect("metadata")
-            .as_inner(),
-        &json!({"space": "other"})
-    );
-}
-
-#[test]
-fn vector_invalid_inputs_are_engine_errors() {
-    let error = VectorCollectionName::new("_internal").expect_err("reserved collection rejected");
-    assert_eq!(error.class(), EngineErrorClass::InvalidInput);
-    assert_eq!(
-        error.code(),
-        "invalid_argument.engine.vector_collection_reserved"
-    );
-
-    let error =
-        VectorEmbedding::new([1.0, f32::INFINITY]).expect_err("non-finite embedding rejected");
-    assert_eq!(error.class(), EngineErrorClass::InvalidInput);
-    assert_eq!(error.code(), "invalid_argument.engine.vector_embedding");
-
-    let error = VectorMetadataPatch::new(json!("not-object")).expect_err("patch rejected");
-    assert_eq!(error.class(), EngineErrorClass::InvalidInput);
-    assert_eq!(
-        error.code(),
-        "invalid_argument.engine.vector_metadata_patch"
-    );
-
-    let mut database = open_cache_database().expect("cache open succeeds");
-    let mut vectors = vector_service(&mut database, "default", "default");
-    vectors
-        .create_collection(collection("docs"), config(2, VectorDistanceMetric::Cosine))
-        .expect("collection create succeeds");
-    let error = vectors
-        .upsert(
-            collection("docs"),
-            vector_key("wrong-dim"),
-            embedding([1.0, 2.0, 3.0]),
-            None,
-        )
-        .expect_err("dimension mismatch rejected");
-    assert_eq!(error.class(), EngineErrorClass::InvalidInput);
-    assert_eq!(error.code(), "invalid_argument.engine.vector_dimension");
-
-    let error = vectors
-        .delete_by_filter(&collection("docs"), &VectorFilter::new())
-        .expect_err("empty filtered delete rejected");
-    assert_eq!(error.class(), EngineErrorClass::InvalidInput);
-    assert_eq!(error.code(), "invalid_argument.engine.vector_filter");
-}
-
-#[test]
-fn vector_missing_branch_errors_are_engine_owned() {
-    let mut database = open_cache_database().expect("cache open succeeds");
-    let mut vectors = vector_service(&mut database, "missing", "default");
-
-    let error = vectors
-        .create_collection(collection("docs"), config(2, VectorDistanceMetric::Cosine))
-        .expect_err("create in missing branch rejected");
-    assert_eq!(error.class(), EngineErrorClass::NotFound);
-    assert_eq!(error.code(), "not_found.engine.branch");
-
-    let error = vectors
-        .upsert(
-            collection("docs"),
-            vector_key("a"),
-            embedding([1.0, 0.0]),
-            None,
-        )
-        .expect_err("upsert in missing branch rejected");
-    assert_eq!(error.class(), EngineErrorClass::NotFound);
-    assert_eq!(error.code(), "not_found.engine.branch");
-
-    let error = vectors
-        .get(&collection("docs"), &vector_key("a"))
-        .expect_err("get in missing branch rejected");
-    assert_eq!(error.class(), EngineErrorClass::NotFound);
-    assert_eq!(error.code(), "not_found.engine.branch");
-
-    let error = vectors
-        .query(&collection("docs"), &embedding([1.0, 0.0]), 0, None)
-        .expect_err("zero-limit query in missing branch rejected");
-    assert_eq!(error.class(), EngineErrorClass::NotFound);
-    assert_eq!(error.code(), "not_found.engine.branch");
-
-    let error = vectors
-        .batch_upsert(&collection("docs"), &[])
-        .expect_err("empty batch upsert in missing branch rejected");
-    assert_eq!(error.class(), EngineErrorClass::NotFound);
-    assert_eq!(error.code(), "not_found.engine.branch");
-
-    let error = vectors
-        .batch_delete(&collection("docs"), &[])
-        .expect_err("empty batch delete in missing branch rejected");
-    assert_eq!(error.class(), EngineErrorClass::NotFound);
-    assert_eq!(error.code(), "not_found.engine.branch");
-}
-
-#[test]
-fn vector_noop_operations_validate_collection_and_query_shape() {
-    let mut database = open_cache_database().expect("cache open succeeds");
-    let mut vectors = vector_service(&mut database, "default", "default");
-    let docs = collection("docs");
-    vectors
-        .create_collection(docs.clone(), config(2, VectorDistanceMetric::Cosine))
-        .expect("collection create succeeds");
-
-    let empty_keys = vectors
-        .list_keys(&docs, None, None, 0)
-        .expect("zero-limit key list succeeds");
-    assert!(empty_keys.keys().is_empty());
-    assert!(!empty_keys.has_more());
-    assert_eq!(
-        vectors
-            .batch_upsert(&docs, &[])
-            .expect("empty batch upsert succeeds")
-            .commit(),
-        None
-    );
-    assert_eq!(
-        vectors
-            .batch_delete(&docs, &[])
-            .expect("empty batch delete succeeds")
-            .commit(),
-        None
-    );
-    assert!(vectors
-        .query(&docs, &embedding([1.0, 0.0]), 0, None)
-        .expect("zero-limit query succeeds")
-        .matches()
-        .is_empty());
-
-    let missing = collection("missing");
-    assert_eq!(
-        vectors
-            .list_keys(&missing, None, None, 0)
-            .expect_err("zero-limit key list validates collection")
-            .code(),
-        "not_found.engine.vector_collection"
-    );
-    assert_eq!(
-        vectors
-            .batch_upsert(&missing, &[])
-            .expect_err("empty batch upsert validates collection")
-            .code(),
-        "not_found.engine.vector_collection"
-    );
-    assert_eq!(
-        vectors
-            .batch_delete(&missing, &[])
-            .expect_err("empty batch delete validates collection")
-            .code(),
-        "not_found.engine.vector_collection"
-    );
-    assert_eq!(
-        vectors
-            .query(&missing, &embedding([1.0, 0.0]), 0, None)
-            .expect_err("zero-limit query validates collection")
-            .code(),
-        "not_found.engine.vector_collection"
-    );
-    assert_eq!(
-        vectors
-            .query(&docs, &embedding([1.0, 0.0, 0.0]), 0, None)
-            .expect_err("zero-limit query validates dimension")
-            .code(),
-        "invalid_argument.engine.vector_dimension"
-    );
-}
-
-#[test]
-fn vector_exact_metric_ordering_is_deterministic() {
-    let mut database = open_cache_database().expect("cache open succeeds");
-    let mut vectors = vector_service(&mut database, "default", "default");
-    vectors
-        .create_collection(
-            collection("dots"),
-            config(2, VectorDistanceMetric::DotProduct),
-        )
-        .expect("collection create succeeds");
-    vectors
-        .batch_upsert(
-            &collection("dots"),
-            &[
-                upsert("b", [1.0, 0.0], json!({"keep": true})),
-                upsert("a", [1.0, 0.0], json!({"keep": true})),
-                upsert("c", [0.0, 1.0], json!({"keep": false})),
-            ],
-        )
-        .expect("batch upsert succeeds");
-
-    let matches = vectors
-        .query(
-            &collection("dots"),
-            &embedding([1.0, 0.0]),
-            3,
-            Some(&filter_eq("keep", true)),
-        )
-        .expect("query succeeds");
-    assert_eq!(
-        matches
-            .matches()
-            .iter()
-            .map(|row| row.entry().key().as_str())
-            .collect::<Vec<_>>(),
-        vec!["a", "b"]
-    );
-    assert!((matches.matches()[0].score() - 1.0).abs() < f32::EPSILON);
-    assert!((matches.matches()[1].score() - 1.0).abs() < f32::EPSILON);
-}
-
-#[test]
-fn vector_collection_delete_tombstones_visible_rows() {
-    let mut database = open_cache_database().expect("cache open succeeds");
-    let mut vectors = vector_service(&mut database, "default", "default");
-    vectors
-        .create_collection(
-            collection("scratch"),
-            config(2, VectorDistanceMetric::Cosine),
-        )
-        .expect("collection create succeeds");
-    vectors
-        .batch_upsert(
-            &collection("scratch"),
-            &[
-                upsert("a", [1.0, 0.0], json!({})),
-                upsert("b", [0.0, 1.0], json!({})),
-            ],
-        )
-        .expect("batch upsert succeeds");
-    assert_eq!(
-        vectors
-            .count(&collection("scratch"))
-            .expect("count succeeds"),
-        2
-    );
-    assert!(vectors
-        .delete_collection(&collection("scratch"))
-        .expect("collection delete succeeds"));
-    assert!(vectors
-        .collection_info(&collection("scratch"))
-        .expect("info succeeds")
-        .is_none());
-    assert!(!vectors
-        .delete_collection(&collection("scratch"))
-        .expect("missing collection delete succeeds"));
-    let error = vectors
-        .query(&collection("scratch"), &embedding([1.0, 0.0]), 1, None)
-        .expect_err("query missing collection rejected");
-    assert_eq!(error.class(), EngineErrorClass::NotFound);
-    assert_eq!(error.code(), "not_found.engine.vector_collection");
-}
-
-#[test]
-fn vector_historical_reads_use_historical_collection_config_after_delete() {
-    let mut database = open_cache_database().expect("cache open succeeds");
-    let mut vectors = vector_service(&mut database, "default", "default");
-    let collection = collection("historical");
-    let key = vector_key("doc");
-    vectors
-        .create_collection(
-            collection.clone(),
-            config(2, VectorDistanceMetric::Euclidean),
-        )
-        .expect("collection create succeeds");
-    let written = vectors
-        .upsert(
-            collection.clone(),
-            key.clone(),
-            embedding([1.0, 0.0]),
-            Some(metadata(json!({"kind": "doc"}))),
-        )
-        .expect("upsert succeeds");
-    let version = written.commit().version();
-    let timestamp = written.commit().timestamp();
-
-    assert!(vectors
-        .delete_collection(&collection)
-        .expect("collection delete succeeds"));
-    assert!(vectors
-        .collection_info(&collection)
-        .expect("latest info succeeds")
-        .is_none());
-
-    assert_eq!(
-        vectors
-            .get_at_version(&collection, &key, version)
-            .expect("historical version read succeeds")
-            .expect("historical vector exists")
-            .entry()
-            .embedding()
-            .as_slice(),
-        &[1.0, 0.0]
-    );
-    assert_eq!(
-        vectors
-            .get_at(&collection, &key, timestamp)
-            .expect("historical timestamp read succeeds")
-            .expect("historical vector exists")
-            .entry()
-            .embedding()
-            .as_slice(),
-        &[1.0, 0.0]
-    );
-    assert_eq!(
-        vectors
-            .query_at(&collection, &embedding([1.0, 0.0]), 10, None, timestamp)
-            .expect("historical query succeeds")
-            .matches()
-            .iter()
-            .map(|row| row.entry().key().as_str())
-            .collect::<Vec<_>>(),
-        vec!["doc"]
-    );
-    let history = vectors
-        .history(&collection, &key)
-        .expect("history succeeds")
-        .expect("history exists");
-    assert_eq!(history.rows().len(), 2);
-    assert!(history.rows()[0].is_tombstone());
-    assert_eq!(history.rows()[1].vector_revision(), Some(1));
-}
-
-#[test]
-fn vector_list_keys_pages_in_public_key_order() {
-    let mut database = open_cache_database().expect("cache open succeeds");
-    let mut vectors = vector_service(&mut database, "default", "default");
-    let collection = collection("paged");
-    vectors
-        .create_collection(collection.clone(), config(2, VectorDistanceMetric::Cosine))
-        .expect("collection create succeeds");
-    vectors
-        .batch_upsert(
-            &collection,
-            &[
-                upsert("b", [1.0, 0.0], json!({})),
-                upsert("aa", [1.0, 0.0], json!({})),
-                upsert("ba", [1.0, 0.0], json!({})),
-                upsert("a", [1.0, 0.0], json!({})),
-                upsert("ab", [1.0, 0.0], json!({})),
-            ],
-        )
-        .expect("batch upsert succeeds");
-
-    let first = vectors
-        .list_keys(&collection, None, None, 2)
-        .expect("first page succeeds");
-    assert_eq!(key_strings(first.keys()), vec!["a", "aa"]);
-    assert!(first.has_more());
-
-    let second = vectors
-        .list_keys(&collection, None, first.cursor(), 2)
-        .expect("second page succeeds");
-    assert_eq!(key_strings(second.keys()), vec!["ab", "b"]);
-    assert!(second.has_more());
-
-    let third = vectors
-        .list_keys(&collection, None, second.cursor(), 2)
-        .expect("third page succeeds");
-    assert_eq!(key_strings(third.keys()), vec!["ba"]);
-    assert!(!third.has_more());
-}
-
-#[test]
-fn vector_serde_and_filter_builder_reject_invalid_inputs() {
-    assert!(serde_json::from_value::<VectorEmbedding>(json!([])).is_err());
-    assert!(serde_json::from_value::<VectorConfig>(json!({
-        "dimension": 0,
-        "metric": "cosine"
-    }))
-    .is_err());
-    assert!(serde_json::from_value::<VectorFilterCondition>(json!({
-        "field": "nested/path",
-        "op": "eq",
-        "value": {
-            "type": "bool",
-            "value": true
-        }
-    }))
-    .is_err());
-
-    let error = VectorFilter::new()
-        .eq("nested/path", true)
-        .expect_err("invalid filter field rejected");
-    assert_eq!(error.class(), EngineErrorClass::InvalidInput);
-    assert_eq!(
-        error.code(),
-        "invalid_argument.engine.vector_metadata_field"
-    );
-}
+#[cfg(feature = "testkit")]
+#[path = "engine_vector/index_artifacts.rs"]
+mod vector_index_artifacts;
+#[cfg(feature = "testkit")]
+#[path = "engine_vector/index_hnsw.rs"]
+mod vector_index_hnsw;
+#[cfg(feature = "testkit")]
+#[path = "engine_vector/index_manifest.rs"]
+mod vector_index_manifest;
+#[cfg(feature = "testkit")]
+#[path = "engine_vector/index_planner.rs"]
+mod vector_index_planner;
+#[cfg(feature = "testkit")]
+#[path = "engine_vector/index_policy.rs"]
+mod vector_index_policy;
+#[cfg(feature = "testkit")]
+#[path = "engine_vector/index_sources.rs"]
+mod vector_index_sources;
 
 fn exercise_vector_collection_lifecycle(database: &mut Database) {
     let mut vectors = vector_service(database, "default", "default");
@@ -1797,6 +906,11 @@ fn run_database_modes(exercise: fn(&mut Database)) {
     durable.close().expect("durable close succeeds");
 }
 
+#[cfg(feature = "testkit")]
+fn durable_flat_artifact_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("engine-artifacts").join("vector").join("flat")
+}
+
 fn vector_service<'a>(
     database: &'a mut Database,
     branch_name: &str,
@@ -1845,11 +959,445 @@ fn key_strings(keys: &[VectorKey]) -> Vec<&str> {
     keys.iter().map(VectorKey::as_str).collect()
 }
 
+#[cfg(feature = "testkit")]
+fn match_key_strings(result: &strata_engine_next::VectorSearchResult) -> Vec<&str> {
+    result
+        .matches()
+        .iter()
+        .map(|row| row.entry().key().as_str())
+        .collect()
+}
+
+#[cfg(feature = "testkit")]
+fn assert_search_results_match(
+    actual: &strata_engine_next::VectorSearchResult,
+    expected: &strata_engine_next::VectorSearchResult,
+) {
+    assert_eq!(
+        result_bytes(actual),
+        result_bytes(expected),
+        "search result mismatch"
+    );
+}
+
+#[cfg(feature = "testkit")]
+fn assert_flat_policy_matches_exact(
+    vectors: &mut strata_engine_next::VectorService<'_>,
+    docs: &VectorCollectionName,
+    query: &VectorEmbedding,
+    k: usize,
+    filter: Option<&VectorFilter>,
+) -> (
+    strata_engine_next::VectorSearchResult,
+    VectorIndexDiagnostics,
+) {
+    let (exact, _) = vectors
+        .query_with_index_policy_for_test(
+            docs,
+            query,
+            k,
+            filter,
+            VectorIndexPolicy::exact_only_for_test(),
+        )
+        .expect("exact policy query succeeds");
+    let (flat, diagnostics) = vectors
+        .query_with_index_policy_for_test(
+            docs,
+            query,
+            k,
+            filter,
+            VectorIndexPolicy::flat_only_for_test(),
+        )
+        .expect("flat policy query succeeds");
+    assert_search_results_match(&flat, &exact);
+    (flat, diagnostics)
+}
+
+#[cfg(feature = "testkit")]
+#[derive(Clone, Copy)]
+enum HnswRecallDataset {
+    Random,
+    Clustered,
+}
+
+#[cfg(feature = "testkit")]
+struct HnswRecallFixture {
+    collection: VectorCollectionName,
+    dataset: HnswRecallDataset,
+    count: usize,
+    dimension: usize,
+    seed: u64,
+}
+
+#[cfg(feature = "testkit")]
+impl HnswRecallFixture {
+    fn random(name: &str, count: usize, dimension: usize, seed: u64) -> Self {
+        Self {
+            collection: collection(name),
+            dataset: HnswRecallDataset::Random,
+            count,
+            dimension,
+            seed,
+        }
+    }
+
+    fn clustered(name: &str, count: usize, dimension: usize, seed: u64) -> Self {
+        Self {
+            collection: collection(name),
+            dataset: HnswRecallDataset::Clustered,
+            count,
+            dimension,
+            seed,
+        }
+    }
+
+    const fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    const fn collection(&self) -> &VectorCollectionName {
+        &self.collection
+    }
+
+    fn seed_collection(&self, vectors: &mut strata_engine_next::VectorService<'_>) {
+        vectors
+            .create_collection(
+                self.collection.clone(),
+                config(self.dimension, VectorDistanceMetric::Cosine),
+            )
+            .expect("collection create succeeds");
+        for chunk_start in (0..self.count).step_by(128) {
+            let chunk_len = 128.min(self.count - chunk_start);
+            let entries = (0..chunk_len)
+                .map(|offset| {
+                    let index = chunk_start + offset;
+                    VectorUpsertEntry::new(
+                        vector_key(&format!("vec-{index:04}")),
+                        self.embedding(index),
+                        Some(metadata(json!({
+                            "fixture": self.collection.as_str(),
+                            "bucket": index % 16,
+                        }))),
+                    )
+                })
+                .collect::<Vec<_>>();
+            vectors
+                .batch_upsert(&self.collection, &entries)
+                .expect("batch upsert succeeds");
+        }
+    }
+
+    fn queries(&self) -> Vec<VectorEmbedding> {
+        (0_usize..16)
+            .map(|sample| match self.dataset {
+                HnswRecallDataset::Random => {
+                    let base_index = sample.saturating_mul(17) % self.count;
+                    perturb_embedding(
+                        self.embedding(base_index),
+                        self.seed ^ 0xA5A5_5A5A ^ sample as u64,
+                        0.005,
+                    )
+                }
+                HnswRecallDataset::Clustered => {
+                    let base_index = sample.saturating_mul(19) % self.count;
+                    perturb_embedding(
+                        self.embedding(base_index),
+                        self.seed ^ 0x5A5A_A5A5 ^ sample as u64,
+                        0.005,
+                    )
+                }
+            })
+            .collect()
+    }
+
+    fn embedding(&self, index: usize) -> VectorEmbedding {
+        match self.dataset {
+            HnswRecallDataset::Random => hnsw_recall_embedding(index, self.dimension, self.seed),
+            HnswRecallDataset::Clustered => {
+                hnsw_clustered_embedding(index, self.dimension, self.seed)
+            }
+        }
+    }
+}
+
+#[cfg(feature = "testkit")]
+#[derive(Debug)]
+struct HnswRecallStats {
+    total_queries: usize,
+    hnsw_queries: usize,
+    recall_at_1: f64,
+    recall_at_5: f64,
+    recall_at_10: f64,
+}
+
+#[cfg(feature = "testkit")]
+fn assert_hnsw_recall_gates(
+    vectors: &mut strata_engine_next::VectorService<'_>,
+    branch_name: &str,
+    docs: &VectorCollectionName,
+    queries: &[VectorEmbedding],
+) -> HnswRecallStats {
+    let stats = hnsw_recall_stats(vectors, docs, queries);
+    assert!(
+        stats.recall_at_1 >= 0.90,
+        "{branch_name}/{} recall@1 below gate: {:?}",
+        docs.as_str(),
+        stats
+    );
+    assert!(
+        stats.recall_at_5 >= 0.92,
+        "{branch_name}/{} recall@5 below gate: {:?}",
+        docs.as_str(),
+        stats
+    );
+    assert!(
+        stats.recall_at_10 >= 0.95,
+        "{branch_name}/{} recall@10 below gate: {:?}",
+        docs.as_str(),
+        stats
+    );
+    stats
+}
+
+#[cfg(feature = "testkit")]
+fn hnsw_recall_stats(
+    vectors: &mut strata_engine_next::VectorService<'_>,
+    docs: &VectorCollectionName,
+    queries: &[VectorEmbedding],
+) -> HnswRecallStats {
+    let mut hits_at_1 = 0usize;
+    let mut expected_at_1 = 0usize;
+    let mut hits_at_5 = 0usize;
+    let mut expected_at_5 = 0usize;
+    let mut hits_at_10 = 0usize;
+    let mut expected_at_10 = 0usize;
+    let mut hnsw_queries = 0usize;
+
+    for query in queries {
+        let exact = vectors
+            .query_exact_for_test(docs, query, 10, None)
+            .expect("exact query succeeds");
+        let (hnsw, diagnostics) = vectors
+            .query_with_index_policy_for_test(
+                docs,
+                query,
+                10,
+                None,
+                VectorIndexPolicy::hnsw_only_for_test(),
+            )
+            .expect("HNSW query succeeds");
+        assert_eq!(diagnostics.manifest_status(), "loaded");
+        assert_eq!(diagnostics.hnsw_source_count(), 1);
+        assert!(diagnostics.last_query_used_index());
+        assert_eq!(diagnostics.exact_source_count(), 0);
+        assert_eq!(diagnostics.last_query_fallback_reason(), None);
+        hnsw_queries = hnsw_queries.saturating_add(1);
+
+        let exact_keys = owned_match_key_strings(&exact);
+        let hnsw_keys = owned_match_key_strings(&hnsw);
+        let (hits, expected) = recall_counts_at_k(&exact_keys, &hnsw_keys, 1);
+        hits_at_1 = hits_at_1.saturating_add(hits);
+        expected_at_1 = expected_at_1.saturating_add(expected);
+        let (hits, expected) = recall_counts_at_k(&exact_keys, &hnsw_keys, 5);
+        hits_at_5 = hits_at_5.saturating_add(hits);
+        expected_at_5 = expected_at_5.saturating_add(expected);
+        let (hits, expected) = recall_counts_at_k(&exact_keys, &hnsw_keys, 10);
+        hits_at_10 = hits_at_10.saturating_add(hits);
+        expected_at_10 = expected_at_10.saturating_add(expected);
+    }
+
+    HnswRecallStats {
+        total_queries: queries.len(),
+        hnsw_queries,
+        recall_at_1: recall_ratio(hits_at_1, expected_at_1),
+        recall_at_5: recall_ratio(hits_at_5, expected_at_5),
+        recall_at_10: recall_ratio(hits_at_10, expected_at_10),
+    }
+}
+
+#[cfg(feature = "testkit")]
+fn recall_counts_at_k(exact: &[String], actual: &[String], k: usize) -> (usize, usize) {
+    let expected = exact.iter().take(k).collect::<BTreeSet<_>>();
+    if expected.is_empty() {
+        return (0, 0);
+    }
+    let actual = actual.iter().take(k).collect::<BTreeSet<_>>();
+    let hits = expected.iter().filter(|key| actual.contains(*key)).count();
+    (hits, expected.len())
+}
+
+#[cfg(feature = "testkit")]
+fn recall_ratio(hits: usize, expected: usize) -> f64 {
+    if expected == 0 {
+        return 1.0;
+    }
+    hits as f64 / expected as f64
+}
+
+#[cfg(feature = "testkit")]
+fn owned_match_key_strings(result: &strata_engine_next::VectorSearchResult) -> Vec<String> {
+    result
+        .matches()
+        .iter()
+        .map(|row| row.entry().key().as_str().to_owned())
+        .collect()
+}
+
+#[cfg(feature = "testkit")]
+fn hnsw_recall_embedding(index: usize, dimension: usize, seed: u64) -> VectorEmbedding {
+    VectorEmbedding::new(normalized_hnsw_values(index, dimension, seed))
+        .expect("valid recall embedding")
+}
+
+#[cfg(feature = "testkit")]
+fn hnsw_clustered_embedding(index: usize, dimension: usize, seed: u64) -> VectorEmbedding {
+    let cluster = index % 8;
+    let center = normalized_hnsw_values(cluster, dimension, seed ^ 0xC1C5_7EAD);
+    let noise = normalized_hnsw_values(index, dimension, seed ^ 0xDEC0_DED0);
+    let values = center
+        .into_iter()
+        .zip(noise)
+        .map(|(center, noise)| center + 0.35 * noise)
+        .collect::<Vec<_>>();
+    VectorEmbedding::new(normalize_values(values)).expect("valid clustered recall embedding")
+}
+
+#[cfg(feature = "testkit")]
+fn perturb_embedding(embedding: VectorEmbedding, seed: u64, amplitude: f32) -> VectorEmbedding {
+    let noise = normalized_hnsw_values(seed as usize, embedding.dimension(), seed ^ 0x9E37_79B9);
+    let values = embedding
+        .as_slice()
+        .iter()
+        .copied()
+        .zip(noise)
+        .map(|(value, noise)| value + amplitude * noise)
+        .collect::<Vec<_>>();
+    VectorEmbedding::new(normalize_values(values)).expect("valid perturbed recall embedding")
+}
+
+#[cfg(feature = "testkit")]
+fn normalized_hnsw_values(index: usize, dimension: usize, seed: u64) -> Vec<f32> {
+    let mut state = seed
+        .wrapping_add((index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15))
+        .wrapping_add(0xD1B5_4A32_D192_ED03);
+    let mut values = Vec::with_capacity(dimension);
+    for lane in 0..dimension {
+        state ^= (lane as u64).wrapping_mul(0xA24B_AED4_963E_E407);
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        let sample = state.wrapping_mul(0x2545_F491_4F6C_DD1D);
+        let unit = ((sample >> 40) as f32) / ((1u64 << 24) as f32);
+        values.push(unit.mul_add(2.0, -1.0));
+    }
+    normalize_values(values)
+}
+
+#[cfg(feature = "testkit")]
+fn normalize_values(mut values: Vec<f32>) -> Vec<f32> {
+    let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for value in &mut values {
+            *value /= norm;
+        }
+    }
+    values
+}
+
+#[cfg(feature = "testkit")]
+fn assert_default_exact_policy_diagnostics(
+    diagnostics: &VectorIndexDiagnostics,
+    collection_name: &str,
+    source_candidate_limit: usize,
+) {
+    assert_default_exact_policy_core(diagnostics, collection_name, source_candidate_limit);
+    assert_eq!(diagnostics.manifest_status(), "missing");
+    assert_eq!(diagnostics.manifest_generation(), None);
+    assert_eq!(diagnostics.manifest_ref_count(), 0);
+    assert_eq!(diagnostics.manifest_inherited_ref_count(), 0);
+    assert_eq!(diagnostics.manifest_owned_ref_count(), 0);
+    assert_eq!(diagnostics.manifest_active_delta_count(), 0);
+}
+
+#[cfg(feature = "testkit")]
+fn assert_default_exact_policy_core(
+    diagnostics: &VectorIndexDiagnostics,
+    collection_name: &str,
+    source_candidate_limit: usize,
+) {
+    assert_eq!(diagnostics.collection(), collection_name);
+    assert_eq!(diagnostics.policy_mode(), "auto");
+    assert_eq!(diagnostics.collection_exact_threshold(), 64);
+    assert_eq!(diagnostics.source_flat_threshold(), 64);
+    assert_eq!(diagnostics.active_delta_seal_threshold(), 16);
+    assert_eq!(diagnostics.overfetch_factor(), 4);
+    assert!(diagnostics.filtered_underfill_fallback());
+    assert_eq!(diagnostics.source_candidate_limit(), source_candidate_limit);
+    assert_eq!(diagnostics.resolved_index_kind_summary(), "exact");
+    assert_eq!(diagnostics.exact_fallback_count(), 1);
+    assert_eq!(diagnostics.indexed_source_count(), 0);
+    assert_eq!(diagnostics.exact_source_count(), 1);
+    assert_eq!(diagnostics.flat_source_count(), 0);
+    assert_eq!(diagnostics.hnsw_source_count(), 0);
+    assert_eq!(diagnostics.active_delta_source_count(), 0);
+    assert_eq!(diagnostics.indexed_vector_count(), 0);
+    assert_eq!(diagnostics.derived_bytes(), 0);
+    assert!(!diagnostics.last_query_used_index());
+    assert_eq!(
+        diagnostics.last_query_fallback_reason(),
+        Some("collection_below_exact_threshold")
+    );
+}
+
+#[cfg(feature = "testkit")]
+fn storage_branch_id(byte: u8) -> BranchId {
+    BranchId::from_bytes([byte; BranchId::BYTE_LEN])
+}
+
 fn score_pairs(matches: &[strata_engine_next::VectorSearchMatch]) -> Vec<(String, f32)> {
     matches
         .iter()
         .map(|row| (row.entry().key().as_str().to_owned(), row.score()))
         .collect()
+}
+
+#[cfg(feature = "testkit")]
+fn result_bytes(result: &strata_engine_next::VectorSearchResult) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    push_len(&mut bytes, result.matches().len());
+    for row in result.matches() {
+        push_text(&mut bytes, row.entry().key().as_str());
+        push_len(&mut bytes, row.entry().embedding().as_slice().len());
+        for value in row.entry().embedding().as_slice() {
+            bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+        }
+        match row.entry().metadata() {
+            Some(metadata) => {
+                bytes.push(1);
+                let metadata_bytes =
+                    serde_json::to_vec(metadata.as_inner()).expect("metadata encodes");
+                push_len(&mut bytes, metadata_bytes.len());
+                bytes.extend_from_slice(&metadata_bytes);
+            }
+            None => bytes.push(0),
+        }
+        bytes.extend_from_slice(&row.entry().vector_revision().to_le_bytes());
+        bytes.extend_from_slice(&row.score().to_bits().to_le_bytes());
+        bytes.extend_from_slice(&row.version().as_u64().to_le_bytes());
+        bytes.extend_from_slice(&row.timestamp().as_micros().to_le_bytes());
+    }
+    bytes
+}
+
+#[cfg(feature = "testkit")]
+fn push_text(bytes: &mut Vec<u8>, text: &str) {
+    push_len(bytes, text.len());
+    bytes.extend_from_slice(text.as_bytes());
+}
+
+#[cfg(feature = "testkit")]
+fn push_len(bytes: &mut Vec<u8>, len: usize) {
+    bytes.extend_from_slice(&u64::try_from(len).expect("length fits").to_le_bytes());
 }
 
 fn assert_close(actual: f32, expected: f32) {
@@ -1868,5 +1416,15 @@ fn upsert<const N: usize>(key: &str, values: [f32; N], metadata_value: Value) ->
         vector_key(key),
         embedding(values),
         Some(metadata(metadata_value)),
+    )
+}
+
+#[cfg(feature = "testkit")]
+fn descending_fixture_upsert(index: u16, metadata_value: Value) -> VectorUpsertEntry {
+    let offset = f32::from(index);
+    upsert(
+        &format!("doc-{index:03}"),
+        [100.0 - offset, offset],
+        metadata_value,
     )
 }

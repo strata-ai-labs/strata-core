@@ -105,19 +105,20 @@ fn required_space_mutations(
     }
     spaces.sort();
     spaces.dedup();
-    let mut mutations = Vec::new();
-    mutations.push(RowMutation::put(
-        space_address(record, space_index_key()),
-        encode_space_index(&spaces)?,
-    ));
-    mutations.push(RowMutation::put(
-        space_address(record, space_catalog_key(default.as_str())),
-        encode_space_record(&default),
-    ));
-    mutations.push(RowMutation::put(
-        space_address(record, reserved_space_key(SYSTEM_SPACE)),
-        encode_reserved_system_space(),
-    ));
+    let mutations = vec![
+        RowMutation::put(
+            space_address(record, space_index_key()),
+            encode_space_index(&spaces)?,
+        ),
+        RowMutation::put(
+            space_address(record, space_catalog_key(default.as_str())),
+            encode_space_record(&default),
+        ),
+        RowMutation::put(
+            space_address(record, reserved_space_key(SYSTEM_SPACE)),
+            encode_reserved_system_space(),
+        ),
+    ];
     Ok(mutations)
 }
 

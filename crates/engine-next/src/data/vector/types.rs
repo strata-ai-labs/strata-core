@@ -9,7 +9,7 @@ use crate::diagnostics::{EngineError, EngineResult};
 
 const MAX_COLLECTION_NAME_BYTES: usize = 256;
 const MAX_VECTOR_KEY_BYTES: usize = 1024;
-const MAX_VECTOR_DIMENSION: usize = 32_768;
+pub(crate) const MAX_VECTOR_DIMENSION: usize = 32_768;
 const MAX_METADATA_BYTES: usize = 16 * 1024 * 1024;
 
 /// Vector collection name.

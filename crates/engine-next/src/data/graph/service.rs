@@ -1461,8 +1461,7 @@ impl<'a> GraphService<'a> {
             .filter(|mutation| mutation.is_delete())
             .count();
         let mut space_mutations =
-            self.control
-                .space_registration_mutations(self.persistence, record, &self.space)?;
+            ControlPlane::space_registration_mutations(self.persistence, record, &self.space)?;
         if !space_mutations.is_empty() {
             space_mutations.extend(mutations);
             mutations = space_mutations;

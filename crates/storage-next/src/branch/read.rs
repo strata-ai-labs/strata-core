@@ -236,6 +236,53 @@ impl BranchHistoryRow {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BranchImmutableRowSource {
+    source_id: String,
+    source_branch_id: BranchId,
+    source_generation: CommitVersion,
+    fork_version_cap: Option<CommitVersion>,
+    rows: Vec<BranchHistoryRow>,
+}
+
+impl BranchImmutableRowSource {
+    fn new(
+        source_id: String,
+        source_branch_id: BranchId,
+        source_generation: CommitVersion,
+        fork_version_cap: Option<CommitVersion>,
+        rows: Vec<BranchHistoryRow>,
+    ) -> Self {
+        Self {
+            source_id,
+            source_branch_id,
+            source_generation,
+            fork_version_cap,
+            rows,
+        }
+    }
+
+    pub(crate) fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
+    pub(crate) const fn source_branch_id(&self) -> BranchId {
+        self.source_branch_id
+    }
+
+    pub(crate) const fn source_generation(&self) -> CommitVersion {
+        self.source_generation
+    }
+
+    pub(crate) const fn fork_version_cap(&self) -> Option<CommitVersion> {
+        self.fork_version_cap
+    }
+
+    pub(crate) fn rows(&self) -> &[BranchHistoryRow] {
+        &self.rows
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum BranchUserKeyBound {
     Unbounded,
     Included(Vec<u8>),
@@ -975,6 +1022,33 @@ impl BranchReadView {
         bound: BranchReadBound,
     ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
         self.scan_including_tombstones(bounds, bound)
+    }
+
+    pub(crate) fn scan_immutable_sources(
+        &self,
+        bounds: &BranchScanBounds,
+        bound: BranchReadBound,
+    ) -> BranchRuntimeResult<Vec<BranchImmutableRowSource>> {
+        self.require_matching_branch(bounds.branch_id())?;
+        self.require_timestamp_coverage(bound)?;
+        let own_bounds = bounds.table_key_bounds()?;
+        let own_bound = effective_own_read_bound(bound);
+        let mut sources = Vec::new();
+        collect_owned_immutable_sources(
+            &self.owned_levels,
+            &own_bounds,
+            own_bound,
+            None,
+            &mut sources,
+        )?;
+        collect_inherited_immutable_sources(
+            self.branch_id,
+            &self.inherited_layers,
+            bounds,
+            bound,
+            &mut sources,
+        )?;
+        Ok(sources)
     }
 
     fn scan(
@@ -3041,6 +3115,161 @@ fn record_scan_candidate_clone(row: &StorageRow) {
         .saturating_add(row.physical_key().user_key().len())
         .saturating_add(row.value().len());
     perf_trace::record_scan_candidate_row_clone(bytes);
+}
+
+fn collect_owned_immutable_sources(
+    owned_levels: &[Vec<BranchOwnedTable>],
+    bounds: &TableKeyBounds,
+    effective_bound: BranchEffectiveReadBound,
+    fork_version_cap: Option<CommitVersion>,
+    sources: &mut Vec<BranchImmutableRowSource>,
+) -> BranchRuntimeResult<()> {
+    for (level_index, tables) in owned_levels.iter().enumerate() {
+        let level = branch_level_from_index(level_index)?;
+        for (table_index, table) in tables.iter().enumerate() {
+            let rows = collect_immutable_table_rows(
+                table,
+                bounds,
+                effective_bound,
+                ImmutableTableSourceKind::Owned { level, table_index },
+            )?;
+            if rows.is_empty() {
+                continue;
+            }
+            sources.push(BranchImmutableRowSource::new(
+                table.descriptor().identity().as_str().to_owned(),
+                table.branch_id(),
+                table.facts().commit_range().max(),
+                fork_version_cap,
+                rows,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn collect_inherited_immutable_sources(
+    child_branch_id: BranchId,
+    inherited_layers: &[BranchInheritedLayer],
+    bounds: &BranchScanBounds,
+    bound: BranchReadBound,
+    sources: &mut Vec<BranchImmutableRowSource>,
+) -> BranchRuntimeResult<()> {
+    for (layer_index, layer) in inherited_layers.iter().enumerate() {
+        if !layer.is_readable() {
+            continue;
+        }
+        let source_bounds = bounds.table_key_bounds_for_branch(layer.source_branch_id())?;
+        let inherited_bound =
+            BranchEffectiveReadBound::for_inherited_layer(bound, layer.fork_version());
+        for (level_index, tables) in layer.owned_levels().iter().enumerate() {
+            let level = branch_level_from_index(level_index)?;
+            for (table_index, table) in tables.iter().enumerate() {
+                let rows = collect_immutable_table_rows(
+                    table,
+                    &source_bounds,
+                    inherited_bound,
+                    ImmutableTableSourceKind::Inherited {
+                        source_branch_id: layer.source_branch_id(),
+                        layer_index,
+                        child_branch_id,
+                    },
+                )?;
+                if rows.is_empty() {
+                    continue;
+                }
+                let source_id = format!(
+                    "{}@{}:{}:{}",
+                    table.descriptor().identity().as_str(),
+                    layer.source_branch_id(),
+                    level.raw(),
+                    table_index
+                );
+                sources.push(BranchImmutableRowSource::new(
+                    source_id,
+                    layer.source_branch_id(),
+                    table.facts().commit_range().max(),
+                    Some(layer.fork_version()),
+                    rows,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ImmutableTableSourceKind {
+    Owned {
+        level: BranchLevel,
+        table_index: usize,
+    },
+    Inherited {
+        source_branch_id: BranchId,
+        layer_index: usize,
+        child_branch_id: BranchId,
+    },
+}
+
+fn collect_immutable_table_rows(
+    table: &BranchOwnedTable,
+    bounds: &TableKeyBounds,
+    effective_bound: BranchEffectiveReadBound,
+    source: ImmutableTableSourceKind,
+) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
+    let mut rows = Vec::new();
+    let mut cursor = table.reader().bounded_cursor(bounds.clone());
+    cursor
+        .seek_to_first()
+        .map_err(|_| BranchRuntimeError::InvalidBranchState {
+            reason: "immutable source cursor seek failed",
+        })?;
+    while let Some(row) = cursor.current() {
+        if effective_bound.matches_row(row.row()) {
+            rows.push(immutable_source_history_row(row.row(), source)?);
+        }
+        cursor
+            .advance()
+            .map_err(|_| BranchRuntimeError::InvalidBranchState {
+                reason: "immutable source cursor advance failed",
+            })?;
+    }
+    Ok(rows)
+}
+
+fn immutable_source_history_row(
+    row: &StorageRow,
+    source: ImmutableTableSourceKind,
+) -> BranchRuntimeResult<BranchHistoryRow> {
+    match source {
+        ImmutableTableSourceKind::Owned { level, table_index } => Ok(BranchHistoryRow::new(
+            row.clone(),
+            BranchRowSource::OwnedTable { level, table_index },
+        )),
+        ImmutableTableSourceKind::Inherited {
+            source_branch_id,
+            layer_index,
+            child_branch_id,
+        } => Ok(BranchHistoryRow::new(
+            rewrite_row_branch(row, source_branch_id, child_branch_id).map_err(|_| {
+                BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "immutable source row branch rewrite failed",
+                }
+            })?,
+            BranchRowSource::Inherited {
+                source_branch_id,
+                layer_index,
+            },
+        )),
+    }
+}
+
+fn branch_level_from_index(level_index: usize) -> BranchRuntimeResult<BranchLevel> {
+    Ok(BranchLevel::new(u8::try_from(level_index).map_err(
+        |_| BranchRuntimeError::InvalidBranchState {
+            reason: "branch level index exceeds branch level range",
+        },
+    )?))
 }
 
 fn scan_cursors_for_sources<'a>(

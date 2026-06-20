@@ -82,8 +82,9 @@ pub use outcome::{
     StorageOpenDisposition, StorageOpenOutcome, StorageOpenSummary, StorageRuntimeState,
 };
 pub use read::{
-    HistoryReadOutcome, HistoryReadRequest, PointReadOutcome, PointReadRequest,
-    PrefixScanReadRequest, ReadBound, ScanReadOutcome, ScanReadRequest, StorageReadRow,
+    HistoryReadOutcome, HistoryReadRequest, ImmutableSourceScanReadOutcome,
+    ImmutableSourceScanReadRequest, PointReadOutcome, PointReadRequest, PrefixScanReadRequest,
+    ReadBound, ScanReadOutcome, ScanReadRequest, StorageImmutableSource, StorageReadRow,
     TimelineBoundsOutcome, TimelineBoundsRequest, TimestampLookupMiss, TimestampLookupOutcome,
     TimestampLookupRequest, VersionLookupOutcome, VersionLookupRequest,
 };

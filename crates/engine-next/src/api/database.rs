@@ -10,7 +10,7 @@ use crate::data::graph::GraphService;
 use crate::data::json::JsonIndexName;
 use crate::data::json::JsonService;
 use crate::data::kv::{KvService, ProductSpace};
-use crate::data::vector::VectorService;
+use crate::data::vector::{VectorArtifactStore, VectorService};
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{
     close_summary_is_durable, PersistenceOpenSummary, PersistenceOpenTarget, StoragePersistence,
@@ -132,6 +132,7 @@ impl CloseOutcome {
 pub struct Database {
     persistence: StoragePersistence,
     control: ControlPlane,
+    vector_artifacts: VectorArtifactStore,
     summary: DatabaseOpenSummary,
     last_close: Option<CloseOutcome>,
     open: bool,
@@ -205,6 +206,7 @@ impl Database {
         Ok(VectorService::new(
             &mut self.persistence,
             &mut self.control,
+            &mut self.vector_artifacts,
             branch,
             space,
         ))
@@ -282,6 +284,21 @@ impl Database {
         Ok(u64::try_from(count).unwrap_or(u64::MAX))
     }
 
+    /// Flushes a branch into immutable storage sources for tests.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn flush_storage_branch_for_test(&mut self, branch: &BranchName) -> EngineResult<usize> {
+        self.require_open()?;
+        self.control.require_healthy()?;
+        let record = self.control.lookup_branch(branch).cloned().ok_or_else(|| {
+            EngineError::not_found(
+                "not_found.engine.branch",
+                format!("branch `{branch}` does not exist"),
+            )
+        })?;
+        self.persistence
+            .flush_branch_for_test(record.storage_branch_id())
+    }
+
     /// Closes the database handle.
     pub fn close(&mut self) -> EngineResult<CloseOutcome> {
         if let Some(close) = self.last_close {
@@ -317,6 +334,7 @@ impl Database {
         open_target: DatabaseOpenTarget,
         default_branch: Option<BranchName>,
     ) -> EngineResult<DatabaseOpenOutcome> {
+        let vector_artifacts = vector_artifact_store_for_target(&target);
         let (mut persistence, persistence_summary) = StoragePersistence::open(target)?;
         let control = bootstrap_or_load(
             &mut persistence,
@@ -328,6 +346,7 @@ impl Database {
             Self {
                 persistence,
                 control,
+                vector_artifacts,
                 summary,
                 last_close: None,
                 open: true,
@@ -343,6 +362,15 @@ impl Database {
             Err(EngineError::closed_runtime(
                 "database handle is closed and cannot accept operations",
             ))
+        }
+    }
+}
+
+fn vector_artifact_store_for_target(target: &PersistenceOpenTarget) -> VectorArtifactStore {
+    match target {
+        PersistenceOpenTarget::Cache => VectorArtifactStore::memory(),
+        PersistenceOpenTarget::DurableLocal(path) => {
+            VectorArtifactStore::durable_local(path.join("engine-artifacts").join("vector"))
         }
     }
 }

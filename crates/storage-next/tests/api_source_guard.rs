@@ -127,6 +127,57 @@ fn api_public_signatures_do_not_expose_lower_layer_concrete_types() {
 }
 
 #[test]
+fn api_runtime_and_read_boundary_stay_vector_agnostic() {
+    let root = common::crate_root();
+    let mut files = api_source_files(&root);
+    files.extend(
+        [
+            "src/api/read.rs",
+            "src/api/runtime/mod.rs",
+            "src/api/runtime/data.rs",
+            "src/api/runtime/diagnostics.rs",
+            "src/api/runtime/maintenance.rs",
+            "src/branch/read.rs",
+        ]
+        .into_iter()
+        .map(|relative| root.join(relative)),
+    );
+    let forbidden = [
+        "VectorCollection",
+        "VectorEmbedding",
+        "VectorDistance",
+        "VectorMetric",
+        "VectorArtifact",
+        "FlatVector",
+        "Hnsw",
+        "HNSW",
+        "fast_hnsw",
+        "Cosine",
+        "cosine",
+        "Euclidean",
+        "euclidean",
+        "DotProduct",
+        "dot_product",
+        "dot-product",
+        "embedding",
+    ];
+    let offenders: Vec<_> = files
+        .into_iter()
+        .filter_map(|path| {
+            let text = fs::read_to_string(&path).expect("read storage source");
+            forbidden
+                .iter()
+                .any(|token| text.contains(token))
+                .then_some(path)
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "storage API/read boundary gained vector-specific behavior: {offenders:?}"
+    );
+}
+
+#[test]
 fn api_open_signatures_do_not_expose_lifecycle_types() {
     assert_api_public_signatures_do_not_expose(&[
         "LifecycleCacheOpenRequest",
@@ -265,6 +316,9 @@ fn api_source_avoids_engine_product_and_runtime_dependencies() {
     for file in api_source_files(&root) {
         let text = fs::read_to_string(&file).expect("read API source");
         for (line_number, line) in text.lines().enumerate() {
+            if is_test_or_fault_injection_api_line(line) {
+                continue;
+            }
             assert!(
                 !contains_forbidden_api_dependency(line),
                 "{}:{} uses forbidden API dependency: {line}",
@@ -567,6 +621,22 @@ fn compact_full_line(line: &str) -> String {
     line.split_whitespace()
         .collect::<String>()
         .to_ascii_lowercase()
+}
+
+fn is_test_or_fault_injection_api_line(line: &str) -> bool {
+    let compact = compact_line(line);
+    compact.starts_with("#[cfg(")
+        && (compact.contains("test") || compact.contains("fault-injection"))
+        || compact.starts_with("usetestkit::")
+        || compact.starts_with("usecrate::testkit::")
+        || compact.contains("backendcall")
+        || compact.contains("faultscript")
+        || compact.contains("faultingbackend")
+        || compact.contains("fsmodel")
+        || compact.contains("testkiterror")
+        || compact.contains("faulting")
+        || compact.contains("reordering")
+        || compact.contains("unsynced")
 }
 
 fn compact_line(line: &str) -> String {

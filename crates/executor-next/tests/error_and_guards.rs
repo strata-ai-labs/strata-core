@@ -105,6 +105,20 @@ fn executor_event_sources_do_not_own_event_product_behavior() {
 }
 
 #[test]
+fn executor_vector_sources_do_not_own_index_or_distance_behavior() {
+    for file in source_files(&crate_root().join("src")) {
+        let text = fs::read_to_string(&file).expect("source reads");
+        for forbidden in forbidden_vector_index_lower_layer_terms() {
+            assert!(
+                !text.contains(forbidden),
+                "{} leaked forbidden vector lower-layer term `{forbidden}`",
+                file.display()
+            );
+        }
+    }
+}
+
+#[test]
 fn command_and_output_are_serde_serializable() {
     let command_source =
         fs::read_to_string(crate_root().join("src/command.rs")).expect("command reads");
@@ -413,6 +427,31 @@ fn forbidden_graph_lower_layer_terms() -> &'static [&'static str] {
         "Sssp",
         "Wcc",
         "Lcc",
+    ]
+}
+
+fn forbidden_vector_index_lower_layer_terms() -> &'static [&'static str] {
+    &[
+        "strata_engine_next::data::vector",
+        "VectorArtifact",
+        "FlatVectorArtifact",
+        "HnswVectorArtifact",
+        "HnswRuntimeIndex",
+        "VectorIndexManifest",
+        "VectorIndexPolicy",
+        "VectorIndexDiagnostics",
+        "VectorArtifactSourceDiagnostic",
+        "encode_flat_vector_artifact",
+        "decode_flat_vector_artifact",
+        "encode_hnsw_vector_artifact",
+        "decode_hnsw_vector_artifact",
+        "vector_score",
+        "fast_hnsw",
+        "Hnsw",
+        "HNSW",
+        "artifact_id",
+        "artifact_sources",
+        "derived_bytes",
     ]
 }
 

@@ -1,5 +1,9 @@
 //! Optional test kit exports.
 
+pub use crate::data::vector::{
+    VectorIndexDiagnosticsForTest as VectorIndexDiagnostics,
+    VectorIndexPolicyForTest as VectorIndexPolicy,
+};
 pub use crate::test_support::*;
 
 /// Returns the storage-space byte for a symbolic row class used in tests.

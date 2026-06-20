@@ -235,6 +235,51 @@ impl ScanReadRequest {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImmutableSourceScanReadRequest {
+    branch_id: BranchId,
+    storage_space: StorageSpaceId,
+    range: ScanRange,
+    bound: ReadBound,
+}
+
+impl ImmutableSourceScanReadRequest {
+    #[must_use]
+    pub const fn new(
+        branch_id: BranchId,
+        storage_space: StorageSpaceId,
+        range: ScanRange,
+        bound: ReadBound,
+    ) -> Self {
+        Self {
+            branch_id,
+            storage_space,
+            range,
+            bound,
+        }
+    }
+
+    #[must_use]
+    pub const fn branch_id(&self) -> BranchId {
+        self.branch_id
+    }
+
+    #[must_use]
+    pub const fn storage_space(&self) -> &StorageSpaceId {
+        &self.storage_space
+    }
+
+    #[must_use]
+    pub const fn range(&self) -> &ScanRange {
+        &self.range
+    }
+
+    #[must_use]
+    pub const fn bound(&self) -> ReadBound {
+        self.bound
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TimestampLookupRequest {
     branch_id: BranchId,
@@ -418,6 +463,76 @@ impl ScanReadOutcome {
     #[must_use]
     pub fn rows(&self) -> &[StorageReadRow] {
         &self.rows
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StorageImmutableSource {
+    source_id: String,
+    source_branch_id: BranchId,
+    source_generation: CommitVersion,
+    fork_version_cap: Option<CommitVersion>,
+    rows: Vec<StorageReadRow>,
+}
+
+impl StorageImmutableSource {
+    #[must_use]
+    pub fn new(
+        source_id: impl Into<String>,
+        source_branch_id: BranchId,
+        source_generation: CommitVersion,
+        fork_version_cap: Option<CommitVersion>,
+        rows: Vec<StorageReadRow>,
+    ) -> Self {
+        Self {
+            source_id: source_id.into(),
+            source_branch_id,
+            source_generation,
+            fork_version_cap,
+            rows,
+        }
+    }
+
+    #[must_use]
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
+    #[must_use]
+    pub const fn source_branch_id(&self) -> BranchId {
+        self.source_branch_id
+    }
+
+    #[must_use]
+    pub const fn source_generation(&self) -> CommitVersion {
+        self.source_generation
+    }
+
+    #[must_use]
+    pub const fn fork_version_cap(&self) -> Option<CommitVersion> {
+        self.fork_version_cap
+    }
+
+    #[must_use]
+    pub fn rows(&self) -> &[StorageReadRow] {
+        &self.rows
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImmutableSourceScanReadOutcome {
+    sources: Vec<StorageImmutableSource>,
+}
+
+impl ImmutableSourceScanReadOutcome {
+    #[must_use]
+    pub const fn new(sources: Vec<StorageImmutableSource>) -> Self {
+        Self { sources }
+    }
+
+    #[must_use]
+    pub fn sources(&self) -> &[StorageImmutableSource] {
+        &self.sources
     }
 }
 

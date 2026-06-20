@@ -15,7 +15,7 @@ embed = ["stratadb/embed"]
 stratadb = { path = ".." }
 strata-core = { path = "../crates/core" }
 strata-engine = { path = "../crates/engine" }
-strata-engine-next = { path = "../crates/engine-next" }
+strata-engine-next = { path = "../crates/engine-next", features = ["testkit"] }
 strata-storage = { path = "../crates/storage", features = ["perf-trace"] }
 strata-storage-next = { path = "../crates/storage-next", features = ["perf-trace"] }
 # Required only for the B6 materialize smoke in `src/bin/regression.rs`:
@@ -86,6 +86,10 @@ path = "src/bin/storage_next_point_spike.rs"
 [[bin]]
 name = "engine-kv-scan-regression"
 path = "src/bin/engine_kv_scan_regression.rs"
+
+[[bin]]
+name = "engine-vector-indexing"
+path = "src/bin/engine_vector_indexing.rs"
 
 [profile.bench]
 debug = true

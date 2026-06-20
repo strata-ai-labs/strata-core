@@ -4,10 +4,12 @@ use strata_core_next::{CommitVersion, Timestamp};
 
 use crate::branch::catalog::{BranchCatalogRecord, BranchParentRecord, BranchStatus};
 use crate::control::ControlPlane;
+use crate::data::vector::{decode_vector_index_manifest, encode_vector_index_manifest};
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{
-    PersistenceBranchCleanup, PersistenceBranchOutcome, PersistenceBranchStatus,
-    PersistenceBranchSummary, StoragePersistence,
+    decode_vector_index_manifest_key, vector_index_manifest_key, vector_index_manifest_prefix,
+    CommitPlan, PersistenceBranchCleanup, PersistenceBranchOutcome, PersistenceBranchStatus,
+    PersistenceBranchSummary, ReadSelector, RowAddress, RowClass, RowMutation, StoragePersistence,
 };
 
 use super::BranchName;
@@ -118,36 +120,39 @@ impl<'a> BranchService<'a> {
         let storage_branch_id = record.storage_branch_id();
 
         ControlPlane::begin_branch_operation(self.persistence, &record)?;
-        if let Err(error) = self.persistence.fork_branch_current(
+        let fork_outcome = match self.persistence.fork_branch_current(
             storage_branch_id,
             source_record.storage_branch_id(),
             generation,
         ) {
-            if error.code() == "not_found.engine.persistence_history" {
-                let outcome = match self
-                    .persistence
-                    .create_branch(storage_branch_id, generation)
-                {
-                    Ok(outcome) => outcome,
-                    Err(error) => {
-                        return Err(self.clear_pending_after_storage_error(&record, error));
-                    }
-                };
-                let branch = outcome.branch();
-                let record = record.with_storage_facts(
-                    branch.generation(),
-                    branch_status(branch),
-                    branch.created_at(),
-                    branch.deleted_at(),
-                    branch.state_revision(),
-                );
-                self.persist_catalog_record(record.clone())?;
-                return Ok(BranchCreateOutcome::new(BranchSummary::from_catalog(
-                    &record,
-                )));
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if error.code() == "not_found.engine.persistence_history" {
+                    let outcome = match self
+                        .persistence
+                        .create_branch(storage_branch_id, generation)
+                    {
+                        Ok(outcome) => outcome,
+                        Err(error) => {
+                            return Err(self.clear_pending_after_storage_error(&record, error));
+                        }
+                    };
+                    let branch = outcome.branch();
+                    let record = record.with_storage_facts(
+                        branch.generation(),
+                        branch_status(branch),
+                        branch.created_at(),
+                        branch.deleted_at(),
+                        branch.state_revision(),
+                    );
+                    self.persist_catalog_record(record.clone())?;
+                    return Ok(BranchCreateOutcome::new(BranchSummary::from_catalog(
+                        &record,
+                    )));
+                }
+                return Err(self.clear_pending_after_storage_error(&record, error));
             }
-            return Err(self.clear_pending_after_storage_error(&record, error));
-        }
+        };
         let outcome = match self.persistence.describe_branch(storage_branch_id) {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -160,13 +165,17 @@ impl<'a> BranchService<'a> {
             source_record.name().clone(),
             source_record.branch_id(),
             source_record.generation(),
-            outcome.parent().map_or(
-                CommitVersion::ZERO,
-                crate::persistence::PersistenceBranchParent::fork_version,
-            ),
+            fork_outcome
+                .fork_version()
+                .or_else(|| {
+                    outcome
+                        .parent()
+                        .map(crate::persistence::PersistenceBranchParent::fork_version)
+                })
+                .unwrap_or(CommitVersion::ZERO),
             None,
         );
-        let record = BranchCatalogRecord::forked(record.name().clone(), generation, parent)
+        let record = BranchCatalogRecord::forked(record.name().clone(), generation, parent.clone())
             .with_storage_facts(
                 outcome.generation(),
                 branch_status(outcome),
@@ -174,6 +183,14 @@ impl<'a> BranchService<'a> {
                 outcome.deleted_at(),
                 outcome.state_revision(),
             );
+        if let Err(error) = self.materialize_vector_index_manifests_for_fork(
+            &source_record,
+            &record,
+            parent.fork_version(),
+            parent.fork_timestamp(),
+        ) {
+            return Err(self.clear_pending_after_storage_error(&record, error));
+        }
         self.persist_catalog_record(record.clone())?;
 
         Ok(BranchCreateOutcome::new(BranchSummary::from_catalog(
@@ -311,13 +328,22 @@ impl<'a> BranchService<'a> {
                 .unwrap_or(CommitVersion::ZERO),
             outcome.fork_timestamp(),
         );
-        let record = BranchCatalogRecord::forked(name, generation, parent).with_storage_facts(
-            branch.generation(),
-            branch_status(branch),
-            branch.created_at(),
-            branch.deleted_at(),
-            branch.state_revision(),
-        );
+        let record = BranchCatalogRecord::forked(name, generation, parent.clone())
+            .with_storage_facts(
+                branch.generation(),
+                branch_status(branch),
+                branch.created_at(),
+                branch.deleted_at(),
+                branch.state_revision(),
+            );
+        if let Err(error) = self.materialize_vector_index_manifests_for_fork(
+            &source_record,
+            &record,
+            parent.fork_version(),
+            parent.fork_timestamp(),
+        ) {
+            return Err(self.clear_pending_after_storage_error(&record, error));
+        }
         self.persist_catalog_record(record.clone())?;
         Ok(BranchCreateOutcome::new(BranchSummary::from_catalog(
             &record,
@@ -358,6 +384,98 @@ impl<'a> BranchService<'a> {
                 Err(error)
             }
         }
+    }
+
+    fn materialize_vector_index_manifests_for_fork(
+        &mut self,
+        source_record: &BranchCatalogRecord,
+        child_record: &BranchCatalogRecord,
+        fork_version: CommitVersion,
+        fork_timestamp: Option<Timestamp>,
+    ) -> EngineResult<()> {
+        if fork_version == CommitVersion::ZERO {
+            return Ok(());
+        }
+        let selector = fork_timestamp.map_or(ReadSelector::AtVersion(fork_version), |timestamp| {
+            ReadSelector::AtTimestamp(timestamp)
+        });
+        let mut mutations = self.vector_index_manifest_fork_mutations(
+            source_record,
+            child_record,
+            fork_version,
+            selector,
+        )?;
+        if mutations.is_empty() && selector != ReadSelector::Latest {
+            mutations = self.vector_index_manifest_fork_mutations(
+                source_record,
+                child_record,
+                fork_version,
+                ReadSelector::Latest,
+            )?;
+        }
+        if mutations.is_empty() {
+            return Ok(());
+        }
+        self.persistence.commit(&CommitPlan::new(
+            child_record.storage_branch_id(),
+            mutations,
+            Some(child_record.generation()),
+        ))?;
+        Ok(())
+    }
+
+    fn vector_index_manifest_fork_mutations(
+        &mut self,
+        source_record: &BranchCatalogRecord,
+        child_record: &BranchCatalogRecord,
+        fork_version: CommitVersion,
+        selector: ReadSelector,
+    ) -> EngineResult<Vec<RowMutation>> {
+        let rows = self.persistence.scan_prefix(
+            source_record.storage_branch_id(),
+            RowClass::SpaceControl,
+            vector_index_manifest_prefix(),
+            selector,
+            None,
+        )?;
+        let mut mutations = Vec::new();
+        for row in rows {
+            if row.is_tombstone() {
+                continue;
+            }
+            let Ok((space, collection)) = decode_vector_index_manifest_key(row.key()) else {
+                continue;
+            };
+            let Some(value) = row.value() else {
+                continue;
+            };
+            let Ok(manifest) = decode_vector_index_manifest(value) else {
+                continue;
+            };
+            if !manifest.matches_branch_key(
+                source_record.storage_branch_id(),
+                source_record.generation(),
+                &space,
+                &collection,
+            ) {
+                continue;
+            }
+            let child_manifest = manifest.materialize_for_child_fork(
+                child_record.storage_branch_id(),
+                child_record.generation(),
+                fork_version,
+            );
+            let bytes = encode_vector_index_manifest(&child_manifest)?;
+            mutations.push(RowMutation::put(
+                RowAddress::new(
+                    child_record.storage_branch_id(),
+                    RowClass::SpaceControl,
+                    vector_index_manifest_key(&space, &collection),
+                ),
+                bytes,
+            ));
+        }
+        Ok(mutations)
     }
 }
 

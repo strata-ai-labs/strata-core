@@ -93,7 +93,9 @@ fn executor_facing_api_does_not_expose_storage_types() {
         "BranchRequest",
         "WalService",
         "WalFormat",
-        "Manifest",
+        "ManifestService",
+        "ManifestSnapshot",
+        "TableManifest",
         "TableRuntime",
         "Lifecycle",
         "StorageBackend",
@@ -349,7 +351,6 @@ fn raw_control_key_helpers_stay_inside_control_and_persistence() {
         "space_index_key",
         "space_catalog_key",
         "reserved_space_key",
-        "RowClass::SpaceControl",
     ];
     let offenders: Vec<_> = roots
         .into_iter()
@@ -469,6 +470,137 @@ fn persistence_adapter_owns_storage_request_construction_and_error_mapping() {
             "persistence adapter stopped owning `{required}`"
         );
     }
+}
+
+#[test]
+fn vector_manifest_code_never_imports_artifact_payloads() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("data")
+        .join("vector")
+        .join("manifest.rs");
+    let text = fs::read_to_string(path).expect("read vector manifest source");
+    for forbidden in [
+        "FlatVectorArtifact",
+        "HnswVectorArtifact",
+        "VectorEmbedding",
+        "FlatVectorArtifactRow",
+        "HnswRuntimeIndex",
+        "encode_flat_vector_artifact",
+        "encode_hnsw_vector_artifact",
+        "decode_flat_vector_artifact",
+        "decode_hnsw_vector_artifact",
+        "FLAT_ARTIFACT_MAGIC",
+        "HNSW_ARTIFACT_MAGIC",
+        "fast_hnsw",
+    ] {
+        assert!(
+            !text.contains(forbidden),
+            "vector manifest imported artifact payload detail `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn vector_system_manifest_writes_stay_ref_only() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("data")
+        .join("vector")
+        .join("service.rs");
+    let text = fs::read_to_string(path).expect("read vector service source");
+    let writer = function_body(&text, "fn put_index_manifest_bytes");
+    for required in [
+        "self.index_manifest_address",
+        "RowMutation::put",
+        "CommitPlan::new",
+    ] {
+        assert!(
+            writer.contains(required),
+            "index manifest writer stopped using expected manifest row path `{required}`"
+        );
+    }
+    for forbidden in [
+        "FlatVectorArtifact",
+        "HnswVectorArtifact",
+        "VectorEmbedding",
+        "encode_flat_vector_artifact",
+        "encode_hnsw_vector_artifact",
+        "store_flat",
+        "store_hnsw",
+        "persist_raw_flat_payload",
+        "persist_raw_hnsw_payload",
+        "fast_hnsw",
+    ] {
+        assert!(
+            !writer.contains(forbidden),
+            "index manifest writer can store artifact payload detail `{forbidden}`"
+        );
+    }
+}
+
+#[test]
+fn vector_artifact_payload_code_stays_private_to_vector_artifact_module() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("data")
+        .join("vector");
+    let offenders: Vec<_> = rust_files(&root)
+        .into_iter()
+        .filter(|path| !path.ends_with("artifact.rs"))
+        .filter_map(|path| {
+            let text = fs::read_to_string(&path).expect("read vector source");
+            [
+                "FLAT_ARTIFACT_MAGIC",
+                "HNSW_ARTIFACT_MAGIC",
+                "persist_raw_flat_payload",
+                "persist_raw_hnsw_payload",
+                "decode_flat_vector_artifact",
+                "decode_hnsw_vector_artifact",
+                "encode_flat_vector_artifact",
+                "encode_hnsw_vector_artifact",
+            ]
+            .iter()
+            .any(|token| text.contains(token))
+            .then_some(path)
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "vector artifact payload codec escaped artifact module: {offenders:?}"
+    );
+}
+
+#[test]
+fn vector_indexing_does_not_reintroduce_process_global_backend_state() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("data")
+        .join("vector");
+    let offenders: Vec<_> = rust_files(&root)
+        .into_iter()
+        .filter_map(|path| {
+            let text = fs::read_to_string(&path).expect("read vector source");
+            [
+                "static mut",
+                "lazy_static!",
+                "OnceLock<",
+                "OnceCell<",
+                "static ARTIFACT",
+                "static HNSW",
+                "static INDEX",
+                "static VECTOR",
+                "static BACKEND",
+            ]
+            .iter()
+            .any(|token| text.contains(token))
+            .then_some(path)
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "vector indexing reintroduced process-global mutable backend state: {offenders:?}"
+    );
 }
 
 #[test]

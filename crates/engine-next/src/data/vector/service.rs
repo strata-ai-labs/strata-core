@@ -3,6 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
+#[cfg(any(test, feature = "testkit"))]
+use strata_core_next::BranchId;
 use strata_core_next::{CommitVersion, Timestamp};
 
 use crate::branch::catalog::BranchCatalogRecord;
@@ -13,27 +15,77 @@ use crate::data::kv::ProductSpace;
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{
     decode_vector_collection_name, decode_vector_key, encode_vector_collection_entry_prefix,
-    encode_vector_collection_key, encode_vector_collection_prefix, encode_vector_key, CommitPlan,
-    PersistenceReadRow, ReadSelector, RowAddress, RowClass, RowMutation, StoragePersistence,
+    encode_vector_collection_key, encode_vector_collection_prefix, encode_vector_key,
+    vector_index_manifest_key, CommitPlan, PersistenceImmutableSource, PersistenceReadRow,
+    ReadSelector, RowAddress, RowClass, RowMutation, StoragePersistence,
 };
 
 use super::{
-    decode_collection_config, decode_vector_record, encode_collection_config, encode_vector_record,
-    vector_score, VectorBatchDeleteOutcome, VectorBatchGetOutcome, VectorBatchUpsertOutcome,
-    VectorBulkDeleteOutcome, VectorCollectionInfo, VectorCollectionName, VectorConfig,
-    VectorDeleteOutcome, VectorEmbedding, VectorEntry, VectorFilter, VectorHistory,
-    VectorHistoryRow, VectorKey, VectorKeyPage, VectorMetadata, VectorMetadataPatch,
-    VectorMetadataUpdateOutcome, VectorRecord, VectorSearchMatch, VectorSearchResult,
-    VectorUpsertEntry, VectorVersionedEntry, VectorWriteOutcome,
+    decode_collection_config, decode_vector_index_manifest, decode_vector_record,
+    default_flat_artifact_build_budget_bytes, default_flat_artifact_load_budget_bytes,
+    default_hnsw_artifact_build_budget_bytes, default_hnsw_artifact_load_budget_bytes,
+    encode_collection_config, encode_vector_index_manifest, encode_vector_record,
+    query_vector_sources_with_index_artifacts, FlatVectorArtifact, HnswArtifactConfig,
+    HnswVectorArtifact, VectorArtifactId, VectorArtifactKind, VectorArtifactRef,
+    VectorArtifactSourceDiagnostic, VectorArtifactStore, VectorBatchDeleteOutcome,
+    VectorBatchGetOutcome, VectorBatchUpsertOutcome, VectorBulkDeleteOutcome, VectorCollectionInfo,
+    VectorCollectionName, VectorConfig, VectorDeleteOutcome, VectorEmbedding, VectorEntry,
+    VectorFilter, VectorFlatArtifactIdentity, VectorFlatArtifactSourceInput, VectorHistory,
+    VectorHistoryRow, VectorHnswArtifactSourceInput, VectorIndexDiagnostics, VectorIndexManifest,
+    VectorIndexManifestLookup, VectorIndexPolicy, VectorKey, VectorKeyPage, VectorMetadata,
+    VectorMetadataPatch, VectorMetadataUpdateOutcome, VectorRecord, VectorSearchResult,
+    VectorSourceId, VectorTombstone, VectorUpsertEntry, VectorVersionedEntry, VectorWriteOutcome,
 };
+
+#[cfg(any(test, feature = "testkit"))]
+use super::query_vector_exact;
+#[cfg(any(test, feature = "testkit"))]
+use super::VectorDistanceMetric;
 
 const VECTOR_LIST_RAW_PAGE_MIN: usize = 64;
 const VECTOR_LIST_RAW_PAGE_MAX: usize = 4096;
+
+struct VectorIndexManifestResolution {
+    lookup: VectorIndexManifestLookup,
+    artifact_refs: Vec<VectorArtifactRef>,
+}
+
+struct VectorQuerySnapshot {
+    entries: Vec<(PersistenceReadRow, VectorEntry)>,
+    tombstones: Vec<VectorTombstone>,
+}
+
+struct VectorIndexArtifactLoadSet {
+    flat_artifacts: Vec<VectorFlatArtifactSourceInput>,
+    hnsw_artifacts: Vec<VectorHnswArtifactSourceInput>,
+    artifact_reports: Vec<VectorArtifactSourceDiagnostic>,
+    flat_unavailable_reason: Option<&'static str>,
+    hnsw_unavailable_reason: Option<&'static str>,
+}
+
+impl VectorIndexArtifactLoadSet {
+    const fn unavailable(reason: &'static str) -> Self {
+        Self {
+            flat_artifacts: Vec::new(),
+            hnsw_artifacts: Vec::new(),
+            artifact_reports: Vec::new(),
+            flat_unavailable_reason: Some(reason),
+            hnsw_unavailable_reason: Some(reason),
+        }
+    }
+}
+
+struct VectorSourceSelectedRow {
+    row: PersistenceReadRow,
+    entry: Option<VectorEntry>,
+}
 
 /// Service for vector collection and exact search operations.
 pub struct VectorService<'a> {
     persistence: &'a mut StoragePersistence,
     control: &'a mut ControlPlane,
+    #[cfg_attr(not(any(test, feature = "testkit")), allow(dead_code))]
+    artifacts: &'a mut VectorArtifactStore,
     branch: BranchName,
     space: ProductSpace,
 }
@@ -42,12 +94,14 @@ impl<'a> VectorService<'a> {
     pub(crate) const fn new(
         persistence: &'a mut StoragePersistence,
         control: &'a mut ControlPlane,
+        artifacts: &'a mut VectorArtifactStore,
         branch: BranchName,
         space: ProductSpace,
     ) -> Self {
         Self {
             persistence,
             control,
+            artifacts,
             branch,
             space,
         }
@@ -491,7 +545,7 @@ impl<'a> VectorService<'a> {
         Ok(VectorBatchDeleteOutcome::new(deleted, Some(commit)))
     }
 
-    /// Runs exact latest nearest-neighbor search.
+    /// Runs latest nearest-neighbor search.
     pub fn query(
         &mut self,
         collection: &VectorCollectionName,
@@ -502,7 +556,7 @@ impl<'a> VectorService<'a> {
         self.query_with_selector(collection, query, k, filter, ReadSelector::Latest)
     }
 
-    /// Runs exact nearest-neighbor search at a timestamp.
+    /// Runs nearest-neighbor search at a timestamp.
     pub fn query_at(
         &mut self,
         collection: &VectorCollectionName,
@@ -518,6 +572,758 @@ impl<'a> VectorService<'a> {
             filter,
             ReadSelector::AtTimestamp(timestamp),
         )
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Searches with the default index policy and returns planner diagnostics.
+    pub fn query_with_index_diagnostics_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        query: &VectorEmbedding,
+        k: usize,
+        filter: Option<&VectorFilter>,
+    ) -> EngineResult<(VectorSearchResult, VectorIndexDiagnostics)> {
+        self.query_with_selector_and_policy(
+            collection,
+            query,
+            k,
+            filter,
+            ReadSelector::Latest,
+            VectorIndexPolicy::default(),
+        )
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Searches with an explicit index policy and returns planner diagnostics.
+    pub fn query_with_index_policy_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        query: &VectorEmbedding,
+        k: usize,
+        filter: Option<&VectorFilter>,
+        policy: VectorIndexPolicy,
+    ) -> EngineResult<(VectorSearchResult, VectorIndexDiagnostics)> {
+        self.query_with_selector_and_policy(
+            collection,
+            query,
+            k,
+            filter,
+            ReadSelector::Latest,
+            policy,
+        )
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Searches at a timestamp with the default index policy and returns planner diagnostics.
+    pub fn query_at_with_index_diagnostics_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        query: &VectorEmbedding,
+        k: usize,
+        filter: Option<&VectorFilter>,
+        timestamp: Timestamp,
+    ) -> EngineResult<(VectorSearchResult, VectorIndexDiagnostics)> {
+        self.query_with_selector_and_policy(
+            collection,
+            query,
+            k,
+            filter,
+            ReadSelector::AtTimestamp(timestamp),
+            VectorIndexPolicy::default(),
+        )
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Searches at a timestamp with an explicit index policy and returns planner diagnostics.
+    pub fn query_at_with_index_policy_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        query: &VectorEmbedding,
+        k: usize,
+        filter: Option<&VectorFilter>,
+        timestamp: Timestamp,
+        policy: VectorIndexPolicy,
+    ) -> EngineResult<(VectorSearchResult, VectorIndexDiagnostics)> {
+        self.query_with_selector_and_policy(
+            collection,
+            query,
+            k,
+            filter,
+            ReadSelector::AtTimestamp(timestamp),
+            policy,
+        )
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Searches latest committed rows through the exact baseline helper.
+    pub fn query_exact_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        query: &VectorEmbedding,
+        k: usize,
+        filter: Option<&VectorFilter>,
+    ) -> EngineResult<VectorSearchResult> {
+        self.query_exact_with_selector(collection, query, k, filter, ReadSelector::Latest)
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Searches timestamp-visible rows through the exact baseline helper.
+    pub fn query_at_exact_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        query: &VectorEmbedding,
+        k: usize,
+        filter: Option<&VectorFilter>,
+        timestamp: Timestamp,
+    ) -> EngineResult<VectorSearchResult> {
+        self.query_exact_with_selector(
+            collection,
+            query,
+            k,
+            filter,
+            ReadSelector::AtTimestamp(timestamp),
+        )
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Stores an empty branch-local vector index manifest for diagnostics tests.
+    pub fn seed_empty_index_manifest_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+    ) -> EngineResult<()> {
+        self.seed_index_manifest_for_test(collection, Vec::new(), 0)
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Returns artifact IDs from the current branch-local index manifest.
+    pub fn index_manifest_artifact_ids_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+    ) -> EngineResult<Vec<String>> {
+        let resolution = self.index_manifest_resolution_for_test(collection)?;
+        Ok(resolution
+            .artifact_refs
+            .iter()
+            .map(|artifact_ref| artifact_ref.artifact_id().to_owned())
+            .collect())
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Returns the byte size of the current branch-local vector index manifest row.
+    pub fn index_manifest_byte_len_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+    ) -> EngineResult<Option<usize>> {
+        let record = self.branch_record()?;
+        let address = self.index_manifest_address(&record, collection);
+        Ok(self
+            .persistence
+            .read(&address, ReadSelector::Latest)?
+            .map(|bytes| bytes.len()))
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Removes artifact payloads referenced by the current manifest.
+    pub fn remove_manifest_flat_artifacts_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+    ) -> EngineResult<usize> {
+        let artifact_ids = self.index_manifest_flat_artifact_ids_for_test(collection)?;
+        for artifact_id in &artifact_ids {
+            self.artifacts.remove_for_test(artifact_id)?;
+        }
+        Ok(artifact_ids.len())
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Replaces artifact payloads referenced by the current manifest with malformed bytes.
+    pub fn corrupt_manifest_flat_artifacts_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+    ) -> EngineResult<usize> {
+        let artifact_ids = self.index_manifest_flat_artifact_ids_for_test(collection)?;
+        for artifact_id in &artifact_ids {
+            self.artifacts
+                .put_raw_flat_for_test(artifact_id.clone(), vec![1, 2, 3])?;
+        }
+        Ok(artifact_ids.len())
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Removes HNSW artifact payloads referenced by the current manifest.
+    pub fn remove_manifest_hnsw_artifacts_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+    ) -> EngineResult<usize> {
+        let artifact_ids = self.index_manifest_hnsw_artifact_ids_for_test(collection)?;
+        for artifact_id in &artifact_ids {
+            self.artifacts.remove_hnsw_for_test(artifact_id)?;
+        }
+        Ok(artifact_ids.len())
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Replaces HNSW artifact payloads referenced by the current manifest with malformed bytes.
+    pub fn corrupt_manifest_hnsw_artifacts_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+    ) -> EngineResult<usize> {
+        let artifact_ids = self.index_manifest_hnsw_artifact_ids_for_test(collection)?;
+        for artifact_id in &artifact_ids {
+            self.artifacts
+                .put_raw_hnsw_for_test(artifact_id.clone(), vec![1, 2, 3])?;
+        }
+        Ok(artifact_ids.len())
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Replaces manifest artifact payloads with payloads whose identity no longer matches.
+    pub fn make_manifest_flat_artifacts_stale_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+    ) -> EngineResult<usize> {
+        let resolution = self.index_manifest_resolution_for_test(collection)?;
+        let (_, collection_generation) = {
+            let record = self.branch_record()?;
+            self.require_collection_config_with_generation(
+                &record,
+                collection,
+                ReadSelector::Latest,
+            )?
+        };
+        let mut replaced = 0;
+        for artifact_ref in resolution
+            .artifact_refs
+            .iter()
+            .filter(|artifact_ref| artifact_ref.index_kind() == VectorArtifactKind::Flat)
+        {
+            let identity = VectorFlatArtifactIdentity::from_manifest_ref(
+                self.space.clone(),
+                collection.clone(),
+                collection_generation.as_u64(),
+                artifact_ref,
+            )?;
+            let stale_identity = VectorFlatArtifactIdentity::new(
+                identity.artifact_id().clone(),
+                identity.source_branch_id(),
+                self.space.clone(),
+                collection.clone(),
+                collection_generation.as_u64().saturating_add(1),
+                VectorSourceId::new(format!("{}-stale", identity.source_id().as_str()))?,
+                identity.source_branch_id(),
+                identity.source_generation(),
+                identity.vector_dimension(),
+                identity.metric(),
+            )?;
+            let stale = FlatVectorArtifact::new(stale_identity, Vec::new())?;
+            self.artifacts.store_flat(&stale)?;
+            replaced += 1;
+        }
+        Ok(replaced)
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    fn index_manifest_flat_artifact_ids_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+    ) -> EngineResult<Vec<VectorArtifactId>> {
+        let resolution = self.index_manifest_resolution_for_test(collection)?;
+        resolution
+            .artifact_refs
+            .iter()
+            .filter(|artifact_ref| artifact_ref.index_kind() == VectorArtifactKind::Flat)
+            .map(|artifact_ref| VectorArtifactId::new(artifact_ref.artifact_id().to_owned()))
+            .collect()
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    fn index_manifest_hnsw_artifact_ids_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+    ) -> EngineResult<Vec<VectorArtifactId>> {
+        let resolution = self.index_manifest_resolution_for_test(collection)?;
+        resolution
+            .artifact_refs
+            .iter()
+            .filter(|artifact_ref| artifact_ref.index_kind() == VectorArtifactKind::Hnsw)
+            .map(|artifact_ref| VectorArtifactId::new(artifact_ref.artifact_id().to_owned()))
+            .collect()
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    fn index_manifest_resolution_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+    ) -> EngineResult<VectorIndexManifestResolution> {
+        let record = self.branch_record()?;
+        let (config, collection_generation) = self.require_collection_config_with_generation(
+            &record,
+            collection,
+            ReadSelector::Latest,
+        )?;
+        self.index_manifest_resolution(
+            &record,
+            collection,
+            config,
+            collection_generation,
+            ReadSelector::Latest,
+        )
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Stores a branch-local vector index manifest with synthetic artifact refs.
+    pub fn seed_synthetic_index_manifest_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        artifact_refs: &[(BranchId, usize, VectorDistanceMetric)],
+        active_delta_count: u64,
+    ) -> EngineResult<()> {
+        let artifact_refs = artifact_refs
+            .iter()
+            .enumerate()
+            .map(|(index, (source_branch_id, dimension, metric))| {
+                let ordinal = index + 1;
+                VectorArtifactRef::for_test(
+                    format!("artifact-{ordinal}"),
+                    format!("source-{ordinal}"),
+                    *source_branch_id,
+                    1,
+                    1,
+                    None,
+                    VectorArtifactKind::Flat,
+                    *dimension,
+                    *metric,
+                    10,
+                    1024,
+                    u64::try_from(ordinal).unwrap_or(u64::MAX),
+                )
+            })
+            .collect();
+        self.seed_index_manifest_for_test(collection, artifact_refs, active_delta_count)
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Stores a branch-local vector index manifest with an unsupported HNSW ref.
+    pub fn seed_synthetic_hnsw_index_manifest_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+    ) -> EngineResult<()> {
+        let record = self.branch_record()?;
+        let (config, _) = self.require_collection_config_with_generation(
+            &record,
+            collection,
+            ReadSelector::Latest,
+        )?;
+        let artifact_ref = VectorArtifactRef::for_test(
+            "artifact-hnsw",
+            "source-hnsw",
+            record.storage_branch_id(),
+            record.generation(),
+            record.generation(),
+            None,
+            VectorArtifactKind::Hnsw,
+            config.dimension(),
+            config.metric(),
+            10,
+            1024,
+            99,
+        );
+        self.seed_index_manifest_for_test(collection, vec![artifact_ref], 0)
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    fn seed_index_manifest_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        artifact_refs: Vec<VectorArtifactRef>,
+        active_delta_count: u64,
+    ) -> EngineResult<()> {
+        let record = self.branch_record()?;
+        let (_, collection_generation) = self.require_collection_config_with_generation(
+            &record,
+            collection,
+            ReadSelector::Latest,
+        )?;
+        let manifest = VectorIndexManifest::empty(
+            record.storage_branch_id(),
+            record.generation(),
+            self.space.clone(),
+            collection.clone(),
+            collection_generation.as_u64(),
+        )
+        .with_artifact_refs_for_test(artifact_refs, active_delta_count);
+        let bytes = encode_vector_index_manifest(&manifest)?;
+        self.put_index_manifest_bytes(&record, collection, bytes)
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Builds a flat artifact from visible rows and stores its small manifest ref.
+    pub fn seed_flat_index_manifest_from_visible_rows_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        source_id: &str,
+    ) -> EngineResult<()> {
+        let artifact_ref = self.build_flat_artifact_ref_from_visible_rows_for_test(
+            collection, source_id, None, None,
+        )?;
+        self.seed_index_manifest_for_test(collection, vec![artifact_ref], 0)
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Builds flat and HNSW artifacts from visible rows and stores their manifest refs.
+    pub fn seed_flat_hnsw_index_manifest_from_visible_rows_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        source_id: &str,
+    ) -> EngineResult<()> {
+        let flat_ref = self.build_flat_artifact_ref_from_visible_rows_for_test(
+            collection, source_id, None, None,
+        )?;
+        let hnsw_ref =
+            self.build_hnsw_artifact_ref_from_visible_rows_for_test(collection, source_id)?;
+        self.seed_index_manifest_for_test(collection, vec![flat_ref, hnsw_ref], 0)
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Explicitly builds branch-local vector index artifacts for tests.
+    pub fn seal_index_artifacts_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        policy: VectorIndexPolicy,
+    ) -> EngineResult<()> {
+        let record = self.branch_record()?;
+        let (config, collection_generation) = self.require_collection_config_with_generation(
+            &record,
+            collection,
+            ReadSelector::Latest,
+        )?;
+        let snapshot = self.vector_query_snapshot(&record, collection, ReadSelector::Latest)?;
+        self.seal_index_artifacts_from_snapshot(
+            &record,
+            collection,
+            collection_generation,
+            config,
+            &snapshot,
+            policy,
+        )
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Returns the load status for the flat artifact built by the testkit builder.
+    pub fn flat_artifact_load_status_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        source_id: &str,
+        max_bytes: Option<usize>,
+    ) -> EngineResult<&'static str> {
+        let (record, config, collection_generation) =
+            self.collection_artifact_context_for_test(collection)?;
+        let identity = self.flat_artifact_identity_for_test(
+            &record,
+            collection,
+            collection_generation,
+            source_id,
+            config,
+        )?;
+        let load = self.artifacts.load_flat(
+            &identity,
+            max_bytes.unwrap_or_else(default_flat_artifact_load_budget_bytes),
+        );
+        Ok(load.report().status().as_str())
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Returns the load status for the HNSW artifact built by the testkit builder.
+    pub fn hnsw_artifact_load_status_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        source_id: &str,
+        max_bytes: Option<usize>,
+    ) -> EngineResult<&'static str> {
+        let (record, config, collection_generation) =
+            self.collection_artifact_context_for_test(collection)?;
+        let identity = VectorFlatArtifactIdentity::new(
+            self.hnsw_artifact_id_for_test(collection, source_id)?,
+            record.storage_branch_id(),
+            self.space.clone(),
+            collection.clone(),
+            collection_generation.as_u64(),
+            VectorSourceId::new(source_id)?,
+            record.storage_branch_id(),
+            record.generation(),
+            config.dimension(),
+            config.metric(),
+        )?;
+        let load = self.artifacts.load_hnsw(
+            &identity,
+            max_bytes.unwrap_or_else(default_hnsw_artifact_load_budget_bytes),
+        );
+        Ok(load.report().status().as_str())
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Returns the byte size of the flat artifact built by the testkit builder.
+    pub fn flat_artifact_byte_len_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        source_id: &str,
+    ) -> EngineResult<Option<u64>> {
+        let (record, config, collection_generation) =
+            self.collection_artifact_context_for_test(collection)?;
+        let identity = self.flat_artifact_identity_for_test(
+            &record,
+            collection,
+            collection_generation,
+            source_id,
+            config,
+        )?;
+        let load = self
+            .artifacts
+            .load_flat(&identity, default_flat_artifact_load_budget_bytes());
+        Ok(load.report().byte_len())
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Removes the flat artifact bytes for missing-artifact diagnostics tests.
+    pub fn remove_flat_artifact_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        source_id: &str,
+    ) -> EngineResult<()> {
+        let artifact_id = self.flat_artifact_id_for_test(collection, source_id)?;
+        self.artifacts.remove_for_test(&artifact_id)
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Replaces flat artifact bytes with malformed payload bytes.
+    pub fn corrupt_flat_artifact_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        source_id: &str,
+    ) -> EngineResult<()> {
+        let artifact_id = self.flat_artifact_id_for_test(collection, source_id)?;
+        self.artifacts
+            .put_raw_flat_for_test(artifact_id, vec![1, 2, 3])
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Replaces flat artifact bytes with a payload whose identity no longer matches.
+    pub fn make_flat_artifact_stale_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        source_id: &str,
+    ) -> EngineResult<()> {
+        let (record, config, collection_generation) =
+            self.collection_artifact_context_for_test(collection)?;
+        let identity = self.flat_artifact_identity_for_test(
+            &record,
+            collection,
+            collection_generation,
+            source_id,
+            config,
+        )?;
+        let stale_identity = VectorFlatArtifactIdentity::new(
+            identity.artifact_id().clone(),
+            record.storage_branch_id(),
+            self.space.clone(),
+            collection.clone(),
+            collection_generation.as_u64().saturating_add(1),
+            VectorSourceId::new(format!("{source_id}-stale"))?,
+            record.storage_branch_id(),
+            record.generation(),
+            config.dimension(),
+            config.metric(),
+        )?;
+        let stale = FlatVectorArtifact::new(stale_identity, Vec::new())?;
+        self.artifacts.store_flat(&stale)?;
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Stores raw branch-local vector index manifest bytes for diagnostics tests.
+    pub fn put_raw_index_manifest_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        bytes: Vec<u8>,
+    ) -> EngineResult<()> {
+        let record = self.branch_record()?;
+        self.put_index_manifest_bytes(&record, collection, bytes)
+    }
+
+    fn put_index_manifest_bytes(
+        &mut self,
+        record: &BranchCatalogRecord,
+        collection: &VectorCollectionName,
+        bytes: Vec<u8>,
+    ) -> EngineResult<()> {
+        self.persistence.commit(&CommitPlan::new(
+            record.storage_branch_id(),
+            vec![RowMutation::put(
+                self.index_manifest_address(record, collection),
+                bytes,
+            )],
+            Some(record.generation()),
+        ))?;
+        Ok(())
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    fn build_flat_artifact_ref_from_visible_rows_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        source_id: &str,
+        artifact_id: Option<VectorArtifactId>,
+        rows: Option<Vec<(PersistenceReadRow, VectorEntry)>>,
+    ) -> EngineResult<VectorArtifactRef> {
+        let (record, config, collection_generation) =
+            self.collection_artifact_context_for_test(collection)?;
+        let identity = match artifact_id {
+            Some(artifact_id) => VectorFlatArtifactIdentity::new(
+                artifact_id,
+                record.storage_branch_id(),
+                self.space.clone(),
+                collection.clone(),
+                collection_generation.as_u64(),
+                VectorSourceId::new(source_id)?,
+                record.storage_branch_id(),
+                record.generation(),
+                config.dimension(),
+                config.metric(),
+            )?,
+            None => self.flat_artifact_identity_for_test(
+                &record,
+                collection,
+                collection_generation,
+                source_id,
+                config,
+            )?,
+        };
+        let rows = match rows {
+            Some(rows) => rows,
+            None => self.visible_vector_entries(&record, collection, ReadSelector::Latest)?,
+        };
+        let artifact = FlatVectorArtifact::from_visible_entries(identity.clone(), &rows)?;
+        let handle = self.artifacts.store_flat(&artifact)?;
+        VectorArtifactRef::new(
+            handle.artifact_id().as_str().to_owned(),
+            identity.source_id().as_str().to_owned(),
+            identity.source_branch_id(),
+            identity.source_generation(),
+            rows_covered_commit_version(&rows).as_u64(),
+            None,
+            VectorArtifactKind::Flat,
+            identity.vector_dimension(),
+            identity.metric(),
+            handle.vector_count(),
+            handle.byte_len(),
+            handle.checksum(),
+        )
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    fn build_hnsw_artifact_ref_from_visible_rows_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        source_id: &str,
+    ) -> EngineResult<VectorArtifactRef> {
+        let (record, config, collection_generation) =
+            self.collection_artifact_context_for_test(collection)?;
+        let identity = VectorFlatArtifactIdentity::new(
+            self.hnsw_artifact_id_for_test(collection, source_id)?,
+            record.storage_branch_id(),
+            self.space.clone(),
+            collection.clone(),
+            collection_generation.as_u64(),
+            VectorSourceId::new(source_id)?,
+            record.storage_branch_id(),
+            record.generation(),
+            config.dimension(),
+            config.metric(),
+        )?;
+        let rows = self.visible_vector_entries(&record, collection, ReadSelector::Latest)?;
+        let artifact = HnswVectorArtifact::from_visible_entries(
+            identity.clone(),
+            HnswArtifactConfig::default_for_engine(),
+            &rows,
+        )?;
+        let handle = self.artifacts.store_hnsw(&artifact)?;
+        VectorArtifactRef::new(
+            handle.artifact_id().as_str().to_owned(),
+            identity.source_id().as_str().to_owned(),
+            identity.source_branch_id(),
+            identity.source_generation(),
+            rows_covered_commit_version(&rows).as_u64(),
+            None,
+            VectorArtifactKind::Hnsw,
+            identity.vector_dimension(),
+            identity.metric(),
+            handle.vector_count(),
+            handle.byte_len(),
+            handle.checksum(),
+        )
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    fn collection_artifact_context_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+    ) -> EngineResult<(BranchCatalogRecord, VectorConfig, CommitVersion)> {
+        let record = self.branch_record()?;
+        let (config, collection_generation) = self.require_collection_config_with_generation(
+            &record,
+            collection,
+            ReadSelector::Latest,
+        )?;
+        Ok((record, config, collection_generation))
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    fn flat_artifact_identity_for_test(
+        &self,
+        record: &BranchCatalogRecord,
+        collection: &VectorCollectionName,
+        collection_generation: CommitVersion,
+        source_id: &str,
+        config: VectorConfig,
+    ) -> EngineResult<VectorFlatArtifactIdentity> {
+        VectorFlatArtifactIdentity::new(
+            self.flat_artifact_id_for_test(collection, source_id)?,
+            record.storage_branch_id(),
+            self.space.clone(),
+            collection.clone(),
+            collection_generation.as_u64(),
+            VectorSourceId::new(source_id)?,
+            record.storage_branch_id(),
+            record.generation(),
+            config.dimension(),
+            config.metric(),
+        )
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    fn flat_artifact_id_for_test(
+        &self,
+        collection: &VectorCollectionName,
+        source_id: &str,
+    ) -> EngineResult<VectorArtifactId> {
+        VectorArtifactId::new(format!(
+            "flat:{}:{}:{source_id}",
+            self.space.as_str(),
+            collection.as_str()
+        ))
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    fn hnsw_artifact_id_for_test(
+        &self,
+        collection: &VectorCollectionName,
+        source_id: &str,
+    ) -> EngineResult<VectorArtifactId> {
+        VectorArtifactId::new(format!(
+            "hnsw:{}:{}:{source_id}",
+            self.space.as_str(),
+            collection.as_str()
+        ))
     }
 
     fn delete_matching(
@@ -554,35 +1360,101 @@ impl<'a> VectorService<'a> {
         filter: Option<&VectorFilter>,
         selector: ReadSelector,
     ) -> EngineResult<VectorSearchResult> {
+        Ok(self
+            .query_with_selector_and_policy(
+                collection,
+                query,
+                k,
+                filter,
+                selector,
+                VectorIndexPolicy::default(),
+            )?
+            .0)
+    }
+
+    fn query_with_selector_and_policy(
+        &mut self,
+        collection: &VectorCollectionName,
+        query: &VectorEmbedding,
+        k: usize,
+        filter: Option<&VectorFilter>,
+        selector: ReadSelector,
+        policy: VectorIndexPolicy,
+    ) -> EngineResult<(VectorSearchResult, VectorIndexDiagnostics)> {
+        let record = self.branch_record()?;
+        let (config, collection_generation) =
+            self.require_collection_config_with_generation(&record, collection, selector)?;
+        query.validate_dimension(config.dimension())?;
+        if k == 0 {
+            return query_vector_sources_with_index_artifacts(
+                collection,
+                query,
+                config.metric(),
+                k,
+                filter,
+                &[],
+                &[],
+                selector,
+                &[],
+                &[],
+                &[],
+                None,
+                None,
+                policy,
+            );
+        }
+        let manifest_resolution = self.index_manifest_resolution(
+            &record,
+            collection,
+            config,
+            collection_generation,
+            selector,
+        )?;
+        let snapshot = self.vector_query_snapshot(&record, collection, selector)?;
+        let index_artifacts = self.load_index_artifact_sources_for_query(
+            collection,
+            collection_generation,
+            &manifest_resolution,
+            snapshot.entries.len(),
+            policy,
+        )?;
+        let (result, mut diagnostics) = query_vector_sources_with_index_artifacts(
+            collection,
+            query,
+            config.metric(),
+            k,
+            filter,
+            &snapshot.entries,
+            &snapshot.tombstones,
+            selector,
+            &index_artifacts.flat_artifacts,
+            &index_artifacts.hnsw_artifacts,
+            &index_artifacts.artifact_reports,
+            index_artifacts.flat_unavailable_reason,
+            index_artifacts.hnsw_unavailable_reason,
+            policy,
+        )?;
+        diagnostics.record_manifest_lookup(manifest_resolution.lookup);
+        Ok((result, diagnostics))
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    fn query_exact_with_selector(
+        &mut self,
+        collection: &VectorCollectionName,
+        query: &VectorEmbedding,
+        k: usize,
+        filter: Option<&VectorFilter>,
+        selector: ReadSelector,
+    ) -> EngineResult<VectorSearchResult> {
         let record = self.branch_record()?;
         let config = self.require_collection_config_with_selector(&record, collection, selector)?;
         query.validate_dimension(config.dimension())?;
         if k == 0 {
-            return Ok(VectorSearchResult::new(Vec::new()));
+            return query_vector_exact(query, config.metric(), k, filter, &[]);
         }
-        let mut matches = Vec::new();
-        for (row, entry) in self.visible_vector_entries(&record, collection, selector)? {
-            if filter.is_some_and(|filter| !filter.matches(entry.metadata())) {
-                continue;
-            }
-            let score = vector_score(query, entry.embedding(), config.metric())?;
-            matches.push(VectorSearchMatch::new(
-                entry,
-                score,
-                row.commit_version(),
-                row.commit_timestamp(),
-            ));
-        }
-        matches.sort_by(|left, right| {
-            right
-                .score()
-                .total_cmp(&left.score())
-                .then_with(|| left.entry().key().cmp(right.entry().key()))
-        });
-        if matches.len() > k {
-            matches.truncate(k);
-        }
-        Ok(VectorSearchResult::new(matches))
+        let entries = self.visible_vector_entries(&record, collection, selector)?;
+        query_vector_exact(query, config.metric(), k, filter, &entries)
     }
 
     fn branch_record(&self) -> EngineResult<BranchCatalogRecord> {
@@ -607,6 +1479,18 @@ impl<'a> VectorService<'a> {
             record.storage_branch_id(),
             RowClass::VectorCollection,
             encode_vector_collection_key(&self.space, collection),
+        )
+    }
+
+    fn index_manifest_address(
+        &self,
+        record: &BranchCatalogRecord,
+        collection: &VectorCollectionName,
+    ) -> RowAddress {
+        RowAddress::new(
+            record.storage_branch_id(),
+            RowClass::SpaceControl,
+            vector_index_manifest_key(&self.space, collection),
         )
     }
 
@@ -650,6 +1534,16 @@ impl<'a> VectorService<'a> {
         collection: &VectorCollectionName,
         selector: ReadSelector,
     ) -> EngineResult<VectorConfig> {
+        self.require_collection_config_with_generation(record, collection, selector)
+            .map(|(config, _)| config)
+    }
+
+    fn require_collection_config_with_generation(
+        &mut self,
+        record: &BranchCatalogRecord,
+        collection: &VectorCollectionName,
+        selector: ReadSelector,
+    ) -> EngineResult<(VectorConfig, CommitVersion)> {
         let Some(row) = self.collection_config_row(record, collection, selector)? else {
             return Err(EngineError::not_found(
                 "not_found.engine.vector_collection",
@@ -662,7 +1556,616 @@ impl<'a> VectorService<'a> {
                 "stored vector collection row is missing a value",
             )
         })?;
-        decode_collection_config(collection, value)
+        let config = decode_collection_config(collection, value)?;
+        Ok((config, row.commit_version()))
+    }
+
+    fn index_manifest_resolution(
+        &mut self,
+        record: &BranchCatalogRecord,
+        collection: &VectorCollectionName,
+        config: VectorConfig,
+        collection_generation: CommitVersion,
+        selector: ReadSelector,
+    ) -> EngineResult<VectorIndexManifestResolution> {
+        let address = self.index_manifest_address(record, collection);
+        let Some(row) = self
+            .persistence
+            .read_row(&address, selector)?
+            .filter(|row| !row.is_tombstone())
+        else {
+            return Ok(VectorIndexManifestResolution {
+                lookup: VectorIndexManifestLookup::Missing,
+                artifact_refs: Vec::new(),
+            });
+        };
+        let Some(value) = row.value() else {
+            return Ok(VectorIndexManifestResolution {
+                lookup: VectorIndexManifestLookup::Corrupt,
+                artifact_refs: Vec::new(),
+            });
+        };
+        let Ok(manifest) = decode_vector_index_manifest(value) else {
+            return Ok(VectorIndexManifestResolution {
+                lookup: VectorIndexManifestLookup::Corrupt,
+                artifact_refs: Vec::new(),
+            });
+        };
+        if !manifest.matches_branch_collection(
+            record.storage_branch_id(),
+            record.generation(),
+            &self.space,
+            collection,
+            collection_generation.as_u64(),
+        ) {
+            return Ok(VectorIndexManifestResolution {
+                lookup: VectorIndexManifestLookup::Stale,
+                artifact_refs: Vec::new(),
+            });
+        }
+        if !manifest.artifact_refs_match_config(config.dimension(), config.metric()) {
+            return Ok(VectorIndexManifestResolution {
+                lookup: VectorIndexManifestLookup::Stale,
+                artifact_refs: Vec::new(),
+            });
+        }
+        let inherited_ref_count = manifest
+            .artifact_refs()
+            .iter()
+            .filter(|artifact_ref| artifact_ref.source_branch_id() != record.storage_branch_id())
+            .count();
+        let ref_count = manifest.artifact_refs().len();
+        let active_delta_count =
+            usize::try_from(manifest.active_delta_count()).unwrap_or(usize::MAX);
+        Ok(VectorIndexManifestResolution {
+            lookup: VectorIndexManifestLookup::Loaded {
+                generation: manifest.manifest_generation(),
+                ref_count,
+                inherited_ref_count,
+                owned_ref_count: ref_count.saturating_sub(inherited_ref_count),
+                active_delta_count,
+            },
+            artifact_refs: manifest.artifact_refs().to_vec(),
+        })
+    }
+
+    fn load_index_artifact_sources_for_query(
+        &mut self,
+        collection: &VectorCollectionName,
+        collection_generation: CommitVersion,
+        manifest_resolution: &VectorIndexManifestResolution,
+        visible_entry_count: usize,
+        policy: VectorIndexPolicy,
+    ) -> EngineResult<VectorIndexArtifactLoadSet> {
+        if !policy.should_load_flat_sources(visible_entry_count) {
+            return Ok(VectorIndexArtifactLoadSet::unavailable(
+                "collection_below_exact_threshold",
+            ));
+        }
+        let VectorIndexManifestLookup::Loaded { .. } = manifest_resolution.lookup else {
+            return Ok(VectorIndexArtifactLoadSet::unavailable(
+                manifest_resolution.lookup.status(),
+            ));
+        };
+        if manifest_resolution.artifact_refs.is_empty() {
+            return Ok(VectorIndexArtifactLoadSet::unavailable("manifest_empty"));
+        }
+
+        let mut flat_artifacts = Vec::new();
+        let mut hnsw_artifacts = Vec::new();
+        let mut artifact_reports = Vec::new();
+        let mut flat_ref_count = 0usize;
+        let mut hnsw_ref_count = 0usize;
+        let load_hnsw = policy.should_load_hnsw_sources(visible_entry_count);
+        for artifact_ref in &manifest_resolution.artifact_refs {
+            let artifact_id = artifact_ref.artifact_id().to_owned();
+            match artifact_ref.index_kind() {
+                VectorArtifactKind::Flat => {
+                    flat_ref_count = flat_ref_count.saturating_add(1);
+                    let status = self.load_flat_source_ref(
+                        collection,
+                        collection_generation,
+                        artifact_ref,
+                        &mut flat_artifacts,
+                    )?;
+                    artifact_reports.push(VectorArtifactSourceDiagnostic::new(
+                        artifact_id,
+                        status,
+                        false,
+                    ));
+                }
+                VectorArtifactKind::Hnsw => {
+                    hnsw_ref_count = hnsw_ref_count.saturating_add(1);
+                    if !load_hnsw {
+                        artifact_reports.push(VectorArtifactSourceDiagnostic::new(
+                            artifact_id,
+                            "not_selected",
+                            false,
+                        ));
+                        continue;
+                    }
+                    let status = self.load_hnsw_source_ref(
+                        collection,
+                        collection_generation,
+                        artifact_ref,
+                        &mut hnsw_artifacts,
+                    )?;
+                    artifact_reports.push(VectorArtifactSourceDiagnostic::new(
+                        artifact_id,
+                        status,
+                        false,
+                    ));
+                }
+            }
+        }
+        let flat_unavailable_reason = if flat_ref_count == 0 {
+            Some("manifest_no_flat_artifacts")
+        } else if flat_artifacts.len() != flat_ref_count {
+            Some("artifact_unavailable")
+        } else {
+            None
+        };
+        let hnsw_unavailable_reason = if !load_hnsw {
+            Some("policy_not_hnsw")
+        } else if hnsw_ref_count == 0 {
+            Some("manifest_no_hnsw_artifacts")
+        } else if hnsw_artifacts.len() != hnsw_ref_count {
+            Some("artifact_unavailable")
+        } else {
+            None
+        };
+        Ok(VectorIndexArtifactLoadSet {
+            flat_artifacts,
+            hnsw_artifacts,
+            artifact_reports,
+            flat_unavailable_reason,
+            hnsw_unavailable_reason,
+        })
+    }
+
+    fn load_flat_source_ref(
+        &mut self,
+        collection: &VectorCollectionName,
+        collection_generation: CommitVersion,
+        artifact_ref: &VectorArtifactRef,
+        flat_artifacts: &mut Vec<VectorFlatArtifactSourceInput>,
+    ) -> EngineResult<&'static str> {
+        let identity = VectorFlatArtifactIdentity::from_manifest_ref(
+            self.space.clone(),
+            collection.clone(),
+            collection_generation.as_u64(),
+            artifact_ref,
+        )?;
+        let (artifact, status) = self.load_flat_artifact_for_query(&identity, artifact_ref);
+        if let Some(artifact) = artifact {
+            flat_artifacts.push(VectorFlatArtifactSourceInput::new(
+                artifact,
+                artifact_ref.derived_bytes(),
+                artifact_ref.fork_version_cap(),
+            ));
+        }
+        Ok(status)
+    }
+
+    fn load_hnsw_source_ref(
+        &mut self,
+        collection: &VectorCollectionName,
+        collection_generation: CommitVersion,
+        artifact_ref: &VectorArtifactRef,
+        hnsw_artifacts: &mut Vec<VectorHnswArtifactSourceInput>,
+    ) -> EngineResult<&'static str> {
+        let identity = VectorFlatArtifactIdentity::from_hnsw_manifest_ref(
+            self.space.clone(),
+            collection.clone(),
+            collection_generation.as_u64(),
+            artifact_ref,
+        )?;
+        let (artifact, status) = self.load_hnsw_artifact_for_query(&identity, artifact_ref);
+        if let Some(artifact) = artifact {
+            hnsw_artifacts.push(VectorHnswArtifactSourceInput::new(
+                artifact,
+                artifact_ref.derived_bytes(),
+                artifact_ref.fork_version_cap(),
+            ));
+        }
+        Ok(status)
+    }
+
+    fn load_flat_artifact_for_query(
+        &mut self,
+        identity: &VectorFlatArtifactIdentity,
+        artifact_ref: &VectorArtifactRef,
+    ) -> (Option<FlatVectorArtifact>, &'static str) {
+        let load = self
+            .artifacts
+            .load_flat(identity, default_flat_artifact_load_budget_bytes());
+        match load {
+            super::VectorFlatArtifactLoad::Loaded { artifact, report } => {
+                if report.byte_len() == Some(artifact_ref.derived_bytes())
+                    && report.checksum() == Some(artifact_ref.checksum())
+                    && u64::try_from(artifact.rows().len()).unwrap_or(u64::MAX)
+                        == artifact_ref.vector_count()
+                {
+                    (Some(artifact), "loaded")
+                } else {
+                    (None, "stale")
+                }
+            }
+            super::VectorFlatArtifactLoad::Skipped(report) => (None, report.status().as_str()),
+        }
+    }
+
+    fn load_hnsw_artifact_for_query(
+        &mut self,
+        identity: &VectorFlatArtifactIdentity,
+        artifact_ref: &VectorArtifactRef,
+    ) -> (Option<HnswVectorArtifact>, &'static str) {
+        let load = self
+            .artifacts
+            .load_hnsw(identity, default_hnsw_artifact_load_budget_bytes());
+        match load {
+            super::VectorHnswArtifactLoad::Loaded { artifact, report } => {
+                if report.byte_len() == Some(artifact_ref.derived_bytes())
+                    && report.checksum() == Some(artifact_ref.checksum())
+                    && u64::try_from(artifact.rows().len()).unwrap_or(u64::MAX)
+                        == artifact_ref.vector_count()
+                {
+                    (Some(artifact), "loaded")
+                } else {
+                    (None, "stale")
+                }
+            }
+            super::VectorHnswArtifactLoad::Skipped(report) => (None, report.status().as_str()),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn seal_index_artifacts_from_snapshot(
+        &mut self,
+        record: &BranchCatalogRecord,
+        collection: &VectorCollectionName,
+        collection_generation: CommitVersion,
+        config: VectorConfig,
+        snapshot: &VectorQuerySnapshot,
+        policy: VectorIndexPolicy,
+    ) -> EngineResult<()> {
+        let mut artifact_refs = self.seal_index_artifacts_from_immutable_sources(
+            record,
+            collection,
+            collection_generation,
+            config,
+            policy,
+        )?;
+        let active_delta_count = if artifact_refs.is_empty() {
+            artifact_refs.push(self.seal_whole_collection_flat_artifact(
+                record,
+                collection,
+                collection_generation,
+                config,
+                snapshot,
+            )?);
+            if policy.should_seal_hnsw_source(snapshot.entries.len()) {
+                artifact_refs.push(self.seal_whole_collection_hnsw_artifact(
+                    record,
+                    collection,
+                    collection_generation,
+                    config,
+                    snapshot,
+                )?);
+            }
+            0
+        } else {
+            active_delta_count_for_refs(snapshot, &artifact_refs)
+        };
+        let manifest = VectorIndexManifest::empty(
+            record.storage_branch_id(),
+            record.generation(),
+            self.space.clone(),
+            collection.clone(),
+            collection_generation.as_u64(),
+        )
+        .with_artifact_refs(
+            artifact_refs,
+            u64::try_from(active_delta_count).unwrap_or(u64::MAX),
+        );
+        let bytes = encode_vector_index_manifest(&manifest)?;
+        self.put_index_manifest_bytes(record, collection, bytes)
+    }
+
+    #[allow(dead_code)]
+    fn seal_index_artifacts_from_immutable_sources(
+        &mut self,
+        record: &BranchCatalogRecord,
+        collection: &VectorCollectionName,
+        collection_generation: CommitVersion,
+        config: VectorConfig,
+        policy: VectorIndexPolicy,
+    ) -> EngineResult<Vec<VectorArtifactRef>> {
+        let start = encode_vector_collection_entry_prefix(&self.space, collection);
+        let end = next_prefix(&start);
+        let sources = self.persistence.scan_immutable_sources(
+            record.storage_branch_id(),
+            RowClass::Vector,
+            Some(start),
+            Some(end),
+            ReadSelector::Latest,
+        )?;
+        let mut refs = Vec::new();
+        for source in sources {
+            let entries = self.visible_entries_from_source(collection, &source)?;
+            if entries.is_empty() {
+                continue;
+            }
+            refs.push(self.seal_flat_artifact_for_source(
+                collection,
+                collection_generation,
+                config,
+                &source,
+                &entries,
+            )?);
+            if policy.should_seal_hnsw_source(entries.len()) {
+                refs.push(self.seal_hnsw_artifact_for_source(
+                    collection,
+                    collection_generation,
+                    config,
+                    &source,
+                    &entries,
+                )?);
+            }
+        }
+        Ok(refs)
+    }
+
+    #[allow(dead_code)]
+    fn seal_whole_collection_flat_artifact(
+        &mut self,
+        record: &BranchCatalogRecord,
+        collection: &VectorCollectionName,
+        collection_generation: CommitVersion,
+        config: VectorConfig,
+        snapshot: &VectorQuerySnapshot,
+    ) -> EngineResult<VectorArtifactRef> {
+        let seal_version = snapshot
+            .entries
+            .iter()
+            .map(|(row, _)| row.commit_version())
+            .chain(snapshot.tombstones.iter().map(VectorTombstone::version))
+            .max()
+            .unwrap_or(collection_generation);
+        let source_id = VectorSourceId::new(format!("sealed-{}", seal_version.as_u64()))?;
+        let artifact_id = VectorArtifactId::new(format!(
+            "flat:{}:{}:sealed-{}",
+            self.space.as_str(),
+            collection.as_str(),
+            seal_version.as_u64()
+        ))?;
+        let identity = VectorFlatArtifactIdentity::new(
+            artifact_id,
+            record.storage_branch_id(),
+            self.space.clone(),
+            collection.clone(),
+            collection_generation.as_u64(),
+            source_id,
+            record.storage_branch_id(),
+            seal_version.as_u64(),
+            config.dimension(),
+            config.metric(),
+        )?;
+        self.store_flat_artifact_ref(&identity, &snapshot.entries, seal_version, None)
+    }
+
+    #[allow(dead_code)]
+    fn seal_whole_collection_hnsw_artifact(
+        &mut self,
+        record: &BranchCatalogRecord,
+        collection: &VectorCollectionName,
+        collection_generation: CommitVersion,
+        config: VectorConfig,
+        snapshot: &VectorQuerySnapshot,
+    ) -> EngineResult<VectorArtifactRef> {
+        let seal_version = snapshot
+            .entries
+            .iter()
+            .map(|(row, _)| row.commit_version())
+            .chain(snapshot.tombstones.iter().map(VectorTombstone::version))
+            .max()
+            .unwrap_or(collection_generation);
+        let source_id = VectorSourceId::new(format!("sealed-{}", seal_version.as_u64()))?;
+        let artifact_id = VectorArtifactId::new(format!(
+            "hnsw:{}:{}:sealed-{}",
+            self.space.as_str(),
+            collection.as_str(),
+            seal_version.as_u64()
+        ))?;
+        let identity = VectorFlatArtifactIdentity::new(
+            artifact_id,
+            record.storage_branch_id(),
+            self.space.clone(),
+            collection.clone(),
+            collection_generation.as_u64(),
+            source_id,
+            record.storage_branch_id(),
+            seal_version.as_u64(),
+            config.dimension(),
+            config.metric(),
+        )?;
+        self.store_hnsw_artifact_ref(&identity, &snapshot.entries, seal_version, None)
+    }
+
+    #[allow(dead_code)]
+    fn seal_flat_artifact_for_source(
+        &mut self,
+        collection: &VectorCollectionName,
+        collection_generation: CommitVersion,
+        config: VectorConfig,
+        source: &PersistenceImmutableSource,
+        entries: &[(PersistenceReadRow, VectorEntry)],
+    ) -> EngineResult<VectorArtifactRef> {
+        let source_id = VectorSourceId::new(source.source_id())?;
+        let artifact_id = VectorArtifactId::new(format!(
+            "flat:{}:{}:source:{}",
+            self.space.as_str(),
+            collection.as_str(),
+            source.source_id()
+        ))?;
+        let identity = VectorFlatArtifactIdentity::new(
+            artifact_id,
+            source.source_branch_id(),
+            self.space.clone(),
+            collection.clone(),
+            collection_generation.as_u64(),
+            source_id,
+            source.source_branch_id(),
+            source.source_generation().as_u64(),
+            config.dimension(),
+            config.metric(),
+        )?;
+        let covered_commit_version =
+            source_covered_commit_version(&self.space, collection, source)?;
+        self.store_flat_artifact_ref(
+            &identity,
+            entries,
+            covered_commit_version,
+            source.fork_version_cap(),
+        )
+    }
+
+    #[allow(dead_code)]
+    fn seal_hnsw_artifact_for_source(
+        &mut self,
+        collection: &VectorCollectionName,
+        collection_generation: CommitVersion,
+        config: VectorConfig,
+        source: &PersistenceImmutableSource,
+        entries: &[(PersistenceReadRow, VectorEntry)],
+    ) -> EngineResult<VectorArtifactRef> {
+        let source_id = VectorSourceId::new(source.source_id())?;
+        let artifact_id = VectorArtifactId::new(format!(
+            "hnsw:{}:{}:source:{}",
+            self.space.as_str(),
+            collection.as_str(),
+            source.source_id()
+        ))?;
+        let identity = VectorFlatArtifactIdentity::new(
+            artifact_id,
+            source.source_branch_id(),
+            self.space.clone(),
+            collection.clone(),
+            collection_generation.as_u64(),
+            source_id,
+            source.source_branch_id(),
+            source.source_generation().as_u64(),
+            config.dimension(),
+            config.metric(),
+        )?;
+        let covered_commit_version =
+            source_covered_commit_version(&self.space, collection, source)?;
+        self.store_hnsw_artifact_ref(
+            &identity,
+            entries,
+            covered_commit_version,
+            source.fork_version_cap(),
+        )
+    }
+
+    #[allow(dead_code)]
+    fn store_flat_artifact_ref(
+        &mut self,
+        identity: &VectorFlatArtifactIdentity,
+        entries: &[(PersistenceReadRow, VectorEntry)],
+        covered_commit_version: CommitVersion,
+        fork_version_cap: Option<CommitVersion>,
+    ) -> EngineResult<VectorArtifactRef> {
+        let artifact = FlatVectorArtifact::from_visible_entries_with_budget(
+            identity.clone(),
+            entries,
+            default_flat_artifact_build_budget_bytes(),
+        )?;
+        let handle = self.artifacts.store_flat(&artifact)?;
+        VectorArtifactRef::new(
+            handle.artifact_id().as_str().to_owned(),
+            identity.source_id().as_str().to_owned(),
+            identity.source_branch_id(),
+            identity.source_generation(),
+            covered_commit_version.as_u64(),
+            fork_version_cap,
+            VectorArtifactKind::Flat,
+            identity.vector_dimension(),
+            identity.metric(),
+            handle.vector_count(),
+            handle.byte_len(),
+            handle.checksum(),
+        )
+    }
+
+    #[allow(dead_code)]
+    fn store_hnsw_artifact_ref(
+        &mut self,
+        identity: &VectorFlatArtifactIdentity,
+        entries: &[(PersistenceReadRow, VectorEntry)],
+        covered_commit_version: CommitVersion,
+        fork_version_cap: Option<CommitVersion>,
+    ) -> EngineResult<VectorArtifactRef> {
+        let artifact = HnswVectorArtifact::from_visible_entries_with_budget(
+            identity.clone(),
+            HnswArtifactConfig::default_for_engine(),
+            entries,
+            default_hnsw_artifact_build_budget_bytes(),
+        )?;
+        let handle = self.artifacts.store_hnsw(&artifact)?;
+        VectorArtifactRef::new(
+            handle.artifact_id().as_str().to_owned(),
+            identity.source_id().as_str().to_owned(),
+            identity.source_branch_id(),
+            identity.source_generation(),
+            covered_commit_version.as_u64(),
+            fork_version_cap,
+            VectorArtifactKind::Hnsw,
+            identity.vector_dimension(),
+            identity.metric(),
+            handle.vector_count(),
+            handle.byte_len(),
+            handle.checksum(),
+        )
+    }
+
+    fn visible_entries_from_source(
+        &self,
+        collection: &VectorCollectionName,
+        source: &PersistenceImmutableSource,
+    ) -> EngineResult<Vec<(PersistenceReadRow, VectorEntry)>> {
+        let mut selected: BTreeMap<VectorKey, VectorSourceSelectedRow> = BTreeMap::new();
+        for row in source.rows() {
+            let (row_collection, key) = decode_vector_key(&self.space, row.key())?;
+            if row_collection != *collection {
+                continue;
+            }
+            let candidate = if row.is_tombstone() {
+                VectorSourceSelectedRow {
+                    row: row.clone(),
+                    entry: None,
+                }
+            } else {
+                VectorSourceSelectedRow {
+                    row: row.clone(),
+                    entry: Some(Self::entry_from_row(collection, &key, row)?),
+                }
+            };
+            match selected.entry(key) {
+                std::collections::btree_map::Entry::Occupied(mut occupied) => {
+                    if persistence_row_is_newer(&candidate.row, &occupied.get().row) {
+                        occupied.insert(candidate);
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(vacant) => {
+                    vacant.insert(candidate);
+                }
+            }
+        }
+        Ok(selected
+            .into_values()
+            .filter_map(|selected| selected.entry.map(|entry| (selected.row, entry)))
+            .collect())
     }
 
     fn require_collection_config_history(
@@ -768,6 +2271,33 @@ impl<'a> VectorService<'a> {
                 Ok((row, entry))
             })
             .collect()
+    }
+
+    fn vector_query_snapshot(
+        &mut self,
+        record: &BranchCatalogRecord,
+        collection: &VectorCollectionName,
+        selector: ReadSelector,
+    ) -> EngineResult<VectorQuerySnapshot> {
+        let mut entries = Vec::new();
+        let mut tombstones = Vec::new();
+        for row in self.vector_rows(record, collection, selector)? {
+            let (_, key) = decode_vector_key(&self.space, row.key())?;
+            if row.is_tombstone() {
+                tombstones.push(VectorTombstone::new(
+                    key,
+                    row.commit_version(),
+                    row.commit_timestamp(),
+                ));
+            } else {
+                let entry = Self::entry_from_row(collection, &key, &row)?;
+                entries.push((row, entry));
+            }
+        }
+        Ok(VectorQuerySnapshot {
+            entries,
+            tombstones,
+        })
     }
 
     fn keys_after_cursor(
@@ -938,8 +2468,7 @@ impl<'a> VectorService<'a> {
             .filter(|mutation| mutation.is_delete())
             .count();
         let mut space_mutations =
-            self.control
-                .space_registration_mutations(self.persistence, record, &self.space)?;
+            ControlPlane::space_registration_mutations(self.persistence, record, &self.space)?;
         if !space_mutations.is_empty() {
             space_mutations.extend(mutations);
             mutations = space_mutations;
@@ -966,6 +2495,65 @@ fn next_prefix(prefix: &[u8]) -> Vec<u8> {
         }
     }
     vec![u8::MAX]
+}
+
+#[allow(dead_code)]
+fn active_delta_count_for_refs(
+    snapshot: &VectorQuerySnapshot,
+    artifact_refs: &[VectorArtifactRef],
+) -> usize {
+    let Some(watermark) = artifact_refs
+        .iter()
+        .map(VectorArtifactRef::covered_commit_version)
+        .min()
+    else {
+        return snapshot
+            .entries
+            .len()
+            .saturating_add(snapshot.tombstones.len());
+    };
+    snapshot
+        .entries
+        .iter()
+        .filter(|(row, _)| row.commit_version() > watermark)
+        .count()
+        .saturating_add(
+            snapshot
+                .tombstones
+                .iter()
+                .filter(|tombstone| tombstone.version() > watermark)
+                .count(),
+        )
+}
+
+#[cfg_attr(not(any(test, feature = "testkit")), allow(dead_code))]
+fn rows_covered_commit_version(rows: &[(PersistenceReadRow, VectorEntry)]) -> CommitVersion {
+    rows.iter()
+        .map(|(row, _)| row.commit_version())
+        .max()
+        .unwrap_or_else(|| CommitVersion::new(0))
+}
+
+#[allow(dead_code)]
+fn source_covered_commit_version(
+    space: &ProductSpace,
+    collection: &VectorCollectionName,
+    source: &PersistenceImmutableSource,
+) -> EngineResult<CommitVersion> {
+    let mut watermark = CommitVersion::new(0);
+    for row in source.rows() {
+        let (row_collection, _) = decode_vector_key(space, row.key())?;
+        if row_collection == *collection && row.commit_version() > watermark {
+            watermark = row.commit_version();
+        }
+    }
+    Ok(watermark)
+}
+
+fn persistence_row_is_newer(left: &PersistenceReadRow, right: &PersistenceReadRow) -> bool {
+    left.commit_version() > right.commit_version()
+        || (left.commit_version() == right.commit_version()
+            && left.commit_timestamp() > right.commit_timestamp())
 }
 
 fn exclusive_after_key(key: &[u8]) -> Vec<u8> {

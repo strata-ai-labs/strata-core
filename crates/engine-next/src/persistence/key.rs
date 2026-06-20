@@ -890,6 +890,70 @@ pub(crate) fn reserved_space_key(name: &str) -> Vec<u8> {
     key
 }
 
+pub(crate) fn vector_index_manifest_key(
+    space: &ProductSpace,
+    collection: &VectorCollectionName,
+) -> Vec<u8> {
+    let space_len = u16::try_from(space.as_str().len()).expect("validated product space length");
+    let collection_len =
+        u16::try_from(collection.as_str().len()).expect("validated collection name length");
+    let mut key = Vec::with_capacity(27 + space.as_str().len() + collection.as_str().len());
+    key.extend_from_slice(b"\x01vector:index-manifest:");
+    key.extend_from_slice(&space_len.to_be_bytes());
+    key.extend_from_slice(space.as_str().as_bytes());
+    key.extend_from_slice(&collection_len.to_be_bytes());
+    key.extend_from_slice(collection.as_str().as_bytes());
+    key
+}
+
+pub(crate) fn vector_index_manifest_prefix() -> Vec<u8> {
+    b"\x01vector:index-manifest:".to_vec()
+}
+
+pub(crate) fn decode_vector_index_manifest_key(
+    encoded: &[u8],
+) -> EngineResult<(ProductSpace, VectorCollectionName)> {
+    let prefix = vector_index_manifest_prefix();
+    if !encoded.starts_with(&prefix) {
+        return Err(EngineError::corruption(
+            "data_loss.engine.vector_index_manifest_key",
+            "stored vector index manifest key has an invalid prefix",
+        ));
+    }
+    let mut rest = &encoded[prefix.len()..];
+    let (space, next) = decode_length_prefixed_text(
+        rest,
+        "data_loss.engine.vector_index_manifest_key",
+        "stored vector index manifest key is missing a product space",
+    )?;
+    rest = next;
+    let (collection, rest) = decode_length_prefixed_text(
+        rest,
+        "data_loss.engine.vector_index_manifest_key",
+        "stored vector index manifest key is missing a collection name",
+    )?;
+    if !rest.is_empty() {
+        return Err(EngineError::corruption(
+            "data_loss.engine.vector_index_manifest_key",
+            "stored vector index manifest key has trailing bytes",
+        ));
+    }
+    Ok((
+        ProductSpace::new(space).map_err(|_| {
+            EngineError::corruption(
+                "data_loss.engine.vector_index_manifest_key",
+                "stored vector index manifest key contains an invalid product space",
+            )
+        })?,
+        VectorCollectionName::new(collection).map_err(|_| {
+            EngineError::corruption(
+                "data_loss.engine.vector_index_manifest_key",
+                "stored vector index manifest key contains an invalid collection name",
+            )
+        })?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -898,9 +962,9 @@ mod tests {
         decode_event_sequence, decode_event_type_index_key, decode_graph_binding_key,
         decode_graph_edge_key, decode_graph_metadata_key, decode_graph_node_key,
         decode_graph_reverse_edge_key, decode_json_document_id, decode_json_index_name,
-        decode_kv_key, decode_vector_collection_name, decode_vector_key, encode_event_key,
-        encode_event_meta_key, encode_event_space_prefix, encode_event_type_index_key,
-        encode_event_type_index_prefix, encode_graph_binding_key,
+        decode_kv_key, decode_vector_collection_name, decode_vector_index_manifest_key,
+        decode_vector_key, encode_event_key, encode_event_meta_key, encode_event_space_prefix,
+        encode_event_type_index_key, encode_event_type_index_prefix, encode_graph_binding_key,
         encode_graph_binding_target_prefix, encode_graph_edge_key, encode_graph_edge_prefix,
         encode_graph_metadata_key, encode_graph_metadata_prefix, encode_graph_node_key,
         encode_graph_node_prefix, encode_graph_reverse_edge_key, encode_graph_reverse_edge_prefix,
@@ -909,7 +973,7 @@ mod tests {
         encode_vector_collection_entry_prefix, encode_vector_collection_key,
         encode_vector_collection_prefix, encode_vector_key, local_instance_identity_key,
         migration_registry_key, reserved_space_key, space_catalog_key, space_index_key,
-        storage_registry_key,
+        storage_registry_key, vector_index_manifest_key, vector_index_manifest_prefix,
     };
     use crate::data::event::{EventSequence, EventType};
     use crate::data::graph::{
@@ -1770,6 +1834,28 @@ mod tests {
         assert_eq!(
             reserved_space_key("_system_"),
             b"\x01space:reserved:\0\x08_system_".to_vec()
+        );
+        assert_eq!(
+            vector_index_manifest_key(
+                &ProductSpace::new("default").expect("valid space"),
+                &VectorCollectionName::new("docs").expect("valid collection")
+            ),
+            b"\x01vector:index-manifest:\0\x07default\0\x04docs".to_vec()
+        );
+        assert_eq!(
+            vector_index_manifest_prefix(),
+            b"\x01vector:index-manifest:".to_vec()
+        );
+        assert_eq!(
+            decode_vector_index_manifest_key(&vector_index_manifest_key(
+                &ProductSpace::new("default").expect("valid space"),
+                &VectorCollectionName::new("docs").expect("valid collection")
+            ))
+            .expect("manifest key decodes"),
+            (
+                ProductSpace::new("default").expect("valid space"),
+                VectorCollectionName::new("docs").expect("valid collection")
+            )
         );
     }
 }

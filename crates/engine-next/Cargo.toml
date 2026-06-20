@@ -20,6 +20,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 uuid = { workspace = true }
+fast-hnsw = "1.0.1"
 
 [dev-dependencies]
 tempfile = { workspace = true }
