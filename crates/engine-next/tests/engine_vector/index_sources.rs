@@ -270,6 +270,103 @@ fn vector_durable_missing_hnsw_artifacts_fall_back_to_flat_without_rebuild() {
 
 #[cfg(feature = "testkit")]
 #[test]
+fn vector_durable_hnsw_load_budget_falls_back_to_flat_after_reopen() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let docs = collection("durable-hnsw-load-budget");
+    {
+        let mut database = open_durable_database(tempdir.path()).expect("durable open succeeds");
+        create_source_owned_hnsw_artifacts(&mut database, &docs);
+        database.close().expect("durable close succeeds");
+    }
+
+    let mut reopened = open_durable_database(tempdir.path()).expect("reopen succeeds");
+    let mut vectors = vector_service(&mut reopened, "default", "default");
+    let exact = vectors
+        .query_exact_for_test(&docs, &embedding([1.0, 0.0]), 8, None)
+        .expect("exact query succeeds");
+    let (indexed, diagnostics) = vectors
+        .query_with_index_policy_for_test(
+            &docs,
+            &embedding([1.0, 0.0]),
+            8,
+            None,
+            VectorIndexPolicy::hnsw_only_for_test().with_hnsw_artifact_load_budget_for_test(1),
+        )
+        .expect("diagnostic query succeeds");
+
+    assert_search_results_match(&indexed, &exact);
+    assert_eq!(diagnostics.manifest_status(), "loaded");
+    assert_eq!(diagnostics.hnsw_source_count(), 0);
+    assert_eq!(diagnostics.flat_source_count(), 1);
+    assert_eq!(diagnostics.exact_source_count(), 0);
+    assert_eq!(diagnostics.exact_fallback_count(), 0);
+    assert_eq!(
+        diagnostics.last_query_fallback_reason(),
+        Some("artifact_unavailable")
+    );
+    assert!(diagnostics.artifact_sources().iter().any(|source| {
+        source.artifact_id().starts_with("hnsw:")
+            && source.status() == "over_budget"
+            && !source.searched()
+    }));
+    assert!(diagnostics.artifact_sources().iter().any(|source| {
+        source.artifact_id().starts_with("flat:")
+            && source.status() == "loaded"
+            && source.searched()
+    }));
+}
+
+#[cfg(feature = "testkit")]
+#[test]
+fn vector_durable_hnsw_memory_budget_falls_back_to_flat_after_reopen() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let docs = collection("durable-hnsw-memory-budget");
+    {
+        let mut database = open_durable_database(tempdir.path()).expect("durable open succeeds");
+        create_source_owned_hnsw_artifacts(&mut database, &docs);
+        database.close().expect("durable close succeeds");
+    }
+
+    let mut reopened = open_durable_database(tempdir.path()).expect("reopen succeeds");
+    let mut vectors = vector_service(&mut reopened, "default", "default");
+    let exact = vectors
+        .query_exact_for_test(&docs, &embedding([1.0, 0.0]), 8, None)
+        .expect("exact query succeeds");
+    let (indexed, diagnostics) = vectors
+        .query_with_index_policy_for_test(
+            &docs,
+            &embedding([1.0, 0.0]),
+            8,
+            None,
+            VectorIndexPolicy::hnsw_only_for_test().with_hnsw_memory_budget_for_test(1),
+        )
+        .expect("diagnostic query succeeds");
+
+    assert_search_results_match(&indexed, &exact);
+    assert_eq!(diagnostics.manifest_status(), "loaded");
+    assert_eq!(diagnostics.hnsw_memory_budget_bytes(), 1);
+    assert_eq!(diagnostics.hnsw_source_count(), 0);
+    assert_eq!(diagnostics.flat_source_count(), 1);
+    assert_eq!(diagnostics.exact_source_count(), 0);
+    assert_eq!(diagnostics.exact_fallback_count(), 0);
+    assert_eq!(
+        diagnostics.last_query_fallback_reason(),
+        Some("hnsw_memory_budget_exceeded")
+    );
+    assert!(diagnostics.artifact_sources().iter().any(|source| {
+        source.artifact_id().starts_with("hnsw:")
+            && source.status() == "loaded"
+            && !source.searched()
+    }));
+    assert!(diagnostics.artifact_sources().iter().any(|source| {
+        source.artifact_id().starts_with("flat:")
+            && source.status() == "loaded"
+            && source.searched()
+    }));
+}
+
+#[cfg(feature = "testkit")]
+#[test]
 fn vector_durable_corrupt_hnsw_artifacts_fall_back_to_flat_without_rebuild() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let docs = collection("durable-hnsw-corrupt");
@@ -378,6 +475,47 @@ fn vector_durable_missing_flat_artifacts_fall_back_to_exact_without_rebuild() {
 
 #[cfg(feature = "testkit")]
 #[test]
+fn vector_durable_flat_load_budget_falls_back_to_exact_after_reopen() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let docs = collection("durable-flat-load-budget");
+    {
+        let mut database = open_durable_database(tempdir.path()).expect("durable open succeeds");
+        create_source_owned_parent_artifacts(&mut database, &docs);
+        database.close().expect("durable close succeeds");
+    }
+
+    let mut reopened = open_durable_database(tempdir.path()).expect("reopen succeeds");
+    let mut vectors = vector_service(&mut reopened, "default", "default");
+    let exact = vectors
+        .query_exact_for_test(&docs, &embedding([1.0, 0.0]), 6, None)
+        .expect("exact query succeeds");
+    let (indexed, diagnostics) = vectors
+        .query_with_index_policy_for_test(
+            &docs,
+            &embedding([1.0, 0.0]),
+            6,
+            None,
+            VectorIndexPolicy::flat_only_for_test().with_flat_artifact_load_budget_for_test(1),
+        )
+        .expect("diagnostic query succeeds");
+
+    assert_search_results_match(&indexed, &exact);
+    assert_eq!(diagnostics.manifest_status(), "loaded");
+    assert_eq!(diagnostics.flat_source_count(), 0);
+    assert_eq!(diagnostics.exact_source_count(), 1);
+    assert_eq!(diagnostics.exact_fallback_count(), 0);
+    assert_eq!(
+        diagnostics.last_query_fallback_reason(),
+        Some("artifact_unavailable")
+    );
+    assert!(diagnostics
+        .artifact_sources()
+        .iter()
+        .all(|source| source.status() == "over_budget" && !source.searched()));
+}
+
+#[cfg(feature = "testkit")]
+#[test]
 fn vector_durable_corrupt_flat_artifacts_fall_back_to_exact_without_rebuild() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let docs = collection("durable-flat-corrupt");
@@ -416,6 +554,59 @@ fn vector_durable_corrupt_flat_artifacts_fall_back_to_exact_without_rebuild() {
 
 #[cfg(feature = "testkit")]
 #[test]
+fn vector_durable_partially_written_flat_artifacts_on_reopen_fall_back_to_exact() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let docs = collection("durable-flat-partial-reopen");
+    let artifact_ids = {
+        let mut database = open_durable_database(tempdir.path()).expect("durable open succeeds");
+        let artifact_ids = create_source_owned_parent_artifacts(&mut database, &docs);
+        database.close().expect("durable close succeeds");
+        artifact_ids
+    };
+    assert!(artifact_ids.len() >= 2);
+
+    for artifact_id in &artifact_ids {
+        let path = durable_flat_artifact_file(tempdir.path(), artifact_id);
+        let bytes = std::fs::read(&path).expect("durable flat artifact exists before truncation");
+        assert!(bytes.len() > 8);
+        std::fs::write(&path, &bytes[..8]).expect("durable flat artifact truncates");
+    }
+
+    let mut reopened = open_durable_database(tempdir.path()).expect("reopen succeeds");
+    let mut vectors = vector_service(&mut reopened, "default", "default");
+    let exact = vectors
+        .query_exact_for_test(&docs, &embedding([1.0, 0.0]), 6, None)
+        .expect("exact query succeeds");
+    let (indexed, diagnostics) = vectors
+        .query_with_index_diagnostics_for_test(&docs, &embedding([1.0, 0.0]), 6, None)
+        .expect("diagnostic query succeeds");
+
+    assert_search_results_match(&indexed, &exact);
+    assert_eq!(diagnostics.manifest_status(), "loaded");
+    assert_eq!(diagnostics.flat_source_count(), 0);
+    assert_eq!(diagnostics.exact_source_count(), 1);
+    assert_eq!(diagnostics.exact_fallback_count(), 0);
+    assert_eq!(
+        diagnostics.last_query_fallback_reason(),
+        Some("artifact_unavailable")
+    );
+    assert!(diagnostics
+        .artifact_sources()
+        .iter()
+        .all(|source| source.status() == "corrupt" && !source.searched()));
+    for artifact_id in &artifact_ids {
+        let path = durable_flat_artifact_file(tempdir.path(), artifact_id);
+        assert_eq!(
+            std::fs::metadata(path)
+                .expect("truncated flat artifact still exists")
+                .len(),
+            8
+        );
+    }
+}
+
+#[cfg(feature = "testkit")]
+#[test]
 fn vector_durable_stale_flat_artifacts_fall_back_to_exact_without_rebuild() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let docs = collection("durable-flat-stale");
@@ -450,6 +641,95 @@ fn vector_durable_stale_flat_artifacts_fall_back_to_exact_without_rebuild() {
         .artifact_sources()
         .iter()
         .all(|source| source.status() == "stale" && !source.searched()));
+}
+
+#[cfg(feature = "testkit")]
+#[test]
+fn vector_durable_partially_written_hnsw_artifacts_on_reopen_fall_back_to_flat() {
+    let tempdir = tempfile::tempdir().expect("tempdir");
+    let docs = collection("durable-hnsw-partial-reopen");
+    let (flat_ids, hnsw_ids) = {
+        let mut database = open_durable_database(tempdir.path()).expect("durable open succeeds");
+        create_source_owned_hnsw_artifacts(&mut database, &docs);
+        let mut vectors = vector_service(&mut database, "default", "default");
+        let artifact_ids = vectors
+            .index_manifest_artifact_ids_for_test(&docs)
+            .expect("manifest artifact IDs read");
+        database.close().expect("durable close succeeds");
+        let flat_ids = artifact_ids
+            .iter()
+            .filter(|artifact_id| artifact_id.starts_with("flat:"))
+            .cloned()
+            .collect::<Vec<_>>();
+        let hnsw_ids = artifact_ids
+            .into_iter()
+            .filter(|artifact_id| artifact_id.starts_with("hnsw:"))
+            .collect::<Vec<_>>();
+        (flat_ids, hnsw_ids)
+    };
+    assert_eq!(flat_ids.len(), 1);
+    assert_eq!(hnsw_ids.len(), 1);
+
+    for artifact_id in &hnsw_ids {
+        let path = durable_hnsw_artifact_file(tempdir.path(), artifact_id);
+        let bytes = std::fs::read(&path).expect("durable HNSW artifact exists before truncation");
+        assert!(bytes.len() > 8);
+        std::fs::write(&path, &bytes[..8]).expect("durable HNSW artifact truncates");
+    }
+
+    let mut reopened = open_durable_database(tempdir.path()).expect("reopen succeeds");
+    let mut vectors = vector_service(&mut reopened, "default", "default");
+    let exact = vectors
+        .query_exact_for_test(&docs, &embedding([1.0, 0.0]), 8, None)
+        .expect("exact query succeeds");
+    let (indexed, diagnostics) = vectors
+        .query_with_index_policy_for_test(
+            &docs,
+            &embedding([1.0, 0.0]),
+            8,
+            None,
+            VectorIndexPolicy::hnsw_only_for_test(),
+        )
+        .expect("diagnostic query succeeds");
+
+    assert_search_results_match(&indexed, &exact);
+    assert_eq!(diagnostics.manifest_status(), "loaded");
+    assert_eq!(diagnostics.hnsw_source_count(), 0);
+    assert_eq!(diagnostics.flat_source_count(), 1);
+    assert_eq!(diagnostics.exact_source_count(), 0);
+    assert_eq!(diagnostics.exact_fallback_count(), 0);
+    assert_eq!(
+        diagnostics.last_query_fallback_reason(),
+        Some("artifact_unavailable")
+    );
+    assert!(diagnostics.artifact_sources().iter().any(|source| {
+        source.artifact_id().starts_with("hnsw:")
+            && source.status() == "corrupt"
+            && !source.searched()
+    }));
+    assert!(diagnostics.artifact_sources().iter().any(|source| {
+        source.artifact_id().starts_with("flat:")
+            && source.status() == "loaded"
+            && source.searched()
+    }));
+    for artifact_id in &hnsw_ids {
+        let path = durable_hnsw_artifact_file(tempdir.path(), artifact_id);
+        assert_eq!(
+            std::fs::metadata(path)
+                .expect("truncated HNSW artifact still exists")
+                .len(),
+            8
+        );
+    }
+    for artifact_id in &flat_ids {
+        let path = durable_flat_artifact_file(tempdir.path(), artifact_id);
+        assert!(
+            std::fs::metadata(path)
+                .expect("flat fallback artifact remains durable")
+                .len()
+                > 8
+        );
+    }
 }
 
 #[cfg(feature = "testkit")]

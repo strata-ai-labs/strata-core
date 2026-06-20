@@ -1045,19 +1045,19 @@ fn vector_artifact_io_error(message: &'static str, error: std::io::Error) -> Eng
     )
 }
 
-pub(crate) fn default_flat_artifact_load_budget_bytes() -> usize {
+pub(crate) const fn default_flat_artifact_load_budget_bytes() -> usize {
     DEFAULT_FLAT_ARTIFACT_LOAD_BUDGET_BYTES
 }
 
-pub(crate) fn default_hnsw_artifact_load_budget_bytes() -> usize {
+pub(crate) const fn default_hnsw_artifact_load_budget_bytes() -> usize {
     DEFAULT_HNSW_ARTIFACT_LOAD_BUDGET_BYTES
 }
 
-pub(crate) fn default_flat_artifact_build_budget_bytes() -> usize {
+pub(crate) const fn default_flat_artifact_build_budget_bytes() -> usize {
     DEFAULT_FLAT_ARTIFACT_BUILD_BUDGET_BYTES
 }
 
-pub(crate) fn default_hnsw_artifact_build_budget_bytes() -> usize {
+pub(crate) const fn default_hnsw_artifact_build_budget_bytes() -> usize {
     DEFAULT_HNSW_ARTIFACT_BUILD_BUDGET_BYTES
 }
 

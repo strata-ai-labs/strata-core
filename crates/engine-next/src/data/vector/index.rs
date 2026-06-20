@@ -15,9 +15,9 @@ use crate::diagnostics::EngineResult;
 use crate::persistence::{PersistenceReadRow, ReadSelector};
 
 use super::{
-    vector_score, FlatVectorArtifact, HnswVectorArtifact, VectorCollectionName,
-    VectorDistanceMetric, VectorEmbedding, VectorEntry, VectorFilter, VectorKey, VectorSearchMatch,
-    VectorSearchResult,
+    default_flat_artifact_load_budget_bytes, default_hnsw_artifact_load_budget_bytes, vector_score,
+    FlatVectorArtifact, HnswVectorArtifact, VectorCollectionName, VectorDistanceMetric,
+    VectorEmbedding, VectorEntry, VectorFilter, VectorKey, VectorSearchMatch, VectorSearchResult,
 };
 
 const DEFAULT_COLLECTION_EXACT_THRESHOLD: usize = 64;
@@ -83,6 +83,8 @@ pub struct VectorIndexPolicy {
     overfetch_factor: usize,
     filtered_underfill_fallback: bool,
     hnsw_memory_budget_bytes: usize,
+    flat_artifact_load_budget_bytes: usize,
+    hnsw_artifact_load_budget_bytes: usize,
 }
 
 impl Default for VectorIndexPolicy {
@@ -96,6 +98,8 @@ impl Default for VectorIndexPolicy {
             overfetch_factor: DEFAULT_OVERFETCH_FACTOR,
             filtered_underfill_fallback: true,
             hnsw_memory_budget_bytes: DEFAULT_HNSW_MEMORY_BUDGET_BYTES,
+            flat_artifact_load_budget_bytes: default_flat_artifact_load_budget_bytes(),
+            hnsw_artifact_load_budget_bytes: default_hnsw_artifact_load_budget_bytes(),
         }
     }
 }
@@ -114,6 +118,8 @@ impl VectorIndexPolicy {
             overfetch_factor: DEFAULT_OVERFETCH_FACTOR,
             filtered_underfill_fallback: true,
             hnsw_memory_budget_bytes: DEFAULT_HNSW_MEMORY_BUDGET_BYTES,
+            flat_artifact_load_budget_bytes: default_flat_artifact_load_budget_bytes(),
+            hnsw_artifact_load_budget_bytes: default_hnsw_artifact_load_budget_bytes(),
         }
     }
 
@@ -130,6 +136,8 @@ impl VectorIndexPolicy {
             overfetch_factor: DEFAULT_OVERFETCH_FACTOR,
             filtered_underfill_fallback: true,
             hnsw_memory_budget_bytes: DEFAULT_HNSW_MEMORY_BUDGET_BYTES,
+            flat_artifact_load_budget_bytes: default_flat_artifact_load_budget_bytes(),
+            hnsw_artifact_load_budget_bytes: default_hnsw_artifact_load_budget_bytes(),
         }
     }
 
@@ -146,6 +154,8 @@ impl VectorIndexPolicy {
             overfetch_factor: DEFAULT_OVERFETCH_FACTOR,
             filtered_underfill_fallback: true,
             hnsw_memory_budget_bytes: DEFAULT_HNSW_MEMORY_BUDGET_BYTES,
+            flat_artifact_load_budget_bytes: default_flat_artifact_load_budget_bytes(),
+            hnsw_artifact_load_budget_bytes: default_hnsw_artifact_load_budget_bytes(),
         }
     }
 
@@ -154,6 +164,22 @@ impl VectorIndexPolicy {
     /// Returns this policy with a different HNSW memory budget.
     pub const fn with_hnsw_memory_budget_for_test(mut self, bytes: usize) -> Self {
         self.hnsw_memory_budget_bytes = bytes;
+        self
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    #[must_use]
+    /// Returns this policy with a different flat artifact load budget.
+    pub const fn with_flat_artifact_load_budget_for_test(mut self, bytes: usize) -> Self {
+        self.flat_artifact_load_budget_bytes = bytes;
+        self
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    #[must_use]
+    /// Returns this policy with a different HNSW artifact load budget.
+    pub const fn with_hnsw_artifact_load_budget_for_test(mut self, bytes: usize) -> Self {
+        self.hnsw_artifact_load_budget_bytes = bytes;
         self
     }
 
@@ -221,6 +247,14 @@ impl VectorIndexPolicy {
 
     const fn hnsw_memory_budget_bytes(self) -> usize {
         self.hnsw_memory_budget_bytes
+    }
+
+    pub(crate) const fn flat_artifact_load_budget_bytes(self) -> usize {
+        self.flat_artifact_load_budget_bytes
+    }
+
+    pub(crate) const fn hnsw_artifact_load_budget_bytes(self) -> usize {
+        self.hnsw_artifact_load_budget_bytes
     }
 }
 
@@ -555,7 +589,6 @@ impl VectorIndexDiagnostics {
         match source.kind() {
             VectorSourceKind::Exact => {
                 self.exact_source_count = self.exact_source_count.saturating_add(1);
-                self.exact_fallback_count = self.exact_fallback_count.saturating_add(1);
                 self.last_query_used_index = false;
             }
             VectorSourceKind::ActiveDelta => {
@@ -588,6 +621,7 @@ impl VectorIndexDiagnostics {
 
     fn record_exact_fallback(&mut self, reason: &'static str) {
         self.resolved_index_kind_summary = "exact";
+        self.exact_fallback_count = self.exact_fallback_count.saturating_add(1);
         self.last_query_used_index = false;
         self.last_query_fallback_reason = Some(reason);
     }
@@ -1738,6 +1772,7 @@ mod tests {
         assert_eq!(result_bytes(&planned), result_bytes(&legacy));
         assert_eq!(diagnostics.resolved_index_kind_summary, "exact");
         assert_eq!(diagnostics.exact_source_count, 1);
+        assert_eq!(diagnostics.exact_fallback_count, 0);
         assert_eq!(diagnostics.source_candidate_limit, usize::MAX);
     }
 
@@ -1772,6 +1807,7 @@ mod tests {
         assert_eq!(diagnostics.policy_mode, "auto");
         assert_eq!(diagnostics.resolved_index_kind_summary, "exact");
         assert_eq!(diagnostics.exact_source_count, 1);
+        assert_eq!(diagnostics.exact_fallback_count, 0);
         assert_eq!(diagnostics.indexed_source_count, 0);
         assert_eq!(diagnostics.source_candidate_limit, usize::MAX);
     }

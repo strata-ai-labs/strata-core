@@ -1667,6 +1667,7 @@ impl<'a> VectorService<'a> {
                         collection_generation,
                         artifact_ref,
                         &mut flat_artifacts,
+                        policy.flat_artifact_load_budget_bytes(),
                     )?;
                     artifact_reports.push(VectorArtifactSourceDiagnostic::new(
                         artifact_id,
@@ -1689,6 +1690,7 @@ impl<'a> VectorService<'a> {
                         collection_generation,
                         artifact_ref,
                         &mut hnsw_artifacts,
+                        policy.hnsw_artifact_load_budget_bytes(),
                     )?;
                     artifact_reports.push(VectorArtifactSourceDiagnostic::new(
                         artifact_id,
@@ -1729,6 +1731,7 @@ impl<'a> VectorService<'a> {
         collection_generation: CommitVersion,
         artifact_ref: &VectorArtifactRef,
         flat_artifacts: &mut Vec<VectorFlatArtifactSourceInput>,
+        load_budget_bytes: usize,
     ) -> EngineResult<&'static str> {
         let identity = VectorFlatArtifactIdentity::from_manifest_ref(
             self.space.clone(),
@@ -1736,7 +1739,8 @@ impl<'a> VectorService<'a> {
             collection_generation.as_u64(),
             artifact_ref,
         )?;
-        let (artifact, status) = self.load_flat_artifact_for_query(&identity, artifact_ref);
+        let (artifact, status) =
+            self.load_flat_artifact_for_query(&identity, artifact_ref, load_budget_bytes);
         if let Some(artifact) = artifact {
             flat_artifacts.push(VectorFlatArtifactSourceInput::new(
                 artifact,
@@ -1753,6 +1757,7 @@ impl<'a> VectorService<'a> {
         collection_generation: CommitVersion,
         artifact_ref: &VectorArtifactRef,
         hnsw_artifacts: &mut Vec<VectorHnswArtifactSourceInput>,
+        load_budget_bytes: usize,
     ) -> EngineResult<&'static str> {
         let identity = VectorFlatArtifactIdentity::from_hnsw_manifest_ref(
             self.space.clone(),
@@ -1760,7 +1765,8 @@ impl<'a> VectorService<'a> {
             collection_generation.as_u64(),
             artifact_ref,
         )?;
-        let (artifact, status) = self.load_hnsw_artifact_for_query(&identity, artifact_ref);
+        let (artifact, status) =
+            self.load_hnsw_artifact_for_query(&identity, artifact_ref, load_budget_bytes);
         if let Some(artifact) = artifact {
             hnsw_artifacts.push(VectorHnswArtifactSourceInput::new(
                 artifact,
@@ -1775,10 +1781,9 @@ impl<'a> VectorService<'a> {
         &mut self,
         identity: &VectorFlatArtifactIdentity,
         artifact_ref: &VectorArtifactRef,
+        load_budget_bytes: usize,
     ) -> (Option<FlatVectorArtifact>, &'static str) {
-        let load = self
-            .artifacts
-            .load_flat(identity, default_flat_artifact_load_budget_bytes());
+        let load = self.artifacts.load_flat(identity, load_budget_bytes);
         match load {
             super::VectorFlatArtifactLoad::Loaded { artifact, report } => {
                 if report.byte_len() == Some(artifact_ref.derived_bytes())
@@ -1799,10 +1804,9 @@ impl<'a> VectorService<'a> {
         &mut self,
         identity: &VectorFlatArtifactIdentity,
         artifact_ref: &VectorArtifactRef,
+        load_budget_bytes: usize,
     ) -> (Option<HnswVectorArtifact>, &'static str) {
-        let load = self
-            .artifacts
-            .load_hnsw(identity, default_hnsw_artifact_load_budget_bytes());
+        let load = self.artifacts.load_hnsw(identity, load_budget_bytes);
         match load {
             super::VectorHnswArtifactLoad::Loaded { artifact, report } => {
                 if report.byte_len() == Some(artifact_ref.derived_bytes())

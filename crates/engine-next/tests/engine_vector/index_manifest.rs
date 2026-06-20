@@ -162,6 +162,304 @@ fn vector_index_manifest_config_mismatch_falls_back_to_exact_results() {
 
 #[cfg(feature = "testkit")]
 #[test]
+fn vector_index_manifest_rejects_wrong_metric_ref() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut vectors = vector_service(&mut database, "default", "default");
+    let docs = collection("manifest-wrong-metric");
+    vectors
+        .create_collection(docs.clone(), config(2, VectorDistanceMetric::Cosine))
+        .expect("collection create succeeds");
+    let entries = (0_u16..72)
+        .map(|index| descending_fixture_upsert(index, json!({"kind": "doc"})))
+        .collect::<Vec<_>>();
+    vectors
+        .batch_upsert(&docs, &entries)
+        .expect("batch upsert succeeds");
+    vectors
+        .seed_synthetic_index_manifest_for_test(
+            &docs,
+            &[(storage_branch_id(0x01), 2, VectorDistanceMetric::DotProduct)],
+            0,
+        )
+        .expect("wrong metric manifest seed succeeds");
+
+    let exact = vectors
+        .query_exact_for_test(&docs, &embedding([1.0, 0.0]), 5, None)
+        .expect("exact query succeeds");
+    let (indexed, diagnostics) = vectors
+        .query_with_index_diagnostics_for_test(&docs, &embedding([1.0, 0.0]), 5, None)
+        .expect("diagnostic query succeeds");
+
+    assert_search_results_match(&indexed, &exact);
+    assert_eq!(
+        match_key_strings(&indexed),
+        vec!["doc-000", "doc-001", "doc-002", "doc-003", "doc-004"]
+    );
+    assert_eq!(diagnostics.manifest_status(), "stale");
+    assert_eq!(diagnostics.manifest_ref_count(), 0);
+    assert_eq!(diagnostics.flat_source_count(), 0);
+    assert_eq!(diagnostics.exact_source_count(), 1);
+    assert_eq!(diagnostics.last_query_fallback_reason(), Some("stale"));
+}
+
+#[cfg(feature = "testkit")]
+#[test]
+fn vector_index_manifest_rejects_wrong_dimension_ref() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut vectors = vector_service(&mut database, "default", "default");
+    let docs = collection("manifest-wrong-dimension");
+    vectors
+        .create_collection(docs.clone(), config(2, VectorDistanceMetric::Cosine))
+        .expect("collection create succeeds");
+    let entries = (0_u16..72)
+        .map(|index| descending_fixture_upsert(index, json!({"kind": "doc"})))
+        .collect::<Vec<_>>();
+    vectors
+        .batch_upsert(&docs, &entries)
+        .expect("batch upsert succeeds");
+    vectors
+        .seed_synthetic_index_manifest_for_test(
+            &docs,
+            &[(storage_branch_id(0x01), 3, VectorDistanceMetric::Cosine)],
+            0,
+        )
+        .expect("wrong dimension manifest seed succeeds");
+
+    let exact = vectors
+        .query_exact_for_test(&docs, &embedding([1.0, 0.0]), 5, None)
+        .expect("exact query succeeds");
+    let (indexed, diagnostics) = vectors
+        .query_with_index_diagnostics_for_test(&docs, &embedding([1.0, 0.0]), 5, None)
+        .expect("diagnostic query succeeds");
+
+    assert_search_results_match(&indexed, &exact);
+    assert_eq!(
+        match_key_strings(&indexed),
+        vec!["doc-000", "doc-001", "doc-002", "doc-003", "doc-004"]
+    );
+    assert_eq!(diagnostics.manifest_status(), "stale");
+    assert_eq!(diagnostics.manifest_ref_count(), 0);
+    assert_eq!(diagnostics.flat_source_count(), 0);
+    assert_eq!(diagnostics.exact_source_count(), 1);
+    assert_eq!(diagnostics.last_query_fallback_reason(), Some("stale"));
+}
+
+#[cfg(feature = "testkit")]
+#[test]
+fn vector_index_identity_excludes_query_timestamp_and_visible_count_in_cache_and_durable_modes() {
+    run_database_modes(exercise_vector_index_identity_excludes_query_timestamp_and_visible_count);
+}
+
+#[cfg(feature = "testkit")]
+fn exercise_vector_index_identity_excludes_query_timestamp_and_visible_count(
+    database: &mut Database,
+) {
+    let mut vectors = vector_service(database, "default", "default");
+    let docs = collection("manifest-identity-boundary");
+    vectors
+        .create_collection(docs.clone(), config(2, VectorDistanceMetric::DotProduct))
+        .expect("collection create succeeds");
+    let entries = (0_u16..72)
+        .map(|index| descending_fixture_upsert(index, json!({"kind": "doc"})))
+        .collect::<Vec<_>>();
+    vectors
+        .batch_upsert(&docs, &entries)
+        .expect("batch upsert succeeds");
+    vectors
+        .seed_flat_index_manifest_from_visible_rows_for_test(&docs, "source-a")
+        .expect("flat artifact seed succeeds");
+    let artifact_ids = vectors
+        .index_manifest_artifact_ids_for_test(&docs)
+        .expect("manifest artifact IDs read");
+    assert_eq!(artifact_ids.len(), 1);
+    let first_timestamp = vectors
+        .upsert(
+            docs.clone(),
+            vector_key("marker-a"),
+            embedding([300.0, 0.0]),
+            Some(metadata(json!({"kind": "doc"}))),
+        )
+        .expect("first marker upsert succeeds")
+        .commit()
+        .timestamp();
+
+    let exact_at = vectors
+        .query_at_exact_for_test(&docs, &embedding([1.0, 0.0]), 3, None, first_timestamp)
+        .expect("timestamp exact query succeeds");
+    let (indexed_at, at_diagnostics) = vectors
+        .query_at_with_index_policy_for_test(
+            &docs,
+            &embedding([1.0, 0.0]),
+            3,
+            None,
+            first_timestamp,
+            VectorIndexPolicy::flat_only_for_test(),
+        )
+        .expect("timestamp indexed query succeeds");
+    assert_search_results_match(&indexed_at, &exact_at);
+    assert_eq!(
+        match_key_strings(&indexed_at),
+        vec!["marker-a", "doc-000", "doc-001"]
+    );
+    assert_eq!(at_diagnostics.manifest_status(), "loaded");
+    assert_eq!(at_diagnostics.flat_source_count(), 1);
+    assert_eq!(at_diagnostics.active_delta_source_count(), 1);
+    assert_eq!(at_diagnostics.exact_source_count(), 0);
+    assert_eq!(at_diagnostics.last_query_fallback_reason(), None);
+    assert_eq!(at_diagnostics.artifact_sources().len(), 1);
+    assert_eq!(
+        at_diagnostics.artifact_sources()[0].artifact_id(),
+        artifact_ids[0]
+    );
+    assert_eq!(at_diagnostics.artifact_sources()[0].status(), "loaded");
+
+    vectors
+        .upsert(
+            docs.clone(),
+            vector_key("marker-b"),
+            embedding([400.0, 0.0]),
+            Some(metadata(json!({"kind": "doc"}))),
+        )
+        .expect("second marker upsert succeeds");
+    let exact_latest = vectors
+        .query_exact_for_test(&docs, &embedding([1.0, 0.0]), 3, None)
+        .expect("latest exact query succeeds");
+    let (indexed_latest, latest_diagnostics) = vectors
+        .query_with_index_policy_for_test(
+            &docs,
+            &embedding([1.0, 0.0]),
+            3,
+            None,
+            VectorIndexPolicy::flat_only_for_test(),
+        )
+        .expect("latest indexed query succeeds");
+    assert_search_results_match(&indexed_latest, &exact_latest);
+    assert_eq!(
+        match_key_strings(&indexed_latest),
+        vec!["marker-b", "marker-a", "doc-000"]
+    );
+    assert_eq!(latest_diagnostics.manifest_status(), "loaded");
+    assert_eq!(latest_diagnostics.flat_source_count(), 1);
+    assert_eq!(latest_diagnostics.active_delta_source_count(), 1);
+    assert_eq!(latest_diagnostics.exact_source_count(), 0);
+    assert_eq!(latest_diagnostics.last_query_fallback_reason(), None);
+    assert_eq!(latest_diagnostics.artifact_sources().len(), 1);
+    assert_eq!(
+        latest_diagnostics.artifact_sources()[0].artifact_id(),
+        artifact_ids[0]
+    );
+    assert_eq!(latest_diagnostics.artifact_sources()[0].status(), "loaded");
+
+    let exact_at_again = vectors
+        .query_at_exact_for_test(&docs, &embedding([1.0, 0.0]), 3, None, first_timestamp)
+        .expect("timestamp exact query succeeds after count changes");
+    let (indexed_at_again, at_again_diagnostics) = vectors
+        .query_at_with_index_policy_for_test(
+            &docs,
+            &embedding([1.0, 0.0]),
+            3,
+            None,
+            first_timestamp,
+            VectorIndexPolicy::flat_only_for_test(),
+        )
+        .expect("timestamp indexed query succeeds after count changes");
+    assert_search_results_match(&indexed_at_again, &exact_at_again);
+    assert_eq!(
+        match_key_strings(&indexed_at_again),
+        vec!["marker-a", "doc-000", "doc-001"]
+    );
+    assert_eq!(at_again_diagnostics.manifest_status(), "loaded");
+    assert_eq!(at_again_diagnostics.flat_source_count(), 1);
+    assert_eq!(at_again_diagnostics.exact_source_count(), 0);
+    assert_eq!(at_again_diagnostics.last_query_fallback_reason(), None);
+    assert_eq!(
+        at_again_diagnostics.artifact_sources()[0].artifact_id(),
+        artifact_ids[0]
+    );
+    assert_eq!(
+        at_again_diagnostics.artifact_sources()[0].status(),
+        "loaded"
+    );
+}
+
+#[cfg(feature = "testkit")]
+#[test]
+fn vector_index_manifest_size_is_ref_bounded_not_vector_count_bounded() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let small_docs = collection("manifest-size-a");
+    let large_docs = collection("manifest-size-b");
+    let mut vectors = vector_service(&mut database, "default", "default");
+    vectors
+        .create_collection(
+            small_docs.clone(),
+            config(2, VectorDistanceMetric::DotProduct),
+        )
+        .expect("small collection create succeeds");
+    let small_entries = (0_u16..16)
+        .map(|index| descending_fixture_upsert(index, json!({"kind": "doc"})))
+        .collect::<Vec<_>>();
+    vectors
+        .batch_upsert(&small_docs, &small_entries)
+        .expect("small batch upsert succeeds");
+    vectors
+        .seed_flat_index_manifest_from_visible_rows_for_test(&small_docs, "source-a")
+        .expect("small flat artifact seed succeeds");
+    let small_manifest_bytes = vectors
+        .index_manifest_byte_len_for_test(&small_docs)
+        .expect("small manifest length reads")
+        .expect("small manifest exists");
+    let small_artifact_bytes = vectors
+        .flat_artifact_byte_len_for_test(&small_docs, "source-a")
+        .expect("small artifact length reads")
+        .expect("small artifact exists");
+
+    vectors
+        .create_collection(
+            large_docs.clone(),
+            config(2, VectorDistanceMetric::DotProduct),
+        )
+        .expect("large collection create succeeds");
+    let large_entries = (0_u16..512)
+        .map(|index| descending_fixture_upsert(index, json!({"kind": "doc"})))
+        .collect::<Vec<_>>();
+    vectors
+        .batch_upsert(&large_docs, &large_entries)
+        .expect("large batch upsert succeeds");
+    vectors
+        .seed_flat_index_manifest_from_visible_rows_for_test(&large_docs, "source-a")
+        .expect("large flat artifact seed succeeds");
+    let large_manifest_bytes = vectors
+        .index_manifest_byte_len_for_test(&large_docs)
+        .expect("large manifest length reads")
+        .expect("large manifest exists");
+    let large_artifact_bytes = vectors
+        .flat_artifact_byte_len_for_test(&large_docs, "source-a")
+        .expect("large artifact length reads")
+        .expect("large artifact exists");
+    let (_indexed, diagnostics) = vectors
+        .query_with_index_policy_for_test(
+            &large_docs,
+            &embedding([1.0, 0.0]),
+            5,
+            None,
+            VectorIndexPolicy::flat_only_for_test(),
+        )
+        .expect("large indexed query succeeds");
+
+    assert_eq!(diagnostics.manifest_ref_count(), 1);
+    assert_eq!(diagnostics.indexed_vector_count(), 512);
+    assert!(small_manifest_bytes < 16 * 1024);
+    assert!(large_manifest_bytes < 16 * 1024);
+    assert!(
+        large_manifest_bytes <= small_manifest_bytes + 64,
+        "manifest bytes should stay tied to ref metadata, not vector row count: small={small_manifest_bytes}, large={large_manifest_bytes}"
+    );
+    assert!(large_artifact_bytes > small_artifact_bytes * 8);
+    assert!(u64::try_from(large_manifest_bytes).unwrap_or(u64::MAX) < large_artifact_bytes);
+}
+
+#[cfg(feature = "testkit")]
+#[test]
 fn vector_index_manifest_timestamp_query_uses_timestamp_visible_manifest() {
     let mut database = open_cache_database().expect("cache open succeeds");
     let mut vectors = vector_service(&mut database, "default", "default");

@@ -176,6 +176,15 @@ shadow every commit.
     candidate sources must carry enough key and commit metadata to avoid a full
     collection scan when resolving each vector id.
 
+15. **Storage Level 3 is deferred from the current scaffold.**
+    The target design still wants storage-owned opaque artifact slots committed
+    with immutable source publication. The current implementation deliberately
+    stops short of that contract: branch manifests live in system space, while
+    flat/HNSW payload bytes live in an engine-owned derived-artifact boundary
+    outside ordinary logical KV rows. This is acceptable only because artifacts
+    are non-authoritative and every query can fall back to exact committed row
+    search.
+
 ## Non-Goals
 
 This slice must not implement:
@@ -550,7 +559,9 @@ pass.
 
 ### Storage Boundary
 
-The plan has two storage integration levels.
+The plan has four storage integration levels. Levels 1 and 2 establish
+correctness. Level 2.5 is the current durable-local scaffold. Level 3 is the
+future storage integration target.
 
 Level 1: no new storage contract
 
@@ -567,7 +578,25 @@ Level 2: system-space manifest contract
 5. Manifest loss, corruption, or stale generation triggers exact fallback or
    manifest rebuild from committed vector rows.
 
-Level 3: generic source and artifact contract
+Level 2.5: current engine-owned artifact boundary
+
+1. Engine owns flat/HNSW artifact payload files or memory blobs outside normal
+   logical KV values.
+2. Durable-local artifact files are not atomically committed with storage
+   source publication.
+3. Branch-owned system-space manifests store only small refs, identity facts,
+   byte counts, and checksums.
+4. Query may reuse a matching artifact, but must skip missing, corrupt, stale,
+   or over-budget artifacts.
+5. A skipped artifact must route to another safe source, normally flat fallback
+   or exact committed-row search.
+6. Artifact loss, failed durable artifact writes, or partial artifact writes
+   must never make committed vector rows unreadable or make query results
+   incorrect.
+7. Read-path artifact rebuild is an optimization, not a correctness
+   requirement.
+
+Level 3: deferred generic source and artifact contract
 
 1. Storage exposes immutable source identity and source row iteration for a
    branch/space/key range.
@@ -577,6 +606,12 @@ Level 3: generic source and artifact contract
    lifecycle context to do so.
 4. Storage recovery treats artifacts as rebuildable.
 
+Level 3 is not required for the current vector indexing scaffold to be correct.
+It is the point where durable artifact reuse becomes cleaner and less
+engine-local: source identity, artifact placement, and atomic source+artifact
+publication move behind a generic storage contract while storage remains
+semantics-free.
+
 Storage must not:
 
 1. parse vector rows;
@@ -585,6 +620,32 @@ Storage must not:
 4. know collection names beyond ordinary key ranges;
 5. reject data because an artifact is unavailable;
 6. store large graph payloads as ordinary logical KV rows.
+
+### Current Correctness Contract
+
+Until Level 3 exists, the current vector indexing scaffold is correct only under
+this contract:
+
+1. Committed vector rows remain the source of truth for embedding, metadata,
+   tombstones, branch visibility, and timestamp reads.
+2. The branch-owned manifest is a search catalog, not authoritative data.
+3. Manifest identity must match branch, space, collection generation,
+   dimension, and metric before refs are searched.
+4. Artifact identity must match manifest refs, collection generation, source
+   identity, dimension, metric, bytes, and checksum before payloads are
+   searched.
+5. Mutable vector count and query timestamp are not artifact identity fields.
+   Fresh writes are covered by exact active-delta search or exact fallback.
+6. Missing, corrupt, stale, over-budget, or unavailable artifacts must be
+   skipped and reported in diagnostics.
+7. Flat indexed results must match exact results byte-for-byte after final
+   visibility, tombstone, filter, dedupe, and rerank checks.
+8. HNSW results must meet recall gates against exact ground truth before HNSW
+   can be treated as a default accelerator.
+9. A read query must not be required to mutate committed engine state in order
+   to be correct.
+10. Artifact persistence, artifact eviction, and artifact rebuild failures are
+    performance events, not data-correctness events.
 
 ### Write, Delete, and Collection Lifecycle
 
@@ -842,23 +903,29 @@ Status: implemented as the current scaffold.
 Durable-local opens now use an internal flat artifact directory outside logical
 KV values. Branch-owned manifests still store only refs, checksums, byte counts,
 and source facts. Query-time artifact loading can reuse matching durable
-payloads and rebuild missing, stale, or corrupt source-owned flat payloads from
-immutable source rows. Cache mode remains memory-only.
+payloads. Missing, stale, corrupt, partial, or over-budget payloads are skipped
+and the planner falls back to flat or exact committed-row search. Cache mode
+remains memory-only. Storage Level 3's generic opaque artifact attachment is
+explicitly deferred.
 
-1. Add generic opaque artifact attachment if storage does not already expose it.
+1. Use an engine-owned artifact boundary until storage exposes a generic opaque
+   artifact attachment.
 2. Serialize flat artifacts with identity and checksum outside logical KV
    values.
 3. Store only artifact refs and checksums in the system-space manifest.
 4. Load matching artifacts on open or first query.
-5. Rebuild missing, stale, or corrupt artifacts from source rows.
-6. Record diagnostics for load, miss, corrupt, stale, rebuild, and fallback.
+5. Skip missing, stale, corrupt, partial, or over-budget artifacts and route to
+   safe fallback.
+6. Record diagnostics for load, miss, corrupt, stale, skip, and fallback.
 
 Exit criteria:
 
 1. Durable reopen can reuse a matching artifact.
 2. Corrupt artifact does not corrupt query results.
-3. Missing artifact rebuilds or falls back.
+3. Missing artifact falls back or rebuilds through explicit maintenance.
 4. No large graph/flat payload is committed as a normal system-space row.
+5. Level 3 atomic source+artifact commit is documented as a future storage
+   integration, not assumed by current correctness.
 
 ### 11. HNSW Candidate Source
 
@@ -936,8 +1003,9 @@ The indexing slice is complete when:
    correctly without storing graph payloads as logical KV;
 7. diagnostics expose index use and fallback reasons;
 8. memory budget can disable or evict indexes without correctness loss;
-9. durable artifact persistence is either implemented and tested, or explicitly
-   documented as the next slice after open-local indexing;
+9. durable artifact persistence is implemented as engine-owned derived state
+   with exact fallback, while Storage Level 3 atomic artifact slots are
+   explicitly deferred;
 10. HNSW is either implemented behind the same source abstraction or left as a
    clearly isolated follow-up with exact/flat foundations in place;
 11. old-engine lessons are covered by tests without reviving the old mutable

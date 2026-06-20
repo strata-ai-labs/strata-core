@@ -35,7 +35,7 @@ fn vector_index_planner_reports_exact_and_flat_sources() {
     assert_eq!(exact_diagnostics.resolved_index_kind_summary(), "exact");
     assert_eq!(exact_diagnostics.exact_source_count(), 1);
     assert_eq!(exact_diagnostics.flat_source_count(), 0);
-    assert_eq!(exact_diagnostics.exact_fallback_count(), 1);
+    assert_eq!(exact_diagnostics.exact_fallback_count(), 0);
     assert!(!exact_diagnostics.last_query_used_index());
     assert_eq!(
         exact_diagnostics.last_query_fallback_reason(),
@@ -130,6 +130,7 @@ fn vector_flat_planner_matches_exact_after_update_delete_and_filter() {
     assert_eq!(diagnostics.flat_source_count(), 1);
     assert_eq!(diagnostics.active_delta_source_count(), 1);
     assert_eq!(diagnostics.exact_source_count(), 1);
+    assert_eq!(diagnostics.exact_fallback_count(), 1);
     assert!(!diagnostics.last_query_used_index());
     assert_eq!(
         diagnostics.last_query_fallback_reason(),
@@ -189,6 +190,7 @@ fn vector_flat_planner_falls_back_when_tombstones_underfill_filtered_candidates(
     assert_eq!(diagnostics.flat_source_count(), 1);
     assert_eq!(diagnostics.active_delta_source_count(), 1);
     assert_eq!(diagnostics.exact_source_count(), 1);
+    assert_eq!(diagnostics.exact_fallback_count(), 1);
     assert!(!diagnostics.last_query_used_index());
     assert_eq!(
         diagnostics.last_query_fallback_reason(),
@@ -321,6 +323,7 @@ fn vector_flat_planner_matches_exact_for_timestamp_reads() {
     assert_eq!(diagnostics.flat_source_count(), 1);
     assert_eq!(diagnostics.active_delta_source_count(), 1);
     assert_eq!(diagnostics.exact_source_count(), 1);
+    assert_eq!(diagnostics.exact_fallback_count(), 1);
     assert!(!diagnostics.last_query_used_index());
     assert_eq!(
         diagnostics.last_query_fallback_reason(),
@@ -384,6 +387,7 @@ fn exercise_vector_flat_planner_edge_cases_match_exact(database: &mut Database) 
     );
     assert_eq!(all_diagnostics.flat_source_count(), 1);
     assert_eq!(all_diagnostics.exact_source_count(), 1);
+    assert_eq!(all_diagnostics.exact_fallback_count(), 1);
     assert_eq!(
         all_diagnostics.last_query_fallback_reason(),
         Some("indexed_underfill")
@@ -432,6 +436,7 @@ fn exercise_vector_flat_planner_edge_cases_match_exact(database: &mut Database) 
     assert!(missing_matches.matches().is_empty());
     assert_eq!(missing_diagnostics.flat_source_count(), 1);
     assert_eq!(missing_diagnostics.exact_source_count(), 1);
+    assert_eq!(missing_diagnostics.exact_fallback_count(), 1);
     assert_eq!(
         missing_diagnostics.last_query_fallback_reason(),
         Some("indexed_underfill")
@@ -543,6 +548,7 @@ fn exercise_vector_flat_delete_all_and_recreate_match_exact(database: &mut Datab
     assert_eq!(delete_diagnostics.flat_source_count(), 1);
     assert_eq!(delete_diagnostics.active_delta_source_count(), 1);
     assert_eq!(delete_diagnostics.exact_source_count(), 1);
+    assert_eq!(delete_diagnostics.exact_fallback_count(), 1);
     assert_eq!(
         delete_diagnostics.last_query_fallback_reason(),
         Some("indexed_underfill")
@@ -595,4 +601,294 @@ fn exercise_vector_flat_delete_all_and_recreate_match_exact(database: &mut Datab
         recreate_diagnostics.last_query_fallback_reason(),
         Some("stale")
     );
+}
+
+#[cfg(feature = "testkit")]
+#[test]
+fn vector_batch_invalidation_preserves_manifest_refs_and_uses_active_delta_in_cache_and_durable_modes(
+) {
+    run_database_modes(
+        exercise_vector_batch_invalidation_preserves_manifest_refs_and_uses_active_delta,
+    );
+}
+
+#[cfg(feature = "testkit")]
+fn exercise_vector_batch_invalidation_preserves_manifest_refs_and_uses_active_delta(
+    database: &mut Database,
+) {
+    let mut vectors = vector_service(database, "default", "default");
+    let docs = collection("flat-batch-invalidation");
+    vectors
+        .create_collection(docs.clone(), config(2, VectorDistanceMetric::DotProduct))
+        .expect("collection create succeeds");
+    let entries = (0_u16..72)
+        .map(|index| descending_fixture_upsert(index, json!({"keep": true})))
+        .collect::<Vec<_>>();
+    vectors
+        .batch_upsert(&docs, &entries)
+        .expect("batch upsert succeeds");
+    vectors
+        .seed_flat_index_manifest_from_visible_rows_for_test(&docs, "source-a")
+        .expect("flat artifact seed succeeds");
+    let original_refs = vectors
+        .index_manifest_artifact_ids_for_test(&docs)
+        .expect("manifest artifact IDs read");
+
+    vectors
+        .batch_upsert(
+            &docs,
+            &[
+                upsert("doc-000", [500.0, 0.0], json!({"keep": false})),
+                upsert("fresh-a", [400.0, 0.0], json!({"keep": true})),
+                upsert("fresh-b", [350.0, 0.0], json!({"keep": true})),
+            ],
+        )
+        .expect("post-index batch upsert succeeds");
+    let deleted = vectors
+        .batch_delete(&docs, &[vector_key("doc-001"), vector_key("doc-002")])
+        .expect("post-index batch delete succeeds");
+    assert_eq!(deleted.deleted(), &[true, true]);
+    let refs_after_batch = vectors
+        .index_manifest_artifact_ids_for_test(&docs)
+        .expect("manifest artifact IDs read after batch");
+    assert_eq!(refs_after_batch, original_refs);
+
+    let filter = filter_eq("keep", true);
+    let (indexed, diagnostics) = assert_flat_policy_matches_exact(
+        &mut vectors,
+        &docs,
+        &embedding([1.0, 0.0]),
+        5,
+        Some(&filter),
+    );
+
+    assert_eq!(
+        match_key_strings(&indexed),
+        vec!["fresh-a", "fresh-b", "doc-003", "doc-004", "doc-005"]
+    );
+    assert_eq!(diagnostics.manifest_status(), "loaded");
+    assert_eq!(diagnostics.flat_source_count(), 1);
+    assert_eq!(diagnostics.active_delta_source_count(), 1);
+    assert_eq!(diagnostics.exact_source_count(), 0);
+    assert_eq!(diagnostics.last_query_fallback_reason(), None);
+    assert!(diagnostics.last_query_used_index());
+}
+
+#[cfg(feature = "testkit")]
+#[test]
+fn vector_branch_local_invalidation_isolated_after_fork_in_cache_and_durable_modes() {
+    run_database_modes(exercise_vector_branch_local_invalidation_isolated_after_fork);
+}
+
+#[cfg(feature = "testkit")]
+fn exercise_vector_branch_local_invalidation_isolated_after_fork(database: &mut Database) {
+    let docs = collection("flat-branch-invalidation");
+    {
+        let mut parent = vector_service(database, "default", "default");
+        parent
+            .create_collection(docs.clone(), config(2, VectorDistanceMetric::DotProduct))
+            .expect("collection create succeeds");
+        let entries = (0_u16..72)
+            .map(|index| descending_fixture_upsert(index, json!({"keep": true})))
+            .collect::<Vec<_>>();
+        parent
+            .batch_upsert(&docs, &entries)
+            .expect("batch upsert succeeds");
+        parent
+            .seed_flat_index_manifest_from_visible_rows_for_test(&docs, "source-a")
+            .expect("flat artifact seed succeeds");
+    }
+    database
+        .branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("branch fork succeeds");
+    {
+        let mut parent = vector_service(database, "default", "default");
+        parent
+            .upsert(
+                docs.clone(),
+                vector_key("parent-only"),
+                embedding([400.0, 0.0]),
+                Some(metadata(json!({"keep": true}))),
+            )
+            .expect("parent post-fork upsert succeeds");
+        parent
+            .delete(&docs, vector_key("doc-000"))
+            .expect("parent post-fork delete succeeds");
+    }
+    {
+        let mut feature = vector_service(database, "feature", "default");
+        feature
+            .upsert(
+                docs.clone(),
+                vector_key("feature-only"),
+                embedding([500.0, 0.0]),
+                Some(metadata(json!({"keep": true}))),
+            )
+            .expect("feature post-fork upsert succeeds");
+        feature
+            .delete(&docs, vector_key("doc-001"))
+            .expect("feature post-fork delete succeeds");
+    }
+
+    let filter = filter_eq("keep", true);
+    {
+        let mut parent = vector_service(database, "default", "default");
+        let (parent_indexed, parent_diagnostics) = assert_flat_policy_matches_exact(
+            &mut parent,
+            &docs,
+            &embedding([1.0, 0.0]),
+            3,
+            Some(&filter),
+        );
+        assert_eq!(
+            match_key_strings(&parent_indexed),
+            vec!["parent-only", "doc-001", "doc-002"]
+        );
+        assert_eq!(parent_diagnostics.manifest_inherited_ref_count(), 0);
+        assert_eq!(parent_diagnostics.manifest_owned_ref_count(), 1);
+        assert_eq!(parent_diagnostics.flat_source_count(), 1);
+        assert_eq!(parent_diagnostics.active_delta_source_count(), 1);
+        assert_eq!(parent_diagnostics.exact_source_count(), 0);
+        assert_eq!(parent_diagnostics.last_query_fallback_reason(), None);
+    }
+    {
+        let mut feature = vector_service(database, "feature", "default");
+        let (feature_indexed, feature_diagnostics) = assert_flat_policy_matches_exact(
+            &mut feature,
+            &docs,
+            &embedding([1.0, 0.0]),
+            3,
+            Some(&filter),
+        );
+        assert_eq!(
+            match_key_strings(&feature_indexed),
+            vec!["feature-only", "doc-000", "doc-002"]
+        );
+        assert_eq!(feature_diagnostics.manifest_inherited_ref_count(), 1);
+        assert_eq!(feature_diagnostics.manifest_owned_ref_count(), 0);
+        assert_eq!(feature_diagnostics.flat_source_count(), 1);
+        assert_eq!(feature_diagnostics.active_delta_source_count(), 1);
+        assert_eq!(feature_diagnostics.exact_source_count(), 0);
+        assert_eq!(feature_diagnostics.last_query_fallback_reason(), None);
+    }
+}
+
+#[cfg(feature = "testkit")]
+#[test]
+fn vector_recreated_collection_rejects_stale_flat_manifest_in_cache_and_durable_modes() {
+    run_database_modes(exercise_vector_recreated_collection_rejects_stale_flat_manifest);
+}
+
+#[cfg(feature = "testkit")]
+fn exercise_vector_recreated_collection_rejects_stale_flat_manifest(database: &mut Database) {
+    let mut vectors = vector_service(database, "default", "default");
+    let docs = collection("flat-stale-manifest-recreate");
+    vectors
+        .create_collection(docs.clone(), config(2, VectorDistanceMetric::DotProduct))
+        .expect("collection create succeeds");
+    let entries = (0_u16..72)
+        .map(|index| descending_fixture_upsert(index, json!({"phase": "old"})))
+        .collect::<Vec<_>>();
+    vectors
+        .batch_upsert(&docs, &entries)
+        .expect("batch upsert succeeds");
+    vectors
+        .seed_flat_index_manifest_from_visible_rows_for_test(&docs, "source-a")
+        .expect("flat artifact seed succeeds");
+    assert!(vectors
+        .delete_collection(&docs)
+        .expect("collection delete succeeds"));
+    vectors
+        .create_collection(docs.clone(), config(2, VectorDistanceMetric::DotProduct))
+        .expect("collection recreate succeeds");
+    vectors
+        .batch_upsert(
+            &docs,
+            &[
+                upsert("new-a", [20.0, 0.0], json!({"phase": "new"})),
+                upsert("new-b", [10.0, 0.0], json!({"phase": "new"})),
+            ],
+        )
+        .expect("new batch upsert succeeds");
+
+    let (indexed, diagnostics) =
+        assert_flat_policy_matches_exact(&mut vectors, &docs, &embedding([1.0, 0.0]), 10, None);
+
+    assert_eq!(match_key_strings(&indexed), vec!["new-a", "new-b"]);
+    assert_eq!(diagnostics.manifest_status(), "stale");
+    assert_eq!(diagnostics.flat_source_count(), 0);
+    assert_eq!(diagnostics.exact_source_count(), 1);
+    assert_eq!(diagnostics.last_query_fallback_reason(), Some("stale"));
+    assert!(!diagnostics.last_query_used_index());
+}
+
+#[cfg(feature = "testkit")]
+#[test]
+fn vector_failed_artifact_invalidation_falls_back_to_exact_after_fresh_writes_in_cache_and_durable_modes(
+) {
+    run_database_modes(
+        exercise_vector_failed_artifact_invalidation_falls_back_to_exact_after_fresh_writes,
+    );
+}
+
+#[cfg(feature = "testkit")]
+fn exercise_vector_failed_artifact_invalidation_falls_back_to_exact_after_fresh_writes(
+    database: &mut Database,
+) {
+    let mut vectors = vector_service(database, "default", "default");
+    let docs = collection("flat-failed-invalidation");
+    vectors
+        .create_collection(docs.clone(), config(2, VectorDistanceMetric::DotProduct))
+        .expect("collection create succeeds");
+    let entries = (0_u16..72)
+        .map(|index| descending_fixture_upsert(index, json!({"keep": true})))
+        .collect::<Vec<_>>();
+    vectors
+        .batch_upsert(&docs, &entries)
+        .expect("batch upsert succeeds");
+    vectors
+        .seed_flat_index_manifest_from_visible_rows_for_test(&docs, "source-a")
+        .expect("flat artifact seed succeeds");
+    vectors
+        .batch_upsert(
+            &docs,
+            &[
+                upsert("fresh-a", [400.0, 0.0], json!({"keep": true})),
+                upsert("doc-000", [500.0, 0.0], json!({"keep": false})),
+            ],
+        )
+        .expect("post-index batch upsert succeeds");
+    vectors
+        .delete(&docs, vector_key("doc-001"))
+        .expect("post-index delete succeeds");
+    vectors
+        .remove_flat_artifact_for_test(&docs, "source-a")
+        .expect("artifact remove succeeds");
+
+    let filter = filter_eq("keep", true);
+    let (indexed, diagnostics) = assert_flat_policy_matches_exact(
+        &mut vectors,
+        &docs,
+        &embedding([1.0, 0.0]),
+        5,
+        Some(&filter),
+    );
+
+    assert_eq!(
+        match_key_strings(&indexed),
+        vec!["fresh-a", "doc-002", "doc-003", "doc-004", "doc-005"]
+    );
+    assert_eq!(diagnostics.manifest_status(), "loaded");
+    assert_eq!(diagnostics.flat_source_count(), 0);
+    assert_eq!(diagnostics.exact_source_count(), 1);
+    assert_eq!(
+        diagnostics.last_query_fallback_reason(),
+        Some("artifact_unavailable")
+    );
+    assert_eq!(diagnostics.artifact_sources().len(), 1);
+    assert_eq!(diagnostics.artifact_sources()[0].status(), "missing");
+    assert!(!diagnostics.artifact_sources()[0].searched());
+    assert!(!diagnostics.last_query_used_index());
 }

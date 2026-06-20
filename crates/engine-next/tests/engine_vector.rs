@@ -7,6 +7,8 @@ use std::collections::BTreeSet;
 
 use serde_json::{json, Map, Value};
 #[cfg(feature = "testkit")]
+use sha2::{Digest, Sha256};
+#[cfg(feature = "testkit")]
 use strata_core_next::BranchId;
 #[cfg(feature = "testkit")]
 use strata_engine_next::testkit::{VectorIndexDiagnostics, VectorIndexPolicy};
@@ -911,6 +913,33 @@ fn durable_flat_artifact_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join("engine-artifacts").join("vector").join("flat")
 }
 
+#[cfg(feature = "testkit")]
+fn durable_hnsw_artifact_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("engine-artifacts").join("vector").join("hnsw")
+}
+
+#[cfg(feature = "testkit")]
+fn durable_flat_artifact_file(root: &std::path::Path, artifact_id: &str) -> std::path::PathBuf {
+    durable_flat_artifact_dir(root).join(durable_artifact_file_name(artifact_id))
+}
+
+#[cfg(feature = "testkit")]
+fn durable_hnsw_artifact_file(root: &std::path::Path, artifact_id: &str) -> std::path::PathBuf {
+    durable_hnsw_artifact_dir(root).join(durable_artifact_file_name(artifact_id))
+}
+
+#[cfg(feature = "testkit")]
+fn durable_artifact_file_name(artifact_id: &str) -> String {
+    let digest = Sha256::digest(artifact_id.as_bytes());
+    let mut name = String::with_capacity(64 + ".bin".len());
+    for byte in digest {
+        name.push(char::from(b"0123456789abcdef"[usize::from(byte >> 4)]));
+        name.push(char::from(b"0123456789abcdef"[usize::from(byte & 0x0f)]));
+    }
+    name.push_str(".bin");
+    name
+}
+
 fn vector_service<'a>(
     database: &'a mut Database,
     branch_name: &str,
@@ -1334,7 +1363,7 @@ fn assert_default_exact_policy_core(
     assert!(diagnostics.filtered_underfill_fallback());
     assert_eq!(diagnostics.source_candidate_limit(), source_candidate_limit);
     assert_eq!(diagnostics.resolved_index_kind_summary(), "exact");
-    assert_eq!(diagnostics.exact_fallback_count(), 1);
+    assert_eq!(diagnostics.exact_fallback_count(), 0);
     assert_eq!(diagnostics.indexed_source_count(), 0);
     assert_eq!(diagnostics.exact_source_count(), 1);
     assert_eq!(diagnostics.flat_source_count(), 0);

@@ -17,6 +17,13 @@ The exact search path remains the ground truth. Every indexed implementation
 must either match exact results exactly, in the case of flat indexes, or meet an
 explicit recall gate against exact results, in the case of HNSW.
 
+The current durable-local scaffold uses engine-owned artifact bytes outside
+ordinary logical KV values, not Storage Level 3 atomic source+artifact slots.
+That boundary is acceptable only while tests prove that manifest/artifact loss,
+corruption, staleness, partial writes, and memory-budget skips cannot change
+query correctness. Storage Level 3 gets its own future test pass when storage
+exposes generic opaque artifact slots.
+
 This test plan covers only the vector primitive. It intentionally excludes
 shadow vectors, auto-embedding, query languages, hybrid retrieval, and ontology
 search.
@@ -42,6 +49,7 @@ search.
 | Artifact corruption fallback | Not applicable | Required if artifacts persist |
 | Memory budget fallback | Required | Required |
 | Old-engine lesson guards | Required | Required |
+| Storage Level 3 deferral guards | Required | Required |
 | HNSW recall | Required when HNSW enabled | Required when HNSW enabled |
 | Benchmarks | Required | Required |
 
@@ -195,6 +203,8 @@ Assertions:
 - Manifest rejects duplicate artifact refs.
 - Manifest rejects refs with wrong dimension.
 - Manifest rejects refs with wrong metric.
+- Manifest identity does not include mutable vector count.
+- Manifest/artifact identity does not include latest query timestamp.
 - Manifest does not encode flat/HNSW payload bytes.
 - Manifest size remains proportional to artifact ref count, not vector count.
 - Missing manifest records a miss and falls back to exact search.
@@ -295,10 +305,14 @@ Required only when durable artifacts are implemented.
 - Rejects wrong dimension.
 - Missing artifact records a miss and falls back.
 - Corrupt artifact records an error and falls back or rebuilds.
+- Stale artifact identity records an error and falls back.
+- Over-budget artifact records an error and falls back.
+- Partial artifact writes are ignored on reopen.
 - Artifact payloads are addressed by manifest refs.
 - Artifact payloads are not committed as ordinary system-space KV values.
 - Artifact cleanup is driven by unreachable refs/source identity, not by product
   row history.
+- Read-path rebuild is not required for correctness.
 
 ### Old-Engine Lesson Guards
 
@@ -318,6 +332,30 @@ Required only when durable artifacts are implemented.
   index backend.
 - Branch-owned manifests replace a process-global mutable backend map.
 - System space contains only manifest/ref metadata, never graph payloads.
+
+### Storage Level 3 Deferral Guards
+
+These tests lock down the current Level 2.5 scaffold so Level 3 can be added
+later without relying on it for correctness.
+
+- Storage code has no vector, metric, or HNSW semantic dependency.
+- Engine-owned artifact payloads are derived state outside ordinary logical KV
+  rows.
+- System-space manifest rows contain refs, checksums, byte counts, and identity
+  facts only.
+- Manifest row size is bounded by artifact ref count, not vector count.
+- Durable artifact bytes can be missing after reopen without changing results.
+- Durable artifact bytes can be corrupt after reopen without changing results.
+- Durable artifact bytes can be stale after reopen without changing results.
+- Durable artifact bytes can be partially written after reopen without changing
+  results.
+- Artifact durable-write failure does not fail committed query semantics.
+- Artifact memory-budget denial does not change results.
+- Manifest refs pointing at unavailable payloads route to exact or safe flat
+  fallback.
+- Query correctness does not require Storage Level 3 atomic source+artifact
+  commit.
+- Storage Level 3, when added, must preserve these fallback semantics.
 
 ### HNSW Source
 
@@ -493,6 +531,10 @@ test is specifically durable-only.
 - Recovery failure to rebuild an optional artifact does not mark source vector
   rows lost.
 - Recovery failure to load a manifest does not mark source vector rows lost.
+- A manifest committed without a matching artifact payload is safe because the
+  payload is derived and exact fallback remains available.
+- Non-atomic Level 2.5 artifact persistence cannot make query results
+  incorrect.
 
 ## Source and Dependency Guards
 
@@ -512,6 +554,7 @@ test is specifically durable-only.
 - No production code stores large flat/HNSW payloads as normal system-space KV
   rows.
 - Storage artifact code treats vector payload bytes as opaque.
+- No test assumes Storage Level 3 atomic artifact slots are present.
 
 ## Recall Tests
 
@@ -643,5 +686,7 @@ The test slice is complete when:
 8. memory-budget fallback is covered;
 9. old-engine lesson guards pass;
 10. source/dependency guards pass;
-11. HNSW recall tests exist before HNSW is enabled by default;
-12. benchmarks report exact versus indexed behavior through normal engine APIs.
+11. Storage Level 3 is either implemented with atomic source+artifact tests or
+    explicitly deferred with Level 2.5 fallback guards;
+12. HNSW recall tests exist before HNSW is enabled by default;
+13. benchmarks report exact versus indexed behavior through normal engine APIs.
