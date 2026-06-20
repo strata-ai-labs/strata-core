@@ -3,20 +3,21 @@ use super::{
     collect_storage_pressure_with_budget, BranchCleanupSummary, BranchGeneration, BranchId,
     BranchParentSummary, BranchReleasePlan, BranchStatus, BranchSummary, CommitBranchGeneration,
     CommitBranchGenerationGuard, CommitVersion, DiagnosticsBranchCatalogReport,
-    DiagnosticsBudgetPool, DiagnosticsBudgetPressure, DiagnosticsBudgetReport,
-    DiagnosticsBudgetUsage, DiagnosticsCheckpointReport, DiagnosticsRecoveryClass,
-    DiagnosticsRecoveryFault, DiagnosticsRecoveryFaultKind, DiagnosticsRecoveryReport,
-    DiagnosticsScope, DiagnosticsSourceLayoutReport, DiagnosticsSourceLevelTableCount,
-    DiagnosticsStoragePressureReason, DiagnosticsStoragePressureReport,
-    DiagnosticsStoragePressureSeverity, DiagnosticsWalGrowthReport, LifecycleBranchCatalog,
-    LifecycleBranchDescriptor, LifecycleBranchStatus, LifecycleDurableLocalRuntime,
-    LifecycleStorageMode, LifecycleStoragePressureReason, LifecycleStoragePressureSeverity,
-    LifecycleWalGrowthPolicy, MaintenanceExecutorStatus, MaintenanceWalGrowthSummary,
-    ModeLifecyclePolicy, RecoveryDegradationClass, RecoveryFaultKind, RecoveryHealth,
-    RecoveryHealthSummary, StorageApiError, StorageApiResult, StorageBudgetPool,
-    StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageDurabilityPolicy, StorageMode,
-    StorageOpenPlan, StorageOpenSummary, StorageRuntime, StorageRuntimeBudget, StorageRuntimeInner,
-    WalGrowthFacts, DEFAULT_BRANCH_ID,
+    DiagnosticsBudgetAccuracy, DiagnosticsBudgetPool, DiagnosticsBudgetPressure,
+    DiagnosticsBudgetReport, DiagnosticsBudgetUsage, DiagnosticsCheckpointReport,
+    DiagnosticsRecoveryClass, DiagnosticsRecoveryFault, DiagnosticsRecoveryFaultKind,
+    DiagnosticsRecoveryReport, DiagnosticsScope, DiagnosticsSourceLayoutReport,
+    DiagnosticsSourceLevelTableCount, DiagnosticsStoragePressureReason,
+    DiagnosticsStoragePressureReport, DiagnosticsStoragePressureSeverity,
+    DiagnosticsWalGrowthReport, LifecycleBranchCatalog, LifecycleBranchDescriptor,
+    LifecycleBranchStatus, LifecycleDurableLocalRuntime, LifecycleStorageMode,
+    LifecycleStoragePressureReason, LifecycleStoragePressureSeverity, LifecycleWalGrowthPolicy,
+    MaintenanceExecutorStatus, MaintenanceWalGrowthSummary, ModeLifecyclePolicy,
+    RecoveryDegradationClass, RecoveryFaultKind, RecoveryHealth, RecoveryHealthSummary,
+    StorageApiError, StorageApiResult, StorageBudgetPool, StorageBudgetPressureSeverity,
+    StorageBudgetSnapshot, StorageDurabilityPolicy, StorageMode, StorageOpenPlan,
+    StorageOpenSummary, StorageRuntime, StorageRuntimeBudget, StorageRuntimeInner, WalGrowthFacts,
+    DEFAULT_BRANCH_ID,
 };
 
 pub(super) fn map_generation_guard(
@@ -233,6 +234,7 @@ pub(super) fn map_budget_report(
                 usage.used_count(),
                 usage.limit_count(),
                 map_budget_pressure(snapshot.pressure(usage.pool())),
+                map_budget_accuracy(usage.pool()),
             )
         })
         .collect();
@@ -253,6 +255,22 @@ pub(super) const fn map_budget_pool(pool: StorageBudgetPool) -> DiagnosticsBudge
         StorageBudgetPool::MaintenanceQueue => DiagnosticsBudgetPool::MaintenanceQueue,
         StorageBudgetPool::GeneratedArtifact => DiagnosticsBudgetPool::GeneratedArtifact,
         StorageBudgetPool::ManifestCatalog => DiagnosticsBudgetPool::ManifestCatalog,
+    }
+}
+
+/// How each pool's reported usage is accounted, for the diagnostics accuracy flag. The
+/// runtime-summed (resident memtables, owned-table readers, block cache) and counted
+/// (maintenance queue) pools report a live `Tracked` figure; the pools admitted per allocation
+/// via `check_available` do not retain a charge, so their reported usage is `AdmissionOnly`.
+pub(super) const fn map_budget_accuracy(pool: StorageBudgetPool) -> DiagnosticsBudgetAccuracy {
+    match pool {
+        StorageBudgetPool::BlockCache
+        | StorageBudgetPool::ActiveMutable
+        | StorageBudgetPool::FrozenMutable
+        | StorageBudgetPool::MaintenanceQueue => DiagnosticsBudgetAccuracy::Tracked,
+        StorageBudgetPool::TableReader
+        | StorageBudgetPool::GeneratedArtifact
+        | StorageBudgetPool::ManifestCatalog => DiagnosticsBudgetAccuracy::AdmissionOnly,
     }
 }
 

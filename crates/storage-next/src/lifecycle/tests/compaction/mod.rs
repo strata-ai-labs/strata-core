@@ -24,6 +24,7 @@ use crate::lifecycle::compaction::{
 use crate::lifecycle::flush::{
     flush_cache_branch, FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId,
 };
+use crate::lifecycle::StorageBudgetPressureSeverity;
 use crate::table::TablePhysicalKeyBytes;
 use strata_core_next::{BranchId, Timestamp};
 
@@ -1633,6 +1634,68 @@ fn storage_pressure_suggests_the_next_table_rewrite_or_flush() {
     );
     assert_eq!(idle_pressure.pending_maintenance(), 1);
     assert!(idle_pressure.suggested_task().is_none());
+}
+
+#[test]
+fn optional_maintenance_is_deferred_under_global_memory_pressure() {
+    let branch = branch_id(0x4b);
+
+    // Four L0 tables suggest an optional (Background) compaction.
+    let mut compact_state = BranchLocalState::empty(branch);
+    for index in 0_u64..4 {
+        install_l0_table(
+            &mut compact_state,
+            branch,
+            &format!("defer-optional-{index}"),
+            vec![put_row(
+                branch,
+                format!("defer-optional-{index}").as_bytes(),
+                index + 2,
+                (index + 2) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    let optional = collect_storage_pressure(&compact_state, empty_maintenance_status());
+    assert_eq!(
+        optional.severity(),
+        LifecycleStoragePressureSeverity::Background
+    );
+    assert!(optional.suggested_task().is_some());
+
+    // No database-wide memory pressure: the optional task is kept.
+    assert!(optional
+        .deferred_under_global_memory_pressure(StorageBudgetPressureSeverity::Normal)
+        .suggested_task()
+        .is_some());
+
+    // Under memory pressure the optional task is deferred: no task, neutral severity, while
+    // the descriptive shape counts are preserved for diagnostics.
+    let deferred = optional.deferred_under_global_memory_pressure(
+        StorageBudgetPressureSeverity::DeferOptionalMaintenance,
+    );
+    assert!(deferred.suggested_task().is_none());
+    assert_eq!(deferred.severity(), LifecycleStoragePressureSeverity::None);
+    assert_eq!(deferred.level_zero_tables(), 4);
+
+    // Required (Urgent) maintenance gates write admission, so even the highest memory
+    // pressure never defers it.
+    let mut frozen_state = BranchLocalState::empty(branch);
+    frozen_state
+        .append_committed_row(put_row(branch, b"frozen", 1, 1_000, b"value"))
+        .expect("append");
+    frozen_state.rotate_active();
+    let required = collect_storage_pressure(&frozen_state, empty_maintenance_status());
+    assert_eq!(
+        required.severity(),
+        LifecycleStoragePressureSeverity::Urgent
+    );
+    assert!(required
+        .deferred_under_global_memory_pressure(
+            StorageBudgetPressureSeverity::RejectMutatingAdmission
+        )
+        .suggested_task()
+        .is_some());
 }
 
 #[test]

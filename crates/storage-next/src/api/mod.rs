@@ -54,15 +54,16 @@ pub use commit::{
     CommitMutation, CommitOptions,
 };
 pub use diagnostics::{
-    DiagnosticsBranchCatalogReport, DiagnosticsBudgetPool, DiagnosticsBudgetPressure,
-    DiagnosticsBudgetReport, DiagnosticsBudgetUsage, DiagnosticsCheckpointReport,
-    DiagnosticsFactState, DiagnosticsOutcome, DiagnosticsQuarantineReport,
-    DiagnosticsReadActivityReport, DiagnosticsRecoveryClass, DiagnosticsRecoveryFault,
-    DiagnosticsRecoveryFaultKind, DiagnosticsRecoveryReport, DiagnosticsRequest,
-    DiagnosticsRetentionReport, DiagnosticsScope, DiagnosticsSourceLayoutReport,
-    DiagnosticsSourceLevelTableCount, DiagnosticsStoragePressureReason,
-    DiagnosticsStoragePressureReport, DiagnosticsStoragePressureSeverity,
-    DiagnosticsTableReachabilityReport, DiagnosticsTimelineReport, DiagnosticsWalGrowthReport,
+    DiagnosticsBranchCatalogReport, DiagnosticsBudgetAccuracy, DiagnosticsBudgetPool,
+    DiagnosticsBudgetPressure, DiagnosticsBudgetReport, DiagnosticsBudgetUsage,
+    DiagnosticsCheckpointReport, DiagnosticsFactState, DiagnosticsOutcome,
+    DiagnosticsQuarantineReport, DiagnosticsReadActivityReport, DiagnosticsRecoveryClass,
+    DiagnosticsRecoveryFault, DiagnosticsRecoveryFaultKind, DiagnosticsRecoveryReport,
+    DiagnosticsRequest, DiagnosticsRetentionReport, DiagnosticsScope,
+    DiagnosticsSourceLayoutReport, DiagnosticsSourceLevelTableCount,
+    DiagnosticsStoragePressureReason, DiagnosticsStoragePressureReport,
+    DiagnosticsStoragePressureSeverity, DiagnosticsTableReachabilityReport,
+    DiagnosticsTimelineReport, DiagnosticsWalGrowthReport,
 };
 pub use error::{StorageApiError, StorageApiErrorClass, StorageApiLowerLayer};
 pub use maintenance::{

@@ -394,6 +394,47 @@ fn diagnostics_reports_cache_budget_facts() {
 }
 
 #[test]
+fn diagnostics_reports_budget_usage_accuracy() {
+    // Each pool reports whether its usage is a tracked live figure or an admission-only estimate
+    // (the diagnostics contract's "exact or approximate"). Runtime-summed and counted pools are
+    // tracked; the pools admitted per allocation via check_available are admission-only.
+    let runtime = open_runtime();
+    let report = diagnostics(&runtime);
+    let budget = report.budget();
+
+    for pool in [
+        DiagnosticsBudgetPool::BlockCache,
+        DiagnosticsBudgetPool::ActiveMutable,
+        DiagnosticsBudgetPool::FrozenMutable,
+        DiagnosticsBudgetPool::MaintenanceQueue,
+    ] {
+        assert_eq!(
+            usage(budget, pool).accuracy(),
+            DiagnosticsBudgetAccuracy::Tracked,
+            "{pool:?} usage should be a tracked live figure"
+        );
+    }
+
+    for pool in [
+        DiagnosticsBudgetPool::TableReader,
+        DiagnosticsBudgetPool::GeneratedArtifact,
+        DiagnosticsBudgetPool::ManifestCatalog,
+    ] {
+        assert_eq!(
+            usage(budget, pool).accuracy(),
+            DiagnosticsBudgetAccuracy::AdmissionOnly,
+            "{pool:?} usage is admission-only and not retained after the call"
+        );
+    }
+
+    // The database-wide total is the tracked-live resident sum (admission-only pools excluded).
+    assert_eq!(
+        budget.total_used_accuracy(),
+        Some(DiagnosticsBudgetAccuracy::Tracked)
+    );
+}
+
+#[test]
 fn diagnostics_reports_lazy_read_counters() {
     let runtime = open_runtime();
 

@@ -90,6 +90,21 @@ pub enum DiagnosticsBudgetPressure {
     RejectMutatingAdmission,
 }
 
+/// Whether a reported budget usage value is a live, tracked figure or an admission-only
+/// estimate. This realizes the diagnostics contract's "exact or approximate" distinction with
+/// names that match how each pool is accounted.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiagnosticsBudgetAccuracy {
+    /// A live figure that reflects current usage. Memtable byte sizes are size-estimates, but
+    /// the value is tracked continuously and is non-zero while objects are resident.
+    Tracked,
+    /// An admission-only figure: the pool is checked per allocation and the charge is not
+    /// retained, so the reported value does not reflect live usage (it reads ~0 while objects
+    /// are live).
+    AdmissionOnly,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DiagnosticsBudgetUsage {
     pool: DiagnosticsBudgetPool,
@@ -98,6 +113,7 @@ pub struct DiagnosticsBudgetUsage {
     used_count: u64,
     limit_count: Option<u64>,
     pressure: DiagnosticsBudgetPressure,
+    accuracy: DiagnosticsBudgetAccuracy,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -105,6 +121,7 @@ pub struct DiagnosticsBudgetReport {
     state: DiagnosticsFactState,
     total_limit_bytes: Option<u64>,
     total_used_bytes: Option<u64>,
+    total_used_accuracy: Option<DiagnosticsBudgetAccuracy>,
     global_pressure: DiagnosticsBudgetPressure,
     usages: Vec<DiagnosticsBudgetUsage>,
 }
@@ -360,6 +377,7 @@ impl DiagnosticsBudgetUsage {
         used_count: u64,
         limit_count: Option<u64>,
         pressure: DiagnosticsBudgetPressure,
+        accuracy: DiagnosticsBudgetAccuracy,
     ) -> Self {
         Self {
             pool,
@@ -368,6 +386,7 @@ impl DiagnosticsBudgetUsage {
             used_count,
             limit_count,
             pressure,
+            accuracy,
         }
     }
 
@@ -400,6 +419,12 @@ impl DiagnosticsBudgetUsage {
     pub const fn pressure(self) -> DiagnosticsBudgetPressure {
         self.pressure
     }
+
+    /// Whether `used_bytes` is a tracked live figure or an admission-only estimate.
+    #[must_use]
+    pub const fn accuracy(self) -> DiagnosticsBudgetAccuracy {
+        self.accuracy
+    }
 }
 
 impl DiagnosticsBudgetReport {
@@ -414,6 +439,7 @@ impl DiagnosticsBudgetReport {
             state: DiagnosticsFactState::Known,
             total_limit_bytes: Some(total_limit_bytes),
             total_used_bytes: Some(total_used_bytes),
+            total_used_accuracy: Some(DiagnosticsBudgetAccuracy::Tracked),
             global_pressure,
             usages,
         }
@@ -425,6 +451,7 @@ impl DiagnosticsBudgetReport {
             state: DiagnosticsFactState::Unknown,
             total_limit_bytes: None,
             total_used_bytes: None,
+            total_used_accuracy: None,
             global_pressure: DiagnosticsBudgetPressure::Normal,
             usages: Vec::new(),
         }
@@ -445,6 +472,14 @@ impl DiagnosticsBudgetReport {
     #[must_use]
     pub const fn total_used_bytes(&self) -> Option<u64> {
         self.total_used_bytes
+    }
+
+    /// Whether `total_used_bytes` is a tracked live figure. The total sums the tracked-live
+    /// resident pools and excludes the admission-only transient pools by design, so it is
+    /// `Tracked` when known and `None` when unknown.
+    #[must_use]
+    pub const fn total_used_accuracy(&self) -> Option<DiagnosticsBudgetAccuracy> {
+        self.total_used_accuracy
     }
 
     /// Database-wide memory pressure derived from the live total against the configured budget.

@@ -323,12 +323,27 @@ This is the central mechanism and the main correction over the prior draft.
    redundant (it double-counts resident outputs) and dropped in Phase 1b. The
    load-bearing change is the runtime total + admission, not per-pool charging.
 
-2. **Add database-local eviction for evictable pools.** The read cache evicts to
-   stay under its pool budget; usage is a true running value, not zero-after-call.
+2. **Database-local eviction for evictable pools** — satisfied by the existing
+   block-cache LRU, which evicts synchronously on the hot path to stay under its
+   pool budget; its usage is a true running value, not zero-after-call. No
+   additional work.
 
-3. **Wire the global pressure tracker into the maintenance loop.** Compute
-   pressure from the summed ledger total; ensure flush/compaction fire on
-   `Warning`/`Critical`; keep eviction synchronous on the hot path.
+3. **Defer optional maintenance under global memory pressure.** *(Corrected from
+   "fire flush/compaction on `Warning`/`Critical`", which does not hold under V1's
+   whole-object materialized readers: flush converts memtable bytes into resident
+   owned-table bytes — ~zero net relief — and a compaction holds its inputs and
+   output resident at once, a transient spike. Only block-cache eviction and
+   admission refusal bound memory.)* Thread the live `global_pressure()` into the
+   two durable maintenance scheduling sites
+   (`schedule_post_commit_maintenance_for_branch` and
+   `schedule_maintenance_coverage_after_branch`) via
+   `LifecycleStoragePressure::deferred_under_global_memory_pressure`: at the
+   high-water mark, hold back optional (`Background`) flush/compaction while
+   required (`Urgent`/`BlockMutatingAdmission`) maintenance — which gates write
+   admission — still runs. Eviction stays synchronous (block-cache LRU).
+   *Limitation:* gating is at enqueue time, so a task queued before pressure rose
+   can still execute under pressure (small window, bounded by the maintenance
+   queue); execute-time gating is a possible future refinement.
 
 4. **Promote a public explicit storage budget type.** Add a public resolved
    per-pool byte budget under `crates/storage-next/src/api/` (e.g.
@@ -350,7 +365,9 @@ This is the central mechanism and the main correction over the prior draft.
 7. **Expose budget diagnostics.** Selected storage budget; per-pool limit and
    live usage (now accurate); pressure severity by pool and overall; budget
    rejection facts; whether cache mode is bounded or explicitly unlimited;
-   whether each usage value is exact or approximate.
+   whether each usage value is exact or approximate (`DiagnosticsBudgetAccuracy`:
+   `Tracked` for the runtime-summed and counted pools, `AdmissionOnly` for the
+   per-allocation `check_available` pools; the database-wide total is `Tracked`).
 
 8. **Source guard.** Storage-next contains no host probing, RAM/CPU inspection,
    or profile classification.

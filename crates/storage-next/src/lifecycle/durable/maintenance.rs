@@ -630,7 +630,18 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             .open_plan
             .lifecycle_config()
             .maintenance_scheduling_policy();
-        let pressure = self.storage_pressure_for_branch(branch_id);
+        // Defer optional (background) maintenance when the database-wide memory budget is
+        // under pressure: with materialized readers, starting an optional flush/compaction
+        // holds its inputs and output resident at once. This is one of the two durable
+        // scheduling sites; the other is `schedule_maintenance_coverage_after_branch`, and a
+        // deferral change must touch both. The runtime total is refreshed here so the global
+        // pressure read reflects post-commit resident bytes (also covers the background
+        // coverage scan this method triggers).
+        self.refresh_runtime_memory_total();
+        let global_pressure = self.budget.global_pressure();
+        let pressure = self
+            .storage_pressure_for_branch(branch_id)
+            .deferred_under_global_memory_pressure(global_pressure);
         let outcome = schedule_suggested_post_commit_maintenance(policy, pressure, |request| {
             self.enqueue_maintenance(request)
         });
@@ -680,6 +691,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             descriptors.len(),
         );
         let maintenance_status = self.maintenance.status();
+        // Second of the two durable scheduling sites: defer optional maintenance under
+        // global memory pressure. The runtime total was refreshed by the post-commit caller
+        // (`schedule_post_commit_maintenance_for_branch`), so this global read is current.
+        let global_pressure = self.budget.global_pressure();
         let mut saw_eligible_work = false;
         for descriptor in descriptors {
             let branch_id = descriptor.branch_id();
@@ -695,7 +710,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 branch,
                 maintenance_status,
                 Some(self.open_plan.lifecycle_config().storage_budget()),
-            );
+            )
+            .deferred_under_global_memory_pressure(global_pressure);
             let Some(request) = pressure.suggested_task() else {
                 continue;
             };

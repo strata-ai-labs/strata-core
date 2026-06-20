@@ -122,6 +122,22 @@ pub(crate) enum StorageBudgetPressureSeverity {
     RejectMutatingAdmission,
 }
 
+impl StorageBudgetPressureSeverity {
+    /// Whether this database-wide pressure level should hold back optional (background)
+    /// maintenance. At or above the high-water mark the global budget cannot absorb the
+    /// transient cost of an optional flush/compaction (inputs and output are resident at
+    /// once), so the scheduler defers that work; required write-admission maintenance is
+    /// unaffected.
+    pub(crate) const fn defers_optional_maintenance(self) -> bool {
+        matches!(
+            self,
+            Self::DeferOptionalMaintenance
+                | Self::RejectOptionalWork
+                | Self::RejectMutatingAdmission
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct StorageBudgetUsage {
     pool: StorageBudgetPool,

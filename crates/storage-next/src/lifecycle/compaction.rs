@@ -4,7 +4,8 @@ use super::{
     telemetry_health_debt, LifecycleCompactionIoPolicy, LifecycleError, LifecycleLowerLayer,
     LifecycleResult, LifecycleStats, MaintenanceExecutorStatus, MaintenanceOutcome,
     MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskRequest,
-    MaintenanceTaskScope, RecoveryHealth, StorageBudgetPool, StorageRuntimeBudget,
+    MaintenanceTaskScope, RecoveryHealth, StorageBudgetPool, StorageBudgetPressureSeverity,
+    StorageRuntimeBudget,
 };
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{
@@ -1233,6 +1234,26 @@ impl LifecycleStoragePressure {
             reason: LifecycleStoragePressureReason::None,
             suggested_task: None,
             ..self
+        }
+    }
+
+    /// Hold back optional (background) maintenance when the database-wide memory budget is
+    /// under pressure. Optional flush/compaction is the only kind cleared here because, with
+    /// whole-object materialized readers, starting one holds its inputs and output resident
+    /// at once — a transient spike exactly when the budget is already tight. Required
+    /// maintenance (`Urgent` / `BlockMutatingAdmission`, which gates write admission) always
+    /// runs, so deferral never deadlocks writes. The descriptive shape counts are preserved
+    /// for diagnostics.
+    pub(crate) const fn deferred_under_global_memory_pressure(
+        self,
+        global: StorageBudgetPressureSeverity,
+    ) -> Self {
+        if matches!(self.severity, LifecycleStoragePressureSeverity::Background)
+            && global.defers_optional_maintenance()
+        {
+            self.with_source_shape_neutralized()
+        } else {
+            self
         }
     }
 
