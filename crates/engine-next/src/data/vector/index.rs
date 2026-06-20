@@ -882,21 +882,17 @@ impl VectorCandidate {
         version: CommitVersion,
         timestamp: Timestamp,
         dimension: usize,
-    ) -> Self {
+    ) -> EngineResult<Self> {
         debug_assert!(dimension > 0);
-        Self {
+        let placeholder = VectorEmbedding::new(vec![1.0; dimension])?;
+        Ok(Self {
             key: key.clone(),
-            entry: VectorEntry::new(
-                key,
-                VectorEmbedding::new(vec![1.0; dimension]).expect("valid placeholder embedding"),
-                None,
-                0,
-            ),
+            entry: VectorEntry::new(key, placeholder, None, 0),
             deleted: true,
             score: 0.0,
             version,
             timestamp,
-        }
+        })
     }
 
     fn into_match(self) -> VectorSearchMatch {
@@ -1436,14 +1432,14 @@ fn score_entries(
     if candidates.len() > limit {
         candidates.truncate(limit);
     }
-    candidates.extend(tombstones.iter().map(|tombstone| {
-        VectorCandidate::tombstone(
+    for tombstone in tombstones {
+        candidates.push(VectorCandidate::tombstone(
             tombstone.key.clone(),
             tombstone.version,
             tombstone.timestamp,
             query.dimension(),
-        )
-    }));
+        )?);
+    }
     Ok(candidates)
 }
 
@@ -1987,6 +1983,7 @@ mod tests {
             Timestamp::from_micros(timestamp_micros),
             2,
         )
+        .expect("valid tombstone placeholder")
     }
 
     fn candidate_keys(candidates: &[VectorCandidate]) -> Vec<&str> {

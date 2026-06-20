@@ -671,6 +671,104 @@ fn executor_crate_does_not_import_storage_crates() {
 }
 
 #[test]
+fn storage_next_source_stays_free_of_vector_indexing_semantics() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let storage = manifest
+        .parent()
+        .expect("engine crate has crates parent")
+        .join("storage-next");
+    if !storage.exists() {
+        return;
+    }
+    let offenders: Vec<_> = rust_files(&storage.join("src"))
+        .into_iter()
+        .filter_map(|path| {
+            let text = fs::read_to_string(&path).expect("read storage-next source");
+            [
+                "fast_hnsw",
+                "HNSW",
+                "Hnsw",
+                "hnsw",
+                "Cosine",
+                "cosine",
+                "Euclidean",
+                "euclidean",
+                "DotProduct",
+                "dot_product",
+                "VectorDistanceMetric",
+                "VectorEmbedding",
+                "VectorCollection",
+                "VectorCollectionName",
+                "VectorMetadata",
+                "VectorIndex",
+                "FlatVectorArtifact",
+                "HnswVectorArtifact",
+                "vector index",
+                "vector artifact",
+            ]
+            .iter()
+            .any(|token| text.contains(token))
+            .then_some(path)
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "storage-next gained vector-indexing semantic dependencies: {offenders:?}"
+    );
+}
+
+#[test]
+fn executor_crate_does_not_compute_vector_distances_or_inspect_index_artifacts() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let executor = manifest
+        .parent()
+        .expect("engine crate has crates parent")
+        .join("executor-next");
+    if !executor.exists() {
+        return;
+    }
+    let offenders: Vec<_> = rust_files(&executor.join("src"))
+        .into_iter()
+        .filter_map(|path| {
+            let text = fs::read_to_string(&path).expect("read executor source");
+            [
+                "fast_hnsw",
+                "HNSW",
+                "Hnsw",
+                "hnsw",
+                "VectorIndexDiagnostics",
+                "VectorIndexPolicy",
+                "VectorCandidateSource",
+                "VectorArtifact",
+                "FlatVectorArtifact",
+                "HnswVectorArtifact",
+                "query_with_index",
+                "query_exact_for_test",
+                "query_at_exact_for_test",
+                "artifact_sources",
+                "flat_artifact",
+                "hnsw_artifact",
+                "seed_flat_index",
+                "seal_index",
+                "cosine_distance",
+                "cosine_similarity",
+                "euclidean_distance",
+                "dot_product_score",
+                "compute_vector_score",
+                "score_embedding",
+            ]
+            .iter()
+            .any(|token| text.contains(token))
+            .then_some(path)
+        })
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "executor-next gained vector index internals or distance computation: {offenders:?}"
+    );
+}
+
+#[test]
 fn benchmark_sources_do_not_use_engine_persistence_internals() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let benchmark_root = manifest

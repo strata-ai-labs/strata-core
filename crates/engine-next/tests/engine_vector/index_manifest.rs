@@ -455,7 +455,10 @@ fn vector_index_manifest_size_is_ref_bounded_not_vector_count_bounded() {
         "manifest bytes should stay tied to ref metadata, not vector row count: small={small_manifest_bytes}, large={large_manifest_bytes}"
     );
     assert!(large_artifact_bytes > small_artifact_bytes * 8);
-    assert!(u64::try_from(large_manifest_bytes).unwrap_or(u64::MAX) < large_artifact_bytes);
+    assert!(
+        u64::try_from(large_manifest_bytes).unwrap_or(u64::MAX) * 8 < large_artifact_bytes,
+        "artifact payload bytes must remain out-of-band from the system manifest row: manifest={large_manifest_bytes}, artifact={large_artifact_bytes}"
+    );
 }
 
 #[cfg(feature = "testkit")]

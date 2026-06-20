@@ -27,6 +27,9 @@ mod vector_core;
 #[path = "engine_vector/index_artifacts.rs"]
 mod vector_index_artifacts;
 #[cfg(feature = "testkit")]
+#[path = "engine_vector/index_fixtures.rs"]
+mod vector_index_fixtures;
+#[cfg(feature = "testkit")]
 #[path = "engine_vector/index_hnsw.rs"]
 mod vector_index_hnsw;
 #[cfg(feature = "testkit")]

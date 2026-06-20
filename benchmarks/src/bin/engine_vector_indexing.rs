@@ -365,6 +365,9 @@ struct BenchmarkRow {
     build_time_ns: Option<u128>,
     derived_bytes: u64,
     recall_at_k: Option<f64>,
+    exact_match_required: bool,
+    exact_match: bool,
+    exact_mismatch_count: usize,
     query_p50_ns: Option<u128>,
     query_p95_ns: Option<u128>,
     query_p99_ns: Option<u128>,
@@ -836,6 +839,8 @@ fn measure_query_policy_on_branch(
     let mut last_diagnostics = None;
     let mut recall_hits = 0usize;
     let mut recall_expected = 0usize;
+    let exact_match_required = policy_requires_exact_match(policy);
+    let mut exact_mismatch_count = 0usize;
     for sample in 0..config.query_samples {
         let query_index = sample % queries.len();
         let query = &queries[query_index];
@@ -848,6 +853,17 @@ fn measure_query_policy_on_branch(
         let expected = exact
             .get(query_index)
             .expect("exact query keys exist for sample");
+        if &actual != expected {
+            exact_mismatch_count = exact_mismatch_count.saturating_add(1);
+            if exact_match_required {
+                return Err(strata_engine_next::EngineError::incompatible_layout(
+                    "failed_precondition.benchmark.vector_index_exact_match",
+                    format!(
+                        "{workload} result diverged from exact query sample {query_index}: expected={expected:?} actual={actual:?}"
+                    ),
+                ));
+            }
+        }
         let (hits, expected_count) = recall_counts(expected, &actual);
         recall_hits = recall_hits.saturating_add(hits);
         recall_expected = recall_expected.saturating_add(expected_count);
@@ -864,6 +880,8 @@ fn measure_query_policy_on_branch(
         diagnostics,
         Some(build_time),
         Some(recall_from_counts(recall_hits, recall_expected)),
+        exact_match_required,
+        exact_mismatch_count,
         Some(percentiles),
         write_throughput,
     ))
@@ -910,6 +928,8 @@ fn row_from_diagnostics(
     diagnostics: VectorIndexDiagnostics,
     build_time: Option<Duration>,
     recall_at_k: Option<f64>,
+    exact_match_required: bool,
+    exact_mismatch_count: usize,
     query_percentiles: Option<Percentiles>,
     write_throughput: Option<f64>,
 ) -> BenchmarkRow {
@@ -966,6 +986,9 @@ fn row_from_diagnostics(
         build_time_ns: build_time.map(|duration| duration.as_nanos()),
         derived_bytes: diagnostics.derived_bytes(),
         recall_at_k,
+        exact_match_required,
+        exact_match: exact_mismatch_count == 0,
+        exact_mismatch_count,
         query_p50_ns: query_percentiles.as_ref().map(|p| p.p50.as_nanos()),
         query_p95_ns: query_percentiles.as_ref().map(|p| p.p95.as_nanos()),
         query_p99_ns: query_percentiles.as_ref().map(|p| p.p99.as_nanos()),
@@ -979,6 +1002,11 @@ fn row_from_diagnostics(
         artifact_over_budget_count,
         artifact_sources,
     }
+}
+
+fn policy_requires_exact_match(policy: VectorIndexPolicy) -> bool {
+    policy == VectorIndexPolicy::exact_only_for_test()
+        || policy == VectorIndexPolicy::flat_only_for_test()
 }
 
 fn load_dataset(
