@@ -19,6 +19,7 @@ pub enum StorageApiErrorClass {
     Unsupported,
     HistoryUnavailable,
     AmbiguousCommit,
+    ResourceExhausted,
     Internal,
 }
 
@@ -92,6 +93,13 @@ pub enum StorageApiError {
         reason: &'static str,
         retryable: bool,
     },
+    ResourceExhausted {
+        resource: &'static str,
+        requested_bytes: u64,
+        used_bytes: u64,
+        limit_bytes: u64,
+        reason: &'static str,
+    },
     LowerLayer {
         layer: StorageApiLowerLayer,
         reason: &'static str,
@@ -117,6 +125,7 @@ impl StorageApiError {
             Self::RecoveryDegraded { .. } => "failed_precondition.storage_api.recovery_degraded",
             Self::MaintenanceRejected { .. } => "failed_precondition.storage_api.maintenance",
             Self::StoragePressure { .. } => "failed_precondition.storage_api.storage_pressure",
+            Self::ResourceExhausted { .. } => "resource_exhausted.storage_api.memory_budget",
             Self::LowerLayer { .. } => "internal.storage_api.lower_layer",
         }
     }
@@ -170,6 +179,9 @@ impl StorageApiError {
             Self::StoragePressure { .. } => {
                 "Allow background maintenance to drain storage pressure, then retry the write."
             }
+            Self::ResourceExhausted { .. } => {
+                "Reduce resident memory pressure or raise the configured storage memory budget, then retry the operation."
+            }
             Self::LowerLayer { .. } => {
                 "Inspect the source error and storage diagnostics for the underlying failure."
             }
@@ -192,6 +204,7 @@ impl StorageApiError {
                 StorageApiErrorClass::HistoryUnavailable
             }
             Self::DurableUncertain { .. } => StorageApiErrorClass::AmbiguousCommit,
+            Self::ResourceExhausted { .. } => StorageApiErrorClass::ResourceExhausted,
             Self::LowerLayer { .. } => StorageApiErrorClass::Internal,
         }
     }
@@ -295,6 +308,16 @@ impl fmt::Display for StorageApiError {
                 }
                 Ok(())
             }
+            Self::ResourceExhausted {
+                resource,
+                requested_bytes,
+                used_bytes,
+                limit_bytes,
+                reason,
+            } => write!(
+                formatter,
+                "storage resource {resource} exhausted: {reason} (requested {requested_bytes} bytes, used {used_bytes}, limit {limit_bytes})"
+            ),
             Self::LowerLayer { layer, reason, .. } => {
                 write!(formatter, "storage lower layer {layer:?} failed: {reason}")
             }

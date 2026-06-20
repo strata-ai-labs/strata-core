@@ -189,10 +189,10 @@ fn open_options_rejects_distributed_writer_mode() {
 #[test]
 fn open_options_preserves_budget_policy() {
     let options = StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always)
-        .with_budget_policy(StorageBudgetPolicy::LowMemory)
+        .with_budget_policy(StorageBudgetPolicy::Default)
         .with_wal_growth_policy(StorageWalGrowthPolicy::Disabled);
 
-    assert_eq!(options.budget_policy(), StorageBudgetPolicy::LowMemory);
+    assert_eq!(options.budget_policy(), StorageBudgetPolicy::Default);
     assert_eq!(
         options.wal_growth_policy(),
         StorageWalGrowthPolicy::Disabled

@@ -263,7 +263,9 @@ fn deterministic_inline_urgent_pressure_with_progress_does_not_sleep() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let mut runtime = StorageRuntime::open(
         StorageOpenOptions::cache()
-            .with_budget_policy(StorageBudgetPolicy::LowMemory)
+            .with_storage_budget_for_test(
+                crate::lifecycle::StorageRuntimeBudget::low_memory_test_profile(),
+            )
             .with_maintenance_scheduling_policy(
                 StorageMaintenanceSchedulingPolicy::DeterministicInline,
             ),
@@ -1331,7 +1333,9 @@ fn sustained_background_overload_paces_writer_via_block_wait() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let mut runtime = StorageRuntime::open(
         StorageOpenOptions::cache()
-            .with_budget_policy(StorageBudgetPolicy::LowMemory)
+            .with_storage_budget_for_test(
+                crate::lifecycle::StorageRuntimeBudget::low_memory_test_profile(),
+            )
             .with_background_worker_count(1)
             .with_background_max_tasks_per_wake(1)
             .with_background_max_runtime_per_wake(std::time::Duration::from_millis(1)),

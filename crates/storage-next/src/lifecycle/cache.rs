@@ -43,9 +43,9 @@ use super::{
     LifecycleWriteAdmissionOutcome, MaintenanceCancelOutcome, MaintenanceEnqueueOutcome,
     MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
     MaintenanceTaskId, MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner,
-    MaintenanceTaskScope, RecoveryHealth, StorageBudgetLedger, StorageBudgetPressureSeverity,
-    StorageBudgetSnapshot, StorageMode, StorageOpenDisposition, StorageOpenOutcome,
-    StorageOpenPlan, StorageRuntimeBudget,
+    MaintenanceTaskScope, RecoveryHealth, StorageBudgetLedger, StorageBudgetPool,
+    StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageMode, StorageOpenDisposition,
+    StorageOpenOutcome, StorageOpenPlan, StorageRuntimeBudget,
 };
 use crate::backend::Backend;
 use crate::branch::config::BranchRuntimeConfig;
@@ -870,8 +870,24 @@ impl<S> LifecycleCacheRuntime<S> {
         branch_id: BranchId,
         batch: &CommitBatch,
     ) -> LifecycleResult<()> {
-        // Volatile modes (cache) never block writes on frozen/source-table
-        // budget; the accepted trade-off is unbounded in-memory growth.
+        let incoming_active_bytes = estimate_commit_batch_active_bytes(batch)?;
+        // The database-wide memory budget applies to cache too: refresh the global total and refuse
+        // a commit that would push the database over its memory budget before any visible mutation.
+        self.refresh_runtime_memory_total();
+        if self.budget.would_exceed_total(incoming_active_bytes) {
+            return Err(LifecycleError::StorageBudgetExceeded {
+                pool: StorageBudgetPool::ActiveMutable,
+                requested_bytes: incoming_active_bytes,
+                used_bytes: self.budget.total_used_bytes(),
+                limit_bytes: self.budget.budget().total_bytes(),
+                requested_count: 0,
+                used_count: 0,
+                limit_count: None,
+                reason: "commit would exceed the database memory budget",
+            });
+        }
+        // Source-shape (frozen rotation -> durable flush) pressure stays volatile-exempt: cache
+        // never flushes mutable state to table sources, so it does not block on the frozen budget.
         if !self
             .open_plan
             .lifecycle_policy()
@@ -879,7 +895,6 @@ impl<S> LifecycleCacheRuntime<S> {
         {
             return Ok(());
         }
-        let incoming_active_bytes = estimate_commit_batch_active_bytes(batch)?;
         let branch = self
             .branch_catalog
             .branch_state(branch_id)

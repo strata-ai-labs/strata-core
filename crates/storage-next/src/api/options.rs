@@ -1,7 +1,7 @@
 //! API open options.
 
 use super::{StorageApiError, StorageApiResult};
-#[cfg(test)]
+#[cfg(any(test, feature = "testkit"))]
 use crate::lifecycle::StorageRuntimeBudget;
 use std::time::Duration;
 
@@ -41,7 +41,6 @@ pub enum StorageMode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StorageBudgetPolicy {
     Default,
-    LowMemory,
 }
 
 /// Minimum supported explicit storage memory budget. Below this the derived per-pool split would
@@ -104,7 +103,7 @@ pub struct StorageOpenOptions {
     maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy,
     background_maintenance: StorageBackgroundMaintenanceOptions,
     wal_segment_size_for_test: Option<u64>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testkit"))]
     storage_budget_for_test: Option<StorageRuntimeBudget>,
 }
 
@@ -216,7 +215,7 @@ impl StorageOpenOptions {
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testkit"))]
             storage_budget_for_test: None,
         }
     }
@@ -241,7 +240,7 @@ impl StorageOpenOptions {
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testkit"))]
             storage_budget_for_test: None,
         }
     }
@@ -257,7 +256,7 @@ impl StorageOpenOptions {
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testkit"))]
             storage_budget_for_test: None,
         }
     }
@@ -273,7 +272,7 @@ impl StorageOpenOptions {
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "testkit"))]
             storage_budget_for_test: None,
         }
     }
@@ -368,7 +367,7 @@ impl StorageOpenOptions {
         self
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     pub(crate) const fn with_storage_budget_for_test(
         mut self,
@@ -450,7 +449,7 @@ impl StorageOpenOptions {
         self.wal_segment_size_for_test
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testkit"))]
     pub(crate) const fn storage_budget_for_test(&self) -> Option<StorageRuntimeBudget> {
         self.storage_budget_for_test
     }

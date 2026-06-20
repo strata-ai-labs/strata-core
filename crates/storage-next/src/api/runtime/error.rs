@@ -8,6 +8,33 @@ use super::{
 #[cfg(any(test, feature = "testkit"))]
 use super::{LifecycleMaintenanceOutcome, MaintenanceRequest, MaintenanceSummary};
 
+/// Surface a storage memory-budget breach as a typed `resource_exhausted` API error.
+///
+/// Both budget admission paths converge here: the global pre-commit check returns
+/// `LifecycleError::StorageBudgetExceeded` directly, while the per-pool commit check
+/// wraps the same error under `CommitLowerLayer::StorageBudget`. Routing both through
+/// one mapping keeps a budget refusal a caller-actionable resource error instead of an
+/// internal lower-layer failure.
+fn budget_exceeded_to_api(error: &LifecycleError) -> Option<StorageApiError> {
+    match error {
+        LifecycleError::StorageBudgetExceeded {
+            pool,
+            requested_bytes,
+            used_bytes,
+            limit_bytes,
+            reason,
+            ..
+        } => Some(StorageApiError::ResourceExhausted {
+            resource: pool.name(),
+            requested_bytes: *requested_bytes,
+            used_bytes: *used_bytes,
+            limit_bytes: *limit_bytes,
+            reason,
+        }),
+        _ => None,
+    }
+}
+
 pub(super) fn branch_error(error: crate::branch::error::BranchRuntimeError) -> StorageApiError {
     match error {
         crate::branch::error::BranchRuntimeError::InsufficientTimestampHistory {
@@ -25,6 +52,10 @@ pub(super) fn branch_error(error: crate::branch::error::BranchRuntimeError) -> S
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "storage API keeps commit error mapping in one exhaustive registry"
+)]
 pub(super) fn commit_error(error: crate::commit::CommitRuntimeError) -> StorageApiError {
     match error {
         crate::commit::CommitRuntimeError::InvalidBatch { reason }
@@ -105,6 +136,21 @@ pub(super) fn commit_error(error: crate::commit::CommitRuntimeError) -> StorageA
                 "commit timeline facts are invalid",
                 error,
             )
+        }
+        crate::commit::CommitRuntimeError::LowerLayer {
+            layer: crate::commit::CommitLowerLayer::StorageBudget,
+            reason,
+            source,
+        } => {
+            let mapped = source
+                .as_deref()
+                .and_then(|inner| inner.downcast_ref::<LifecycleError>())
+                .and_then(budget_exceeded_to_api);
+            mapped.unwrap_or(StorageApiError::LowerLayer {
+                layer: StorageApiLowerLayer::Commit,
+                reason,
+                source,
+            })
         }
         other => StorageApiError::lower_layer_with(
             StorageApiLowerLayer::Commit,
@@ -236,6 +282,20 @@ pub(super) fn map_lifecycle_error(error: LifecycleError) -> StorageApiError {
                 },
                 commit_error,
             ),
+        LifecycleError::StorageBudgetExceeded {
+            pool,
+            requested_bytes,
+            used_bytes,
+            limit_bytes,
+            reason,
+            ..
+        } => StorageApiError::ResourceExhausted {
+            resource: pool.name(),
+            requested_bytes,
+            used_bytes,
+            limit_bytes,
+            reason,
+        },
         other => StorageApiError::lower_layer_with(
             StorageApiLowerLayer::Lifecycle,
             "lifecycle runtime failed",

@@ -194,32 +194,131 @@ fn cache_load_records_zero_durable_and_maintenance_counters() {
 }
 
 #[test]
-fn cache_load_exceeds_old_default_budget_without_rejecting() {
-    // Review-fix regression guard: cache uses an effectively-unlimited memory
-    // budget. A load that exceeds the old default 64 MiB active / 128 MiB frozen
-    // caps must complete with every commit succeeding and the runtime open.
+fn cache_over_budget_load_is_refused() {
+    // Cache now obeys its memory budget (the Default profile). A sustained load that would grow
+    // past the finite pools is refused with a typed resource error instead of growing unbounded,
+    // and the runtime stays open.
     let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
         .expect("cache open should succeed")
         .into_runtime();
 
-    // ~70 commits of 1 MiB each => ~70 MiB held in one growing active table,
-    // past the old 64 MiB active cap that would previously have rejected writes.
+    let value = vec![0x5A; 1024 * 1024];
+    let mut refused = false;
+    for index in 0..300 {
+        let name = format!("over-budget-{index:04}");
+        match runtime.commit(&background_put_batch(name.as_bytes(), value.clone())) {
+            Ok(_) => {}
+            Err(error) => {
+                assert_eq!(error.code(), "resource_exhausted.storage_api.memory_budget");
+                assert_eq!(
+                    error.class(),
+                    crate::api::StorageApiErrorClass::ResourceExhausted
+                );
+                refused = true;
+                break;
+            }
+        }
+    }
+
+    assert!(
+        refused,
+        "a sustained cache load must eventually be refused by the budget"
+    );
+    assert!(
+        runtime.is_open(),
+        "the runtime stays open after a refused commit"
+    );
+}
+
+#[test]
+fn cache_unlimited_override_allows_large_load() {
+    // The named test-only override still lets a cache run unbounded for workloads that need it.
+    let mut runtime = StorageRuntime::open(
+        StorageOpenOptions::cache()
+            .with_storage_budget_for_test(crate::lifecycle::StorageRuntimeBudget::unlimited()),
+    )
+    .expect("cache open should succeed")
+    .into_runtime();
+
     let value = vec![0x5A; 1024 * 1024];
     for index in 0..70 {
         let name = format!("over-budget-{index:04}");
         runtime
             .commit(&background_put_batch(name.as_bytes(), value.clone()))
-            .unwrap_or_else(|error| panic!("cache commit {index} must succeed: {error}"));
-        assert!(
-            runtime.is_open(),
-            "runtime must stay open at commit {index}"
-        );
+            .unwrap_or_else(|error| panic!("unlimited cache commit {index} must succeed: {error}"));
     }
-
     assert_eq!(runtime.state(), StorageRuntimeState::Open);
-    let status = runtime.maintenance_status().expect("maintenance status");
-    assert_eq!(status.pending_tasks(), 0);
-    assert_eq!(status.background_worker_count(), 0);
+}
+
+fn put_on_branch(branch: BranchId, name: &[u8], value: Vec<u8>) -> CommitBatch {
+    CommitBatch::new(
+        branch,
+        vec![CommitMutation::Put {
+            storage_space: StorageSpaceId::new(vec![0x20]).expect("engine storage space"),
+            key: StorageKey::new(name.to_vec()).expect("valid key"),
+            value: StorageValue::new(value),
+            ttl: None,
+        }],
+        CommitOptions::default(),
+    )
+    .expect("valid put batch")
+}
+
+#[test]
+fn cache_multi_branch_over_global_budget_is_refused() {
+    // The global budget is the whole point of this work: total_bytes sits just above active_mutable,
+    // so no single branch can exceed the total through its own active pool — only two branches'
+    // combined resident can. This is the case a per-allocation or per-branch limit cannot reach, and
+    // it proves the global pre-commit admission path surfaces the same typed resource error at the
+    // public surface as the per-pool path.
+    let parts = crate::lifecycle::StorageRuntimeBudgetParts {
+        block_cache_bytes: 0,
+        table_reader_bytes: 1024,
+        active_mutable_bytes: 64 * 1024,
+        frozen_mutable_bytes: 1024,
+        maintenance_queue_bytes: 1024,
+        generated_artifact_bytes: 1024,
+        manifest_catalog_bytes: 1024,
+        total_bytes: 64 * 1024 + 5 * 1024,
+        max_open_readers: 4,
+        max_frozen_tables: 4,
+        max_pending_maintenance_tasks: 4,
+    };
+    let budget = crate::lifecycle::StorageRuntimeBudget::from_parts(parts).expect("budget");
+    let mut runtime =
+        StorageRuntime::open(StorageOpenOptions::cache().with_storage_budget_for_test(budget))
+            .expect("cache open should succeed")
+            .into_runtime();
+
+    let branch_a = StorageRuntime::default_branch_id_for_test();
+    let branch_b = branch_id(0x73);
+    runtime
+        .branch(&BranchRequest::new(
+            branch_b,
+            BranchAction::Create,
+            Some(BranchGeneration::new(1)),
+        ))
+        .expect("create branch b");
+
+    // Each ~48 KiB commit stays under active_mutable (64 KiB), so neither branch trips its own
+    // per-pool admission or rotates; but the two branches' combined resident exceeds the total.
+    let value = vec![0x55; 48 * 1024];
+    runtime
+        .commit(&put_on_branch(branch_a, b"a", value.clone()))
+        .expect("branch a commit fits the per-branch and global budget");
+
+    let error = runtime
+        .commit(&put_on_branch(branch_b, b"b", value))
+        .expect_err("branch b commit exceeds the database memory budget");
+    assert_eq!(error.code(), "resource_exhausted.storage_api.memory_budget");
+    assert_eq!(
+        error.class(),
+        crate::api::StorageApiErrorClass::ResourceExhausted
+    );
+    assert!(
+        runtime.is_open(),
+        "the runtime stays open after a refused commit"
+    );
 }
 
 #[cfg(feature = "perf-trace")]

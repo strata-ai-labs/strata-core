@@ -248,6 +248,7 @@ impl StorageRuntimeBudget {
     /// `u64::MAX` total without overflow. The huge active-mutable limit also
     /// lifts the active rotation threshold, so a cache branch keeps a single
     /// growing in-memory table instead of fanning out across frozen tables.
+    #[cfg(any(test, feature = "testkit"))]
     pub(crate) fn unlimited() -> Self {
         let unbounded_pool = u64::MAX / 8;
         Self::from_parts(StorageRuntimeBudgetParts {
@@ -266,6 +267,7 @@ impl StorageRuntimeBudget {
         .expect("unlimited storage budget is valid")
     }
 
+    #[cfg(any(test, feature = "testkit"))]
     pub(crate) fn low_memory_test_profile() -> Self {
         Self::from_parts(StorageRuntimeBudgetParts {
             total_bytes: 64 * 1024,

@@ -27,7 +27,7 @@ use strata_storage_next::api::{
 /// `remediation()`, and `Display` are exhaustive matches, so a new variant is a
 /// compile error there until handled; this count is the test-level backstop
 /// ensuring the conformance fixture below is extended in lockstep.
-const EXPECTED_VARIANT_COUNT: usize = 14;
+const EXPECTED_VARIANT_COUNT: usize = 15;
 
 /// Substrings that must never appear in a public message or remediation hint.
 /// The full redaction matrix lives at the command/CLI/SDK surfaces; this is the
@@ -181,6 +181,18 @@ fn sample_errors() -> Vec<(&'static str, StorageApiError, StorageApiErrorClass, 
             false,
         ),
         (
+            "ResourceExhausted",
+            StorageApiError::ResourceExhausted {
+                resource: "active_mutable",
+                requested_bytes: 48 * 1024,
+                used_bytes: 64 * 1024,
+                limit_bytes: 70 * 1024,
+                reason: "commit would exceed the database memory budget",
+            },
+            StorageApiErrorClass::ResourceExhausted,
+            false,
+        ),
+        (
             "LowerLayer",
             StorageApiError::lower_layer_with(
                 StorageApiLowerLayer::Commit,
@@ -204,6 +216,7 @@ fn expected_code_prefix(class: StorageApiErrorClass) -> &'static str {
         StorageApiErrorClass::Unsupported => "unsupported",
         StorageApiErrorClass::HistoryUnavailable => "history_unavailable",
         StorageApiErrorClass::AmbiguousCommit => "ambiguous_commit",
+        StorageApiErrorClass::ResourceExhausted => "resource_exhausted",
         StorageApiErrorClass::Internal => "internal",
         // `StorageApiErrorClass` is `#[non_exhaustive]`; external code cannot
         // match exhaustively. A new class must be given a code prefix here.

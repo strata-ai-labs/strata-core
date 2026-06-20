@@ -35,8 +35,9 @@ pub fn check_storage_api_diagnostics_model_contract(
     let options = if script[0] % 2 == 0 {
         StorageOpenOptions::ephemeral()
     } else {
-        StorageOpenOptions::ephemeral()
-            .with_budget_policy(crate::api::StorageBudgetPolicy::LowMemory)
+        StorageOpenOptions::ephemeral().with_storage_budget_for_test(
+            crate::lifecycle::StorageRuntimeBudget::low_memory_test_profile(),
+        )
     };
     let mut runtime = StorageRuntime::open(options)
         .map_err(testkit_error)?

@@ -375,23 +375,20 @@ fn diagnostics_reports_memory_budget_usage() {
 
 #[test]
 fn diagnostics_reports_cache_budget_facts() {
-    // Cache is volatile: it uses an effectively-unlimited memory budget so
-    // writes never reject on source-table memory, regardless of the requested
-    // budget policy. An explicit LowMemory request is therefore overridden.
-    let runtime = StorageRuntime::open(
-        StorageOpenOptions::cache().with_budget_policy(StorageBudgetPolicy::LowMemory),
-    )
-    .expect("open cache runtime")
-    .into_runtime();
+    // Cache now obeys the same budget as durable (the Default profile by default) rather than
+    // running unbounded, so its total and mutable pools are finite.
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache())
+        .expect("open cache runtime")
+        .into_runtime();
 
     let report = diagnostics(&runtime);
     let frozen = usage(report.budget(), DiagnosticsBudgetPool::FrozenMutable);
     let active = usage(report.budget(), DiagnosticsBudgetPool::ActiveMutable);
 
-    // The volatile mutable pools dwarf any finite policy preset (LowMemory caps
-    // these at kibibytes), proving the cache budget is unbounded, not LowMemory.
-    assert!(frozen.limit_bytes() > (1 << 50));
-    assert!(active.limit_bytes() > (1 << 50));
+    // Finite Default-profile pools, not the old effectively-unlimited cache.
+    assert_eq!(report.budget().total_limit_bytes(), Some(512 * 1024 * 1024));
+    assert!(frozen.limit_bytes() > 0 && frozen.limit_bytes() < (1 << 50));
+    assert!(active.limit_bytes() > 0 && active.limit_bytes() < (1 << 50));
     assert_eq!(frozen.pressure(), DiagnosticsBudgetPressure::Normal);
     assert_eq!(active.pressure(), DiagnosticsBudgetPressure::Normal);
 }

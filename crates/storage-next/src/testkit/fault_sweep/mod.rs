@@ -22,8 +22,8 @@ use super::recovery_oracle::workload::{
 };
 use crate::api::{
     CommitBatch, CommitOptions, MaintenanceRequest, MaintenanceScope, MaintenanceTask,
-    StorageApiError, StorageBackend, StorageBudgetPolicy, StorageDurabilityPolicy,
-    StorageMaintenanceSchedulingPolicy, StorageOpenOptions, StorageRuntime,
+    StorageApiError, StorageBackend, StorageDurabilityPolicy, StorageMaintenanceSchedulingPolicy,
+    StorageOpenOptions, StorageRuntime,
 };
 use crate::testkit::{
     BackendOperation, FaultKind, FaultMode, FaultRule, FaultScript, TestkitError,
@@ -280,7 +280,9 @@ fn run_budget_exhaustion_case(root: &Path, seed: u64) -> Result<bool, TestkitErr
     {
         let backend = StorageBackend::local_fs(root.to_path_buf());
         let options = StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
-            .with_budget_policy(StorageBudgetPolicy::LowMemory)
+            .with_storage_budget_for_test(
+                crate::lifecycle::StorageRuntimeBudget::low_memory_test_profile(),
+            )
             .with_maintenance_scheduling_policy(
                 StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
             );
