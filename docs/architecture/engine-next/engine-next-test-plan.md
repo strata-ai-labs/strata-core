@@ -154,6 +154,15 @@ full suite green):
   policy (`ResourceExhausted`/`AmbiguousCommit`/`Unavailable` retryable;
   `RecoveryDegraded`/`NotFound`/`Conflict` not); read-path and engine-owned
   (validation, not-found, open-surface) errors redact too.
+- **Slice 11 — JSON path mutation errors (§6.3).** `engine_json.rs`: descending a
+  key into a scalar (or indexing a non-array) → `invalid_argument.engine.json_path_type`;
+  an out-of-bounds array index → `invalid_argument.engine.json_path_not_found`;
+  `set` on a missing document → `not_found.engine.json_document`.
+  - **Finding (pinned):** `set` vs `set_or_create` is **document-level only** —
+    the path segments are always auto-created (`set_at_path(..., create_missing =
+    true)`), so a missing *key* is created rather than rejected. `json_path_not_found`
+    is therefore reachable only via an out-of-bounds array index, never a missing
+    key. Pinned by the new test.
 
 Decision of record (from the implementing session): §11 items that are latent
 bugs are **fixed**, not just pinned (per user direction). Resolved: §11.1

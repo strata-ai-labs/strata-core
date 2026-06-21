@@ -1085,6 +1085,51 @@ fn json_batch_delete_entries_empty_is_a_noop() {
     assert!(outcome.commit().is_none());
 }
 
+#[test]
+fn json_set_path_type_and_not_found_errors_are_engine_owned() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut json = database
+        .json(branch("default"), space("default"))
+        .expect("JSON service opens");
+    json.create(doc_id("doc"), json_value(json!({"a": 5, "tags": ["x"]})))
+        .expect("create doc");
+
+    // Descending a key into a scalar value is a path type mismatch.
+    let type_error = json
+        .set_or_create(doc_id("doc"), &path("a.b"), json_value(json!(1)))
+        .expect_err("type mismatch rejected");
+    assert_eq!(type_error.class(), EngineErrorClass::InvalidInput);
+    assert_eq!(type_error.code(), "invalid_argument.engine.json_path_type");
+
+    // An out-of-bounds array index is not found — array slots are not created.
+    let oob_error = json
+        .set_or_create(doc_id("doc"), &path("tags[5]"), json_value(json!(1)))
+        .expect_err("out-of-bounds index rejected");
+    assert_eq!(
+        oob_error.code(),
+        "invalid_argument.engine.json_path_not_found"
+    );
+
+    // `set` on a missing document reports a missing document, not a path error.
+    let no_document = json
+        .set(doc_id("ghost"), &root(), json_value(json!(1)))
+        .expect_err("missing document rejected");
+    assert_eq!(no_document.class(), EngineErrorClass::NotFound);
+    assert_eq!(no_document.code(), "not_found.engine.json_document");
+
+    // The set/set_or_create distinction is document-level only: `set` on an
+    // existing document still auto-creates missing path segments.
+    json.set(doc_id("doc"), &path("nested.key"), json_value(json!(7)))
+        .expect("set creates missing path segments on an existing document");
+    assert_eq!(
+        json.get(&doc_id("doc"), &path("nested.key"))
+            .expect("read nested.key")
+            .expect("nested.key present")
+            .as_inner(),
+        &json!(7)
+    );
+}
+
 fn run_database_modes(exercise: fn(&mut Database)) {
     let mut cache = open_cache_database().expect("cache open succeeds");
     exercise(&mut cache);
