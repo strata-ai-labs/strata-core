@@ -68,6 +68,15 @@ full suite green):
   mid-batch partial-apply atomicity needs storage internals not reachable from
   engine; the seam models failure *before* mutation.
 
+- **Slice 4 — Shared capability conformance harness (§6.1).** `tests/capability_conformance.rs`
+  — a `CapabilityFixture` trait + a macro generating `capability × invariant`
+  tests across KV/JSON/event/vector/graph (30 tests). Shared invariants proven
+  uniformly: write-then-read-visible, fork inherit + isolate, space isolation,
+  missing-branch → `not_found.engine.branch`, closed-runtime rejection, durable
+  reopen. Capability-specific divergences (event's keyless append → seed encoded
+  in type+payload; vector/graph container setup) are handled inside each fixture,
+  not in the shared bodies — so a new capability cannot drift on the skeleton.
+
 Decision of record (from the implementing session): §11 items that are latent
 bugs are **fixed**, not just pinned (per user direction). §11.1 done; remaining
 (`AdminHealthStatus::Degraded` dead state, unread `EventIndex` rows, vector
