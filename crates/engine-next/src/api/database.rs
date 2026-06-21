@@ -16,7 +16,9 @@ use crate::persistence::{
     close_summary_is_durable, PersistenceOpenSummary, PersistenceOpenTarget, StoragePersistence,
 };
 #[cfg(any(test, feature = "testkit"))]
-use crate::persistence::{encode_json_index_entry_prefix, ReadSelector, RowClass};
+use crate::persistence::{
+    encode_json_index_entry_prefix, FaultOp, ReadSelector, RowClass, StorageFaultKind,
+};
 
 use super::{
     AdminService, BranchName, CacheOpenOptions, ControlDiagnostics, DurableLocalOpenOptions,
@@ -327,6 +329,30 @@ impl Database {
         })?;
         self.persistence
             .flush_branch_for_test(record.storage_branch_id())
+    }
+
+    /// Arms a storage fault that fires on the next persistence commit.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn inject_commit_fault_for_test(&mut self, kind: StorageFaultKind) {
+        self.persistence.arm_storage_fault(FaultOp::Commit, kind);
+    }
+
+    /// Arms a storage fault that fires on the next persistence point read.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn inject_read_fault_for_test(&mut self, kind: StorageFaultKind) {
+        self.persistence.arm_storage_fault(FaultOp::Read, kind);
+    }
+
+    /// Arms a storage fault that fires on the next persistence scan.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn inject_scan_fault_for_test(&mut self, kind: StorageFaultKind) {
+        self.persistence.arm_storage_fault(FaultOp::Scan, kind);
+    }
+
+    /// Arms a storage fault that fires on the next persistence branch action.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn inject_branch_fault_for_test(&mut self, kind: StorageFaultKind) {
+        self.persistence.arm_storage_fault(FaultOp::Branch, kind);
     }
 
     /// Closes the database handle.

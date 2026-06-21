@@ -1,6 +1,7 @@
 //! Storage persistence adapter boundary.
 
 mod adapter;
+mod fault;
 mod key;
 mod plan;
 mod row;
@@ -41,3 +42,8 @@ pub(crate) use space::RowClass;
 
 #[cfg(any(test, feature = "testkit"))]
 pub(crate) use space::row_class_storage_id_for_test;
+
+#[cfg(any(test, feature = "testkit"))]
+pub(crate) use fault::FaultOp;
+#[cfg(any(test, feature = "testkit"))]
+pub use fault::StorageFaultKind;

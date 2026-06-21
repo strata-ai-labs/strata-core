@@ -12,8 +12,8 @@ use strata_storage_next::api::{
     ImmutableSourceScanReadRequest, PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit,
     ScanRange, ScanReadRequest, StorageApiError, StorageApiErrorClass, StorageCloseSummary,
     StorageDurabilityPolicy, StorageImmutableSource, StorageKey, StorageMemoryBudget,
-    StorageOpenDisposition, StorageOpenOptions, StorageReadRow, StorageRuntime, StorageRuntimeState,
-    StorageSpaceId, StorageValue,
+    StorageOpenDisposition, StorageOpenOptions, StorageReadRow, StorageRuntime,
+    StorageRuntimeState, StorageSpaceId, StorageValue,
 };
 #[cfg(any(test, feature = "testkit"))]
 use strata_storage_next::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
@@ -22,6 +22,9 @@ use crate::branch::catalog::{DEFAULT_BRANCH_GENERATION, SYSTEM_BRANCH_ID};
 use crate::commit::CommitOutcome;
 use crate::diagnostics::{EngineError, EngineErrorClass, EngineResult};
 
+use super::fault::FaultOp;
+#[cfg(any(test, feature = "testkit"))]
+use super::fault::{FaultSchedule, StorageFaultKind};
 use super::{CommitPlan, ReadSelector, RowAddress, RowClass, RowMutation};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,6 +54,8 @@ impl PersistenceOpenSummary {
 pub(crate) struct StoragePersistence {
     runtime: StorageRuntime<'static>,
     durable: bool,
+    #[cfg(any(test, feature = "testkit"))]
+    faults: FaultSchedule,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -297,9 +302,40 @@ impl StoragePersistence {
         };
         let created = matches!(summary.disposition(), StorageOpenDisposition::Created);
         Ok((
-            Self { runtime, durable },
+            Self {
+                runtime,
+                durable,
+                #[cfg(any(test, feature = "testkit"))]
+                faults: FaultSchedule::default(),
+            },
             PersistenceOpenSummary { created, durable },
         ))
+    }
+
+    /// Returns an injected fault for `op` as a mapped engine error, if a test
+    /// armed one.
+    #[cfg(any(test, feature = "testkit"))]
+    fn guard_fault(&mut self, op: FaultOp) -> EngineResult<()> {
+        if let Some(error) = self.faults.take(op) {
+            return Err(map_storage_error(error));
+        }
+        Ok(())
+    }
+
+    /// Production builds carry no fault schedule, so this is a no-op. The
+    /// `unused_self`/`unnecessary_wraps` relaxations are intentional: the method
+    /// must keep the same `self.guard_fault(op)?` call shape as the test build so
+    /// callers need no `cfg` branching.
+    #[cfg(not(any(test, feature = "testkit")))]
+    #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+    fn guard_fault(&self, _op: FaultOp) -> EngineResult<()> {
+        Ok(())
+    }
+
+    /// Arms a storage fault that fires on the next matching persistence call.
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn arm_storage_fault(&mut self, op: FaultOp, kind: StorageFaultKind) {
+        self.faults.arm(op, kind);
     }
 
     pub(crate) fn create_system_branch_for_new_database(&mut self) -> EngineResult<()> {
@@ -415,12 +451,14 @@ impl StoragePersistence {
         action: BranchAction,
         generation: Option<StorageBranchGeneration>,
     ) -> EngineResult<PersistenceBranchOutcome> {
+        self.guard_fault(FaultOp::Branch)?;
         let request = BranchRequest::new(branch_id, action, generation);
         let outcome = self.runtime.branch(&request).map_err(map_storage_error)?;
         map_branch_outcome(&outcome)
     }
 
     pub(crate) fn commit(&mut self, plan: &CommitPlan) -> EngineResult<CommitOutcome> {
+        self.guard_fault(FaultOp::Commit)?;
         let mut mutations = Vec::with_capacity(plan.mutations().len());
         for mutation in plan.mutations() {
             mutations.push(to_storage_mutation(mutation)?);
@@ -457,6 +495,7 @@ impl StoragePersistence {
         address: &RowAddress,
         selector: ReadSelector,
     ) -> EngineResult<Option<PersistenceReadRow>> {
+        self.guard_fault(FaultOp::Read)?;
         let outcome = match self
             .runtime
             .read_point(&point_read_request(address, selector)?)
@@ -477,6 +516,7 @@ impl StoragePersistence {
         address: &RowAddress,
         include_tombstones: bool,
     ) -> EngineResult<Vec<PersistenceReadRow>> {
+        self.guard_fault(FaultOp::Read)?;
         let request = HistoryReadRequest::new(
             address.branch_id(),
             storage_space(address)?,
@@ -536,6 +576,7 @@ impl StoragePersistence {
         limit: Option<usize>,
         after_version: Option<CommitVersion>,
     ) -> EngineResult<Vec<PersistenceReadRow>> {
+        self.guard_fault(FaultOp::Scan)?;
         if limit == Some(0) {
             return Ok(Vec::new());
         }
@@ -579,6 +620,7 @@ impl StoragePersistence {
         selector: ReadSelector,
         limit: Option<usize>,
     ) -> EngineResult<Vec<PersistenceReadRow>> {
+        self.guard_fault(FaultOp::Scan)?;
         if limit == Some(0) {
             return Ok(Vec::new());
         }
@@ -621,6 +663,7 @@ impl StoragePersistence {
         end: Option<Vec<u8>>,
         selector: ReadSelector,
     ) -> EngineResult<Vec<PersistenceImmutableSource>> {
+        self.guard_fault(FaultOp::Scan)?;
         let outcome = match self
             .runtime
             .scan_immutable_sources(&immutable_source_scan_request(
@@ -968,6 +1011,12 @@ pub(crate) fn map_storage_error(error: StorageApiError) -> EngineError {
             true,
             "persistence is temporarily unable to accept the request",
         ),
+        StorageApiErrorClass::ResourceExhausted => (
+            EngineErrorClass::Unavailable,
+            "unavailable.engine.persistence_budget",
+            true,
+            "persistence resource budget is exhausted",
+        ),
         StorageApiErrorClass::Internal => (
             EngineErrorClass::Internal,
             "internal.engine.persistence",
@@ -1071,6 +1120,114 @@ mod tests {
         ));
         assert_eq!(error.class(), EngineErrorClass::Unavailable);
         assert_eq!(error.code(), "unavailable.engine.persistence");
+        assert!(error.retryable());
+        assert!(error.source_arc().is_some());
+    }
+
+    #[test]
+    fn storage_invalid_argument_maps_to_invalid_input() {
+        let error = map_storage_error(StorageApiError::InvalidArgument {
+            field: "test field",
+            reason: "test reason",
+        });
+        assert_eq!(error.class(), EngineErrorClass::InvalidInput);
+        assert_eq!(error.code(), "invalid_argument.engine.persistence");
+        assert!(!error.retryable());
+        assert!(error.source_arc().is_some());
+    }
+
+    #[test]
+    fn storage_unsupported_capability_maps_to_unavailable_capability() {
+        let error = map_storage_error(StorageApiError::UnsupportedCapability {
+            capability: "test capability",
+            reason: "test reason",
+        });
+        assert_eq!(error.class(), EngineErrorClass::Unavailable);
+        assert_eq!(error.code(), "unavailable.engine.persistence_capability");
+        assert!(!error.retryable());
+        assert!(error.source_arc().is_some());
+    }
+
+    #[test]
+    fn storage_branch_not_found_maps_to_not_found() {
+        let error = map_storage_error(StorageApiError::BranchNotFound {
+            branch_id: BranchId::from_bytes([0x11; BranchId::BYTE_LEN]),
+        });
+        assert_eq!(error.class(), EngineErrorClass::NotFound);
+        assert_eq!(error.code(), "not_found.engine.persistence");
+        assert!(!error.retryable());
+        assert!(error.source_arc().is_some());
+    }
+
+    #[test]
+    fn storage_branch_already_exists_maps_to_conflict() {
+        let error = map_storage_error(StorageApiError::BranchAlreadyExists {
+            branch_id: BranchId::from_bytes([0x11; BranchId::BYTE_LEN]),
+        });
+        assert_eq!(error.class(), EngineErrorClass::Conflict);
+        assert_eq!(error.code(), "conflict.engine.persistence");
+        assert!(!error.retryable());
+        assert!(error.source_arc().is_some());
+    }
+
+    #[test]
+    fn storage_retained_history_unavailable_maps_to_not_found_history() {
+        let error = map_storage_error(StorageApiError::RetainedHistoryUnavailable {
+            branch_id: BranchId::from_bytes([0x11; BranchId::BYTE_LEN]),
+            reason: "test retained history",
+        });
+        assert_eq!(error.class(), EngineErrorClass::NotFound);
+        assert_eq!(error.code(), "not_found.engine.persistence_history");
+        assert!(!error.retryable());
+        assert!(error.source_arc().is_some());
+    }
+
+    #[test]
+    fn storage_timestamp_history_unavailable_maps_to_not_found_history() {
+        let error = map_storage_error(StorageApiError::TimestampHistoryUnavailable {
+            branch_id: BranchId::from_bytes([0x11; BranchId::BYTE_LEN]),
+            reason: "test timestamp history",
+        });
+        assert_eq!(error.class(), EngineErrorClass::NotFound);
+        assert_eq!(error.code(), "not_found.engine.persistence_history");
+        assert!(!error.retryable());
+    }
+
+    #[test]
+    fn storage_maintenance_rejected_maps_to_retryable_unavailable() {
+        let error = map_storage_error(StorageApiError::MaintenanceRejected {
+            reason: "test maintenance rejection",
+        });
+        assert_eq!(error.class(), EngineErrorClass::Unavailable);
+        assert_eq!(error.code(), "failed_precondition.engine.persistence");
+        assert!(error.retryable());
+    }
+
+    #[test]
+    fn storage_invalid_runtime_state_maps_to_retryable_unavailable() {
+        let error = map_storage_error(StorageApiError::InvalidRuntimeState {
+            reason: "test runtime state",
+        });
+        assert_eq!(error.class(), EngineErrorClass::Unavailable);
+        assert_eq!(error.code(), "failed_precondition.engine.persistence");
+        assert!(error.retryable());
+    }
+
+    // Storage resource-budget exhaustion is a transient pressure condition, so
+    // it maps to a retryable `unavailable`, not a non-retryable internal failure
+    // (which would tell callers to treat a recoverable budget limit as a bug).
+    // This resolves the open scope item in `engine-next-test-plan.md` (§11.1).
+    #[test]
+    fn storage_resource_exhausted_maps_to_retryable_unavailable() {
+        let error = map_storage_error(StorageApiError::ResourceExhausted {
+            resource: "memory",
+            requested_bytes: 4096,
+            used_bytes: 1024,
+            limit_bytes: 2048,
+            reason: "test budget exhaustion",
+        });
+        assert_eq!(error.class(), EngineErrorClass::Unavailable);
+        assert_eq!(error.code(), "unavailable.engine.persistence_budget");
         assert!(error.retryable());
         assert!(error.source_arc().is_some());
     }

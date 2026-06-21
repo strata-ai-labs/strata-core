@@ -4,6 +4,7 @@ pub use crate::data::vector::{
     VectorIndexDiagnosticsForTest as VectorIndexDiagnostics,
     VectorIndexPolicyForTest as VectorIndexPolicy,
 };
+pub use crate::persistence::StorageFaultKind;
 pub use crate::test_support::*;
 
 /// Returns the storage-space byte for a symbolic row class used in tests.

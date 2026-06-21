@@ -48,6 +48,7 @@ impl EngineError {
         retryable: bool,
         message: impl Into<String>,
     ) -> Self {
+        debug_assert_registered(class, code);
         Self {
             class,
             code,
@@ -64,6 +65,7 @@ impl EngineError {
         message: impl Into<String>,
         source: impl Error + Send + Sync + 'static,
     ) -> Self {
+        debug_assert_registered(class, code);
         Self {
             class,
             code,
@@ -168,4 +170,12 @@ impl Error for EngineError {
             .as_deref()
             .map(|source| source as &(dyn Error + 'static))
     }
+}
+
+/// Validates in debug builds that `code` is registered and maps to `class`.
+fn debug_assert_registered(class: EngineErrorClass, code: &'static str) {
+    debug_assert!(
+        super::registry::class_for_code(code) == Some(class),
+        "engine error code `{code}` is unregistered or mapped to a class other than {class:?}"
+    );
 }
