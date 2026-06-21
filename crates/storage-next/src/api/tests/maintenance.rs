@@ -810,7 +810,10 @@ fn api_maintenance_drain_preserves_branch_scope() {
 fn api_repair_branch_scope_round_trips_through_drain() {
     let (backend, mut runtime) = open_durable_runtime_with_backend(
         "maintenance-repair-branch-scope",
-        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_maintenance_scheduling_policy(
+                StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
+            ),
     );
     let child = branch_with(0x77);
     runtime

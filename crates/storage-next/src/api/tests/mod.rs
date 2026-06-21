@@ -100,6 +100,7 @@ fn default_background_worker_count() -> usize {
     StorageBackgroundMaintenanceOptions::product_default().worker_count()
 }
 
+#[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
 fn default_terminal_nonzero_level() -> u8 {
     let max_level_count = crate::branch::config::BranchRuntimeConfig::default().max_level_count();
     u8::try_from(max_level_count.saturating_sub(1)).expect("configured level fits in u8")

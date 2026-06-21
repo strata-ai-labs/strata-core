@@ -45,15 +45,12 @@ fn dotenv_path() -> Option<PathBuf> {
     }
 
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    for candidate in [
+    [
         manifest_dir.join(".env"),
         manifest_dir.join("..").join("..").join(".env"),
-    ] {
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
+    ]
+    .into_iter()
+    .find(|candidate| candidate.exists())
 }
 
 fn integration_enabled() -> bool {

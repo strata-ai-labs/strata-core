@@ -1,5 +1,7 @@
 //! Stable inference error contract tests.
 
+#![allow(clippy::too_many_lines)]
+
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use strata_inference_next::{InferenceError, InferenceErrorClass};

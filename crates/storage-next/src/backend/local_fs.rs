@@ -242,6 +242,7 @@ impl LocalFsBackend {
     }
 
     #[cfg(all(test, unix))]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     fn arm_targeted_publish_fault(
         &self,
         step: LocalFsPublishStep,
@@ -260,6 +261,7 @@ impl LocalFsBackend {
     /// Arm a targeted publish fault at the temp-file fsync (before the object becomes visible) for
     /// `target_object`. Generic over any durable object — table manifest, checkpoint snapshot, etc.
     #[cfg(all(test, unix))]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     pub(crate) fn inject_targeted_publish_fault_before_visibility(
         &self,
         target_object: String,
@@ -270,6 +272,7 @@ impl LocalFsBackend {
     /// Arm a targeted publish fault at the parent-directory fsync (after the object is visible but
     /// before its durability is confirmed) for `target_object`.
     #[cfg(all(test, unix))]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     pub(crate) fn inject_targeted_publish_fault_visible_unconfirmed(
         &self,
         target_object: String,

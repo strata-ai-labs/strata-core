@@ -314,6 +314,7 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     pub(crate) fn submit_panicking_background_task_for_test(
         &self,
         ready: std::sync::Arc<std::sync::Barrier>,
@@ -346,6 +347,7 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     #[allow(
         clippy::match_same_arms,
         reason = "borrowed and owned durable slots have different concrete lifetimes"
@@ -362,6 +364,7 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     #[allow(
         clippy::match_same_arms,
         reason = "borrowed and owned durable slots have different concrete lifetimes"
@@ -380,6 +383,7 @@ impl StorageRuntime<'static> {
         clippy::match_same_arms,
         reason = "borrowed and owned durable slots have different concrete lifetimes"
     )]
+    #[allow(dead_code)]
     pub(crate) fn wait_background_idle_until_for_test(
         &self,
         timeout: Duration,
@@ -406,6 +410,7 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     pub(crate) fn pending_flush_watermark_candidate_for_test(&self) -> Option<CommitVersion> {
         match &self.inner {
             StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => None,
@@ -416,11 +421,13 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     pub(crate) fn background_now_for_test(&self) -> Option<MaintenanceInstant> {
         self.background_now_for_current_runtime()
     }
 
     #[cfg(test)]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     #[allow(
         clippy::match_same_arms,
         reason = "borrowed and owned durable slots have different concrete lifetimes"
@@ -445,6 +452,7 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     #[allow(
         clippy::match_same_arms,
         reason = "borrowed and owned durable slots have different concrete lifetimes"
@@ -476,6 +484,7 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     #[allow(
         clippy::match_same_arms,
         reason = "borrowed and owned durable slots have different concrete lifetimes"
@@ -496,6 +505,7 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     pub(crate) fn submit_stale_background_wake_for_test(&self) {
         self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::Low);
     }

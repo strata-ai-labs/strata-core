@@ -15,11 +15,13 @@ use crate::branch::state::compaction::{
 };
 use crate::branch::state::materialization::BranchMaterializationRecovery;
 use crate::branch::state::BranchLocalState;
+#[cfg(feature = "perf-trace")]
+use crate::lifecycle::compaction::defer_compaction_for_resource_policy;
 use crate::lifecycle::compaction::{
     compact_cache_branch_to_fixed_point, current_compaction_request_from_maintenance_task,
-    current_compaction_request_from_maintenance_task_with_budget,
-    defer_compaction_for_resource_policy, nonzero_compaction_pressure, nonzero_level_target_bytes,
-    nonzero_level_targets_from_level_bytes, LifecycleCompactionDrainRequest,
+    current_compaction_request_from_maintenance_task_with_budget, nonzero_compaction_pressure,
+    nonzero_level_target_bytes, nonzero_level_targets_from_level_bytes,
+    LifecycleCompactionDrainRequest,
 };
 use crate::lifecycle::flush::{
     flush_cache_branch, FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId,
@@ -40,6 +42,7 @@ const fn tib(value: u64) -> u64 {
     value * 1024 * 1024 * 1024 * 1024
 }
 
+#[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
 fn target_bytes_for_state(state: &BranchLocalState) -> Vec<u64> {
     let level_bytes = state
         .owned_levels()

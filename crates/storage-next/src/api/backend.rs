@@ -171,6 +171,7 @@ impl StorageBackend {
     /// sync); `false` faults after it is visible but before its durability is confirmed (the
     /// parent-directory sync). A memory backend is a no-op (it has no fault hook).
     #[cfg(all(test, unix, feature = "localfs"))]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     fn inject_targeted_publish_fault(&self, object: String, before_visibility: bool) {
         let StorageBackendInner::LocalFs(backend) = &self.inner else {
             return;
@@ -189,6 +190,7 @@ impl StorageBackend {
     /// Arm a publish fault on the branch's table manifest object. Used by the off-lock publish
     /// durability suite to drive manifest-debt recovery.
     #[cfg(all(test, unix, feature = "localfs"))]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     pub(crate) fn inject_manifest_publish_fault(
         &self,
         branch_id: strata_core_next::BranchId,
@@ -204,6 +206,7 @@ impl StorageBackend {
     /// Arm a publish fault on the checkpoint snapshot object for `snapshot_id`. Used by the
     /// delta-checkpoint crash-consistency suite to fail the snapshot fsync during a checkpoint.
     #[cfg(all(test, unix, feature = "localfs"))]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     pub(crate) fn inject_snapshot_publish_fault(&self, snapshot_id: u64, before_visibility: bool) {
         let object = ObjectLayout::snapshot(snapshot_id)
             .expect("snapshot object name")

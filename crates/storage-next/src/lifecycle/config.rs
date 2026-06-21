@@ -53,9 +53,8 @@ pub(crate) enum LifecycleMaintenanceSchedulingPolicy {
 pub(crate) enum LifecycleCompactionIoPolicy {
     #[default]
     Unlimited,
-    PerTaskByteBudget {
-        max_bytes: u64,
-    },
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
+    PerTaskByteBudget { max_bytes: u64 },
 }
 
 impl LifecycleConfig {
@@ -108,6 +107,7 @@ impl LifecycleConfig {
         Ok(self)
     }
 
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     pub(crate) fn with_compaction_io_policy(
         mut self,
         compaction_io_policy: LifecycleCompactionIoPolicy,
@@ -254,6 +254,7 @@ impl LifecycleMaintenanceSchedulingPolicy {
 }
 
 impl LifecycleCompactionIoPolicy {
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     pub(crate) const fn per_task_byte_budget(max_bytes: u64) -> Self {
         Self::PerTaskByteBudget { max_bytes }
     }

@@ -13,6 +13,7 @@ pub(in crate::lifecycle::tests) fn open_runtime(
     shell.complete_recovery(&outcome).expect("open runtime")
 }
 
+#[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
 pub(in crate::lifecycle::tests) fn open_runtime_with_lifecycle_config(
     branch: BranchId,
     backend: &CheckpointTestBackend,
@@ -53,6 +54,7 @@ pub(in crate::lifecycle::tests) fn assemble_shell(
     )
 }
 
+#[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
 fn assemble_shell_with_lifecycle_config(
     branch: BranchId,
     backend: &CheckpointTestBackend,

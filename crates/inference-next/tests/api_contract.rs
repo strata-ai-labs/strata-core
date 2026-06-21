@@ -1,5 +1,7 @@
 //! Public inference API contract tests.
 
+#![allow(clippy::float_cmp)]
+
 use std::path::PathBuf;
 
 use serde::de::DeserializeOwned;

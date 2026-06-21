@@ -1014,6 +1014,7 @@ impl<S> LifecycleCacheRuntime<S> {
     }
 
     #[cfg(test)]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     pub(crate) fn schedule_post_commit_maintenance_for_test(
         &mut self,
         branch_id: BranchId,

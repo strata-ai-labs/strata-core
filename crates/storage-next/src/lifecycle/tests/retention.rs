@@ -6,9 +6,11 @@ use crate::backend::{
 };
 use crate::format::DatabaseManifest;
 use crate::layout::ObjectLayout;
+#[cfg(feature = "perf-trace")]
+use crate::lifecycle::retention::reject_implicit_snapshot_floor_advancement;
 use crate::lifecycle::retention::{
-    reject_implicit_snapshot_floor_advancement, retention_outcome_for_delegated_families,
-    retention_outcome_for_scope, table_quarantine_candidate,
+    retention_outcome_for_delegated_families, retention_outcome_for_scope,
+    table_quarantine_candidate,
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::service::SnapshotService;

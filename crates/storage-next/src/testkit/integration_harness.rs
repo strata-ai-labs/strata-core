@@ -84,6 +84,7 @@ pub(crate) mod crash_sim {
     /// Truncate a published object to `new_len` bytes. Simulates a fault where
     /// some payload bytes reached the disk but the tail of the publication was
     /// lost (e.g. fsync interrupted partway).
+    #[cfg_attr(not(feature = "fault-injection"), allow(dead_code))]
     pub(crate) fn truncate_object(
         root: &Path,
         name: &crate::object::ObjectName,
@@ -112,6 +113,7 @@ pub(crate) mod crash_sim {
 
     /// Patch a single byte to simulate a torn write or bit-rot that did not
     /// alter the object length.
+    #[cfg_attr(not(feature = "fault-injection"), allow(dead_code))]
     pub(crate) fn corrupt_object_byte(
         root: &Path,
         name: &crate::object::ObjectName,

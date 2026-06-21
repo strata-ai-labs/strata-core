@@ -1,6 +1,26 @@
 //! Public inference runtime and provider API.
 
 #![cfg_attr(all(not(feature = "local"), not(test)), deny(unsafe_code))]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::doc_link_with_quotes,
+    clippy::doc_markdown,
+    clippy::float_cmp,
+    clippy::if_same_then_else,
+    clippy::manual_let_else,
+    clippy::manual_string_new,
+    clippy::match_same_arms,
+    clippy::needless_raw_string_hashes,
+    clippy::needless_pass_by_value,
+    clippy::redundant_closure_for_method_calls,
+    clippy::single_match_else,
+    clippy::struct_excessive_bools,
+    clippy::uninlined_format_args,
+    clippy::unused_self,
+    clippy::used_underscore_binding
+)]
 
 pub mod api;
 mod error;

@@ -31,12 +31,14 @@ fn type_inventory_snapshot_is_current() {
             // +28 more for the Storage Testing Hardening (STH) program's
             // feature-gated test harnesses (recovery_oracle, fault_sweep, fs_models,
             // simulation incl. the 4c fault/crash dimension, reordering_backend).
-            // These are test-only types; the production guard below (cleanup-target)
-            // is unchanged at 644.
+            // +7 more for source-shape reads and budget accuracy reporting used by
+            // the vector index artifact boundary. Five are public API shells and two
+            // land in cleanup-target production code; they keep storage generic and
+            // do not introduce product/vector vocabulary into storage.
             "--max-all-types",
-            "1120",
+            "1127",
             "--max-cleanup-target-types",
-            "644",
+            "646",
         ])
         .output()
         .expect("run inventory guard");
@@ -58,15 +60,18 @@ fn parent_facade_reexports_do_not_regrow() {
             // publish_{compaction,materialization}_outcome_manifest) that lets the manifest
             // fsync move off the global runtime lock while synchronous callers stay 2-phase.
             "--max-reexport-names",
-            "lifecycle/mod.rs=242",
+            "lifecycle/mod.rs=243",
             // +13 for the STH program's testkit harness exports (the run_*_harness
             // entry points + *Outcome types for recovery_oracle / fault_sweep /
             // fs_models / simulation + the 4c fault simulation, plus FsModel /
             // ReorderingBackend) re-exported from the testkit facade.
             "--max-reexport-names",
             "testkit/mod.rs=112",
+            // +5 for the public source-shape read DTOs and diagnostics budget
+            // accuracy enum needed by upper layers without exposing lower storage
+            // internals.
             "--max-reexport-names",
-            "api/mod.rs=104",
+            "api/mod.rs=109",
             "--max-reexport-names",
             "commit/mod.rs=80",
             "--max-reexport-names",
@@ -131,14 +136,17 @@ fn scaffold_allowance_markers_do_not_regrow() {
     let output = inventory_command()
         .args([
             "--quiet",
+            // +1 in each background maintenance dispatcher for feature-gated
+            // perf-trace hooks that are dead in the default testkit feature set
+            // but intentionally compiled for strict all-target clippy.
             "--max-scaffold-markers",
-            "lifecycle/durable/maintenance.rs=0:31",
+            "lifecycle/durable/maintenance.rs=0:32",
             "--max-scaffold-markers",
             "lifecycle/mod.rs=24:1",
             "--max-scaffold-markers",
             "commit/mod.rs=16:1",
             "--max-scaffold-markers",
-            "lifecycle/cache.rs=0:14",
+            "lifecycle/cache.rs=0:15",
             "--max-scaffold-markers",
             "table/mod.rs=9:1",
             "--max-scaffold-markers",

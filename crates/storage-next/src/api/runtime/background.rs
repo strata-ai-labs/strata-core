@@ -322,6 +322,7 @@ impl<R> RuntimeSlot<R> {
     }
 
     #[cfg(test)]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     pub(super) fn wait_background_idle_until(
         &self,
         timeout: Duration,
@@ -349,6 +350,7 @@ impl<R> RuntimeSlot<R> {
     }
 
     #[cfg(test)]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     pub(super) fn set_background_drain_limits(
         &mut self,
         max_tasks: usize,
@@ -363,6 +365,7 @@ impl<R> RuntimeSlot<R> {
     }
 
     #[cfg(test)]
+    #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
     pub(super) fn set_background_block_wait_for_test(
         &mut self,
         wait_slice: Duration,

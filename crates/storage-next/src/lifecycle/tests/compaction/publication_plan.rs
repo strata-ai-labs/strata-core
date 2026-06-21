@@ -12,10 +12,11 @@ use crate::branch::state::compaction::{
 };
 use crate::branch::state::BranchLocalState;
 use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource};
+#[cfg(feature = "perf-trace")]
+use crate::lifecycle::tests::checkpoint::shared::open_runtime_with_lifecycle_config;
 use crate::lifecycle::tests::checkpoint::shared::{
     assemble_shell, durable_batch, generation_guard, open_runtime,
-    open_runtime_with_lifecycle_config, physical_key as checkpoint_physical_key,
-    CheckpointTestBackend,
+    physical_key as checkpoint_physical_key, CheckpointTestBackend,
 };
 use crate::row::StorageSpaceId;
 use strata_core_next::{CommitVersion, Timestamp};
