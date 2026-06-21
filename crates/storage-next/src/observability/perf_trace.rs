@@ -89,6 +89,10 @@ pub struct StoragePerfSnapshot {
     commit_wal_append_ns: u64,
     commit_wal_appends: u64,
     commit_wal_append_bytes: u64,
+    commit_post_wal_growth_ns: u64,
+    commit_wal_growth_facts_ns: u64,
+    commit_wal_growth_manifest_ns: u64,
+    commit_post_maintenance_ns: u64,
     commit_visible_publish_attempts: u64,
     commit_visible_publish_successes: u64,
     commit_visible_publish_failures: u64,
@@ -566,6 +570,26 @@ impl StoragePerfSnapshot {
     /// Durable WAL append payload bytes reported by the WAL service.
     pub const fn commit_wal_append_bytes(self) -> u64 {
         self.commit_wal_append_bytes
+    }
+
+    /// Nanoseconds spent in the post-commit WAL-growth policy evaluation.
+    pub const fn commit_post_wal_growth_ns(self) -> u64 {
+        self.commit_post_wal_growth_ns
+    }
+
+    /// Nanoseconds spent gathering WAL growth facts (segment readdir + stat).
+    pub const fn commit_wal_growth_facts_ns(self) -> u64 {
+        self.commit_wal_growth_facts_ns
+    }
+
+    /// Nanoseconds spent loading the current manifest during WAL-growth evaluation.
+    pub const fn commit_wal_growth_manifest_ns(self) -> u64 {
+        self.commit_wal_growth_manifest_ns
+    }
+
+    /// Nanoseconds spent scheduling post-commit maintenance for the branch.
+    pub const fn commit_post_maintenance_ns(self) -> u64 {
+        self.commit_post_maintenance_ns
     }
 
     /// Visible-version publication attempts made by commit execution.
@@ -2337,6 +2361,14 @@ static COMMIT_WAL_APPENDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_WAL_APPEND_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static COMMIT_POST_WAL_GROWTH_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_GROWTH_FACTS_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_GROWTH_MANIFEST_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_POST_MAINTENANCE_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_VISIBLE_PUBLISH_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_VISIBLE_PUBLISH_SUCCESSES: AtomicU64 = AtomicU64::new(0);
@@ -3120,6 +3152,10 @@ pub fn reset() {
     COMMIT_WAL_APPEND_NS.store(0, Ordering::Relaxed);
     COMMIT_WAL_APPENDS.store(0, Ordering::Relaxed);
     COMMIT_WAL_APPEND_BYTES.store(0, Ordering::Relaxed);
+    COMMIT_POST_WAL_GROWTH_NS.store(0, Ordering::Relaxed);
+    COMMIT_WAL_GROWTH_FACTS_NS.store(0, Ordering::Relaxed);
+    COMMIT_WAL_GROWTH_MANIFEST_NS.store(0, Ordering::Relaxed);
+    COMMIT_POST_MAINTENANCE_NS.store(0, Ordering::Relaxed);
     COMMIT_VISIBLE_PUBLISH_ATTEMPTS.store(0, Ordering::Relaxed);
     COMMIT_VISIBLE_PUBLISH_SUCCESSES.store(0, Ordering::Relaxed);
     COMMIT_VISIBLE_PUBLISH_FAILURES.store(0, Ordering::Relaxed);
@@ -3511,6 +3547,10 @@ pub fn snapshot() -> StoragePerfSnapshot {
         commit_wal_append_ns: COMMIT_WAL_APPEND_NS.load(Ordering::Relaxed),
         commit_wal_appends: COMMIT_WAL_APPENDS.load(Ordering::Relaxed),
         commit_wal_append_bytes: COMMIT_WAL_APPEND_BYTES.load(Ordering::Relaxed),
+        commit_post_wal_growth_ns: COMMIT_POST_WAL_GROWTH_NS.load(Ordering::Relaxed),
+        commit_wal_growth_facts_ns: COMMIT_WAL_GROWTH_FACTS_NS.load(Ordering::Relaxed),
+        commit_wal_growth_manifest_ns: COMMIT_WAL_GROWTH_MANIFEST_NS.load(Ordering::Relaxed),
+        commit_post_maintenance_ns: COMMIT_POST_MAINTENANCE_NS.load(Ordering::Relaxed),
         commit_visible_publish_attempts: COMMIT_VISIBLE_PUBLISH_ATTEMPTS.load(Ordering::Relaxed),
         commit_visible_publish_successes: COMMIT_VISIBLE_PUBLISH_SUCCESSES.load(Ordering::Relaxed),
         commit_visible_publish_failures: COMMIT_VISIBLE_PUBLISH_FAILURES.load(Ordering::Relaxed),
@@ -4296,6 +4336,38 @@ pub(crate) fn record_commit_wal_append_elapsed(start: PerfTraceTimer, bytes: u64
     record_elapsed(&COMMIT_WAL_APPEND_NS, start);
     COMMIT_WAL_APPENDS.fetch_add(1, Ordering::Relaxed);
     COMMIT_WAL_APPEND_BYTES.fetch_add(bytes, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_post_wal_growth_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_post_wal_growth_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_POST_WAL_GROWTH_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_wal_growth_facts_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_wal_growth_facts_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_WAL_GROWTH_FACTS_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_wal_growth_manifest_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_wal_growth_manifest_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_WAL_GROWTH_MANIFEST_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_post_maintenance_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_post_maintenance_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_POST_MAINTENANCE_NS, start);
 }
 
 #[cfg(not(feature = "perf-trace"))]

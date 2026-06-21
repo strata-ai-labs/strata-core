@@ -1133,6 +1133,28 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         }
     }
 
+    /// Reads the current manifest watermark and derives commits-since-checkpoint
+    /// (the count surfaced in the WAL-growth outcome and the public maintenance
+    /// summary). Extracted so `evaluate_wal_growth_policy` stays within the
+    /// per-function line budget.
+    fn wal_growth_commits_since_checkpoint(&self) -> LifecycleResult<u64> {
+        let manifest_start = crate::observability::perf_trace::start_timer();
+        let manifest_result = self.services.manifest().load_required();
+        crate::observability::perf_trace::record_commit_wal_growth_manifest_elapsed(manifest_start);
+        let current_manifest = manifest_result.map_err(manifest_error)?;
+        let checkpoint_watermark = current_manifest
+            .snapshot_watermark()
+            .map(CommitVersion::new);
+        let retention_watermark = wal_retention_watermark(
+            checkpoint_watermark,
+            current_manifest.flushed_through_commit_id(),
+        );
+        Ok(commits_since_checkpoint(
+            self.visible.visible_version(),
+            retention_watermark,
+        ))
+    }
+
     #[allow(
         dead_code,
         reason = "pre-public-boundary policy hook is consumed by lifecycle hardening tests"
@@ -1147,7 +1169,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 0,
             ));
         }
-        let facts = match self.services.wal().growth_facts() {
+        let facts_start = crate::observability::perf_trace::start_timer();
+        let facts_result = self.services.wal().growth_facts();
+        crate::observability::perf_trace::record_commit_wal_growth_facts_elapsed(facts_start);
+        let facts = match facts_result {
             Ok(facts) => facts,
             Err(error) => {
                 return LifecycleWalGrowthOutcome::deferred_with_health(
@@ -1158,27 +1183,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 );
             }
         };
-        let current_manifest = match self.services.manifest().load_required() {
-            Ok(manifest) => manifest,
+        let commits_since_checkpoint = match self.wal_growth_commits_since_checkpoint() {
+            Ok(count) => count,
             Err(error) => {
                 let trigger = policy.trigger_for(facts, 0);
-                return LifecycleWalGrowthOutcome::deferred_with_health(
-                    facts,
-                    0,
-                    trigger,
-                    manifest_error(error),
-                );
+                return LifecycleWalGrowthOutcome::deferred_with_health(facts, 0, trigger, error);
             }
         };
-        let checkpoint_watermark = current_manifest
-            .snapshot_watermark()
-            .map(CommitVersion::new);
-        let retention_watermark = wal_retention_watermark(
-            checkpoint_watermark,
-            current_manifest.flushed_through_commit_id(),
-        );
-        let commits_since_checkpoint =
-            commits_since_checkpoint(self.visible.visible_version(), retention_watermark);
         let Some(trigger) = policy.trigger_for(facts, commits_since_checkpoint) else {
             return Ok(LifecycleWalGrowthOutcome::below_threshold(
                 facts,
@@ -1667,6 +1678,9 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 let outcome =
                     self.maintenance
                         .finish_started(task, outcome.maintenance_outcome(), false);
+                // The deletion ran on a background retention clone, so the
+                // primary WAL service's cached retention totals are now stale.
+                self.services.wal().invalidate_sealed_retention();
                 PreparedPublishStep::Done(self.record_publish_phase_health(outcome))
             }
             DurableBackgroundMaintenanceBuilt::Compaction {

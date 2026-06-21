@@ -820,7 +820,7 @@ fn print_result(result: &RunResult) {
             perf_trace.table_bound_check_ns(),
         );
         eprintln!(
-            "    commit-perf wal_build_ns={} wal_records={} wal_record_rows={} wal_record_bytes={} wal_payload_bytes={} wal_row_encode_bytes={} wal_encode_buffer_allocations={} wal_encode_buffer_reuses={} wal_append_ns={} wal_appends={} wal_append_bytes={} visible_publish_attempts={} visible_publish_successes={} visible_publish_failures={} gate_attempts={} gate_acquired={} gate_rejected_unresolved={} gate_rejected_active={} unresolved_records={} unresolved_durable_not_applied_records={} unresolved_applied_not_visible_records={} registry_lookups={} registry_descriptors_scanned={} branch_guard_attempts={} branch_guard_acquired={} branch_guard_rejected={} quiesce_attempts={} quiesce_acquired={} quiesce_rejected={} conflict_validation_calls={} conflict_validation_skipped={} conflict_validation_without_source={} conflict_validation_with_source={} read_facts_checked={} cas_facts_checked={} conflicts_detected={} timeline_view_rows={} timeline_timestamp_facts={} timeline_version_facts={} timeline_reconcile_calls={} timeline_reconcile_timestamp_facts={} timeline_reconcile_version_facts={} timeline_reconcile_entry_checks={} timeline_lookup_calls={} timeline_lookup_entries_scanned={} replay_classification_calls={} replay_rows_classified={} replay_history_calls={} replay_source_probes={}",
+            "    commit-perf wal_build_ns={} wal_records={} wal_record_rows={} wal_record_bytes={} wal_payload_bytes={} wal_row_encode_bytes={} wal_encode_buffer_allocations={} wal_encode_buffer_reuses={} wal_append_ns={} wal_appends={} wal_append_bytes={} post_wal_growth_ns={} wal_growth_facts_ns={} wal_growth_manifest_ns={} post_maintenance_ns={} visible_publish_attempts={} visible_publish_successes={} visible_publish_failures={} gate_attempts={} gate_acquired={} gate_rejected_unresolved={} gate_rejected_active={} unresolved_records={} unresolved_durable_not_applied_records={} unresolved_applied_not_visible_records={} registry_lookups={} registry_descriptors_scanned={} branch_guard_attempts={} branch_guard_acquired={} branch_guard_rejected={} quiesce_attempts={} quiesce_acquired={} quiesce_rejected={} conflict_validation_calls={} conflict_validation_skipped={} conflict_validation_without_source={} conflict_validation_with_source={} read_facts_checked={} cas_facts_checked={} conflicts_detected={} timeline_view_rows={} timeline_timestamp_facts={} timeline_version_facts={} timeline_reconcile_calls={} timeline_reconcile_timestamp_facts={} timeline_reconcile_version_facts={} timeline_reconcile_entry_checks={} timeline_lookup_calls={} timeline_lookup_entries_scanned={} replay_classification_calls={} replay_rows_classified={} replay_history_calls={} replay_source_probes={}",
             perf_trace.commit_wal_record_build_ns(),
             perf_trace.commit_wal_records_built(),
             perf_trace.commit_wal_record_rows(),
@@ -832,6 +832,10 @@ fn print_result(result: &RunResult) {
             perf_trace.commit_wal_append_ns(),
             perf_trace.commit_wal_appends(),
             perf_trace.commit_wal_append_bytes(),
+            perf_trace.commit_post_wal_growth_ns(),
+            perf_trace.commit_wal_growth_facts_ns(),
+            perf_trace.commit_wal_growth_manifest_ns(),
+            perf_trace.commit_post_maintenance_ns(),
             perf_trace.commit_visible_publish_attempts(),
             perf_trace.commit_visible_publish_successes(),
             perf_trace.commit_visible_publish_failures(),
@@ -1604,6 +1608,22 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
     field!(
         "commit_wal_append_bytes",
         perf_trace.commit_wal_append_bytes()
+    );
+    field!(
+        "commit_post_wal_growth_ns",
+        perf_trace.commit_post_wal_growth_ns()
+    );
+    field!(
+        "commit_wal_growth_facts_ns",
+        perf_trace.commit_wal_growth_facts_ns()
+    );
+    field!(
+        "commit_wal_growth_manifest_ns",
+        perf_trace.commit_wal_growth_manifest_ns()
+    );
+    field!(
+        "commit_post_maintenance_ns",
+        perf_trace.commit_post_maintenance_ns()
     );
     field!(
         "commit_visible_publish_attempts",

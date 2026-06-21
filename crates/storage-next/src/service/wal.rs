@@ -27,7 +27,7 @@ use crate::service::{
     durable_cleanup_failure, durable_cleanup_succeeded, validate_publish_outcome, ObjectPublisher,
 };
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use strata_core_next::CommitVersion;
 
@@ -784,6 +784,16 @@ impl WalSidecarDeleteOutcome {
     }
 }
 
+/// Incrementally-maintained retention totals for the *sealed* (non-active) WAL
+/// segments. Combined with the live `active_segment_size`, this yields the total
+/// retained WAL bytes/segments the growth policy needs without a per-commit
+/// directory scan plus per-segment stat.
+#[derive(Clone, Copy, Debug)]
+struct SealedRetention {
+    segments: usize,
+    bytes: u64,
+}
+
 pub(crate) struct WalService<'a> {
     backend: BackendHandle<'a>,
     database_id: [u8; 16],
@@ -797,6 +807,13 @@ pub(crate) struct WalService<'a> {
     dirty_records: u64,
     active_metadata: SegmentMetadata,
     repair_uncertain: bool,
+    // Cached retention totals for sealed (non-active) segments. `None` means the
+    // totals must be refreshed from a backend scan on the next read; the scan is
+    // memoized here so steady-state commits compute growth facts entirely from
+    // memory (sealed totals + the live active segment size). Interior mutability
+    // keeps `growth_facts` a `&self` read for the diagnostic/backpressure callers
+    // while still memoizing the first scan.
+    sealed_retention: Cell<Option<SealedRetention>>,
 }
 
 impl<'a> WalService<'a> {
@@ -827,6 +844,7 @@ impl<'a> WalService<'a> {
             dirty_records: 0,
             active_metadata,
             repair_uncertain: false,
+            sealed_retention: Cell::new(None),
         })
     }
 
@@ -864,6 +882,10 @@ impl<'a> WalService<'a> {
             dirty_records: 0,
             active_metadata: self.active_metadata.clone(),
             repair_uncertain: self.repair_uncertain,
+            // The background retention clone serves no growth-facts reads; it
+            // refreshes lazily if ever asked. Its deletions invalidate the
+            // primary's cache at the truncation publish step.
+            sealed_retention: Cell::new(None),
         }
     }
 
@@ -1053,9 +1075,48 @@ impl<'a> WalService<'a> {
     }
 
     pub(crate) fn growth_facts(&self) -> WalServiceResult<WalGrowthFacts> {
+        let sealed = self.sealed_retention_facts()?;
+        let retained_segments = sealed.segments.saturating_add(1);
+        let retained_bytes = sealed.bytes.checked_add(self.active_segment_size).ok_or(
+            WalServiceError::UnexpectedObjectSize {
+                object: self.active_object.clone(),
+                expected: sealed.bytes,
+                actual: self.active_segment_size,
+            },
+        )?;
+        Ok(WalGrowthFacts::new(
+            retained_segments,
+            retained_bytes,
+            self.active_segment_id,
+            self.active_segment_size,
+            self.dirty_bytes,
+            self.dirty_records,
+        ))
+    }
+
+    /// Returns the cached sealed-segment retention totals, refreshing them from a
+    /// backend scan when the cache has been invalidated (open, repair, or a
+    /// retention deletion). The active segment is excluded here — its live size
+    /// is added by `growth_facts` — so steady-state appends never invalidate it.
+    fn sealed_retention_facts(&self) -> WalServiceResult<SealedRetention> {
+        if let Some(sealed) = self.sealed_retention.get() {
+            return Ok(sealed);
+        }
+        let sealed = self.scan_sealed_retention()?;
+        self.sealed_retention.set(Some(sealed));
+        Ok(sealed)
+    }
+
+    fn scan_sealed_retention(&self) -> WalServiceResult<SealedRetention> {
         let segments = list_segments(&self.backend)?;
-        let mut retained_bytes = 0_u64;
-        for (_, object) in &segments {
+        let mut sealed = SealedRetention {
+            segments: 0,
+            bytes: 0,
+        };
+        for (segment_id, object) in &segments {
+            if *segment_id == self.active_segment_id {
+                continue;
+            }
             let metadata = self.backend.object_metadata(object).map_err(|source| {
                 WalServiceError::Backend {
                     operation: WalOperation::List,
@@ -1063,22 +1124,24 @@ impl<'a> WalService<'a> {
                     source,
                 }
             })?;
-            retained_bytes = retained_bytes.checked_add(metadata.size_bytes()).ok_or(
+            sealed.segments = sealed.segments.saturating_add(1);
+            sealed.bytes = sealed.bytes.checked_add(metadata.size_bytes()).ok_or(
                 WalServiceError::UnexpectedObjectSize {
                     object: object.clone(),
-                    expected: retained_bytes,
+                    expected: sealed.bytes,
                     actual: metadata.size_bytes(),
                 },
             )?;
         }
-        Ok(WalGrowthFacts::new(
-            segments.len(),
-            retained_bytes,
-            self.active_segment_id,
-            self.active_segment_size,
-            self.dirty_bytes,
-            self.dirty_records,
-        ))
+        Ok(sealed)
+    }
+
+    /// Invalidates the cached sealed-segment retention totals so the next
+    /// `growth_facts` re-derives them from the backend. Called after retention
+    /// deletes sealed segments (directly in `delete_covered_segments`, and on the
+    /// primary service at the background truncation publish step).
+    pub(crate) fn invalidate_sealed_retention(&self) {
+        self.sealed_retention.set(None);
     }
 
     pub(crate) fn repair_latest_tail(
@@ -1222,6 +1285,13 @@ impl<'a> WalService<'a> {
             }
         }
 
+        // Deleting sealed segments invalidates this service's cached retention
+        // totals. The primary service's cache is refreshed separately when a
+        // background retention clone performs the deletion.
+        if !report.deleted_segments().is_empty() {
+            self.invalidate_sealed_retention();
+        }
+
         Ok(report)
     }
 
@@ -1266,6 +1336,17 @@ impl<'a> WalService<'a> {
                 })?;
         let (next_object, next_size, next_metadata) =
             create_segment(&self.backend, self.database_id, next_segment_id)?;
+
+        // The segment being rotated away is now sealed at its final size; fold it
+        // into the cached sealed totals so growth facts stay correct without a
+        // rescan. A cold cache will count it on its next scan, so only update a
+        // populated cache. `active_segment_size` is still the old segment's size
+        // until the assignment below.
+        if let Some(mut sealed) = self.sealed_retention.get() {
+            sealed.segments = sealed.segments.saturating_add(1);
+            sealed.bytes = sealed.bytes.saturating_add(self.active_segment_size);
+            self.sealed_retention.set(Some(sealed));
+        }
 
         self.active_segment_id = next_segment_id;
         self.active_object = next_object;

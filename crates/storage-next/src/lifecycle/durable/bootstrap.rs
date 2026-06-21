@@ -1194,8 +1194,12 @@ where
             .map_err(commit_error)
         };
         if outcome.is_ok() {
+            let wal_growth_start = perf_trace::start_timer();
             self.evaluate_and_record_wal_growth_policy();
+            perf_trace::record_commit_post_wal_growth_elapsed(wal_growth_start);
+            let maintenance_start = perf_trace::start_timer();
             let _ = self.schedule_post_commit_maintenance_for_branch(branch_id);
+            perf_trace::record_commit_post_maintenance_elapsed(maintenance_start);
         }
         outcome
     }
