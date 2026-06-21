@@ -46,6 +46,51 @@ fn durable_executor_reopens_vector_collections_rows_and_history() {
 }
 
 #[test]
+fn vector_index_query_returns_matches_and_planner_diagnostics() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    create_collection(&mut executor, "docs", VectorDistanceMetric::Cosine);
+    upsert_vector(
+        &mut executor,
+        "docs",
+        "doc-a",
+        vec![1.0, 0.0],
+        json!({"kind": "doc"}),
+    );
+    upsert_vector(
+        &mut executor,
+        "docs",
+        "note-b",
+        vec![0.0, 1.0],
+        json!({"kind": "note"}),
+    );
+
+    let Output::VectorIndexQuery(result) = executor
+        .execute(Command::VectorIndexQuery {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            query: vec![1.0, 0.0],
+            k: 10,
+            filter: Some(kind_filter("doc")),
+            as_of: None,
+        })
+        .expect("vector index query succeeds")
+    else {
+        panic!("unexpected vector index query output");
+    };
+
+    assert_eq!(result.matches().len(), 1);
+    assert_eq!(result.matches()[0].key(), "doc-a");
+    assert_eq!(result.diagnostics().collection(), "docs");
+    assert_eq!(result.diagnostics().manifest_status(), "missing");
+    assert!(!result.diagnostics().last_query_used_index());
+    assert_eq!(result.diagnostics().indexed_source_count(), 0);
+    assert_eq!(result.diagnostics().exact_fallback_count(), 0);
+    assert_eq!(result.diagnostics().hnsw_graph_builds(), 0);
+    assert!(result.diagnostics().artifact_sources().is_empty());
+}
+
+#[test]
 fn vector_branch_and_space_defaults_are_isolated() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
     create_collection_in(
@@ -326,6 +371,15 @@ fn vector_mapping_bulk_commands() -> Vec<Command> {
             filter: None,
             as_of: None,
         },
+        Command::VectorIndexQuery {
+            branch: None,
+            space: None,
+            collection: "map".to_owned(),
+            query: vec![1.0, 0.0],
+            k: 10,
+            filter: None,
+            as_of: None,
+        },
         Command::VectorBatchUpsert {
             branch: None,
             space: None,
@@ -352,7 +406,7 @@ fn vector_mapping_bulk_commands() -> Vec<Command> {
 }
 
 fn assert_vector_mapping_outputs(outputs: &[Output]) {
-    assert_eq!(outputs.len(), 18);
+    assert_eq!(outputs.len(), 19);
     assert!(matches!(outputs[0], Output::VectorCollectionList(_)));
     assert!(matches!(outputs[1], Output::Bool(_)));
     assert!(matches!(outputs[2], Output::VectorCollectionList(_)));
@@ -371,9 +425,10 @@ fn assert_vector_mapping_outputs(outputs: &[Output]) {
     assert!(matches!(outputs[12], Output::VectorBulkDeleteResult { .. }));
     assert!(matches!(outputs[13], Output::VectorBulkDeleteResult { .. }));
     assert!(matches!(outputs[14], Output::VectorMatches(_)));
-    assert!(matches!(outputs[15], Output::VectorBatchUpsertResults(_)));
-    assert!(matches!(outputs[16], Output::VectorBatchGetResults(_)));
-    assert!(matches!(outputs[17], Output::VectorBatchDeleteResults(_)));
+    assert!(matches!(outputs[15], Output::VectorIndexQuery(_)));
+    assert!(matches!(outputs[16], Output::VectorBatchUpsertResults(_)));
+    assert!(matches!(outputs[17], Output::VectorBatchGetResults(_)));
+    assert!(matches!(outputs[18], Output::VectorBatchDeleteResults(_)));
 }
 
 fn assert_invalid_input_vector_commands(executor: &mut Executor) {
@@ -448,6 +503,15 @@ fn invalid_input_vector_commands() -> Vec<Command> {
                 "nested.path",
                 "doc",
             )])),
+            as_of: None,
+        },
+        Command::VectorIndexQuery {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            query: Vec::new(),
+            k: 10,
+            filter: None,
             as_of: None,
         },
     ]

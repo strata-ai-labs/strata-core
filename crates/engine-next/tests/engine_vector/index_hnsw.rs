@@ -317,3 +317,61 @@ fn vector_hnsw_artifact_loss_or_corruption_falls_back_to_flat_artifact() {
             && !source.searched()
     }));
 }
+
+#[cfg(feature = "testkit")]
+#[test]
+fn vector_hnsw_graph_is_built_once_and_reused_across_queries() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut vectors = vector_service(&mut database, "default", "default");
+    let docs = collection("hnsw-graph-cache");
+    vectors
+        .create_collection(docs.clone(), config(2, VectorDistanceMetric::Cosine))
+        .expect("collection create succeeds");
+    let entries = (0_u16..320)
+        .map(|index| descending_fixture_upsert(index, json!({"kind": "doc"})))
+        .collect::<Vec<_>>();
+    vectors
+        .batch_upsert(&docs, &entries)
+        .expect("batch upsert succeeds");
+    vectors
+        .seed_flat_hnsw_index_manifest_from_visible_rows_for_test(&docs, "source-a")
+        .expect("artifact seed succeeds");
+
+    let query = embedding([1.0, 0.0]);
+    // The first query is a cold load: the HNSW graph is constructed exactly once.
+    let (first, first_diagnostics) = vectors
+        .query_with_index_policy_for_test(
+            &docs,
+            &query,
+            8,
+            None,
+            VectorIndexPolicy::hnsw_only_for_test(),
+        )
+        .expect("first diagnostic query succeeds");
+    assert_eq!(first_diagnostics.hnsw_source_count(), 1);
+    assert_eq!(
+        first_diagnostics.hnsw_graph_builds(),
+        1,
+        "the cold query must build the graph once"
+    );
+
+    // Subsequent queries reuse the cached graph: zero rebuilds and identical results.
+    for _ in 0..3 {
+        let (again, diagnostics) = vectors
+            .query_with_index_policy_for_test(
+                &docs,
+                &query,
+                8,
+                None,
+                VectorIndexPolicy::hnsw_only_for_test(),
+            )
+            .expect("repeat diagnostic query succeeds");
+        assert_eq!(diagnostics.hnsw_source_count(), 1);
+        assert_eq!(
+            diagnostics.hnsw_graph_builds(),
+            0,
+            "a warm query must reuse the cached graph instead of rebuilding it"
+        );
+        assert_search_results_match(&again, &first);
+    }
+}

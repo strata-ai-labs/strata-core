@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
@@ -14,6 +15,7 @@ use crate::data::kv::ProductSpace;
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::PersistenceReadRow;
 
+use super::index::CachedHnswArtifact;
 use super::types::MAX_VECTOR_DIMENSION;
 use super::{
     VectorArtifactKind, VectorArtifactRef, VectorCollectionName, VectorDistanceMetric,
@@ -29,6 +31,7 @@ const DEFAULT_HNSW_ARTIFACT_LOAD_BUDGET_BYTES: usize = 128 * 1024 * 1024;
 const DEFAULT_FLAT_ARTIFACT_BUILD_BUDGET_BYTES: usize = DEFAULT_FLAT_ARTIFACT_LOAD_BUDGET_BYTES;
 const DEFAULT_HNSW_ARTIFACT_BUILD_BUDGET_BYTES: usize = DEFAULT_HNSW_ARTIFACT_LOAD_BUDGET_BYTES;
 const DEFAULT_ARTIFACT_MEMORY_BUDGET_BYTES: usize = 256 * 1024 * 1024;
+const DEFAULT_HNSW_RUNTIME_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 const MAX_ID_BYTES: usize = 1024;
 
 pub(crate) const DEFAULT_HNSW_M: u16 = 16;
@@ -539,6 +542,13 @@ pub(crate) struct VectorArtifactStore {
     payload_order: VecDeque<VectorArtifactCacheEntry>,
     memory_payload_bytes: usize,
     memory_budget_bytes: usize,
+    // Built HNSW graphs keyed by artifact id, so the graph is constructed once per artifact load
+    // and reused across queries instead of rebuilt on every query. Pure in-memory derived state
+    // in both cache and durable modes; bounded by `hnsw_runtime_budget_bytes` and evicted LRU.
+    hnsw_runtime: BTreeMap<VectorArtifactId, HnswRuntimeCacheEntry>,
+    hnsw_runtime_order: VecDeque<VectorArtifactId>,
+    hnsw_runtime_bytes: usize,
+    hnsw_runtime_budget_bytes: usize,
     flat_root: Option<PathBuf>,
     hnsw_root: Option<PathBuf>,
 }
@@ -551,6 +561,10 @@ impl Default for VectorArtifactStore {
             payload_order: VecDeque::new(),
             memory_payload_bytes: 0,
             memory_budget_bytes: DEFAULT_ARTIFACT_MEMORY_BUDGET_BYTES,
+            hnsw_runtime: BTreeMap::new(),
+            hnsw_runtime_order: VecDeque::new(),
+            hnsw_runtime_bytes: 0,
+            hnsw_runtime_budget_bytes: DEFAULT_HNSW_RUNTIME_BUDGET_BYTES,
             flat_root: None,
             hnsw_root: None,
         }
@@ -565,13 +579,82 @@ impl VectorArtifactStore {
     pub(crate) fn durable_local(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
         Self {
-            flat_payloads: BTreeMap::new(),
-            hnsw_payloads: BTreeMap::new(),
-            payload_order: VecDeque::new(),
-            memory_payload_bytes: 0,
-            memory_budget_bytes: DEFAULT_ARTIFACT_MEMORY_BUDGET_BYTES,
             flat_root: Some(root.join("flat")),
             hnsw_root: Some(root.join("hnsw")),
+            ..Self::default()
+        }
+    }
+
+    /// Return a cached built HNSW graph for `artifact_id` when one is present and its source
+    /// bytes still match `expected_checksum` (i.e. the artifact has not been re-sealed). Touches
+    /// LRU order on a hit. A miss returns `None` and the caller loads + builds via
+    /// `insert_hnsw_runtime`.
+    pub(crate) fn cached_hnsw_runtime(
+        &mut self,
+        artifact_id: &VectorArtifactId,
+        expected_checksum: u64,
+    ) -> Option<Arc<CachedHnswArtifact>> {
+        let entry = self.hnsw_runtime.get(artifact_id)?;
+        if entry.checksum != expected_checksum {
+            return None;
+        }
+        let cached = Arc::clone(&entry.cached);
+        self.touch_hnsw_runtime(artifact_id);
+        Some(cached)
+    }
+
+    /// Build the HNSW graph for `artifact` once, cache it keyed by `artifact_id` + `checksum`,
+    /// and return a shared handle. Replaces any stale entry for the same id and evicts LRU
+    /// entries while over the runtime budget. Eviction never affects correctness: an evicted
+    /// graph is rebuilt on its next load, and the returned handle stays alive for this query.
+    pub(crate) fn insert_hnsw_runtime(
+        &mut self,
+        artifact_id: VectorArtifactId,
+        checksum: u64,
+        artifact: HnswVectorArtifact,
+    ) -> Arc<CachedHnswArtifact> {
+        self.remove_hnsw_runtime(&artifact_id);
+        let cached = Arc::new(CachedHnswArtifact::build(artifact));
+        let estimated_bytes = cached.estimated_memory_bytes();
+        self.hnsw_runtime.insert(
+            artifact_id.clone(),
+            HnswRuntimeCacheEntry {
+                cached: Arc::clone(&cached),
+                checksum,
+                estimated_bytes,
+            },
+        );
+        self.hnsw_runtime_order.push_back(artifact_id);
+        self.hnsw_runtime_bytes = self.hnsw_runtime_bytes.saturating_add(estimated_bytes);
+        self.evict_hnsw_runtime();
+        cached
+    }
+
+    fn touch_hnsw_runtime(&mut self, artifact_id: &VectorArtifactId) {
+        self.hnsw_runtime_order.retain(|id| id != artifact_id);
+        self.hnsw_runtime_order.push_back(artifact_id.clone());
+    }
+
+    fn remove_hnsw_runtime(&mut self, artifact_id: &VectorArtifactId) {
+        self.hnsw_runtime_order.retain(|id| id != artifact_id);
+        if let Some(entry) = self.hnsw_runtime.remove(artifact_id) {
+            self.hnsw_runtime_bytes = self
+                .hnsw_runtime_bytes
+                .saturating_sub(entry.estimated_bytes);
+        }
+    }
+
+    fn evict_hnsw_runtime(&mut self) {
+        while self.hnsw_runtime_bytes > self.hnsw_runtime_budget_bytes {
+            let Some(artifact_id) = self.hnsw_runtime_order.pop_front() else {
+                self.hnsw_runtime_bytes = 0;
+                break;
+            };
+            if let Some(entry) = self.hnsw_runtime.remove(&artifact_id) {
+                self.hnsw_runtime_bytes = self
+                    .hnsw_runtime_bytes
+                    .saturating_sub(entry.estimated_bytes);
+            }
         }
     }
 
@@ -988,6 +1071,12 @@ enum VectorArtifactPayloadKind {
 struct VectorArtifactCacheEntry {
     kind: VectorArtifactPayloadKind,
     artifact_id: VectorArtifactId,
+}
+
+struct HnswRuntimeCacheEntry {
+    cached: Arc<CachedHnswArtifact>,
+    checksum: u64,
+    estimated_bytes: usize,
 }
 
 fn persist_raw_flat_payload_at(path: &Path, bytes: &[u8]) -> EngineResult<()> {

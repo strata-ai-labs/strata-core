@@ -10,7 +10,7 @@ use crate::types::{
     GraphNodeDataOutput, HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
     JsonIndexDefinition, JsonSampleItem, JsonVersionedValue, SampleItem, ScanItem,
     VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorHistoryItem,
-    VectorMatch, VectorVersionedData, VersionedValue,
+    VectorIndexQueryResult, VectorMatch, VectorVersionedData, VersionedValue,
 };
 
 /// Successful executor output.
@@ -187,6 +187,8 @@ pub enum Output {
     VectorVersionHistory(Option<Vec<VectorHistoryItem>>),
     /// Vector search matches.
     VectorMatches(Vec<VectorMatch>),
+    /// Vector search matches plus index planner diagnostics.
+    VectorIndexQuery(VectorIndexQueryResult),
     /// Paginated vector key list.
     VectorKeyPage {
         /// Keys in this page.

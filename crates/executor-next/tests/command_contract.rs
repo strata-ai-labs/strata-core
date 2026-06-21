@@ -13,7 +13,8 @@ use strata_executor_next::{
     JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
     JsonIndexType, JsonSampleItem, JsonVersionedValue, Output, SampleItem, ScanItem,
     VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorData,
-    VectorDistanceMetric, VectorFilterCondition, VectorFilterOp, VectorHistoryItem, VectorMatch,
+    VectorDistanceMetric, VectorFilterCondition, VectorFilterOp, VectorHistoryItem,
+    VectorIndexArtifactSource, VectorIndexDiagnostics, VectorIndexQueryResult, VectorMatch,
     VectorMetadataFilter, VectorScalar, VectorVersionedData, VersionedValue,
 };
 
@@ -312,6 +313,52 @@ fn arrow_output_json_uses_stable_tags_and_field_shape() {
 }
 
 #[test]
+fn vector_index_query_json_uses_stable_tags_and_field_shape() {
+    let command = Command::VectorIndexQuery {
+        branch: None,
+        space: None,
+        collection: "docs".to_owned(),
+        query: vec![1.0, 0.0],
+        k: 5,
+        filter: Some(VectorMetadataFilter::new(vec![VectorFilterCondition::eq(
+            "kind", "doc",
+        )])),
+        as_of: None,
+    };
+    let encoded = serde_json::to_value(&command).expect("command serializes");
+    assert_eq!(encoded["type"], "vector_index_query");
+    assert_eq!(encoded["collection"], "docs");
+    assert_eq!(encoded["query"], json!([1.0, 0.0]));
+    assert_eq!(encoded["k"], 5);
+    assert!(encoded.get("branch").is_none());
+    assert!(encoded.get("space").is_none());
+    assert!(encoded.get("as_of").is_none());
+    assert_eq!(
+        serde_json::from_value::<Command>(encoded).expect("command deserializes"),
+        command
+    );
+
+    let output = Output::VectorIndexQuery(VectorIndexQueryResult::new(
+        vec![VectorMatch::new("doc-a".to_owned(), 1.0, None)],
+        vector_index_diagnostics_fixture(),
+    ));
+    let encoded = serde_json::to_value(&output).expect("output serializes");
+    assert_eq!(encoded["type"], "vector_index_query");
+    assert_eq!(encoded["data"]["matches"][0]["key"], "doc-a");
+    assert_eq!(encoded["data"]["diagnostics"]["collection"], "docs");
+    assert_eq!(encoded["data"]["diagnostics"]["manifest_status"], "loaded");
+    assert_eq!(
+        encoded["data"]["diagnostics"]["artifact_sources"][0]["status"],
+        "loaded"
+    );
+    assert_eq!(encoded["data"]["diagnostics"]["hnsw_graph_builds"], 0);
+    assert_eq!(
+        serde_json::from_value::<Output>(encoded).expect("output deserializes"),
+        output
+    );
+}
+
+#[test]
 fn command_names_cover_every_variant() {
     let names = all_commands()
         .into_iter()
@@ -370,6 +417,7 @@ fn command_names_cover_every_variant() {
             "vector_delete_by_filter",
             "vector_delete_all",
             "vector_query",
+            "vector_index_query",
             "vector_batch_upsert",
             "vector_batch_get",
             "vector_batch_delete",
@@ -726,6 +774,17 @@ fn vector_bulk_commands() -> Vec<Command> {
             collection: "docs".to_owned(),
         },
         Command::VectorQuery {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            query: vec![1.0, 0.0],
+            k: 10,
+            filter: Some(VectorMetadataFilter::new(vec![VectorFilterCondition::eq(
+                "kind", "doc",
+            )])),
+            as_of: Some(99),
+        },
+        Command::VectorIndexQuery {
             branch: None,
             space: None,
             collection: "docs".to_owned(),
@@ -1180,6 +1239,17 @@ fn vector_round_trip_edge_commands() -> Vec<Command> {
             )])),
             as_of: Some(123),
         },
+        Command::VectorIndexQuery {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            collection: "cosine".to_owned(),
+            query: vec![0.0, 1.5, -2.0],
+            k: 3,
+            filter: Some(VectorMetadataFilter::new(vec![VectorFilterCondition::eq(
+                "tag", "doc",
+            )])),
+            as_of: Some(123),
+        },
         Command::VectorBatchUpsert {
             branch: Some("feature".to_owned()),
             space: Some("space-a".to_owned()),
@@ -1551,6 +1621,14 @@ fn vector_outputs() -> Vec<Output> {
             1.0,
             Some(json!({"kind": "doc"})),
         )]),
+        Output::VectorIndexQuery(VectorIndexQueryResult::new(
+            vec![VectorMatch::new(
+                "doc-a".to_owned(),
+                1.0,
+                Some(json!({"kind": "doc"})),
+            )],
+            vector_index_diagnostics_fixture(),
+        )),
         Output::VectorKeyPage {
             keys: vec!["doc-a".to_owned()],
             has_more: true,
@@ -1586,6 +1664,44 @@ fn vector_outputs() -> Vec<Output> {
             None,
         )]),
     ]
+}
+
+fn vector_index_diagnostics_fixture() -> VectorIndexDiagnostics {
+    VectorIndexDiagnostics::new(
+        "docs".to_owned(),
+        "loaded".to_owned(),
+        Some(7),
+        2,
+        1,
+        1,
+        3,
+        "auto".to_owned(),
+        64,
+        64,
+        u64::MAX,
+        4,
+        true,
+        16,
+        64 * 1024 * 1024,
+        40,
+        "flat".to_owned(),
+        0,
+        0,
+        1,
+        0,
+        1,
+        0,
+        1,
+        100,
+        8192,
+        true,
+        None,
+        vec![VectorIndexArtifactSource::new(
+            "artifact-flat-1".to_owned(),
+            "loaded".to_owned(),
+            true,
+        )],
+    )
 }
 
 fn event_outputs() -> Vec<Output> {

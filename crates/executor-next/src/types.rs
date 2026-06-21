@@ -1449,6 +1449,316 @@ impl VectorMatch {
     }
 }
 
+/// One vector index artifact diagnostic.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VectorIndexArtifactSource {
+    artifact_id: String,
+    status: String,
+    searched: bool,
+}
+
+impl VectorIndexArtifactSource {
+    /// Creates one vector index artifact diagnostic.
+    pub const fn new(artifact_id: String, status: String, searched: bool) -> Self {
+        Self {
+            artifact_id,
+            status,
+            searched,
+        }
+    }
+
+    /// Returns the artifact identity recorded in the engine manifest.
+    pub fn artifact_id(&self) -> &str {
+        &self.artifact_id
+    }
+
+    /// Returns the artifact load status.
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// Returns true when this artifact was searched.
+    pub const fn searched(&self) -> bool {
+        self.searched
+    }
+}
+
+/// Vector index planner diagnostics.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct VectorIndexDiagnostics {
+    collection: String,
+    manifest_status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    manifest_generation: Option<u64>,
+    manifest_ref_count: u64,
+    manifest_inherited_ref_count: u64,
+    manifest_owned_ref_count: u64,
+    active_delta_count: u64,
+    policy_mode: String,
+    collection_exact_threshold: u64,
+    source_flat_threshold: u64,
+    source_hnsw_threshold: u64,
+    overfetch_factor: u64,
+    filtered_underfill_fallback: bool,
+    active_delta_seal_threshold: u64,
+    hnsw_memory_budget_bytes: u64,
+    source_candidate_limit: u64,
+    resolved_index_kind_summary: String,
+    exact_fallback_count: u64,
+    hnsw_graph_builds: u64,
+    indexed_source_count: u64,
+    exact_source_count: u64,
+    flat_source_count: u64,
+    hnsw_source_count: u64,
+    active_delta_source_count: u64,
+    indexed_vector_count: u64,
+    derived_bytes: u64,
+    last_query_used_index: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_query_fallback_reason: Option<String>,
+    artifact_sources: Vec<VectorIndexArtifactSource>,
+}
+
+impl VectorIndexDiagnostics {
+    /// Creates vector index planner diagnostics.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        collection: String,
+        manifest_status: String,
+        manifest_generation: Option<u64>,
+        manifest_ref_count: u64,
+        manifest_inherited_ref_count: u64,
+        manifest_owned_ref_count: u64,
+        active_delta_count: u64,
+        policy_mode: String,
+        collection_exact_threshold: u64,
+        source_flat_threshold: u64,
+        source_hnsw_threshold: u64,
+        overfetch_factor: u64,
+        filtered_underfill_fallback: bool,
+        active_delta_seal_threshold: u64,
+        hnsw_memory_budget_bytes: u64,
+        source_candidate_limit: u64,
+        resolved_index_kind_summary: String,
+        exact_fallback_count: u64,
+        hnsw_graph_builds: u64,
+        indexed_source_count: u64,
+        exact_source_count: u64,
+        flat_source_count: u64,
+        hnsw_source_count: u64,
+        active_delta_source_count: u64,
+        indexed_vector_count: u64,
+        derived_bytes: u64,
+        last_query_used_index: bool,
+        last_query_fallback_reason: Option<String>,
+        artifact_sources: Vec<VectorIndexArtifactSource>,
+    ) -> Self {
+        Self {
+            collection,
+            manifest_status,
+            manifest_generation,
+            manifest_ref_count,
+            manifest_inherited_ref_count,
+            manifest_owned_ref_count,
+            active_delta_count,
+            policy_mode,
+            collection_exact_threshold,
+            source_flat_threshold,
+            source_hnsw_threshold,
+            overfetch_factor,
+            filtered_underfill_fallback,
+            active_delta_seal_threshold,
+            hnsw_memory_budget_bytes,
+            source_candidate_limit,
+            resolved_index_kind_summary,
+            exact_fallback_count,
+            hnsw_graph_builds,
+            indexed_source_count,
+            exact_source_count,
+            flat_source_count,
+            hnsw_source_count,
+            active_delta_source_count,
+            indexed_vector_count,
+            derived_bytes,
+            last_query_used_index,
+            last_query_fallback_reason,
+            artifact_sources,
+        }
+    }
+
+    /// Returns the searched collection.
+    pub fn collection(&self) -> &str {
+        &self.collection
+    }
+
+    /// Returns the branch-local index manifest status.
+    pub fn manifest_status(&self) -> &str {
+        &self.manifest_status
+    }
+
+    /// Returns the loaded index manifest generation, when available.
+    pub const fn manifest_generation(&self) -> Option<u64> {
+        self.manifest_generation
+    }
+
+    /// Returns the total artifact ref count in the loaded manifest.
+    pub const fn manifest_ref_count(&self) -> u64 {
+        self.manifest_ref_count
+    }
+
+    /// Returns the inherited artifact ref count in the loaded manifest.
+    pub const fn manifest_inherited_ref_count(&self) -> u64 {
+        self.manifest_inherited_ref_count
+    }
+
+    /// Returns the branch-owned artifact ref count in the loaded manifest.
+    pub const fn manifest_owned_ref_count(&self) -> u64 {
+        self.manifest_owned_ref_count
+    }
+
+    /// Returns the active delta count advertised by the loaded manifest.
+    pub const fn active_delta_count(&self) -> u64 {
+        self.active_delta_count
+    }
+
+    /// Returns the resolved planner policy mode.
+    pub fn policy_mode(&self) -> &str {
+        &self.policy_mode
+    }
+
+    /// Returns the collection-level exact-search threshold.
+    pub const fn collection_exact_threshold(&self) -> u64 {
+        self.collection_exact_threshold
+    }
+
+    /// Returns the flat-source threshold.
+    pub const fn source_flat_threshold(&self) -> u64 {
+        self.source_flat_threshold
+    }
+
+    /// Returns the approximate-source threshold.
+    pub const fn source_hnsw_threshold(&self) -> u64 {
+        self.source_hnsw_threshold
+    }
+
+    /// Returns the candidate overfetch factor.
+    pub const fn overfetch_factor(&self) -> u64 {
+        self.overfetch_factor
+    }
+
+    /// Returns true when selective filters can fall back to exact search on underfill.
+    pub const fn filtered_underfill_fallback(&self) -> bool {
+        self.filtered_underfill_fallback
+    }
+
+    /// Returns the active-delta sealing threshold.
+    pub const fn active_delta_seal_threshold(&self) -> u64 {
+        self.active_delta_seal_threshold
+    }
+
+    /// Returns the approximate index memory budget.
+    pub const fn hnsw_memory_budget_bytes(&self) -> u64 {
+        self.hnsw_memory_budget_bytes
+    }
+
+    /// Returns the resolved per-source candidate limit.
+    pub const fn source_candidate_limit(&self) -> u64 {
+        self.source_candidate_limit
+    }
+
+    /// Returns the resolved source kind summary.
+    pub fn resolved_index_kind_summary(&self) -> &str {
+        &self.resolved_index_kind_summary
+    }
+
+    /// Returns true when the query used at least one indexed source.
+    pub const fn last_query_used_index(&self) -> bool {
+        self.last_query_used_index
+    }
+
+    /// Returns the planner fallback reason, if one was recorded.
+    pub fn last_query_fallback_reason(&self) -> Option<&str> {
+        self.last_query_fallback_reason.as_deref()
+    }
+
+    /// Returns the number of exact fallbacks taken by this query.
+    pub const fn exact_fallback_count(&self) -> u64 {
+        self.exact_fallback_count
+    }
+
+    /// Returns the number of approximate index graphs built while answering this query.
+    pub const fn hnsw_graph_builds(&self) -> u64 {
+        self.hnsw_graph_builds
+    }
+
+    /// Returns the number of indexed sources searched by this query.
+    pub const fn indexed_source_count(&self) -> u64 {
+        self.indexed_source_count
+    }
+
+    /// Returns the number of exact sources searched by this query.
+    pub const fn exact_source_count(&self) -> u64 {
+        self.exact_source_count
+    }
+
+    /// Returns the number of flat sources searched by this query.
+    pub const fn flat_source_count(&self) -> u64 {
+        self.flat_source_count
+    }
+
+    /// Returns the number of approximate sources searched by this query.
+    pub const fn hnsw_source_count(&self) -> u64 {
+        self.hnsw_source_count
+    }
+
+    /// Returns the number of active delta sources searched by this query.
+    pub const fn active_delta_source_count(&self) -> u64 {
+        self.active_delta_source_count
+    }
+
+    /// Returns the number of vectors covered by indexed sources.
+    pub const fn indexed_vector_count(&self) -> u64 {
+        self.indexed_vector_count
+    }
+
+    /// Returns the estimated derived bytes touched by indexed sources.
+    pub const fn derived_bytes(&self) -> u64 {
+        self.derived_bytes
+    }
+
+    /// Returns artifact load and search facts.
+    pub fn artifact_sources(&self) -> &[VectorIndexArtifactSource] {
+        &self.artifact_sources
+    }
+}
+
+/// Vector index search output.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VectorIndexQueryResult {
+    matches: Vec<VectorMatch>,
+    diagnostics: VectorIndexDiagnostics,
+}
+
+impl VectorIndexQueryResult {
+    /// Creates vector index search output.
+    pub const fn new(matches: Vec<VectorMatch>, diagnostics: VectorIndexDiagnostics) -> Self {
+        Self {
+            matches,
+            diagnostics,
+        }
+    }
+
+    /// Returns search matches.
+    pub fn matches(&self) -> &[VectorMatch] {
+        &self.matches
+    }
+
+    /// Returns index planner diagnostics.
+    pub const fn diagnostics(&self) -> &VectorIndexDiagnostics {
+        &self.diagnostics
+    }
+}
+
 /// Positional vector batch write/delete result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VectorBatchItemResult {

@@ -439,8 +439,6 @@ fn forbidden_vector_index_lower_layer_terms() -> &'static [&'static str] {
         "HnswRuntimeIndex",
         "VectorIndexManifest",
         "VectorIndexPolicy",
-        "VectorIndexDiagnostics",
-        "VectorArtifactSourceDiagnostic",
         "encode_flat_vector_artifact",
         "decode_flat_vector_artifact",
         "encode_hnsw_vector_artifact",
@@ -449,9 +447,6 @@ fn forbidden_vector_index_lower_layer_terms() -> &'static [&'static str] {
         "fast_hnsw",
         "Hnsw",
         "HNSW",
-        "artifact_id",
-        "artifact_sources",
-        "derived_bytes",
     ]
 }
 

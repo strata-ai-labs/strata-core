@@ -22,8 +22,7 @@ use crate::persistence::{
 
 use super::{
     decode_collection_config, decode_vector_index_manifest, decode_vector_record,
-    default_flat_artifact_build_budget_bytes, default_flat_artifact_load_budget_bytes,
-    default_hnsw_artifact_build_budget_bytes, default_hnsw_artifact_load_budget_bytes,
+    default_flat_artifact_build_budget_bytes, default_hnsw_artifact_build_budget_bytes,
     encode_collection_config, encode_vector_index_manifest, encode_vector_record,
     query_vector_sources_with_index_artifacts, FlatVectorArtifact, HnswArtifactConfig,
     HnswVectorArtifact, VectorArtifactId, VectorArtifactKind, VectorArtifactRef,
@@ -41,6 +40,8 @@ use super::{
 use super::query_vector_exact;
 #[cfg(any(test, feature = "testkit"))]
 use super::VectorDistanceMetric;
+#[cfg(any(test, feature = "testkit"))]
+use super::{default_flat_artifact_load_budget_bytes, default_hnsw_artifact_load_budget_bytes};
 
 const VECTOR_LIST_RAW_PAGE_MIN: usize = 64;
 const VECTOR_LIST_RAW_PAGE_MAX: usize = 4096;
@@ -61,6 +62,7 @@ struct VectorIndexArtifactLoadSet {
     artifact_reports: Vec<VectorArtifactSourceDiagnostic>,
     flat_unavailable_reason: Option<&'static str>,
     hnsw_unavailable_reason: Option<&'static str>,
+    hnsw_graph_builds: usize,
 }
 
 impl VectorIndexArtifactLoadSet {
@@ -71,6 +73,7 @@ impl VectorIndexArtifactLoadSet {
             artifact_reports: Vec::new(),
             flat_unavailable_reason: Some(reason),
             hnsw_unavailable_reason: Some(reason),
+            hnsw_graph_builds: 0,
         }
     }
 }
@@ -574,9 +577,8 @@ impl<'a> VectorService<'a> {
         )
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     /// Searches with the default index policy and returns planner diagnostics.
-    pub fn query_with_index_diagnostics_for_test(
+    pub fn query_with_index_diagnostics(
         &mut self,
         collection: &VectorCollectionName,
         query: &VectorEmbedding,
@@ -591,6 +593,18 @@ impl<'a> VectorService<'a> {
             ReadSelector::Latest,
             VectorIndexPolicy::default(),
         )
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Searches with the default index policy and returns planner diagnostics.
+    pub fn query_with_index_diagnostics_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        query: &VectorEmbedding,
+        k: usize,
+        filter: Option<&VectorFilter>,
+    ) -> EngineResult<(VectorSearchResult, VectorIndexDiagnostics)> {
+        self.query_with_index_diagnostics(collection, query, k, filter)
     }
 
     #[cfg(any(test, feature = "testkit"))]
@@ -613,9 +627,8 @@ impl<'a> VectorService<'a> {
         )
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     /// Searches at a timestamp with the default index policy and returns planner diagnostics.
-    pub fn query_at_with_index_diagnostics_for_test(
+    pub fn query_at_with_index_diagnostics(
         &mut self,
         collection: &VectorCollectionName,
         query: &VectorEmbedding,
@@ -631,6 +644,19 @@ impl<'a> VectorService<'a> {
             ReadSelector::AtTimestamp(timestamp),
             VectorIndexPolicy::default(),
         )
+    }
+
+    #[cfg(any(test, feature = "testkit"))]
+    /// Searches at a timestamp with the default index policy and returns planner diagnostics.
+    pub fn query_at_with_index_diagnostics_for_test(
+        &mut self,
+        collection: &VectorCollectionName,
+        query: &VectorEmbedding,
+        k: usize,
+        filter: Option<&VectorFilter>,
+        timestamp: Timestamp,
+    ) -> EngineResult<(VectorSearchResult, VectorIndexDiagnostics)> {
+        self.query_at_with_index_diagnostics(collection, query, k, filter, timestamp)
     }
 
     #[cfg(any(test, feature = "testkit"))]
@@ -1435,6 +1461,7 @@ impl<'a> VectorService<'a> {
             policy,
         )?;
         diagnostics.record_manifest_lookup(manifest_resolution.lookup);
+        diagnostics.record_hnsw_graph_builds(index_artifacts.hnsw_graph_builds);
         Ok((result, diagnostics))
     }
 
@@ -1656,6 +1683,7 @@ impl<'a> VectorService<'a> {
         let mut artifact_reports = Vec::new();
         let mut flat_ref_count = 0usize;
         let mut hnsw_ref_count = 0usize;
+        let mut hnsw_graph_builds = 0usize;
         let load_hnsw = policy.should_load_hnsw_sources(visible_entry_count);
         for artifact_ref in &manifest_resolution.artifact_refs {
             let artifact_id = artifact_ref.artifact_id().to_owned();
@@ -1685,13 +1713,16 @@ impl<'a> VectorService<'a> {
                         ));
                         continue;
                     }
-                    let status = self.load_hnsw_source_ref(
+                    let (status, built) = self.load_hnsw_source_ref(
                         collection,
                         collection_generation,
                         artifact_ref,
                         &mut hnsw_artifacts,
                         policy.hnsw_artifact_load_budget_bytes(),
                     )?;
+                    if built {
+                        hnsw_graph_builds = hnsw_graph_builds.saturating_add(1);
+                    }
                     artifact_reports.push(VectorArtifactSourceDiagnostic::new(
                         artifact_id,
                         status,
@@ -1722,6 +1753,7 @@ impl<'a> VectorService<'a> {
             artifact_reports,
             flat_unavailable_reason,
             hnsw_unavailable_reason,
+            hnsw_graph_builds,
         })
     }
 
@@ -1758,23 +1790,42 @@ impl<'a> VectorService<'a> {
         artifact_ref: &VectorArtifactRef,
         hnsw_artifacts: &mut Vec<VectorHnswArtifactSourceInput>,
         load_budget_bytes: usize,
-    ) -> EngineResult<&'static str> {
+    ) -> EngineResult<(&'static str, bool)> {
         let identity = VectorFlatArtifactIdentity::from_hnsw_manifest_ref(
             self.space.clone(),
             collection.clone(),
             collection_generation.as_u64(),
             artifact_ref,
         )?;
-        let (artifact, status) =
-            self.load_hnsw_artifact_for_query(&identity, artifact_ref, load_budget_bytes);
-        if let Some(artifact) = artifact {
-            hnsw_artifacts.push(VectorHnswArtifactSourceInput::new(
-                artifact,
+        // Reuse a previously built graph when the cached source bytes still match the manifest
+        // ref checksum, so repeated queries do not rebuild the HNSW graph.
+        if let Some(cached) = self
+            .artifacts
+            .cached_hnsw_runtime(identity.artifact_id(), artifact_ref.checksum())
+        {
+            hnsw_artifacts.push(VectorHnswArtifactSourceInput::from_cached(
+                cached,
                 artifact_ref.derived_bytes(),
                 artifact_ref.fork_version_cap(),
             ));
+            return Ok(("loaded", false));
         }
-        Ok(status)
+        let (artifact, status) =
+            self.load_hnsw_artifact_for_query(&identity, artifact_ref, load_budget_bytes);
+        if let Some(artifact) = artifact {
+            let cached = self.artifacts.insert_hnsw_runtime(
+                identity.artifact_id().clone(),
+                artifact_ref.checksum(),
+                artifact,
+            );
+            hnsw_artifacts.push(VectorHnswArtifactSourceInput::from_cached(
+                cached,
+                artifact_ref.derived_bytes(),
+                artifact_ref.fork_version_cap(),
+            ));
+            return Ok((status, true));
+        }
+        Ok((status, false))
     }
 
     fn load_flat_artifact_for_query(

@@ -594,8 +594,29 @@ pub enum Command {
         /// Collection name.
         collection: String,
     },
-    /// Runs exact vector search.
+    /// Runs vector search with the default engine planner.
     VectorQuery {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Collection name.
+        collection: String,
+        /// Query embedding.
+        query: Vec<f32>,
+        /// Maximum number of matches.
+        k: u64,
+        /// Optional metadata filter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        filter: Option<VectorMetadataFilter>,
+        /// Optional timestamp in microseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Runs vector search and returns index planner diagnostics.
+    VectorIndexQuery {
         /// Target branch. Defaults to the executor handle branch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         branch: Option<String>,
@@ -1231,6 +1252,7 @@ impl Command {
             Self::VectorDeleteByFilter { .. } => "vector_delete_by_filter",
             Self::VectorDeleteAll { .. } => "vector_delete_all",
             Self::VectorQuery { .. } => "vector_query",
+            Self::VectorIndexQuery { .. } => "vector_index_query",
             Self::VectorBatchUpsert { .. } => "vector_batch_upsert",
             Self::VectorBatchGet { .. } => "vector_batch_get",
             Self::VectorBatchDelete { .. } => "vector_batch_delete",

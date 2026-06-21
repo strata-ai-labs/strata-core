@@ -42,10 +42,11 @@ use strata_engine_next::{
     VectorEntry as EngineVectorEntry, VectorFilter as EngineVectorFilter,
     VectorFilterCondition as EngineVectorFilterCondition, VectorFilterOp as EngineVectorFilterOp,
     VectorHistory as EngineVectorHistory, VectorHistoryRow as EngineVectorHistoryRow,
-    VectorKey as EngineVectorKey, VectorKeyPage as EngineVectorKeyPage,
-    VectorMetadata as EngineVectorMetadata, VectorMetadataPatch as EngineVectorMetadataPatch,
-    VectorScalar as EngineVectorScalar, VectorSearchMatch as EngineVectorSearchMatch,
-    VectorService, VectorUpsertEntry as EngineVectorUpsertEntry,
+    VectorIndexDiagnostics as EngineVectorIndexDiagnostics, VectorKey as EngineVectorKey,
+    VectorKeyPage as EngineVectorKeyPage, VectorMetadata as EngineVectorMetadata,
+    VectorMetadataPatch as EngineVectorMetadataPatch, VectorScalar as EngineVectorScalar,
+    VectorSearchMatch as EngineVectorSearchMatch, VectorService,
+    VectorUpsertEntry as EngineVectorUpsertEntry,
     VectorVersionedEntry as EngineVectorVersionedEntry,
 };
 
@@ -64,8 +65,11 @@ use crate::types::{
     JsonIndexDefinition, JsonIndexType, JsonSampleItem,
     JsonVersionedValue as OutputJsonVersionedValue, SampleItem, ScanItem, VectorBatchGetItemResult,
     VectorBatchItemResult, VectorCollectionInfo as OutputVectorCollectionInfo, VectorData,
-    VectorDistanceMetric, VectorFilterOp, VectorHistoryItem, VectorMatch, VectorMetadataFilter,
-    VectorScalar, VectorVersionedData, VersionedValue, DEFAULT_BRANCH, DEFAULT_SPACE,
+    VectorDistanceMetric, VectorFilterOp, VectorHistoryItem,
+    VectorIndexArtifactSource as OutputVectorIndexArtifactSource,
+    VectorIndexDiagnostics as OutputVectorIndexDiagnostics, VectorIndexQueryResult, VectorMatch,
+    VectorMetadataFilter, VectorScalar, VectorVersionedData, VersionedValue, DEFAULT_BRANCH,
+    DEFAULT_SPACE,
 };
 
 const DEFAULT_JSON_LIST_LIMIT: usize = 100;
@@ -464,6 +468,23 @@ impl Executor {
                 filter,
                 as_of,
             } => self.execute_vector_query(
+                branch.as_deref(),
+                space.as_deref(),
+                collection,
+                query,
+                k,
+                filter,
+                as_of,
+            ),
+            Command::VectorIndexQuery {
+                branch,
+                space,
+                collection,
+                query,
+                k,
+                filter,
+                as_of,
+            } => self.execute_vector_index_query(
                 branch.as_deref(),
                 space.as_deref(),
                 collection,
@@ -1800,6 +1821,43 @@ impl Executor {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn execute_vector_index_query(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        collection: String,
+        query: Vec<f32>,
+        k: u64,
+        filter: Option<VectorMetadataFilter>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let collection = vector_collection(collection)?;
+        let query = vector_embedding(query)?;
+        let k = required_usize(
+            k,
+            "invalid_argument.executor.vector_limit",
+            "vector match limit does not fit this platform",
+        )?;
+        let filter = filter.map(vector_filter).transpose()?;
+        let mut service = self.vector_service(branch, space)?;
+        let (result, diagnostics) = if let Some(as_of) = as_of {
+            service.query_at_with_index_diagnostics(
+                &collection,
+                &query,
+                k,
+                filter.as_ref(),
+                Timestamp::from_micros(as_of),
+            )?
+        } else {
+            service.query_with_index_diagnostics(&collection, &query, k, filter.as_ref())?
+        };
+        Ok(Output::VectorIndexQuery(VectorIndexQueryResult::new(
+            result.matches().iter().map(vector_match).collect(),
+            vector_index_diagnostics(&diagnostics),
+        )))
+    }
+
     fn execute_vector_batch_upsert(
         &mut self,
         branch: Option<&str>,
@@ -2979,6 +3037,25 @@ impl Executor {
         })
     }
 
+    /// Executes a default-branch vector index-query command.
+    pub fn vector_index_query(
+        &mut self,
+        collection: impl Into<String>,
+        query: Vec<f32>,
+        k: u64,
+        filter: Option<VectorMetadataFilter>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::VectorIndexQuery {
+            branch: None,
+            space: None,
+            collection: collection.into(),
+            query,
+            k,
+            filter,
+            as_of: None,
+        })
+    }
+
     /// Executes a default-branch vector batch-upsert command.
     pub fn vector_batch_upsert(
         &mut self,
@@ -3846,6 +3923,52 @@ fn vector_match(value: &EngineVectorSearchMatch) -> VectorMatch {
             .entry()
             .metadata()
             .map(|metadata| metadata.as_inner().clone()),
+    )
+}
+
+fn vector_index_diagnostics(value: &EngineVectorIndexDiagnostics) -> OutputVectorIndexDiagnostics {
+    OutputVectorIndexDiagnostics::new(
+        value.collection().to_owned(),
+        value.manifest_status().to_owned(),
+        value.manifest_generation(),
+        usize_to_u64(value.manifest_ref_count()),
+        usize_to_u64(value.manifest_inherited_ref_count()),
+        usize_to_u64(value.manifest_owned_ref_count()),
+        usize_to_u64(value.manifest_active_delta_count()),
+        value.policy_mode().to_owned(),
+        usize_to_u64(value.collection_exact_threshold()),
+        usize_to_u64(value.source_flat_threshold()),
+        usize_to_u64(value.source_hnsw_threshold()),
+        usize_to_u64(value.overfetch_factor()),
+        value.filtered_underfill_fallback(),
+        usize_to_u64(value.active_delta_seal_threshold()),
+        usize_to_u64(value.hnsw_memory_budget_bytes()),
+        usize_to_u64(value.source_candidate_limit()),
+        value.resolved_index_kind_summary().to_owned(),
+        value.exact_fallback_count(),
+        usize_to_u64(value.hnsw_graph_builds()),
+        usize_to_u64(value.indexed_source_count()),
+        usize_to_u64(value.exact_source_count()),
+        usize_to_u64(value.flat_source_count()),
+        usize_to_u64(value.hnsw_source_count()),
+        usize_to_u64(value.active_delta_source_count()),
+        usize_to_u64(value.indexed_vector_count()),
+        value.derived_bytes(),
+        value.last_query_used_index(),
+        value
+            .last_query_fallback_reason()
+            .map(std::borrow::ToOwned::to_owned),
+        value
+            .artifact_sources()
+            .iter()
+            .map(|source| {
+                OutputVectorIndexArtifactSource::new(
+                    source.artifact_id().to_owned(),
+                    source.status().to_owned(),
+                    source.searched(),
+                )
+            })
+            .collect(),
     )
 }
 

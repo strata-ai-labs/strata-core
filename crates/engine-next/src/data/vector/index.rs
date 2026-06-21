@@ -1,6 +1,7 @@
 //! Vector candidate planning and index diagnostics.
 
 use std::collections::{btree_map::Entry, BTreeMap};
+use std::sync::Arc;
 
 use fast_hnsw::{
     distance::{
@@ -301,53 +302,6 @@ pub(crate) enum VectorIndexManifestLookup {
     Stale,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(not(any(test, feature = "testkit")), allow(unreachable_pub))]
-pub struct VectorArtifactSourceDiagnostic {
-    artifact_id: String,
-    status: &'static str,
-    searched: bool,
-}
-
-impl VectorArtifactSourceDiagnostic {
-    pub(crate) fn new(
-        artifact_id: impl Into<String>,
-        status: &'static str,
-        searched: bool,
-    ) -> Self {
-        Self {
-            artifact_id: artifact_id.into(),
-            status,
-            searched,
-        }
-    }
-
-    fn mark_searched(&mut self) {
-        self.searched = true;
-    }
-
-    #[cfg(any(test, feature = "testkit"))]
-    #[must_use]
-    /// Returns the artifact ref identity recorded by the manifest.
-    pub fn artifact_id(&self) -> &str {
-        &self.artifact_id
-    }
-
-    #[cfg(any(test, feature = "testkit"))]
-    #[must_use]
-    /// Returns the load status for this artifact ref.
-    pub const fn status(&self) -> &str {
-        self.status
-    }
-
-    #[cfg(any(test, feature = "testkit"))]
-    #[must_use]
-    /// Returns whether this artifact ref was searched by the planner.
-    pub const fn searched(&self) -> bool {
-        self.searched
-    }
-}
-
 pub(crate) struct VectorFlatArtifactSourceInput {
     artifact: FlatVectorArtifact,
     derived_bytes: u64,
@@ -372,37 +326,67 @@ impl VectorFlatArtifactSourceInput {
     }
 }
 
-pub(crate) struct VectorHnswArtifactSourceInput {
+/// A built HNSW graph paired with the artifact rows it was built from. The expensive graph
+/// construction happens once here, when the artifact is first loaded, rather than on every
+/// query. The per-database `VectorArtifactStore` caches this behind an `Arc` and hands a clone
+/// to each query, so repeated queries reuse the same graph. See the implementation plan's
+/// Implementation Order step 11.3 ("rebuild on open when serialization is not viable") and the
+/// Resource Budget rules.
+pub(crate) struct CachedHnswArtifact {
     artifact: HnswVectorArtifact,
     index: HnswRuntimeIndex,
-    derived_bytes: u64,
     estimated_memory_bytes: usize,
-    fork_version_cap: Option<CommitVersion>,
 }
 
-impl VectorHnswArtifactSourceInput {
-    pub(crate) fn new(
-        artifact: HnswVectorArtifact,
-        derived_bytes: u64,
-        fork_version_cap: Option<CommitVersion>,
-    ) -> Self {
+impl CachedHnswArtifact {
+    pub(crate) fn build(artifact: HnswVectorArtifact) -> Self {
         let estimated_memory_bytes = estimate_hnsw_memory_bytes(&artifact);
         let index = HnswRuntimeIndex::build(&artifact);
         Self {
             artifact,
             index,
-            derived_bytes,
             estimated_memory_bytes,
+        }
+    }
+
+    pub(crate) fn artifact(&self) -> &HnswVectorArtifact {
+        &self.artifact
+    }
+
+    fn index(&self) -> &HnswRuntimeIndex {
+        &self.index
+    }
+
+    pub(crate) const fn estimated_memory_bytes(&self) -> usize {
+        self.estimated_memory_bytes
+    }
+}
+
+pub(crate) struct VectorHnswArtifactSourceInput {
+    cached: Arc<CachedHnswArtifact>,
+    derived_bytes: u64,
+    fork_version_cap: Option<CommitVersion>,
+}
+
+impl VectorHnswArtifactSourceInput {
+    pub(crate) fn from_cached(
+        cached: Arc<CachedHnswArtifact>,
+        derived_bytes: u64,
+        fork_version_cap: Option<CommitVersion>,
+    ) -> Self {
+        Self {
+            cached,
+            derived_bytes,
             fork_version_cap,
         }
     }
 
     fn artifact_id(&self) -> &str {
-        self.artifact.identity().artifact_id().as_str()
+        self.cached.artifact().identity().artifact_id().as_str()
     }
 
-    const fn estimated_memory_bytes(&self) -> usize {
-        self.estimated_memory_bytes
+    fn estimated_memory_bytes(&self) -> usize {
+        self.cached.estimated_memory_bytes()
     }
 }
 
@@ -516,7 +500,52 @@ impl VectorIndexManifestLookup {
     }
 }
 
-/// Vector index planning facts exposed through testkit.
+/// Per-artifact vector index load and search facts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(not(any(test, feature = "testkit")), allow(unreachable_pub))]
+pub struct VectorArtifactSourceDiagnostic {
+    artifact_id: String,
+    status: &'static str,
+    searched: bool,
+}
+
+impl VectorArtifactSourceDiagnostic {
+    pub(crate) fn new(
+        artifact_id: impl Into<String>,
+        status: &'static str,
+        searched: bool,
+    ) -> Self {
+        Self {
+            artifact_id: artifact_id.into(),
+            status,
+            searched,
+        }
+    }
+
+    fn mark_searched(&mut self) {
+        self.searched = true;
+    }
+
+    #[must_use]
+    /// Returns the artifact ref identity recorded by the manifest.
+    pub fn artifact_id(&self) -> &str {
+        &self.artifact_id
+    }
+
+    #[must_use]
+    /// Returns the load status for this artifact ref.
+    pub const fn status(&self) -> &str {
+        self.status
+    }
+
+    #[must_use]
+    /// Returns whether this artifact ref was searched by the planner.
+    pub const fn searched(&self) -> bool {
+        self.searched
+    }
+}
+
+/// Vector index planning facts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(not(any(test, feature = "testkit")), allow(unreachable_pub))]
 pub struct VectorIndexDiagnostics {
@@ -538,6 +567,7 @@ pub struct VectorIndexDiagnostics {
     source_candidate_limit: usize,
     resolved_index_kind_summary: &'static str,
     exact_fallback_count: u64,
+    hnsw_graph_builds: usize,
     indexed_source_count: usize,
     exact_source_count: usize,
     flat_source_count: usize,
@@ -571,6 +601,7 @@ impl VectorIndexDiagnostics {
             source_candidate_limit: 0,
             resolved_index_kind_summary: "none",
             exact_fallback_count: 0,
+            hnsw_graph_builds: 0,
             indexed_source_count: 0,
             exact_source_count: 0,
             flat_source_count: 0,
@@ -630,6 +661,10 @@ impl VectorIndexDiagnostics {
         self.artifact_sources.extend_from_slice(sources);
     }
 
+    pub(crate) fn record_hnsw_graph_builds(&mut self, builds: usize) {
+        self.hnsw_graph_builds = builds;
+    }
+
     pub(crate) fn record_manifest_lookup(&mut self, lookup: VectorIndexManifestLookup) {
         self.manifest_status = lookup.status();
         match lookup {
@@ -658,196 +693,176 @@ impl VectorIndexDiagnostics {
         }
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the collection searched by the planner.
     pub fn collection(&self) -> &str {
         &self.collection
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the branch-local manifest lookup status.
     pub const fn manifest_status(&self) -> &str {
         self.manifest_status
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the loaded manifest generation, when one matched the query.
     pub const fn manifest_generation(&self) -> Option<u64> {
         self.manifest_generation
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the artifact ref count from the loaded manifest.
     pub const fn manifest_ref_count(&self) -> usize {
         self.manifest_ref_count
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the inherited artifact ref count from the loaded manifest.
     pub const fn manifest_inherited_ref_count(&self) -> usize {
         self.manifest_inherited_ref_count
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the branch-owned artifact ref count from the loaded manifest.
     pub const fn manifest_owned_ref_count(&self) -> usize {
         self.manifest_owned_ref_count
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the active-delta count advertised by the loaded manifest.
     pub const fn manifest_active_delta_count(&self) -> usize {
         self.active_delta_count
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the resolved policy mode.
     pub const fn policy_mode(&self) -> &str {
         self.policy_mode
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the exact-scan threshold configured on the policy.
     pub const fn collection_exact_threshold(&self) -> usize {
         self.collection_exact_threshold
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the flat-source threshold configured on the policy.
     pub const fn source_flat_threshold(&self) -> usize {
         self.source_flat_threshold
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the HNSW-source threshold configured on the policy.
     pub const fn source_hnsw_threshold(&self) -> usize {
         self.source_hnsw_threshold
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the candidate overfetch factor configured on the policy.
     pub const fn overfetch_factor(&self) -> usize {
         self.overfetch_factor
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns whether filtered underfill fallback is enabled on the policy.
     pub const fn filtered_underfill_fallback(&self) -> bool {
         self.filtered_underfill_fallback
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the active-delta sealing threshold configured on the policy.
     pub const fn active_delta_seal_threshold(&self) -> usize {
         self.active_delta_seal_threshold
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the memory budget configured for HNSW sources.
     pub const fn hnsw_memory_budget_bytes(&self) -> usize {
         self.hnsw_memory_budget_bytes
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the resolved candidate limit used by indexed sources.
     pub const fn source_candidate_limit(&self) -> usize {
         self.source_candidate_limit
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns a short summary of the source kind used by the last query.
     pub const fn resolved_index_kind_summary(&self) -> &str {
         self.resolved_index_kind_summary
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the number of exact fallbacks taken by this query.
     pub const fn exact_fallback_count(&self) -> u64 {
         self.exact_fallback_count
     }
 
-    #[cfg(any(test, feature = "testkit"))]
+    #[must_use]
+    /// Returns the number of HNSW graphs constructed while answering this query. A fully cached
+    /// query reports `0`; only a cold load (first query, or after re-seal/eviction) reports a
+    /// build, because the per-database runtime cache reuses the built graph across queries.
+    pub const fn hnsw_graph_builds(&self) -> usize {
+        self.hnsw_graph_builds
+    }
+
     #[must_use]
     /// Returns the number of indexed sources searched by this query.
     pub const fn indexed_source_count(&self) -> usize {
         self.indexed_source_count
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the number of exact sources searched by this query.
     pub const fn exact_source_count(&self) -> usize {
         self.exact_source_count
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the number of flat sources searched by this query.
     pub const fn flat_source_count(&self) -> usize {
         self.flat_source_count
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the number of HNSW sources searched by this query.
     pub const fn hnsw_source_count(&self) -> usize {
         self.hnsw_source_count
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the number of active delta sources searched by this query.
     pub const fn active_delta_source_count(&self) -> usize {
         self.active_delta_source_count
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the number of vectors covered by indexed sources.
     pub const fn indexed_vector_count(&self) -> usize {
         self.indexed_vector_count
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns estimated derived bytes touched by indexed sources.
     pub const fn derived_bytes(&self) -> u64 {
         self.derived_bytes
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns true when the query used an indexed source.
     pub const fn last_query_used_index(&self) -> bool {
         self.last_query_used_index
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns the fallback reason recorded for the last query.
     pub const fn last_query_fallback_reason(&self) -> Option<&str> {
         self.last_query_fallback_reason
     }
 
-    #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     /// Returns per-artifact load and search facts recorded by the planner.
     pub fn artifact_sources(&self) -> &[VectorArtifactSourceDiagnostic] {
@@ -1102,7 +1117,7 @@ impl VectorCandidateSource for HnswArtifactVectorSource<'_> {
     }
 
     fn len(&self) -> usize {
-        self.input.artifact.rows().len()
+        self.input.cached.artifact().rows().len()
     }
 
     fn estimated_bytes(&self) -> u64 {
@@ -1121,7 +1136,7 @@ impl VectorCandidateSource for HnswArtifactVectorSource<'_> {
             || self.input.fork_version_cap.is_some()
         {
             return score_hnsw_artifact_exact(
-                &self.input.artifact,
+                self.input.cached.artifact(),
                 self.selector,
                 self.input.fork_version_cap,
                 query,
@@ -1131,13 +1146,14 @@ impl VectorCandidateSource for HnswArtifactVectorSource<'_> {
             );
         }
         let mut candidates = Vec::new();
-        let candidate_ids = self.input.index.search(
+        let artifact = self.input.cached.artifact();
+        let candidate_ids = self.input.cached.index().search(
             query,
-            limit.min(self.input.artifact.rows().len()),
-            self.input.artifact.config().ef_search(),
+            limit.min(artifact.rows().len()),
+            artifact.config().ef_search(),
         );
         for candidate_id in candidate_ids {
-            let Some(row) = self.input.artifact.rows().get(candidate_id) else {
+            let Some(row) = artifact.rows().get(candidate_id) else {
                 continue;
             };
             if !artifact_row_visible(

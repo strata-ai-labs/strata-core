@@ -9,6 +9,7 @@ mod record;
 mod service;
 mod types;
 
+pub use index::{VectorArtifactSourceDiagnostic, VectorIndexDiagnostics};
 pub use outcome::{
     VectorBatchDeleteOutcome, VectorBatchGetOutcome, VectorBatchUpsertOutcome,
     VectorBulkDeleteOutcome, VectorCollectionInfo, VectorDeleteOutcome, VectorEntry, VectorHistory,
@@ -33,9 +34,8 @@ pub(crate) use distance::vector_score;
 #[cfg(any(test, feature = "testkit"))]
 pub(crate) use index::query_vector_exact;
 pub(crate) use index::{
-    query_vector_sources_with_index_artifacts, VectorArtifactSourceDiagnostic,
-    VectorFlatArtifactSourceInput, VectorHnswArtifactSourceInput, VectorIndexDiagnostics,
-    VectorIndexManifestLookup, VectorIndexPolicy, VectorTombstone,
+    query_vector_sources_with_index_artifacts, VectorFlatArtifactSourceInput,
+    VectorHnswArtifactSourceInput, VectorIndexManifestLookup, VectorIndexPolicy, VectorTombstone,
 };
 pub(crate) use manifest::{
     decode_vector_index_manifest, encode_vector_index_manifest, VectorArtifactKind,
