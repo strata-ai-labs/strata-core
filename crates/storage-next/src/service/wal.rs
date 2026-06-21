@@ -10,8 +10,8 @@
 
 use crate::backend::{
     with_authorized_wal_repair_mutation, with_authorized_wal_retention_mutation, Backend,
-    BackendCapability, BackendError, BackendErrorKind, BackendHandle, BackendRange,
-    DeleteDurability, DeleteError, DeleteOutcome, PublishError,
+    BackendAppend, BackendAppendHandle, BackendCapability, BackendError, BackendErrorKind,
+    BackendHandle, BackendRange, DeleteDurability, DeleteError, DeleteOutcome, PublishError,
 };
 use crate::config::mode::DurabilityPolicy;
 use crate::format::{
@@ -814,7 +814,23 @@ pub(crate) struct WalService<'a> {
     // keeps `growth_facts` a `&self` read for the diagnostic/backpressure callers
     // while still memoizing the first scan.
     sealed_retention: Cell<Option<SealedRetention>>,
+    // Persistent append descriptor for the active segment, lazily opened on the
+    // first append after open/rotation/repair and held across subsequent appends
+    // so steady-state commits do one `write` instead of stat+open+write+stat+close.
+    // `None` means: not yet opened, or the backend does not support persistent
+    // appends (then `append`/`force_durable` fall back to the per-call backend
+    // path). Never carried into `clone_for_background_retention` — the clone only
+    // deletes sealed segments and must not hold the writer's descriptor.
+    active_append: Option<Box<dyn BackendAppendHandle>>,
 }
+
+// `WalService` is moved across threads for background retention (the clone never
+// carries `active_append`, but the type must stay `Send`). Guard it so a future
+// non-`Send` append handle fails here, not as an opaque closure bound elsewhere.
+const _: () = {
+    fn assert_send<T: Send>() {}
+    let _ = assert_send::<WalService<'static>>;
+};
 
 impl<'a> WalService<'a> {
     pub(crate) fn open(
@@ -845,6 +861,7 @@ impl<'a> WalService<'a> {
             active_metadata,
             repair_uncertain: false,
             sealed_retention: Cell::new(None),
+            active_append: None,
         })
     }
 
@@ -886,6 +903,9 @@ impl<'a> WalService<'a> {
             // refreshes lazily if ever asked. Its deletions invalidate the
             // primary's cache at the truncation publish step.
             sealed_retention: Cell::new(None),
+            // Never duplicate the writer's append descriptor into the clone: it
+            // only deletes sealed segments and must never append.
+            active_append: None,
         }
     }
 
@@ -925,11 +945,20 @@ impl<'a> WalService<'a> {
                 });
             }
 
-            self.validate_active_object_size(WalOperation::Append)?;
+            // Open the persistent append descriptor for the active segment when
+            // the backend supports one. The fast path then trusts the in-memory
+            // size (the open-time stat is the boundary check); the fallback keeps
+            // the per-append reconciliation stat.
+            self.ensure_active_append_handle()?;
+            if self.active_append.is_none() {
+                self.validate_active_object_size(WalOperation::Append)?;
+            }
 
-            // Rotation is decided against service state that was just reconciled
-            // with backend metadata. That prevents appending after an unrepaired
-            // partial tail or externally-mutated active segment.
+            // Rotation is decided against service state reconciled with backend
+            // metadata: the in-memory size (authoritative under the single-writer
+            // lock on the fast path) or the stat above on the fallback. That
+            // prevents appending after an unrepaired partial tail or external
+            // mutation of the active segment.
             let projected_size = self.active_segment_size.checked_add(frame_len).ok_or(
                 WalServiceError::RecordTooLarge {
                     bytes: frame_len,
@@ -938,18 +967,14 @@ impl<'a> WalService<'a> {
             )?;
             if projected_size > self.segment_size {
                 self.rotate_segment()?;
-                self.validate_active_object_size(WalOperation::Append)?;
+                self.ensure_active_append_handle()?;
+                if self.active_append.is_none() {
+                    self.validate_active_object_size(WalOperation::Append)?;
+                }
             }
 
             let expected_offset = self.active_segment_size;
-            let append = self
-                .backend
-                .append_object(&self.active_object, &buffers.frame)
-                .map_err(|source| WalServiceError::Backend {
-                    operation: WalOperation::Append,
-                    object: self.active_object.clone(),
-                    source,
-                })?;
+            let append = self.append_frame(&buffers.frame)?;
             if append.start_offset() != expected_offset {
                 return Err(WalServiceError::UnexpectedAppendOffset {
                     object: self.active_object.clone(),
@@ -1005,14 +1030,58 @@ impl<'a> WalService<'a> {
         })
     }
 
-    pub(crate) fn force_durable(&mut self) -> WalServiceResult<()> {
-        self.backend
-            .sync_object(&self.active_object)
+    /// Lazily open a persistent append descriptor for the active segment when the
+    /// backend supports one. No-op when already held or unsupported (then the
+    /// per-call `append_object`/`sync_object` fallback is used). The open-time stat
+    /// reconciles the in-memory size with the backend once per segment.
+    fn ensure_active_append_handle(&mut self) -> WalServiceResult<()> {
+        if self.active_append.is_some() {
+            return Ok(());
+        }
+        let handle = self
+            .backend
+            .open_append_handle(&self.active_object, self.active_segment_size)
             .map_err(|source| WalServiceError::Backend {
-                operation: WalOperation::Sync,
+                operation: WalOperation::Append,
                 object: self.active_object.clone(),
                 source,
             })?;
+        if let Some(handle) = handle {
+            // Reconcile the in-memory size with the backend once at handle open.
+            // This is the boundary check the held descriptor then lets every later
+            // append skip; it rejects an unrepaired partial tail (or any external
+            // mutation) with the same `UnexpectedAppendOffset` the per-append stat
+            // produced. On failure the freshly opened descriptor is dropped here.
+            self.validate_active_object_size(WalOperation::Append)?;
+            self.active_append = Some(handle);
+        }
+        Ok(())
+    }
+
+    /// Append a frame through the held descriptor when present, else the per-call
+    /// backend path. The returned facts are validated by the caller either way.
+    fn append_frame(&mut self, frame: &[u8]) -> WalServiceResult<BackendAppend> {
+        let result = match self.active_append.as_mut() {
+            Some(handle) => handle.append(frame),
+            None => self.backend.append_object(&self.active_object, frame),
+        };
+        result.map_err(|source| WalServiceError::Backend {
+            operation: WalOperation::Append,
+            object: self.active_object.clone(),
+            source,
+        })
+    }
+
+    pub(crate) fn force_durable(&mut self) -> WalServiceResult<()> {
+        let result = match self.active_append.as_mut() {
+            Some(handle) => handle.sync(),
+            None => self.backend.sync_object(&self.active_object),
+        };
+        result.map_err(|source| WalServiceError::Backend {
+            operation: WalOperation::Sync,
+            object: self.active_object.clone(),
+            source,
+        })?;
         self.dirty_bytes = 0;
         self.dirty_records = 0;
         Ok(())
@@ -1032,6 +1101,9 @@ impl<'a> WalService<'a> {
         //      observable fsync no-op at the backend; the cost is one
         //      syscall on close, paid once.
         self.force_durable()?;
+        // Release the persistent append descriptor after the close sync. Any
+        // later append (e.g. a close retry path) re-opens it lazily.
+        self.active_append = None;
         Ok(())
     }
 
@@ -1148,6 +1220,10 @@ impl<'a> WalService<'a> {
         &mut self,
         truncation: &WalTruncation,
     ) -> WalServiceResult<WalRepair> {
+        // Repair rewrites the active object via publish_durable_replace (a
+        // temp-file + rename on localfs), so any held append descriptor now points
+        // at the old, unlinked inode. Drop it; the next append re-opens lazily.
+        self.active_append = None;
         if truncation.segment_id() != self.active_segment_id {
             return Err(WalServiceError::TruncationSegmentMismatch {
                 segment_id: truncation.segment_id(),
@@ -1327,6 +1403,9 @@ impl<'a> WalService<'a> {
         if self.dirty_bytes > 0 {
             self.force_durable()?;
         }
+        // The old segment is now sealed and durable; release its append descriptor
+        // before advancing. The next append to the new segment re-opens lazily.
+        self.active_append = None;
 
         let next_segment_id =
             self.active_segment_id

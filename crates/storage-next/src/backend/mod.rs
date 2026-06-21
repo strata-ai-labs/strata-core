@@ -259,6 +259,21 @@ impl BackendAppend {
     }
 }
 
+/// A persistent append handle over a single durable object, held across many
+/// appends by a single writer. `append` writes through the held descriptor and
+/// returns the same `BackendAppend` facts as `Backend::append_object` (the caller
+/// still verifies them); `sync` fsyncs the held descriptor. The handle tracks the
+/// object size in memory, so steady-state appends do no `stat`/`open`/`close`.
+///
+/// `Send` is load-bearing: the owning `WalService` is moved across threads for
+/// background retention (it never carries the handle into that clone, but the type
+/// must stay `Send`). It need not be `Sync` — it lives behind `&mut self`.
+pub(crate) trait BackendAppendHandle: Send {
+    fn append(&mut self, bytes: &[u8]) -> BackendResult<BackendAppend>;
+
+    fn sync(&mut self) -> BackendResult<()>;
+}
+
 trait BackendWriterGuardInner: Send + Sync {}
 
 impl<T> BackendWriterGuardInner for T where T: Send + Sync {}
@@ -420,6 +435,20 @@ pub(crate) trait Backend: Send + Sync {
         Err(BackendError::unsupported(BackendCapability::DurableSync))
     }
 
+    // Open a persistent append handle for `name`, letting a single-writer caller
+    // append and fsync through one held descriptor instead of reopening the
+    // object per call. `expected_size` is the caller's authoritative current size;
+    // implementations verify it against the object as a once-per-open boundary
+    // check. Returns `Ok(None)` by default: callers must fall back to
+    // `append_object`/`sync_object`. Only durable backends override this.
+    fn open_append_handle(
+        &self,
+        _name: &ObjectName,
+        _expected_size: u64,
+    ) -> BackendResult<Option<Box<dyn BackendAppendHandle>>> {
+        Ok(None)
+    }
+
     fn conditional_create(
         &self,
         _name: &ObjectName,
@@ -553,6 +582,14 @@ impl Backend for BackendHandle<'_> {
 
     fn sync_object(&self, name: &ObjectName) -> BackendResult<()> {
         self.as_backend().sync_object(name)
+    }
+
+    fn open_append_handle(
+        &self,
+        name: &ObjectName,
+        expected_size: u64,
+    ) -> BackendResult<Option<Box<dyn BackendAppendHandle>>> {
+        self.as_backend().open_append_handle(name, expected_size)
     }
 
     fn conditional_create(

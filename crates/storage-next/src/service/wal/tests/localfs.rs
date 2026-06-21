@@ -487,3 +487,136 @@ fn covered_old_segments_are_deleted_after_rotation() {
         .read_object(&ObjectLayout::wal_segment(2).expect("second segment"))
         .is_ok());
 }
+
+// Fast path (persistent append descriptor): many appends flow through one held
+// descriptor without a per-append sync; the close sync must make them all durable
+// and recoverable on reopen.
+#[test]
+fn fast_path_many_appends_recover_after_reopen() {
+    let (_dir, backend) = backend();
+    let count: usize = 64;
+    {
+        let mut service = WalService::open(
+            &backend,
+            database_id(),
+            1,
+            DurabilityPolicy::Standard,
+            // One segment large enough to hold every record, so all appends share
+            // a single held descriptor (no rotation).
+            WalServiceConfig::new(64 * 1024),
+        )
+        .expect("open WAL");
+        for index in 0..count {
+            service
+                .append(&record(
+                    index as u64 + 1,
+                    format!("rec-{index}").into_bytes(),
+                ))
+                .expect("append through held descriptor");
+        }
+        service.close().expect("close syncs the held descriptor");
+    }
+
+    let reopened = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(64 * 1024),
+    )
+    .expect("reopen WAL");
+    let read = reopened.read_all().expect("read all");
+    assert_eq!(read.records().len(), count);
+    assert_eq!(read.truncation(), None);
+}
+
+// Fast path: rotation inside `append` must sync and release the old segment's held
+// descriptor before advancing, so records from both the sealed old segment and the
+// new active segment survive a reopen.
+#[test]
+fn fast_path_rotation_records_recover_after_reopen() {
+    let (_dir, backend) = backend();
+    let large = vec![0x55; 800];
+    let first = record(1, large.clone());
+    let second = record(2, large);
+    {
+        let mut service = WalService::open(
+            &backend,
+            database_id(),
+            1,
+            DurabilityPolicy::Standard,
+            testing_config(),
+        )
+        .expect("open WAL");
+        service.append(&first).expect("first");
+        let rotated = service.append(&second).expect("second rotates");
+        assert_eq!(rotated.segment_id(), 2);
+        assert_eq!(service.active_segment_id(), 2);
+        service.close().expect("close");
+    }
+
+    // Reopen at the rotated active segment; `read_all` still scans every segment.
+    let reopened = WalService::open(
+        &backend,
+        database_id(),
+        2,
+        DurabilityPolicy::Standard,
+        testing_config(),
+    )
+    .expect("reopen at rotated segment");
+    let read = reopened.read_all().expect("read all");
+    assert_eq!(read.records(), &[first, second]);
+    assert_eq!(read.truncation(), None);
+}
+
+// Fast path: repairing a partial tail rewrites the active object, so the held
+// descriptor must be dropped on repair; the next append re-opens against the
+// repaired file and lands exactly at the valid prefix end.
+#[test]
+fn fast_path_repair_then_append_recovers() {
+    let (_dir, backend) = backend();
+    let first = record(1, b"first".to_vec());
+    {
+        let mut service = WalService::open(
+            &backend,
+            database_id(),
+            1,
+            DurabilityPolicy::Standard,
+            testing_config(),
+        )
+        .expect("open WAL");
+        service.append(&first).expect("append");
+        service.close().expect("close");
+    }
+    let object = ObjectLayout::wal_segment(1).expect("segment");
+    let valid_end = backend
+        .object_metadata(&object)
+        .expect("metadata before tail")
+        .size_bytes();
+    backend
+        .append_object(&object, &[0xff, 0xee])
+        .expect("partial tail");
+
+    let mut reopened = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        testing_config(),
+    )
+    .expect("reopen with recoverable tail");
+    let read = reopened.read_all().expect("read recoverable tail");
+    let truncation = read.truncation().expect("truncation fact").clone();
+    drop(read);
+    reopened
+        .repair_latest_tail(&truncation)
+        .expect("repair latest tail");
+
+    let second = record(2, b"after repair".to_vec());
+    let append = reopened.append(&second).expect("append after repair");
+    assert_eq!(append.start_offset(), valid_end);
+
+    let read = reopened.read_all().expect("read repaired WAL");
+    assert_eq!(read.records(), &[first, second]);
+    assert_eq!(read.truncation(), None);
+}

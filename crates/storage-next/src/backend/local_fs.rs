@@ -1,10 +1,11 @@
 //! Local filesystem backend shell.
 
 use super::{
-    Backend, BackendAppend, BackendCapabilities, BackendError, BackendErrorKind, BackendMetadata,
-    BackendRange, BackendResult, BackendWriterGuard, DeleteDurability, DeleteError, DeleteOutcome,
-    DeleteResult, PublishDurability, PublishError, PublishFailureKind, PublishMode, PublishOutcome,
-    PublishResult, BASIC_OBJECT_BACKEND_CAPABILITIES,
+    Backend, BackendAppend, BackendAppendHandle, BackendCapabilities, BackendError,
+    BackendErrorKind, BackendMetadata, BackendRange, BackendResult, BackendWriterGuard,
+    DeleteDurability, DeleteError, DeleteOutcome, DeleteResult, PublishDurability, PublishError,
+    PublishFailureKind, PublishMode, PublishOutcome, PublishResult,
+    BASIC_OBJECT_BACKEND_CAPABILITIES,
 };
 use crate::layout::ObjectLayout;
 use crate::object::{ObjectName, ObjectPrefix};
@@ -826,6 +827,35 @@ impl LocalFsBackend {
     }
 }
 
+/// Persistent append handle over a single WAL segment. Holds the `O_APPEND`
+/// descriptor open and tracks the on-disk size in memory so each append is a
+/// single `write` (no per-call stat/open/close). Single-writer exclusion is
+/// provided by the durable lifecycle's writer lock; `write_all` guarantees the
+/// full frame is written, so `before + len` is the authoritative post-append size.
+struct LocalFsAppendHandle {
+    file: File,
+    size: u64,
+}
+
+impl BackendAppendHandle for LocalFsAppendHandle {
+    fn append(&mut self, bytes: &[u8]) -> BackendResult<BackendAppend> {
+        let before = self.size;
+        self.file
+            .write_all(bytes)
+            .map_err(|err| map_io_error(&err))?;
+        self.size = self.size.saturating_add(bytes.len() as u64);
+        Ok(BackendAppend::new(
+            before,
+            bytes.len() as u64,
+            BackendMetadata::new(self.size, None),
+        ))
+    }
+
+    fn sync(&mut self) -> BackendResult<()> {
+        self.file.sync_all().map_err(|err| map_io_error(&err))
+    }
+}
+
 impl Backend for LocalFsBackend {
     fn capabilities(&self) -> BackendCapabilities {
         let mut capabilities = BackendCapabilities::from_slice(BASIC_OBJECT_BACKEND_CAPABILITIES);
@@ -1047,6 +1077,26 @@ impl Backend for LocalFsBackend {
         File::open(path)
             .and_then(|file| file.sync_all())
             .map_err(|err| map_io_error(&err))
+    }
+
+    fn open_append_handle(
+        &self,
+        name: &ObjectName,
+        expected_size: u64,
+    ) -> BackendResult<Option<Box<dyn BackendAppendHandle>>> {
+        Self::reject_writer_lock_object_mutation(name, "append")?;
+        let path = self.path_for(name);
+        // The caller (WalService) reconciles `expected_size` against the backend
+        // via its own boundary stat right after opening, so the handle trusts the
+        // passed size and starts tracking from there — no stat here.
+        let file = OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .map_err(|err| map_io_error(&err))?;
+        Ok(Some(Box::new(LocalFsAppendHandle {
+            file,
+            size: expected_size,
+        })))
     }
 
     fn publish_object(
