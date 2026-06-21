@@ -332,10 +332,10 @@ impl StoragePersistence {
         Ok(())
     }
 
-    /// Arms a storage fault that fires on the next matching persistence call.
+    /// Arms a storage fault that fires after `skip` matching persistence calls.
     #[cfg(any(test, feature = "testkit"))]
-    pub(crate) fn arm_storage_fault(&mut self, op: FaultOp, kind: StorageFaultKind) {
-        self.faults.arm(op, kind);
+    pub(crate) fn arm_storage_fault(&mut self, op: FaultOp, kind: StorageFaultKind, skip: usize) {
+        self.faults.arm(op, kind, skip);
     }
 
     pub(crate) fn create_system_branch_for_new_database(&mut self) -> EngineResult<()> {

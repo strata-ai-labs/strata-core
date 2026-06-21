@@ -83,21 +83,38 @@ mod injection {
         }
     }
 
+    struct ScheduledFault {
+        op: FaultOp,
+        error: StorageApiError,
+        /// Number of matching operations that pass before this fault fires.
+        skip: usize,
+    }
+
     /// FIFO schedule of pending faults, matched and consumed per operation.
     #[derive(Default)]
     pub(crate) struct FaultSchedule {
-        entries: Vec<(FaultOp, StorageApiError)>,
+        entries: Vec<ScheduledFault>,
     }
 
     impl FaultSchedule {
-        pub(crate) fn arm(&mut self, op: FaultOp, kind: StorageFaultKind) {
-            self.entries.push((op, kind.into_storage_error()));
+        /// Arms a fault that fires after `skip` matching operations pass.
+        pub(crate) fn arm(&mut self, op: FaultOp, kind: StorageFaultKind, skip: usize) {
+            self.entries.push(ScheduledFault {
+                op,
+                error: kind.into_storage_error(),
+                skip,
+            });
         }
 
-        /// Removes and returns the first fault armed for `op`, if any.
+        /// Returns the fault for `op` if one is due, letting `skip` occurrences
+        /// pass through to real storage first.
         pub(crate) fn take(&mut self, op: FaultOp) -> Option<StorageApiError> {
-            let position = self.entries.iter().position(|(armed, _)| *armed == op)?;
-            Some(self.entries.remove(position).1)
+            let position = self.entries.iter().position(|entry| entry.op == op)?;
+            if self.entries[position].skip > 0 {
+                self.entries[position].skip -= 1;
+                return None;
+            }
+            Some(self.entries.remove(position).error)
         }
     }
 }

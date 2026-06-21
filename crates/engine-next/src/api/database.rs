@@ -334,25 +334,34 @@ impl Database {
     /// Arms a storage fault that fires on the next persistence commit.
     #[cfg(any(test, feature = "testkit"))]
     pub fn inject_commit_fault_for_test(&mut self, kind: StorageFaultKind) {
-        self.persistence.arm_storage_fault(FaultOp::Commit, kind);
+        self.persistence.arm_storage_fault(FaultOp::Commit, kind, 0);
+    }
+
+    /// Arms a storage fault that fires after `skip` further commits pass — used
+    /// to fail a later commit (such as a pending-operation cleanup) while
+    /// letting earlier commits succeed.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn inject_commit_fault_after_for_test(&mut self, skip: usize, kind: StorageFaultKind) {
+        self.persistence
+            .arm_storage_fault(FaultOp::Commit, kind, skip);
     }
 
     /// Arms a storage fault that fires on the next persistence point read.
     #[cfg(any(test, feature = "testkit"))]
     pub fn inject_read_fault_for_test(&mut self, kind: StorageFaultKind) {
-        self.persistence.arm_storage_fault(FaultOp::Read, kind);
+        self.persistence.arm_storage_fault(FaultOp::Read, kind, 0);
     }
 
     /// Arms a storage fault that fires on the next persistence scan.
     #[cfg(any(test, feature = "testkit"))]
     pub fn inject_scan_fault_for_test(&mut self, kind: StorageFaultKind) {
-        self.persistence.arm_storage_fault(FaultOp::Scan, kind);
+        self.persistence.arm_storage_fault(FaultOp::Scan, kind, 0);
     }
 
     /// Arms a storage fault that fires on the next persistence branch action.
     #[cfg(any(test, feature = "testkit"))]
     pub fn inject_branch_fault_for_test(&mut self, kind: StorageFaultKind) {
-        self.persistence.arm_storage_fault(FaultOp::Branch, kind);
+        self.persistence.arm_storage_fault(FaultOp::Branch, kind, 0);
     }
 
     /// Closes the database handle.

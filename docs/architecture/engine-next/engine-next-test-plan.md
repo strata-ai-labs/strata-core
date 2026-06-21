@@ -131,6 +131,16 @@ full suite green):
   still answer reads and inspection; writes need recovery), while `Missing`/
   `Corrupt` stay `Unhealthy`. The previously-dead `Degraded` variant is now
   reachable; unit-tested in `api/admin.rs`.
+- **Slice 8 — Control-plane lifecycle (§5.5 / §9).** Extended the fault seam with
+  a skip count (`inject_commit_fault_after_for_test`) so a *later* commit can fail
+  while earlier commits succeed. `tests/control_plane_lifecycle.rs` (testkit):
+  (1) a branch op whose pending-cleanup commit also fails forces the control plane
+  closed — diagnostics report every area `Unavailable`, `admin().health()` is
+  `Degraded` (the §11.2 wiring exercised through a real integration path), and
+  writes are rejected with `unavailable.engine.control_plane`; (2) the
+  recovery-oracle case — a branch creation interrupted after its durable pending
+  marker is written is detected on reopen as `data_loss.engine.branch_create_pending`
+  rather than silently resuming.
 
 Decision of record (from the implementing session): §11 items that are latent
 bugs are **fixed**, not just pinned (per user direction). Resolved: §11.1
