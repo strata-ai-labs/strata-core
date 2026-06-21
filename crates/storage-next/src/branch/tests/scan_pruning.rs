@@ -404,3 +404,192 @@ fn branch_range_scan_uses_lazy_inherited_nonzero_level_after_key_rewrite() {
     assert_eq!(perf.scan_candidates_materialized(), 3);
     assert_eq!(perf.scan_rows_returned(), 3);
 }
+
+#[test]
+fn branch_prefix_scan_skips_owned_nonzero_tables_sealed_at_or_below_after_version() {
+    let branch = branch_id(50);
+    let mut state = BranchLocalState::empty(branch);
+    // Fresh table holding the LOWEST key but a high version: must be kept.
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            scan_table(branch, BranchLevel::new(1), "seg-fresh-low", "seg-000", 100),
+        )
+        .expect("install fresh-low owned table");
+    // Sealed tables: higher keys, versions at or below the watermark, must be skipped.
+    for index in 1..=8u64 {
+        let key = format!("seg-{index:03}");
+        state
+            .install_owned_table_at_level(
+                BranchLevel::new(1),
+                scan_table(
+                    branch,
+                    BranchLevel::new(1),
+                    &format!("seg-sealed-{index:03}"),
+                    &key,
+                    index,
+                ),
+            )
+            .expect("install sealed owned table");
+    }
+    // Fresh table holding the HIGHEST key and a high version: must be kept.
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            scan_table(
+                branch,
+                BranchLevel::new(1),
+                "seg-fresh-high",
+                "seg-009",
+                101,
+            ),
+        )
+        .expect("install fresh-high owned table");
+    let view = state.capture_read_view().expect("read view");
+    let bounds = scan_prefix(branch, "seg-");
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let rows = view
+        .scan_prefix_including_tombstones(
+            &bounds,
+            BranchReadBound::latest(),
+            Some(CommitVersion::new(50)),
+        )
+        .expect("prefix scan");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    // Only the two fresh tables are opened; the eight sealed tables are skipped without ever
+    // opening a cursor — even though one fresh table holds the lowest key and the sealed tables
+    // hold higher keys, so the skip is driven by version, not key position.
+    assert_eq!(
+        row_user_keys(&rows),
+        vec![b"seg-000".to_vec(), b"seg-009".to_vec()]
+    );
+    assert_eq!(perf.scan_owned_nonzero_level_cursors(), 1);
+    assert_eq!(perf.scan_owned_nonzero_table_cursors_opened(), 2);
+    assert_eq!(perf.scan_rows_visited(), 2);
+    assert_eq!(perf.scan_rows_returned(), 2);
+}
+
+#[test]
+fn branch_scan_skips_inherited_nonzero_tables_sealed_at_or_below_after_version() {
+    let branch = branch_id(51);
+    let parent = branch_id(52);
+    let mut parent_tables = vec![scan_table(
+        parent,
+        BranchLevel::new(1),
+        "inh-fresh-low",
+        "parent-000",
+        100,
+    )];
+    for index in 1..=8u64 {
+        let key = format!("parent-{index:03}");
+        parent_tables.push(scan_table(
+            parent,
+            BranchLevel::new(1),
+            &format!("inh-sealed-{index:03}"),
+            &key,
+            index,
+        ));
+    }
+    parent_tables.push(scan_table(
+        parent,
+        BranchLevel::new(1),
+        "inh-fresh-high",
+        "parent-009",
+        101,
+    ));
+    let inherited = branch_inherited_layer(
+        parent,
+        CommitVersion::new(200),
+        InheritedLayerStatus::Active,
+        vec![Vec::new(), parent_tables],
+    );
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .attach_inherited_layers(vec![inherited])
+        .expect("attach inherited");
+    let view = state.capture_read_view().expect("read view");
+    let bounds = scan_prefix(branch, "parent-");
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let rows = view
+        .scan_prefix_including_tombstones(
+            &bounds,
+            BranchReadBound::latest(),
+            Some(CommitVersion::new(50)),
+        )
+        .expect("inherited scan");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    // Sealed inherited tables (versions <= 50) are skipped without opening a cursor; the fork point
+    // (200) keeps the fresh rows fully visible. Keys still rewrite to the child branch.
+    assert_eq!(
+        row_user_keys(&rows),
+        vec![b"parent-000".to_vec(), b"parent-009".to_vec()]
+    );
+    assert!(rows
+        .iter()
+        .all(|row| row.row().physical_key().branch_id() == branch));
+    assert_eq!(perf.scan_inherited_nonzero_level_cursors(), 1);
+    assert_eq!(perf.scan_inherited_nonzero_table_cursors_opened(), 2);
+    assert_eq!(perf.scan_rows_visited(), 2);
+    assert_eq!(perf.scan_rows_returned(), 2);
+}
+
+#[test]
+fn branch_scan_skips_owned_l0_tables_sealed_at_or_below_after_version() {
+    let branch = branch_id(53);
+    let mut state = BranchLocalState::empty(branch);
+    state
+        .install_l0_table(scan_table(
+            branch,
+            BranchLevel::ZERO,
+            "l0-fresh-low",
+            "l0-000",
+            100,
+        ))
+        .expect("install fresh-low L0 table");
+    for index in 1..=8u64 {
+        let key = format!("l0-{index:03}");
+        state
+            .install_l0_table(scan_table(
+                branch,
+                BranchLevel::ZERO,
+                &format!("l0-sealed-{index:03}"),
+                &key,
+                index,
+            ))
+            .expect("install sealed L0 table");
+    }
+    state
+        .install_l0_table(scan_table(
+            branch,
+            BranchLevel::ZERO,
+            "l0-fresh-high",
+            "l0-009",
+            101,
+        ))
+        .expect("install fresh-high L0 table");
+    let view = state.capture_read_view().expect("read view");
+    let bounds = scan_prefix(branch, "l0-");
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let rows = view
+        .scan_prefix_including_tombstones(
+            &bounds,
+            BranchReadBound::latest(),
+            Some(CommitVersion::new(50)),
+        )
+        .expect("L0 scan");
+    let perf = crate::observability::perf_trace::snapshot();
+
+    // Sealed L0 tables never get a per-table cursor; only the two fresh L0 tables are read.
+    assert_eq!(
+        row_user_keys(&rows),
+        vec![b"l0-000".to_vec(), b"l0-009".to_vec()]
+    );
+    assert_eq!(perf.scan_owned_l0_cursors(), 2);
+    assert_eq!(perf.scan_rows_visited(), 2);
+    assert_eq!(perf.scan_rows_returned(), 2);
+}

@@ -91,5 +91,9 @@ path = "src/bin/engine_kv_scan_regression.rs"
 name = "engine-vector-indexing"
 path = "src/bin/engine_vector_indexing.rs"
 
+[[bin]]
+name = "storage-next-after-version-scan"
+path = "src/bin/storage_next_after_version_scan.rs"
+
 [profile.bench]
 debug = true

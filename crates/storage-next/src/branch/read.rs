@@ -2461,6 +2461,18 @@ fn first_nonzero_level_scan_table_index(
     Ok(Some(low))
 }
 
+/// Whether every row in `table` is at or below the `after_version` watermark and would therefore be
+/// dropped by the selection-time lower bound. Such a table cannot contribute a kept row, so the scan
+/// can skip opening it entirely instead of reading and discarding its rows. Returns `false` when no
+/// watermark is set.
+fn nonzero_table_sealed_at_or_below(
+    table: &BranchOwnedTable,
+    after_version: Option<CommitVersion>,
+) -> bool {
+    after_version
+        .is_some_and(|watermark| table.facts().commit_range().max().as_u64() <= watermark.as_u64())
+}
+
 fn nonzero_table_overlaps_scan_bounds(
     table: &BranchOwnedTable,
     bounds: &TableKeyBounds,
@@ -2596,6 +2608,7 @@ impl<'a> BranchScanCursor<'a> {
         source: BranchNonzeroLevelScanSource,
         first_table_index: usize,
         effective_bound: BranchEffectiveReadBound,
+        after_version: Option<CommitVersion>,
     ) -> Self {
         Self {
             kind: BranchScanCursorKind::NonzeroLevel(Box::new(BranchNonzeroLevelScanCursor::new(
@@ -2603,6 +2616,7 @@ impl<'a> BranchScanCursor<'a> {
                 bounds,
                 source,
                 first_table_index,
+                after_version,
             ))),
             effective_bound,
             current_logical_key: None,
@@ -2768,6 +2782,7 @@ struct BranchNonzeroLevelScanCursor<'a> {
     next_table_index: usize,
     current_table_index: Option<usize>,
     current_cursor: Option<BoundedTableCursor<'a>>,
+    after_version: Option<CommitVersion>,
 }
 
 impl<'a> BranchNonzeroLevelScanCursor<'a> {
@@ -2776,6 +2791,7 @@ impl<'a> BranchNonzeroLevelScanCursor<'a> {
         bounds: TableKeyBounds,
         source: BranchNonzeroLevelScanSource,
         first_table_index: usize,
+        after_version: Option<CommitVersion>,
     ) -> Self {
         Self {
             tables,
@@ -2785,6 +2801,7 @@ impl<'a> BranchNonzeroLevelScanCursor<'a> {
             next_table_index: first_table_index,
             current_table_index: None,
             current_cursor: None,
+            after_version,
         }
     }
 
@@ -2844,6 +2861,9 @@ impl<'a> BranchNonzeroLevelScanCursor<'a> {
             }
             self.next_table_index = self.next_table_index.saturating_add(1);
             if !nonzero_table_overlaps_scan_bounds(table, &self.bounds)? {
+                continue;
+            }
+            if nonzero_table_sealed_at_or_below(table, self.after_version) {
                 continue;
             }
 
@@ -2932,6 +2952,7 @@ fn scan_including_tombstones_from_sources(
         inherited_layers,
         bounds,
         bound,
+        after_version,
     )?;
     for cursor in &mut cursors {
         cursor.seek_to_first()?;
@@ -3307,6 +3328,7 @@ fn scan_cursors_for_sources<'a>(
     inherited_layers: &'a [BranchInheritedLayer],
     bounds: &BranchScanBounds,
     bound: BranchReadBound,
+    after_version: Option<CommitVersion>,
 ) -> BranchRuntimeResult<Vec<BranchScanCursor<'a>>> {
     let own_bounds = bounds.table_key_bounds()?;
     let own_bound = BranchEffectiveReadBound::for_own_branch(bound);
@@ -3330,6 +3352,7 @@ fn scan_cursors_for_sources<'a>(
         owned_levels,
         &own_bounds,
         own_bound,
+        after_version,
         &mut cursors,
         &mut source_counts,
     )?;
@@ -3338,6 +3361,7 @@ fn scan_cursors_for_sources<'a>(
         inherited_layers,
         bounds,
         bound,
+        after_version,
         &mut cursors,
         &mut source_counts,
     )?;
@@ -3387,12 +3411,16 @@ fn push_owned_level_scan_cursors<'a>(
     owned_levels: &'a [Vec<BranchOwnedTable>],
     bounds: &TableKeyBounds,
     effective_bound: BranchEffectiveReadBound,
+    after_version: Option<CommitVersion>,
     cursors: &mut Vec<BranchScanCursor<'a>>,
     source_counts: &mut perf_trace::BranchScanSourceCounts,
 ) -> BranchRuntimeResult<()> {
     for (level_index, tables) in owned_levels.iter().enumerate() {
         if level_index == 0 {
             for (table_index, table) in tables.iter().enumerate() {
+                if nonzero_table_sealed_at_or_below(table, after_version) {
+                    continue;
+                }
                 cursors.push(BranchScanCursor::new(
                     Box::new(table.reader().bounded_cursor(bounds.clone())),
                     BranchScanCursorSource::OwnedTable {
@@ -3420,6 +3448,7 @@ fn push_owned_level_scan_cursors<'a>(
             BranchNonzeroLevelScanSource::Owned { level },
             first_table_index,
             effective_bound,
+            after_version,
         ));
         source_counts.owned_nonzero_level_cursors =
             source_counts.owned_nonzero_level_cursors.saturating_add(1);
@@ -3432,6 +3461,7 @@ fn push_inherited_level_scan_cursors<'a>(
     inherited_layers: &'a [BranchInheritedLayer],
     bounds: &BranchScanBounds,
     bound: BranchReadBound,
+    after_version: Option<CommitVersion>,
     cursors: &mut Vec<BranchScanCursor<'a>>,
     source_counts: &mut perf_trace::BranchScanSourceCounts,
 ) -> BranchRuntimeResult<()> {
@@ -3445,6 +3475,9 @@ fn push_inherited_level_scan_cursors<'a>(
         for (level_index, tables) in layer.owned_levels().iter().enumerate() {
             if level_index == 0 {
                 for table in tables {
+                    if nonzero_table_sealed_at_or_below(table, after_version) {
+                        continue;
+                    }
                     cursors.push(BranchScanCursor::new(
                         Box::new(table.reader().bounded_cursor(source_bounds.clone())),
                         BranchScanCursorSource::Inherited {
@@ -3475,6 +3508,7 @@ fn push_inherited_level_scan_cursors<'a>(
                 },
                 first_table_index,
                 inherited_bound,
+                after_version,
             ));
             source_counts.inherited_nonzero_level_cursors = source_counts
                 .inherited_nonzero_level_cursors
