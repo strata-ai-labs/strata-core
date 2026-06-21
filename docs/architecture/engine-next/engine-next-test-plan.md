@@ -77,6 +77,26 @@ full suite green):
   in type+payload; vector/graph container setup) are handled inside each fixture,
   not in the shared bodies — so a new capability cannot drift on the skeleton.
 
+- **Slice 5 — Property/model tests (§8).** Added `proptest` (dev-dep) and two
+  model suites. `tests/branch_dag_model.rs`: a random create/fork/delete sequence
+  applied to the engine and a reference model in lockstep; after every op the
+  model predicts the exact outcome (success or error code) and the full active
+  branch set with generations, and the engine must agree — pinning generation
+  monotonicity, active-set correctness, the undeletable default, and the
+  create/fork/delete error precedence (fork checks dst-duplicate before source;
+  delete checks default then last-active-count before existence).
+  `tests/temporal_timeline_model.rs`: a KV put/delete commit sequence builds a
+  per-key timeline oracle; `get` / `get_at_version` / `get_at` are checked
+  against it across the whole version range plus boundaries; and a
+  fork-equivalence property (`fork_at_version(V)` child latest == source
+  `get_at_version(V)`) links the branch and temporal models.
+  - **Finding (§5.3, pinned not fixed):** `get_at_version` is inclusive, and a
+    version **past the latest commit reads as `None`** — it does **not** fall
+    back to latest the way an `as_of` timestamp does (timestamp past-latest →
+    latest). This asymmetry is defensible (a future version does not exist) and
+    is now pinned by the timeline model. Flag for a product decision if symmetry
+    with `as_of` is wanted.
+
 Decision of record (from the implementing session): §11 items that are latent
 bugs are **fixed**, not just pinned (per user direction). §11.1 done; remaining
 (`AdminHealthStatus::Degraded` dead state, unread `EventIndex` rows, vector

@@ -23,6 +23,7 @@ uuid = { workspace = true }
 fast-hnsw = "1.0.1"
 
 [dev-dependencies]
+proptest = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]
