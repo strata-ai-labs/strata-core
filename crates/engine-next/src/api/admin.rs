@@ -21,9 +21,10 @@ use super::{
 pub enum AdminHealthStatus {
     /// All required facts are healthy.
     Healthy,
-    /// The database can respond, but a diagnostic area needs attention.
+    /// The control plane is unavailable but can still answer reads and
+    /// inspection; writes need recovery.
     Degraded,
-    /// A required diagnostic area is missing, corrupt, unavailable, or closed.
+    /// A required diagnostic area is missing or corrupt.
     Unhealthy,
 }
 
@@ -462,8 +463,34 @@ fn worst_status(statuses: impl IntoIterator<Item = ControlHealthStatus>) -> Admi
 const fn admin_status(status: ControlHealthStatus) -> AdminHealthStatus {
     match status {
         ControlHealthStatus::Healthy => AdminHealthStatus::Healthy,
-        ControlHealthStatus::Missing
-        | ControlHealthStatus::Corrupt
-        | ControlHealthStatus::Unavailable => AdminHealthStatus::Unhealthy,
+        // An unavailable (fail-closed) control plane can still answer reads and
+        // inspection; writes need recovery. That is degraded, not fully down.
+        ControlHealthStatus::Unavailable => AdminHealthStatus::Degraded,
+        ControlHealthStatus::Missing | ControlHealthStatus::Corrupt => AdminHealthStatus::Unhealthy,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{admin_status, AdminHealthStatus, ControlHealthStatus};
+
+    #[test]
+    fn unavailable_control_plane_is_degraded_not_unhealthy() {
+        assert_eq!(
+            admin_status(ControlHealthStatus::Healthy),
+            AdminHealthStatus::Healthy
+        );
+        assert_eq!(
+            admin_status(ControlHealthStatus::Unavailable),
+            AdminHealthStatus::Degraded
+        );
+        assert_eq!(
+            admin_status(ControlHealthStatus::Missing),
+            AdminHealthStatus::Unhealthy
+        );
+        assert_eq!(
+            admin_status(ControlHealthStatus::Corrupt),
+            AdminHealthStatus::Unhealthy
+        );
     }
 }

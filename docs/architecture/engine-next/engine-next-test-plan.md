@@ -126,15 +126,17 @@ full suite green):
     durable handle without `close()` (commits are durable on success). Pinned by
     `dropped_durable_handle_preserves_committed_data`; no `Drop` impl needed.
 
+- **§11.2 resolved (wired, per owner decision).** `admin_status` now maps a
+  fail-closed/`Unavailable` control plane → `AdminHealthStatus::Degraded` (it can
+  still answer reads and inspection; writes need recovery), while `Missing`/
+  `Corrupt` stay `Unhealthy`. The previously-dead `Degraded` variant is now
+  reachable; unit-tested in `api/admin.rs`.
+
 Decision of record (from the implementing session): §11 items that are latent
 bugs are **fixed**, not just pinned (per user direction). Resolved: §11.1
-(`ResourceExhausted` remapped); §11.5 (drop-without-close is safe, characterized).
-**Still open — needs a product/surface decision, not a unilateral fix:** §11.2
-`AdminHealthStatus::Degraded` is a dead public enum variant (`admin_status` maps
-every non-Healthy control status to `Unhealthy`) — *remove the variant* (public
-surface change) or *wire it* to a state (e.g. fail-closed `Unavailable` →
-`Degraded`); needs an owner call. Remaining: unread `EventIndex` rows, vector
-auto-seal wiring — to be handled when their areas are reached.
+(`ResourceExhausted` remapped), §11.2 (`Unavailable` → `Degraded` wired), §11.5
+(drop-without-close is safe, characterized). Remaining: unread `EventIndex` rows,
+vector auto-seal wiring — to be handled when their areas are reached.
 
 ## 2. Current Coverage Snapshot
 
