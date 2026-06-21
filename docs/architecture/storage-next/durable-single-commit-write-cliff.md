@@ -1,8 +1,8 @@
 # Durable single-commit write cliff — root cause and fix plan
 
-Status: investigation complete; fix planned, not yet implemented. A partial
-prototype (size-aware checkpoint gate) exists in the working tree and is
-**not** the final fix — see [Fix attempts](#fix-attempts-that-did-not-work).
+Status: fix #1 (size-driven flush) implemented; fixes #2 (lock-free maintenance
+install) and #3 (throttle-not-reject backpressure) still planned. See
+[Planned fix](#planned-fix) for status per step.
 
 Layers touched: [L6 branch LSM runtime](./l6-branch-isolated-lsm-runtime.md),
 [L7 commit runtime](./l7-commit-runtime.md),
@@ -273,20 +273,33 @@ This removes the foreground stall for *all* maintenance, not just checkpoints,
 and is the only change that addresses the dominant `foreground_wait_background_lock`
 term. It is the larger architectural lift and the highest-leverage fix.
 
-### Complement — size-driven flush / checkpoint (addresses #1)
+### Complement — size-driven flush / checkpoint (addresses #1) — IMPLEMENTED
 
-Make checkpoint/flush cadence data-driven, matching the old engine:
+Done. The commit-count WAL-growth trigger is **off by default**: the internal
+`LifecycleWalGrowthPolicy.max_commits_since_checkpoint` is now `Option<u64>`,
+`None` in `Default`, and the byte/segment bounds + size-based memtable rotation
+drive flushing. The commit-count bound remains an explicit opt-in via the public
+`StorageWalGrowthPolicy::Thresholds` (recovery-replay-count safety). Changed:
+`lifecycle/config.rs`, `lifecycle/wal_growth.rs` (`trigger_for` /
+`backpressure_trigger_for` gate on `Some`), `api/runtime/open_close.rs` mapping,
+`api/options.rs` docs, `api/runtime/diagnostics.rs`.
 
-- Drop or strongly subordinate the commit-count WAL-growth trigger so it no
-  longer forces a checkpoint+flush for tiny commits. The byte/segment bounds
-  remain the WAL-size backstop; the flush watermark (advanced by size-driven
-  rotation) drives WAL truncation.
-- If a recovery-replay-record-count safety is still wanted, set it far higher
-  than 1024 and/or gate it so a checkpoint is only forced once there is a
-  flush-worthy amount of un-flushed data.
+Correction to the original plan: WAL truncation does **not** ride on size-driven
+rotation — it is enqueued only by the WAL-growth checkpoint path
+(`evaluate_wal_growth_policy`). With the commit-count trigger off, WAL truncation
+now rests on the byte/segment triggers (256 MiB / 64 segments) + segment rolling.
+At the scales that cliffed, the old commit-count checkpoints were deleting **0**
+WAL segments anyway (single un-rolled segment), so this loses no real truncation;
+WAL stays bounded. Decoupling truncation so it tracks flush cadence (smaller WAL)
+is a follow-up.
 
-On its own this is a bounded improvement for small datasets; combined with the
-primary fix it restores full single-row durable throughput.
+Measured (single-row durable `load-seq`, default budget, 64 B values):
+`load 100k` **58 → 9,068 ops/s** (~156×), `checkpoint_executions` 103 → 0, no
+`LevelZeroTableBacklog` rejection; `engine-ycsb` durable workload A
+**141 → 16,948 ops/s**, update p50 **12.84 ms → 116 µs**. Batched load unchanged
+(~full speed). The residual at 100k is the base per-commit cost (~110 µs) with
+background maintenance running concurrently — the global-lock stalls that remain
+at larger scale are fix #2.
 
 ### Backpressure — throttle, don't reject (addresses the hard-reject failure mode)
 
@@ -311,9 +324,9 @@ for *concurrent* durable throughput and is tracked separately.)
 
 ### Sequencing
 
-1. Land the complement (#1, size-driven flush) first as a contained, low-risk
-   change with a matching test slice; it removes the worst small-data churn and
-   de-risks the larger change.
+1. ✅ **Done** — the complement (#1, size-driven flush): a contained, low-risk
+   change with a matching test slice; it removes the per-1024-commit churn
+   (100k single-row durable 58 → 9,068 ops/s) and de-risks the larger change.
 2. Land the primary (#2, lock-free maintenance install); this is the real fix and
    needs careful concurrency review (it changes the runtime locking contract).
 3. Land the backpressure change (#3, throttle-not-reject) to remove the hard

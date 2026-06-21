@@ -190,8 +190,10 @@ impl LifecycleWalGrowthPolicy {
         if facts.retained_segments() > self.max_retained_wal_segments() {
             return Some(LifecycleWalGrowthTrigger::RetainedSegments);
         }
-        if commits_since_checkpoint > self.max_commits_since_checkpoint() {
-            return Some(LifecycleWalGrowthTrigger::CommitsSinceCheckpoint);
+        if let Some(max_commits) = self.max_commits_since_checkpoint() {
+            if commits_since_checkpoint > max_commits {
+                return Some(LifecycleWalGrowthTrigger::CommitsSinceCheckpoint);
+            }
         }
         None
     }
@@ -218,12 +220,12 @@ impl LifecycleWalGrowthPolicy {
         {
             return Some(LifecycleWalGrowthTrigger::RetainedSegments);
         }
-        if commits_since_checkpoint
-            > self
-                .max_commits_since_checkpoint()
-                .saturating_mul(WAL_GROWTH_BACKPRESSURE_COMMITS_MULTIPLIER)
-        {
-            return Some(LifecycleWalGrowthTrigger::CommitsSinceCheckpoint);
+        if let Some(max_commits) = self.max_commits_since_checkpoint() {
+            if commits_since_checkpoint
+                > max_commits.saturating_mul(WAL_GROWTH_BACKPRESSURE_COMMITS_MULTIPLIER)
+            {
+                return Some(LifecycleWalGrowthTrigger::CommitsSinceCheckpoint);
+            }
         }
         None
     }

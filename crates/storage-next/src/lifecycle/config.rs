@@ -6,7 +6,6 @@ const DEFAULT_MAX_MAINTENANCE_QUEUE_DEPTH: usize = 1024;
 const DEFAULT_MAX_RECOVERY_FAULTS: usize = 64;
 const DEFAULT_WAL_GROWTH_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const DEFAULT_WAL_GROWTH_MAX_SEGMENTS: usize = 64;
-const DEFAULT_WAL_GROWTH_MAX_COMMITS: u64 = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleConfig {
@@ -37,7 +36,11 @@ pub(crate) struct LifecycleWalGrowthPolicy {
     enabled: bool,
     max_retained_wal_bytes: u64,
     max_retained_wal_segments: usize,
-    max_commits_since_checkpoint: u64,
+    /// Optional recovery-replay-count safety: force a checkpoint after this many
+    /// commits since the last one. `None` (the default) disables the commit-count
+    /// trigger entirely, so flush/checkpoint cadence is size-driven (byte/segment
+    /// triggers + size-based memtable rotation) rather than firing on tiny commits.
+    max_commits_since_checkpoint: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -176,7 +179,7 @@ impl LifecycleWalGrowthPolicy {
     pub(crate) const fn new(
         max_retained_wal_bytes: u64,
         max_retained_wal_segments: usize,
-        max_commits_since_checkpoint: u64,
+        max_commits_since_checkpoint: Option<u64>,
     ) -> Self {
         Self {
             enabled: true,
@@ -191,7 +194,7 @@ impl LifecycleWalGrowthPolicy {
             enabled: false,
             max_retained_wal_bytes: DEFAULT_WAL_GROWTH_MAX_BYTES,
             max_retained_wal_segments: DEFAULT_WAL_GROWTH_MAX_SEGMENTS,
-            max_commits_since_checkpoint: DEFAULT_WAL_GROWTH_MAX_COMMITS,
+            max_commits_since_checkpoint: None,
         }
     }
 
@@ -207,7 +210,7 @@ impl LifecycleWalGrowthPolicy {
         self.max_retained_wal_segments
     }
 
-    pub(crate) const fn max_commits_since_checkpoint(self) -> u64 {
+    pub(crate) const fn max_commits_since_checkpoint(self) -> Option<u64> {
         self.max_commits_since_checkpoint
     }
 
@@ -224,7 +227,7 @@ impl LifecycleWalGrowthPolicy {
                 reason: "must be nonzero when WAL growth policy is enabled",
             });
         }
-        if self.enabled && self.max_commits_since_checkpoint == 0 {
+        if self.enabled && self.max_commits_since_checkpoint == Some(0) {
             return Err(LifecycleError::InvalidConfig {
                 field: "max_commits_since_checkpoint",
                 reason: "must be nonzero when WAL growth policy is enabled",
@@ -236,10 +239,14 @@ impl LifecycleWalGrowthPolicy {
 
 impl Default for LifecycleWalGrowthPolicy {
     fn default() -> Self {
+        // Commit-count trigger off by default: flush/checkpoint cadence is
+        // size-driven (byte/segment triggers + size-based rotation), matching the
+        // pre-V1 engine and RocksDB. Callers opt into the commit-count safety via
+        // `StorageWalGrowthPolicy::Thresholds`.
         Self::new(
             DEFAULT_WAL_GROWTH_MAX_BYTES,
             DEFAULT_WAL_GROWTH_MAX_SEGMENTS,
-            DEFAULT_WAL_GROWTH_MAX_COMMITS,
+            None,
         )
     }
 }

@@ -72,11 +72,24 @@ impl StorageMemoryBudget {
     }
 }
 
+/// Policy controlling when WAL growth forces a checkpoint.
+///
+/// Flush/checkpoint cadence is size-driven by default: the byte and segment
+/// bounds (plus size-based memtable rotation) drive flushing, matching the
+/// pre-V1 engine and `RocksDB`. A commit-count bound is available only as an
+/// explicit opt-in via [`Self::Thresholds`] — it forces a checkpoint after a
+/// fixed number of commits regardless of how little data accumulated, which is a
+/// recovery-replay-count safety, not a normal flush trigger.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StorageWalGrowthPolicy {
+    /// Size-driven defaults: byte and segment bounds only; the commit-count
+    /// trigger is **off** (no checkpoint is forced purely on commit count).
     Default,
+    /// WAL growth checkpointing fully disabled.
     Disabled,
+    /// Explicit bounds. Setting `max_commits_since_checkpoint` opts back into the
+    /// commit-count safety in addition to the byte/segment bounds.
     Thresholds {
         max_retained_wal_bytes: u64,
         max_retained_wal_segments: usize,

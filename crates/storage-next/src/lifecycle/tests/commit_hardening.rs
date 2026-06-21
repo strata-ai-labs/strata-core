@@ -18,7 +18,7 @@ const DATABASE_ID: [u8; 16] = [0x7a; 16];
 
 #[test]
 fn wal_growth_policy_triggers_on_each_threshold_deterministically() {
-    let policy = LifecycleWalGrowthPolicy::new(100, 2, 3);
+    let policy = LifecycleWalGrowthPolicy::new(100, 2, Some(3));
     let by_bytes = WalGrowthFacts::new_for_policy(1, 101, 1, 101, 0, 0);
     let by_segments = WalGrowthFacts::new_for_policy(3, 90, 3, 30, 0, 0);
     let by_commits = WalGrowthFacts::new_for_policy(1, 90, 1, 90, 0, 0);
@@ -43,10 +43,33 @@ fn wal_growth_policy_triggers_on_each_threshold_deterministically() {
 }
 
 #[test]
+fn default_wal_growth_policy_is_size_driven_not_commit_count_driven() {
+    let policy = LifecycleWalGrowthPolicy::default();
+    assert!(policy.max_commits_since_checkpoint().is_none());
+
+    // Below the byte/segment bounds, no commit count — however large — forces a
+    // checkpoint under the default (size-driven) policy. This is the fix: tiny
+    // commits no longer checkpoint every N commits.
+    let below_bounds = WalGrowthFacts::new_for_policy(1, 1_000, 1, 1_000, 0, 0);
+    assert_eq!(policy.trigger_for(below_bounds, u64::MAX), None);
+    assert_eq!(
+        policy.backpressure_trigger_for(below_bounds, u64::MAX),
+        None
+    );
+
+    // The byte bound still fires under the default policy.
+    let over_bytes = WalGrowthFacts::new_for_policy(1, 256 * 1024 * 1024 + 1, 1, 1_000, 0, 0);
+    assert_eq!(
+        policy.trigger_for(over_bytes, 0),
+        Some(LifecycleWalGrowthTrigger::RetainedBytes)
+    );
+}
+
+#[test]
 fn automatic_checkpoint_does_not_trigger_below_threshold() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x91);
-    let policy = LifecycleWalGrowthPolicy::new(u64::MAX, usize::MAX, u64::MAX);
+    let policy = LifecycleWalGrowthPolicy::new(u64::MAX, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, &backend, policy);
 
     runtime
@@ -68,7 +91,7 @@ fn automatic_checkpoint_does_not_trigger_below_threshold() {
 fn automatic_checkpoint_triggers_when_wal_bytes_exceed_threshold() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x92);
-    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, u64::MAX);
+    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, &backend, policy);
 
     runtime
@@ -112,7 +135,7 @@ fn automatic_checkpoint_triggers_when_wal_bytes_exceed_threshold() {
 fn automatic_checkpoint_triggers_when_retained_segments_exceed_threshold() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x97);
-    let policy = LifecycleWalGrowthPolicy::new(u64::MAX, 1, u64::MAX);
+    let policy = LifecycleWalGrowthPolicy::new(u64::MAX, 1, None);
     let mut runtime = open_durable_runtime_with_wal_segment_size(branch, &backend, policy, 4096);
 
     for index in 0..8 {
@@ -150,7 +173,7 @@ fn automatic_checkpoint_triggers_when_retained_segments_exceed_threshold() {
 fn automatic_checkpoint_coalesces_existing_checkpoint_task() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x93);
-    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, u64::MAX);
+    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, &backend, policy);
 
     runtime
@@ -184,7 +207,7 @@ fn automatic_checkpoint_coalesces_existing_checkpoint_task() {
 fn automatic_checkpoint_uses_existing_maintenance_executor() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x8d);
-    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, u64::MAX);
+    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, &backend, policy);
 
     runtime
@@ -220,7 +243,7 @@ fn automatic_checkpoint_uses_existing_maintenance_executor() {
 fn automatic_checkpoint_failure_records_health_debt() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x98);
-    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, u64::MAX);
+    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, &backend, policy);
 
     backend.fail_wal_listing();
@@ -264,7 +287,7 @@ fn automatic_checkpoint_disable_requires_explicit_config() {
 fn automatic_checkpoint_deferred_while_quiesce_active() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x94);
-    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, u64::MAX);
+    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, &backend, policy);
 
     runtime
@@ -299,7 +322,7 @@ fn automatic_checkpoint_deferred_while_quiesce_active() {
 fn automatic_checkpoint_deferred_while_close_in_progress() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x8e);
-    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, u64::MAX);
+    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, &backend, policy);
 
     runtime
@@ -374,7 +397,7 @@ fn automatic_checkpoint_cache_mode_reports_no_durable_action() {
 fn wal_growth_pressure_facts_are_visible_to_public_boundary() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x8f);
-    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, u64::MAX);
+    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime(branch, &backend, policy);
 
     runtime
@@ -409,7 +432,7 @@ fn automatic_checkpoint_policy_is_deterministic_without_background_thread() {
     let first_backend = CheckpointTestBackend::new();
     let second_backend = CheckpointTestBackend::new();
     let branch = branch_id(0x8a);
-    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, u64::MAX);
+    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut first = open_durable_runtime(branch, &first_backend, policy);
     let mut second = open_durable_runtime(branch, &second_backend, policy);
 
@@ -598,7 +621,7 @@ fn automatic_checkpoint_does_not_truncate_wal_without_retention_proof() {
 fn automatic_checkpoint_truncates_wal_only_after_checkpoint_or_table_manifest_proof() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x8b);
-    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, u64::MAX);
+    let policy = LifecycleWalGrowthPolicy::new(1, usize::MAX, None);
     let mut runtime = open_durable_runtime_with_wal_segment_size(branch, &backend, policy, 4096);
 
     for index in 0..8 {

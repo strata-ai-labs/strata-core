@@ -411,7 +411,7 @@ pub(super) fn map_wal_growth_report(
         Some(policy.max_retained_wal_segments()),
         current_facts.map(WalGrowthFacts::retained_bytes),
         current_facts.map(WalGrowthFacts::retained_segments),
-        Some(policy.max_commits_since_checkpoint()),
+        policy.max_commits_since_checkpoint(),
         last_status,
     )
 }

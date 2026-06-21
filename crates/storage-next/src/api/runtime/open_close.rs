@@ -120,7 +120,7 @@ pub(super) fn map_wal_growth_policy(policy: StorageWalGrowthPolicy) -> Lifecycle
         } => LifecycleWalGrowthPolicy::new(
             max_retained_wal_bytes,
             max_retained_wal_segments,
-            max_commits_since_checkpoint,
+            Some(max_commits_since_checkpoint),
         ),
     }
 }
