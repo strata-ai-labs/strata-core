@@ -28,12 +28,14 @@ serde_json = "1.0"
 tempfile = "3.8"
 fastrand = "2.0.0"
 chrono = "0.4"
+# Used by the `rocksdb-ycsb` comparison bin (and the `ycsb_compare` bench); a
+# regular dependency so the bin can link it.
+rocksdb = { version = "0.22.0", default-features = false, features = ["lz4"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 redb = "2"
 heed = "0.22"
-rocksdb = { version = "0.22.0", default-features = false, features = ["lz4"] }
 sled = "0.34.7"
 fjall = "=2.11"
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -94,6 +96,10 @@ path = "src/bin/engine_kv_scale.rs"
 [[bin]]
 name = "engine-ycsb"
 path = "src/bin/engine_ycsb.rs"
+
+[[bin]]
+name = "rocksdb-ycsb"
+path = "src/bin/rocksdb_ycsb.rs"
 
 [[bin]]
 name = "engine-vector-indexing"
