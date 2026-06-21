@@ -113,11 +113,28 @@ full suite green):
     deletes the **whole document** (returns `deleted=true`) — it is not the no-op
     the single-path delete is. Pinned by the new test.
 
+- **Slice 7 — Runtime/open breadth (§4).** `tests/runtime_lifecycle.rs`:
+  configured non-default branch is the database default (created at gen 1; literal
+  `default` absent); reopen with a mismatched default →
+  `failed_precondition.engine.default_branch` while the persisted default reopens;
+  memory budget below the 1 MiB minimum → `invalid_argument.engine.persistence`
+  (no storage leak); durable close reports `durable_synced`. `admin_and_space.rs`:
+  `config_value` allowlist (`target`/`created`/`durable`, trimmed + case-insensitive)
+  + empty-key `invalid_argument.engine.config_key`; `SpaceService::usage` (all 8
+  counts) + `list`.
+  - **§11.5 characterized — NOT a bug:** a committed write survives dropping the
+    durable handle without `close()` (commits are durable on success). Pinned by
+    `dropped_durable_handle_preserves_committed_data`; no `Drop` impl needed.
+
 Decision of record (from the implementing session): §11 items that are latent
-bugs are **fixed**, not just pinned (per user direction). §11.1 done; remaining
-(`AdminHealthStatus::Degraded` dead state, unread `EventIndex` rows, vector
-auto-seal wiring, `Drop`-without-close) to be handled when their areas are
-reached.
+bugs are **fixed**, not just pinned (per user direction). Resolved: §11.1
+(`ResourceExhausted` remapped); §11.5 (drop-without-close is safe, characterized).
+**Still open — needs a product/surface decision, not a unilateral fix:** §11.2
+`AdminHealthStatus::Degraded` is a dead public enum variant (`admin_status` maps
+every non-Healthy control status to `Unhealthy`) — *remove the variant* (public
+surface change) or *wire it* to a state (e.g. fail-closed `Unavailable` →
+`Degraded`); needs an owner call. Remaining: unread `EventIndex` rows, vector
+auto-seal wiring — to be handled when their areas are reached.
 
 ## 2. Current Coverage Snapshot
 

@@ -260,3 +260,72 @@ fn admin_and_spaces_survive_durable_reopen() {
         .exists(&space("tenant_a"))
         .expect("space exists succeeds"));
 }
+
+#[test]
+fn admin_config_value_covers_allowlist_and_rejects_empty_key() {
+    let mut database = open_cache_database().expect("cache database opens");
+    let admin = database.admin().expect("admin service opens");
+
+    assert_eq!(
+        admin.config_value("target").expect("target value"),
+        Some("cache".to_owned())
+    );
+    assert_eq!(
+        admin.config_value("created").expect("created value"),
+        Some("true".to_owned())
+    );
+    assert_eq!(
+        admin.config_value("durable").expect("durable value"),
+        Some("false".to_owned())
+    );
+    // Keys are trimmed and case-insensitive.
+    assert_eq!(
+        admin.config_value("  TARGET  ").expect("trimmed key"),
+        Some("cache".to_owned())
+    );
+
+    let error = admin
+        .config_value("")
+        .expect_err("an empty config key is rejected");
+    assert_eq!(error.class(), EngineErrorClass::InvalidInput);
+    assert_eq!(error.code(), "invalid_argument.engine.config_key");
+    assert_eq!(
+        admin
+            .config_value("unknown")
+            .expect("unknown key is hidden"),
+        None
+    );
+}
+
+#[test]
+fn space_usage_reports_per_capability_counts_and_lists_spaces() {
+    let mut database = open_cache_database().expect("cache database opens");
+    {
+        let mut kv = database
+            .kv(branch("default"), space("default"))
+            .expect("kv service opens");
+        kv.put(key(b"a"), value(b"1")).expect("put a");
+        kv.put(key(b"b"), value(b"2")).expect("put b");
+    }
+
+    let mut spaces = database
+        .spaces(branch("default"))
+        .expect("space service opens");
+    let usage = spaces.usage(&space("default")).expect("usage succeeds");
+    assert_eq!(usage.kv_count(), 2);
+    assert_eq!(usage.json_count(), 0);
+    assert_eq!(usage.vector_collection_count(), 0);
+    assert_eq!(usage.vector_entry_count(), 0);
+    assert_eq!(usage.event_count(), 0);
+    assert_eq!(usage.graph_count(), 0);
+    assert_eq!(usage.graph_node_count(), 0);
+    assert_eq!(usage.graph_edge_count(), 0);
+
+    let listed: Vec<String> = spaces
+        .list()
+        .expect("list succeeds")
+        .iter()
+        .map(|entry| entry.as_str().to_owned())
+        .collect();
+    assert!(listed.contains(&"default".to_owned()));
+}
