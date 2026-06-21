@@ -19,13 +19,12 @@ fn build_llama_cpp() {
     }
 
     let llama_cpp_dir = llama_cpp_dir();
-    if !llama_cpp_dir.join("CMakeLists.txt").exists() {
-        panic!(
-            "llama.cpp source not found at {}. Set STRATA_LLAMA_CPP_DIR to a \
-             populated llama.cpp checkout before building with --features local",
-            llama_cpp_dir.display()
-        );
-    }
+    assert!(
+        llama_cpp_dir.join("CMakeLists.txt").exists(),
+        "llama.cpp source not found at {}. Set STRATA_LLAMA_CPP_DIR to a \
+         populated llama.cpp checkout before building with --features local",
+        llama_cpp_dir.display()
+    );
 
     let mut config = cmake::Config::new(&llama_cpp_dir);
 
