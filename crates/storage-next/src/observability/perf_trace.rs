@@ -93,6 +93,15 @@ pub struct StoragePerfSnapshot {
     commit_wal_growth_facts_ns: u64,
     commit_wal_growth_manifest_ns: u64,
     commit_post_maintenance_ns: u64,
+    commit_exec_admission_ns: u64,
+    commit_exec_conflict_ns: u64,
+    commit_exec_stage_ns: u64,
+    commit_exec_apply_ns: u64,
+    commit_exec_publish_ns: u64,
+    commit_admit_ns: u64,
+    commit_setup_ns: u64,
+    commit_api_batch_clone_ns: u64,
+    commit_api_post_ns: u64,
     commit_visible_publish_attempts: u64,
     commit_visible_publish_successes: u64,
     commit_visible_publish_failures: u64,
@@ -590,6 +599,55 @@ impl StoragePerfSnapshot {
     /// Nanoseconds spent scheduling post-commit maintenance for the branch.
     pub const fn commit_post_maintenance_ns(self) -> u64 {
         self.commit_post_maintenance_ns
+    }
+
+    /// Nanoseconds spent in commit admission: entry validation, the durable gate,
+    /// and branch registry/guard admission.
+    pub const fn commit_exec_admission_ns(self) -> u64 {
+        self.commit_exec_admission_ns
+    }
+
+    /// Nanoseconds spent in commit conflict validation.
+    pub const fn commit_exec_conflict_ns(self) -> u64 {
+        self.commit_exec_conflict_ns
+    }
+
+    /// Nanoseconds spent staging commit rows: allocation, prepare, pre-apply validation.
+    pub const fn commit_exec_stage_ns(self) -> u64 {
+        self.commit_exec_stage_ns
+    }
+
+    /// Nanoseconds spent applying committed rows to branch state after WAL append.
+    pub const fn commit_exec_apply_ns(self) -> u64 {
+        self.commit_exec_apply_ns
+    }
+
+    /// Nanoseconds spent publishing the new visible version.
+    pub const fn commit_exec_publish_ns(self) -> u64 {
+        self.commit_exec_publish_ns
+    }
+
+    /// Nanoseconds spent in lifecycle commit admission before the executor runs
+    /// (state/generation/mode checks and the mutating write-admission gauntlet).
+    pub const fn commit_admit_ns(self) -> u64 {
+        self.commit_admit_ns
+    }
+
+    /// Nanoseconds spent fetching branch state and constructing the commit
+    /// executor before `execute`.
+    pub const fn commit_setup_ns(self) -> u64 {
+        self.commit_setup_ns
+    }
+
+    /// Nanoseconds spent cloning the runtime batch in the api commit loop.
+    pub const fn commit_api_batch_clone_ns(self) -> u64 {
+        self.commit_api_batch_clone_ns
+    }
+
+    /// Nanoseconds spent in the api commit loop after the executor returns
+    /// (admission/maintenance/wal-growth snapshot reads).
+    pub const fn commit_api_post_ns(self) -> u64 {
+        self.commit_api_post_ns
     }
 
     /// Visible-version publication attempts made by commit execution.
@@ -2369,6 +2427,24 @@ static COMMIT_WAL_GROWTH_MANIFEST_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_POST_MAINTENANCE_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static COMMIT_EXEC_ADMISSION_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_EXEC_CONFLICT_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_EXEC_STAGE_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_EXEC_APPLY_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_EXEC_PUBLISH_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_ADMIT_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_SETUP_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_API_BATCH_CLONE_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_API_POST_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_VISIBLE_PUBLISH_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_VISIBLE_PUBLISH_SUCCESSES: AtomicU64 = AtomicU64::new(0);
@@ -3156,6 +3232,15 @@ pub fn reset() {
     COMMIT_WAL_GROWTH_FACTS_NS.store(0, Ordering::Relaxed);
     COMMIT_WAL_GROWTH_MANIFEST_NS.store(0, Ordering::Relaxed);
     COMMIT_POST_MAINTENANCE_NS.store(0, Ordering::Relaxed);
+    COMMIT_EXEC_ADMISSION_NS.store(0, Ordering::Relaxed);
+    COMMIT_EXEC_CONFLICT_NS.store(0, Ordering::Relaxed);
+    COMMIT_EXEC_STAGE_NS.store(0, Ordering::Relaxed);
+    COMMIT_EXEC_APPLY_NS.store(0, Ordering::Relaxed);
+    COMMIT_EXEC_PUBLISH_NS.store(0, Ordering::Relaxed);
+    COMMIT_ADMIT_NS.store(0, Ordering::Relaxed);
+    COMMIT_SETUP_NS.store(0, Ordering::Relaxed);
+    COMMIT_API_BATCH_CLONE_NS.store(0, Ordering::Relaxed);
+    COMMIT_API_POST_NS.store(0, Ordering::Relaxed);
     COMMIT_VISIBLE_PUBLISH_ATTEMPTS.store(0, Ordering::Relaxed);
     COMMIT_VISIBLE_PUBLISH_SUCCESSES.store(0, Ordering::Relaxed);
     COMMIT_VISIBLE_PUBLISH_FAILURES.store(0, Ordering::Relaxed);
@@ -3551,6 +3636,15 @@ pub fn snapshot() -> StoragePerfSnapshot {
         commit_wal_growth_facts_ns: COMMIT_WAL_GROWTH_FACTS_NS.load(Ordering::Relaxed),
         commit_wal_growth_manifest_ns: COMMIT_WAL_GROWTH_MANIFEST_NS.load(Ordering::Relaxed),
         commit_post_maintenance_ns: COMMIT_POST_MAINTENANCE_NS.load(Ordering::Relaxed),
+        commit_exec_admission_ns: COMMIT_EXEC_ADMISSION_NS.load(Ordering::Relaxed),
+        commit_exec_conflict_ns: COMMIT_EXEC_CONFLICT_NS.load(Ordering::Relaxed),
+        commit_exec_stage_ns: COMMIT_EXEC_STAGE_NS.load(Ordering::Relaxed),
+        commit_exec_apply_ns: COMMIT_EXEC_APPLY_NS.load(Ordering::Relaxed),
+        commit_exec_publish_ns: COMMIT_EXEC_PUBLISH_NS.load(Ordering::Relaxed),
+        commit_admit_ns: COMMIT_ADMIT_NS.load(Ordering::Relaxed),
+        commit_setup_ns: COMMIT_SETUP_NS.load(Ordering::Relaxed),
+        commit_api_batch_clone_ns: COMMIT_API_BATCH_CLONE_NS.load(Ordering::Relaxed),
+        commit_api_post_ns: COMMIT_API_POST_NS.load(Ordering::Relaxed),
         commit_visible_publish_attempts: COMMIT_VISIBLE_PUBLISH_ATTEMPTS.load(Ordering::Relaxed),
         commit_visible_publish_successes: COMMIT_VISIBLE_PUBLISH_SUCCESSES.load(Ordering::Relaxed),
         commit_visible_publish_failures: COMMIT_VISIBLE_PUBLISH_FAILURES.load(Ordering::Relaxed),
@@ -4368,6 +4462,78 @@ pub(crate) fn record_commit_post_maintenance_elapsed(_start: PerfTraceTimer) {}
 #[cfg(feature = "perf-trace")]
 pub(crate) fn record_commit_post_maintenance_elapsed(start: PerfTraceTimer) {
     record_elapsed(&COMMIT_POST_MAINTENANCE_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_exec_admission_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_exec_admission_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_EXEC_ADMISSION_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_exec_conflict_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_exec_conflict_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_EXEC_CONFLICT_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_exec_stage_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_exec_stage_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_EXEC_STAGE_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_exec_apply_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_exec_apply_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_EXEC_APPLY_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_exec_publish_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_exec_publish_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_EXEC_PUBLISH_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_admit_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_admit_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_ADMIT_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_setup_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_setup_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_SETUP_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_api_batch_clone_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_api_batch_clone_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_API_BATCH_CLONE_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_api_post_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_api_post_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_API_POST_NS, start);
 }
 
 #[cfg(not(feature = "perf-trace"))]

@@ -1154,6 +1154,7 @@ where
         batch: CommitBatch,
         generation_guard: CommitBranchGenerationGuard,
     ) -> LifecycleResult<CommitOutcome> {
+        let admit_timer = perf_trace::start_timer();
         self.last_write_admission = None;
         require_admitted(self.state, LifecycleOperationKind::Commit)?;
         let branch_id = batch.branch_id();
@@ -1174,13 +1175,15 @@ where
             self.evaluate_mutating_write_admission_for_branch(branch_id)?;
             self.require_projected_mutating_commit_budget(branch_id, &batch)?;
         }
+        perf_trace::record_commit_admit_elapsed(admit_timer);
         let outcome = {
+            let setup_timer = perf_trace::start_timer();
             let (branch, registry) = self.branch_catalog.branch_state_mut_with_registry(
                 branch_id,
                 CommitBranchGenerationGuard::exact(generation),
             )?;
             let mut budgeted_branch = BudgetedCommitBranch::new(branch, &self.budget);
-            CommitDurableRuntime::new(
+            let mut runtime = CommitDurableRuntime::new(
                 &self.commit_config,
                 registry,
                 &self.guard_set,
@@ -1189,9 +1192,11 @@ where
                 &mut self.visible,
                 &mut self.services.wal,
                 &self.durable_gate,
-            )
-            .execute(batch, generation_guard)
-            .map_err(commit_error)
+            );
+            perf_trace::record_commit_setup_elapsed(setup_timer);
+            runtime
+                .execute(batch, generation_guard)
+                .map_err(commit_error)
         };
         if outcome.is_ok() {
             let wal_growth_start = perf_trace::start_timer();

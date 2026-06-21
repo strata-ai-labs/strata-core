@@ -165,11 +165,36 @@ where
     B: CommitBranchApplyTarget,
     V: CommitVisiblePublisher,
 {
+    /// Validate the batch against same-branch conflicts, capturing a read-view
+    /// source only when the batch's mutations require one. Extracted from
+    /// `execute` to keep that function within the per-function line budget.
+    fn validate_commit_conflicts_for_batch(
+        &mut self,
+        batch: &ValidatedCommitBatch,
+        current_visible_version: strata_core_next::CommitVersion,
+    ) -> CommitRuntimeResult<()> {
+        let conflict_timer = perf_trace::start_timer();
+        if commit_conflict_validation_needs_source(batch) {
+            let read_view = self.branch.capture_read_view()?;
+            perf_trace::record_conflict_source_built();
+            let conflict_source = CommitBranchReadViewConflictSource::new_at_version(
+                &read_view,
+                current_visible_version,
+            );
+            validate_commit_conflicts(batch, &conflict_source)?;
+        } else {
+            validate_commit_conflicts_without_source(batch)?;
+        }
+        perf_trace::record_commit_exec_conflict_elapsed(conflict_timer);
+        Ok(())
+    }
+
     pub(crate) fn execute(
         &mut self,
         batch: CommitBatch,
         generation_guard: CommitBranchGenerationGuard,
     ) -> CommitRuntimeResult<CommitOutcome> {
+        let admission_timer = perf_trace::start_timer();
         let batch = batch.validate(self.config)?;
         let (required_policy, durability) = require_durable_mutating_batch(&batch)?;
         let branch_id = batch.batch().branch_id();
@@ -205,28 +230,21 @@ where
             self.branch.max_commit_version(),
             current_visible_version,
         )?;
+        perf_trace::record_commit_exec_admission_elapsed(admission_timer);
 
-        if commit_conflict_validation_needs_source(&batch) {
-            let read_view = self.branch.capture_read_view()?;
-            perf_trace::record_conflict_source_built();
-            let conflict_source = CommitBranchReadViewConflictSource::new_at_version(
-                &read_view,
-                current_visible_version,
-            );
-            validate_commit_conflicts(&batch, &conflict_source)?;
-        } else {
-            validate_commit_conflicts_without_source(&batch)?;
-        }
+        self.validate_commit_conflicts_for_batch(&batch, current_visible_version)?;
 
         perf_trace::record_commit_admission_accepted_under_pressure(
             admission_pressure.under_pressure(),
         );
+        let stage_timer = perf_trace::start_timer();
         let allocation = self.allocator.allocate_for_batch(&batch)?;
         let stamp = require_mutating_allocation(allocation)?;
         require_allocated_after_visible(stamp, current_visible_version)?;
         let (combined_rows, mutation_counts) = prepare_commit_rows(batch, stamp, self.config)?;
         self.branch
             .validate_committed_rows_before_apply(&combined_rows)?;
+        perf_trace::record_commit_exec_stage_elapsed(stage_timer);
         let wal_record_rows = combined_rows.len();
         let wal_record_timer = perf_trace::start_timer();
         let record = build_wal_record(stamp, combined_rows)?;
@@ -253,7 +271,10 @@ where
         )?;
 
         let combined_rows = record.into_commit_payload().into_rows();
-        if let Err(source) = self.branch.append_committed_rows_atomically(combined_rows) {
+        let apply_timer = perf_trace::start_timer();
+        let apply_result = self.branch.append_committed_rows_atomically(combined_rows);
+        perf_trace::record_commit_exec_apply_elapsed(apply_timer);
+        if let Err(source) = apply_result {
             let reason = "branch state rejected durable commit rows after WAL append";
             unresolved_admission.record_unresolved(
                 CommitUnresolvedDurable::durable_not_applied_with_facts(stamp, durability, reason)?,
@@ -268,7 +289,9 @@ where
 
         let facts = visible_durable_facts(stamp)?;
         perf_trace::record_commit_visible_publish_attempt();
+        let publish_timer = perf_trace::start_timer();
         let publish = self.visible.publish_from_facts(facts);
+        perf_trace::record_commit_exec_publish_elapsed(publish_timer);
         if let Err(error) = publish {
             perf_trace::record_commit_visible_publish_failure();
             let reason = durable_visible_reason(&error);

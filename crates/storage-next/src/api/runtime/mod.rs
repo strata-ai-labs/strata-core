@@ -2653,14 +2653,19 @@ impl<'a> StorageRuntime<'a> {
                 }
                 StorageRuntimeInner::DurableOwned(slot) => {
                     let mut runtime = slot.lock();
-                    let result =
-                        runtime.execute_durable_commit(runtime_batch.clone(), generation_guard);
-                    (
+                    let clone_timer = perf_trace::start_timer();
+                    let exec_batch = runtime_batch.clone();
+                    perf_trace::record_commit_api_batch_clone_elapsed(clone_timer);
+                    let result = runtime.execute_durable_commit(exec_batch, generation_guard);
+                    let post_timer = perf_trace::start_timer();
+                    let snapshot = (
                         result,
                         runtime.last_write_admission(),
                         runtime.maintenance_status().pending_tasks(),
                         runtime.last_wal_growth_outcome().cloned(),
-                    )
+                    );
+                    perf_trace::record_commit_api_post_elapsed(post_timer);
+                    snapshot
                 }
                 StorageRuntimeInner::Closed => {
                     return Err(StorageApiError::InvalidRuntimeState {
