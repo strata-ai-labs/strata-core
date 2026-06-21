@@ -11,8 +11,9 @@ use strata_storage_next::api::{
     CommitBatch, CommitDurabilitySummary, CommitMutation, CommitOptions, HistoryReadRequest,
     ImmutableSourceScanReadRequest, PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit,
     ScanRange, ScanReadRequest, StorageApiError, StorageApiErrorClass, StorageCloseSummary,
-    StorageImmutableSource, StorageKey, StorageOpenDisposition, StorageReadRow, StorageRuntime,
-    StorageRuntimeState, StorageSpaceId, StorageValue,
+    StorageDurabilityPolicy, StorageImmutableSource, StorageKey, StorageMemoryBudget,
+    StorageOpenDisposition, StorageOpenOptions, StorageReadRow, StorageRuntime, StorageRuntimeState,
+    StorageSpaceId, StorageValue,
 };
 #[cfg(any(test, feature = "testkit"))]
 use strata_storage_next::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
@@ -264,17 +265,32 @@ impl PersistenceImmutableSource {
 }
 
 impl StoragePersistence {
+    #[cfg(test)]
     pub(crate) fn open(
         target: PersistenceOpenTarget,
     ) -> EngineResult<(Self, PersistenceOpenSummary)> {
+        Self::open_with_budget(target, None)
+    }
+
+    pub(crate) fn open_with_budget(
+        target: PersistenceOpenTarget,
+        memory_budget_bytes: Option<u64>,
+    ) -> EngineResult<(Self, PersistenceOpenSummary)> {
         let (runtime, summary, durable) = match target {
             PersistenceOpenTarget::Cache => {
-                let outcome = StorageRuntime::open_cache().map_err(map_storage_error)?;
+                let options =
+                    apply_memory_budget(StorageOpenOptions::cache(), memory_budget_bytes)?;
+                let outcome = StorageRuntime::open(options).map_err(map_storage_error)?;
                 let (runtime, summary) = outcome.into_parts();
                 (runtime, summary, false)
             }
             PersistenceOpenTarget::DurableLocal(path) => {
-                let outcome = StorageRuntime::open_local(path).map_err(map_storage_error)?;
+                let options = apply_memory_budget(
+                    StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+                    memory_budget_bytes,
+                )?;
+                let outcome = StorageRuntime::open_durable_local_with_options(path, options)
+                    .map_err(map_storage_error)?;
                 let (runtime, summary) = outcome.into_parts();
                 (runtime, summary, true)
             }
@@ -863,6 +879,19 @@ const fn durable_commit_summary(summary: CommitDurabilitySummary) -> bool {
         summary,
         CommitDurabilitySummary::Standard | CommitDurabilitySummary::Always
     )
+}
+
+fn apply_memory_budget(
+    options: StorageOpenOptions,
+    memory_budget_bytes: Option<u64>,
+) -> EngineResult<StorageOpenOptions> {
+    match memory_budget_bytes {
+        Some(bytes) => {
+            let budget = StorageMemoryBudget::new(bytes).map_err(map_storage_error)?;
+            Ok(options.with_memory_budget(budget))
+        }
+        None => Ok(options),
+    }
 }
 
 pub(crate) fn map_storage_error(error: StorageApiError) -> EngineError {

@@ -251,6 +251,18 @@ impl StorageRuntime<'static> {
         open_durable_local_owned(root, policy)
     }
 
+    /// Open durable local storage at `root` with explicit open options.
+    ///
+    /// Like [`Self::open_durable_local`], but accepts a full
+    /// [`StorageOpenOptions`] so callers can set an explicit memory budget. The
+    /// options must select a durable-local mode; other modes are rejected.
+    pub fn open_durable_local_with_options(
+        root: impl Into<std::path::PathBuf>,
+        options: StorageOpenOptions,
+    ) -> StorageApiResult<StorageOpenOutcome<'static>> {
+        open_durable_local_owned_with_options(root, options)
+    }
+
     pub fn open(options: StorageOpenOptions) -> StorageApiResult<StorageOpenOutcome<'static>> {
         options.validate()?;
         match options.mode() {
@@ -655,17 +667,40 @@ fn open_durable_local_owned(
     root: impl Into<std::path::PathBuf>,
     policy: StorageDurabilityPolicy,
 ) -> StorageApiResult<StorageOpenOutcome<'static>> {
-    let backend = StorageBackend::local_fs(root);
-    open_durable_with_owned_backend_handle(
-        StorageOpenOptions::durable_local(policy),
-        backend.into_backend_handle(),
-    )
+    open_durable_local_owned_with_options(root, StorageOpenOptions::durable_local(policy))
 }
 
 #[cfg(not(feature = "localfs"))]
 fn open_durable_local_owned(
     _root: impl Into<std::path::PathBuf>,
     _policy: StorageDurabilityPolicy,
+) -> StorageApiResult<StorageOpenOutcome<'static>> {
+    Err(StorageApiError::UnsupportedCapability {
+        capability: "localfs",
+        reason: "durable local storage requires the localfs feature",
+    })
+}
+
+#[cfg(feature = "localfs")]
+fn open_durable_local_owned_with_options(
+    root: impl Into<std::path::PathBuf>,
+    options: StorageOpenOptions,
+) -> StorageApiResult<StorageOpenOutcome<'static>> {
+    options.validate()?;
+    if !matches!(options.mode(), StorageMode::DurableLocal { .. }) {
+        return Err(StorageApiError::InvalidArgument {
+            field: "mode",
+            reason: "durable local open requires a durable-local mode",
+        });
+    }
+    let backend = StorageBackend::local_fs(root);
+    open_durable_with_owned_backend_handle(options, backend.into_backend_handle())
+}
+
+#[cfg(not(feature = "localfs"))]
+fn open_durable_local_owned_with_options(
+    _root: impl Into<std::path::PathBuf>,
+    _options: StorageOpenOptions,
 ) -> StorageApiResult<StorageOpenOutcome<'static>> {
     Err(StorageApiError::UnsupportedCapability {
         capability: "localfs",
