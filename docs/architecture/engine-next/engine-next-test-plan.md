@@ -147,6 +147,13 @@ full suite green):
   and float metadata normalize through `as_f64` (so `5` matches both `5` and `5.0`);
   number comparison is **bit-exact** (`-0.0` does not match a stored `+0.0`); a
   string filter does not match a numeric value; boolean equality is exact.
+- **Slice 10 — Error redaction + retry policy (§7).** `tests/error_redaction.rs`:
+  every storage fault mapped through a real commit redacts its internals through
+  the **whole source chain** (the raw storage error is retained as a source but
+  never leaks storage type names or secrets) and carries the documented retry
+  policy (`ResourceExhausted`/`AmbiguousCommit`/`Unavailable` retryable;
+  `RecoveryDegraded`/`NotFound`/`Conflict` not); read-path and engine-owned
+  (validation, not-found, open-surface) errors redact too.
 
 Decision of record (from the implementing session): §11 items that are latent
 bugs are **fixed**, not just pinned (per user direction). Resolved: §11.1
