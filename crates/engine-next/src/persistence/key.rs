@@ -138,6 +138,10 @@ pub(crate) fn encode_json_index_entry_prefix(
     encode_json_index_key(JSON_INDEX_ENTRY_DISCRIMINATOR, space, name, &[])
 }
 
+pub(crate) fn encode_json_index_entry_space_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(JSON_INDEX_ENTRY_DISCRIMINATOR, space, &[])
+}
+
 pub(crate) fn encode_vector_collection_key(
     space: &ProductSpace,
     collection: &VectorCollectionName,
@@ -268,6 +272,10 @@ pub(crate) fn encode_event_meta_key(space: &ProductSpace) -> Vec<u8> {
     encode_user_key(EVENT_META_DISCRIMINATOR, space, b"meta")
 }
 
+pub(crate) fn encode_event_meta_space_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(EVENT_META_DISCRIMINATOR, space, &[])
+}
+
 pub(crate) fn encode_event_type_index_key(
     space: &ProductSpace,
     event_type: &EventType,
@@ -277,6 +285,10 @@ pub(crate) fn encode_event_type_index_key(
     encode_length_prefixed_text(&mut suffix, event_type.as_str());
     suffix.extend_from_slice(&sequence.as_u64().to_be_bytes());
     encode_user_key(EVENT_TYPE_INDEX_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_event_type_index_space_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(EVENT_TYPE_INDEX_DISCRIMINATOR, space, &[])
 }
 
 pub(crate) fn encode_graph_metadata_key(space: &ProductSpace, graph: &GraphName) -> Vec<u8> {
@@ -334,6 +346,10 @@ pub(crate) fn encode_graph_node_prefix(space: &ProductSpace, graph: &GraphName) 
     let mut suffix = Vec::new();
     encode_length_prefixed_text(&mut suffix, graph.as_str());
     encode_user_key(GRAPH_NODE_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_graph_node_space_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(GRAPH_NODE_DISCRIMINATOR, space, &[])
 }
 
 pub(crate) fn decode_graph_node_key(
@@ -395,6 +411,10 @@ pub(crate) fn encode_graph_edge_prefix(space: &ProductSpace, graph: &GraphName) 
     encode_user_key(GRAPH_EDGE_DISCRIMINATOR, space, &suffix)
 }
 
+pub(crate) fn encode_graph_edge_space_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(GRAPH_EDGE_DISCRIMINATOR, space, &[])
+}
+
 pub(crate) fn encode_graph_outgoing_edge_prefix(
     space: &ProductSpace,
     graph: &GraphName,
@@ -440,6 +460,10 @@ pub(crate) fn encode_graph_reverse_edge_prefix(space: &ProductSpace, graph: &Gra
     let mut suffix = Vec::new();
     encode_length_prefixed_text(&mut suffix, graph.as_str());
     encode_user_key(GRAPH_REVERSE_EDGE_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_graph_reverse_edge_space_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(GRAPH_REVERSE_EDGE_DISCRIMINATOR, space, &[])
 }
 
 pub(crate) fn encode_graph_incoming_edge_prefix(
@@ -776,6 +800,10 @@ fn encode_user_key(discriminator: u8, space: &ProductSpace, key_bytes: &[u8]) ->
 
 pub(crate) fn encode_kv_space_prefix(space: &ProductSpace) -> Vec<u8> {
     encode_kv_key_bytes(space, &[])
+}
+
+pub(crate) fn encode_vector_space_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(VECTOR_ENTRY_DISCRIMINATOR, space, &[])
 }
 
 pub(crate) fn decode_kv_key(space: &ProductSpace, encoded: &[u8]) -> EngineResult<KvKey> {

@@ -1,5 +1,6 @@
 //! Executor-facing engine API.
 
+mod admin;
 mod branch;
 mod control;
 mod database;
@@ -8,8 +9,14 @@ mod graph;
 mod json;
 mod kv;
 mod options;
+mod space;
 mod vector;
 
+pub use admin::{
+    AdminCapabilitySummary, AdminConfigSummary, AdminDatabaseInfo, AdminDescribeSummary,
+    AdminGraphSummary, AdminHealthStatus, AdminHealthSummary, AdminMetricsSummary,
+    AdminPingSummary, AdminPrimitiveSummary, AdminService, AdminVectorCollectionSummary,
+};
 pub use branch::{
     BranchCleanupSummary, BranchCreateOutcome, BranchDeleteOutcome, BranchParentSummary,
     BranchStatus, BranchSummary,
@@ -43,6 +50,7 @@ pub use kv::{
     KvScanRow, KvService, KvValue, KvVersionedValue, ProductSpace,
 };
 pub use options::{CacheOpenOptions, DurableLocalOpenOptions};
+pub use space::{SpaceCreateOutcome, SpaceDeleteOutcome, SpaceService, SpaceUsageSummary};
 pub use vector::{
     VectorArtifactSourceDiagnostic, VectorBatchDeleteOutcome, VectorBatchGetOutcome,
     VectorBatchUpsertOutcome, VectorBulkDeleteOutcome, VectorCollectionInfo, VectorCollectionName,

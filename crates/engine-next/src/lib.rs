@@ -20,6 +20,9 @@ pub mod test_support;
 pub mod testkit;
 
 pub use api::{
+    AdminCapabilitySummary, AdminConfigSummary, AdminDatabaseInfo, AdminDescribeSummary,
+    AdminGraphSummary, AdminHealthStatus, AdminHealthSummary, AdminMetricsSummary,
+    AdminPingSummary, AdminPrimitiveSummary, AdminService, AdminVectorCollectionSummary,
     BranchCleanupSummary, BranchCreateOutcome, BranchDeleteOutcome, BranchName,
     BranchParentSummary, BranchService, BranchStatus, BranchSummary, CacheOpenOptions,
     CloseOutcome, ControlDiagnostics, ControlHealthStatus, Database, DatabaseOpenOutcome,
@@ -38,12 +41,12 @@ pub use api::{
     JsonPath, JsonPathSegment, JsonSample, JsonSampleRow, JsonService, JsonSetEntry, JsonValue,
     JsonVersionedValue, JsonWriteOutcome, KvBatchDeleteOutcome, KvDeleteOutcome, KvHistory,
     KvHistoryRow, KvKey, KvListPage, KvSample, KvScanRow, KvService, KvValue, KvVersionedValue,
-    ProductSpace, SpaceCatalogDiagnostics, VectorArtifactSourceDiagnostic,
-    VectorBatchDeleteOutcome, VectorBatchGetOutcome, VectorBatchUpsertOutcome,
-    VectorBulkDeleteOutcome, VectorCollectionInfo, VectorCollectionName, VectorConfig,
-    VectorDeleteOutcome, VectorDistanceMetric, VectorEmbedding, VectorEntry, VectorFilter,
-    VectorFilterCondition, VectorFilterOp, VectorHistory, VectorHistoryRow, VectorIndexDiagnostics,
-    VectorKey, VectorKeyPage, VectorMetadata, VectorMetadataPatch, VectorMetadataUpdateOutcome,
-    VectorScalar, VectorSearchMatch, VectorSearchResult, VectorService, VectorUpsertEntry,
-    VectorVersionedEntry, VectorWriteOutcome,
+    ProductSpace, SpaceCatalogDiagnostics, SpaceCreateOutcome, SpaceDeleteOutcome, SpaceService,
+    SpaceUsageSummary, VectorArtifactSourceDiagnostic, VectorBatchDeleteOutcome,
+    VectorBatchGetOutcome, VectorBatchUpsertOutcome, VectorBulkDeleteOutcome, VectorCollectionInfo,
+    VectorCollectionName, VectorConfig, VectorDeleteOutcome, VectorDistanceMetric, VectorEmbedding,
+    VectorEntry, VectorFilter, VectorFilterCondition, VectorFilterOp, VectorHistory,
+    VectorHistoryRow, VectorIndexDiagnostics, VectorKey, VectorKeyPage, VectorMetadata,
+    VectorMetadataPatch, VectorMetadataUpdateOutcome, VectorScalar, VectorSearchMatch,
+    VectorSearchResult, VectorService, VectorUpsertEntry, VectorVersionedEntry, VectorWriteOutcome,
 };

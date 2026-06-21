@@ -4,19 +4,69 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::types::{
-    ArrowExportResult, ArrowImportResult, BatchGetItemResult, BatchItemResult, BranchCleanupItem,
-    BranchItem, Bytes, EventBatchAppendItemResult, EventChainVerification, EventVersionedData,
-    GraphBatchItemResult, GraphBindingHit, GraphEdgeDataOutput, GraphInfoData, GraphNeighborHit,
-    GraphNodeDataOutput, HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
-    JsonIndexDefinition, JsonSampleItem, JsonVersionedValue, SampleItem, ScanItem,
-    VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorHistoryItem,
-    VectorIndexQueryResult, VectorMatch, VectorVersionedData, VersionedValue,
+    AdminConfig, AdminDatabaseInfo, AdminDescribe, AdminHealth, AdminMetrics, ArrowExportResult,
+    ArrowImportResult, BatchGetItemResult, BatchItemResult, BranchCleanupItem, BranchItem, Bytes,
+    EventBatchAppendItemResult, EventChainVerification, EventVersionedData, GraphBatchItemResult,
+    GraphBindingHit, GraphEdgeDataOutput, GraphInfoData, GraphNeighborHit, GraphNodeDataOutput,
+    HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
+    JsonSampleItem, JsonVersionedValue, SampleItem, ScanItem, VectorBatchGetItemResult,
+    VectorBatchItemResult, VectorCollectionInfo, VectorHistoryItem, VectorIndexQueryResult,
+    VectorMatch, VectorVersionedData, VersionedValue,
 };
 
 /// Successful executor output.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum Output {
+    /// Lightweight admin liveness result.
+    Pong {
+        /// Engine package version.
+        version: String,
+    },
+    /// Database identity and catalog summary.
+    DatabaseInfo(AdminDatabaseInfo),
+    /// Control-plane health facts.
+    Health(AdminHealth),
+    /// Lightweight database metrics.
+    Metrics(AdminMetrics),
+    /// Compact database description.
+    Described(AdminDescribe),
+    /// Sanitized configuration facts.
+    Config(AdminConfig),
+    /// Optional sanitized configuration value.
+    ConfigValue(Option<String>),
+    /// Product space list.
+    SpaceList(Vec<String>),
+    /// Product space create result.
+    SpaceCreateResult {
+        /// Product space name.
+        space: String,
+        /// True when a catalog row was created.
+        created: bool,
+        /// Commit version when a catalog mutation was applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        /// Commit timestamp when a catalog mutation was applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
+    },
+    /// Product space delete result.
+    SpaceDeleteResult {
+        /// Product space name.
+        space: String,
+        /// True when a catalog row was deleted.
+        deleted: bool,
+        /// True when visible space data was force-deleted.
+        force: bool,
+        /// Number of visible space rows tombstoned, including primitive index/control rows.
+        deleted_rows: u64,
+        /// Commit version when a catalog mutation was applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        /// Commit timestamp when a catalog mutation was applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
+    },
     /// One branch summary.
     Branch(BranchItem),
     /// Branch list.

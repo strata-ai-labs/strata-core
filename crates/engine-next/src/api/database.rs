@@ -18,7 +18,10 @@ use crate::persistence::{
 #[cfg(any(test, feature = "testkit"))]
 use crate::persistence::{encode_json_index_entry_prefix, ReadSelector, RowClass};
 
-use super::{BranchName, CacheOpenOptions, ControlDiagnostics, DurableLocalOpenOptions};
+use super::{
+    AdminService, BranchName, CacheOpenOptions, ControlDiagnostics, DurableLocalOpenOptions,
+    SpaceService,
+};
 
 /// Explicit storage target used to open a database.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -241,6 +244,29 @@ impl Database {
             &mut self.control,
             branch,
             space,
+        ))
+    }
+
+    /// Returns a product space service for the selected branch.
+    pub fn spaces(&mut self, branch: BranchName) -> EngineResult<SpaceService<'_>> {
+        self.require_open()?;
+        self.control.require_healthy()?;
+        Ok(SpaceService::new(
+            &mut self.persistence,
+            &mut self.control,
+            branch,
+        ))
+    }
+
+    /// Returns a safe administration and introspection service.
+    pub fn admin(&mut self) -> EngineResult<AdminService<'_>> {
+        self.require_open()?;
+        Ok(AdminService::new(
+            &mut self.persistence,
+            &mut self.control,
+            &mut self.vector_artifacts,
+            self.summary,
+            self.open,
         ))
     }
 

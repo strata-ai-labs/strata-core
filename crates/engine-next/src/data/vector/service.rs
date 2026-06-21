@@ -1428,6 +1428,7 @@ impl<'a> VectorService<'a> {
             .0)
     }
 
+    #[allow(clippy::too_many_lines)]
     fn query_with_selector_and_policy(
         &mut self,
         collection: &VectorCollectionName,

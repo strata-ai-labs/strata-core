@@ -1221,6 +1221,7 @@ impl<'a> PlannedVectorSource<'a> {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn query_vector_sources_with_index_artifacts(
     collection: &VectorCollectionName,
     query: &VectorEmbedding,

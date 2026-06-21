@@ -500,7 +500,9 @@ fn run_query_workload(
     workload: &'static str,
     policy: VectorIndexPolicy,
 ) -> EngineResult<BenchmarkRow> {
-    run_with_progress(workload, || run_query_scenario(config, queries, workload, policy))
+    run_with_progress(workload, || {
+        run_query_scenario(config, queries, workload, policy)
+    })
 }
 
 fn run_with_progress<T>(
@@ -657,7 +659,10 @@ fn run_mutation_scenario(
         &exact,
         config,
         VectorIndexPolicy::hnsw_only_for_test(),
-        Some(ops_per_second(mutation_count.saturating_mul(2), mutation_elapsed)),
+        Some(ops_per_second(
+            mutation_count.saturating_mul(2),
+            mutation_elapsed,
+        )),
     )
 }
 
@@ -694,11 +699,7 @@ fn run_branch_scenario(
         let mut vectors = vector_service(&mut opened.database, "feature")?;
         let entries = (0..branch_write_count)
             .map(|offset| {
-                upsert_entry(
-                    config.collection_size + offset,
-                    config.dimension,
-                    "feature",
-                )
+                upsert_entry(config.collection_size + offset, config.dimension, "feature")
             })
             .collect::<EngineResult<Vec<_>>>()?;
         vectors.batch_upsert(&collection, &entries)?;
@@ -1108,10 +1109,7 @@ fn recall_counts(expected: &[String], actual: &[String]) -> (usize, usize) {
         return (0, 0);
     }
     let actual = actual.iter().collect::<BTreeSet<_>>();
-    let hits = expected
-        .iter()
-        .filter(|key| actual.contains(key))
-        .count();
+    let hits = expected.iter().filter(|key| actual.contains(key)).count();
     (hits, expected.len())
 }
 
@@ -1191,7 +1189,10 @@ fn branch(name: &str) -> EngineResult<BranchName> {
     BranchName::new(name)
 }
 
-fn open_bench_database(config: &BenchConfig, workload: &'static str) -> EngineResult<OpenedDatabase> {
+fn open_bench_database(
+    config: &BenchConfig,
+    workload: &'static str,
+) -> EngineResult<OpenedDatabase> {
     let path = config
         .durable_path
         .as_ref()
@@ -1235,7 +1236,8 @@ fn open_local(path: &Path) -> EngineResult<Database> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(io_engine_error)?;
     }
-    Database::open_local(path, DurableLocalOpenOptions::new()).map(DatabaseOpenOutcome::into_database)
+    Database::open_local(path, DurableLocalOpenOptions::new())
+        .map(DatabaseOpenOutcome::into_database)
 }
 
 fn ops_per_second(count: usize, elapsed: Duration) -> f64 {

@@ -267,6 +267,20 @@ fn executor_graph_surface_excludes_deferred_old_commands() {
 }
 
 #[test]
+fn executor_admin_surface_excludes_deferred_old_commands() {
+    for file in source_files(&crate_root().join("src")) {
+        let text = fs::read_to_string(&file).expect("source reads");
+        for forbidden in excluded_admin_command_names() {
+            assert!(
+                !text.contains(forbidden),
+                "{} exposed deferred admin command `{forbidden}`",
+                file.display()
+            );
+        }
+    }
+}
+
+#[test]
 fn executor_benchmarks_do_not_bypass_commands() {
     let benchmark_root = workspace_root().join("benchmarks/src/bin");
     if !benchmark_root.exists() {
@@ -500,6 +514,28 @@ fn excluded_graph_command_names() -> &'static [&'static str] {
         "GraphPagerank",
         "GraphLcc",
         "GraphSssp",
+    ]
+}
+
+fn excluded_admin_command_names() -> &'static [&'static str] {
+    &[
+        "Command::Flush",
+        "Flush {",
+        "Command::Compact",
+        "Compact {",
+        "Command::TimeRange",
+        "TimeRange {",
+        "Command::DurabilityCounters",
+        "DurabilityCounters",
+        "ConfigSetAutoEmbed",
+        "AutoEmbedStatus",
+        "EmbedStatus",
+        "ReindexEmbeddings",
+        "ConfigureModel",
+        "ConfigureSet",
+        "RetentionApply",
+        "RetentionPreview",
+        "RetentionStats",
     ]
 }
 

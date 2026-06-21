@@ -5,8 +5,17 @@ use std::path::PathBuf;
 
 use strata_core_next::{CommitVersion, Timestamp};
 use strata_engine_next::{
-    api::CommitOutcome, BranchCleanupSummary, BranchName, BranchStatus as EngineBranchStatus,
-    BranchSummary, CacheOpenOptions, Database, DurableLocalOpenOptions,
+    api::CommitOutcome, AdminCapabilitySummary as EngineAdminCapabilitySummary,
+    AdminConfigSummary as EngineAdminConfigSummary, AdminDatabaseInfo as EngineAdminDatabaseInfo,
+    AdminDescribeSummary as EngineAdminDescribeSummary,
+    AdminGraphSummary as EngineAdminGraphSummary, AdminHealthStatus as EngineAdminHealthStatus,
+    AdminHealthSummary as EngineAdminHealthSummary,
+    AdminMetricsSummary as EngineAdminMetricsSummary,
+    AdminPrimitiveSummary as EngineAdminPrimitiveSummary,
+    AdminVectorCollectionSummary as EngineAdminVectorCollectionSummary, BranchCleanupSummary,
+    BranchName, BranchStatus as EngineBranchStatus, BranchSummary, CacheOpenOptions,
+    ControlHealthStatus as EngineControlHealthStatus, Database,
+    DatabaseOpenTarget as EngineDatabaseOpenTarget, DurableLocalOpenOptions,
     EventAppendOutcome as EngineEventAppendOutcome,
     EventBatchAppendEntry as EngineEventBatchAppendEntry,
     EventBatchAppendItemOutcome as EngineEventBatchAppendItemOutcome,
@@ -35,6 +44,7 @@ use strata_engine_next::{
     JsonSampleRow, JsonService, JsonSetEntry, JsonValue as EngineJsonValue,
     JsonVersionedValue as EngineJsonVersionedValue, KvHistory, KvHistoryRow, KvKey, KvSample,
     KvScanRow, KvValue, KvVersionedValue, ProductSpace,
+    SpaceCreateOutcome as EngineSpaceCreateOutcome, SpaceDeleteOutcome as EngineSpaceDeleteOutcome,
     VectorBulkDeleteOutcome as EngineVectorBulkDeleteOutcome,
     VectorCollectionInfo as EngineVectorCollectionInfo,
     VectorCollectionName as EngineVectorCollectionName, VectorConfig as EngineVectorConfig,
@@ -54,6 +64,12 @@ use crate::command::Command;
 use crate::error::{ExecutorError, ExecutorErrorClass, ExecutorResult};
 use crate::output::Output;
 use crate::types::{
+    AdminCapabilities as OutputAdminCapabilities, AdminConfig as OutputAdminConfig,
+    AdminControlStatus as OutputAdminControlStatus, AdminDatabaseInfo as OutputAdminDatabaseInfo,
+    AdminDescribe as OutputAdminDescribe, AdminGraph as OutputAdminGraph,
+    AdminHealth as OutputAdminHealth, AdminHealthStatus as OutputAdminHealthStatus,
+    AdminMetrics as OutputAdminMetrics, AdminOpenTarget as OutputAdminOpenTarget,
+    AdminPrimitives as OutputAdminPrimitives, AdminVectorCollection as OutputAdminVectorCollection,
     ArrowExportPrimitive, ArrowFileFormat, ArrowImportTarget, BatchEventEntry, BatchGetItemResult,
     BatchItemResult, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry,
     BatchVectorEntry, BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus, Bytes,
@@ -156,6 +172,25 @@ impl Executor {
     /// Executes one serialized command.
     pub fn execute(&mut self, command: Command) -> ExecutorResult<Output> {
         match command {
+            Command::Ping => self.execute_ping(),
+            Command::Info { branch } => self.execute_info(branch.as_deref()),
+            Command::Health { branch } => self.execute_health(branch.as_deref()),
+            Command::Metrics { branch } => self.execute_metrics(branch.as_deref()),
+            Command::Describe { branch } => self.execute_describe(branch.as_deref()),
+            Command::ConfigGet => self.execute_config_get(),
+            Command::ConfigureGetKey { key } => self.execute_configure_get_key(&key),
+            Command::SpaceList { branch } => self.execute_space_list(branch.as_deref()),
+            Command::SpaceCreate { branch, space } => {
+                self.execute_space_create(branch.as_deref(), &space)
+            }
+            Command::SpaceExists { branch, space } => {
+                self.execute_space_exists(branch.as_deref(), &space)
+            }
+            Command::SpaceDelete {
+                branch,
+                space,
+                force,
+            } => self.execute_space_delete(branch.as_deref(), &space, force),
             Command::BranchList => self.execute_branch_list(),
             Command::BranchGet { branch } => self.execute_branch_get(&branch),
             Command::BranchCreate { branch } => self.execute_branch_create(&branch),
@@ -894,6 +929,99 @@ impl Executor {
                 .map(Output::InferenceCacheStatus)
                 .map_err(ExecutorError::from),
         }
+    }
+
+    fn execute_ping(&mut self) -> ExecutorResult<Output> {
+        let summary = self.database.admin()?.ping();
+        Ok(Output::Pong {
+            version: summary.version,
+        })
+    }
+
+    fn execute_info(&mut self, branch: Option<&str>) -> ExecutorResult<Output> {
+        let branch = branch_name(branch, &self.default_branch)?;
+        let mut admin = self.database.admin()?;
+        let summary = admin.info(Some(&branch))?;
+        Ok(Output::DatabaseInfo(output_admin_info(&summary)))
+    }
+
+    fn execute_health(&mut self, branch: Option<&str>) -> ExecutorResult<Output> {
+        let branch = branch_name(branch, &self.default_branch)?;
+        let mut admin = self.database.admin()?;
+        let summary = admin.health(Some(&branch));
+        Ok(Output::Health(output_admin_health(&summary)))
+    }
+
+    fn execute_metrics(&mut self, branch: Option<&str>) -> ExecutorResult<Output> {
+        let branch = branch_name(branch, &self.default_branch)?;
+        let mut admin = self.database.admin()?;
+        let summary = admin.metrics(Some(&branch))?;
+        Ok(Output::Metrics(output_admin_metrics(&summary)))
+    }
+
+    fn execute_describe(&mut self, branch: Option<&str>) -> ExecutorResult<Output> {
+        let branch = branch_name(branch, &self.default_branch)?;
+        let mut admin = self.database.admin()?;
+        let summary = admin.describe(Some(&branch))?;
+        Ok(Output::Described(output_admin_describe(&summary)))
+    }
+
+    fn execute_config_get(&mut self) -> ExecutorResult<Output> {
+        let admin = self.database.admin()?;
+        Ok(Output::Config(output_admin_config(&admin.config())))
+    }
+
+    fn execute_configure_get_key(&mut self, key: &str) -> ExecutorResult<Output> {
+        let admin = self.database.admin()?;
+        Ok(Output::ConfigValue(admin.config_value(key)?))
+    }
+
+    fn execute_space_list(&mut self, branch: Option<&str>) -> ExecutorResult<Output> {
+        let branch = branch_name(branch, &self.default_branch)?;
+        let mut spaces = self.database.spaces(branch)?;
+        Ok(Output::SpaceList(
+            spaces
+                .list()?
+                .iter()
+                .map(|space| space.as_str().to_owned())
+                .collect(),
+        ))
+    }
+
+    fn execute_space_create(
+        &mut self,
+        branch: Option<&str>,
+        space: &str,
+    ) -> ExecutorResult<Output> {
+        let branch = branch_name(branch, &self.default_branch)?;
+        let space = product_space(Some(space))?;
+        let mut spaces = self.database.spaces(branch)?;
+        let outcome = spaces.create(space)?;
+        Ok(output_space_create(&outcome))
+    }
+
+    fn execute_space_exists(
+        &mut self,
+        branch: Option<&str>,
+        space: &str,
+    ) -> ExecutorResult<Output> {
+        let branch = branch_name(branch, &self.default_branch)?;
+        let space = product_space(Some(space))?;
+        let mut spaces = self.database.spaces(branch)?;
+        Ok(Output::Bool(spaces.exists(&space)?))
+    }
+
+    fn execute_space_delete(
+        &mut self,
+        branch: Option<&str>,
+        space: &str,
+        force: bool,
+    ) -> ExecutorResult<Output> {
+        let branch = branch_name(branch, &self.default_branch)?;
+        let space = product_space(Some(space))?;
+        let mut spaces = self.database.spaces(branch)?;
+        let outcome = spaces.delete(&space, force)?;
+        Ok(output_space_delete(&outcome))
     }
 
     fn execute_branch_list(&mut self) -> ExecutorResult<Output> {
@@ -2581,6 +2709,167 @@ fn arrow_feature_disabled() -> ExecutorError {
         "invalid_argument.executor.arrow_feature_disabled",
         "Arrow import/export requires the executor arrow feature",
     )
+}
+
+const fn output_admin_open_target(target: EngineDatabaseOpenTarget) -> OutputAdminOpenTarget {
+    match target {
+        EngineDatabaseOpenTarget::Cache => OutputAdminOpenTarget::Cache,
+        EngineDatabaseOpenTarget::DurableLocal => OutputAdminOpenTarget::DurableLocal,
+    }
+}
+
+const fn output_admin_health_status(status: EngineAdminHealthStatus) -> OutputAdminHealthStatus {
+    match status {
+        EngineAdminHealthStatus::Healthy => OutputAdminHealthStatus::Healthy,
+        EngineAdminHealthStatus::Degraded => OutputAdminHealthStatus::Degraded,
+        EngineAdminHealthStatus::Unhealthy => OutputAdminHealthStatus::Unhealthy,
+    }
+}
+
+const fn output_admin_control_status(
+    status: EngineControlHealthStatus,
+) -> OutputAdminControlStatus {
+    match status {
+        EngineControlHealthStatus::Healthy => OutputAdminControlStatus::Healthy,
+        EngineControlHealthStatus::Missing => OutputAdminControlStatus::Missing,
+        EngineControlHealthStatus::Corrupt => OutputAdminControlStatus::Corrupt,
+        EngineControlHealthStatus::Unavailable => OutputAdminControlStatus::Unavailable,
+    }
+}
+
+fn output_admin_info(info: &EngineAdminDatabaseInfo) -> OutputAdminDatabaseInfo {
+    OutputAdminDatabaseInfo {
+        version: info.version.clone(),
+        target: output_admin_open_target(info.target),
+        created: info.created,
+        durable: info.durable,
+        default_branch: info.default_branch.as_str().to_owned(),
+        branch_count: info.branch_count,
+        space_count: info.space_count,
+        open: info.open,
+    }
+}
+
+fn output_admin_health(health: &EngineAdminHealthSummary) -> OutputAdminHealth {
+    OutputAdminHealth {
+        status: output_admin_health_status(health.status),
+        identity: output_admin_control_status(health.identity),
+        registry: output_admin_control_status(health.registry),
+        branch_catalog: output_admin_control_status(health.branch_catalog),
+        space_catalog: health.space_catalog.map(output_admin_control_status),
+        default_branch: health.default_branch.as_str().to_owned(),
+        branch_count: health.branch_count,
+    }
+}
+
+fn output_admin_metrics(metrics: &EngineAdminMetricsSummary) -> OutputAdminMetrics {
+    OutputAdminMetrics {
+        target: output_admin_open_target(metrics.target),
+        durable: metrics.durable,
+        open: metrics.open,
+        branch_count: metrics.branch_count,
+        space_count: metrics.space_count,
+        control_status: output_admin_health_status(metrics.control_status),
+    }
+}
+
+fn output_admin_config(config: &EngineAdminConfigSummary) -> OutputAdminConfig {
+    OutputAdminConfig {
+        target: output_admin_open_target(config.target),
+        created: config.created,
+        durable: config.durable,
+        default_branch: config.default_branch.as_str().to_owned(),
+    }
+}
+
+fn output_admin_capabilities(
+    capabilities: &EngineAdminCapabilitySummary,
+) -> OutputAdminCapabilities {
+    OutputAdminCapabilities {
+        kv: capabilities.kv,
+        json: capabilities.json,
+        event: capabilities.event,
+        vector: capabilities.vector,
+        vector_index: capabilities.vector_index,
+        graph_core: capabilities.graph_core,
+        arrow: cfg!(feature = "arrow"),
+        inference: cfg!(feature = "inference"),
+    }
+}
+
+fn output_admin_vector_collection(
+    collection: &EngineAdminVectorCollectionSummary,
+) -> OutputAdminVectorCollection {
+    OutputAdminVectorCollection {
+        name: collection.name.clone(),
+        dimension: collection.dimension,
+        metric: output_vector_metric(collection.metric),
+        count: collection.count,
+    }
+}
+
+fn output_admin_graph(graph: &EngineAdminGraphSummary) -> OutputAdminGraph {
+    OutputAdminGraph {
+        name: graph.name.clone(),
+        node_count: graph.node_count,
+        edge_count: graph.edge_count,
+    }
+}
+
+fn output_admin_primitives(primitives: &EngineAdminPrimitiveSummary) -> OutputAdminPrimitives {
+    OutputAdminPrimitives {
+        kv_count: primitives.kv_count,
+        json_count: primitives.json_count,
+        event_count: primitives.event_count,
+        vector_collections: primitives
+            .vector_collections
+            .iter()
+            .map(output_admin_vector_collection)
+            .collect(),
+        graphs: primitives.graphs.iter().map(output_admin_graph).collect(),
+    }
+}
+
+fn output_admin_describe(describe: &EngineAdminDescribeSummary) -> OutputAdminDescribe {
+    OutputAdminDescribe {
+        version: describe.version.clone(),
+        target: output_admin_open_target(describe.target),
+        default_branch: describe.default_branch.as_str().to_owned(),
+        branch: describe.branch.as_str().to_owned(),
+        branches: describe
+            .branches
+            .iter()
+            .map(|branch| branch.as_str().to_owned())
+            .collect(),
+        spaces: describe
+            .spaces
+            .iter()
+            .map(|space| space.as_str().to_owned())
+            .collect(),
+        primitives: output_admin_primitives(&describe.primitives),
+        config: output_admin_config(&describe.config),
+        capabilities: output_admin_capabilities(&describe.capabilities),
+    }
+}
+
+fn output_space_create(outcome: &EngineSpaceCreateOutcome) -> Output {
+    Output::SpaceCreateResult {
+        space: outcome.space().as_str().to_owned(),
+        created: outcome.created(),
+        version: outcome.version().map(CommitVersion::as_u64),
+        timestamp: outcome.timestamp().map(Timestamp::as_micros),
+    }
+}
+
+fn output_space_delete(outcome: &EngineSpaceDeleteOutcome) -> Output {
+    Output::SpaceDeleteResult {
+        space: outcome.space().as_str().to_owned(),
+        deleted: outcome.deleted(),
+        force: outcome.force(),
+        deleted_rows: outcome.deleted_rows(),
+        version: outcome.version().map(CommitVersion::as_u64),
+        timestamp: outcome.timestamp().map(Timestamp::as_micros),
+    }
 }
 
 impl Executor {

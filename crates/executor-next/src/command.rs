@@ -10,10 +10,81 @@ use crate::types::{
     GraphEntityBinding, JsonIndexType, VectorDistanceMetric, VectorMetadataFilter,
 };
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 /// Serializable executor command.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    /// Lightweight admin liveness check.
+    Ping,
+    /// Returns database identity and catalog summary.
+    Info {
+        /// Branch whose space catalog should be summarized. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
+    /// Returns control-plane health facts.
+    Health {
+        /// Branch whose space catalog should be checked. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
+    /// Returns lightweight database metrics.
+    Metrics {
+        /// Branch whose space catalog should be counted. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
+    /// Returns a compact database description.
+    Describe {
+        /// Branch whose primitive data should be described. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
+    /// Returns sanitized configuration facts.
+    ConfigGet,
+    /// Returns one sanitized configuration value by key.
+    ConfigureGetKey {
+        /// Config key.
+        key: String,
+    },
+    /// Lists product spaces for a branch.
+    SpaceList {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
+    /// Creates a product space for a branch.
+    SpaceCreate {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Product space name.
+        space: String,
+    },
+    /// Checks whether a product space exists for a branch.
+    SpaceExists {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Product space name.
+        space: String,
+    },
+    /// Deletes a product space from a branch.
+    SpaceDelete {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Product space name.
+        space: String,
+        /// Delete visible data in the space before dropping the catalog entry.
+        #[serde(default, skip_serializing_if = "is_false")]
+        force: bool,
+    },
     /// Lists active branches.
     BranchList,
     /// Reads one branch summary.
@@ -1203,6 +1274,17 @@ impl Command {
     /// Returns the stable command name.
     pub const fn name(&self) -> &'static str {
         match self {
+            Self::Ping => "ping",
+            Self::Info { .. } => "info",
+            Self::Health { .. } => "health",
+            Self::Metrics { .. } => "metrics",
+            Self::Describe { .. } => "describe",
+            Self::ConfigGet => "config_get",
+            Self::ConfigureGetKey { .. } => "configure_get_key",
+            Self::SpaceList { .. } => "space_list",
+            Self::SpaceCreate { .. } => "space_create",
+            Self::SpaceExists { .. } => "space_exists",
+            Self::SpaceDelete { .. } => "space_delete",
             Self::BranchList => "branch_list",
             Self::BranchGet { .. } => "branch_get",
             Self::BranchCreate { .. } => "branch_create",
@@ -1308,5 +1390,48 @@ impl Command {
             #[cfg(feature = "inference")]
             Self::InferenceCacheStatus => "inference_cache_status",
         }
+    }
+
+    /// Returns true when the command may mutate database state.
+    pub const fn is_write(&self) -> bool {
+        matches!(
+            self,
+            Self::SpaceCreate { .. }
+                | Self::SpaceDelete { .. }
+                | Self::BranchCreate { .. }
+                | Self::BranchForkCurrent { .. }
+                | Self::BranchForkAtVersion { .. }
+                | Self::BranchForkAtTimestamp { .. }
+                | Self::BranchDelete { .. }
+                | Self::KvPut { .. }
+                | Self::KvDelete { .. }
+                | Self::KvBatchPut { .. }
+                | Self::KvBatchDelete { .. }
+                | Self::JsonSet { .. }
+                | Self::JsonDelete { .. }
+                | Self::JsonBatchSet { .. }
+                | Self::JsonBatchDelete { .. }
+                | Self::JsonCreateIndex { .. }
+                | Self::JsonDropIndex { .. }
+                | Self::VectorCreateCollection { .. }
+                | Self::VectorDeleteCollection { .. }
+                | Self::VectorUpsert { .. }
+                | Self::VectorUpdateMetadata { .. }
+                | Self::VectorDelete { .. }
+                | Self::VectorDeleteByFilter { .. }
+                | Self::VectorDeleteAll { .. }
+                | Self::VectorBatchUpsert { .. }
+                | Self::VectorBatchDelete { .. }
+                | Self::EventBatchAppend { .. }
+                | Self::EventAppend { .. }
+                | Self::GraphCreate { .. }
+                | Self::GraphDelete { .. }
+                | Self::GraphAddNode { .. }
+                | Self::GraphRemoveNode { .. }
+                | Self::GraphAddEdge { .. }
+                | Self::GraphRemoveEdge { .. }
+                | Self::GraphBatchWrite { .. }
+                | Self::ArrowImport { .. }
+        )
     }
 }

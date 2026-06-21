@@ -2,15 +2,17 @@
 
 use serde_json::{json, Value};
 use strata_executor_next::{
-    ArrowExportPrimitive, ArrowExportResult, ArrowFileFormat, ArrowImportResult, ArrowImportTarget,
-    BatchEventEntry, BatchGetItemResult, BatchItemResult, BatchJsonDeleteEntry, BatchJsonEntry,
-    BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry, BranchCleanupItem, BranchItem,
-    BranchParentItem, BranchStatus, Bytes, Command, EventBatchAppendItemResult,
-    EventChainVerification, EventData, EventRangeDirection, EventVersionedData,
-    GraphBatchItemResult, GraphBatchOperation, GraphBindingHit, GraphBindingPrimitive,
-    GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEdgeDataOutput, GraphEntityBinding,
-    GraphInfoData, GraphNeighborHit, GraphNodeData, GraphNodeDataOutput, HistoryItem,
-    JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
+    AdminCapabilities, AdminConfig, AdminControlStatus, AdminDatabaseInfo, AdminDescribe,
+    AdminGraph, AdminHealth, AdminHealthStatus, AdminMetrics, AdminOpenTarget, AdminPrimitives,
+    AdminVectorCollection, ArrowExportPrimitive, ArrowExportResult, ArrowFileFormat,
+    ArrowImportResult, ArrowImportTarget, BatchEventEntry, BatchGetItemResult, BatchItemResult,
+    BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry,
+    BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus, Bytes, Command,
+    EventBatchAppendItemResult, EventChainVerification, EventData, EventRangeDirection,
+    EventVersionedData, GraphBatchItemResult, GraphBatchOperation, GraphBindingHit,
+    GraphBindingPrimitive, GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEdgeDataOutput,
+    GraphEntityBinding, GraphInfoData, GraphNeighborHit, GraphNodeData, GraphNodeDataOutput,
+    HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
     JsonIndexType, JsonSampleItem, JsonVersionedValue, Output, SampleItem, ScanItem,
     VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorData,
     VectorDistanceMetric, VectorFilterCondition, VectorFilterOp, VectorHistoryItem,
@@ -34,6 +36,42 @@ fn every_output_round_trips_through_json() {
         let decoded: Output = serde_json::from_str(&encoded).expect("output deserializes");
         assert_eq!(decoded, output);
     }
+}
+
+#[test]
+fn admin_and_space_command_json_uses_stable_tags_and_field_shape() {
+    let command = Command::SpaceDelete {
+        branch: None,
+        space: "tenant_a".to_owned(),
+        force: false,
+    };
+    let encoded = serde_json::to_value(&command).expect("command serializes");
+    assert_eq!(
+        encoded,
+        json!({
+            "type": "space_delete",
+            "space": "tenant_a",
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<Command>(encoded).expect("command deserializes"),
+        command
+    );
+
+    let forced = Command::SpaceDelete {
+        branch: Some("feature".to_owned()),
+        space: "tenant_a".to_owned(),
+        force: true,
+    };
+    let forced_json = serde_json::to_value(&forced).expect("command serializes");
+    assert_eq!(forced_json["type"], "space_delete");
+    assert_eq!(forced_json["branch"], "feature");
+    assert_eq!(forced_json["space"], "tenant_a");
+    assert_eq!(forced_json["force"], true);
+
+    let info = Command::Info { branch: None };
+    let info_json = serde_json::to_value(&info).expect("command serializes");
+    assert_eq!(info_json, json!({ "type": "info" }));
 }
 
 #[test]
@@ -368,6 +406,17 @@ fn command_names_cover_every_variant() {
     assert_eq!(
         names,
         vec![
+            "ping",
+            "info",
+            "health",
+            "metrics",
+            "describe",
+            "config_get",
+            "configure_get_key",
+            "space_list",
+            "space_create",
+            "space_exists",
+            "space_delete",
             "branch_list",
             "branch_get",
             "branch_create",
@@ -452,8 +501,53 @@ fn command_names_cover_every_variant() {
     );
 }
 
+#[test]
+fn admin_and_space_write_classification_is_explicit() {
+    for command in [
+        Command::Ping,
+        Command::Info { branch: None },
+        Command::Health { branch: None },
+        Command::Metrics { branch: None },
+        Command::Describe { branch: None },
+        Command::ConfigGet,
+        Command::ConfigureGetKey {
+            key: "target".to_owned(),
+        },
+        Command::SpaceList { branch: None },
+        Command::SpaceExists {
+            branch: None,
+            space: "tenant_a".to_owned(),
+        },
+    ] {
+        assert!(
+            !command.is_write(),
+            "{} should be classified as read-only",
+            command.name()
+        );
+    }
+
+    for command in [
+        Command::SpaceCreate {
+            branch: None,
+            space: "tenant_a".to_owned(),
+        },
+        Command::SpaceDelete {
+            branch: None,
+            space: "tenant_a".to_owned(),
+            force: true,
+        },
+    ] {
+        assert!(
+            command.is_write(),
+            "{} should be classified as a write",
+            command.name()
+        );
+    }
+}
+
 fn all_commands() -> Vec<Command> {
-    let mut commands = branch_commands();
+    let mut commands = admin_space_commands();
+    commands.extend(branch_commands());
     commands.extend(kv_commands());
     commands.extend(json_commands());
     commands.extend(vector_commands());
@@ -463,8 +557,41 @@ fn all_commands() -> Vec<Command> {
     commands
 }
 
+fn admin_space_commands() -> Vec<Command> {
+    vec![
+        Command::Ping,
+        Command::Info { branch: None },
+        Command::Health {
+            branch: Some("feature".to_owned()),
+        },
+        Command::Metrics { branch: None },
+        Command::Describe {
+            branch: Some("feature".to_owned()),
+        },
+        Command::ConfigGet,
+        Command::ConfigureGetKey {
+            key: "target".to_owned(),
+        },
+        Command::SpaceList { branch: None },
+        Command::SpaceCreate {
+            branch: Some("feature".to_owned()),
+            space: "tenant_a".to_owned(),
+        },
+        Command::SpaceExists {
+            branch: None,
+            space: "tenant_a".to_owned(),
+        },
+        Command::SpaceDelete {
+            branch: Some("feature".to_owned()),
+            space: "tenant_a".to_owned(),
+            force: true,
+        },
+    ]
+}
+
 fn command_round_trip_cases() -> Vec<Command> {
     let mut commands = all_commands();
+    commands.extend(admin_space_round_trip_edge_commands());
     commands.extend(json_round_trip_edge_commands());
     commands.extend(vector_round_trip_edge_commands());
     commands.extend(event_round_trip_edge_commands());
@@ -472,6 +599,22 @@ fn command_round_trip_cases() -> Vec<Command> {
     commands.extend(graph_binding_target_round_trip_commands());
     commands.extend(arrow_round_trip_edge_commands());
     commands
+}
+
+fn admin_space_round_trip_edge_commands() -> Vec<Command> {
+    vec![
+        Command::Info {
+            branch: Some("default".to_owned()),
+        },
+        Command::SpaceList {
+            branch: Some("feature".to_owned()),
+        },
+        Command::SpaceDelete {
+            branch: None,
+            space: "tenant_b".to_owned(),
+            force: false,
+        },
+    ]
 }
 
 fn branch_commands() -> Vec<Command> {
@@ -1429,7 +1572,8 @@ fn graph_binding_target_round_trip_commands() -> Vec<Command> {
 }
 
 fn all_outputs() -> Vec<Output> {
-    let mut outputs = branch_outputs();
+    let mut outputs = admin_space_outputs();
+    outputs.extend(branch_outputs());
     outputs.extend(kv_outputs());
     outputs.extend(json_outputs());
     outputs.extend(vector_outputs());
@@ -1437,6 +1581,129 @@ fn all_outputs() -> Vec<Output> {
     outputs.extend(graph_outputs());
     outputs.extend(arrow_outputs());
     outputs
+}
+
+fn admin_space_outputs() -> Vec<Output> {
+    let mut outputs = admin_outputs();
+    outputs.extend(space_outputs());
+    outputs
+}
+
+fn admin_outputs() -> Vec<Output> {
+    vec![
+        Output::Pong {
+            version: "1.0.0".to_owned(),
+        },
+        Output::DatabaseInfo(AdminDatabaseInfo {
+            version: "1.0.0".to_owned(),
+            target: AdminOpenTarget::Cache,
+            created: true,
+            durable: false,
+            default_branch: "default".to_owned(),
+            branch_count: 1,
+            space_count: 1,
+            open: true,
+        }),
+        Output::Health(AdminHealth {
+            status: AdminHealthStatus::Healthy,
+            identity: AdminControlStatus::Healthy,
+            registry: AdminControlStatus::Healthy,
+            branch_catalog: AdminControlStatus::Healthy,
+            space_catalog: Some(AdminControlStatus::Healthy),
+            default_branch: "default".to_owned(),
+            branch_count: 1,
+        }),
+        Output::Metrics(AdminMetrics {
+            target: AdminOpenTarget::DurableLocal,
+            durable: true,
+            open: true,
+            branch_count: 2,
+            space_count: 3,
+            control_status: AdminHealthStatus::Healthy,
+        }),
+        Output::Described(AdminDescribe {
+            version: "1.0.0".to_owned(),
+            target: AdminOpenTarget::Cache,
+            default_branch: "default".to_owned(),
+            branch: "default".to_owned(),
+            branches: vec!["default".to_owned(), "feature".to_owned()],
+            spaces: vec!["default".to_owned(), "tenant_a".to_owned()],
+            primitives: AdminPrimitives {
+                kv_count: 1,
+                json_count: 2,
+                event_count: 3,
+                vector_collections: vec![AdminVectorCollection {
+                    name: "docs".to_owned(),
+                    dimension: 3,
+                    metric: VectorDistanceMetric::Cosine,
+                    count: 4,
+                }],
+                graphs: vec![AdminGraph {
+                    name: "deps".to_owned(),
+                    node_count: 5,
+                    edge_count: 6,
+                }],
+            },
+            config: AdminConfig {
+                target: AdminOpenTarget::Cache,
+                created: true,
+                durable: false,
+                default_branch: "default".to_owned(),
+            },
+            capabilities: AdminCapabilities {
+                kv: true,
+                json: true,
+                event: true,
+                vector: true,
+                vector_index: true,
+                graph_core: true,
+                arrow: false,
+                inference: false,
+            },
+        }),
+        Output::Config(AdminConfig {
+            target: AdminOpenTarget::Cache,
+            created: true,
+            durable: false,
+            default_branch: "default".to_owned(),
+        }),
+        Output::ConfigValue(Some("cache".to_owned())),
+        Output::ConfigValue(None),
+    ]
+}
+
+fn space_outputs() -> Vec<Output> {
+    vec![
+        Output::SpaceList(vec!["default".to_owned(), "tenant_a".to_owned()]),
+        Output::SpaceCreateResult {
+            space: "tenant_a".to_owned(),
+            created: true,
+            version: Some(2),
+            timestamp: Some(20),
+        },
+        Output::SpaceCreateResult {
+            space: "tenant_a".to_owned(),
+            created: false,
+            version: None,
+            timestamp: None,
+        },
+        Output::SpaceDeleteResult {
+            space: "tenant_a".to_owned(),
+            deleted: true,
+            force: true,
+            deleted_rows: 7,
+            version: Some(3),
+            timestamp: Some(30),
+        },
+        Output::SpaceDeleteResult {
+            space: "missing".to_owned(),
+            deleted: false,
+            force: false,
+            deleted_rows: 0,
+            version: None,
+            timestamp: None,
+        },
+    ]
 }
 
 fn branch_outputs() -> Vec<Output> {

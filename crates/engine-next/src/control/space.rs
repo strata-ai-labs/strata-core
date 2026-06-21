@@ -58,6 +58,58 @@ pub(crate) fn registration_mutations(
     ])
 }
 
+pub(crate) fn registered_spaces(
+    persistence: &mut StoragePersistence,
+    record: &BranchCatalogRecord,
+) -> EngineResult<Vec<ProductSpace>> {
+    let spaces = read_required_space_index(persistence, record)?;
+    for space in &spaces {
+        validate_space_catalog_row(persistence, record, space)?;
+    }
+    Ok(spaces)
+}
+
+pub(crate) fn space_exists(
+    persistence: &mut StoragePersistence,
+    record: &BranchCatalogRecord,
+    space: &ProductSpace,
+) -> EngineResult<bool> {
+    Ok(registered_spaces(persistence, record)?
+        .iter()
+        .any(|existing| existing == space))
+}
+
+pub(crate) fn deletion_mutations(
+    persistence: &mut StoragePersistence,
+    record: &BranchCatalogRecord,
+    space: &ProductSpace,
+) -> EngineResult<Option<Vec<RowMutation>>> {
+    let mut spaces = read_required_space_index(persistence, record)?;
+    for existing in &spaces {
+        validate_space_catalog_row(persistence, record, existing)?;
+    }
+    let Some(position) = spaces.iter().position(|existing| existing == space) else {
+        return Ok(None);
+    };
+    spaces.remove(position);
+    if !spaces
+        .iter()
+        .any(|existing| existing.as_str() == DEFAULT_SPACE)
+    {
+        return Err(EngineError::corruption(
+            "data_loss.engine.space_catalog",
+            "space deletion would remove the default space",
+        ));
+    }
+    Ok(Some(vec![
+        RowMutation::put(
+            space_address(record, space_index_key()),
+            encode_space_index(&spaces)?,
+        ),
+        RowMutation::delete(space_address(record, space_catalog_key(space.as_str()))),
+    ]))
+}
+
 pub(crate) fn validate_required_space_rows(
     persistence: &mut StoragePersistence,
     record: &BranchCatalogRecord,
