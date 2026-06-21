@@ -486,6 +486,40 @@ impl StoragePersistence {
         selector: ReadSelector,
         limit: Option<usize>,
     ) -> EngineResult<Vec<PersistenceReadRow>> {
+        self.scan_prefix_inner(branch_id, row_class, prefix, selector, limit, None)
+    }
+
+    /// Scan a prefix returning only rows whose committed version is strictly greater than
+    /// `after_version` — i.e. the "active delta" written after a watermark. Lets a caller that
+    /// already holds covering index artifacts skip re-reading the sealed rows.
+    pub(crate) fn scan_prefix_after_version(
+        &mut self,
+        branch_id: BranchId,
+        row_class: RowClass,
+        prefix: Vec<u8>,
+        selector: ReadSelector,
+        limit: Option<usize>,
+        after_version: CommitVersion,
+    ) -> EngineResult<Vec<PersistenceReadRow>> {
+        self.scan_prefix_inner(
+            branch_id,
+            row_class,
+            prefix,
+            selector,
+            limit,
+            Some(after_version),
+        )
+    }
+
+    fn scan_prefix_inner(
+        &mut self,
+        branch_id: BranchId,
+        row_class: RowClass,
+        prefix: Vec<u8>,
+        selector: ReadSelector,
+        limit: Option<usize>,
+        after_version: Option<CommitVersion>,
+    ) -> EngineResult<Vec<PersistenceReadRow>> {
         if limit == Some(0) {
             return Ok(Vec::new());
         }
@@ -496,6 +530,7 @@ impl StoragePersistence {
             prefix.clone(),
             selector,
             limit,
+            after_version,
         )?) {
             Ok(outcome) => outcome,
             Err(error) if is_outside_retained_history(&error) => return Ok(Vec::new()),
@@ -507,6 +542,7 @@ impl StoragePersistence {
                     prefix,
                     ReadSelector::Latest,
                     limit,
+                    after_version,
                 )?)
                 .map_err(map_storage_error)?,
             Err(error) => return Err(map_storage_error(error)),
@@ -729,14 +765,19 @@ fn prefix_scan_request(
     prefix: Vec<u8>,
     selector: ReadSelector,
     limit: Option<ReadLimit>,
+    after_version: Option<CommitVersion>,
 ) -> EngineResult<PrefixScanReadRequest> {
-    Ok(PrefixScanReadRequest::new(
+    let request = PrefixScanReadRequest::new(
         branch_id,
         storage_space_for_class(row_class)?,
         storage_key_from_bytes(prefix)?,
         storage_read_bound(selector),
         limit,
-    ))
+    );
+    Ok(match after_version {
+        Some(after_version) => request.with_after_version(after_version),
+        None => request,
+    })
 }
 
 fn scan_range_request(

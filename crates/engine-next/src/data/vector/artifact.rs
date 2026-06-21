@@ -32,6 +32,7 @@ const DEFAULT_FLAT_ARTIFACT_BUILD_BUDGET_BYTES: usize = DEFAULT_FLAT_ARTIFACT_LO
 const DEFAULT_HNSW_ARTIFACT_BUILD_BUDGET_BYTES: usize = DEFAULT_HNSW_ARTIFACT_LOAD_BUDGET_BYTES;
 const DEFAULT_ARTIFACT_MEMORY_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 const DEFAULT_HNSW_RUNTIME_BUDGET_BYTES: usize = 256 * 1024 * 1024;
+const DEFAULT_FLAT_RUNTIME_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 const MAX_ID_BYTES: usize = 1024;
 
 pub(crate) const DEFAULT_HNSW_M: u16 = 16;
@@ -549,6 +550,13 @@ pub(crate) struct VectorArtifactStore {
     hnsw_runtime_order: VecDeque<VectorArtifactId>,
     hnsw_runtime_bytes: usize,
     hnsw_runtime_budget_bytes: usize,
+    // Parsed flat artifacts keyed by artifact id, so the payload is decoded once per load and
+    // reused across queries instead of re-decoded each query (including when it is loaded only as
+    // a fallback for an HNSW query). Same in-memory, budget + LRU contract as `hnsw_runtime`.
+    flat_runtime: BTreeMap<VectorArtifactId, FlatRuntimeCacheEntry>,
+    flat_runtime_order: VecDeque<VectorArtifactId>,
+    flat_runtime_bytes: usize,
+    flat_runtime_budget_bytes: usize,
     flat_root: Option<PathBuf>,
     hnsw_root: Option<PathBuf>,
 }
@@ -565,6 +573,10 @@ impl Default for VectorArtifactStore {
             hnsw_runtime_order: VecDeque::new(),
             hnsw_runtime_bytes: 0,
             hnsw_runtime_budget_bytes: DEFAULT_HNSW_RUNTIME_BUDGET_BYTES,
+            flat_runtime: BTreeMap::new(),
+            flat_runtime_order: VecDeque::new(),
+            flat_runtime_bytes: 0,
+            flat_runtime_budget_bytes: DEFAULT_FLAT_RUNTIME_BUDGET_BYTES,
             flat_root: None,
             hnsw_root: None,
         }
@@ -653,6 +665,77 @@ impl VectorArtifactStore {
             if let Some(entry) = self.hnsw_runtime.remove(&artifact_id) {
                 self.hnsw_runtime_bytes = self
                     .hnsw_runtime_bytes
+                    .saturating_sub(entry.estimated_bytes);
+            }
+        }
+    }
+
+    /// Return a cached parsed flat artifact for `artifact_id` when present and its source bytes
+    /// still match `expected_checksum`. Touches LRU on a hit; a miss returns `None` and the caller
+    /// decodes once via `insert_flat_runtime`.
+    pub(crate) fn cached_flat_runtime(
+        &mut self,
+        artifact_id: &VectorArtifactId,
+        expected_checksum: u64,
+    ) -> Option<Arc<FlatVectorArtifact>> {
+        let entry = self.flat_runtime.get(artifact_id)?;
+        if entry.checksum != expected_checksum {
+            return None;
+        }
+        let cached = Arc::clone(&entry.cached);
+        self.touch_flat_runtime(artifact_id);
+        Some(cached)
+    }
+
+    /// Cache a parsed flat artifact keyed by `artifact_id` + `checksum` and return a shared handle.
+    /// Replaces any stale entry and evicts LRU entries while over the runtime budget. Eviction is a
+    /// performance event only: an evicted artifact is re-decoded on its next load.
+    pub(crate) fn insert_flat_runtime(
+        &mut self,
+        artifact_id: VectorArtifactId,
+        checksum: u64,
+        artifact: FlatVectorArtifact,
+    ) -> Arc<FlatVectorArtifact> {
+        self.remove_flat_runtime(&artifact_id);
+        let estimated_bytes = estimate_flat_artifact_memory_bytes(&artifact);
+        let cached = Arc::new(artifact);
+        self.flat_runtime.insert(
+            artifact_id.clone(),
+            FlatRuntimeCacheEntry {
+                cached: Arc::clone(&cached),
+                checksum,
+                estimated_bytes,
+            },
+        );
+        self.flat_runtime_order.push_back(artifact_id);
+        self.flat_runtime_bytes = self.flat_runtime_bytes.saturating_add(estimated_bytes);
+        self.evict_flat_runtime();
+        cached
+    }
+
+    fn touch_flat_runtime(&mut self, artifact_id: &VectorArtifactId) {
+        self.flat_runtime_order.retain(|id| id != artifact_id);
+        self.flat_runtime_order.push_back(artifact_id.clone());
+    }
+
+    fn remove_flat_runtime(&mut self, artifact_id: &VectorArtifactId) {
+        self.flat_runtime_order.retain(|id| id != artifact_id);
+        if let Some(entry) = self.flat_runtime.remove(artifact_id) {
+            self.flat_runtime_bytes = self
+                .flat_runtime_bytes
+                .saturating_sub(entry.estimated_bytes);
+        }
+    }
+
+    fn evict_flat_runtime(&mut self) {
+        while self.flat_runtime_bytes > self.flat_runtime_budget_bytes {
+            let Some(artifact_id) = self.flat_runtime_order.pop_front() else {
+                self.flat_runtime_bytes = 0;
+                break;
+            };
+            if let Some(entry) = self.flat_runtime.remove(&artifact_id) {
+                self.flat_runtime_bytes = self
+                    .flat_runtime_bytes
                     .saturating_sub(entry.estimated_bytes);
             }
         }
@@ -1077,6 +1160,21 @@ struct HnswRuntimeCacheEntry {
     cached: Arc<CachedHnswArtifact>,
     checksum: u64,
     estimated_bytes: usize,
+}
+
+struct FlatRuntimeCacheEntry {
+    cached: Arc<FlatVectorArtifact>,
+    checksum: u64,
+    estimated_bytes: usize,
+}
+
+fn estimate_flat_artifact_memory_bytes(artifact: &FlatVectorArtifact) -> usize {
+    let per_vector_bytes = artifact
+        .identity()
+        .vector_dimension()
+        .saturating_mul(std::mem::size_of::<f32>())
+        .saturating_add(64);
+    artifact.rows().len().saturating_mul(per_vector_bytes)
 }
 
 fn persist_raw_flat_payload_at(path: &Path, bytes: &[u8]) -> EngineResult<()> {

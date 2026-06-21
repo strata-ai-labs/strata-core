@@ -212,6 +212,12 @@ impl VectorIndexPolicy {
         )
     }
 
+    /// Whether this policy can ever resolve to an index source (i.e. it is not exact-only). Used
+    /// to gate the bounded active-delta read: an exact-only policy must read the full snapshot.
+    pub(crate) fn may_use_index(self) -> bool {
+        !matches!(self.resolve_kind(usize::MAX).kind, VectorSourceKind::Exact)
+    }
+
     pub(crate) fn should_load_hnsw_sources(self, vector_count: usize) -> bool {
         self.resolve_kind(vector_count).kind == VectorSourceKind::Hnsw
     }
@@ -303,14 +309,14 @@ pub(crate) enum VectorIndexManifestLookup {
 }
 
 pub(crate) struct VectorFlatArtifactSourceInput {
-    artifact: FlatVectorArtifact,
+    artifact: Arc<FlatVectorArtifact>,
     derived_bytes: u64,
     fork_version_cap: Option<CommitVersion>,
 }
 
 impl VectorFlatArtifactSourceInput {
     pub(crate) fn new(
-        artifact: FlatVectorArtifact,
+        artifact: Arc<FlatVectorArtifact>,
         derived_bytes: u64,
         fork_version_cap: Option<CommitVersion>,
     ) -> Self {
@@ -366,6 +372,10 @@ pub(crate) struct VectorHnswArtifactSourceInput {
     cached: Arc<CachedHnswArtifact>,
     derived_bytes: u64,
     fork_version_cap: Option<CommitVersion>,
+    // True only when the fork cap actually excludes some artifact rows (the artifact was sealed
+    // past the fork point). When false — the common case where every artifact row is visible to
+    // this branch — graph search is exactly correct and the brute-force visibility scan is skipped.
+    fork_cap_excludes_rows: bool,
 }
 
 impl VectorHnswArtifactSourceInput {
@@ -373,11 +383,13 @@ impl VectorHnswArtifactSourceInput {
         cached: Arc<CachedHnswArtifact>,
         derived_bytes: u64,
         fork_version_cap: Option<CommitVersion>,
+        fork_cap_excludes_rows: bool,
     ) -> Self {
         Self {
             cached,
             derived_bytes,
             fork_version_cap,
+            fork_cap_excludes_rows,
         }
     }
 
@@ -568,6 +580,7 @@ pub struct VectorIndexDiagnostics {
     resolved_index_kind_summary: &'static str,
     exact_fallback_count: u64,
     hnsw_graph_builds: usize,
+    source_rows_scanned: usize,
     indexed_source_count: usize,
     exact_source_count: usize,
     flat_source_count: usize,
@@ -602,6 +615,7 @@ impl VectorIndexDiagnostics {
             resolved_index_kind_summary: "none",
             exact_fallback_count: 0,
             hnsw_graph_builds: 0,
+            source_rows_scanned: 0,
             indexed_source_count: 0,
             exact_source_count: 0,
             flat_source_count: 0,
@@ -663,6 +677,10 @@ impl VectorIndexDiagnostics {
 
     pub(crate) fn record_hnsw_graph_builds(&mut self, builds: usize) {
         self.hnsw_graph_builds = builds;
+    }
+
+    pub(crate) fn record_source_rows_scanned(&mut self, rows: usize) {
+        self.source_rows_scanned = rows;
     }
 
     pub(crate) fn record_manifest_lookup(&mut self, lookup: VectorIndexManifestLookup) {
@@ -807,6 +825,14 @@ impl VectorIndexDiagnostics {
     /// build, because the per-database runtime cache reuses the built graph across queries.
     pub const fn hnsw_graph_builds(&self) -> usize {
         self.hnsw_graph_builds
+    }
+
+    #[must_use]
+    /// Returns how many source rows were materialized to answer this query. An index-covered
+    /// query reads only the active delta (rows past the manifest watermark), so this is small/zero
+    /// even for a large collection; a full-scan or exact-fallback query reads the whole set.
+    pub const fn source_rows_scanned(&self) -> usize {
+        self.source_rows_scanned
     }
 
     #[must_use]
@@ -1052,12 +1078,12 @@ struct FlatArtifactVectorSource<'a> {
 }
 
 impl<'a> FlatArtifactVectorSource<'a> {
-    const fn new(
+    fn new(
         input: &'a VectorFlatArtifactSourceInput,
         selector: ReadSelector,
     ) -> FlatArtifactVectorSource<'a> {
         Self {
-            artifact: &input.artifact,
+            artifact: input.artifact.as_ref(),
             estimated_bytes: input.derived_bytes,
             selector,
             fork_version_cap: input.fork_version_cap,
@@ -1133,7 +1159,7 @@ impl VectorCandidateSource for HnswArtifactVectorSource<'_> {
     ) -> EngineResult<Vec<VectorCandidate>> {
         if filter.is_some()
             || !matches!(self.selector, ReadSelector::Latest)
-            || self.input.fork_version_cap.is_some()
+            || self.input.fork_cap_excludes_rows
         {
             return score_hnsw_artifact_exact(
                 self.input.cached.artifact(),
@@ -1210,8 +1236,14 @@ pub(crate) fn query_vector_sources_with_index_artifacts(
     flat_unavailable_reason: Option<&'static str>,
     hnsw_unavailable_reason: Option<&'static str>,
     policy: VectorIndexPolicy,
+    collection_size: usize,
+    entries_are_complete: bool,
 ) -> EngineResult<(VectorSearchResult, VectorIndexDiagnostics)> {
-    let resolved = policy.resolve_kind(entries.len());
+    // `entries` may be only the active delta (rows past the manifest watermark) when a sealed
+    // index covers the rest, so index-kind selection uses `collection_size` (from the manifest),
+    // and the internal exact-underfill fallback only runs when `entries` is the complete visible
+    // set. The caller re-runs over the full snapshot otherwise.
+    let resolved = policy.resolve_kind(collection_size);
     let mut diagnostics = VectorIndexDiagnostics::new(collection, policy);
 
     let hnsw_memory_bytes = hnsw_artifacts
@@ -1280,7 +1312,7 @@ pub(crate) fn query_vector_sources_with_index_artifacts(
         }
         let result =
             execute_vector_plan(query, metric, k, filter, &planned_sources, &mut diagnostics)?;
-        if should_exact_fallback_for_indexed_underfill(&result, k, policy) {
+        if entries_are_complete && should_exact_fallback_for_indexed_underfill(&result, k, policy) {
             let exact_result =
                 execute_exact_fallback(query, metric, k, filter, entries, &mut diagnostics)?;
             return Ok((exact_result, diagnostics));
@@ -1300,7 +1332,7 @@ pub(crate) fn query_vector_sources_with_index_artifacts(
         }
         let result =
             execute_vector_plan(query, metric, k, filter, &planned_sources, &mut diagnostics)?;
-        if should_exact_fallback_for_indexed_underfill(&result, k, policy) {
+        if entries_are_complete && should_exact_fallback_for_indexed_underfill(&result, k, policy) {
             let exact_result =
                 execute_exact_fallback(query, metric, k, filter, entries, &mut diagnostics)?;
             return Ok((exact_result, diagnostics));
@@ -1812,6 +1844,8 @@ mod tests {
             None,
             None,
             VectorIndexPolicy::default(),
+            entries.len(),
+            true,
         )
         .expect("planned query succeeds");
 

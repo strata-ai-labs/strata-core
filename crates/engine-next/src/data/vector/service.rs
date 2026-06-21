@@ -51,6 +51,36 @@ struct VectorIndexManifestResolution {
     artifact_refs: Vec<VectorArtifactRef>,
 }
 
+impl VectorIndexManifestResolution {
+    /// The boundary at or below which every row is represented by a sealed artifact; rows past it
+    /// are the active delta. A seal captures one atomic snapshot into its sources and replaces the
+    /// manifest wholesale, so all rows up to the *highest* covered version across the refs are
+    /// sealed — hence `max`. (Using `min` would treat rows covered by a newer source as active and
+    /// re-scan most of a multi-source collection.) `None` when nothing is sealed.
+    fn active_delta_watermark(&self) -> Option<CommitVersion> {
+        self.artifact_refs
+            .iter()
+            .map(VectorArtifactRef::covered_commit_version)
+            .max()
+    }
+
+    /// Estimated number of distinct sealed vectors, counting each source once (flat and HNSW refs
+    /// for the same source cover the same vectors). Used as the index-kind threshold input so the
+    /// bounded active-delta read does not need a whole-collection scan to size the collection.
+    fn indexed_vector_count(&self) -> usize {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut total = 0usize;
+        for artifact_ref in &self.artifact_refs {
+            if seen.insert(artifact_ref.source_id().to_owned()) {
+                total = total.saturating_add(
+                    usize::try_from(artifact_ref.vector_count()).unwrap_or(usize::MAX),
+                );
+            }
+        }
+        total
+    }
+}
+
 struct VectorQuerySnapshot {
     entries: Vec<(PersistenceReadRow, VectorEntry)>,
     tombstones: Vec<VectorTombstone>,
@@ -1427,6 +1457,8 @@ impl<'a> VectorService<'a> {
                 None,
                 None,
                 policy,
+                0,
+                true,
             );
         }
         let manifest_resolution = self.index_manifest_resolution(
@@ -1436,12 +1468,70 @@ impl<'a> VectorService<'a> {
             collection_generation,
             selector,
         )?;
+        // Fast path: when a sealed index covers the collection, read only the active delta (rows
+        // past the manifest watermark) and resolve the rest from artifacts — O(active delta + k)
+        // instead of scanning the whole collection. Latest reads only.
+        let bounded_watermark = if matches!(selector, ReadSelector::Latest)
+            && policy.may_use_index()
+            && !manifest_resolution.artifact_refs.is_empty()
+        {
+            manifest_resolution.active_delta_watermark()
+        } else {
+            None
+        };
+        if let Some(watermark) = bounded_watermark {
+            let delta = self.vector_active_delta_snapshot(&record, collection, watermark)?;
+            let collection_size = manifest_resolution
+                .indexed_vector_count()
+                .saturating_add(delta.entries.len());
+            let index_artifacts = self.load_index_artifact_sources_for_query(
+                collection,
+                collection_generation,
+                &manifest_resolution,
+                collection_size,
+                policy,
+            )?;
+            let (result, mut diagnostics) = query_vector_sources_with_index_artifacts(
+                collection,
+                query,
+                config.metric(),
+                k,
+                filter,
+                &delta.entries,
+                &delta.tombstones,
+                selector,
+                &index_artifacts.flat_artifacts,
+                &index_artifacts.hnsw_artifacts,
+                &index_artifacts.artifact_reports,
+                index_artifacts.flat_unavailable_reason,
+                index_artifacts.hnsw_unavailable_reason,
+                policy,
+                collection_size,
+                false,
+            )?;
+            // The active delta is only the rows past the watermark, so it is a complete answer
+            // only when the index actually answered without an exact underfill. If the index was
+            // unavailable or the result underfilled after filtering, fall through to the
+            // full-snapshot path below, which is exact.
+            let needs_full_snapshot = !diagnostics.last_query_used_index()
+                || (diagnostics.filtered_underfill_fallback()
+                    && k > 0
+                    && result.matches().len() < k);
+            if !needs_full_snapshot {
+                diagnostics.record_manifest_lookup(manifest_resolution.lookup);
+                diagnostics.record_hnsw_graph_builds(index_artifacts.hnsw_graph_builds);
+                diagnostics.record_source_rows_scanned(delta.entries.len());
+                return Ok((result, diagnostics));
+            }
+        }
+
         let snapshot = self.vector_query_snapshot(&record, collection, selector)?;
+        let collection_size = snapshot.entries.len();
         let index_artifacts = self.load_index_artifact_sources_for_query(
             collection,
             collection_generation,
             &manifest_resolution,
-            snapshot.entries.len(),
+            collection_size,
             policy,
         )?;
         let (result, mut diagnostics) = query_vector_sources_with_index_artifacts(
@@ -1459,9 +1549,12 @@ impl<'a> VectorService<'a> {
             index_artifacts.flat_unavailable_reason,
             index_artifacts.hnsw_unavailable_reason,
             policy,
+            collection_size,
+            true,
         )?;
         diagnostics.record_manifest_lookup(manifest_resolution.lookup);
         diagnostics.record_hnsw_graph_builds(index_artifacts.hnsw_graph_builds);
+        diagnostics.record_source_rows_scanned(snapshot.entries.len());
         Ok((result, diagnostics))
     }
 
@@ -1771,11 +1864,29 @@ impl<'a> VectorService<'a> {
             collection_generation.as_u64(),
             artifact_ref,
         )?;
+        // Reuse the parsed flat artifact when its cached source bytes still match the manifest ref
+        // checksum, so repeated queries do not re-decode the flat payload.
+        if let Some(cached) = self
+            .artifacts
+            .cached_flat_runtime(identity.artifact_id(), artifact_ref.checksum())
+        {
+            flat_artifacts.push(VectorFlatArtifactSourceInput::new(
+                cached,
+                artifact_ref.derived_bytes(),
+                artifact_ref.fork_version_cap(),
+            ));
+            return Ok("loaded");
+        }
         let (artifact, status) =
             self.load_flat_artifact_for_query(&identity, artifact_ref, load_budget_bytes);
         if let Some(artifact) = artifact {
-            flat_artifacts.push(VectorFlatArtifactSourceInput::new(
+            let cached = self.artifacts.insert_flat_runtime(
+                identity.artifact_id().clone(),
+                artifact_ref.checksum(),
                 artifact,
+            );
+            flat_artifacts.push(VectorFlatArtifactSourceInput::new(
+                cached,
                 artifact_ref.derived_bytes(),
                 artifact_ref.fork_version_cap(),
             ));
@@ -1797,6 +1908,13 @@ impl<'a> VectorService<'a> {
             collection_generation.as_u64(),
             artifact_ref,
         )?;
+        // Graph search stays exact for an inherited artifact only when the fork cap actually
+        // excludes some of its rows (it was sealed past the fork point). When every row is visible
+        // to this branch — the common case — the per-candidate visibility filter is a no-op and the
+        // graph path is used.
+        let fork_cap_excludes_rows = artifact_ref
+            .fork_version_cap()
+            .is_some_and(|cap| artifact_ref.covered_commit_version() > cap);
         // Reuse a previously built graph when the cached source bytes still match the manifest
         // ref checksum, so repeated queries do not rebuild the HNSW graph.
         if let Some(cached) = self
@@ -1807,6 +1925,7 @@ impl<'a> VectorService<'a> {
                 cached,
                 artifact_ref.derived_bytes(),
                 artifact_ref.fork_version_cap(),
+                fork_cap_excludes_rows,
             ));
             return Ok(("loaded", false));
         }
@@ -1822,6 +1941,7 @@ impl<'a> VectorService<'a> {
                 cached,
                 artifact_ref.derived_bytes(),
                 artifact_ref.fork_version_cap(),
+                fork_cap_excludes_rows,
             ));
             return Ok((status, true));
         }
@@ -2334,9 +2454,39 @@ impl<'a> VectorService<'a> {
         collection: &VectorCollectionName,
         selector: ReadSelector,
     ) -> EngineResult<VectorQuerySnapshot> {
+        let rows = self.vector_rows(record, collection, selector)?;
+        self.snapshot_from_rows(collection, rows)
+    }
+
+    /// Read and decode only the "active delta": rows committed after `watermark`, leaving rows
+    /// covered by a sealed index artifact unread. This keeps an index-covered latest query
+    /// O(active delta) instead of O(collection). Latest selector only (the bounded read is the
+    /// hot path; timestamp/version reads use the full snapshot).
+    fn vector_active_delta_snapshot(
+        &mut self,
+        record: &BranchCatalogRecord,
+        collection: &VectorCollectionName,
+        watermark: CommitVersion,
+    ) -> EngineResult<VectorQuerySnapshot> {
+        let rows = self.persistence.scan_prefix_after_version(
+            record.storage_branch_id(),
+            RowClass::Vector,
+            encode_vector_collection_entry_prefix(&self.space, collection),
+            ReadSelector::Latest,
+            None,
+            watermark,
+        )?;
+        self.snapshot_from_rows(collection, rows)
+    }
+
+    fn snapshot_from_rows(
+        &self,
+        collection: &VectorCollectionName,
+        rows: Vec<PersistenceReadRow>,
+    ) -> EngineResult<VectorQuerySnapshot> {
         let mut entries = Vec::new();
         let mut tombstones = Vec::new();
-        for row in self.vector_rows(record, collection, selector)? {
+        for row in rows {
             let (_, key) = decode_vector_key(&self.space, row.key())?;
             if row.is_tombstone() {
                 tombstones.push(VectorTombstone::new(

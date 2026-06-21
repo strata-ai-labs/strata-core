@@ -375,3 +375,54 @@ fn vector_hnsw_graph_is_built_once_and_reused_across_queries() {
         assert_search_results_match(&again, &first);
     }
 }
+
+#[cfg(feature = "testkit")]
+#[test]
+fn vector_branch_fork_hnsw_searches_inherited_graph_without_exact_rescan() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let docs = collection("fork-hnsw-graph");
+    {
+        let mut parent = vector_service(&mut database, "default", "default");
+        parent
+            .create_collection(docs.clone(), config(2, VectorDistanceMetric::Cosine))
+            .expect("collection create succeeds");
+        let entries = (0_u16..320)
+            .map(|index| descending_fixture_upsert(index, json!({"kind": "doc"})))
+            .collect::<Vec<_>>();
+        parent
+            .batch_upsert(&docs, &entries)
+            .expect("batch upsert succeeds");
+        parent
+            .seal_index_artifacts_for_test(&docs, VectorIndexPolicy::hnsw_only_for_test())
+            .expect("seal default");
+    }
+    // Fork after sealing: every inherited artifact row is at or below the fork point, so the fork
+    // sees them all and the inherited HNSW graph can be searched directly.
+    database
+        .branches()
+        .expect("branches")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("fork");
+
+    let mut feature = vector_service(&mut database, "feature", "default");
+    let query = embedding([1.0, 0.0]);
+    let exact = feature
+        .query_exact_for_test(&docs, &query, 8, None)
+        .expect("exact branch query succeeds");
+    let (indexed, diagnostics) = feature
+        .query_with_index_policy_for_test(
+            &docs,
+            &query,
+            8,
+            None,
+            VectorIndexPolicy::hnsw_only_for_test(),
+        )
+        .expect("indexed branch query succeeds");
+
+    // The inherited artifact is searched via the graph (not a brute-force visibility rescan), and
+    // with no branch-local writes the active delta is empty.
+    assert_eq!(diagnostics.hnsw_source_count(), 1);
+    assert_eq!(diagnostics.exact_source_count(), 0);
+    assert_eq!(diagnostics.source_rows_scanned(), 0);
+    assert_search_results_match(&indexed, &exact);
+}

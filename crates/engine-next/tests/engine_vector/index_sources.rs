@@ -971,3 +971,73 @@ fn assert_feature_query_uses_inherited_source_artifacts(
         .iter()
         .all(|artifact_id| parent_artifact_ids.contains(artifact_id)));
 }
+
+#[cfg(feature = "testkit")]
+#[test]
+fn vector_index_covered_query_reads_only_the_active_delta() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut vectors = vector_service(&mut database, "default", "default");
+    let docs = collection("active-delta-bounded-read");
+    vectors
+        .create_collection(docs.clone(), config(2, VectorDistanceMetric::Cosine))
+        .expect("collection create succeeds");
+    let entries = (0_u16..320)
+        .map(|index| descending_fixture_upsert(index, json!({"kind": "doc"})))
+        .collect::<Vec<_>>();
+    vectors
+        .batch_upsert(&docs, &entries)
+        .expect("batch upsert succeeds");
+    vectors
+        .seed_flat_hnsw_index_manifest_from_visible_rows_for_test(&docs, "source-a")
+        .expect("artifact seed succeeds");
+
+    let query = embedding([1.0, 0.0]);
+    let exact = vectors
+        .query_exact_for_test(&docs, &query, 8, None)
+        .expect("exact query succeeds");
+
+    // A fully sealed collection: the query is answered from artifacts + an empty active delta, so
+    // no source rows are re-scanned, yet the result still matches exact.
+    let (indexed, diagnostics) = vectors
+        .query_with_index_policy_for_test(
+            &docs,
+            &query,
+            8,
+            None,
+            VectorIndexPolicy::hnsw_only_for_test(),
+        )
+        .expect("indexed query succeeds");
+    assert_search_results_match(&indexed, &exact);
+    assert_eq!(diagnostics.hnsw_source_count(), 1);
+    assert_eq!(
+        diagnostics.source_rows_scanned(),
+        0,
+        "an index-covered query must not re-scan the sealed collection"
+    );
+
+    // Fresh writes land in the active delta and are the only source rows scanned.
+    let fresh = (320_u16..324)
+        .map(|index| descending_fixture_upsert(index, json!({"kind": "doc"})))
+        .collect::<Vec<_>>();
+    vectors
+        .batch_upsert(&docs, &fresh)
+        .expect("fresh batch upsert succeeds");
+    let exact_after = vectors
+        .query_exact_for_test(&docs, &query, 8, None)
+        .expect("exact query after fresh writes succeeds");
+    let (indexed_after, diagnostics_after) = vectors
+        .query_with_index_policy_for_test(
+            &docs,
+            &query,
+            8,
+            None,
+            VectorIndexPolicy::hnsw_only_for_test(),
+        )
+        .expect("indexed query after fresh writes succeeds");
+    assert_search_results_match(&indexed_after, &exact_after);
+    assert_eq!(
+        diagnostics_after.source_rows_scanned(),
+        fresh.len(),
+        "only the fresh active-delta rows are scanned, not the whole collection"
+    );
+}
