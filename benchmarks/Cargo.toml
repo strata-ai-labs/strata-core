@@ -88,6 +88,14 @@ name = "engine-kv-scan-regression"
 path = "src/bin/engine_kv_scan_regression.rs"
 
 [[bin]]
+name = "engine-kv-scale"
+path = "src/bin/engine_kv_scale.rs"
+
+[[bin]]
+name = "engine-ycsb"
+path = "src/bin/engine_ycsb.rs"
+
+[[bin]]
 name = "engine-vector-indexing"
 path = "src/bin/engine_vector_indexing.rs"
 

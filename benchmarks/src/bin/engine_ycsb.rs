@@ -1,0 +1,668 @@
+//! YCSB benchmark for the engine-next KV surface.
+//!
+//! Runs the standard YCSB workloads A-F through the public `strata_engine_next`
+//! `Database`/`KvService` API with a proper load phase + run phase, the standard
+//! Zipfian/Uniform/Latest request distributions, and per-operation-type latency
+//! percentiles. Workload/distribution generators are shared with the
+//! competitive `ycsb_compare` bench via the `ycsb_workloads` module.
+//!
+//! Usage:
+//!   engine-ycsb                                   # A-F, cache+durable, 100k/100k
+//!   engine-ycsb --workload a,c --records 1m
+//!   engine-ycsb -q                                # quick: 10k records, 10k ops
+//!   engine-ycsb --mode cache --memory-budget 16g
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::process;
+use std::time::{Duration, Instant, SystemTime};
+
+use serde::Serialize;
+use strata_engine_next::{
+    BranchName, CacheOpenOptions, Database, DurableLocalOpenOptions, EngineResult, KvKey, KvValue,
+    ProductSpace,
+};
+
+// Shared YCSB workload definitions and distribution generators (no churn to the
+// existing competitive bench — the file is included directly).
+#[allow(dead_code)]
+#[path = "../../benches/ycsb_workloads.rs"]
+mod ycsb_workloads;
+
+use ycsb_workloads::{
+    workload_by_label, ycsb_key, FastRng, KeyChooser, Operation, WorkloadSpec,
+};
+
+const DEFAULT_RECORDS: usize = 100_000;
+const DEFAULT_OPS: usize = 100_000;
+const QUICK_RECORDS: usize = 10_000;
+const QUICK_OPS: usize = 10_000;
+const DEFAULT_VALUE_BYTES: usize = 1_000;
+const DEFAULT_SCAN_MAX: usize = 100;
+const DEFAULT_MEMORY_BUDGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const RUN_SEED: u64 = 0xABCD_2026;
+
+// The load phase is benchmark setup, not the measured YCSB workload: batch its
+// inserts so the durable mode does not pay one fsync per record before the run
+// phase even starts. The run phase keeps one commit per operation (proper YCSB).
+// Override with `--load-batch 1` to measure single-insert load throughput.
+const DEFAULT_LOAD_BATCH: usize = 1_000;
+
+fn main() {
+    let config = match Config::parse(std::env::args().skip(1)) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("{error}");
+            process::exit(2);
+        }
+    };
+    if let Err(error) = run(config) {
+        eprintln!("{error:?}");
+        process::exit(1);
+    }
+}
+
+fn run(config: Config) -> EngineResult<()> {
+    let root = std::env::current_dir()
+        .unwrap_or_else(|_| ".".into())
+        .join(".benchmark")
+        .join("engine-ycsb");
+    std::fs::create_dir_all(&root).expect("benchmark directory");
+
+    println!(
+        "engine-ycsb records={} ops={} value={}B scan_max={} budget={} modes={} workloads={}",
+        config.records,
+        config.ops,
+        config.value_bytes,
+        config.scan_max,
+        format_bytes(config.memory_budget_bytes),
+        config
+            .mode
+            .modes()
+            .iter()
+            .map(|m| m.as_str())
+            .collect::<Vec<_>>()
+            .join("+"),
+        config
+            .workloads
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+
+    let mut results = Vec::new();
+    for &label in &config.workloads {
+        let Some(workload) = workload_by_label(label) else {
+            eprintln!("warning: unknown workload `{label}`, skipping");
+            continue;
+        };
+        println!(
+            "\n--- Workload {}: {} ({}) ---",
+            workload.label.to_ascii_uppercase(),
+            workload.name,
+            workload.mix_label(),
+        );
+        for mode in config.mode.modes() {
+            let tempdir = tempfile::tempdir_in(&root).expect("temporary benchmark database");
+            let result = run_workload(&config, mode, workload, tempdir.path())?;
+            print_result(&result);
+            results.push(result);
+        }
+    }
+
+    if !results.is_empty() {
+        print_summary(&results);
+        write_results(&config, &results);
+    }
+    Ok(())
+}
+
+fn run_workload(
+    config: &Config,
+    mode: BenchMode,
+    workload: &WorkloadSpec,
+    path: &Path,
+) -> EngineResult<WorkloadResult> {
+    let mut database = open_database(config, mode, path)?;
+
+    // Load phase: insert `records` keys (user0..user{records-1}).
+    let value = vec![0x42u8; config.value_bytes];
+    let load_start = Instant::now();
+    load(&mut database, config, &value)?;
+    let load_elapsed = load_start.elapsed();
+
+    // Run phase: weighted operation mix over the chosen request distribution.
+    let run = run_phase(&mut database, config, workload, &value)?;
+
+    Ok(WorkloadResult {
+        workload: workload.label,
+        workload_name: workload.name,
+        mode: mode.as_str(),
+        distribution: workload.distribution.label(),
+        records: config.records,
+        ops: config.ops,
+        value_bytes: config.value_bytes,
+        memory_budget_bytes: config.memory_budget_bytes,
+        load_ops_per_sec: rate(config.records, load_elapsed),
+        load_elapsed_ms: load_elapsed.as_millis(),
+        run_ops_per_sec: run.ops_per_sec,
+        run_elapsed_ms: run.elapsed_ms,
+        operations: run.operations,
+    })
+}
+
+fn open_database(config: &Config, mode: BenchMode, path: &Path) -> EngineResult<Database> {
+    let outcome = match mode {
+        BenchMode::Cache => {
+            Database::open_cache(CacheOpenOptions::new().with_memory_budget(config.memory_budget_bytes))?
+        }
+        BenchMode::Durable => Database::open_local(
+            path,
+            DurableLocalOpenOptions::new().with_memory_budget(config.memory_budget_bytes),
+        )?,
+    };
+    Ok(outcome.into_database())
+}
+
+fn load(database: &mut Database, config: &Config, value: &[u8]) -> EngineResult<()> {
+    let mut service = database.kv(default_branch(), default_space())?;
+    if config.load_batch <= 1 {
+        for index in 0..config.records {
+            service.put(make_key(index), KvValue::new(value.to_vec()))?;
+        }
+    } else {
+        let mut batch = Vec::with_capacity(config.load_batch);
+        for index in 0..config.records {
+            batch.push((make_key(index), KvValue::new(value.to_vec())));
+            if batch.len() >= config.load_batch {
+                service.put_batch(std::mem::take(&mut batch))?;
+            }
+        }
+        if !batch.is_empty() {
+            service.put_batch(batch)?;
+        }
+    }
+    Ok(())
+}
+
+struct RunPhase {
+    ops_per_sec: f64,
+    elapsed_ms: u128,
+    operations: BTreeMap<&'static str, LatencySummary>,
+}
+
+fn run_phase(
+    database: &mut Database,
+    config: &Config,
+    workload: &WorkloadSpec,
+    value: &[u8],
+) -> EngineResult<RunPhase> {
+    let update_value = vec![0x43u8; config.value_bytes];
+    let mut rng = FastRng::new(RUN_SEED);
+    let mut key_chooser = KeyChooser::new(workload.distribution, config.records.max(1));
+    let mut insert_counter = config.records;
+    let mut stats = OpStatsByType::new();
+
+    let mut service = database.kv(default_branch(), default_space())?;
+    let wall_start = Instant::now();
+    for _ in 0..config.ops {
+        let op = workload.choose_operation(rng.next_f64());
+        let op_start = Instant::now();
+        match op {
+            Operation::Read => {
+                let key = make_key(key_chooser.next(&mut rng));
+                let _ = service.get(&key)?;
+            }
+            Operation::Update => {
+                let key = make_key(key_chooser.next(&mut rng));
+                service.put(key, KvValue::new(update_value.clone()))?;
+            }
+            Operation::Insert => {
+                service.put(make_key(insert_counter), KvValue::new(value.to_vec()))?;
+                insert_counter += 1;
+                key_chooser.set_max_key(insert_counter);
+            }
+            Operation::Scan => {
+                let key = make_key(key_chooser.next(&mut rng));
+                let len = 1 + rng.next_usize(config.scan_max);
+                let _ = service.scan(Some(&key), Some(len))?;
+            }
+            Operation::ReadModifyWrite => {
+                let key = make_key(key_chooser.next(&mut rng));
+                let _ = service.get(&key)?;
+                service.put(key, KvValue::new(update_value.clone()))?;
+            }
+        }
+        stats.record(op, op_start.elapsed().as_nanos() as u64);
+    }
+    let elapsed = wall_start.elapsed();
+
+    Ok(RunPhase {
+        ops_per_sec: rate(config.ops, elapsed),
+        elapsed_ms: elapsed.as_millis(),
+        operations: stats.into_summaries(),
+    })
+}
+
+fn make_key(index: usize) -> KvKey {
+    KvKey::new(ycsb_key(index).into_bytes()).expect("valid YCSB key")
+}
+
+fn default_branch() -> BranchName {
+    BranchName::new("default").expect("valid branch")
+}
+
+fn default_space() -> ProductSpace {
+    ProductSpace::new("default").expect("valid product space")
+}
+
+// ---------------------------------------------------------------------------
+// Per-operation-type latency accounting
+// ---------------------------------------------------------------------------
+
+struct OpStatsByType {
+    read: Vec<u64>,
+    update: Vec<u64>,
+    insert: Vec<u64>,
+    scan: Vec<u64>,
+    rmw: Vec<u64>,
+}
+
+impl OpStatsByType {
+    fn new() -> Self {
+        Self {
+            read: Vec::new(),
+            update: Vec::new(),
+            insert: Vec::new(),
+            scan: Vec::new(),
+            rmw: Vec::new(),
+        }
+    }
+
+    fn record(&mut self, op: Operation, nanos: u64) {
+        match op {
+            Operation::Read => self.read.push(nanos),
+            Operation::Update => self.update.push(nanos),
+            Operation::Insert => self.insert.push(nanos),
+            Operation::Scan => self.scan.push(nanos),
+            Operation::ReadModifyWrite => self.rmw.push(nanos),
+        }
+    }
+
+    fn into_summaries(self) -> BTreeMap<&'static str, LatencySummary> {
+        let mut map = BTreeMap::new();
+        for (label, mut samples) in [
+            ("read", self.read),
+            ("update", self.update),
+            ("insert", self.insert),
+            ("scan", self.scan),
+            ("rmw", self.rmw),
+        ] {
+            if let Some(summary) = LatencySummary::from_samples(&mut samples) {
+                map.insert(label, summary);
+            }
+        }
+        map
+    }
+}
+
+#[derive(Serialize)]
+struct LatencySummary {
+    count: usize,
+    avg_ns: u64,
+    p50_ns: u64,
+    p95_ns: u64,
+    p99_ns: u64,
+    p999_ns: u64,
+    max_ns: u64,
+}
+
+impl LatencySummary {
+    fn from_samples(samples: &mut [u64]) -> Option<Self> {
+        if samples.is_empty() {
+            return None;
+        }
+        samples.sort_unstable();
+        let sum: u128 = samples.iter().map(|&n| n as u128).sum();
+        Some(Self {
+            count: samples.len(),
+            avg_ns: (sum / samples.len() as u128) as u64,
+            p50_ns: percentile(samples, 50.0),
+            p95_ns: percentile(samples, 95.0),
+            p99_ns: percentile(samples, 99.0),
+            p999_ns: percentile(samples, 99.9),
+            max_ns: *samples.last().expect("non-empty"),
+        })
+    }
+}
+
+fn percentile(sorted: &[u64], p: f64) -> u64 {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let rank = (p / 100.0) * (sorted.len() - 1) as f64;
+    sorted[(rank.round() as usize).min(sorted.len() - 1)]
+}
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+
+fn print_result(result: &WorkloadResult) {
+    println!(
+        "  [{}] load={:.0} ops/s ({}ms)  run={:.0} ops/s ({}ms)",
+        result.mode,
+        result.load_ops_per_sec,
+        result.load_elapsed_ms,
+        result.run_ops_per_sec,
+        result.run_elapsed_ms,
+    );
+    for (label, summary) in &result.operations {
+        println!(
+            "      {:<7} n={:<8} p50={:>9} p99={:>9} p99.9={:>9} max={:>9}",
+            label,
+            summary.count,
+            format_nanos(summary.p50_ns),
+            format_nanos(summary.p99_ns),
+            format_nanos(summary.p999_ns),
+            format_nanos(summary.max_ns),
+        );
+    }
+}
+
+fn print_summary(results: &[WorkloadResult]) {
+    println!("\n=== Summary (run throughput, ops/s) ===");
+    println!("  {:<12}  {:>14}  {:>14}", "workload", "cache", "durable");
+    println!("  {:<12}  {:>14}  {:>14}", "--------", "-----", "-------");
+    let mut labels = Vec::new();
+    for r in results {
+        if !labels.contains(&r.workload) {
+            labels.push(r.workload);
+        }
+    }
+    for label in labels {
+        let cache = results
+            .iter()
+            .find(|r| r.workload == label && r.mode == "cache");
+        let durable = results
+            .iter()
+            .find(|r| r.workload == label && r.mode == "durable");
+        println!(
+            "  Workload {}   {:>14}  {:>14}",
+            label.to_ascii_uppercase(),
+            cache.map_or("—".to_string(), |r| format!("{:.0}", r.run_ops_per_sec)),
+            durable.map_or("—".to_string(), |r| format!("{:.0}", r.run_ops_per_sec)),
+        );
+    }
+}
+
+fn write_results(config: &Config, results: &[WorkloadResult]) {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("results")
+        .join("engine-ycsb");
+    if let Err(error) = std::fs::create_dir_all(&dir) {
+        eprintln!("warning: could not create results dir: {error}");
+        return;
+    }
+    let path = dir.join(format!("engine-ycsb-{}.json", unix_seconds()));
+    let payload = ResultsFile {
+        benchmark: "engine-ycsb",
+        records: config.records,
+        ops: config.ops,
+        value_bytes: config.value_bytes,
+        scan_max: config.scan_max,
+        memory_budget_bytes: config.memory_budget_bytes,
+        results,
+    };
+    match serde_json::to_string_pretty(&payload) {
+        Ok(json) => match std::fs::write(&path, json) {
+            Ok(()) => println!("\nresults: {}", path.display()),
+            Err(error) => eprintln!("warning: could not write results file: {error}"),
+        },
+        Err(error) => eprintln!("warning: could not serialize results: {error}"),
+    }
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ModeSelection {
+    Both,
+    One(BenchMode),
+}
+
+impl ModeSelection {
+    fn modes(self) -> Vec<BenchMode> {
+        match self {
+            Self::Both => vec![BenchMode::Cache, BenchMode::Durable],
+            Self::One(mode) => vec![mode],
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BenchMode {
+    Cache,
+    Durable,
+}
+
+impl BenchMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cache => "cache",
+            Self::Durable => "durable",
+        }
+    }
+}
+
+struct Config {
+    workloads: Vec<char>,
+    mode: ModeSelection,
+    records: usize,
+    ops: usize,
+    value_bytes: usize,
+    scan_max: usize,
+    load_batch: usize,
+    memory_budget_bytes: u64,
+}
+
+impl Config {
+    fn parse(args: impl IntoIterator<Item = String>) -> Result<Self, String> {
+        let mut config = Self {
+            workloads: vec!['a', 'b', 'c', 'd', 'e', 'f'],
+            mode: ModeSelection::Both,
+            records: DEFAULT_RECORDS,
+            ops: DEFAULT_OPS,
+            value_bytes: DEFAULT_VALUE_BYTES,
+            scan_max: DEFAULT_SCAN_MAX,
+            load_batch: DEFAULT_LOAD_BATCH,
+            memory_budget_bytes: DEFAULT_MEMORY_BUDGET_BYTES,
+        };
+        let mut args = args.into_iter();
+        while let Some(arg) = args.next() {
+            match arg.as_str() {
+                "--workload" | "-w" => {
+                    config.workloads = arg_value(&arg, args.next())?
+                        .split(',')
+                        .filter_map(|s| s.trim().chars().next())
+                        .map(|c| c.to_ascii_lowercase())
+                        .collect();
+                }
+                "--mode" => config.mode = parse_mode(&arg_value(&arg, args.next())?)?,
+                "--cache" => config.mode = ModeSelection::One(BenchMode::Cache),
+                "--durable" => config.mode = ModeSelection::One(BenchMode::Durable),
+                "--records" => config.records = parse_scale(&arg, args.next())?,
+                "--ops" => config.ops = parse_scale(&arg, args.next())?,
+                "--value-bytes" => config.value_bytes = parse_positive_usize(&arg, args.next())?,
+                "--scan-max" => config.scan_max = parse_positive_usize(&arg, args.next())?,
+                "--load-batch" => config.load_batch = parse_positive_usize(&arg, args.next())?,
+                "--memory-budget" => config.memory_budget_bytes = parse_size(&arg, args.next())?,
+                "-q" | "--quick" => {
+                    config.records = QUICK_RECORDS;
+                    config.ops = QUICK_OPS;
+                }
+                "-h" | "--help" => return Err(usage()),
+                _ => return Err(format!("unknown argument `{arg}`\n{}", usage())),
+            }
+        }
+        if config.workloads.is_empty() {
+            return Err("no workloads selected".to_string());
+        }
+        Ok(config)
+    }
+}
+
+fn parse_mode(value: &str) -> Result<ModeSelection, String> {
+    match value {
+        "both" => Ok(ModeSelection::Both),
+        "cache" => Ok(ModeSelection::One(BenchMode::Cache)),
+        "durable" => Ok(ModeSelection::One(BenchMode::Durable)),
+        _ => Err(format!("unknown mode `{value}`\n{}", usage())),
+    }
+}
+
+fn arg_value(flag: &str, value: Option<String>) -> Result<String, String> {
+    value.ok_or_else(|| format!("{flag} requires a value"))
+}
+
+fn parse_positive_usize(flag: &str, value: Option<String>) -> Result<usize, String> {
+    let value = arg_value(flag, value)?;
+    let parsed = value
+        .parse::<usize>()
+        .map_err(|_| format!("{flag} requires a positive integer, got `{value}`"))?;
+    if parsed == 0 {
+        return Err(format!("{flag} must be greater than zero"));
+    }
+    Ok(parsed)
+}
+
+/// Parses a count with optional decimal `k`/`m` suffix (e.g. `100k`, `1m`).
+fn parse_scale(flag: &str, value: Option<String>) -> Result<usize, String> {
+    let raw = arg_value(flag, value)?;
+    let lower = raw.trim().to_ascii_lowercase();
+    let (digits, mult): (&str, usize) = if let Some(d) = lower.strip_suffix('m') {
+        (d, 1_000_000)
+    } else if let Some(d) = lower.strip_suffix('k') {
+        (d, 1_000)
+    } else {
+        (lower.as_str(), 1)
+    };
+    let parsed = digits
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| format!("{flag}: invalid count `{raw}`"))?;
+    let scaled = parsed * mult;
+    if scaled == 0 {
+        return Err(format!("{flag} must be greater than zero"));
+    }
+    Ok(scaled)
+}
+
+/// Parses a byte size with optional binary `k`/`m`/`g` (`b`) suffix (e.g. `8g`).
+fn parse_size(flag: &str, value: Option<String>) -> Result<u64, String> {
+    let raw = arg_value(flag, value)?;
+    let lower = raw.trim().to_ascii_lowercase();
+    let lower = lower.strip_suffix('b').unwrap_or(&lower);
+    let (digits, mult): (&str, u64) = if let Some(d) = lower.strip_suffix('g') {
+        (d, 1 << 30)
+    } else if let Some(d) = lower.strip_suffix('m') {
+        (d, 1 << 20)
+    } else if let Some(d) = lower.strip_suffix('k') {
+        (d, 1 << 10)
+    } else {
+        (lower, 1)
+    };
+    let parsed = digits
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| format!("{flag}: invalid size `{raw}`"))?;
+    let bytes = parsed.saturating_mul(mult);
+    if bytes == 0 {
+        return Err(format!("{flag} must be greater than zero"));
+    }
+    Ok(bytes)
+}
+
+fn usage() -> String {
+    "usage: engine-ycsb [--workload a,b,c,d,e,f] [--mode cache|durable|both] \
+     [--records N] [--ops N] [--value-bytes N] [--scan-max N] [--load-batch N] \
+     [--memory-budget SIZE] [-q]\n  \
+     records/ops accept k/m suffixes (decimal); SIZE accepts k/m/g (binary)."
+        .to_owned()
+}
+
+// ---------------------------------------------------------------------------
+// Result types
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct ResultsFile<'a> {
+    benchmark: &'static str,
+    records: usize,
+    ops: usize,
+    value_bytes: usize,
+    scan_max: usize,
+    memory_budget_bytes: u64,
+    results: &'a [WorkloadResult],
+}
+
+#[derive(Serialize)]
+struct WorkloadResult {
+    workload: char,
+    workload_name: &'static str,
+    mode: &'static str,
+    distribution: &'static str,
+    records: usize,
+    ops: usize,
+    value_bytes: usize,
+    memory_budget_bytes: u64,
+    load_ops_per_sec: f64,
+    load_elapsed_ms: u128,
+    run_ops_per_sec: f64,
+    run_elapsed_ms: u128,
+    operations: BTreeMap<&'static str, LatencySummary>,
+}
+
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+fn rate(count: usize, elapsed: Duration) -> f64 {
+    let seconds = elapsed.as_secs_f64();
+    if seconds == 0.0 {
+        return 0.0;
+    }
+    count as f64 / seconds
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const GIB: u64 = 1 << 30;
+    const MIB: u64 = 1 << 20;
+    if bytes >= GIB {
+        format!("{:.0}GiB", bytes as f64 / GIB as f64)
+    } else if bytes >= MIB {
+        format!("{:.0}MiB", bytes as f64 / MIB as f64)
+    } else {
+        format!("{bytes}B")
+    }
+}
+
+fn format_nanos(ns: u64) -> String {
+    if ns >= 1_000_000 {
+        format!("{:.2}ms", ns as f64 / 1_000_000.0)
+    } else if ns >= 1_000 {
+        format!("{:.2}us", ns as f64 / 1_000.0)
+    } else {
+        format!("{ns}ns")
+    }
+}
