@@ -97,6 +97,22 @@ full suite green):
     is now pinned by the timeline model. Flag for a product decision if symmetry
     with `as_of` is wanted.
 
+- **Slice 6 — Seam-free coverage batch.** `tests/runtime_lifecycle.rs` — §4
+  closed-handle accessor matrix: every accessor (branch/space/admin/diagnostics
+  and all five data capabilities) rejects a closed handle with
+  `failed_precondition.engine.runtime_closed`, plus close idempotency. (Note: the
+  pre-implementation map was wrong about `admin()` — it calls `require_open()` like
+  the rest, so the behavior is uniform, not asymmetric.) `engine_json.rs` — §6.3
+  JSON `batch_delete_entries` (positional path/array/whole-doc deletes; empty
+  no-op). `engine_graph.rs` — §6.6 graph dangling-endpoint-under-temporal: across
+  a node/edge/delete-cascade history, historical neighbor/edge reads track exactly
+  the edges whose endpoints are both visible, and **no version ever raises a
+  dangling-endpoint corruption** (the fragile `visible_node_or_corruption` path),
+  plus a timestamp-temporal read.
+  - **Finding (pinned):** a root-path (`$`) entry in `batch_delete_entries`
+    deletes the **whole document** (returns `deleted=true`) — it is not the no-op
+    the single-path delete is. Pinned by the new test.
+
 Decision of record (from the implementing session): §11 items that are latent
 bugs are **fixed**, not just pinned (per user direction). §11.1 done; remaining
 (`AdminHealthStatus::Degraded` dead state, unread `EventIndex` rows, vector

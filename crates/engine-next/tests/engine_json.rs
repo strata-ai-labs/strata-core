@@ -1017,6 +1017,74 @@ fn exercise_json_batch_list_index_contract(
     assert_eq!(deleted.deleted(), &[true, false]);
 }
 
+#[test]
+fn json_batch_delete_entries_removes_paths_positionally() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut json = database
+        .json(branch("default"), space("default"))
+        .expect("JSON service opens");
+    json.create(
+        doc_id("doc"),
+        json_value(json!({"a": 1, "b": {"c": 2, "d": 3}, "tags": ["x", "y"]})),
+    )
+    .expect("create doc");
+    json.create(doc_id("other"), json_value(json!({"k": "v"})))
+        .expect("create other");
+
+    let outcome = json
+        .batch_delete_entries([
+            JsonGetEntry::new(doc_id("doc"), path("a")),
+            JsonGetEntry::new(doc_id("doc"), path("b.c")),
+            JsonGetEntry::new(doc_id("missing"), path("x")),
+            JsonGetEntry::new(doc_id("doc"), path("tags[0]")),
+            JsonGetEntry::new(doc_id("other"), root()),
+        ])
+        .expect("batch delete succeeds");
+
+    // Positional flags: path delete, path delete, missing document, array
+    // element delete, and a root-path entry that deletes the whole document.
+    assert_eq!(outcome.deleted(), &[true, true, false, true, true]);
+    assert!(outcome.commit().is_some());
+
+    assert!(json
+        .get(&doc_id("doc"), &path("a"))
+        .expect("read a")
+        .is_none());
+    assert!(json
+        .get(&doc_id("doc"), &path("b.c"))
+        .expect("read b.c")
+        .is_none());
+    assert_eq!(
+        json.get(&doc_id("doc"), &path("b.d"))
+            .expect("read b.d")
+            .expect("b.d present")
+            .as_inner(),
+        &json!(3)
+    );
+    assert_eq!(
+        json.get(&doc_id("doc"), &path("tags[0]"))
+            .expect("read tags[0]")
+            .expect("tags[0] present")
+            .as_inner(),
+        &json!("y")
+    );
+    // The root-path entry deleted the whole `other` document.
+    assert!(!json.exists(&doc_id("other")).expect("exists other"));
+}
+
+#[test]
+fn json_batch_delete_entries_empty_is_a_noop() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut json = database
+        .json(branch("default"), space("default"))
+        .expect("JSON service opens");
+    let outcome = json
+        .batch_delete_entries(Vec::new())
+        .expect("empty batch succeeds");
+    assert!(outcome.deleted().is_empty());
+    assert!(outcome.commit().is_none());
+}
+
 fn run_database_modes(exercise: fn(&mut Database)) {
     let mut cache = open_cache_database().expect("cache open succeeds");
     exercise(&mut cache);

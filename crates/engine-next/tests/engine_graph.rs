@@ -5,10 +5,11 @@
 mod common;
 
 use serde_json::json;
+use strata_core_next::CommitVersion;
 use strata_engine_next::{
     Database, EngineErrorClass, GraphBatchOperation, GraphBatchWrite, GraphBindingPrimitive,
     GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEdgeType, GraphEntityBinding,
-    GraphName, GraphNodeData, GraphNodeId, GraphProperties,
+    GraphName, GraphNodeData, GraphNodeId, GraphProperties, GraphService,
 };
 
 use common::{branch, open_cache_database, open_durable_database, space};
@@ -1555,6 +1556,168 @@ fn exercise_graph_batch_ordering_and_failure_regressions(mut database: Database)
         )
         .expect("batch-created incident edge read succeeds")
         .is_none());
+}
+
+fn outgoing_dsts(
+    graph: &mut GraphService<'_>,
+    name: &GraphName,
+    source: &GraphNodeId,
+    version: CommitVersion,
+) -> Vec<String> {
+    let mut ids: Vec<String> = graph
+        .neighbors_at_version(
+            name,
+            source,
+            GraphDirection::Outgoing,
+            None,
+            None,
+            16,
+            version,
+        )
+        .expect("historical neighbor read must not corrupt")
+        .neighbors()
+        .iter()
+        .map(|neighbor| neighbor.node().node_id().as_str().to_owned())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Historical neighbor and edge reads never surface a dangling endpoint or a
+/// spurious corruption: an edge is visible exactly when both of its endpoints
+/// are, and the delete cascade keeps that invariant across every version.
+// Short node names (a/b/c) and their per-edge version markers are intentionally terse.
+#[allow(clippy::similar_names)]
+#[test]
+fn graph_historical_edge_reads_never_dangle_or_corrupt() {
+    let mut database = open_cache_database().expect("cache open succeeds");
+    let mut graph = database
+        .graph(branch("default"), space("default"))
+        .expect("graph service opens");
+    let name = graph_name("deps");
+    let rel = edge_type("rel");
+    graph.create_graph(name.clone()).expect("create graph");
+
+    graph
+        .upsert_node(&name, node("a"), node_data(json!({}), None))
+        .expect("node a");
+    let b_create = graph
+        .upsert_node(&name, node("b"), node_data(json!({}), None))
+        .expect("node b");
+    let v_no_edges = b_create.commit().version();
+
+    let ab = graph
+        .upsert_edge(
+            &name,
+            node("a"),
+            rel.clone(),
+            node("b"),
+            edge_data(1.0, json!({})),
+        )
+        .expect("edge a->b");
+    let ab_commit = ab.commit();
+    let v_ab = ab_commit.version();
+    let ts_ab = ab_commit.timestamp();
+
+    graph
+        .upsert_node(&name, node("c"), node_data(json!({}), None))
+        .expect("node c");
+    let ac = graph
+        .upsert_edge(
+            &name,
+            node("a"),
+            rel.clone(),
+            node("c"),
+            edge_data(1.0, json!({})),
+        )
+        .expect("edge a->c");
+    let v_ac = ac.commit().version();
+
+    let delete = graph
+        .delete_node(&name, &node("b"))
+        .expect("delete b cascades the a->b edge");
+    let v_del = delete.commit().expect("delete commits").version();
+
+    // Outgoing neighbors of `a` track exactly the edges whose endpoints are both
+    // visible at each version; the deleted endpoint never dangles.
+    assert!(outgoing_dsts(&mut graph, &name, &node("a"), v_no_edges).is_empty());
+    assert_eq!(
+        outgoing_dsts(&mut graph, &name, &node("a"), v_ab),
+        vec!["b".to_owned()]
+    );
+    assert_eq!(
+        outgoing_dsts(&mut graph, &name, &node("a"), v_ac),
+        vec!["b".to_owned(), "c".to_owned()]
+    );
+    assert_eq!(
+        outgoing_dsts(&mut graph, &name, &node("a"), v_del),
+        vec!["c".to_owned()]
+    );
+
+    // A historical edge read resolves cleanly across the endpoint's lifetime.
+    assert!(graph
+        .get_edge_at_version(&name, &node("a"), &rel, &node("b"), v_no_edges)
+        .expect("edge before creation")
+        .is_none());
+    assert!(graph
+        .get_edge_at_version(&name, &node("a"), &rel, &node("b"), v_ab)
+        .expect("edge present")
+        .is_some());
+    assert!(graph
+        .get_edge_at_version(&name, &node("a"), &rel, &node("b"), v_del)
+        .expect("edge after cascade")
+        .is_none());
+
+    // The deleted endpoint is visible before the delete and invisible at it.
+    assert!(graph
+        .get_node_at_version(&name, &node("b"), v_ab)
+        .expect("node b before")
+        .is_some());
+    assert!(graph
+        .get_node_at_version(&name, &node("b"), v_del)
+        .expect("node b after")
+        .is_none());
+
+    // No version across the whole history raises a dangling-endpoint
+    // corruption. A version before the graph existed legitimately returns
+    // not-found; what must never happen is a corruption-class error.
+    for raw in 1..=v_del.as_u64() {
+        if let Err(error) = graph.neighbors_at_version(
+            &name,
+            &node("a"),
+            GraphDirection::Outgoing,
+            None,
+            None,
+            16,
+            CommitVersion::new(raw),
+        ) {
+            assert_ne!(
+                error.class(),
+                EngineErrorClass::Corruption,
+                "neighbors at version {raw} corrupted: {}",
+                error.code()
+            );
+        }
+    }
+
+    // A timestamp-based historical read agrees with the version-based one.
+    let mut at_ts: Vec<String> = graph
+        .neighbors_at(
+            &name,
+            &node("a"),
+            GraphDirection::Outgoing,
+            None,
+            None,
+            16,
+            ts_ab,
+        )
+        .expect("timestamp neighbor read")
+        .neighbors()
+        .iter()
+        .map(|neighbor| neighbor.node().node_id().as_str().to_owned())
+        .collect();
+    at_ts.sort();
+    assert_eq!(at_ts, vec!["b".to_owned()]);
 }
 
 fn run_database_modes(exercise: fn(Database)) {
