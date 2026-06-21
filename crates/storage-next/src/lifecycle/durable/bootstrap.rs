@@ -32,10 +32,22 @@ use crate::observability::perf_trace;
 use crate::row::PhysicalKey;
 use crate::service::WalGrowthFacts;
 use crate::table::TableRuntimeError;
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
+
+/// Cached database-manifest retention watermark (`max(snapshot_watermark,
+/// flushed_through_commit_id)`), the value the per-commit growth/backpressure
+/// checks need to derive `commits_since_checkpoint`. `Unknown` means it must be
+/// refreshed from the manifest on the next read; `Known` is memoized until a
+/// checkpoint/flush completion invalidates it. Avoids a manifest read per commit.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum CachedRetentionWatermark {
+    Unknown,
+    Known(Option<CommitVersion>),
+}
 
 #[derive(Debug)]
 pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSource> {
@@ -59,6 +71,12 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) last_wal_growth_outcome: Option<LifecycleWalGrowthOutcome>,
     pub(super) pressure_rejected_commit_branches: HashSet<BranchId>,
     pub(super) last_write_admission: Option<LifecycleWriteAdmissionOutcome>,
+    // Cached manifest retention watermark for the per-commit growth/backpressure
+    // checks. `Cell` keeps the read paths `&self` (no `&mut` cascade); invalidated
+    // at checkpoint/flush completion and refreshed lazily. Interior mutability
+    // makes the runtime `!Sync`, which is fine behind the runtime mutex (only
+    // `Send` is required, as for the WAL service's `sealed_retention` cache).
+    pub(super) retention_watermark: Cell<CachedRetentionWatermark>,
     // Released table references from `clear_branch`/`delete_branch` queue
     // here until the next retention pass drains them. In-memory only —
     // restart loses the buffer; durable persistence of release tombstones
@@ -188,6 +206,14 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             .ok_or(LifecycleError::CheckpointPublicationFailed {
                 reason: "checkpoint snapshot id overflow",
             })?;
+        // Seed the retention-watermark cache from the open-time manifest facts so
+        // the first commit is a cache hit rather than a cold manifest read.
+        let retention_watermark_seed = crate::lifecycle::wal_retention_watermark(
+            self.assembly_facts()
+                .manifest_snapshot_watermark()
+                .map(CommitVersion::new),
+            self.assembly_facts().manifest_flush_watermark(),
+        );
         Ok(LifecycleDurableLocalRuntime {
             state: self.state,
             open_plan: self.open_plan,
@@ -209,6 +235,9 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             last_wal_growth_outcome: None,
             pressure_rejected_commit_branches: HashSet::new(),
             last_write_admission: None,
+            retention_watermark: Cell::new(CachedRetentionWatermark::Known(
+                retention_watermark_seed,
+            )),
             pending_releases,
             branch_catalog_sequence,
             pending_releases_sequence,
@@ -515,26 +544,45 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.services.wal().growth_facts().map_err(super::wal_error)
     }
 
+    /// Returns the cached manifest retention watermark, refreshing it from the
+    /// manifest only when a checkpoint/flush has invalidated it. This is the sole
+    /// manifest read left on the per-commit growth/backpressure path; steady-state
+    /// commits hit the memoized value.
+    pub(crate) fn cached_retention_watermark(&self) -> LifecycleResult<Option<CommitVersion>> {
+        if let CachedRetentionWatermark::Known(watermark) = self.retention_watermark.get() {
+            return Ok(watermark);
+        }
+        let manifest_start = perf_trace::start_timer();
+        let manifest_result = self.services.manifest().load_required();
+        perf_trace::record_commit_wal_growth_manifest_elapsed(manifest_start);
+        let current_manifest = manifest_result.map_err(super::manifest_error)?;
+        let watermark = crate::lifecycle::wal_retention_watermark(
+            current_manifest
+                .snapshot_watermark()
+                .map(CommitVersion::new),
+            current_manifest.flushed_through_commit_id(),
+        );
+        self.retention_watermark
+            .set(CachedRetentionWatermark::Known(watermark));
+        Ok(watermark)
+    }
+
+    /// Invalidates the cached retention watermark so the next growth/backpressure
+    /// check re-reads it from the manifest. Called at every checkpoint/flush
+    /// completion — the only operations that advance the watermark.
+    pub(crate) fn invalidate_retention_watermark_cache(&self) {
+        self.retention_watermark
+            .set(CachedRetentionWatermark::Unknown);
+    }
+
     pub(crate) fn current_wal_growth_backpressure_snapshot(
         &self,
     ) -> LifecycleResult<(WalGrowthFacts, u64, Option<LifecycleWalGrowthTrigger>)> {
         let policy = self.open_plan.lifecycle_config().wal_growth_policy();
         let facts = self.current_wal_growth_facts()?;
-        let current_manifest = self
-            .services
-            .manifest()
-            .load_required()
-            .map_err(super::manifest_error)?;
-        let checkpoint_watermark = current_manifest
-            .snapshot_watermark()
-            .map(CommitVersion::new);
-        let retention_watermark = crate::lifecycle::wal_retention_watermark(
-            checkpoint_watermark,
-            current_manifest.flushed_through_commit_id(),
-        );
         let commits_since_checkpoint = crate::lifecycle::commits_since_checkpoint(
             self.visible.visible_version(),
-            retention_watermark,
+            self.cached_retention_watermark()?,
         );
         let trigger = policy.backpressure_trigger_for(facts, commits_since_checkpoint);
         Ok((facts, commits_since_checkpoint, trigger))

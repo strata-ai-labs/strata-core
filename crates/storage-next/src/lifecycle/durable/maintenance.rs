@@ -844,7 +844,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         request: &LifecycleCheckpointRequest,
     ) -> LifecycleResult<LifecycleCheckpointOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        checkpoint_durable_runtime_with_budget(
+        let outcome = checkpoint_durable_runtime_with_budget(
             &self.branch_catalog,
             &self.services,
             &self.guard_set,
@@ -852,7 +852,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             request,
             self.initial_branch_id,
             Some(&self.budget),
-        )
+        )?;
+        // A checkpoint advances the manifest snapshot watermark.
+        self.invalidate_retention_watermark_cache();
+        Ok(outcome)
     }
 
     #[allow(
@@ -896,12 +899,15 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         proof: &LifecycleFlushWatermarkProof,
     ) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        persist_flush_watermark(
+        let outcome = persist_flush_watermark(
             self.services.manifest(),
             self.visible.visible_version(),
             candidate,
             proof,
-        )
+        )?;
+        // A flush-watermark persist advances flushed_through_commit_id.
+        self.invalidate_retention_watermark_cache();
+        Ok(outcome)
     }
 
     #[allow(
@@ -942,7 +948,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 reason: "table manifest flush proof requires all active branches to be loaded",
             });
         }
-        persist_flush_watermark_with_table_manifest_proof(
+        let outcome = persist_flush_watermark_with_table_manifest_proof(
             self.services.manifest(),
             self.visible.visible_version(),
             candidate,
@@ -950,7 +956,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             proof.manifest_epoch(),
             proof.recovery_health_epoch(),
             &[(branch_id, manifest.manifest_sequence())],
-        )
+        )?;
+        // A flush-watermark persist advances flushed_through_commit_id.
+        self.invalidate_retention_watermark_cache();
+        Ok(outcome)
     }
 
     #[allow(
@@ -1133,25 +1142,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         }
     }
 
-    /// Reads the current manifest watermark and derives commits-since-checkpoint
-    /// (the count surfaced in the WAL-growth outcome and the public maintenance
-    /// summary). Extracted so `evaluate_wal_growth_policy` stays within the
-    /// per-function line budget.
+    /// Derives commits-since-checkpoint (the count surfaced in the WAL-growth
+    /// outcome and the public maintenance summary) from the cached retention
+    /// watermark — no per-commit manifest read. Extracted so
+    /// `evaluate_wal_growth_policy` stays within the per-function line budget.
     fn wal_growth_commits_since_checkpoint(&self) -> LifecycleResult<u64> {
-        let manifest_start = crate::observability::perf_trace::start_timer();
-        let manifest_result = self.services.manifest().load_required();
-        crate::observability::perf_trace::record_commit_wal_growth_manifest_elapsed(manifest_start);
-        let current_manifest = manifest_result.map_err(manifest_error)?;
-        let checkpoint_watermark = current_manifest
-            .snapshot_watermark()
-            .map(CommitVersion::new);
-        let retention_watermark = wal_retention_watermark(
-            checkpoint_watermark,
-            current_manifest.flushed_through_commit_id(),
-        );
         Ok(commits_since_checkpoint(
             self.visible.visible_version(),
-            retention_watermark,
+            self.cached_retention_watermark()?,
         ))
     }
 
@@ -1432,9 +1430,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             budget,
             manifest_debt,
         };
-        maintenance.run_next_matching(state, &mut runner, |task| {
+        let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::Checkpoint
-        })
+        });
+        // A completed checkpoint advanced the manifest snapshot watermark.
+        if matches!(outcome, Ok(Some(_))) {
+            self.invalidate_retention_watermark_cache();
+        }
+        outcome
     }
 
     pub(crate) fn start_next_background_checkpoint_maintenance(
@@ -1662,6 +1665,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                                 },
                             )?;
                         }
+                        // The background checkpoint advanced the manifest snapshot
+                        // watermark (and possibly the flush boundary); drop the
+                        // cached value so the next commit re-reads it.
+                        self.invalidate_retention_watermark_cache();
                         self.maintenance
                             .finish_started(task, outcome.maintenance_outcome(), false)
                     }
@@ -2080,9 +2087,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             visible_version,
             health,
         };
-        maintenance.run_next_matching(state, &mut runner, |task| {
+        let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             task.kind() == MaintenanceTaskKind::FlushWatermark
-        })
+        });
+        // A completed flush-watermark persist advanced flushed_through_commit_id.
+        if matches!(outcome, Ok(Some(_))) {
+            self.invalidate_retention_watermark_cache();
+        }
+        outcome
     }
 
     pub(crate) fn run_next_background_flush_watermark_maintenance(

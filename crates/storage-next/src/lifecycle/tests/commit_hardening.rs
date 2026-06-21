@@ -464,6 +464,98 @@ fn automatic_checkpoint_policy_is_deterministic_without_background_thread() {
     assert!(second_backend.snapshot_objects().is_empty());
 }
 
+// The cached retention watermark must be invalidated when a checkpoint advances
+// the manifest snapshot watermark, so commits_since_checkpoint recomputes against
+// the new watermark instead of climbing forever from the stale base. Uses the
+// commit-count trigger so a stale cache would keep re-triggering and the assert
+// would catch it.
+#[test]
+fn checkpoint_invalidates_cached_retention_watermark() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0xb1);
+    // Only the commit-count trigger is active (bytes/segments effectively off).
+    let policy = LifecycleWalGrowthPolicy::new(u64::MAX, usize::MAX, Some(3));
+    let mut runtime = open_durable_runtime(branch, &backend, policy);
+
+    for index in 0..4 {
+        runtime
+            .execute_durable_commit(
+                dynamic_durable_batch(branch, format!("k{index}").into_bytes(), b"v".to_vec()),
+                generation_guard(),
+            )
+            .expect("durable commit");
+    }
+    // The 4th commit crosses the commit-count threshold (3) and enqueues a
+    // checkpoint; commits_since_checkpoint is 4 (no checkpoint applied yet).
+    let before = runtime
+        .last_wal_growth_outcome()
+        .expect("policy outcome")
+        .commits_since_checkpoint();
+    assert_eq!(before, 4);
+
+    // Run the checkpoint: it advances snapshot_watermark to the visible version
+    // and must invalidate the cached watermark.
+    drain_wal_growth_maintenance(&mut runtime);
+
+    runtime
+        .execute_durable_commit(
+            dynamic_durable_batch(branch, b"after".to_vec(), b"v".to_vec()),
+            generation_guard(),
+        )
+        .expect("durable commit after checkpoint");
+    // visible=5, watermark advanced to 4 by the checkpoint → 5 - 4 = 1. A missed
+    // invalidation would leave the watermark at 0 and report 5.
+    let after = runtime
+        .last_wal_growth_outcome()
+        .expect("policy outcome")
+        .commits_since_checkpoint();
+    assert_eq!(after, 1);
+}
+
+// The cached retention watermark must equal a fresh manifest read after a
+// checkpoint advances it — locks the cache to ground truth.
+#[test]
+fn cached_retention_watermark_matches_manifest_after_checkpoint() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0xb2);
+    let policy = LifecycleWalGrowthPolicy::new(u64::MAX, usize::MAX, Some(2));
+    let mut runtime = open_durable_runtime(branch, &backend, policy);
+
+    for index in 0..3 {
+        runtime
+            .execute_durable_commit(
+                dynamic_durable_batch(branch, format!("k{index}").into_bytes(), b"v".to_vec()),
+                generation_guard(),
+            )
+            .expect("durable commit");
+    }
+    drain_wal_growth_maintenance(&mut runtime);
+    runtime
+        .execute_durable_commit(
+            dynamic_durable_batch(branch, b"after".to_vec(), b"v".to_vec()),
+            generation_guard(),
+        )
+        .expect("durable commit after checkpoint");
+
+    let manifest = runtime
+        .services()
+        .manifest()
+        .load_required()
+        .expect("manifest");
+    let expected = crate::lifecycle::commits_since_checkpoint(
+        runtime.visible_version(),
+        crate::lifecycle::wal_retention_watermark(
+            manifest.snapshot_watermark().map(CommitVersion::new),
+            manifest.flushed_through_commit_id(),
+        ),
+    );
+    let reported = runtime
+        .last_wal_growth_outcome()
+        .expect("policy outcome")
+        .commits_since_checkpoint();
+    assert_eq!(reported, expected);
+}
+
 fn open_durable_runtime(
     branch: BranchId,
     backend: &CheckpointTestBackend,
