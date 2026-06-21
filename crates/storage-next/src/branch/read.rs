@@ -44,6 +44,7 @@ impl BranchReadBound {
 pub(crate) struct BranchEffectiveReadBound {
     max_commit_version: Option<CommitVersion>,
     max_commit_timestamp: Option<Timestamp>,
+    min_commit_version: Option<CommitVersion>,
 }
 
 impl BranchEffectiveReadBound {
@@ -54,7 +55,20 @@ impl BranchEffectiveReadBound {
         Self {
             max_commit_version,
             max_commit_timestamp,
+            min_commit_version: None,
         }
+    }
+
+    /// Add a generic lower bound: only rows whose commit version is strictly greater than
+    /// `min_commit_version` are visible. Applied uniformly at selection, so a key whose newest
+    /// visible version is at or below the watermark is dropped (it is covered elsewhere, e.g. by a
+    /// sealed index artifact), while post-watermark writes — including tombstones — are kept.
+    pub(crate) const fn with_min_commit_version(
+        mut self,
+        min_commit_version: Option<CommitVersion>,
+    ) -> Self {
+        self.min_commit_version = min_commit_version;
+        self
     }
 
     pub(crate) const fn for_own_branch(bound: BranchReadBound) -> Self {
@@ -118,10 +132,17 @@ impl BranchEffectiveReadBound {
     }
 
     pub(crate) const fn row_version_in_bound(self, row: &StorageRow) -> bool {
-        match self.max_commit_version {
-            Some(version) => row.commit_version().as_u64() <= version.as_u64(),
-            None => true,
+        if let Some(version) = self.max_commit_version {
+            if row.commit_version().as_u64() > version.as_u64() {
+                return false;
+            }
         }
+        if let Some(min) = self.min_commit_version {
+            if row.commit_version().as_u64() <= min.as_u64() {
+                return false;
+            }
+        }
+        true
     }
 
     pub(crate) const fn row_timestamp_in_bound(self, row: &StorageRow) -> bool {
@@ -1012,8 +1033,9 @@ impl BranchReadView {
         &self,
         bounds: &BranchScanBounds,
         bound: BranchReadBound,
+        after_version: Option<CommitVersion>,
     ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
-        self.scan_including_tombstones(bounds, bound)
+        self.scan_including_tombstones(bounds, bound, after_version)
     }
 
     pub(crate) fn scan_range_including_tombstones(
@@ -1021,7 +1043,7 @@ impl BranchReadView {
         bounds: &BranchScanBounds,
         bound: BranchReadBound,
     ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
-        self.scan_including_tombstones(bounds, bound)
+        self.scan_including_tombstones(bounds, bound, None)
     }
 
     pub(crate) fn scan_immutable_sources(
@@ -1068,6 +1090,7 @@ impl BranchReadView {
             bounds,
             bound,
             None,
+            None,
             effective_bound.max_commit_timestamp(),
             false,
         )?;
@@ -1083,6 +1106,7 @@ impl BranchReadView {
         &self,
         bounds: &BranchScanBounds,
         bound: BranchReadBound,
+        after_version: Option<CommitVersion>,
     ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
         self.require_matching_branch(bounds.branch_id())?;
         self.require_timestamp_coverage(bound)?;
@@ -1094,6 +1118,7 @@ impl BranchReadView {
             &self.inherited_layers,
             bounds,
             bound,
+            after_version,
             None,
             effective_own_read_bound(bound).max_commit_timestamp(),
             true,
@@ -1170,6 +1195,7 @@ impl BranchLocalState {
             self.inherited_layers(),
             bounds,
             bound,
+            None,
             visible_limit,
             visible_limit_timestamp,
             true,
@@ -2884,6 +2910,7 @@ fn scan_including_tombstones_from_sources(
     inherited_layers: &[BranchInheritedLayer],
     bounds: &BranchScanBounds,
     bound: BranchReadBound,
+    after_version: Option<CommitVersion>,
     visible_limit: Option<usize>,
     visible_limit_timestamp: Option<Timestamp>,
     record_rows_returned: bool,
@@ -2895,7 +2922,7 @@ fn scan_including_tombstones_from_sources(
         return Ok(Vec::new());
     }
 
-    let effective_bound = effective_own_read_bound(bound);
+    let effective_bound = effective_own_read_bound(bound).with_min_commit_version(after_version);
     let source_setup_timer = perf_trace::start_timer();
     let mut cursors = scan_cursors_for_sources(
         branch_id,

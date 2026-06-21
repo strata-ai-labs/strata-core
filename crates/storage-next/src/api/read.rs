@@ -136,6 +136,7 @@ pub struct PrefixScanReadRequest {
     prefix: StorageKey,
     bound: ReadBound,
     limit: Option<ReadLimit>,
+    after_version: Option<CommitVersion>,
 }
 
 impl PrefixScanReadRequest {
@@ -153,7 +154,18 @@ impl PrefixScanReadRequest {
             prefix,
             bound,
             limit,
+            after_version: None,
         }
+    }
+
+    /// Restrict the scan to rows whose selected commit version is strictly greater than
+    /// `after_version`. This is a generic MVCC lower bound (it carries no product semantics): it
+    /// lets a caller read only rows committed after a watermark, skipping immutable sources that
+    /// cannot contain a newer version.
+    #[must_use]
+    pub const fn with_after_version(mut self, after_version: CommitVersion) -> Self {
+        self.after_version = Some(after_version);
+        self
     }
 
     #[must_use]
@@ -179,6 +191,11 @@ impl PrefixScanReadRequest {
     #[must_use]
     pub const fn limit(&self) -> Option<ReadLimit> {
         self.limit
+    }
+
+    #[must_use]
+    pub const fn after_version(&self) -> Option<CommitVersion> {
+        self.after_version
     }
 }
 

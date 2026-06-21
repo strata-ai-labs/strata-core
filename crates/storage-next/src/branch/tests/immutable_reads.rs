@@ -784,7 +784,7 @@ fn branch_borrowed_prefix_scan_matches_read_view_across_local_sources() {
     let read_view_rows = state
         .capture_read_view()
         .expect("view")
-        .scan_prefix_including_tombstones(&bounds, BranchReadBound::latest())
+        .scan_prefix_including_tombstones(&bounds, BranchReadBound::latest(), None)
         .expect("read-view scan");
     let borrowed_rows = state
         .scan_including_tombstones_borrowed(&bounds, BranchReadBound::latest(), None, None)
@@ -985,7 +985,7 @@ fn branch_borrowed_scan_preserves_competing_source_order() {
     let read_view_rows = state
         .capture_read_view()
         .expect("view")
-        .scan_prefix_including_tombstones(&bounds, BranchReadBound::latest())
+        .scan_prefix_including_tombstones(&bounds, BranchReadBound::latest(), None)
         .expect("read-view scan");
     let borrowed_rows = state
         .scan_including_tombstones_borrowed(&bounds, BranchReadBound::latest(), None, None)

@@ -1253,7 +1253,9 @@ impl<'a> StorageRuntime<'a> {
             request.storage_space(),
             request.prefix(),
         )?;
-        if matches!(request.bound(), ReadBound::Latest) {
+        // The Latest fast path does not apply a version lower bound, so route `after_version`
+        // reads through the resolving view path (which honors the bound at selection).
+        if matches!(request.bound(), ReadBound::Latest) && request.after_version().is_none() {
             let bounds = BranchScanBounds::prefix(&prefix);
             let scan_timer = perf_trace::start_timer();
             let rows = self.scan_latest_including_tombstones_for_branch(
@@ -1276,7 +1278,11 @@ impl<'a> StorageRuntime<'a> {
         let resolved = resolve_read_bound(&view, request.bound())?;
         let bounds = BranchScanBounds::prefix(&prefix);
         let rows = view
-            .scan_prefix_including_tombstones(&bounds, resolved.branch_bound)
+            .scan_prefix_including_tombstones(
+                &bounds,
+                resolved.branch_bound,
+                request.after_version(),
+            )
             .map_err(branch_error)?;
         map_scan_rows(
             rows.iter().map(crate::branch::read::BranchHistoryRow::row),

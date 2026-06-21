@@ -389,7 +389,7 @@ fn branch_borrowed_latest_scan_matches_read_view_with_inherited_sources() {
     let bounds = BranchScanBounds::prefix(&physical_key(child, b"fast-scan-".to_vec()));
     let view = child_state.capture_read_view().expect("view");
     let read_view_rows = view
-        .scan_prefix_including_tombstones(&bounds, BranchReadBound::latest())
+        .scan_prefix_including_tombstones(&bounds, BranchReadBound::latest(), None)
         .expect("read-view scan");
     let borrowed_rows = child_state
         .scan_including_tombstones_borrowed(&bounds, BranchReadBound::latest(), Some(2), None)
