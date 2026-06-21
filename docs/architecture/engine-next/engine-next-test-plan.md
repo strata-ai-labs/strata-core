@@ -163,6 +163,11 @@ full suite green):
     true)`), so a missing *key* is created rather than rejected. `json_path_not_found`
     is therefore reachable only via an out-of-bounds array index, never a missing
     key. Pinned by the new test.
+- **Slice 12 — KV pagination across the raw-page boundary (§6.2).**
+  `tests/kv_pagination.rs`: with 200 keys (> the 64-row internal raw-page clamp),
+  a cursor walk of `list_page` returns every key exactly once in order, and a
+  scan past 100 interleaved tombstones returns the live keys in order across the
+  raw pages — paths smaller suites never exercised.
 
 Decision of record (from the implementing session): §11 items that are latent
 bugs are **fixed**, not just pinned (per user direction). Resolved: §11.1
