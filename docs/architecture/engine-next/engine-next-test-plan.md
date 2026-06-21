@@ -142,11 +142,21 @@ full suite green):
   marker is written is detected on reopen as `data_loss.engine.branch_create_pending`
   rather than silently resuming.
 
+- **Slice 9 — Vector filter scalar matrix (§6.5).** `tests/vector_filter_scalars.rs`
+  pins `Eq` filter semantics across scalar types: null matches a JSON null; integer
+  and float metadata normalize through `as_f64` (so `5` matches both `5` and `5.0`);
+  number comparison is **bit-exact** (`-0.0` does not match a stored `+0.0`); a
+  string filter does not match a numeric value; boolean equality is exact.
+
 Decision of record (from the implementing session): §11 items that are latent
 bugs are **fixed**, not just pinned (per user direction). Resolved: §11.1
 (`ResourceExhausted` remapped), §11.2 (`Unavailable` → `Degraded` wired), §11.5
-(drop-without-close is safe, characterized). Remaining: unread `EventIndex` rows,
-vector auto-seal wiring — to be handled when their areas are reached.
+(drop-without-close is safe, characterized). Remaining two are **decisions, not
+clean test fixes** — surface for an owner call: §11.3 unread `EventIndex` rows
+(remove the dead write path, or wire `get_by_type` to use the index?); §11.4
+vector auto-seal (the seal path is `#[allow(dead_code)]`/testkit-only — is it
+meant to be wired into production maintenance? if not, that is a product gap, not
+a test gap).
 
 ## 2. Current Coverage Snapshot
 
