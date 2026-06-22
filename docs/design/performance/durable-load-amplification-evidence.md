@@ -180,51 +180,6 @@ load completes), tracking the full vector: load throughput, on-disk bytes, live
 vs total table count, compaction input/output bytes, and the maintenance
 keep-up counters above.
 
-## Update (2026-06-22): M12B-1 landed — eager single-branch reclaim
-
-The first fix slice — single-branch eager obsolete-table reclaim at compaction
-completion — is implemented and re-measured on the same harness. It wires the
-reclaim chain end-to-end for the single-branch case: after a compaction's new
-manifest is durable, the runtime runs the existing table-object retention proof
-and deletes the proven-dead objects directly, decoupled from the coalesced
-maintenance lane (mirrors `reclaim_wal_after_flush`; multi-branch defers to the
-branch-aware GC frontier). Code: `TableObjectService::delete_object_best_effort`
-(`service/table.rs`) + `reclaim_obsolete_tables_after_compaction` hooked into
-`run_compaction_maintenance_task` (`lifecycle/durable/maintenance.rs`).
-
-Re-measured (same 1M/3M/5M, 8 GiB, standard, load-only):
-
-| Scale | Metric | Before | After M12B-1 |
-|---|---|--:|--:|
-| 5M | on-disk tables | 78 GB | **13 GB** |
-| | table files (live / total) | 155 / 2,295 | 79 / 174 |
-| | space-amp | 15.8× | **~2.6×** |
-| | compaction output | 74.5 GB | **6.5 GB** |
-| | load throughput | 16,667 ops/s | **88,203 ops/s (5.3×)** |
-| | load time | 300 s | **57 s** |
-| 3M | on-disk | 14 GB | **4.6 GB** (4.7× → ~1.5×) |
-| 1M | on-disk | 1.3 GB | 1.3 GB (no compaction; nothing to reclaim) |
-
-The space win was expected (SA2). The throughput/write-amp collapse was a
-cascade: reclaiming dead objects keeps the on-disk structure lean, so compaction
-stopped re-merging through bloat (trivial moves rose 2 → 283 at 5M; the
-super-linear load collapse went from 42× to ~8× time for 5× data). RC1 (the
-single-lane maintenance keep-up) is unchanged and remains the lead for M12C.
-
-**Residual / follow-ups.** ~95 dead tables remain at 5M (down from 2,140; ~96% of
-dead objects reclaimed, but live/total is 45% and space-amp 2.6× is still above
-the M12B ≤1.5× gate). Tightening: also reclaim on the background-compaction path,
-and widen the proof-status gate to accept `CompletedWithHealthDebt` (a complete
-listing). So M12B-1 is a large step, not the full M12B close.
-
-**Validation.** storage-next lib suite 3,130 passing (incl. a new
-`delete_object_best_effort` unit test); clippy + fmt clean. **Test-track gap:**
-the synthetic-input lifecycle harness (`CheckpointTestBackend` + `install_l0_table`)
-cannot exercise end-to-end reclaim — its inputs are not real `tables/` objects, so
-the retention proof finds nothing to delete (verified: gate passes, status
-`Completed`, zero candidates). The benchmark above is the integration validation;
-M12TB needs a real-object (flush → compact → reclaim) end-to-end test.
-
 ## Reproduce
 
 ```bash
