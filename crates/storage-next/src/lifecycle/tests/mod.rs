@@ -148,6 +148,31 @@ fn lifecycle_config_rejects_zero_limits() {
 }
 
 #[test]
+fn lifecycle_config_rejects_invalid_write_throttle_policy() {
+    // soft ratio must be strictly inside (0, 1000) so the `1000 - soft` ramp denominator is
+    // never 0; max delay must be nonzero. Reasons differ per field, so match on `field` only.
+    for (field, policy) in [
+        (
+            "write_throttle_soft_ratio_permille",
+            LifecycleWriteThrottlePolicy::new(0, 20),
+        ),
+        (
+            "write_throttle_soft_ratio_permille",
+            LifecycleWriteThrottlePolicy::new(1000, 20),
+        ),
+        (
+            "write_throttle_max_delay_millis",
+            LifecycleWriteThrottlePolicy::new(700, 0),
+        ),
+    ] {
+        assert!(matches!(
+            LifecycleConfig::default().with_write_throttle_policy(policy),
+            Err(LifecycleError::InvalidConfig { field: actual, .. }) if actual == field
+        ));
+    }
+}
+
+#[test]
 fn lifecycle_fact_variants_are_constructible() {
     assert_eq!(LifecycleState::New, LifecycleState::New);
     assert_eq!(LifecycleState::Opening, LifecycleState::Opening);

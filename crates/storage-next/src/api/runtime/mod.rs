@@ -24,9 +24,10 @@ use crate::lifecycle::{
     LifecycleRetentionRequest, LifecycleRetentionScope, LifecycleStoragePressure,
     LifecycleStoragePressureReason, LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome,
     LifecycleWalGrowthPolicy, LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger,
-    LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus, MaintenanceCheckpointOptions,
-    MaintenanceClock, MaintenanceExecutor, MaintenanceExecutorStats, MaintenanceExecutorStatus,
-    MaintenanceInstant, MaintenanceOutcome as LifecycleMaintenanceOutcome,
+    LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus, LifecycleWriteThrottlePolicy,
+    MaintenanceCheckpointOptions, MaintenanceClock, MaintenanceExecutor, MaintenanceExecutorStats,
+    MaintenanceExecutorStatus, MaintenanceInstant,
+    MaintenanceOutcome as LifecycleMaintenanceOutcome,
     MaintenanceOutcomeReasonClass as LifecycleMaintenanceOutcomeReasonClass,
     MaintenanceOutcomeStatus as LifecycleMaintenanceOutcomeStatus,
     MaintenanceTaskKind as LifecycleMaintenanceTaskKind,
@@ -2628,57 +2629,81 @@ impl<'a> StorageRuntime<'a> {
         let runtime_timer = perf_trace::start_timer();
         let mut pressure_wait_deadline = None;
         loop {
-            let (outcome_result, admission, pending_tasks, wal_growth) = match &mut self.inner {
-                StorageRuntimeInner::Cache(slot) => {
-                    let mut runtime = slot.lock();
-                    let result =
-                        runtime.execute_cache_commit(runtime_batch.clone(), generation_guard);
-                    (
-                        result,
-                        runtime.last_write_admission(),
-                        runtime.maintenance_status().pending_tasks(),
-                        None,
-                    )
-                }
-                StorageRuntimeInner::Durable(slot) => {
-                    let mut runtime = slot.lock();
-                    let result =
-                        runtime.execute_durable_commit(runtime_batch.clone(), generation_guard);
-                    (
-                        result,
-                        runtime.last_write_admission(),
-                        runtime.maintenance_status().pending_tasks(),
-                        runtime.last_wal_growth_outcome().cloned(),
-                    )
-                }
-                StorageRuntimeInner::DurableOwned(slot) => {
-                    let mut runtime = slot.lock();
-                    let clone_timer = perf_trace::start_timer();
-                    let exec_batch = runtime_batch.clone();
-                    perf_trace::record_commit_api_batch_clone_elapsed(clone_timer);
-                    let result = runtime.execute_durable_commit(exec_batch, generation_guard);
-                    let post_timer = perf_trace::start_timer();
-                    let snapshot = (
-                        result,
-                        runtime.last_write_admission(),
-                        runtime.maintenance_status().pending_tasks(),
-                        runtime.last_wal_growth_outcome().cloned(),
-                    );
-                    perf_trace::record_commit_api_post_elapsed(post_timer);
-                    snapshot
-                }
-                StorageRuntimeInner::Closed => {
-                    return Err(StorageApiError::InvalidRuntimeState {
-                        reason: "commit requires an open runtime",
-                    });
-                }
-            };
+            let (outcome_result, admission, pending_tasks, wal_growth, throttle_delay_millis) =
+                match &mut self.inner {
+                    StorageRuntimeInner::Cache(slot) => {
+                        let mut runtime = slot.lock();
+                        let result =
+                            runtime.execute_cache_commit(runtime_batch.clone(), generation_guard);
+                        (
+                            result,
+                            runtime.last_write_admission(),
+                            runtime.maintenance_status().pending_tasks(),
+                            None,
+                            // Cache mode neutralizes throttle pressure to 0; never throttles.
+                            0,
+                        )
+                    }
+                    StorageRuntimeInner::Durable(slot) => {
+                        let mut runtime = slot.lock();
+                        let result =
+                            runtime.execute_durable_commit(runtime_batch.clone(), generation_guard);
+                        let throttle_delay_millis = write_throttle_delay_millis(
+                            runtime.last_write_admission().map_or(0, |admission| {
+                                admission.pressure().throttle_ratio_permille()
+                            }),
+                            runtime
+                                .open_plan()
+                                .lifecycle_config()
+                                .write_throttle_policy(),
+                        );
+                        (
+                            result,
+                            runtime.last_write_admission(),
+                            runtime.maintenance_status().pending_tasks(),
+                            runtime.last_wal_growth_outcome().cloned(),
+                            throttle_delay_millis,
+                        )
+                    }
+                    StorageRuntimeInner::DurableOwned(slot) => {
+                        let mut runtime = slot.lock();
+                        let clone_timer = perf_trace::start_timer();
+                        let exec_batch = runtime_batch.clone();
+                        perf_trace::record_commit_api_batch_clone_elapsed(clone_timer);
+                        let result = runtime.execute_durable_commit(exec_batch, generation_guard);
+                        let post_timer = perf_trace::start_timer();
+                        let throttle_delay_millis = write_throttle_delay_millis(
+                            runtime.last_write_admission().map_or(0, |admission| {
+                                admission.pressure().throttle_ratio_permille()
+                            }),
+                            runtime
+                                .open_plan()
+                                .lifecycle_config()
+                                .write_throttle_policy(),
+                        );
+                        let snapshot = (
+                            result,
+                            runtime.last_write_admission(),
+                            runtime.maintenance_status().pending_tasks(),
+                            runtime.last_wal_growth_outcome().cloned(),
+                            throttle_delay_millis,
+                        );
+                        perf_trace::record_commit_api_post_elapsed(post_timer);
+                        snapshot
+                    }
+                    StorageRuntimeInner::Closed => {
+                        return Err(StorageApiError::InvalidRuntimeState {
+                            reason: "commit requires an open runtime",
+                        });
+                    }
+                };
             if pending_tasks > 0 {
                 self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
             }
             match outcome_result {
                 Ok(outcome) => {
                     self.background_wait_after_wal_growth_enqueue(wal_growth.as_ref());
+                    self.background_wait_after_write_throttle(throttle_delay_millis);
                     perf_trace::record_api_commit_runtime_elapsed(runtime_timer);
                     return map_commit_summary(&outcome, admission);
                 }
@@ -3013,6 +3038,39 @@ impl<'a> StorageRuntime<'a> {
                 return;
             }
         }
+    }
+
+    /// Proportional pre-budget write throttle (fix #2): pace the writer by `delay_millis`
+    /// (computed in `execute_commit` from pool fullness while the slot lock was held) so a
+    /// sustained load settles at the flush-limited rate before the hard memory budget is hit.
+    /// Like the WAL-growth wait, this runs AFTER the commit released the slot lock and paces via
+    /// `wait_background_progress_until` (deterministic under the manual clock). Unlike the relief
+    /// waits it sleeps the FULL delay (see the `u64::MAX` baseline below) — a deliberate pace, not
+    /// a wait-for-relief. No runtime lock is held across the wait, so the background flusher can
+    /// take it and drain — the throttle softens, never stalls.
+    fn background_wait_after_write_throttle(&mut self, delay_millis: u64) {
+        if delay_millis == 0 || !self.has_background_runtime() {
+            return;
+        }
+        let Some(now) = self.background_now_for_current_runtime() else {
+            return;
+        };
+        self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
+        // Sleep the FULL computed delay: this is a deliberate pace, not a wait-for-relief, so it
+        // must not wake early on background task completions (which fire constantly under load and
+        // would shrink the pace to ~0). `u64::MAX` as the progress baseline makes the
+        // "tasks_completed > baseline" wake condition unreachable, so it waits the whole deadline.
+        let completed_before = u64::MAX;
+        let deadline = now.saturating_add(Duration::from_millis(delay_millis));
+        let _drove_drain = match &self.inner {
+            StorageRuntimeInner::Durable(slot) => {
+                slot.wait_background_progress_until(completed_before, deadline)
+            }
+            StorageRuntimeInner::DurableOwned(slot) => {
+                slot.wait_background_progress_until(completed_before, deadline)
+            }
+            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => false,
+        };
     }
 
     fn evaluate_wal_growth_policy_for_background_wait(&mut self) {
@@ -3518,6 +3576,68 @@ impl<'a> StorageRuntime<'a> {
     }
 }
 
+/// Per-commit proportional write-throttle delay in milliseconds. Returns 0 below the policy's
+/// soft fullness threshold; above it the delay ramps quadratically toward `max_delay_millis` as
+/// pool fullness approaches the hard memory budget (a well-damped P-controller: gentle at the
+/// knee, strong as the budget nears). `RocksDB`'s debt-driven token-bucket rate ramp is a
+/// deliberate out-of-scope follow-up (stateful integral controller; RC1/fix #3 territory).
+fn write_throttle_delay_millis(ratio_permille: u16, policy: LifecycleWriteThrottlePolicy) -> u64 {
+    if !policy.enabled() {
+        return 0;
+    }
+    let soft = u64::from(policy.soft_ratio_permille());
+    let ratio = u64::from(ratio_permille).min(1000);
+    if ratio <= soft {
+        return 0;
+    }
+    // `validate()` guarantees soft in 1..1000, so the denominator is >= 1.
+    let excess_permille = (ratio - soft).saturating_mul(1000) / (1000 - soft);
+    policy
+        .max_delay_millis()
+        .saturating_mul(excess_permille)
+        .saturating_mul(excess_permille)
+        / 1_000_000
+}
+
 const fn default_timestamp_source() -> ApiTimestampSource {
     ApiTimestampSource::new(DEFAULT_TIMESTAMP)
+}
+
+#[cfg(test)]
+mod write_throttle_tests {
+    use super::{write_throttle_delay_millis, LifecycleWriteThrottlePolicy};
+
+    #[test]
+    fn delay_is_zero_at_or_below_the_soft_threshold() {
+        let policy = LifecycleWriteThrottlePolicy::new(700, 20);
+        assert_eq!(write_throttle_delay_millis(0, policy), 0);
+        assert_eq!(write_throttle_delay_millis(699, policy), 0);
+        assert_eq!(write_throttle_delay_millis(700, policy), 0);
+    }
+
+    #[test]
+    fn delay_ramps_monotonically_and_caps_at_max() {
+        let policy = LifecycleWriteThrottlePolicy::new(700, 20);
+        let mut previous = 0;
+        for ratio in 700u16..=1000 {
+            let delay = write_throttle_delay_millis(ratio, policy);
+            assert!(
+                delay >= previous,
+                "delay must be non-decreasing in fullness"
+            );
+            assert!(delay <= 20, "delay must never exceed max_delay_millis");
+            previous = delay;
+        }
+        // Full fullness reaches the cap; over-full (clamped) stays at the cap.
+        assert_eq!(write_throttle_delay_millis(1000, policy), 20);
+        assert_eq!(write_throttle_delay_millis(u16::MAX, policy), 20);
+    }
+
+    #[test]
+    fn delay_is_zero_when_the_policy_is_disabled() {
+        assert_eq!(
+            write_throttle_delay_millis(1000, LifecycleWriteThrottlePolicy::disabled()),
+            0
+        );
+    }
 }

@@ -180,6 +180,10 @@ pub(crate) struct LifecycleStoragePressure {
     table_rewrite_bytes: u64,
     inherited_layers: usize,
     pending_maintenance: usize,
+    /// Continuous write-throttle fullness in permille (0..=1000): the max of the
+    /// active-pool, frozen-pool, and L0 fullness ratios. Drives the proportional
+    /// pre-budget write throttle (fix #2). 0 for cache mode and below all soft thresholds.
+    throttle_ratio_permille: u16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1233,6 +1237,8 @@ impl LifecycleStoragePressure {
             severity: LifecycleStoragePressureSeverity::None,
             reason: LifecycleStoragePressureReason::None,
             suggested_task: None,
+            // Cache mode never throttles writes on source/table shape.
+            throttle_ratio_permille: 0,
             ..self
         }
     }
@@ -1303,6 +1309,10 @@ impl LifecycleStoragePressure {
 
     pub(crate) const fn pending_maintenance(self) -> usize {
         self.pending_maintenance
+    }
+
+    pub(crate) const fn throttle_ratio_permille(self) -> u16 {
+        self.throttle_ratio_permille
     }
 }
 
@@ -1788,6 +1798,16 @@ pub(crate) fn collect_storage_pressure_with_budget(
         false,
     );
 
+    let throttle_ratio_permille = storage_pressure_throttle_ratio_permille(
+        branch,
+        active_bytes,
+        frozen_bytes,
+        frozen_tables,
+        level_zero_tables,
+        pending_maintenance,
+        budget,
+    );
+
     LifecycleStoragePressure {
         branch_id,
         severity,
@@ -1802,6 +1822,7 @@ pub(crate) fn collect_storage_pressure_with_budget(
         table_rewrite_bytes,
         inherited_layers,
         pending_maintenance,
+        throttle_ratio_permille,
     }
 }
 
@@ -1999,6 +2020,68 @@ fn frozen_mutable_byte_pressure(
 fn proportional_threshold(total: u64, numerator: u64, denominator: u64) -> u64 {
     debug_assert!(denominator != 0);
     total.saturating_mul(numerator).div_ceil(denominator).max(1)
+}
+
+/// Fullness of `used` against `limit` in permille; 0 when `limit == 0` (mirrors the
+/// byte-pressure guards). May exceed 1000 when over the limit; the caller clamps.
+fn fullness_permille(used: u64, limit: u64) -> u64 {
+    if limit == 0 {
+        return 0;
+    }
+    used.saturating_mul(1000) / limit
+}
+
+/// `fullness_permille` for count-based dimensions (usize used/limit).
+fn count_fullness_permille(used: usize, limit: usize) -> u64 {
+    fullness_permille(
+        u64::try_from(used).unwrap_or(u64::MAX),
+        u64::try_from(limit).unwrap_or(u64::MAX),
+    )
+}
+
+/// Max write-throttle fullness across every hard-block admission trigger — active-pool bytes,
+/// frozen-pool bytes, frozen-table count, L0-table count, and pending-maintenance depth — in
+/// permille (0..=1000). Pure function of values already loaded by
+/// `collect_storage_pressure_with_budget` (no extra branch reads). Taking the max over all
+/// triggers makes the proportional throttle ramp before *each* binary block; the frozen-count
+/// and L0-count cliffs are the in-budget RC2 collapse drivers, and the frozen-pool projection
+/// (frozen+active vs the frozen budget) leads the rotation stall.
+fn storage_pressure_throttle_ratio_permille(
+    branch: &BranchLocalState,
+    active_bytes: u64,
+    frozen_bytes: u64,
+    frozen_tables: usize,
+    level_zero_tables: usize,
+    pending_maintenance: usize,
+    budget: Option<StorageRuntimeBudget>,
+) -> u16 {
+    let rotation_bytes = u64::try_from(branch.config().active_rotation_bytes()).unwrap_or(u64::MAX);
+    let mut ratio = fullness_permille(active_bytes, rotation_bytes);
+
+    if frozen_tables > 0 {
+        if let Some(budget) = budget {
+            let frozen_limit = budget.pool_limit_bytes(StorageBudgetPool::FrozenMutable);
+            ratio = ratio.max(fullness_permille(
+                frozen_bytes.saturating_add(active_bytes),
+                frozen_limit,
+            ));
+        }
+    }
+
+    ratio = ratio.max(count_fullness_permille(
+        frozen_tables,
+        FROZEN_BLOCKING_FLUSH_THRESHOLD,
+    ));
+    ratio = ratio.max(count_fullness_permille(
+        level_zero_tables,
+        LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD,
+    ));
+    ratio = ratio.max(count_fullness_permille(
+        pending_maintenance,
+        PENDING_MAINTENANCE_BLOCKING_THRESHOLD,
+    ));
+
+    u16::try_from(ratio.min(1000)).unwrap_or(1000)
 }
 
 fn record_active_byte_pressure(severity: Option<LifecycleStoragePressureSeverity>) {

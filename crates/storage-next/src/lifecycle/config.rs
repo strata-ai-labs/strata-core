@@ -12,6 +12,16 @@ const DEFAULT_WAL_GROWTH_MAX_SEGMENTS: usize = 64;
 /// and far above the frozen-mutable budget, so flushing already-frozen data can always drop
 /// retained WAL back below it. Edge deployments may tune this lower.
 const DEFAULT_WAL_HARD_CAP_BYTES: u64 = 1024 * 1024 * 1024;
+/// Write-throttle soft engage point, in permille of pool fullness. Below this, writes run
+/// at full speed; above it the per-commit delay ramps toward `max_delay`. 700 sits just
+/// below the 750 (`Urgent`) byte tier and the 800 budget high-water, so pacing begins
+/// before any hard reject is approached. (Benchmarking: lowering it to 500 / raising the cap
+/// to 50 ms did not reduce the rare max tail — that residual is the flush-bound relief of the
+/// hard admission block, i.e. RC1/fix #3, not throttle-preventable.)
+const DEFAULT_WRITE_THROTTLE_SOFT_PERMILLE: u16 = 700;
+/// Maximum per-commit throttle delay (ms) at full pool fullness. Capped small so the
+/// throttle paces rather than stalls; the hard budget/admission paths remain the ceiling.
+const DEFAULT_WRITE_THROTTLE_MAX_DELAY_MILLIS: u64 = 20;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleConfig {
@@ -23,6 +33,7 @@ pub(crate) struct LifecycleConfig {
     wal_growth_policy: LifecycleWalGrowthPolicy,
     maintenance_scheduling_policy: LifecycleMaintenanceSchedulingPolicy,
     compaction_io_policy: LifecycleCompactionIoPolicy,
+    write_throttle_policy: LifecycleWriteThrottlePolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,6 +61,74 @@ pub(crate) struct LifecycleWalGrowthPolicy {
     /// Hard cap on retained WAL bytes; see `DEFAULT_WAL_HARD_CAP_BYTES`. Should exceed
     /// `max_retained_wal_bytes` so the reclaim trigger fires before the cap rejects writes.
     max_total_wal_bytes: u64,
+}
+
+/// Proportional write-throttle policy (fix #2). Below `soft_ratio_permille` pool fullness
+/// writes run at full speed; above it a per-commit delay ramps quadratically toward
+/// `max_delay_millis` as fullness approaches the hard memory budget, pacing the writer to the
+/// flush-limited rate so the hard reject is not reached under steady load. Durations are
+/// stored as millis to keep `const fn` constructors and avoid a `Duration` import here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LifecycleWriteThrottlePolicy {
+    enabled: bool,
+    soft_ratio_permille: u16,
+    max_delay_millis: u64,
+}
+
+impl LifecycleWriteThrottlePolicy {
+    pub(crate) const fn new(soft_ratio_permille: u16, max_delay_millis: u64) -> Self {
+        Self {
+            enabled: true,
+            soft_ratio_permille,
+            max_delay_millis,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn disabled() -> Self {
+        Self {
+            enabled: false,
+            soft_ratio_permille: DEFAULT_WRITE_THROTTLE_SOFT_PERMILLE,
+            max_delay_millis: DEFAULT_WRITE_THROTTLE_MAX_DELAY_MILLIS,
+        }
+    }
+
+    pub(crate) const fn enabled(self) -> bool {
+        self.enabled
+    }
+
+    pub(crate) const fn soft_ratio_permille(self) -> u16 {
+        self.soft_ratio_permille
+    }
+
+    pub(crate) const fn max_delay_millis(self) -> u64 {
+        self.max_delay_millis
+    }
+
+    pub(crate) fn validate(self) -> LifecycleResult<()> {
+        if self.enabled && (self.soft_ratio_permille == 0 || self.soft_ratio_permille >= 1000) {
+            return Err(LifecycleError::InvalidConfig {
+                field: "write_throttle_soft_ratio_permille",
+                reason: "must be in 1..1000 when the write throttle is enabled",
+            });
+        }
+        if self.enabled && self.max_delay_millis == 0 {
+            return Err(LifecycleError::InvalidConfig {
+                field: "write_throttle_max_delay_millis",
+                reason: "must be nonzero when the write throttle is enabled",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Default for LifecycleWriteThrottlePolicy {
+    fn default() -> Self {
+        Self::new(
+            DEFAULT_WRITE_THROTTLE_SOFT_PERMILLE,
+            DEFAULT_WRITE_THROTTLE_MAX_DELAY_MILLIS,
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -85,6 +164,7 @@ impl LifecycleConfig {
             wal_growth_policy: LifecycleWalGrowthPolicy::default(),
             maintenance_scheduling_policy: LifecycleMaintenanceSchedulingPolicy::default(),
             compaction_io_policy: LifecycleCompactionIoPolicy::default(),
+            write_throttle_policy: LifecycleWriteThrottlePolicy::default(),
         };
         config.validate()?;
         Ok(config)
@@ -106,6 +186,17 @@ impl LifecycleConfig {
     ) -> LifecycleResult<Self> {
         wal_growth_policy.validate()?;
         self.wal_growth_policy = wal_growth_policy;
+        self.validate()?;
+        Ok(self)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_write_throttle_policy(
+        mut self,
+        write_throttle_policy: LifecycleWriteThrottlePolicy,
+    ) -> LifecycleResult<Self> {
+        write_throttle_policy.validate()?;
+        self.write_throttle_policy = write_throttle_policy;
         self.validate()?;
         Ok(self)
     }
@@ -154,6 +245,10 @@ impl LifecycleConfig {
         self.wal_growth_policy
     }
 
+    pub(crate) const fn write_throttle_policy(self) -> LifecycleWriteThrottlePolicy {
+        self.write_throttle_policy
+    }
+
     pub(crate) const fn maintenance_scheduling_policy(
         self,
     ) -> LifecycleMaintenanceSchedulingPolicy {
@@ -180,6 +275,7 @@ impl LifecycleConfig {
         self.storage_budget.validate()?;
         self.wal_growth_policy.validate()?;
         self.compaction_io_policy.validate()?;
+        self.write_throttle_policy.validate()?;
         Ok(())
     }
 }

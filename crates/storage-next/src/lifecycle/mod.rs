@@ -116,6 +116,7 @@ pub(crate) use compaction::{
 pub(crate) use config::{
     LifecycleCloseTimeoutPolicy, LifecycleCompactionIoPolicy, LifecycleConfig,
     LifecycleLossyRecoveryPolicy, LifecycleMaintenanceSchedulingPolicy, LifecycleWalGrowthPolicy,
+    LifecycleWriteThrottlePolicy,
 };
 #[allow(
     unused_imports,

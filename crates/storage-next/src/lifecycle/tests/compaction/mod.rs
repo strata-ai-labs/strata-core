@@ -2098,6 +2098,65 @@ fn storage_pressure_reports_l0_table_backlog_boundaries() {
 }
 
 #[test]
+fn storage_pressure_throttle_ratio_tracks_l0_backlog() {
+    fn ratio_for_l0(count: u64) -> u16 {
+        let branch = branch_id(0x68);
+        let mut state = BranchLocalState::empty(branch);
+        for index in 0..count {
+            install_l0_table(
+                &mut state,
+                branch,
+                &format!("throttle-{count}-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("throttle-{count}-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+        collect_storage_pressure(&state, empty_maintenance_status()).throttle_ratio_permille()
+    }
+
+    // With no active/frozen bytes, the throttle ratio is the L0 fullness against the blocking
+    // threshold (16): count/16 in permille, clamped to 1000 when over-full.
+    assert_eq!(ratio_for_l0(0), 0);
+    assert_eq!(ratio_for_l0(4), 250);
+    assert_eq!(ratio_for_l0(8), 500);
+    assert_eq!(ratio_for_l0(16), 1000);
+    assert_eq!(ratio_for_l0(20), 1000);
+}
+
+#[test]
+fn storage_pressure_throttle_ratio_tracks_frozen_table_backlog() {
+    fn ratio_for_frozen(count: u64) -> u16 {
+        let branch = branch_id(0x69);
+        let mut state = BranchLocalState::empty(branch);
+        for index in 0..count {
+            state
+                .append_committed_row(put_row(
+                    branch,
+                    format!("frozen-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    b"value",
+                ))
+                .expect("append active row");
+            state.rotate_active();
+        }
+        collect_storage_pressure(&state, empty_maintenance_status()).throttle_ratio_permille()
+    }
+
+    // Without a budget the frozen-BYTE dimension is skipped, so the ratio reflects frozen-table
+    // COUNT fullness against FROZEN_BLOCKING_FLUSH_THRESHOLD (4) — the dimension fix #2 added so
+    // the throttle ramps before the frozen-count cliff (the in-budget collapse driver).
+    assert_eq!(ratio_for_frozen(0), 0);
+    assert_eq!(ratio_for_frozen(2), 500);
+    assert_eq!(ratio_for_frozen(4), 1000);
+}
+
+#[test]
 fn storage_pressure_suggests_flush_before_blocking_l0_compaction() {
     let branch = branch_id(0x6c);
     let mut state = BranchLocalState::empty(branch);
