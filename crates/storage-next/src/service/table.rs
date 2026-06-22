@@ -1,13 +1,13 @@
 //! Durable immutable-table object publication service.
 
 use crate::backend::{
-    Backend, BackendCapability, BackendError, BackendHandle, BackendRange, PublishError,
-    PublishFailureKind,
+    Backend, BackendCapability, BackendError, BackendHandle, BackendRange, DeleteStatus,
+    PublishError, PublishFailureKind,
 };
 use crate::format::{decode_immutable_table, FormatError, ImmutableTable, TableManifestTableRef};
 use crate::layout::{LayoutError, ObjectLayout};
 use crate::object::{ObjectName, ObjectPrefix};
-use crate::service::{validate_publish_outcome, ObjectPublisher};
+use crate::service::{durable_cleanup_succeeded, validate_publish_outcome, ObjectPublisher};
 use crate::table::{
     ImmutableTableReader, TableBlockCache, TableByteSource, TableIdentity, TableReaderConfig,
     TableReaderOpenMode, TableRuntimeError, TableRuntimeResult,
@@ -573,6 +573,23 @@ impl<'a> TableObjectService<'a> {
         self.block_cache
             .as_ref()
             .map_or(0, |cache| cache.current_bytes())
+    }
+
+    /// Best-effort delete of a proven-dead obsolete table object during reclaim.
+    ///
+    /// Returns `true` only when the backend confirms the object was deleted.
+    /// Never errors: obsolete-table reclaim is monotone and backstopped (the
+    /// explicit Reclaim API re-attempts), so a transient backend failure simply
+    /// leaves the object for a later pass rather than failing the compaction that
+    /// triggered reclaim. The caller must prove the object is unreferenced (via
+    /// the table-object retention proof) before calling this.
+    pub(crate) fn delete_object_best_effort(&self, object: &ObjectName) -> bool {
+        matches!(
+            self.backend.delete_object(object),
+            Ok(outcome)
+                if durable_cleanup_succeeded(&outcome)
+                    && outcome.status() == DeleteStatus::Deleted
+        )
     }
 
     pub(crate) fn publish_create(
@@ -1208,6 +1225,33 @@ mod tests {
         assert_eq!(facts.commit_max(), CommitVersion::new(9));
         assert_eq!(backend.read_stored(&object), bytes);
         assert_eq!(backend.operations(), vec![(object, PublishMode::Create)]);
+    }
+
+    #[test]
+    fn delete_object_best_effort_reclaims_present_object_and_no_ops_when_absent() {
+        let backend = RecordingBackend::durable();
+        let bytes = valid_table_bytes();
+        let branch = branch_id().to_string();
+        let object = ObjectLayout::table_object(&branch, 2, "table0001").expect("table object");
+        let service = TableObjectService::new(&backend);
+        service
+            .publish_create(&branch, 2, "table0001", &bytes)
+            .expect("publish table object");
+
+        // A present object is deleted and reported reclaimed.
+        assert!(
+            service.delete_object_best_effort(&object),
+            "present object must be reclaimed"
+        );
+        assert_eq!(backend.delete_calls(), 1);
+
+        // An already-absent object is a best-effort no-op: reported not-reclaimed
+        // (no `Deleted` status) and never a panic — reclaim is monotone and
+        // idempotent, so a re-run after a crash simply finds nothing to do.
+        assert!(
+            !service.delete_object_best_effort(&object),
+            "absent object must be a no-op, not an error"
+        );
     }
 
     #[test]

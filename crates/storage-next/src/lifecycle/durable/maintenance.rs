@@ -995,6 +995,44 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         let _ = self.enqueue_maintenance(MaintenanceTaskRequest::wal_truncation());
     }
 
+    /// Eagerly reclaim the obsolete input objects a single-branch compaction just
+    /// superseded, decoupled from the coalesced Retention/Quarantine maintenance
+    /// lane. Storage pressure only ever suggests flush/compaction, so that lane is
+    /// never scheduled under sustained load and obsolete table objects otherwise
+    /// accumulate on disk indefinitely (measured: ~93% of on-disk tables dead on a
+    /// single branch, ~16x space amplification).
+    ///
+    /// Mirrors `reclaim_wal_after_flush`: single-branch only (a fork may still
+    /// inherit an obsolete input — that needs the branch-aware reachability GC),
+    /// best-effort (a transient read or delete never fails the compaction),
+    /// monotone, and backstopped by the explicit Reclaim API. The caller holds the
+    /// per-branch publish guard, so the manifest the retention proof reads cannot
+    /// change underneath it.
+    fn reclaim_obsolete_tables_after_compaction(&self, branch_id: BranchId) {
+        // Single-branch only: with forks an obsolete input may be inherited by
+        // another branch, which requires blocker-set reachability, not this hook.
+        if self.branch_catalog.registry().active_branch_ids() != vec![branch_id] {
+            return;
+        }
+        let health = self.current_recovery_health.clone();
+        // Best-effort: a transient manifest/inventory read must not fail the compaction.
+        let Ok(request) = table_object_retention_request(&self.services, branch_id, &health) else {
+            return;
+        };
+        let Ok(outcome) = table_object_retention_outcome(&request) else {
+            return;
+        };
+        // Only delete on a complete proof. An incomplete listing (recovery-health
+        // debt, unsupported scope) must never drive deletion.
+        if outcome.status() != LifecycleRetentionStatus::Completed {
+            return;
+        }
+        let table_object = self.services.table_object();
+        for token in outcome.quarantine_tokens() {
+            let _ = table_object.delete_object_best_effort(token.object());
+        }
+    }
+
     #[allow(
         dead_code,
         reason = "durable maintenance dispatch uses this concrete truncation hook"
@@ -2466,6 +2504,15 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             .is_some_and(table_rewrite_outcome_allows_chain_resubmit)
         {
             self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
+        }
+        // Eagerly reclaim the inputs this compaction superseded (single-branch),
+        // so obsolete table objects do not pile up while the coalesced reclaim
+        // lane never runs under load. Runs with the publish guard still held.
+        if outcome
+            .as_ref()
+            .is_some_and(|outcome| outcome.status() == MaintenanceOutcomeStatus::Completed)
+        {
+            self.reclaim_obsolete_tables_after_compaction(branch_id);
         }
         Ok(outcome)
     }
