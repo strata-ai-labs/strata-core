@@ -1319,11 +1319,6 @@ impl LifecycleMaintenanceExecutor {
         &self.queue
     }
 
-    pub(crate) fn has_pending_or_active_kind(&self, kind: MaintenanceTaskKind) -> bool {
-        self.queue.iter().any(|task| task.kind() == kind)
-            || self.active.iter().any(|task| task.kind() == kind)
-    }
-
     pub(crate) fn replace_pending_flush_watermark_candidate(
         &mut self,
         task_id: MaintenanceTaskId,

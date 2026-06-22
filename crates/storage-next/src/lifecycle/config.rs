@@ -6,6 +6,12 @@ const DEFAULT_MAX_MAINTENANCE_QUEUE_DEPTH: usize = 1024;
 const DEFAULT_MAX_RECOVERY_FAULTS: usize = 64;
 const DEFAULT_WAL_GROWTH_MAX_BYTES: u64 = 256 * 1024 * 1024;
 const DEFAULT_WAL_GROWTH_MAX_SEGMENTS: usize = 64;
+/// Hard cap on retained WAL bytes. When retained WAL exceeds this, mutating commits are
+/// rejected (retryable) before appending more WAL, so the WAL can never outrun flush-driven
+/// truncation and fill the disk. Sits above the reclaim trigger (`DEFAULT_WAL_GROWTH_MAX_BYTES`)
+/// and far above the frozen-mutable budget, so flushing already-frozen data can always drop
+/// retained WAL back below it. Edge deployments may tune this lower.
+const DEFAULT_WAL_HARD_CAP_BYTES: u64 = 1024 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleConfig {
@@ -41,6 +47,9 @@ pub(crate) struct LifecycleWalGrowthPolicy {
     /// trigger entirely, so flush/checkpoint cadence is size-driven (byte/segment
     /// triggers + size-based memtable rotation) rather than firing on tiny commits.
     max_commits_since_checkpoint: Option<u64>,
+    /// Hard cap on retained WAL bytes; see `DEFAULT_WAL_HARD_CAP_BYTES`. Should exceed
+    /// `max_retained_wal_bytes` so the reclaim trigger fires before the cap rejects writes.
+    max_total_wal_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -186,6 +195,7 @@ impl LifecycleWalGrowthPolicy {
             max_retained_wal_bytes,
             max_retained_wal_segments,
             max_commits_since_checkpoint,
+            max_total_wal_bytes: DEFAULT_WAL_HARD_CAP_BYTES,
         }
     }
 
@@ -195,6 +205,7 @@ impl LifecycleWalGrowthPolicy {
             max_retained_wal_bytes: DEFAULT_WAL_GROWTH_MAX_BYTES,
             max_retained_wal_segments: DEFAULT_WAL_GROWTH_MAX_SEGMENTS,
             max_commits_since_checkpoint: None,
+            max_total_wal_bytes: DEFAULT_WAL_HARD_CAP_BYTES,
         }
     }
 
@@ -214,6 +225,19 @@ impl LifecycleWalGrowthPolicy {
         self.max_commits_since_checkpoint
     }
 
+    pub(crate) const fn max_total_wal_bytes(self) -> u64 {
+        self.max_total_wal_bytes
+    }
+
+    /// Override the retained-WAL hard cap (bytes). The default (`DEFAULT_WAL_HARD_CAP_BYTES`)
+    /// suits server deployments; smaller suits edge. Used by tests to exercise the cap with
+    /// small data.
+    #[cfg(test)]
+    pub(crate) const fn with_max_total_wal_bytes(mut self, max_total_wal_bytes: u64) -> Self {
+        self.max_total_wal_bytes = max_total_wal_bytes;
+        self
+    }
+
     pub(crate) fn validate(self) -> LifecycleResult<()> {
         if self.enabled && self.max_retained_wal_bytes == 0 {
             return Err(LifecycleError::InvalidConfig {
@@ -230,6 +254,12 @@ impl LifecycleWalGrowthPolicy {
         if self.enabled && self.max_commits_since_checkpoint == Some(0) {
             return Err(LifecycleError::InvalidConfig {
                 field: "max_commits_since_checkpoint",
+                reason: "must be nonzero when WAL growth policy is enabled",
+            });
+        }
+        if self.enabled && self.max_total_wal_bytes == 0 {
+            return Err(LifecycleError::InvalidConfig {
+                field: "max_total_wal_bytes",
                 reason: "must be nonzero when WAL growth policy is enabled",
             });
         }

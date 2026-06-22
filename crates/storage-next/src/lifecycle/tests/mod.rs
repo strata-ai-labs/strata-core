@@ -132,6 +132,10 @@ fn lifecycle_config_rejects_zero_limits() {
             "max_commits_since_checkpoint",
             LifecycleWalGrowthPolicy::new(1, 1, Some(0)),
         ),
+        (
+            "max_total_wal_bytes",
+            LifecycleWalGrowthPolicy::new(1, 1, Some(1)).with_max_total_wal_bytes(0),
+        ),
     ] {
         assert!(matches!(
             LifecycleConfig::default().with_wal_growth_policy(policy),

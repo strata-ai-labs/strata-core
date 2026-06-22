@@ -1036,7 +1036,7 @@ fn queued_wal_truncation_task_defers_without_retention_proof() {
 }
 
 #[test]
-fn wal_truncation_waits_for_queued_flush_watermark_work() {
+fn wal_truncation_no_longer_waits_for_queued_flush_watermark_work() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x2a);
     let mut runtime = open_runtime(branch, &backend);
@@ -1049,13 +1049,18 @@ fn wal_truncation_waits_for_queued_flush_watermark_work() {
         .enqueue_maintenance(MaintenanceTaskRequest::wal_truncation())
         .expect("enqueue truncation");
 
+    // Truncation is no longer gated by a queued flush-watermark task (that gate stalled WAL
+    // reclaim under sustained pressure). It runs against the current persisted retention
+    // watermark; with none set yet it defers, leaving the flush-watermark task for its turn.
     let maintenance = runtime
         .run_next_wal_truncation_maintenance()
-        .expect("run truncation");
+        .expect("run truncation")
+        .expect("truncation maintenance");
 
-    assert_eq!(maintenance, None);
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 2);
-    assert_eq!(runtime.maintenance_status().stats().started(), 0);
+    assert_eq!(maintenance.task_kind(), MaintenanceTaskKind::WalTruncation);
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert_eq!(runtime.maintenance_status().stats().deferred(), 1);
 }
 
 #[test]

@@ -2935,7 +2935,9 @@ impl<'a> StorageRuntime<'a> {
         let block_wait = BackgroundBlockWaitConfig::default();
         let stall_deadline = now.saturating_add(block_wait.stall_deadline);
         let mut no_relief_rounds = 0usize;
-        while self.current_wal_growth_exceeds_backpressure() {
+        while self.current_wal_growth_exceeds_backpressure()
+            || self.current_wal_growth_exceeds_hard_cap()
+        {
             let Some(now) = self.background_now_for_current_runtime() else {
                 return;
             };
@@ -2998,6 +3000,16 @@ impl<'a> StorageRuntime<'a> {
                 }
             }
             if !progressed || no_relief_rounds >= block_wait.no_relief_rounds {
+                // Disk-safety guard: above the hard WAL cap the soft give-up does not apply —
+                // the WAL must not keep growing past the ceiling, so keep waiting on background
+                // reclaim (flush → flush-watermark → truncation, re-enqueued each iteration by
+                // `evaluate_wal_growth_policy_for_background_wait`) until relief or the stall
+                // deadline. Below the cap this stays the soft give-up that lets the writer make
+                // progress when maintenance is merely slow.
+                if self.current_wal_growth_exceeds_hard_cap() {
+                    no_relief_rounds = 0;
+                    continue;
+                }
                 return;
             }
         }
@@ -3018,6 +3030,23 @@ impl<'a> StorageRuntime<'a> {
     fn current_wal_growth_exceeds_backpressure(&self) -> bool {
         self.background_wal_growth_snapshot_for_current_runtime()
             .is_some_and(|snapshot| snapshot.exceeds_backpressure)
+    }
+
+    fn current_wal_growth_exceeds_hard_cap(&self) -> bool {
+        // A transient facts-read error is treated as "not over the cap" (mirrors the
+        // backpressure check): we never block the writer on a read failure — the next
+        // commit's pacing re-checks.
+        match &self.inner {
+            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => false,
+            StorageRuntimeInner::Durable(slot) => slot
+                .lock()
+                .current_wal_growth_exceeds_hard_cap()
+                .unwrap_or(false),
+            StorageRuntimeInner::DurableOwned(slot) => slot
+                .lock()
+                .current_wal_growth_exceeds_hard_cap()
+                .unwrap_or(false),
+        }
     }
 
     fn background_wal_growth_snapshot_for_current_runtime(

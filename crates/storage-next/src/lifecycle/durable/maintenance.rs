@@ -962,6 +962,39 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         Ok(outcome)
     }
 
+    /// Advance the flush watermark to the highest L0-covered commit and enqueue WAL
+    /// truncation, so retained WAL is reclaimed when a memtable reaches L0 rather than
+    /// waiting for a checkpoint. Reuses the table-manifest coverage path
+    /// (`highest_coverable_flush_watermark_candidate` + `persist_table_manifest_flush_watermark`),
+    /// which validates against the `wal_retention_watermark` floor independently of checkpoint.
+    ///
+    /// Best-effort by design: a flush must never fail because reclaim could not advance. The
+    /// watermark is monotone (the persist no-ops when the candidate is not above the persisted
+    /// value) and the periodic WAL-growth policy remains the backstop, so a transient error here
+    /// only defers reclaim to the next flush.
+    fn reclaim_wal_after_flush(&mut self) {
+        let candidate = match self.highest_coverable_flush_watermark_candidate() {
+            Ok(Some(candidate)) => candidate,
+            // Nothing new is fully covered in L0 yet, or this is a multi-branch runtime
+            // (which reclaims via checkpoint instead); the next flush retries.
+            Ok(None) => return,
+            // Best-effort: a transient manifest read must not fail the flush; the periodic
+            // WAL-growth policy re-attempts reclaim.
+            Err(_error) => return,
+        };
+        // Best-effort: monotone (no-ops when not advancing); the periodic policy backstops.
+        if self
+            .persist_table_manifest_flush_watermark(candidate)
+            .is_err()
+        {
+            return;
+        }
+        // Best-effort enqueue: truncation runs off-lock against a WAL retention clone and
+        // coalesces; if the maintenance queue is momentarily full the periodic WAL-growth
+        // policy re-enqueues it.
+        let _ = self.enqueue_maintenance(MaintenanceTaskRequest::wal_truncation());
+    }
+
     #[allow(
         dead_code,
         reason = "durable maintenance dispatch uses this concrete truncation hook"
@@ -1271,7 +1304,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         else {
             return Ok(None);
         };
-        self.run_flush_maintenance_task(task.id())
+        let outcome = self.run_flush_maintenance_task(task.id())?;
+        // Flush-driven WAL reclaim for the inline scheduling path (the background path reclaims
+        // in `finish_publish_phase`). Best-effort; only when the flush actually completed.
+        if matches!(&outcome, Some(outcome) if outcome.status() == MaintenanceOutcomeStatus::Completed)
+        {
+            self.reclaim_wal_after_flush();
+        }
+        Ok(outcome)
     }
 
     fn run_flush_maintenance_task(
@@ -1540,15 +1580,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     pub(crate) fn run_next_wal_truncation_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-        if self
-            .maintenance
-            .has_pending_or_active_kind(MaintenanceTaskKind::Flush)
-            || self
-                .maintenance
-                .has_pending_or_active_kind(MaintenanceTaskKind::FlushWatermark)
-        {
-            return Ok(None);
-        }
+        // No pending-flush/flush-watermark gate: truncation reads the *current* persisted
+        // retention watermark and only deletes sealed segments fully below it, so running
+        // while a flush or watermark advance is in flight is safe — it reclaims what is
+        // already covered and the next pass reclaims the rest (truncation tasks coalesce).
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let manifest = self.services.manifest();
@@ -1563,15 +1598,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         &mut self,
     ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        if self
-            .maintenance
-            .has_pending_or_active_kind(MaintenanceTaskKind::Flush)
-            || self
-                .maintenance
-                .has_pending_or_active_kind(MaintenanceTaskKind::FlushWatermark)
-        {
-            return Ok(None);
-        }
+        // No pending-flush/flush-watermark gate: see `run_next_wal_truncation_maintenance`.
         let Some(task) = self
             .maintenance
             .next_matching_task(|task| task.kind() == MaintenanceTaskKind::WalTruncation)
@@ -1992,13 +2019,19 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             guard,
             post,
         } = prepared;
+        // Set when a flush actually installed new L0 table(s); gates the flush-driven WAL
+        // reclaim at the tail (after the task is finished and the publish guard released).
+        let mut flush_published = false;
         let outcome = match post {
             PreparedPublishPost::Flush => match write_result {
                 Ok(write) => match self
                     .table_catalog
                     .record_reserved_manifest(write.manifest())
                 {
-                    Ok(()) => base_outcome,
+                    Ok(()) => {
+                        flush_published = true;
+                        base_outcome
+                    }
                     Err(error) => table_manifest_debt_outcome(base_outcome, error),
                 },
                 Err(error) => table_manifest_debt_outcome(base_outcome, error),
@@ -2031,7 +2064,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         // publish for this branch can interleave between persist and record.
         drop(guard);
         let finished = self.maintenance.finish_started(task, outcome, false);
-        self.record_publish_phase_health(finished)
+        let result = self.record_publish_phase_health(finished);
+        // Flush-driven WAL reclaim: advance the flush watermark to the just-published L0
+        // coverage and enqueue truncation, decoupled from checkpoint. Runs after the guard is
+        // released and the task finished; best-effort, never disturbs the flush result.
+        if flush_published {
+            self.reclaim_wal_after_flush();
+        }
+        result
     }
 
     /// Fold an off-lock persist result into a rewrite outcome: record the persisted manifest's
@@ -2062,12 +2102,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     pub(crate) fn run_next_flush_watermark_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-        if self
-            .maintenance
-            .has_pending_or_active_kind(MaintenanceTaskKind::Flush)
-        {
-            return Ok(None);
-        }
+        // No pending-flush gate: see `run_next_background_flush_watermark_maintenance`.
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let branch = self
@@ -2100,12 +2135,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     pub(crate) fn run_next_background_flush_watermark_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-        if self
-            .maintenance
-            .has_pending_or_active_kind(MaintenanceTaskKind::Flush)
-        {
-            return Ok(None);
-        }
+        // No pending-flush gate: the watermark advance (Path A/B below) is proven
+        // against the *current* published table manifest, so an unpublished in-flight
+        // flush is simply not counted — advancing to already-covered L0 while a flush
+        // is active is safe and is what lets WAL reclaim keep pace under write pressure.
         let Some(task) = self
             .maintenance
             .next_matching_task(|task| task.kind() == MaintenanceTaskKind::FlushWatermark)

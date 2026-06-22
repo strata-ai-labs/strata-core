@@ -1117,7 +1117,7 @@ fn background_flush_watermark_uses_checkpoint_covered_candidate() {
 }
 
 #[test]
-fn flush_watermark_waits_for_queued_flush_work() {
+fn flush_watermark_no_longer_waits_for_queued_flush_work() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0xd7);
     let mut runtime = open_runtime(branch, &backend);
@@ -1130,13 +1130,18 @@ fn flush_watermark_waits_for_queued_flush_work() {
         ))
         .expect("enqueue watermark");
 
+    // Flush-watermark is no longer gated by a queued flush task (that gate self-starved the
+    // watermark advance under sustained flush pressure). It runs against the current table
+    // manifest; with no coverage yet it defers, leaving the flush task for its turn.
     let outcome = runtime
         .run_next_flush_watermark_maintenance()
-        .expect("run watermark");
+        .expect("run watermark")
+        .expect("watermark maintenance");
 
-    assert_eq!(outcome, None);
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 2);
-    assert_eq!(runtime.maintenance_status().stats().started(), 0);
+    assert_eq!(outcome.task_kind(), MaintenanceTaskKind::FlushWatermark);
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    assert_eq!(runtime.maintenance_status().stats().deferred(), 1);
 }
 
 #[test]
@@ -1460,4 +1465,51 @@ fn end_to_end_publish_persist_truncate_recover() {
             .flushed_through_commit_id(),
         Some(CommitVersion::new(2))
     );
+}
+
+#[test]
+fn flush_completion_advances_watermark_and_reclaims_wal_without_checkpoint() {
+    let backend = CheckpointTestBackend::new();
+    let branch = branch_id(0xf1);
+    let mut runtime = open_runtime(branch, &backend);
+
+    // Commit, rotate, and flush to L0 through the maintenance path — no checkpoint anywhere.
+    runtime
+        .execute_durable_commit(
+            durable_batch(branch, b"flush-reclaim", b"value"),
+            generation_guard(),
+        )
+        .expect("commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue flush");
+    let flush = runtime
+        .run_next_flush_maintenance()
+        .expect("run flush")
+        .expect("flush outcome");
+    assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
+
+    // Flush-driven reclaim advanced the flush watermark with no checkpoint: the snapshot
+    // watermark stays unset, yet flushed_through_commit_id now covers the flushed commit.
+    let manifest = DatabaseManifestService::new(&backend)
+        .load_required()
+        .expect("manifest");
+    assert_eq!(manifest.snapshot_watermark(), None);
+    assert_eq!(
+        manifest.flushed_through_commit_id(),
+        Some(CommitVersion::new(1))
+    );
+
+    // Reclaim also enqueued a WAL-truncation task. It runs against the freshly advanced
+    // watermark (the flush-watermark retention proof) and completes, rather than deferring
+    // for "no retention proof" as it would before any watermark advanced.
+    let truncation = runtime
+        .run_next_wal_truncation_maintenance()
+        .expect("run truncation")
+        .expect("truncation outcome");
+    assert_eq!(truncation.task_kind(), MaintenanceTaskKind::WalTruncation);
+    assert_eq!(truncation.status(), MaintenanceOutcomeStatus::Completed);
 }

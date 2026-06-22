@@ -66,6 +66,22 @@ fn default_wal_growth_policy_is_size_driven_not_commit_count_driven() {
 }
 
 #[test]
+fn wal_growth_hard_cap_is_byte_based_and_off_when_policy_disabled() {
+    // Cap above the reclaim trigger; the hard cap is purely byte-based, so the segment count
+    // is irrelevant (`under_cap` carries many segments yet stays under the cap).
+    let policy = LifecycleWalGrowthPolicy::new(100, 2, None).with_max_total_wal_bytes(1_000);
+    let at_cap = WalGrowthFacts::new_for_policy(64, 1_000, 1, 0, 0, 0);
+    let over_cap = WalGrowthFacts::new_for_policy(1, 1_001, 1, 0, 0, 0);
+
+    assert!(!policy.hard_cap_exceeded(at_cap));
+    assert!(policy.hard_cap_exceeded(over_cap));
+    // A disabled WAL-growth policy never enforces the hard cap.
+    assert!(!LifecycleWalGrowthPolicy::disabled()
+        .with_max_total_wal_bytes(1_000)
+        .hard_cap_exceeded(over_cap));
+}
+
+#[test]
 fn automatic_checkpoint_does_not_trigger_below_threshold() {
     let backend = CheckpointTestBackend::new();
     let branch = branch_id(0x91);

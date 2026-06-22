@@ -588,6 +588,14 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         Ok((facts, commits_since_checkpoint, trigger))
     }
 
+    /// Whether retained WAL has exceeded the hard disk-safety cap (`max_total_wal_bytes`).
+    /// When true the foreground WAL pacing must not give up — the WAL must never keep growing
+    /// past this ceiling — so the writer waits on background reclaim until it drops back below.
+    pub(crate) fn current_wal_growth_exceeds_hard_cap(&self) -> LifecycleResult<bool> {
+        let policy = self.open_plan.lifecycle_config().wal_growth_policy();
+        Ok(policy.hard_cap_exceeded(self.current_wal_growth_facts()?))
+    }
+
     pub(crate) const fn last_write_admission(&self) -> Option<LifecycleWriteAdmissionOutcome> {
         self.last_write_admission
     }

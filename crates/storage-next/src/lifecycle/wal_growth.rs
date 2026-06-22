@@ -229,6 +229,14 @@ impl LifecycleWalGrowthPolicy {
         }
         None
     }
+
+    /// Hard disk-safety cap: retained WAL bytes have exceeded the absolute ceiling above which
+    /// mutating commits must be rejected (rather than merely throttled) so the WAL can never
+    /// outrun flush-driven truncation and fill the disk. Byte-based only — WAL segments are
+    /// fixed-size, so a byte bound also bounds the segment count.
+    pub(crate) fn hard_cap_exceeded(self, facts: WalGrowthFacts) -> bool {
+        self.enabled() && facts.retained_bytes() > self.max_total_wal_bytes()
+    }
 }
 
 pub(crate) fn commits_since_checkpoint(
