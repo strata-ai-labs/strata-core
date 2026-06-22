@@ -20,8 +20,8 @@ use strata_storage_next::api::{
     DiagnosticsSourceLayoutReport, MaintenanceQueueSummary, MaintenanceRequest, MaintenanceScope,
     MaintenanceSummary, MaintenanceSummaryStatus, MaintenanceTask, PointReadRequest,
     PrefixScanReadRequest, ReadBound, ReadLimit, ScanRange, ScanReadOutcome, ScanReadRequest,
-    StorageApiError, StorageApiResult, StorageDurabilityPolicy, StorageKey, StorageOpenOutcome,
-    StorageRuntime, StorageSpaceId, StorageValue,
+    StorageApiError, StorageApiResult, StorageDurabilityPolicy, StorageKey, StorageMemoryBudget,
+    StorageOpenOptions, StorageOpenOutcome, StorageRuntime, StorageSpaceId, StorageValue,
 };
 use strata_storage_next::perf_trace::{self, StoragePerfSnapshot};
 use tempfile::TempDir;
@@ -87,6 +87,12 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
     eprintln!(
         "diagnostic_source_shape={} diagnostic_final_drain={}",
         config.diagnostic_source_shape, config.diagnostic_final_drain
+    );
+    eprintln!(
+        "memory_budget={}",
+        config
+            .memory_budget_bytes
+            .map_or_else(|| "default".to_string(), |bytes| bytes.to_string())
     );
     eprintln!();
 
@@ -930,6 +936,27 @@ fn print_result(result: &RunResult) {
             perf_trace.table_rewrite_reader_reopens_avoided(),
             perf_trace.table_rewrite_reader_row_vectors_reused(),
         );
+        eprintln!(
+            "    lifecycle-compaction ops_completed={} l0={} l0_to_l1={} nonzero={} bottommost={} input_tables={} output_tables={} input_bytes={} output_bytes={} input_rows={} elapsed_ns={} trivial_moves={} selected={} selected_table_count={} selected_byte_count={} selected_target_bytes={} nonzero_input_selections={} nonzero_input_bytes={}",
+            perf_trace.lifecycle_compaction_operations_completed(),
+            perf_trace.lifecycle_compaction_l0_operations(),
+            perf_trace.lifecycle_compaction_l0_to_level_one_operations(),
+            perf_trace.lifecycle_compaction_nonzero_operations(),
+            perf_trace.lifecycle_compaction_bottommost_operations(),
+            perf_trace.lifecycle_compaction_input_tables(),
+            perf_trace.lifecycle_compaction_output_tables(),
+            perf_trace.lifecycle_compaction_input_bytes(),
+            perf_trace.lifecycle_compaction_output_bytes(),
+            perf_trace.lifecycle_compaction_input_rows(),
+            perf_trace.lifecycle_compaction_elapsed_ns(),
+            perf_trace.lifecycle_compaction_trivial_moves(),
+            perf_trace.lifecycle_compaction_selected(),
+            perf_trace.lifecycle_compaction_selected_table_count(),
+            perf_trace.lifecycle_compaction_selected_byte_count(),
+            perf_trace.lifecycle_compaction_selected_target_bytes(),
+            perf_trace.lifecycle_compaction_nonzero_input_selections(),
+            perf_trace.lifecycle_compaction_nonzero_input_bytes(),
+        );
     }
     if let Some(load_phase) = result.load_phase_trace {
         eprintln!(
@@ -1040,6 +1067,7 @@ Options:
   --branch-samples N     Branch fork samples. Default: 100
   --scan-limit N         Prefix scan limit. Default: 64
   --seed N               Deterministic sampling seed.
+  --memory-budget SIZE   Storage memory budget, e.g. 48g/512m. Default: storage default profile.
   --root PATH            Benchmark scratch root. Default: benchmarks/.benchmark/storage-next-l9
   --results-dir PATH     JSON output directory. Default: benchmarks/results/storage-next-l9
   --diagnostic-source-shape
@@ -1075,6 +1103,7 @@ struct Config {
     diagnostic_final_drain: bool,
     keep_dir: bool,
     progress: bool,
+    memory_budget_bytes: Option<u64>,
 }
 
 impl Config {
@@ -1098,6 +1127,7 @@ impl Config {
             diagnostic_final_drain: false,
             keep_dir: false,
             progress: false,
+            memory_budget_bytes: None,
         };
 
         let args = args.collect::<Vec<_>>();
@@ -1120,6 +1150,11 @@ impl Config {
                 "--value-bytes" => {
                     index += 1;
                     config.value_bytes = parse_usize(args.get(index), "--value-bytes")?;
+                }
+                "--memory-budget" => {
+                    index += 1;
+                    config.memory_budget_bytes =
+                        Some(parse_byte_size(args.get(index), "--memory-budget")?);
                 }
                 "--batch-size" => {
                     index += 1;
@@ -1301,6 +1336,24 @@ impl fmt::Display for Workload {
     }
 }
 
+/// Open durable-local storage, applying an explicit `--memory-budget` when set
+/// (so the benchmark can reproduce a specific operating point such as the YCSB
+/// 48 GiB baseline); otherwise the storage default resource profile is used.
+fn open_durable_runtime(
+    path: PathBuf,
+    policy: StorageDurabilityPolicy,
+    config: &Config,
+) -> StorageApiResult<StorageOpenOutcome<'static>> {
+    match config.memory_budget_bytes {
+        Some(bytes) => {
+            let options = StorageOpenOptions::durable_local(policy)
+                .with_memory_budget(StorageMemoryBudget::new(bytes)?);
+            StorageRuntime::open_durable_local_with_options(path, options)
+        }
+        None => StorageRuntime::open_durable_local(path, policy),
+    }
+}
+
 struct OpenBenchRuntime {
     runtime: StorageRuntime<'static>,
     _tempdir: Option<TempDir>,
@@ -1321,12 +1374,12 @@ impl OpenBenchRuntime {
                             .root
                             .join(format!("{}-{}-{}", engine, scale, unix_nanos_now()));
                     std::fs::create_dir_all(&path)?;
-                    let outcome = StorageRuntime::open_durable_local(path.clone(), policy)?;
+                    let outcome = open_durable_runtime(path.clone(), policy, config)?;
                     Ok(Self::from_outcome(outcome, None, Some(path)))
                 } else {
                     let tempdir = tempfile::tempdir_in(&config.root)?;
                     let outcome =
-                        StorageRuntime::open_durable_local(tempdir.path().to_path_buf(), policy)?;
+                        open_durable_runtime(tempdir.path().to_path_buf(), policy, config)?;
                     Ok(Self::from_outcome(outcome, Some(tempdir), None))
                 }
             }
@@ -3799,6 +3852,29 @@ fn parse_u64(value: Option<&String>, flag: &'static str) -> Result<u64, CliError
         .ok_or(CliError::MissingValue(flag))?
         .parse::<u64>()
         .map_err(|_| CliError::InvalidNumber(flag))
+}
+
+/// Parse a binary byte size with an optional `k`/`m`/`g` suffix (1024-based),
+/// e.g. `48g`, `512m`, `65536`. Used for `--memory-budget`.
+fn parse_byte_size(value: Option<&String>, flag: &'static str) -> Result<u64, CliError> {
+    let raw = value.ok_or(CliError::MissingValue(flag))?;
+    let lower = raw.to_ascii_lowercase();
+    let (digits, multiplier) = if let Some(digits) = lower.strip_suffix('g') {
+        (digits, 1024u64 * 1024 * 1024)
+    } else if let Some(digits) = lower.strip_suffix('m') {
+        (digits, 1024u64 * 1024)
+    } else if let Some(digits) = lower.strip_suffix('k') {
+        (digits, 1024u64)
+    } else {
+        (lower.as_str(), 1u64)
+    };
+    digits
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .and_then(|raw| raw.checked_mul(multiplier))
+        .filter(|bytes| *bytes > 0)
+        .ok_or(CliError::InvalidNumber(flag))
 }
 
 fn value(value: Option<&String>, flag: &'static str) -> Result<String, CliError> {
