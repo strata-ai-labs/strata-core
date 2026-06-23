@@ -719,7 +719,11 @@ fn assert_json_command_error_classes(executor: &mut Executor) {
     for command in invalid_input_json_commands() {
         let error = executor.execute(command).expect_err("command fails");
         assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
-        assert!(error.code().contains(".executor."));
+        assert!(
+            error.code().contains(".engine.") || error.code().contains(".executor."),
+            "unexpected public error code: {}",
+            error.code()
+        );
     }
 
     for command in missing_branch_json_commands() {

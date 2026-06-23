@@ -127,7 +127,7 @@ impl<'a> BranchService<'a> {
         ) {
             Ok(outcome) => outcome,
             Err(error) => {
-                if error.code() == "not_found.engine.persistence_history" {
+                if error.code() == "history_unavailable.engine.persistence_history" {
                     let outcome = match self
                         .persistence
                         .create_branch(storage_branch_id, generation)
@@ -554,7 +554,7 @@ mod tests {
             .fork_current(&BranchName::default_branch(), feature.clone())
             .expect_err("fallback create fails");
         assert_eq!(error.class(), EngineErrorClass::Conflict);
-        assert_eq!(error.code(), "conflict.engine.persistence");
+        assert_eq!(error.code(), "already_exists.engine.persistence");
         assert!(!control.contains_branch(&feature));
 
         let loaded = bootstrap_or_load(&mut persistence, false, None)

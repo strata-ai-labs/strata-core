@@ -13,7 +13,7 @@ mod common;
 
 use common::{assert_status, branch, key, open_cache_database, space, value};
 use strata_engine_next::testkit::StorageFaultKind;
-use strata_engine_next::EngineErrorClass;
+use strata_engine_next::{CommitOutcomeStatus, EngineErrorClass, ErrorClass, RetryPolicy};
 
 #[test]
 fn commit_fault_resource_exhausted_surfaces_retryable_and_writes_nothing() {
@@ -28,8 +28,14 @@ fn commit_fault_resource_exhausted_surfaces_retryable_and_writes_nothing() {
     assert_status(
         &error,
         EngineErrorClass::Unavailable,
-        "unavailable.engine.persistence_budget",
+        "resource_exhausted.engine.persistence_budget",
         true,
+    );
+    assert_eq!(error.public_class(), ErrorClass::ResourceExhausted);
+    assert_eq!(error.retry_policy(), RetryPolicy::AfterStateChange);
+    assert_eq!(
+        error.commit_outcome(),
+        CommitOutcomeStatus::DefinitelyNotCommitted
     );
     // The fault fires before the storage mutation, so nothing is persisted; the
     // consumed schedule then lets the follow-up read run normally.
@@ -40,7 +46,7 @@ fn commit_fault_resource_exhausted_surfaces_retryable_and_writes_nothing() {
 }
 
 #[test]
-fn commit_fault_ambiguous_is_retryable_and_ambiguous() {
+fn commit_fault_ambiguous_reports_unknown_retry_and_maybe_committed() {
     let mut db = open_cache_database().expect("cache database opens");
     db.inject_commit_fault_for_test(StorageFaultKind::AmbiguousCommit);
     let mut kv = db
@@ -53,8 +59,11 @@ fn commit_fault_ambiguous_is_retryable_and_ambiguous() {
         &error,
         EngineErrorClass::AmbiguousCommit,
         "ambiguous_commit.engine.persistence",
-        true,
+        false,
     );
+    assert_eq!(error.public_class(), ErrorClass::AmbiguousCommit);
+    assert_eq!(error.retry_policy(), RetryPolicy::Unknown);
+    assert_eq!(error.commit_outcome(), CommitOutcomeStatus::MaybeCommitted);
 }
 
 #[test]
@@ -70,9 +79,12 @@ fn commit_fault_recovery_degraded_maps_to_corruption() {
     assert_status(
         &error,
         EngineErrorClass::Corruption,
-        "data_loss.engine.persistence_recovery",
+        "corruption.engine.persistence_recovery",
         false,
     );
+    assert_eq!(error.public_class(), ErrorClass::Corruption);
+    assert_eq!(error.retry_policy(), RetryPolicy::Never);
+    assert_eq!(error.commit_outcome(), CommitOutcomeStatus::NotApplicable);
 }
 
 #[test]
@@ -97,6 +109,9 @@ fn read_fault_surfaces_mapped_engine_error() {
         "unavailable.engine.persistence",
         true,
     );
+    assert_eq!(error.public_class(), ErrorClass::Unavailable);
+    assert_eq!(error.retry_policy(), RetryPolicy::SameRequest);
+    assert_eq!(error.commit_outcome(), CommitOutcomeStatus::NotApplicable);
 }
 
 #[test]
@@ -119,6 +134,9 @@ fn scan_fault_surfaces_mapped_engine_error() {
         "unavailable.engine.persistence",
         true,
     );
+    assert_eq!(error.public_class(), ErrorClass::Unavailable);
+    assert_eq!(error.retry_policy(), RetryPolicy::SameRequest);
+    assert_eq!(error.commit_outcome(), CommitOutcomeStatus::NotApplicable);
 }
 
 #[test]
@@ -135,7 +153,13 @@ fn injected_fault_fires_once_then_clears() {
         &error,
         EngineErrorClass::Conflict,
         "conflict.engine.persistence",
-        false,
+        true,
+    );
+    assert_eq!(error.public_class(), ErrorClass::Conflict);
+    assert_eq!(error.retry_policy(), RetryPolicy::AfterStateChange);
+    assert_eq!(
+        error.commit_outcome(),
+        CommitOutcomeStatus::DefinitelyNotCommitted
     );
     // The fault is consumed once, so the retried write succeeds and persists.
     kv.put(key(b"k"), value(b"second"))

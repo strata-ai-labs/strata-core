@@ -1,6 +1,6 @@
 //! Executor graph command behavior tests.
 
-#![allow(clippy::too_many_lines)]
+#![allow(clippy::result_large_err, clippy::too_many_lines)]
 
 use serde_json::json;
 use strata_engine_next::{CacheOpenOptions, Database, DurableLocalOpenOptions};

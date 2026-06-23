@@ -88,9 +88,10 @@ const NOT_FOUND_CODES: &[&str] = &[
     "not_found.engine.graph",
     "not_found.engine.json_document",
     "not_found.engine.persistence",
-    "not_found.engine.persistence_history",
     "not_found.engine.vector_collection",
 ];
+
+const ALREADY_EXISTS_CODES: &[&str] = &["already_exists.engine.persistence"];
 
 const CONFLICT_CODES: &[&str] = &[
     "already_exists.engine.branch",
@@ -103,7 +104,14 @@ const CONFLICT_CODES: &[&str] = &[
     "failed_precondition.engine.space_not_empty",
 ];
 
+const HISTORY_UNAVAILABLE_CODES: &[&str] = &["history_unavailable.engine.persistence_history"];
+
+const UNSUPPORTED_CODES: &[&str] = &["unsupported.engine.persistence_capability"];
+
+const RESOURCE_EXHAUSTED_CODES: &[&str] = &["resource_exhausted.engine.persistence_budget"];
+
 const CORRUPTION_CODES: &[&str] = &[
+    "corruption.engine.persistence_recovery",
     "data_loss.engine.branch_catalog",
     "data_loss.engine.branch_create_pending",
     "data_loss.engine.branch_id",
@@ -130,7 +138,6 @@ const CORRUPTION_CODES: &[&str] = &[
     "data_loss.engine.json_key",
     "data_loss.engine.kv_key",
     "data_loss.engine.kv_value",
-    "data_loss.engine.persistence_recovery",
     "data_loss.engine.space_catalog",
     "data_loss.engine.vector_artifact",
     "data_loss.engine.vector_artifacts",
@@ -148,8 +155,6 @@ const UNAVAILABLE_CODES: &[&str] = &[
     "failed_precondition.engine.persistence",
     "unavailable.engine.control_plane",
     "unavailable.engine.persistence",
-    "unavailable.engine.persistence_budget",
-    "unavailable.engine.persistence_capability",
     "unavailable.engine.vector_artifacts",
 ];
 
@@ -180,7 +185,23 @@ const GROUPS: &[CodeGroup] = &[
     },
     CodeGroup {
         class: EngineErrorClass::Conflict,
+        codes: ALREADY_EXISTS_CODES,
+    },
+    CodeGroup {
+        class: EngineErrorClass::Conflict,
         codes: CONFLICT_CODES,
+    },
+    CodeGroup {
+        class: EngineErrorClass::NotFound,
+        codes: HISTORY_UNAVAILABLE_CODES,
+    },
+    CodeGroup {
+        class: EngineErrorClass::Unavailable,
+        codes: UNSUPPORTED_CODES,
+    },
+    CodeGroup {
+        class: EngineErrorClass::Unavailable,
+        codes: RESOURCE_EXHAUSTED_CODES,
     },
     CodeGroup {
         class: EngineErrorClass::Corruption,
@@ -229,7 +250,11 @@ mod tests {
         "already_exists",
         "conflict",
         "failed_precondition",
+        "history_unavailable",
+        "unsupported",
+        "resource_exhausted",
         "data_loss",
+        "corruption",
         "ambiguous_commit",
         "unavailable",
         "internal",
@@ -325,12 +350,16 @@ mod tests {
             let prefix = code.split('.').next().expect("code has a prefix");
             let expected = match prefix {
                 "invalid_argument" => Some(EngineErrorClass::InvalidInput),
-                "not_found" => Some(EngineErrorClass::NotFound),
+                "not_found" | "history_unavailable" => Some(EngineErrorClass::NotFound),
                 "already_exists" | "conflict" => Some(EngineErrorClass::Conflict),
-                "data_loss" => Some(EngineErrorClass::Corruption),
+                "corruption" | "data_loss" => Some(EngineErrorClass::Corruption),
                 "ambiguous_commit" => Some(EngineErrorClass::AmbiguousCommit),
-                "unavailable" => Some(EngineErrorClass::Unavailable),
+                "unavailable" | "unsupported" | "resource_exhausted" => {
+                    Some(EngineErrorClass::Unavailable)
+                }
                 "internal" => Some(EngineErrorClass::Internal),
+                // These V1 classes are represented by the closest legacy class
+                // until `EngineErrorClass` is retired as the public surface.
                 // `failed_precondition` intentionally maps to several classes.
                 "failed_precondition" => None,
                 other => panic!("unknown class prefix: {other}"),

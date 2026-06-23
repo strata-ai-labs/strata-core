@@ -4,7 +4,10 @@
 
 use std::path::PathBuf;
 
-use strata_executor_next::{Command, Executor, ExecutorError, ExecutorErrorClass, Output};
+use strata_executor_next::{
+    Command, CommitOutcomeStatus, ErrorClass, Executor, ExecutorError, ExecutorErrorClass, Output,
+    RetryPolicy,
+};
 use strata_inference_next::{
     EmbedRequest, EmbedResponse, EmbedRuntimeOutcome, GenerateRequest, GenerateResponse,
     InferenceCapability, InferenceError, InferenceRuntime, InferenceRuntimeConfig,
@@ -160,7 +163,10 @@ fn inference_errors_preserve_stable_code_class_and_redaction_through_executor() 
     let error: ExecutorError = InferenceError::Provider("OPENAI_API_KEY not set".to_owned()).into();
     assert_eq!(error.code(), "inference.missing_api_key");
     assert_eq!(error.class(), ExecutorErrorClass::Unavailable);
-    assert!(!error.retryable());
+    assert_eq!(error.public_class(), ErrorClass::FailedPrecondition);
+    assert_eq!(error.retry_policy(), RetryPolicy::AfterStateChange);
+    assert_eq!(error.commit_outcome(), CommitOutcomeStatus::NotApplicable);
+    assert!(error.retryable());
 
     let secret_error: ExecutorError =
         InferenceError::Provider("request failed for sk-test-secret".to_owned()).into();
@@ -168,6 +174,25 @@ fn inference_errors_preserve_stable_code_class_and_redaction_through_executor() 
     assert!(!secret_error.message().contains("sk-test-secret"));
     assert!(!encoded.contains("sk-test-secret"));
     assert!(encoded.contains("[REDACTED]"));
+}
+
+#[test]
+fn inference_error_retry_policies_match_v1_contract() {
+    let verification_error: ExecutorError =
+        InferenceError::Registry("sha-256 hash mismatch".to_owned()).into();
+    assert_eq!(
+        verification_error.code(),
+        "inference.download_verification_failed"
+    );
+    assert_eq!(
+        verification_error.retry_policy(),
+        RetryPolicy::AfterStateChange
+    );
+
+    let local_runtime_error: ExecutorError =
+        InferenceError::LlamaCpp("context allocation failed".to_owned()).into();
+    assert_eq!(local_runtime_error.code(), "inference.local_runtime_failed");
+    assert_eq!(local_runtime_error.retry_policy(), RetryPolicy::Unknown);
 }
 
 #[test]
@@ -230,4 +255,6 @@ fn cloud_generate_reports_missing_api_key_without_env() {
         unsafe { std::env::set_var("OPENAI_API_KEY", previous) };
     }
     assert_eq!(err.code(), "inference.missing_api_key");
+    assert_eq!(err.public_class(), ErrorClass::FailedPrecondition);
+    assert_eq!(err.retry_policy(), RetryPolicy::AfterStateChange);
 }

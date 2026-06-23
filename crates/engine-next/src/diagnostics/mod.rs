@@ -3,4 +3,7 @@
 mod error;
 mod registry;
 
-pub use error::{EngineError, EngineErrorClass, EngineResult};
+pub use error::{
+    CommitOutcomeStatus, EngineError, EngineErrorClass, EngineErrorStatus, EngineResult,
+    ErrorClass, ErrorDetail, RetryPolicy,
+};

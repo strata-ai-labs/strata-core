@@ -20,7 +20,10 @@ use strata_storage_next::api::{MaintenanceRequest, MaintenanceScope, Maintenance
 
 use crate::branch::catalog::{DEFAULT_BRANCH_GENERATION, SYSTEM_BRANCH_ID};
 use crate::commit::CommitOutcome;
-use crate::diagnostics::{EngineError, EngineErrorClass, EngineResult};
+use crate::diagnostics::{
+    CommitOutcomeStatus, EngineError, EngineErrorClass, EngineErrorStatus, EngineResult,
+    ErrorClass, ErrorDetail, RetryPolicy,
+};
 
 use super::fault::FaultOp;
 #[cfg(any(test, feature = "testkit"))]
@@ -937,100 +940,324 @@ fn apply_memory_budget(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn map_storage_error(error: StorageApiError) -> EngineError {
+    let details = storage_error_details(&error);
+    let suggested_fix = persistence_suggested_fix(&error);
     match &error {
         StorageApiError::BranchGenerationMismatch { .. } => {
-            return EngineError::with_source(
+            return EngineError::with_status(
                 EngineErrorClass::Conflict,
-                "conflict.engine.branch_generation",
-                false,
-                "branch generation changed before the write could commit",
+                EngineErrorStatus::new(
+                    ErrorClass::Conflict,
+                    "conflict.engine.branch_generation",
+                    RetryPolicy::AfterStateChange,
+                    CommitOutcomeStatus::DefinitelyNotCommitted,
+                    "branch generation changed before the write could commit",
+                    suggested_fix,
+                    details,
+                    vec!["Reload the branch state before retrying this write.".to_owned()],
+                ),
                 error,
             );
         }
         StorageApiError::RecoveryDegraded { .. } => {
-            return EngineError::with_source(
+            return EngineError::with_status(
                 EngineErrorClass::Corruption,
-                "data_loss.engine.persistence_recovery",
-                false,
-                "persistence recovery reported degraded state",
+                EngineErrorStatus::new(
+                    ErrorClass::Corruption,
+                    "corruption.engine.persistence_recovery",
+                    RetryPolicy::Never,
+                    CommitOutcomeStatus::NotApplicable,
+                    "persistence recovery reported degraded state",
+                    suggested_fix,
+                    details,
+                    vec!["Inspect recovery diagnostics before resuming writes.".to_owned()],
+                ),
                 error,
             );
         }
         StorageApiError::LowerLayer { .. } => {
-            return EngineError::with_source(
+            return EngineError::with_status(
                 EngineErrorClass::Unavailable,
-                "unavailable.engine.persistence",
-                true,
-                "persistence lower layer is unavailable",
+                EngineErrorStatus::new(
+                    ErrorClass::Unavailable,
+                    "unavailable.engine.persistence",
+                    RetryPolicy::SameRequest,
+                    CommitOutcomeStatus::NotApplicable,
+                    "persistence lower layer is unavailable",
+                    suggested_fix,
+                    details,
+                    vec!["Retry after the local persistence layer is available.".to_owned()],
+                ),
                 error,
             );
         }
         _ => {}
     }
-    let (class, code, retryable, message) = match error.class() {
-        StorageApiErrorClass::InvalidArgument => (
-            EngineErrorClass::InvalidInput,
-            "invalid_argument.engine.persistence",
-            false,
-            "persistence request was invalid",
+    let (legacy_class, public_class, code, retry_policy, commit_outcome, message) =
+        match error.class() {
+            StorageApiErrorClass::InvalidArgument => (
+                EngineErrorClass::InvalidInput,
+                ErrorClass::InvalidArgument,
+                "invalid_argument.engine.persistence",
+                RetryPolicy::Never,
+                CommitOutcomeStatus::NotStarted,
+                "persistence request was invalid",
+            ),
+            StorageApiErrorClass::NotFound => (
+                EngineErrorClass::NotFound,
+                ErrorClass::NotFound,
+                "not_found.engine.persistence",
+                RetryPolicy::Never,
+                CommitOutcomeStatus::NotApplicable,
+                "persistence target was not found",
+            ),
+            StorageApiErrorClass::AlreadyExists => (
+                EngineErrorClass::Conflict,
+                ErrorClass::AlreadyExists,
+                "already_exists.engine.persistence",
+                RetryPolicy::Never,
+                CommitOutcomeStatus::NotStarted,
+                "persistence target already exists",
+            ),
+            StorageApiErrorClass::Conflict => (
+                EngineErrorClass::Conflict,
+                ErrorClass::Conflict,
+                "conflict.engine.persistence",
+                RetryPolicy::AfterStateChange,
+                CommitOutcomeStatus::DefinitelyNotCommitted,
+                "persistence target conflicted with existing state",
+            ),
+            StorageApiErrorClass::Unsupported => (
+                EngineErrorClass::Unavailable,
+                ErrorClass::Unsupported,
+                "unsupported.engine.persistence_capability",
+                RetryPolicy::AfterStateChange,
+                CommitOutcomeStatus::NotApplicable,
+                "requested persistence capability is unavailable",
+            ),
+            StorageApiErrorClass::HistoryUnavailable => (
+                EngineErrorClass::NotFound,
+                ErrorClass::HistoryUnavailable,
+                "history_unavailable.engine.persistence_history",
+                RetryPolicy::AfterStateChange,
+                CommitOutcomeStatus::NotApplicable,
+                "requested persistence history is unavailable",
+            ),
+            StorageApiErrorClass::AmbiguousCommit => (
+                EngineErrorClass::AmbiguousCommit,
+                ErrorClass::AmbiguousCommit,
+                "ambiguous_commit.engine.persistence",
+                RetryPolicy::Unknown,
+                CommitOutcomeStatus::MaybeCommitted,
+                "persistence could not prove whether the commit succeeded",
+            ),
+            StorageApiErrorClass::FailedPrecondition => (
+                EngineErrorClass::Unavailable,
+                ErrorClass::FailedPrecondition,
+                "failed_precondition.engine.persistence",
+                RetryPolicy::AfterStateChange,
+                CommitOutcomeStatus::DefinitelyNotCommitted,
+                "persistence is temporarily unable to accept the request",
+            ),
+            StorageApiErrorClass::ResourceExhausted => (
+                EngineErrorClass::Unavailable,
+                ErrorClass::ResourceExhausted,
+                "resource_exhausted.engine.persistence_budget",
+                RetryPolicy::AfterStateChange,
+                CommitOutcomeStatus::DefinitelyNotCommitted,
+                "persistence resource budget is exhausted",
+            ),
+            StorageApiErrorClass::Internal => (
+                EngineErrorClass::Internal,
+                ErrorClass::Internal,
+                "internal.engine.persistence",
+                RetryPolicy::Unknown,
+                CommitOutcomeStatus::NotApplicable,
+                "persistence returned an internal failure",
+            ),
+            _ => (
+                EngineErrorClass::Internal,
+                ErrorClass::Internal,
+                "internal.engine.persistence",
+                RetryPolicy::Unknown,
+                CommitOutcomeStatus::NotApplicable,
+                "persistence returned an unknown failure",
+            ),
+        };
+    EngineError::with_status(
+        legacy_class,
+        EngineErrorStatus::new(
+            public_class,
+            code,
+            retry_policy,
+            commit_outcome,
+            message,
+            suggested_fix,
+            details,
+            Vec::new(),
         ),
-        StorageApiErrorClass::NotFound => (
-            EngineErrorClass::NotFound,
-            "not_found.engine.persistence",
-            false,
-            "persistence target was not found",
-        ),
-        StorageApiErrorClass::AlreadyExists | StorageApiErrorClass::Conflict => (
-            EngineErrorClass::Conflict,
-            "conflict.engine.persistence",
-            false,
-            "persistence target conflicted with existing state",
-        ),
-        StorageApiErrorClass::Unsupported => (
-            EngineErrorClass::Unavailable,
-            "unavailable.engine.persistence_capability",
-            false,
-            "requested persistence capability is unavailable",
-        ),
-        StorageApiErrorClass::HistoryUnavailable => (
-            EngineErrorClass::NotFound,
-            "not_found.engine.persistence_history",
-            false,
-            "requested persistence history is unavailable",
-        ),
-        StorageApiErrorClass::AmbiguousCommit => (
-            EngineErrorClass::AmbiguousCommit,
-            "ambiguous_commit.engine.persistence",
-            true,
-            "persistence could not prove whether the commit succeeded",
-        ),
-        StorageApiErrorClass::FailedPrecondition => (
-            EngineErrorClass::Unavailable,
-            "failed_precondition.engine.persistence",
-            true,
-            "persistence is temporarily unable to accept the request",
-        ),
-        StorageApiErrorClass::ResourceExhausted => (
-            EngineErrorClass::Unavailable,
-            "unavailable.engine.persistence_budget",
-            true,
-            "persistence resource budget is exhausted",
-        ),
-        StorageApiErrorClass::Internal => (
-            EngineErrorClass::Internal,
-            "internal.engine.persistence",
-            false,
-            "persistence returned an internal failure",
-        ),
-        _ => (
-            EngineErrorClass::Internal,
-            "internal.engine.persistence",
-            false,
-            "persistence returned an unknown failure",
-        ),
-    };
-    EngineError::with_source(class, code, retryable, message, error)
+        error,
+    )
+}
+
+fn storage_error_details(error: &StorageApiError) -> Vec<ErrorDetail> {
+    let mut details = Vec::new();
+    match error {
+        StorageApiError::InvalidArgument { field, reason } => {
+            details.push(ErrorDetail::new("field", *field));
+            details.push(ErrorDetail::new("reason", *reason));
+        }
+        StorageApiError::UnsupportedCapability { capability, reason } => {
+            details.push(ErrorDetail::new("capability", *capability));
+            details.push(ErrorDetail::new("reason", *reason));
+        }
+        StorageApiError::InvalidRuntimeState { reason }
+        | StorageApiError::RetainedHistoryUnavailable { reason, .. }
+        | StorageApiError::TimestampHistoryUnavailable { reason, .. }
+        | StorageApiError::DurableUncertain { reason, .. }
+        | StorageApiError::RecoveryDegraded { reason }
+        | StorageApiError::MaintenanceRejected { reason } => {
+            details.push(ErrorDetail::new("reason", *reason));
+        }
+        StorageApiError::BranchNotFound { branch_id }
+        | StorageApiError::BranchAlreadyExists { branch_id } => {
+            details.push(ErrorDetail::new("branch_id", branch_id.to_string()));
+        }
+        StorageApiError::BranchGenerationMismatch {
+            branch_id,
+            expected,
+            actual,
+        } => {
+            details.push(ErrorDetail::new("branch_id", branch_id.to_string()));
+            details.push(ErrorDetail::new(
+                "expected_generation",
+                expected.to_string(),
+            ));
+            details.push(ErrorDetail::new("actual_generation", actual.to_string()));
+        }
+        StorageApiError::Conflict {
+            branch_id,
+            storage_space,
+            key_fingerprint,
+            user_key_len,
+            reason,
+        } => {
+            details.push(ErrorDetail::new("branch_id", branch_id.to_string()));
+            if let Some(space) = storage_space {
+                details.push(ErrorDetail::new("space_id", space.to_string()));
+            }
+            if let Some(fingerprint) = key_fingerprint {
+                details.push(ErrorDetail::new("key_fingerprint", fingerprint.to_string()));
+            }
+            if let Some(length) = user_key_len {
+                details.push(ErrorDetail::new("user_key_len", length.to_string()));
+            }
+            details.push(ErrorDetail::new("reason", *reason));
+        }
+        StorageApiError::StoragePressure {
+            branch_id,
+            severity,
+            pressure_reason,
+            reason,
+            retryable,
+        } => {
+            details.push(ErrorDetail::new("branch_id", branch_id.to_string()));
+            details.push(ErrorDetail::new("severity", format!("{severity:?}")));
+            details.push(ErrorDetail::new(
+                "pressure_reason",
+                format!("{pressure_reason:?}"),
+            ));
+            details.push(ErrorDetail::new("reason", *reason));
+            details.push(ErrorDetail::new("retryable", retryable.to_string()));
+        }
+        StorageApiError::ResourceExhausted {
+            resource,
+            requested_bytes,
+            used_bytes,
+            limit_bytes,
+            reason,
+        } => {
+            details.push(ErrorDetail::new("resource", *resource));
+            details.push(ErrorDetail::new(
+                "requested_bytes",
+                requested_bytes.to_string(),
+            ));
+            details.push(ErrorDetail::new("used_bytes", used_bytes.to_string()));
+            details.push(ErrorDetail::new("limit_bytes", limit_bytes.to_string()));
+            details.push(ErrorDetail::new("reason", *reason));
+        }
+        StorageApiError::LowerLayer { layer, reason, .. } => {
+            details.push(ErrorDetail::new("layer", format!("{layer:?}")));
+            details.push(ErrorDetail::new("reason", *reason));
+        }
+        _ => {}
+    }
+    details
+}
+
+const fn persistence_suggested_fix(error: &StorageApiError) -> &'static str {
+    match error {
+        StorageApiError::InvalidArgument { .. } => "Correct the request input and retry.",
+        StorageApiError::UnsupportedCapability { .. } => {
+            "Use a supported database mode, backend, or capability."
+        }
+        StorageApiError::InvalidRuntimeState { .. }
+        | StorageApiError::MaintenanceRejected { .. }
+        | StorageApiError::StoragePressure { .. } => {
+            "Wait for the database to become ready, then retry."
+        }
+        StorageApiError::BranchNotFound { .. } => "Target an existing branch before retrying.",
+        StorageApiError::BranchAlreadyExists { .. } => {
+            "Use the existing branch or choose a new branch name."
+        }
+        StorageApiError::BranchGenerationMismatch { .. } | StorageApiError::Conflict { .. } => {
+            "Reload current state and retry against the latest version."
+        }
+        StorageApiError::RetainedHistoryUnavailable { .. }
+        | StorageApiError::TimestampHistoryUnavailable { .. } => {
+            "Request history inside the retained window."
+        }
+        StorageApiError::DurableUncertain { .. } => {
+            "Re-open or inspect the database state before assuming whether the write committed."
+        }
+        StorageApiError::RecoveryDegraded { .. } => {
+            "Stop writing and inspect recovery diagnostics before continuing."
+        }
+        StorageApiError::ResourceExhausted { .. } => {
+            "Reduce resource pressure or raise the configured limit, then retry."
+        }
+        StorageApiError::LowerLayer { .. } => {
+            "Retry after the local persistence layer is available."
+        }
+        _ => persistence_suggested_fix_for_class(error.class()),
+    }
+}
+
+const fn persistence_suggested_fix_for_class(class: StorageApiErrorClass) -> &'static str {
+    match class {
+        StorageApiErrorClass::InvalidArgument => "Correct the request input and retry.",
+        StorageApiErrorClass::NotFound => "Check that the requested object exists before retrying.",
+        StorageApiErrorClass::AlreadyExists => "Use the existing object or choose a new name.",
+        StorageApiErrorClass::Conflict => {
+            "Reload current state and retry against the latest version."
+        }
+        StorageApiErrorClass::Unsupported => {
+            "Use a supported database mode, backend, or capability."
+        }
+        StorageApiErrorClass::HistoryUnavailable => "Request history inside the retained window.",
+        StorageApiErrorClass::AmbiguousCommit => {
+            "Re-open or inspect the database state before assuming whether the write committed."
+        }
+        StorageApiErrorClass::ResourceExhausted => {
+            "Reduce resource pressure or raise the configured limit, then retry."
+        }
+        StorageApiErrorClass::FailedPrecondition => {
+            "Change database state or wait for the database to become ready, then retry."
+        }
+        _ => "Capture diagnostics and report this as a Strata bug.",
+    }
 }
 
 pub(crate) fn close_summary_is_durable(summary: StorageCloseSummary) -> bool {
@@ -1046,7 +1273,46 @@ mod tests {
     };
 
     use super::map_storage_error;
-    use crate::diagnostics::EngineErrorClass;
+    use crate::diagnostics::{
+        CommitOutcomeStatus, EngineError, EngineErrorClass, ErrorClass, RetryPolicy,
+    };
+
+    fn assert_v1_status(
+        error: &EngineError,
+        class: ErrorClass,
+        retry_policy: RetryPolicy,
+        commit_outcome: CommitOutcomeStatus,
+    ) {
+        assert_eq!(error.public_class(), class);
+        assert_eq!(error.retry_policy(), retry_policy);
+        assert_eq!(error.commit_outcome(), commit_outcome);
+        assert!(
+            !error.suggested_fix().is_empty(),
+            "mapped storage errors should carry remediation"
+        );
+        assert!(
+            !error.details().is_empty(),
+            "mapped storage errors should carry structured details"
+        );
+        assert_public_details_do_not_leak_storage_terms(error);
+    }
+
+    fn assert_public_details_do_not_leak_storage_terms(error: &EngineError) {
+        for detail in error.details() {
+            assert!(
+                !detail.key().contains("storage"),
+                "public detail key leaked storage vocabulary: {detail:?}"
+            );
+            assert!(
+                !detail.value().contains("storage_api"),
+                "public detail value leaked storage API vocabulary: {detail:?}"
+            );
+        }
+        assert!(
+            !error.suggested_fix().contains("StorageApiError"),
+            "suggested fix leaked storage API type name"
+        );
+    }
 
     #[test]
     fn storage_conflict_maps_to_engine_conflict() {
@@ -1059,7 +1325,13 @@ mod tests {
         });
         assert_eq!(error.class(), EngineErrorClass::Conflict);
         assert_eq!(error.code(), "conflict.engine.persistence");
-        assert!(!error.retryable());
+        assert!(error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::Conflict,
+            RetryPolicy::AfterStateChange,
+            CommitOutcomeStatus::DefinitelyNotCommitted,
+        );
         assert!(error.source_arc().is_some());
     }
 
@@ -1075,15 +1347,27 @@ mod tests {
         assert_eq!(error.class(), EngineErrorClass::Unavailable);
         assert_eq!(error.code(), "failed_precondition.engine.persistence");
         assert!(error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::FailedPrecondition,
+            RetryPolicy::AfterStateChange,
+            CommitOutcomeStatus::DefinitelyNotCommitted,
+        );
         assert!(error.source_arc().is_some());
     }
 
     #[test]
-    fn ambiguous_storage_commit_remains_retryable_and_ambiguous() {
+    fn ambiguous_storage_commit_reports_unknown_retry_and_maybe_committed() {
         let error = map_storage_error(StorageApiError::durable_uncertain("test uncertainty"));
         assert_eq!(error.class(), EngineErrorClass::AmbiguousCommit);
         assert_eq!(error.code(), "ambiguous_commit.engine.persistence");
-        assert!(error.retryable());
+        assert!(!error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::AmbiguousCommit,
+            RetryPolicy::Unknown,
+            CommitOutcomeStatus::MaybeCommitted,
+        );
         assert!(error.source_arc().is_some());
     }
 
@@ -1096,7 +1380,13 @@ mod tests {
         });
         assert_eq!(error.class(), EngineErrorClass::Conflict);
         assert_eq!(error.code(), "conflict.engine.branch_generation");
-        assert!(!error.retryable());
+        assert!(error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::Conflict,
+            RetryPolicy::AfterStateChange,
+            CommitOutcomeStatus::DefinitelyNotCommitted,
+        );
         assert!(error.source_arc().is_some());
     }
 
@@ -1106,8 +1396,14 @@ mod tests {
             reason: "test recovery degradation",
         });
         assert_eq!(error.class(), EngineErrorClass::Corruption);
-        assert_eq!(error.code(), "data_loss.engine.persistence_recovery");
+        assert_eq!(error.code(), "corruption.engine.persistence_recovery");
         assert!(!error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::Corruption,
+            RetryPolicy::Never,
+            CommitOutcomeStatus::NotApplicable,
+        );
         assert!(error.source_arc().is_some());
     }
 
@@ -1121,6 +1417,12 @@ mod tests {
         assert_eq!(error.class(), EngineErrorClass::Unavailable);
         assert_eq!(error.code(), "unavailable.engine.persistence");
         assert!(error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::Unavailable,
+            RetryPolicy::SameRequest,
+            CommitOutcomeStatus::NotApplicable,
+        );
         assert!(error.source_arc().is_some());
     }
 
@@ -1133,6 +1435,12 @@ mod tests {
         assert_eq!(error.class(), EngineErrorClass::InvalidInput);
         assert_eq!(error.code(), "invalid_argument.engine.persistence");
         assert!(!error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::InvalidArgument,
+            RetryPolicy::Never,
+            CommitOutcomeStatus::NotStarted,
+        );
         assert!(error.source_arc().is_some());
     }
 
@@ -1143,8 +1451,14 @@ mod tests {
             reason: "test reason",
         });
         assert_eq!(error.class(), EngineErrorClass::Unavailable);
-        assert_eq!(error.code(), "unavailable.engine.persistence_capability");
-        assert!(!error.retryable());
+        assert_eq!(error.code(), "unsupported.engine.persistence_capability");
+        assert!(error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::Unsupported,
+            RetryPolicy::AfterStateChange,
+            CommitOutcomeStatus::NotApplicable,
+        );
         assert!(error.source_arc().is_some());
     }
 
@@ -1156,6 +1470,12 @@ mod tests {
         assert_eq!(error.class(), EngineErrorClass::NotFound);
         assert_eq!(error.code(), "not_found.engine.persistence");
         assert!(!error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::NotFound,
+            RetryPolicy::Never,
+            CommitOutcomeStatus::NotApplicable,
+        );
         assert!(error.source_arc().is_some());
     }
 
@@ -1165,8 +1485,14 @@ mod tests {
             branch_id: BranchId::from_bytes([0x11; BranchId::BYTE_LEN]),
         });
         assert_eq!(error.class(), EngineErrorClass::Conflict);
-        assert_eq!(error.code(), "conflict.engine.persistence");
+        assert_eq!(error.code(), "already_exists.engine.persistence");
         assert!(!error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::AlreadyExists,
+            RetryPolicy::Never,
+            CommitOutcomeStatus::NotStarted,
+        );
         assert!(error.source_arc().is_some());
     }
 
@@ -1177,8 +1503,17 @@ mod tests {
             reason: "test retained history",
         });
         assert_eq!(error.class(), EngineErrorClass::NotFound);
-        assert_eq!(error.code(), "not_found.engine.persistence_history");
-        assert!(!error.retryable());
+        assert_eq!(
+            error.code(),
+            "history_unavailable.engine.persistence_history"
+        );
+        assert!(error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::HistoryUnavailable,
+            RetryPolicy::AfterStateChange,
+            CommitOutcomeStatus::NotApplicable,
+        );
         assert!(error.source_arc().is_some());
     }
 
@@ -1189,8 +1524,17 @@ mod tests {
             reason: "test timestamp history",
         });
         assert_eq!(error.class(), EngineErrorClass::NotFound);
-        assert_eq!(error.code(), "not_found.engine.persistence_history");
-        assert!(!error.retryable());
+        assert_eq!(
+            error.code(),
+            "history_unavailable.engine.persistence_history"
+        );
+        assert!(error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::HistoryUnavailable,
+            RetryPolicy::AfterStateChange,
+            CommitOutcomeStatus::NotApplicable,
+        );
     }
 
     #[test]
@@ -1201,6 +1545,12 @@ mod tests {
         assert_eq!(error.class(), EngineErrorClass::Unavailable);
         assert_eq!(error.code(), "failed_precondition.engine.persistence");
         assert!(error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::FailedPrecondition,
+            RetryPolicy::AfterStateChange,
+            CommitOutcomeStatus::DefinitelyNotCommitted,
+        );
     }
 
     #[test]
@@ -1211,6 +1561,12 @@ mod tests {
         assert_eq!(error.class(), EngineErrorClass::Unavailable);
         assert_eq!(error.code(), "failed_precondition.engine.persistence");
         assert!(error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::FailedPrecondition,
+            RetryPolicy::AfterStateChange,
+            CommitOutcomeStatus::DefinitelyNotCommitted,
+        );
     }
 
     // Storage resource-budget exhaustion is a transient pressure condition, so
@@ -1227,8 +1583,14 @@ mod tests {
             reason: "test budget exhaustion",
         });
         assert_eq!(error.class(), EngineErrorClass::Unavailable);
-        assert_eq!(error.code(), "unavailable.engine.persistence_budget");
+        assert_eq!(error.code(), "resource_exhausted.engine.persistence_budget");
         assert!(error.retryable());
+        assert_v1_status(
+            &error,
+            ErrorClass::ResourceExhausted,
+            RetryPolicy::AfterStateChange,
+            CommitOutcomeStatus::DefinitelyNotCommitted,
+        );
         assert!(error.source_arc().is_some());
     }
 }

@@ -2,6 +2,9 @@
 
 #![deny(unsafe_code)]
 #![allow(clippy::missing_const_for_fn)]
+// `ExecutorResult<T>` is the stable serialized command-boundary API; boxing
+// `ExecutorError` would be a deliberate contract change.
+#![allow(clippy::result_large_err)]
 #![allow(clippy::struct_field_names)]
 #![allow(clippy::too_many_lines)]
 
@@ -14,9 +17,13 @@ pub mod output;
 pub mod types;
 
 pub use command::Command;
-pub use error::{ExecutorError, ExecutorErrorClass, ExecutorResult};
+pub use error::{
+    with_error_render_config, ErrorReferenceIdSource, ErrorRenderConfig, ErrorStatus,
+    ExecutorError, ExecutorErrorClass, ExecutorResult, SequentialErrorReferenceIdSource,
+};
 pub use executor::Executor;
 pub use output::Output;
+pub use strata_engine_next::{CommitOutcomeStatus, ErrorClass, ErrorDetail, RetryPolicy};
 #[cfg(feature = "inference")]
 pub use strata_inference_next::{
     EmbedRequest as InferenceEmbedRequest, EmbedResponse as InferenceEmbedResponse,

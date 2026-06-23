@@ -100,7 +100,7 @@ fn space_delete_is_conservative_and_force_removes_visible_data() {
         })
         .expect_err("non-empty delete without force fails");
     assert_eq!(error.class(), ExecutorErrorClass::Conflict);
-    assert_eq!(error.code(), "failed_precondition.executor.space_not_empty");
+    assert_eq!(error.code(), "failed_precondition.engine.space_not_empty");
     assert!(space_exists(&mut executor, None, "tenant_a"));
     assert_eq!(kv_count(&mut executor, Some("tenant_a")), 1);
 

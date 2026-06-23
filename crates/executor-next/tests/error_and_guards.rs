@@ -2,8 +2,13 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use strata_executor_next::{Bytes, Command, Executor, ExecutorError, ExecutorErrorClass};
+use strata_executor_next::{
+    with_error_render_config, Bytes, Command, CommitOutcomeStatus, ErrorClass,
+    ErrorReferenceIdSource, ErrorRenderConfig, Executor, ExecutorError, ExecutorErrorClass,
+    RetryPolicy,
+};
 
 #[test]
 fn executor_errors_have_stable_public_shape() {
@@ -18,7 +23,16 @@ fn executor_errors_have_stable_public_shape() {
         })
         .expect_err("empty key fails");
     assert_eq!(invalid_key.class(), ExecutorErrorClass::InvalidInput);
-    assert!(invalid_key.code().contains(".executor."));
+    assert_eq!(invalid_key.public_class(), ErrorClass::InvalidArgument);
+    assert_eq!(invalid_key.retry_policy(), RetryPolicy::Never);
+    assert_eq!(
+        invalid_key.commit_outcome(),
+        CommitOutcomeStatus::NotStarted
+    );
+    assert!(!invalid_key.suggested_fix().is_empty());
+    assert!(invalid_key.docs_url().ends_with(invalid_key.code()));
+    assert!(invalid_key.reference_id().starts_with("err_local_"));
+    assert!(invalid_key.code().contains(".engine."));
 
     let invalid_space = executor
         .execute(Command::KvPut {
@@ -49,17 +63,72 @@ fn executor_errors_have_stable_public_shape() {
         })
         .expect_err("closed executor fails");
     assert_eq!(closed.class(), ExecutorErrorClass::ClosedHandle);
+    assert_eq!(closed.public_class(), ErrorClass::FailedPrecondition);
+    assert_eq!(closed.retry_policy(), RetryPolicy::Never);
+    assert_eq!(closed.commit_outcome(), CommitOutcomeStatus::NotStarted);
+}
+
+#[derive(Debug)]
+struct FixedReferenceIdSource;
+
+impl ErrorReferenceIdSource for FixedReferenceIdSource {
+    fn next_reference_id(&self) -> String {
+        "ref_test_000001".to_owned()
+    }
 }
 
 #[test]
-fn serialized_errors_do_not_expose_lower_layer_terms() {
-    let error = ExecutorError::new(
-        ExecutorErrorClass::Internal,
-        "internal.executor.test",
-        false,
-        "public message",
+fn executor_error_rendering_uses_injected_boundary_config() {
+    let config = ErrorRenderConfig::new(
+        "https://docs.example.test/errors/",
+        Arc::new(FixedReferenceIdSource),
     );
+
+    let error = with_error_render_config(config, || {
+        ExecutorError::invalid_input("invalid_argument.executor.test", "public message")
+    });
+
+    assert_eq!(error.reference_id(), "ref_test_000001");
+    assert_eq!(
+        error.docs_url(),
+        "https://docs.example.test/errors/invalid_argument.executor.test"
+    );
+}
+
+#[test]
+fn executor_preserves_engine_error_codes_at_public_boundary() {
+    let error: ExecutorError =
+        strata_engine_next::EngineError::closed_runtime("runtime closed").into();
+
+    assert_eq!(error.code(), "failed_precondition.engine.runtime_closed");
+    assert_eq!(error.public_class(), ErrorClass::FailedPrecondition);
+    assert_eq!(error.commit_outcome(), CommitOutcomeStatus::NotStarted);
+    assert!(error.docs_url().ends_with(error.code()));
+}
+
+#[test]
+fn serialized_errors_have_v1_status_shape() {
+    let error = ExecutorError::invalid_input("invalid_argument.executor.test", "public message");
     let encoded = serde_json::to_string(&error).expect("error serializes");
+    let status: serde_json::Value = serde_json::from_str(&encoded).expect("json parses");
+
+    assert_eq!(status["class"], "invalid_argument");
+    assert_eq!(status["code"], "invalid_argument.executor.test");
+    assert_eq!(status["retry_policy"], "never");
+    assert_eq!(status["commit_outcome"], "not_started");
+    assert_eq!(status["message"], "public message");
+    assert_eq!(
+        status["suggested_fix"],
+        "Correct the command input and retry."
+    );
+    assert_eq!(
+        status["docs_url"],
+        "https://strata.dev/docs/errors/invalid_argument.executor.test"
+    );
+    assert!(status["reference_id"]
+        .as_str()
+        .expect("reference id is a string")
+        .starts_with("err_local_"));
 
     for forbidden in forbidden_lower_layer_terms() {
         assert!(

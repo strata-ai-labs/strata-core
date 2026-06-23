@@ -1,6 +1,9 @@
 //! Executor-facing engine contract built over the storage persistence boundary.
 
 #![deny(unsafe_code)]
+// `EngineResult<T>` is the stable product API shape; boxing `EngineError`
+// would be a deliberate contract change rather than a local lint cleanup.
+#![allow(clippy::result_large_err)]
 
 pub mod api;
 
@@ -25,12 +28,13 @@ pub use api::{
     AdminPingSummary, AdminPrimitiveSummary, AdminService, AdminVectorCollectionSummary,
     BranchCleanupSummary, BranchCreateOutcome, BranchDeleteOutcome, BranchName,
     BranchParentSummary, BranchService, BranchStatus, BranchSummary, CacheOpenOptions,
-    CloseOutcome, ControlDiagnostics, ControlHealthStatus, Database, DatabaseOpenOutcome,
-    DatabaseOpenSummary, DatabaseOpenTarget, DurableLocalOpenOptions, EngineError,
-    EngineErrorClass, EngineResult, EventAppendOutcome, EventBatchAppendEntry,
-    EventBatchAppendItemOutcome, EventBatchAppendOutcome, EventChainVerification, EventLength,
-    EventPayload, EventRangeDirection, EventRangePage, EventSequence, EventService, EventType,
-    EventTypeList, EventVersionedRecord, GraphBatchOpOutcome, GraphBatchOperation, GraphBatchWrite,
+    CloseOutcome, CommitOutcomeStatus, ControlDiagnostics, ControlHealthStatus, Database,
+    DatabaseOpenOutcome, DatabaseOpenSummary, DatabaseOpenTarget, DurableLocalOpenOptions,
+    EngineError, EngineErrorClass, EngineErrorStatus, EngineResult, ErrorClass, ErrorDetail,
+    EventAppendOutcome, EventBatchAppendEntry, EventBatchAppendItemOutcome,
+    EventBatchAppendOutcome, EventChainVerification, EventLength, EventPayload,
+    EventRangeDirection, EventRangePage, EventSequence, EventService, EventType, EventTypeList,
+    EventVersionedRecord, GraphBatchOpOutcome, GraphBatchOperation, GraphBatchWrite,
     GraphBatchWriteOutcome, GraphBinding, GraphBindingPage, GraphBindingPrimitive,
     GraphBindingTarget, GraphDeleteOutcome, GraphDirection, GraphEdge, GraphEdgeData,
     GraphEdgeType, GraphEdgeWriteOutcome, GraphEntityBinding, GraphInfo, GraphName, GraphNamePage,
@@ -41,8 +45,8 @@ pub use api::{
     JsonPath, JsonPathSegment, JsonSample, JsonSampleRow, JsonService, JsonSetEntry, JsonValue,
     JsonVersionedValue, JsonWriteOutcome, KvBatchDeleteOutcome, KvDeleteOutcome, KvHistory,
     KvHistoryRow, KvKey, KvListPage, KvSample, KvScanRow, KvService, KvValue, KvVersionedValue,
-    ProductSpace, SpaceCatalogDiagnostics, SpaceCreateOutcome, SpaceDeleteOutcome, SpaceService,
-    SpaceUsageSummary, VectorArtifactSourceDiagnostic, VectorBatchDeleteOutcome,
+    ProductSpace, RetryPolicy, SpaceCatalogDiagnostics, SpaceCreateOutcome, SpaceDeleteOutcome,
+    SpaceService, SpaceUsageSummary, VectorArtifactSourceDiagnostic, VectorBatchDeleteOutcome,
     VectorBatchGetOutcome, VectorBatchUpsertOutcome, VectorBulkDeleteOutcome, VectorCollectionInfo,
     VectorCollectionName, VectorConfig, VectorDeleteOutcome, VectorDistanceMetric, VectorEmbedding,
     VectorEntry, VectorFilter, VectorFilterCondition, VectorFilterOp, VectorHistory,

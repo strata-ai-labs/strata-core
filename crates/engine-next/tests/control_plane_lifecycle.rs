@@ -62,7 +62,7 @@ fn fail_closed_control_plane_degrades_health_and_rejects_work() {
         &rejected,
         EngineErrorClass::Unavailable,
         "unavailable.engine.control_plane",
-        false,
+        true,
     );
 }
 
