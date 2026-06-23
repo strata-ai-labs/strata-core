@@ -3,6 +3,7 @@
 use strata_core_next::{CommitVersion, Timestamp};
 
 use crate::commit::CommitOutcome;
+use crate::diagnostics::{EngineError, EngineErrorStatus};
 
 use super::{EventPayload, EventSequence, EventType};
 
@@ -196,7 +197,7 @@ pub struct EventBatchAppendItemOutcome {
     event_type: Option<EventType>,
     commit_version: Option<CommitVersion>,
     commit_timestamp: Option<Timestamp>,
-    error: Option<String>,
+    error: Option<EngineErrorStatus>,
 }
 
 impl EventBatchAppendItemOutcome {
@@ -214,13 +215,13 @@ impl EventBatchAppendItemOutcome {
         }
     }
 
-    pub(crate) fn failure(error: impl Into<String>) -> Self {
+    pub(crate) fn failure(error: &EngineError) -> Self {
         Self {
             sequence: None,
             event_type: None,
             commit_version: None,
             commit_timestamp: None,
-            error: Some(error.into()),
+            error: Some(error.status().clone()),
         }
     }
 
@@ -251,7 +252,13 @@ impl EventBatchAppendItemOutcome {
     #[must_use]
     /// Returns the item error for failed items.
     pub fn error_message(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error.as_ref().map(EngineErrorStatus::message)
+    }
+
+    #[must_use]
+    /// Returns the structured item error status for failed items.
+    pub const fn error_status(&self) -> Option<&EngineErrorStatus> {
+        self.error.as_ref()
     }
 }
 

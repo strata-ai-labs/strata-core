@@ -1220,7 +1220,7 @@ impl Executor {
             match kv_key(key) {
                 Ok(key) => valid_entries.push((index, output_key, key, kv_value(value))),
                 Err(error) => {
-                    results[index] = Some(BatchItemResult::failed(output_key, error.to_string()));
+                    results[index] = Some(BatchItemResult::failed_error(output_key, error));
                 }
             }
         }
@@ -1265,8 +1265,7 @@ impl Executor {
             match kv_key(key) {
                 Ok(key) => valid_keys.push((index, output_key, key)),
                 Err(error) => {
-                    results[index] =
-                        Some(BatchGetItemResult::failed(output_key, error.to_string()));
+                    results[index] = Some(BatchGetItemResult::failed_error(output_key, error));
                 }
             }
         }
@@ -1301,7 +1300,7 @@ impl Executor {
             match kv_key(key) {
                 Ok(key) => valid_keys.push((index, output_key, key)),
                 Err(error) => {
-                    results[index] = Some(BatchItemResult::failed(output_key, error.to_string()));
+                    results[index] = Some(BatchItemResult::failed_error(output_key, error));
                 }
             }
         }
@@ -1500,9 +1499,7 @@ impl Executor {
                     let effect = upsert_effect(existed || already_written);
                     valid_entries.push((index, effect, entry));
                 }
-                Err(error) => {
-                    results[index] = Some(JsonBatchItemResult::failed(error.to_string()));
-                }
+                Err(error) => results[index] = Some(JsonBatchItemResult::failed_error(error)),
             }
         }
         if valid_entries.is_empty() {
@@ -1539,9 +1536,7 @@ impl Executor {
             let (key, path) = entry.into_parts();
             match json_get_entry(key, &path) {
                 Ok(entry) => valid_entries.push((index, entry)),
-                Err(error) => {
-                    results[index] = Some(JsonBatchGetItemResult::failed(error.to_string()));
-                }
+                Err(error) => results[index] = Some(JsonBatchGetItemResult::failed_error(error)),
             }
         }
         if valid_entries.is_empty() {
@@ -1578,9 +1573,7 @@ impl Executor {
             let (key, path) = entry.into_parts();
             match json_get_entry(key, &path) {
                 Ok(entry) => valid_entries.push((index, entry)),
-                Err(error) => {
-                    results[index] = Some(JsonBatchItemResult::failed(error.to_string()));
-                }
+                Err(error) => results[index] = Some(JsonBatchItemResult::failed_error(error)),
             }
         }
         if valid_entries.is_empty() {
@@ -4443,6 +4436,9 @@ fn event_range_output(page: &EngineEventRangePage) -> Output {
 fn event_batch_append_item_result(
     item: &EngineEventBatchAppendItemOutcome,
 ) -> EventBatchAppendItemResult {
+    if let Some(error) = item.error_status() {
+        return EventBatchAppendItemResult::failed_engine_status(error);
+    }
     if let Some(error) = item.error_message() {
         return EventBatchAppendItemResult::failed(error);
     }

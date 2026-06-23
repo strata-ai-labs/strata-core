@@ -114,8 +114,7 @@ The structure is good enough to build against, but the product still needs:
 1. a published V1 error code registry;
 2. docs pages for the error-code docs URLs;
 3. final review of retry policies by code;
-4. structured batch item errors instead of string-only item failures;
-5. SDK mapping tests for every error class and representative codes.
+4. SDK mapping tests for every error class and representative codes.
 
 These are completion tasks, not structural blockers for the error model.
 
@@ -172,16 +171,17 @@ Recent improvements:
 5. JSON batch gets distinguish missing from stored JSON `null`.
 6. KV and JSON point write/delete outputs expose `commit` and `effect`.
 7. KV and JSON batch write/delete item results expose `commit` and `effect`.
+8. Batch item failures serialize structured `ErrorStatus`.
+9. Batch item successes serialize explicit `error: null`.
 
 Executor gaps:
 
 1. Vector, event, graph, space, and admin write outputs have not all migrated
    to the shared success concepts yet.
 2. Batch outputs still use primitive-specific item shapes.
-3. Batch item failures are mostly strings, not structured public errors.
-4. Page outputs still use command-specific variants.
-5. Golden JSON snapshots cover only selected shapes.
-6. SDK-ready response models are not yet generated or enforced.
+3. Page outputs still use command-specific variants.
+4. Golden JSON snapshots cover only selected shapes.
+5. SDK-ready response models are not yet generated or enforced.
 
 ## Readiness Matrix
 
@@ -198,7 +198,7 @@ Executor gaps:
 | Vector optional reads | Partial | Semantics are clear in Rust, but not normalized with a shared `Maybe`. |
 | Pagination | Partial | Common fields exist, common public model does not. |
 | Batch success items | Partial | KV/JSON write items now include shared commit/effect facts, but batch wrappers remain primitive-specific. |
-| Batch item failures | Not ready | String-only failures are below the V1 error bar. |
+| Batch item failures | Ready for this slice | Batch item failures now carry structured public `ErrorStatus`; KV/JSON/event item validation preserves stable engine codes. |
 | Success diagnostics | Partial | Vector is strong; other primitives are mostly plain acknowledgements. |
 | Golden response snapshots | Partial | Serde round-trip is broad; golden contract coverage is not. |
 | SDK response ergonomics | Not ready | SDKs would still need command-specific inference. |
@@ -296,9 +296,9 @@ Add golden JSON tests for each shared type.
 ### 2. Wire KV and JSON Writes
 
 Status: implemented for KV/JSON point write/delete and KV/JSON batch
-write/delete item success facts. Remaining work in this area is to move
-item-level failures to structured public errors and to decide whether the
-outer batch wrappers should be normalized before IDL freeze.
+write/delete item success facts and structured item-level failures. Remaining
+work in this area is to decide whether the outer batch wrappers should be
+normalized before IDL freeze.
 
 Migrate:
 
@@ -317,14 +317,19 @@ Exit criteria:
 
 ### 3. Normalize Batch Item Failures
 
-Replace string-only batch item errors with structured public error status.
+Status: implemented for executor-next batch item result types. Existing message
+accessors remain for compatibility, serialized item failures now carry public
+error status, and successful batch items serialize explicit `error: null`.
+
+Keep batch item failures on the structured public error status shape.
 
 Exit criteria:
 
 1. top-level and item-level failures share the same public error vocabulary;
 2. item failures include class, code, retry policy, commit outcome, message, and
    suggested fix;
-3. positional ordering remains stable.
+3. positional ordering remains stable;
+4. successful batch items serialize `error: null`.
 
 ### 4. Normalize Pagination
 

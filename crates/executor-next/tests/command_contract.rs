@@ -212,6 +212,85 @@ fn write_outputs_use_commit_receipt_and_mutation_effect() {
 }
 
 #[test]
+fn batch_item_failures_use_structured_error_status() {
+    let kv = BatchItemResult::failed(Bytes::new(Vec::new()), "invalid key");
+    let json = JsonBatchItemResult::failed("invalid document id");
+    let vector = VectorBatchItemResult::failed("invalid vector");
+    let event = EventBatchAppendItemResult::failed("invalid event");
+    let graph = GraphBatchItemResult::failed(2, "upsert_edge", "invalid graph edge");
+
+    for encoded in [
+        serde_json::to_value(&kv).expect("KV item serializes"),
+        serde_json::to_value(&json).expect("JSON item serializes"),
+        serde_json::to_value(&vector).expect("vector item serializes"),
+        serde_json::to_value(&event).expect("event item serializes"),
+        serde_json::to_value(&graph).expect("graph item serializes"),
+    ] {
+        let error = encoded
+            .get("error")
+            .and_then(Value::as_object)
+            .expect("item error is a structured object");
+        assert_eq!(error.get("class"), Some(&json!("invalid_argument")));
+        assert_eq!(
+            error.get("code"),
+            Some(&json!("invalid_argument.executor.batch_item"))
+        );
+        assert_eq!(error.get("retry_policy"), Some(&json!("never")));
+        assert_eq!(error.get("commit_outcome"), Some(&json!("not_started")));
+        assert!(error.get("message").and_then(Value::as_str).is_some());
+        assert!(error.get("suggested_fix").and_then(Value::as_str).is_some());
+        assert!(error.get("docs_url").and_then(Value::as_str).is_some());
+        assert!(error.get("reference_id").and_then(Value::as_str).is_some());
+    }
+
+    assert_eq!(kv.error(), Some("invalid key"));
+    assert_eq!(json.error(), Some("invalid document id"));
+    assert_eq!(vector.error(), Some("invalid vector"));
+    assert_eq!(event.error(), Some("invalid event"));
+    assert_eq!(graph.error(), Some("invalid graph edge"));
+    assert!(kv.error_status().is_some());
+    assert!(json.error_status().is_some());
+    assert!(vector.error_status().is_some());
+    assert!(event.error_status().is_some());
+    assert!(graph.error_status().is_some());
+}
+
+#[test]
+fn batch_item_successes_serialize_error_null() {
+    let commit = commit_receipt(7, 70, 1, 0);
+    let kv = BatchItemResult::new(
+        Bytes::new(b"key".to_vec()),
+        MutationEffect::created(),
+        Some(commit),
+    );
+    let json = JsonBatchItemResult::new(MutationEffect::updated(), Some(commit), Some(3));
+    let vector = VectorBatchItemResult::new(true, Some(7), Some(70), Some(4));
+    let vector_get = VectorBatchGetItemResult::new(None);
+    let event = EventBatchAppendItemResult::new(
+        Some(1),
+        Some("user.created".to_owned()),
+        Some(7),
+        Some(70),
+    );
+    let graph = GraphBatchItemResult::new(0, "upsert_node", Some(true), None, Some(7), Some(70));
+    let kv_get = BatchGetItemResult::new(Bytes::new(b"key".to_vec()), None, None, None);
+    let json_get = JsonBatchGetItemResult::new(None, None, None, None);
+
+    for encoded in [
+        serde_json::to_value(&kv).expect("KV item serializes"),
+        serde_json::to_value(&kv_get).expect("KV get item serializes"),
+        serde_json::to_value(&json).expect("JSON item serializes"),
+        serde_json::to_value(&json_get).expect("JSON get item serializes"),
+        serde_json::to_value(&vector).expect("vector item serializes"),
+        serde_json::to_value(&vector_get).expect("vector get item serializes"),
+        serde_json::to_value(&event).expect("event item serializes"),
+        serde_json::to_value(&graph).expect("graph item serializes"),
+    ] {
+        assert_eq!(encoded.get("error"), Some(&Value::Null));
+    }
+}
+
+#[test]
 fn admin_and_space_command_json_uses_stable_tags_and_field_shape() {
     let command = Command::SpaceDelete {
         branch: None,

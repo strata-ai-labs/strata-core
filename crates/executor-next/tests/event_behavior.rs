@@ -273,12 +273,23 @@ fn run_event_batch_append_edges(executor: &mut Executor) {
     };
     assert_eq!(results.len(), 4);
     assert!(results[0].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("event type status").code(),
+        "invalid_argument.engine.event_type"
+    );
     assert_eq!(results[1].sequence(), Some(0));
     assert_eq!(results[1].event_type(), Some("user.created"));
     assert!(results[1].version().is_some());
     assert!(results[1].timestamp().is_some());
     assert!(results[1].error().is_none());
     assert!(results[2].error().is_some());
+    assert_eq!(
+        results[2]
+            .error_status()
+            .expect("event payload status")
+            .code(),
+        "invalid_argument.engine.event_payload"
+    );
     assert_eq!(results[3].sequence(), Some(1));
     assert_eq!(results[3].event_type(), Some("user.updated"));
     assert!(results[3].version().is_some());

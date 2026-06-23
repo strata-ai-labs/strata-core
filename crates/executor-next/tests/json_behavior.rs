@@ -526,6 +526,10 @@ fn json_invalid_batch_items_are_positional_errors() {
     };
     assert_eq!(results.len(), 2);
     assert!(results[0].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("item error status").code(),
+        "invalid_argument.engine.json_document_id"
+    );
     assert!(results[1].version().is_some());
     assert_eq!(
         execute_json_get_value(&mut executor, "valid", "$.name"),
@@ -547,6 +551,10 @@ fn json_invalid_batch_items_are_positional_errors() {
     };
     assert_eq!(results.len(), 2);
     assert!(results[0].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("item error status").code(),
+        "invalid_argument.engine.json_document_id"
+    );
     assert_eq!(results[1].value(), Some(&json!("Ada")));
 
     let output = executor
@@ -564,6 +572,10 @@ fn json_invalid_batch_items_are_positional_errors() {
     };
     assert_eq!(results.len(), 2);
     assert!(results[0].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("item error status").code(),
+        "invalid_argument.engine.json_document_id"
+    );
     assert!(results[1].version().is_some());
     assert_eq!(
         execute_json_get_value(&mut executor, "valid", "$.name"),
@@ -1002,6 +1014,17 @@ fn assert_json_batch_item_error_boundaries(executor: &mut Executor) {
     assert_eq!(results.len(), 3);
     assert!(results[0].error().is_some());
     assert!(results[1].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("path error status").code(),
+        "invalid_argument.engine.json_path"
+    );
+    assert_eq!(
+        results[1]
+            .error_status()
+            .expect("value error status")
+            .code(),
+        "invalid_argument.engine.json_document_too_deep"
+    );
     assert!(results[2].version().is_some());
     assert!(
         results

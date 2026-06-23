@@ -127,9 +127,7 @@ Executor gaps:
    value and a stored JSON `null` as the same JSON `null`.
 3. Pagination fields use consistent names but not one public model.
 4. Batch item shapes differ across KV, JSON, vector, event, and graph.
-5. Batch item failures do not share the same public error status as top-level
-   failures.
-6. Success outputs have round-trip tests, but not golden JSON snapshots for
+5. Success outputs have round-trip tests, but not golden JSON snapshots for
    every command family.
 
 ## Target Public Concepts
@@ -502,6 +500,11 @@ Exit criteria:
    primitive.
 
 ### 7. Normalize Batch Results
+
+Status: partially implemented. Executor-next batch item failures now serialize
+`ErrorStatus`, successful batch items serialize `error: null`, and KV/JSON/event
+item validation preserves stable engine codes. Batch wrappers and item status
+fields remain primitive-specific.
 
 Define batch mode and item status consistently.
 

@@ -92,9 +92,7 @@ impl<'a> EventService<'a> {
                     items.push(None);
                 }
                 Err(error) => {
-                    items.push(Some(EventBatchAppendItemOutcome::failure(
-                        error.to_string(),
-                    )));
+                    items.push(Some(EventBatchAppendItemOutcome::failure(&error)));
                 }
             }
         }

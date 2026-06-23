@@ -1,7 +1,9 @@
 //! Serializable request and response helper types.
 
+use crate::error::{batch_item_error_status, engine_error_status, ErrorStatus, ExecutorError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use strata_engine_next::EngineErrorStatus;
 
 /// Default product branch used when a command omits its branch.
 pub const DEFAULT_BRANCH: &str = "default";
@@ -1270,8 +1272,7 @@ pub struct GraphBatchItemResult {
     version: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     timestamp: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    error: Option<ErrorStatus>,
 }
 
 impl GraphBatchItemResult {
@@ -1301,6 +1302,24 @@ impl GraphBatchItemResult {
         operation: impl Into<String>,
         error: impl Into<String>,
     ) -> Self {
+        Self::failed_status(operation_index, operation, batch_item_error_status(error))
+    }
+
+    /// Creates a failed graph batch item result from an executor error.
+    pub fn failed_error(
+        operation_index: u64,
+        operation: impl Into<String>,
+        error: ExecutorError,
+    ) -> Self {
+        Self::failed_status(operation_index, operation, error.into_status())
+    }
+
+    /// Creates a failed graph batch item result from a public error status.
+    pub fn failed_status(
+        operation_index: u64,
+        operation: impl Into<String>,
+        error: ErrorStatus,
+    ) -> Self {
         Self {
             operation_index,
             operation: operation.into(),
@@ -1308,7 +1327,7 @@ impl GraphBatchItemResult {
             deleted: None,
             version: None,
             timestamp: None,
-            error: Some(error.into()),
+            error: Some(error),
         }
     }
 
@@ -1344,7 +1363,12 @@ impl GraphBatchItemResult {
 
     /// Returns item error when present.
     pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error.as_ref().map(ErrorStatus::message)
+    }
+
+    /// Returns the structured item error status.
+    pub const fn error_status(&self) -> Option<&ErrorStatus> {
+        self.error.as_ref()
     }
 }
 
@@ -1451,7 +1475,7 @@ pub struct EventBatchAppendItemResult {
     event_type: Option<String>,
     version: Option<u64>,
     timestamp: Option<u64>,
-    error: Option<String>,
+    error: Option<ErrorStatus>,
 }
 
 impl EventBatchAppendItemResult {
@@ -1473,12 +1497,27 @@ impl EventBatchAppendItemResult {
 
     /// Creates a failed event batch append result.
     pub fn failed(error: impl Into<String>) -> Self {
+        Self::failed_status(batch_item_error_status(error))
+    }
+
+    /// Creates a failed event batch append result from an executor error.
+    pub fn failed_error(error: ExecutorError) -> Self {
+        Self::failed_status(error.into_status())
+    }
+
+    /// Creates a failed event batch append result from an engine status.
+    pub fn failed_engine_status(error: &EngineErrorStatus) -> Self {
+        Self::failed_status(engine_error_status(error))
+    }
+
+    /// Creates a failed event batch append result from a public error status.
+    pub fn failed_status(error: ErrorStatus) -> Self {
         Self {
             sequence: None,
             event_type: None,
             version: None,
             timestamp: None,
-            error: Some(error.into()),
+            error: Some(error),
         }
     }
 
@@ -1504,7 +1543,12 @@ impl EventBatchAppendItemResult {
 
     /// Returns the item error when validation failed.
     pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error.as_ref().map(ErrorStatus::message)
+    }
+
+    /// Returns the structured item error status.
+    pub const fn error_status(&self) -> Option<&ErrorStatus> {
+        self.error.as_ref()
     }
 }
 
@@ -2093,7 +2137,7 @@ pub struct VectorBatchItemResult {
     version: Option<u64>,
     timestamp: Option<u64>,
     vector_revision: Option<u64>,
-    error: Option<String>,
+    error: Option<ErrorStatus>,
 }
 
 impl VectorBatchItemResult {
@@ -2115,12 +2159,22 @@ impl VectorBatchItemResult {
 
     /// Creates a failed vector batch result.
     pub fn failed(error: impl Into<String>) -> Self {
+        Self::failed_status(batch_item_error_status(error))
+    }
+
+    /// Creates a failed vector batch result from an executor error.
+    pub fn failed_error(error: ExecutorError) -> Self {
+        Self::failed_status(error.into_status())
+    }
+
+    /// Creates a failed vector batch result from a public error status.
+    pub fn failed_status(error: ErrorStatus) -> Self {
         Self {
             applied: false,
             version: None,
             timestamp: None,
             vector_revision: None,
-            error: Some(error.into()),
+            error: Some(error),
         }
     }
 
@@ -2146,7 +2200,12 @@ impl VectorBatchItemResult {
 
     /// Returns the item error when validation failed.
     pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error.as_ref().map(ErrorStatus::message)
+    }
+
+    /// Returns the structured item error status.
+    pub const fn error_status(&self) -> Option<&ErrorStatus> {
+        self.error.as_ref()
     }
 }
 
@@ -2155,7 +2214,7 @@ impl VectorBatchItemResult {
 pub struct VectorBatchGetItemResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     value: Option<VectorVersionedData>,
-    error: Option<String>,
+    error: Option<ErrorStatus>,
 }
 
 impl VectorBatchGetItemResult {
@@ -2166,9 +2225,19 @@ impl VectorBatchGetItemResult {
 
     /// Creates a failed vector batch read result.
     pub fn failed(error: impl Into<String>) -> Self {
+        Self::failed_status(batch_item_error_status(error))
+    }
+
+    /// Creates a failed vector batch read result from an executor error.
+    pub fn failed_error(error: ExecutorError) -> Self {
+        Self::failed_status(error.into_status())
+    }
+
+    /// Creates a failed vector batch read result from a public error status.
+    pub fn failed_status(error: ErrorStatus) -> Self {
         Self {
             value: None,
-            error: Some(error.into()),
+            error: Some(error),
         }
     }
 
@@ -2179,7 +2248,12 @@ impl VectorBatchGetItemResult {
 
     /// Returns the item error when validation failed.
     pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error.as_ref().map(ErrorStatus::message)
+    }
+
+    /// Returns the structured item error status.
+    pub const fn error_status(&self) -> Option<&ErrorStatus> {
+        self.error.as_ref()
     }
 }
 
@@ -2550,7 +2624,7 @@ pub struct JsonBatchItemResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     commit: Option<CommitReceipt>,
     document_version: Option<u64>,
-    error: Option<String>,
+    error: Option<ErrorStatus>,
 }
 
 impl JsonBatchItemResult {
@@ -2570,11 +2644,21 @@ impl JsonBatchItemResult {
 
     /// Creates a failed JSON batch result.
     pub fn failed(error: impl Into<String>) -> Self {
+        Self::failed_status(batch_item_error_status(error))
+    }
+
+    /// Creates a failed JSON batch result from an executor error.
+    pub fn failed_error(error: ExecutorError) -> Self {
+        Self::failed_status(error.into_status())
+    }
+
+    /// Creates a failed JSON batch result from a public error status.
+    pub fn failed_status(error: ErrorStatus) -> Self {
         Self {
             effect: None,
             commit: None,
             document_version: None,
-            error: Some(error.into()),
+            error: Some(error),
         }
     }
 
@@ -2619,7 +2703,12 @@ impl JsonBatchItemResult {
 
     /// Returns the item error, when this item failed validation.
     pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error.as_ref().map(ErrorStatus::message)
+    }
+
+    /// Returns the structured item error status.
+    pub const fn error_status(&self) -> Option<&ErrorStatus> {
+        self.error.as_ref()
     }
 }
 
@@ -2631,7 +2720,7 @@ pub struct JsonBatchGetItemResult {
     version: Option<u64>,
     timestamp: Option<u64>,
     document_version: Option<u64>,
-    error: Option<String>,
+    error: Option<ErrorStatus>,
 }
 
 impl JsonBatchGetItemResult {
@@ -2664,13 +2753,23 @@ impl JsonBatchGetItemResult {
 
     /// Creates a failed JSON batch read result.
     pub fn failed(error: impl Into<String>) -> Self {
+        Self::failed_status(batch_item_error_status(error))
+    }
+
+    /// Creates a failed JSON batch read result from an executor error.
+    pub fn failed_error(error: ExecutorError) -> Self {
+        Self::failed_status(error.into_status())
+    }
+
+    /// Creates a failed JSON batch read result from a public error status.
+    pub fn failed_status(error: ErrorStatus) -> Self {
         Self {
             found: false,
             value: Value::Null,
             version: None,
             timestamp: None,
             document_version: None,
-            error: Some(error.into()),
+            error: Some(error),
         }
     }
 
@@ -2705,7 +2804,12 @@ impl JsonBatchGetItemResult {
 
     /// Returns the item error, when this item failed validation.
     pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error.as_ref().map(ErrorStatus::message)
+    }
+
+    /// Returns the structured item error status.
+    pub const fn error_status(&self) -> Option<&ErrorStatus> {
+        self.error.as_ref()
     }
 }
 
@@ -3044,7 +3148,7 @@ pub struct BatchItemResult {
     effect: Option<MutationEffect>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     commit: Option<CommitReceipt>,
-    error: Option<String>,
+    error: Option<ErrorStatus>,
 }
 
 impl BatchItemResult {
@@ -3060,11 +3164,21 @@ impl BatchItemResult {
 
     /// Creates a failed batch item result.
     pub fn failed(key: Bytes, error: impl Into<String>) -> Self {
+        Self::failed_status(key, batch_item_error_status(error))
+    }
+
+    /// Creates a failed batch item result from an executor error.
+    pub fn failed_error(key: Bytes, error: ExecutorError) -> Self {
+        Self::failed_status(key, error.into_status())
+    }
+
+    /// Creates a failed batch item result from a public error status.
+    pub fn failed_status(key: Bytes, error: ErrorStatus) -> Self {
         Self {
             key,
             effect: None,
             commit: None,
-            error: Some(error.into()),
+            error: Some(error),
         }
     }
 
@@ -3109,7 +3223,12 @@ impl BatchItemResult {
 
     /// Returns the item error, when this item failed validation.
     pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error.as_ref().map(ErrorStatus::message)
+    }
+
+    /// Returns the structured item error status.
+    pub const fn error_status(&self) -> Option<&ErrorStatus> {
+        self.error.as_ref()
     }
 }
 
@@ -3120,7 +3239,7 @@ pub struct BatchGetItemResult {
     value: Option<Bytes>,
     version: Option<u64>,
     timestamp: Option<u64>,
-    error: Option<String>,
+    error: Option<ErrorStatus>,
 }
 
 impl BatchGetItemResult {
@@ -3142,12 +3261,22 @@ impl BatchGetItemResult {
 
     /// Creates a failed batch read result.
     pub fn failed(key: Bytes, error: impl Into<String>) -> Self {
+        Self::failed_status(key, batch_item_error_status(error))
+    }
+
+    /// Creates a failed batch read result from an executor error.
+    pub fn failed_error(key: Bytes, error: ExecutorError) -> Self {
+        Self::failed_status(key, error.into_status())
+    }
+
+    /// Creates a failed batch read result from a public error status.
+    pub fn failed_status(key: Bytes, error: ErrorStatus) -> Self {
         Self {
             key,
             value: None,
             version: None,
             timestamp: None,
-            error: Some(error.into()),
+            error: Some(error),
         }
     }
 
@@ -3173,7 +3302,12 @@ impl BatchGetItemResult {
 
     /// Returns the item error, when this item failed validation.
     pub fn error(&self) -> Option<&str> {
-        self.error.as_deref()
+        self.error.as_ref().map(ErrorStatus::message)
+    }
+
+    /// Returns the structured item error status.
+    pub const fn error_status(&self) -> Option<&ErrorStatus> {
+        self.error.as_ref()
     }
 }
 

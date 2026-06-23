@@ -327,7 +327,14 @@ fn exercise_event_batch_append_edge_cases(database: &mut Database) {
     assert!(mixed.items()[1]
         .error_message()
         .expect("validation error recorded")
-        .contains("invalid_argument.engine.event_type"));
+        .contains("event type"));
+    assert_eq!(
+        mixed.items()[1]
+            .error_status()
+            .expect("validation error status")
+            .code(),
+        "invalid_argument.engine.event_type"
+    );
     assert_eq!(mixed.items()[2].sequence(), Some(EventSequence::new(1)));
     assert_eq!(events.len().expect("mixed len succeeds").count(), 2);
 

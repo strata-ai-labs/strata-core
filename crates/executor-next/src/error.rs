@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
-use strata_engine_next::{CommitOutcomeStatus, EngineError, ErrorClass, ErrorDetail, RetryPolicy};
+use strata_engine_next::{
+    CommitOutcomeStatus, EngineError, EngineErrorStatus, ErrorClass, ErrorDetail, RetryPolicy,
+};
 
 const DEFAULT_DOCS_BASE_URL: &str = "https://strata.dev/docs/errors";
 
@@ -348,6 +350,11 @@ impl ExecutorError {
         &self.status
     }
 
+    /// Consumes this error and returns the public status.
+    pub(crate) fn into_status(self) -> ErrorStatus {
+        self.status
+    }
+
     /// Returns the compatibility class.
     #[must_use]
     pub fn class(&self) -> ExecutorErrorClass {
@@ -417,19 +424,7 @@ impl ExecutorError {
 
 impl From<EngineError> for ExecutorError {
     fn from(value: EngineError) -> Self {
-        let code = value.code().to_owned();
-        let status = render_status(
-            value.public_class(),
-            code,
-            value.retry_policy(),
-            value.commit_outcome(),
-            value.message().to_owned(),
-            value.suggested_fix().to_owned(),
-            None,
-            value.details().to_vec(),
-            value.hints().to_vec(),
-        );
-        Self::from_status(status)
+        Self::from_status(engine_error_status(value.status()))
     }
 }
 
@@ -502,6 +497,34 @@ fn render_status(
         trace_id,
         details,
         hints,
+    )
+}
+
+pub(crate) fn batch_item_error_status(message: impl Into<String>) -> ErrorStatus {
+    render_status(
+        ErrorClass::InvalidArgument,
+        "invalid_argument.executor.batch_item",
+        RetryPolicy::Never,
+        CommitOutcomeStatus::NotStarted,
+        message,
+        "Correct the batch item input and retry.",
+        None,
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
+pub(crate) fn engine_error_status(status: &EngineErrorStatus) -> ErrorStatus {
+    render_status(
+        status.class(),
+        status.code().to_owned(),
+        status.retry_policy(),
+        status.commit_outcome(),
+        status.message().to_owned(),
+        status.suggested_fix().to_owned(),
+        None,
+        status.details().to_vec(),
+        status.hints().to_vec(),
     )
 }
 

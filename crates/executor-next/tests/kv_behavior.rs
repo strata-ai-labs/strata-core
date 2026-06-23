@@ -465,6 +465,10 @@ fn invalid_batch_items_are_positional_errors() {
     assert_eq!(results.len(), 2);
     assert!(!results[0].applied());
     assert!(results[0].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("item error status").code(),
+        "invalid_argument.engine.kv_key"
+    );
     assert!(results[1].applied());
     assert_eq!(execute_get(&mut executor, "valid"), Some(bytes("good")));
 
@@ -480,6 +484,10 @@ fn invalid_batch_items_are_positional_errors() {
     };
     assert_eq!(results.len(), 2);
     assert!(results[0].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("item error status").code(),
+        "invalid_argument.engine.kv_key"
+    );
     assert_eq!(results[1].value(), Some(&bytes("good")));
 
     let output = executor
@@ -494,6 +502,10 @@ fn invalid_batch_items_are_positional_errors() {
     };
     assert_eq!(results.len(), 2);
     assert!(results[0].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("item error status").code(),
+        "invalid_argument.engine.kv_key"
+    );
     assert!(results[1].applied());
     assert!(execute_get(&mut executor, "valid").is_none());
 }
