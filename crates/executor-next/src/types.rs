@@ -154,6 +154,26 @@ impl MutationEffect {
         }
     }
 
+    /// Creates effect facts for a newly created entity.
+    pub const fn created() -> Self {
+        Self::new(true, MutationEffectKind::Created, false, 1)
+    }
+
+    /// Creates effect facts for an updated entity.
+    pub const fn updated() -> Self {
+        Self::new(true, MutationEffectKind::Updated, true, 1)
+    }
+
+    /// Creates effect facts for a deleted entity.
+    pub const fn deleted() -> Self {
+        Self::new(true, MutationEffectKind::Deleted, true, 1)
+    }
+
+    /// Creates effect facts for a missing mutation target.
+    pub const fn not_found() -> Self {
+        Self::new(false, MutationEffectKind::NotFound, false, 0)
+    }
+
     /// Returns true when the operation changed durable logical state.
     pub const fn applied(&self) -> bool {
         self.applied
@@ -2525,8 +2545,10 @@ impl JsonHistoryItem {
 /// Positional JSON batch write/delete result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct JsonBatchItemResult {
-    version: Option<u64>,
-    timestamp: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effect: Option<MutationEffect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commit: Option<CommitReceipt>,
     document_version: Option<u64>,
     error: Option<String>,
 }
@@ -2534,13 +2556,13 @@ pub struct JsonBatchItemResult {
 impl JsonBatchItemResult {
     /// Creates a successful JSON batch result.
     pub const fn new(
-        version: Option<u64>,
-        timestamp: Option<u64>,
+        effect: MutationEffect,
+        commit: Option<CommitReceipt>,
         document_version: Option<u64>,
     ) -> Self {
         Self {
-            version,
-            timestamp,
+            effect: Some(effect),
+            commit,
             document_version,
             error: None,
         }
@@ -2549,21 +2571,45 @@ impl JsonBatchItemResult {
     /// Creates a failed JSON batch result.
     pub fn failed(error: impl Into<String>) -> Self {
         Self {
-            version: None,
-            timestamp: None,
+            effect: None,
+            commit: None,
             document_version: None,
             error: Some(error.into()),
         }
     }
 
+    /// Returns mutation effect facts for successful items.
+    pub const fn effect(&self) -> Option<&MutationEffect> {
+        self.effect.as_ref()
+    }
+
+    /// Returns true when this item applied a mutation.
+    pub const fn applied(&self) -> bool {
+        match self.effect {
+            Some(effect) => effect.applied(),
+            None => false,
+        }
+    }
+
+    /// Returns the commit receipt, when this item applied a commit.
+    pub const fn commit(&self) -> Option<&CommitReceipt> {
+        self.commit.as_ref()
+    }
+
     /// Returns the commit version, when present.
     pub const fn version(&self) -> Option<u64> {
-        self.version
+        match self.commit {
+            Some(commit) => Some(commit.version()),
+            None => None,
+        }
     }
 
     /// Returns the commit timestamp, when present.
     pub const fn timestamp(&self) -> Option<u64> {
-        self.timestamp
+        match self.commit {
+            Some(commit) => Some(commit.timestamp()),
+            None => None,
+        }
     }
 
     /// Returns the document version, when present.
@@ -2994,20 +3040,20 @@ impl VersionedValue {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct BatchItemResult {
     key: Bytes,
-    applied: bool,
-    version: Option<u64>,
-    timestamp: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    effect: Option<MutationEffect>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    commit: Option<CommitReceipt>,
     error: Option<String>,
 }
 
 impl BatchItemResult {
     /// Creates a batch item result.
-    pub fn new(key: Bytes, applied: bool, version: Option<u64>, timestamp: Option<u64>) -> Self {
+    pub fn new(key: Bytes, effect: MutationEffect, commit: Option<CommitReceipt>) -> Self {
         Self {
             key,
-            applied,
-            version,
-            timestamp,
+            effect: Some(effect),
+            commit,
             error: None,
         }
     }
@@ -3016,9 +3062,8 @@ impl BatchItemResult {
     pub fn failed(key: Bytes, error: impl Into<String>) -> Self {
         Self {
             key,
-            applied: false,
-            version: None,
-            timestamp: None,
+            effect: None,
+            commit: None,
             error: Some(error.into()),
         }
     }
@@ -3028,19 +3073,38 @@ impl BatchItemResult {
         &self.key
     }
 
+    /// Returns mutation effect facts for successful items.
+    pub const fn effect(&self) -> Option<&MutationEffect> {
+        self.effect.as_ref()
+    }
+
     /// Returns true when this item was applied.
     pub const fn applied(&self) -> bool {
-        self.applied
+        match self.effect {
+            Some(effect) => effect.applied(),
+            None => false,
+        }
+    }
+
+    /// Returns the commit receipt, when this item applied a commit.
+    pub const fn commit(&self) -> Option<&CommitReceipt> {
+        self.commit.as_ref()
     }
 
     /// Returns the commit version, when an item was applied.
     pub const fn version(&self) -> Option<u64> {
-        self.version
+        match self.commit {
+            Some(commit) => Some(commit.version()),
+            None => None,
+        }
     }
 
     /// Returns the commit timestamp, when an item was applied.
     pub const fn timestamp(&self) -> Option<u64> {
-        self.timestamp
+        match self.commit {
+            Some(commit) => Some(commit.timestamp()),
+            None => None,
+        }
     }
 
     /// Returns the item error, when this item failed validation.

@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use strata_engine_next::{CacheOpenOptions, Database};
 use strata_executor_next::{
     BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, Bytes, Command, Executor,
-    ExecutorErrorClass, JsonIndexType, Output, DEFAULT_BRANCH,
+    ExecutorErrorClass, JsonIndexType, MutationEffectKind, Output, DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -12,6 +12,167 @@ use tempfile::TempDir;
 fn cache_executor_runs_complete_json_command_suite() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
     run_json_command_suite(&mut executor);
+}
+
+#[test]
+fn json_write_outputs_report_commit_receipts_and_effects() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    let created = executor
+        .execute(Command::JsonSet {
+            branch: None,
+            space: None,
+            key: "effect-doc".to_owned(),
+            path: "$".to_owned(),
+            value: json!({"name": "Ada"}),
+        })
+        .expect("create succeeds");
+    let Output::WriteResult { effect, commit, .. } = created else {
+        panic!("unexpected create output: {created:?}");
+    };
+    assert_eq!(effect.kind(), MutationEffectKind::Created);
+    assert!(effect.applied());
+    assert!(!effect.matched());
+    assert_eq!(commit.put_count(), 1);
+    assert_eq!(commit.delete_count(), 0);
+
+    let updated = executor
+        .execute(Command::JsonSet {
+            branch: None,
+            space: None,
+            key: "effect-doc".to_owned(),
+            path: "$.name".to_owned(),
+            value: json!("Grace"),
+        })
+        .expect("update succeeds");
+    let Output::WriteResult { effect, commit, .. } = updated else {
+        panic!("unexpected update output: {updated:?}");
+    };
+    assert_eq!(effect.kind(), MutationEffectKind::Updated);
+    assert!(effect.applied());
+    assert!(effect.matched());
+    assert_eq!(commit.put_count(), 1);
+    assert_eq!(commit.delete_count(), 0);
+
+    let deleted = executor
+        .execute(Command::JsonDelete {
+            branch: None,
+            space: None,
+            key: "effect-doc".to_owned(),
+            path: "$".to_owned(),
+        })
+        .expect("delete succeeds");
+    let Output::DeleteResult { effect, commit, .. } = deleted else {
+        panic!("unexpected delete output: {deleted:?}");
+    };
+    assert_eq!(effect.kind(), MutationEffectKind::Deleted);
+    assert!(effect.applied());
+    assert!(effect.matched());
+    assert!(commit.is_some());
+
+    let missing = executor
+        .execute(Command::JsonDelete {
+            branch: None,
+            space: None,
+            key: "effect-doc".to_owned(),
+            path: "$".to_owned(),
+        })
+        .expect("missing delete succeeds");
+    let Output::DeleteResult { effect, commit, .. } = missing else {
+        panic!("unexpected missing delete output: {missing:?}");
+    };
+    assert_eq!(effect.kind(), MutationEffectKind::NotFound);
+    assert!(!effect.applied());
+    assert!(!effect.matched());
+    assert_eq!(effect.affected_count(), 0);
+    assert!(commit.is_none());
+}
+
+#[test]
+fn json_batch_write_outputs_report_per_item_commit_receipts_and_effects() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    write_json(
+        &mut executor,
+        None,
+        None,
+        "batch-effect-existing",
+        "$",
+        json!({"name": "Ada"}),
+    );
+
+    let output = executor
+        .execute(Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonEntry::new("batch-effect-created", "$", json!({"name": "Grace"})),
+                BatchJsonEntry::new("batch-effect-created", "$.lang", json!("rust")),
+                BatchJsonEntry::new("batch-effect-existing", "$.name", json!("Katherine")),
+            ],
+        })
+        .expect("JSON batch set succeeds");
+    let Output::JsonBatchResults(results) = output else {
+        panic!("unexpected JSON batch set output: {output:?}");
+    };
+    assert_eq!(results.len(), 3);
+    let created = results[0].effect().expect("created effect");
+    assert_eq!(created.kind(), MutationEffectKind::Created);
+    assert!(created.applied());
+    assert!(!created.matched());
+    assert_eq!(results[0].document_version(), Some(1));
+    let repeated_update = results[1].effect().expect("repeated update effect");
+    assert_eq!(repeated_update.kind(), MutationEffectKind::Updated);
+    assert!(repeated_update.applied());
+    assert!(repeated_update.matched());
+    assert_eq!(results[1].document_version(), Some(2));
+    let existing_update = results[2].effect().expect("existing update effect");
+    assert_eq!(existing_update.kind(), MutationEffectKind::Updated);
+    assert!(existing_update.applied());
+    assert!(existing_update.matched());
+    assert_eq!(results[2].document_version(), Some(2));
+    let batch_commit = results[0].commit().expect("created commit");
+    assert_eq!(batch_commit.put_count(), 2);
+    assert_eq!(batch_commit.delete_count(), 0);
+    assert_eq!(
+        results[1]
+            .commit()
+            .expect("repeated update commit")
+            .version(),
+        batch_commit.version()
+    );
+    assert_eq!(
+        results[2]
+            .commit()
+            .expect("existing update commit")
+            .version(),
+        batch_commit.version()
+    );
+
+    let output = executor
+        .execute(Command::JsonBatchDelete {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonDeleteEntry::new("batch-effect-created", "$"),
+                BatchJsonDeleteEntry::new("batch-effect-missing", "$"),
+            ],
+        })
+        .expect("JSON batch delete succeeds");
+    let Output::JsonBatchResults(results) = output else {
+        panic!("unexpected JSON batch delete output: {output:?}");
+    };
+    assert_eq!(results.len(), 2);
+    let deleted = results[0].effect().expect("deleted effect");
+    assert_eq!(deleted.kind(), MutationEffectKind::Deleted);
+    assert!(deleted.applied());
+    assert!(deleted.matched());
+    let missing = results[1].effect().expect("missing effect");
+    assert_eq!(missing.kind(), MutationEffectKind::NotFound);
+    assert!(!missing.applied());
+    assert!(!missing.matched());
+    assert!(results[0].commit().is_some());
+    assert!(results[1].commit().is_none());
 }
 
 #[test]
@@ -1201,9 +1362,13 @@ fn write_json(
         })
         .expect("JSON set succeeds")
     {
-        Output::WriteResult {
-            version, timestamp, ..
-        } => WriteFacts { version, timestamp },
+        Output::WriteResult { effect, commit, .. } => {
+            assert!(effect.applied());
+            WriteFacts {
+                version: commit.version(),
+                timestamp: commit.timestamp(),
+            }
+        }
         output => panic!("unexpected JSON set output: {output:?}"),
     }
 }
@@ -1330,7 +1495,7 @@ fn execute_json_delete(executor: &mut Executor, key: &str, path: &str) -> bool {
         })
         .expect("JSON delete succeeds")
     {
-        Output::DeleteResult { deleted, .. } => deleted,
+        Output::DeleteResult { effect, .. } => effect.applied(),
         output => panic!("unexpected JSON delete output: {output:?}"),
     }
 }

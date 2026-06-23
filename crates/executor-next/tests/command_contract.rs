@@ -7,14 +7,14 @@ use strata_executor_next::{
     AdminVectorCollection, ArrowExportPrimitive, ArrowExportResult, ArrowFileFormat,
     ArrowImportResult, ArrowImportTarget, BatchEventEntry, BatchGetItemResult, BatchItemResult,
     BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry,
-    BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus, Bytes, Command,
+    BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus, Bytes, Command, CommitReceipt,
     EventBatchAppendItemResult, EventChainVerification, EventData, EventRangeDirection,
     EventVersionedData, GraphBatchItemResult, GraphBatchOperation, GraphBindingHit,
     GraphBindingPrimitive, GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEdgeDataOutput,
     GraphEntityBinding, GraphInfoData, GraphNeighborHit, GraphNodeData, GraphNodeDataOutput,
     HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
     JsonIndexType, JsonSampleItem, JsonVersionedValue, MaybeJsonValue, MaybeJsonVersionedValue,
-    Output, SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult,
+    MutationEffect, Output, SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult,
     VectorCollectionInfo, VectorData, VectorDistanceMetric, VectorFilterCondition, VectorFilterOp,
     VectorHistoryItem, VectorIndexArtifactSource, VectorIndexDiagnostics, VectorIndexQueryResult,
     VectorMatch, VectorMetadataFilter, VectorScalar, VectorVersionedData, VersionedValue,
@@ -145,6 +145,69 @@ fn json_read_outputs_distinguish_missing_from_stored_null() {
         serde_json::from_value::<JsonBatchGetItemResult>(batch_stored_null_json)
             .expect("batch stored null deserializes"),
         batch_stored_null
+    );
+}
+
+#[test]
+fn write_outputs_use_commit_receipt_and_mutation_effect() {
+    let write = Output::WriteResult {
+        key: bytes("user"),
+        effect: MutationEffect::created(),
+        commit: commit_receipt(7, 70, 1, 0),
+    };
+    let write_json = serde_json::to_value(&write).expect("write output serializes");
+    assert_eq!(
+        write_json,
+        json!({
+            "type": "write_result",
+            "data": {
+                "key": b"user",
+                "effect": {
+                    "applied": true,
+                    "kind": "created",
+                    "matched": false,
+                    "affected_count": 1,
+                },
+                "commit": {
+                    "version": 7,
+                    "timestamp": 70,
+                    "durable": true,
+                    "put_count": 1,
+                    "delete_count": 0,
+                },
+            },
+        })
+    );
+
+    let missing_delete = Output::DeleteResult {
+        key: bytes("missing"),
+        effect: MutationEffect::not_found(),
+        commit: None,
+    };
+    let missing_delete_json =
+        serde_json::to_value(&missing_delete).expect("delete output serializes");
+    assert_eq!(
+        missing_delete_json,
+        json!({
+            "type": "delete_result",
+            "data": {
+                "key": b"missing",
+                "effect": {
+                    "applied": false,
+                    "kind": "not_found",
+                    "matched": false,
+                    "affected_count": 0,
+                },
+            },
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<Output>(write_json).expect("write output deserializes"),
+        write
+    );
+    assert_eq!(
+        serde_json::from_value::<Output>(missing_delete_json).expect("delete output deserializes"),
+        missing_delete
     );
 }
 
@@ -1850,21 +1913,19 @@ fn kv_outputs() -> Vec<Output> {
         },
         Output::WriteResult {
             key: bytes("a"),
-            version: 1,
-            timestamp: 10,
+            effect: MutationEffect::created(),
+            commit: commit_receipt(1, 10, 1, 0),
         },
         Output::DeleteResult {
             key: bytes("a"),
-            deleted: true,
-            version: Some(2),
-            timestamp: Some(20),
+            effect: MutationEffect::deleted(),
+            commit: Some(commit_receipt(2, 20, 0, 1)),
         },
         Output::KvScanResult(vec![ScanItem::new(bytes("a"), bytes("one"), 1, 10)]),
         Output::BatchResults(vec![BatchItemResult::new(
             bytes("a"),
-            true,
-            Some(1),
-            Some(10),
+            MutationEffect::created(),
+            Some(commit_receipt(1, 10, 1, 0)),
         )]),
         Output::BatchResults(vec![BatchItemResult::failed(
             Bytes::new(Vec::new()),
@@ -1915,7 +1976,11 @@ fn json_outputs() -> Vec<Output> {
             has_more: true,
             cursor: Some("doc-a".to_owned()),
         },
-        Output::JsonBatchResults(vec![JsonBatchItemResult::new(Some(1), Some(10), Some(2))]),
+        Output::JsonBatchResults(vec![JsonBatchItemResult::new(
+            MutationEffect::created(),
+            Some(commit_receipt(1, 10, 1, 0)),
+            Some(2),
+        )]),
         Output::JsonBatchResults(vec![JsonBatchItemResult::failed("invalid document id")]),
         Output::JsonBatchGetResults(vec![JsonBatchGetItemResult::new(
             Some(json!("Ada")),
@@ -2342,6 +2407,15 @@ fn arrow_outputs() -> Vec<Output> {
 
 fn bytes(value: &str) -> Bytes {
     Bytes::from(value)
+}
+
+fn commit_receipt(
+    version: u64,
+    timestamp: u64,
+    put_count: u64,
+    delete_count: u64,
+) -> CommitReceipt {
+    CommitReceipt::new(version, timestamp, true, put_count, delete_count)
 }
 
 fn event_versioned_data(

@@ -73,16 +73,16 @@ use crate::types::{
     ArrowExportPrimitive, ArrowFileFormat, ArrowImportTarget, BatchEventEntry, BatchGetItemResult,
     BatchItemResult, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry,
     BatchVectorEntry, BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus, Bytes,
-    EventBatchAppendItemResult, EventChainVerification as OutputEventChainVerification, EventData,
-    EventRangeDirection, EventVersionedData, GraphBatchItemResult, GraphBatchOperation,
-    GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget, GraphDirection, GraphEdgeData,
-    GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData, GraphNeighborHit, GraphNodeData,
-    GraphNodeDataOutput, HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
-    JsonIndexDefinition, JsonIndexType, JsonSampleItem,
-    JsonVersionedValue as OutputJsonVersionedValue, MaybeJsonValue, MaybeJsonVersionedValue,
-    SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult,
-    VectorCollectionInfo as OutputVectorCollectionInfo, VectorData, VectorDistanceMetric,
-    VectorFilterOp, VectorHistoryItem,
+    CommitReceipt, EventBatchAppendItemResult,
+    EventChainVerification as OutputEventChainVerification, EventData, EventRangeDirection,
+    EventVersionedData, GraphBatchItemResult, GraphBatchOperation, GraphBindingHit,
+    GraphBindingPrimitive, GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEdgeDataOutput,
+    GraphEntityBinding, GraphInfoData, GraphNeighborHit, GraphNodeData, GraphNodeDataOutput,
+    HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
+    JsonIndexType, JsonSampleItem, JsonVersionedValue as OutputJsonVersionedValue, MaybeJsonValue,
+    MaybeJsonVersionedValue, MutationEffect, SampleItem, ScanItem, VectorBatchGetItemResult,
+    VectorBatchItemResult, VectorCollectionInfo as OutputVectorCollectionInfo, VectorData,
+    VectorDistanceMetric, VectorFilterOp, VectorHistoryItem,
     VectorIndexArtifactSource as OutputVectorIndexArtifactSource,
     VectorIndexDiagnostics as OutputVectorIndexDiagnostics, VectorIndexQueryResult, VectorMatch,
     VectorMetadataFilter, VectorScalar, VectorVersionedData, VersionedValue, DEFAULT_BRANCH,
@@ -1110,9 +1110,11 @@ impl Executor {
         value: Bytes,
     ) -> ExecutorResult<Output> {
         let output_key = key.clone();
+        let key = kv_key(key)?;
         let mut service = self.kv_service(branch, space)?;
-        let outcome = service.put(kv_key(key)?, kv_value(value))?;
-        Ok(write_output(output_key, outcome))
+        let effect = upsert_effect(service.exists(&key)?);
+        let outcome = service.put(key, kv_value(value))?;
+        Ok(write_output(output_key, effect, outcome))
     }
 
     fn execute_kv_get(
@@ -1230,9 +1232,18 @@ impl Executor {
             .iter()
             .map(|(_, _, key, value)| (key.clone(), value.clone()))
             .collect::<Vec<_>>();
+        let existing_keys = valid_entries
+            .iter()
+            .map(|(_, _, key, _)| key.clone())
+            .collect::<Vec<_>>();
+        let existing = service.batch_exists(&existing_keys)?;
         let outcome = service.put_batch(engine_entries)?;
-        for (index, output_key, ..) in valid_entries {
-            results[index] = Some(batch_item_result(output_key, true, Some(outcome)));
+        for ((index, output_key, ..), existed) in valid_entries.into_iter().zip(existing) {
+            results[index] = Some(batch_item_result(
+                output_key,
+                upsert_effect(existed),
+                Some(outcome),
+            ));
         }
         Ok(Output::BatchResults(finish_batch_results(results)))
     }
@@ -1308,7 +1319,11 @@ impl Executor {
             .zip(outcome.deleted().iter().copied())
         {
             let commit = deleted.then(|| outcome.commit()).flatten();
-            results[index] = Some(batch_item_result(output_key, deleted, commit));
+            results[index] = Some(batch_item_result(
+                output_key,
+                delete_effect(deleted),
+                commit,
+            ));
         }
         Ok(Output::BatchResults(finish_batch_results(results)))
     }
@@ -1387,8 +1402,9 @@ impl Executor {
         let path = json_path(path)?;
         let value = json_value(value)?;
         let mut service = self.json_service(branch, space)?;
+        let effect = upsert_effect(service.exists(&id)?);
         let outcome = service.set_or_create(id, &path, value)?;
-        Ok(json_write_output(key, outcome.commit()))
+        Ok(json_write_output(key, effect, outcome.commit()))
     }
 
     fn execute_json_get(
@@ -1468,10 +1484,22 @@ impl Executor {
         }
         let mut results = empty_json_batch_results(entries.len());
         let mut valid_entries = Vec::with_capacity(entries.len());
+        let mut written_docs = BTreeSet::new();
         for (index, entry) in entries.into_iter().enumerate() {
             let (key, path, value) = entry.into_parts();
-            match json_set_entry(key, &path, value) {
-                Ok(entry) => valid_entries.push((index, entry)),
+            let validation: ExecutorResult<(String, JsonSetEntry)> = (|| {
+                let id = json_document_id(key.clone())?;
+                let path = json_path(&path)?;
+                let value = json_value(value)?;
+                Ok((key, JsonSetEntry::new(id, path, value)))
+            })();
+            match validation {
+                Ok((key, entry)) => {
+                    let existed = service.exists(&json_document_id(key.clone())?)?;
+                    let already_written = !written_docs.insert(key);
+                    let effect = upsert_effect(existed || already_written);
+                    valid_entries.push((index, effect, entry));
+                }
                 Err(error) => {
                     results[index] = Some(JsonBatchItemResult::failed(error.to_string()));
                 }
@@ -1482,11 +1510,12 @@ impl Executor {
         }
         let engine_entries = valid_entries
             .iter()
-            .map(|(_, entry)| entry.clone())
+            .map(|(_, _, entry)| entry.clone())
             .collect::<Vec<_>>();
         let outcome = service.batch_set_or_create(engine_entries)?;
-        for ((index, _), item) in valid_entries.into_iter().zip(outcome.results()) {
+        for ((index, effect, _), item) in valid_entries.into_iter().zip(outcome.results()) {
             results[index] = Some(json_batch_item_result(
+                effect,
                 outcome.commit(),
                 Some(item.document_version()),
             ));
@@ -1567,6 +1596,7 @@ impl Executor {
             .zip(outcome.deleted().iter().copied())
         {
             results[index] = Some(json_batch_item_result(
+                delete_effect(deleted),
                 deleted.then(|| outcome.commit()).flatten(),
                 None,
             ));
@@ -3797,18 +3827,6 @@ fn json_index_name(name: String) -> ExecutorResult<JsonIndexName> {
     JsonIndexName::new(name).map_err(ExecutorError::from)
 }
 
-fn json_set_entry(
-    key: String,
-    path: &str,
-    value: serde_json::Value,
-) -> ExecutorResult<JsonSetEntry> {
-    Ok(JsonSetEntry::new(
-        json_document_id(key)?,
-        json_path(path)?,
-        json_value(value)?,
-    ))
-}
-
 fn json_get_entry(key: String, path: &str) -> ExecutorResult<JsonGetEntry> {
     Ok(JsonGetEntry::new(json_document_id(key)?, json_path(path)?))
 }
@@ -3894,30 +3912,54 @@ fn usize_to_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
 
-fn write_output(key: Bytes, outcome: CommitOutcome) -> Output {
+fn commit_receipt(outcome: CommitOutcome) -> CommitReceipt {
+    CommitReceipt::new(
+        outcome.version().as_u64(),
+        outcome.timestamp().as_micros(),
+        outcome.durable(),
+        usize_to_u64(outcome.put_count()),
+        usize_to_u64(outcome.delete_count()),
+    )
+}
+
+fn upsert_effect(existed: bool) -> MutationEffect {
+    if existed {
+        MutationEffect::updated()
+    } else {
+        MutationEffect::created()
+    }
+}
+
+fn delete_effect(deleted: bool) -> MutationEffect {
+    if deleted {
+        MutationEffect::deleted()
+    } else {
+        MutationEffect::not_found()
+    }
+}
+
+fn write_output(key: Bytes, effect: MutationEffect, outcome: CommitOutcome) -> Output {
     Output::WriteResult {
         key,
-        version: outcome.version().as_u64(),
-        timestamp: outcome.timestamp().as_micros(),
+        effect,
+        commit: commit_receipt(outcome),
     }
 }
 
 fn delete_output(key: Bytes, deleted: bool, outcome: Option<CommitOutcome>) -> Output {
     Output::DeleteResult {
         key,
-        deleted,
-        version: outcome.map(|outcome| outcome.version().as_u64()),
-        timestamp: outcome.map(|outcome| outcome.timestamp().as_micros()),
+        effect: delete_effect(deleted),
+        commit: outcome.map(commit_receipt),
     }
 }
 
-fn batch_item_result(key: Bytes, applied: bool, outcome: Option<CommitOutcome>) -> BatchItemResult {
-    BatchItemResult::new(
-        key,
-        applied,
-        outcome.map(|outcome| outcome.version().as_u64()),
-        outcome.map(|outcome| outcome.timestamp().as_micros()),
-    )
+fn batch_item_result(
+    key: Bytes,
+    effect: MutationEffect,
+    outcome: Option<CommitOutcome>,
+) -> BatchItemResult {
+    BatchItemResult::new(key, effect, outcome.map(commit_receipt))
 }
 
 fn batch_get_result(key: Bytes, value: Option<KvVersionedValue>) -> BatchGetItemResult {
@@ -3978,8 +4020,8 @@ fn sample_output(sample: &KvSample) -> Output {
     }
 }
 
-fn json_write_output(key: &str, outcome: CommitOutcome) -> Output {
-    write_output(Bytes::from(key), outcome)
+fn json_write_output(key: &str, effect: MutationEffect, outcome: CommitOutcome) -> Output {
+    write_output(Bytes::from(key), effect, outcome)
 }
 
 fn json_delete_output(key: &str, deleted: bool, outcome: Option<CommitOutcome>) -> Output {
@@ -4014,14 +4056,11 @@ fn json_history_item(row: &JsonHistoryRow) -> JsonHistoryItem {
 }
 
 fn json_batch_item_result(
+    effect: MutationEffect,
     outcome: Option<CommitOutcome>,
     document_version: Option<u64>,
 ) -> JsonBatchItemResult {
-    JsonBatchItemResult::new(
-        outcome.map(|outcome| outcome.version().as_u64()),
-        outcome.map(|outcome| outcome.timestamp().as_micros()),
-        document_version,
-    )
+    JsonBatchItemResult::new(effect, outcome.map(commit_receipt), document_version)
 }
 
 fn json_batch_get_result(value: Option<EngineJsonVersionedValue>) -> JsonBatchGetItemResult {

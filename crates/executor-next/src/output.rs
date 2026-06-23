@@ -3,12 +3,12 @@
 use crate::types::{
     AdminConfig, AdminDatabaseInfo, AdminDescribe, AdminHealth, AdminMetrics, ArrowExportResult,
     ArrowImportResult, BatchGetItemResult, BatchItemResult, BranchCleanupItem, BranchItem, Bytes,
-    EventBatchAppendItemResult, EventChainVerification, EventVersionedData, GraphBatchItemResult,
-    GraphBindingHit, GraphEdgeDataOutput, GraphInfoData, GraphNeighborHit, GraphNodeDataOutput,
-    HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
-    JsonSampleItem, MaybeJsonValue, MaybeJsonVersionedValue, SampleItem, ScanItem,
-    VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorHistoryItem,
-    VectorIndexQueryResult, VectorMatch, VectorVersionedData, VersionedValue,
+    CommitReceipt, EventBatchAppendItemResult, EventChainVerification, EventVersionedData,
+    GraphBatchItemResult, GraphBindingHit, GraphEdgeDataOutput, GraphInfoData, GraphNeighborHit,
+    GraphNodeDataOutput, HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
+    JsonIndexDefinition, JsonSampleItem, MaybeJsonValue, MaybeJsonVersionedValue, MutationEffect,
+    SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo,
+    VectorHistoryItem, VectorIndexQueryResult, VectorMatch, VectorVersionedData, VersionedValue,
 };
 use serde::{Deserialize, Serialize};
 
@@ -108,23 +108,20 @@ pub enum Output {
     WriteResult {
         /// Written key.
         key: Bytes,
-        /// Commit version.
-        version: u64,
-        /// Commit timestamp.
-        timestamp: u64,
+        /// Mutation effect facts.
+        effect: MutationEffect,
+        /// Commit receipt.
+        commit: CommitReceipt,
     },
     /// Delete acknowledgement.
     DeleteResult {
-        /// Deleted key.
+        /// Target key.
         key: Bytes,
-        /// True when a visible key existed before delete.
-        deleted: bool,
-        /// Commit version when a delete was applied.
+        /// Mutation effect facts.
+        effect: MutationEffect,
+        /// Commit receipt when a delete was applied.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        version: Option<u64>,
-        /// Commit timestamp when a delete was applied.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        timestamp: Option<u64>,
+        commit: Option<CommitReceipt>,
     },
     /// KV scan result.
     KvScanResult(Vec<ScanItem>),

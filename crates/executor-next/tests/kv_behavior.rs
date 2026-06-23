@@ -2,7 +2,8 @@
 
 use strata_engine_next::{CacheOpenOptions, Database};
 use strata_executor_next::{
-    BatchKvEntry, Bytes, Command, Executor, ExecutorErrorClass, Output, DEFAULT_BRANCH,
+    BatchKvEntry, Bytes, Command, Executor, ExecutorErrorClass, MutationEffectKind, Output,
+    DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -10,6 +11,136 @@ use tempfile::TempDir;
 fn cache_executor_runs_complete_kv_command_suite() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
     run_kv_command_suite(&mut executor);
+}
+
+#[test]
+fn kv_write_outputs_report_commit_receipts_and_effects() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    let created = executor
+        .execute(Command::KvPut {
+            branch: None,
+            space: None,
+            key: bytes("effect-key"),
+            value: bytes("one"),
+        })
+        .expect("create succeeds");
+    let Output::WriteResult { effect, commit, .. } = created else {
+        panic!("unexpected create output: {created:?}");
+    };
+    assert_eq!(effect.kind(), MutationEffectKind::Created);
+    assert!(effect.applied());
+    assert!(!effect.matched());
+    assert_eq!(effect.affected_count(), 1);
+    assert_eq!(commit.put_count(), 1);
+    assert_eq!(commit.delete_count(), 0);
+
+    let updated = executor
+        .execute(Command::KvPut {
+            branch: None,
+            space: None,
+            key: bytes("effect-key"),
+            value: bytes("two"),
+        })
+        .expect("update succeeds");
+    let Output::WriteResult { effect, commit, .. } = updated else {
+        panic!("unexpected update output: {updated:?}");
+    };
+    assert_eq!(effect.kind(), MutationEffectKind::Updated);
+    assert!(effect.applied());
+    assert!(effect.matched());
+    assert_eq!(commit.put_count(), 1);
+    assert_eq!(commit.delete_count(), 0);
+
+    let deleted = executor
+        .execute(Command::KvDelete {
+            branch: None,
+            space: None,
+            key: bytes("effect-key"),
+        })
+        .expect("delete succeeds");
+    let Output::DeleteResult { effect, commit, .. } = deleted else {
+        panic!("unexpected delete output: {deleted:?}");
+    };
+    assert_eq!(effect.kind(), MutationEffectKind::Deleted);
+    assert!(effect.applied());
+    assert!(effect.matched());
+    assert!(commit.is_some());
+
+    let missing = executor
+        .execute(Command::KvDelete {
+            branch: None,
+            space: None,
+            key: bytes("effect-key"),
+        })
+        .expect("missing delete succeeds");
+    let Output::DeleteResult { effect, commit, .. } = missing else {
+        panic!("unexpected missing delete output: {missing:?}");
+    };
+    assert_eq!(effect.kind(), MutationEffectKind::NotFound);
+    assert!(!effect.applied());
+    assert!(!effect.matched());
+    assert_eq!(effect.affected_count(), 0);
+    assert!(commit.is_none());
+}
+
+#[test]
+fn kv_batch_write_outputs_report_per_item_commit_receipts_and_effects() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    write(&mut executor, None, None, "batch-effect-existing", "old");
+
+    let output = executor
+        .execute(Command::KvBatchPut {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchKvEntry::new(bytes("batch-effect-created"), bytes("new")),
+                BatchKvEntry::new(bytes("batch-effect-existing"), bytes("updated")),
+            ],
+        })
+        .expect("batch put succeeds");
+    let Output::BatchResults(results) = output else {
+        panic!("unexpected batch put output: {output:?}");
+    };
+    assert_eq!(results.len(), 2);
+    let created = results[0].effect().expect("created effect");
+    assert_eq!(created.kind(), MutationEffectKind::Created);
+    assert!(created.applied());
+    assert!(!created.matched());
+    let updated = results[1].effect().expect("updated effect");
+    assert_eq!(updated.kind(), MutationEffectKind::Updated);
+    assert!(updated.applied());
+    assert!(updated.matched());
+    let batch_commit = results[0].commit().expect("created commit");
+    assert_eq!(batch_commit.put_count(), 2);
+    assert_eq!(batch_commit.delete_count(), 0);
+    assert_eq!(
+        results[1].commit().expect("updated commit").version(),
+        batch_commit.version()
+    );
+
+    let output = executor
+        .execute(Command::KvBatchDelete {
+            branch: None,
+            space: None,
+            keys: vec![bytes("batch-effect-created"), bytes("batch-effect-missing")],
+        })
+        .expect("batch delete succeeds");
+    let Output::BatchResults(results) = output else {
+        panic!("unexpected batch delete output: {output:?}");
+    };
+    assert_eq!(results.len(), 2);
+    let deleted = results[0].effect().expect("deleted effect");
+    assert_eq!(deleted.kind(), MutationEffectKind::Deleted);
+    assert!(deleted.applied());
+    assert!(deleted.matched());
+    let missing = results[1].effect().expect("missing effect");
+    assert_eq!(missing.kind(), MutationEffectKind::NotFound);
+    assert!(!missing.applied());
+    assert!(!missing.matched());
+    assert!(results[0].commit().is_some());
+    assert!(results[1].commit().is_none());
 }
 
 #[test]
@@ -492,9 +623,13 @@ fn write(
         })
         .expect("put succeeds")
     {
-        Output::WriteResult {
-            version, timestamp, ..
-        } => WriteFacts { version, timestamp },
+        Output::WriteResult { effect, commit, .. } => {
+            assert!(effect.applied());
+            WriteFacts {
+                version: commit.version(),
+                timestamp: commit.timestamp(),
+            }
+        }
         output => panic!("unexpected put output: {output:?}"),
     }
 }
@@ -588,7 +723,7 @@ fn execute_delete(executor: &mut Executor, key: &str) -> bool {
         })
         .expect("delete succeeds")
     {
-        Output::DeleteResult { deleted, .. } => deleted,
+        Output::DeleteResult { effect, .. } => effect.applied(),
         output => panic!("unexpected delete output: {output:?}"),
     }
 }

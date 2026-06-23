@@ -110,24 +110,26 @@ Executor has a stable tagged `Output` enum and command/output serde tests.
 Strengths:
 
 1. Every output variant round-trips through serde.
-2. Most write outputs include version and timestamp.
-3. Page-like outputs usually have `has_more` and `cursor`.
-4. Batch outputs are positional.
-5. Vector indexed queries include planner diagnostics.
+2. KV and JSON point write/delete outputs expose shared `commit` and `effect`
+   facts.
+3. KV and JSON batch write/delete item results expose shared `commit` and
+   `effect` facts.
+4. Page-like outputs usually have `has_more` and `cursor`.
+5. Batch outputs are positional.
+6. Vector indexed queries include planner diagnostics.
 
 Executor gaps:
 
-1. Commit facts are repeated as `version` and `timestamp` fields instead of one
-   `commit` object.
-2. Durability is absent from most write acknowledgements.
-3. Optional reads are represented with `Option<T>`, which is not always safe on
+1. Vector, event, graph, space, and admin mutation outputs have not all moved
+   to the shared `commit` and `effect` concepts yet.
+2. Optional reads are represented with `Option<T>`, which is not always safe on
    the wire. In particular, `JsonValue(Option<Value>)` serializes a missing
    value and a stored JSON `null` as the same JSON `null`.
-4. Pagination fields use consistent names but not one public model.
-5. Batch item shapes differ across KV, JSON, vector, event, and graph.
-6. Batch item failures do not share the same public error status as top-level
+3. Pagination fields use consistent names but not one public model.
+4. Batch item shapes differ across KV, JSON, vector, event, and graph.
+5. Batch item failures do not share the same public error status as top-level
    failures.
-7. Success outputs have round-trip tests, but not golden JSON snapshots for
+6. Success outputs have round-trip tests, but not golden JSON snapshots for
    every command family.
 
 ## Target Public Concepts
@@ -634,4 +636,3 @@ The response contract is ready for IDL freeze when:
 6. golden public JSON fixtures cover all command families;
 7. engine, executor, and IDL response inventories agree;
 8. no public success response leaks storage or internal control-plane details.
-
