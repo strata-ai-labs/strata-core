@@ -296,15 +296,14 @@ fn source_contract_uses_kv_specific_value_outputs() {
         fs::read_to_string(crate_root().join("src/output.rs")).expect("output reads");
     let tests_source =
         fs::read_to_string(crate_root().join("tests/command_contract.rs")).expect("tests read");
-    let generic_optional = ["May", "be"].concat();
-    let generic_versioned = ["May", "beVersioned"].concat();
-
     assert!(output_source.contains("KvValue"));
     assert!(output_source.contains("KvVersionedValue"));
-    assert!(!output_source.contains(&generic_optional));
-    assert!(!output_source.contains(&generic_versioned));
-    assert!(!tests_source.contains(&generic_optional));
-    assert!(!tests_source.contains(&generic_versioned));
+    assert!(!output_source.contains("KvValue(Maybe"));
+    assert!(!output_source.contains("KvVersionedValue(Maybe"));
+    assert!(output_source.contains("JsonValue(MaybeJsonValue)"));
+    assert!(output_source.contains("JsonVersionedValue(MaybeJsonVersionedValue)"));
+    assert!(tests_source.contains("MaybeJsonValue::missing"));
+    assert!(tests_source.contains("MaybeJsonVersionedValue::missing"));
 }
 
 #[test]

@@ -262,7 +262,7 @@ fn export_json(
             let Output::JsonVersionedValue(value) = output else {
                 return Err(unexpected_output("json_get"));
             };
-            if let Some(value) = value {
+            if let Some(value) = value.value() {
                 key_builder.append_value(key);
                 document_builder.append_value(json_to_string(value.value())?);
                 version_builder.append_value(value.version());

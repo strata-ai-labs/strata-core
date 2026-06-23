@@ -1,18 +1,16 @@
 //! Serializable command outputs.
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
 use crate::types::{
     AdminConfig, AdminDatabaseInfo, AdminDescribe, AdminHealth, AdminMetrics, ArrowExportResult,
     ArrowImportResult, BatchGetItemResult, BatchItemResult, BranchCleanupItem, BranchItem, Bytes,
     EventBatchAppendItemResult, EventChainVerification, EventVersionedData, GraphBatchItemResult,
     GraphBindingHit, GraphEdgeDataOutput, GraphInfoData, GraphNeighborHit, GraphNodeDataOutput,
     HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
-    JsonSampleItem, JsonVersionedValue, SampleItem, ScanItem, VectorBatchGetItemResult,
-    VectorBatchItemResult, VectorCollectionInfo, VectorHistoryItem, VectorIndexQueryResult,
-    VectorMatch, VectorVersionedData, VersionedValue,
+    JsonSampleItem, MaybeJsonValue, MaybeJsonVersionedValue, SampleItem, ScanItem,
+    VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorHistoryItem,
+    VectorIndexQueryResult, VectorMatch, VectorVersionedData, VersionedValue,
 };
+use serde::{Deserialize, Serialize};
 
 /// Successful executor output.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -87,9 +85,9 @@ pub enum Output {
     /// Optional KV value with commit metadata.
     KvVersionedValue(Option<VersionedValue>),
     /// Optional JSON value.
-    JsonValue(Option<Value>),
+    JsonValue(MaybeJsonValue),
     /// Optional JSON value with commit metadata.
-    JsonVersionedValue(Option<JsonVersionedValue>),
+    JsonVersionedValue(MaybeJsonVersionedValue),
     /// Full version history for one key.
     VersionHistory(Option<Vec<HistoryItem>>),
     /// Full JSON document version history.

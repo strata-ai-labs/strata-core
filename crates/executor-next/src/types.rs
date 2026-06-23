@@ -59,6 +59,122 @@ impl From<&str> for Bytes {
     }
 }
 
+/// Commit facts returned by mutating operations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CommitReceipt {
+    version: u64,
+    timestamp: u64,
+    durable: bool,
+    put_count: u64,
+    delete_count: u64,
+}
+
+impl CommitReceipt {
+    /// Creates a commit receipt.
+    pub const fn new(
+        version: u64,
+        timestamp: u64,
+        durable: bool,
+        put_count: u64,
+        delete_count: u64,
+    ) -> Self {
+        Self {
+            version,
+            timestamp,
+            durable,
+            put_count,
+            delete_count,
+        }
+    }
+
+    /// Returns the commit version.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Returns the commit timestamp in microseconds.
+    pub const fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+
+    /// Returns true when the commit reached durable storage.
+    pub const fn durable(&self) -> bool {
+        self.durable
+    }
+
+    /// Returns the number of put rows in the commit.
+    pub const fn put_count(&self) -> u64 {
+        self.put_count
+    }
+
+    /// Returns the number of delete rows in the commit.
+    pub const fn delete_count(&self) -> u64 {
+        self.delete_count
+    }
+}
+
+/// High-level mutation effect for idempotent and conditional operations.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationEffectKind {
+    /// A new logical entity was created.
+    Created,
+    /// An existing logical entity was updated.
+    Updated,
+    /// An existing logical entity was deleted.
+    Deleted,
+    /// The operation matched but left state unchanged.
+    Unchanged,
+    /// The operation did not match a visible entity.
+    NotFound,
+}
+
+/// Normalized mutation effect facts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct MutationEffect {
+    applied: bool,
+    kind: MutationEffectKind,
+    matched: bool,
+    affected_count: u64,
+}
+
+impl MutationEffect {
+    /// Creates mutation effect facts.
+    pub const fn new(
+        applied: bool,
+        kind: MutationEffectKind,
+        matched: bool,
+        affected_count: u64,
+    ) -> Self {
+        Self {
+            applied,
+            kind,
+            matched,
+            affected_count,
+        }
+    }
+
+    /// Returns true when the operation changed durable logical state.
+    pub const fn applied(&self) -> bool {
+        self.applied
+    }
+
+    /// Returns the normalized mutation kind.
+    pub const fn kind(&self) -> MutationEffectKind {
+        self.kind
+    }
+
+    /// Returns true when the operation matched an existing logical entity.
+    pub const fn matched(&self) -> bool {
+        self.matched
+    }
+
+    /// Returns the number of affected logical entities.
+    pub const fn affected_count(&self) -> u64 {
+        self.affected_count
+    }
+}
+
 /// Database open target exposed in admin outputs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2232,6 +2348,126 @@ impl JsonVersionedValue {
     }
 }
 
+/// JSON point-read result that distinguishes absence from a stored JSON null.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MaybeJsonValue {
+    found: bool,
+    value: Value,
+}
+
+impl MaybeJsonValue {
+    /// Creates a present JSON value result.
+    pub const fn found(value: Value) -> Self {
+        Self { found: true, value }
+    }
+
+    /// Creates a missing JSON value result.
+    pub const fn missing() -> Self {
+        Self {
+            found: false,
+            value: Value::Null,
+        }
+    }
+
+    /// Creates a result from an optional engine value.
+    pub fn from_option(value: Option<Value>) -> Self {
+        match value {
+            Some(value) => Self::found(value),
+            None => Self::missing(),
+        }
+    }
+
+    /// Returns true when the selected JSON value exists.
+    pub const fn found_flag(&self) -> bool {
+        self.found
+    }
+
+    /// Returns true when the selected JSON value exists.
+    pub const fn is_found(&self) -> bool {
+        self.found
+    }
+
+    /// Returns the selected JSON value when it exists.
+    pub const fn value(&self) -> Option<&Value> {
+        if self.found {
+            Some(&self.value)
+        } else {
+            None
+        }
+    }
+
+    /// Consumes the result and returns the selected JSON value when it exists.
+    pub fn into_option(self) -> Option<Value> {
+        if self.found {
+            Some(self.value)
+        } else {
+            None
+        }
+    }
+}
+
+/// JSON versioned point-read result that distinguishes absence from a stored JSON null.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MaybeJsonVersionedValue {
+    found: bool,
+    #[serde(default)]
+    value: Option<JsonVersionedValue>,
+}
+
+impl MaybeJsonVersionedValue {
+    /// Creates a present JSON versioned value result.
+    pub fn found(value: JsonVersionedValue) -> Self {
+        Self {
+            found: true,
+            value: Some(value),
+        }
+    }
+
+    /// Creates a missing JSON versioned value result.
+    pub const fn missing() -> Self {
+        Self {
+            found: false,
+            value: None,
+        }
+    }
+
+    /// Creates a result from an optional engine value.
+    pub fn from_option(value: Option<JsonVersionedValue>) -> Self {
+        match value {
+            Some(value) => Self::found(value),
+            None => Self::missing(),
+        }
+    }
+
+    /// Returns true when the selected JSON value exists.
+    pub const fn found_flag(&self) -> bool {
+        self.found
+    }
+
+    /// Returns true when the selected JSON value exists.
+    pub const fn is_found(&self) -> bool {
+        self.found
+    }
+
+    /// Returns the selected JSON value with version metadata when it exists.
+    pub const fn value(&self) -> Option<&JsonVersionedValue> {
+        if self.found {
+            self.value.as_ref()
+        } else {
+            None
+        }
+    }
+
+    /// Consumes the result and returns the selected JSON value with version metadata when it exists.
+    pub fn into_option(self) -> Option<JsonVersionedValue> {
+        if self.found {
+            self.value
+        } else {
+            None
+        }
+    }
+}
+
 /// JSON version-history item.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JsonHistoryItem {
@@ -2344,7 +2580,8 @@ impl JsonBatchItemResult {
 /// Positional JSON batch read result.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JsonBatchGetItemResult {
-    value: Option<Value>,
+    found: bool,
+    value: Value,
     version: Option<u64>,
     timestamp: Option<u64>,
     document_version: Option<u64>,
@@ -2359,19 +2596,31 @@ impl JsonBatchGetItemResult {
         timestamp: Option<u64>,
         document_version: Option<u64>,
     ) -> Self {
-        Self {
-            value,
-            version,
-            timestamp,
-            document_version,
-            error: None,
+        match value {
+            Some(value) => Self {
+                found: true,
+                value,
+                version,
+                timestamp,
+                document_version,
+                error: None,
+            },
+            None => Self {
+                found: false,
+                value: Value::Null,
+                version,
+                timestamp,
+                document_version,
+                error: None,
+            },
         }
     }
 
     /// Creates a failed JSON batch read result.
     pub fn failed(error: impl Into<String>) -> Self {
         Self {
-            value: None,
+            found: false,
+            value: Value::Null,
             version: None,
             timestamp: None,
             document_version: None,
@@ -2379,9 +2628,18 @@ impl JsonBatchGetItemResult {
         }
     }
 
+    /// Returns true when the selected JSON value exists.
+    pub const fn found(&self) -> bool {
+        self.found
+    }
+
     /// Returns the selected JSON value, when present.
     pub const fn value(&self) -> Option<&Value> {
-        self.value.as_ref()
+        if self.found {
+            Some(&self.value)
+        } else {
+            None
+        }
     }
 
     /// Returns the commit version, when present.

@@ -1267,13 +1267,12 @@ fn execute_json_get_versioned(
         })
         .expect("JSON get succeeds")
     {
-        Output::JsonVersionedValue(Some(value)) => Some(VersionedJsonFacts {
+        Output::JsonVersionedValue(value) => value.value().map(|value| VersionedJsonFacts {
             value: value.value().clone(),
             version: value.version(),
             timestamp: value.timestamp(),
             document_version: value.document_version(),
         }),
-        Output::JsonVersionedValue(None) => None,
         output => panic!("unexpected JSON get output: {output:?}"),
     }
 }
@@ -1295,8 +1294,7 @@ fn execute_json_get_value_in(
         })
         .expect("JSON get succeeds")
     {
-        Output::JsonVersionedValue(Some(value)) => Some(value.value().clone()),
-        Output::JsonVersionedValue(None) => None,
+        Output::JsonVersionedValue(value) => value.value().map(|value| value.value().clone()),
         output => panic!("unexpected JSON get output: {output:?}"),
     }
 }
@@ -1317,7 +1315,7 @@ fn execute_json_get_as_of(
         })
         .expect("historical JSON get succeeds")
     {
-        Output::JsonValue(value) => value,
+        Output::JsonValue(value) => value.into_option(),
         output => panic!("unexpected historical JSON get output: {output:?}"),
     }
 }

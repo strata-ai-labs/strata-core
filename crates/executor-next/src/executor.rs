@@ -79,9 +79,10 @@ use crate::types::{
     GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData, GraphNeighborHit, GraphNodeData,
     GraphNodeDataOutput, HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
     JsonIndexDefinition, JsonIndexType, JsonSampleItem,
-    JsonVersionedValue as OutputJsonVersionedValue, SampleItem, ScanItem, VectorBatchGetItemResult,
-    VectorBatchItemResult, VectorCollectionInfo as OutputVectorCollectionInfo, VectorData,
-    VectorDistanceMetric, VectorFilterOp, VectorHistoryItem,
+    JsonVersionedValue as OutputJsonVersionedValue, MaybeJsonValue, MaybeJsonVersionedValue,
+    SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult,
+    VectorCollectionInfo as OutputVectorCollectionInfo, VectorData, VectorDistanceMetric,
+    VectorFilterOp, VectorHistoryItem,
     VectorIndexArtifactSource as OutputVectorIndexArtifactSource,
     VectorIndexDiagnostics as OutputVectorIndexDiagnostics, VectorIndexQueryResult, VectorMatch,
     VectorMetadataFilter, VectorScalar, VectorVersionedData, VersionedValue, DEFAULT_BRANCH,
@@ -1403,13 +1404,17 @@ impl Executor {
         let mut service = self.json_service(branch, space)?;
         if let Some(as_of) = as_of {
             let value = service.get_at(&id, &path, Timestamp::from_micros(as_of))?;
-            return Ok(Output::JsonValue(value.map(json_value_output)));
+            return Ok(Output::JsonValue(MaybeJsonValue::from_option(
+                value.map(json_value_output),
+            )));
         }
         Ok(Output::JsonVersionedValue(
-            service
-                .get_versioned(&id, &path)?
-                .as_ref()
-                .map(json_versioned_value),
+            MaybeJsonVersionedValue::from_option(
+                service
+                    .get_versioned(&id, &path)?
+                    .as_ref()
+                    .map(json_versioned_value),
+            ),
         ))
     }
 

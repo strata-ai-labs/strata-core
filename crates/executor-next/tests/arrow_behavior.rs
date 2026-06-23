@@ -640,7 +640,7 @@ fn json_get_in(
     let Output::JsonVersionedValue(value) = output else {
         panic!("unexpected json get output");
     };
-    value.map(|value| value.value().clone())
+    value.value().map(|value| value.value().clone())
 }
 
 fn vector_count(executor: &mut Executor, collection: &str) -> u64 {

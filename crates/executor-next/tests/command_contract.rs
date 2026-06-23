@@ -13,11 +13,11 @@ use strata_executor_next::{
     GraphBindingPrimitive, GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEdgeDataOutput,
     GraphEntityBinding, GraphInfoData, GraphNeighborHit, GraphNodeData, GraphNodeDataOutput,
     HistoryItem, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition,
-    JsonIndexType, JsonSampleItem, JsonVersionedValue, Output, SampleItem, ScanItem,
-    VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorData,
-    VectorDistanceMetric, VectorFilterCondition, VectorFilterOp, VectorHistoryItem,
-    VectorIndexArtifactSource, VectorIndexDiagnostics, VectorIndexQueryResult, VectorMatch,
-    VectorMetadataFilter, VectorScalar, VectorVersionedData, VersionedValue,
+    JsonIndexType, JsonSampleItem, JsonVersionedValue, MaybeJsonValue, MaybeJsonVersionedValue,
+    Output, SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult,
+    VectorCollectionInfo, VectorData, VectorDistanceMetric, VectorFilterCondition, VectorFilterOp,
+    VectorHistoryItem, VectorIndexArtifactSource, VectorIndexDiagnostics, VectorIndexQueryResult,
+    VectorMatch, VectorMetadataFilter, VectorScalar, VectorVersionedData, VersionedValue,
 };
 
 #[test]
@@ -36,6 +36,116 @@ fn every_output_round_trips_through_json() {
         let decoded: Output = serde_json::from_str(&encoded).expect("output deserializes");
         assert_eq!(decoded, output);
     }
+}
+
+#[test]
+fn json_read_outputs_distinguish_missing_from_stored_null() {
+    let missing = Output::JsonValue(MaybeJsonValue::missing());
+    let stored_null = Output::JsonValue(MaybeJsonValue::found(Value::Null));
+
+    let missing_json = serde_json::to_value(&missing).expect("missing output serializes");
+    let stored_null_json =
+        serde_json::to_value(&stored_null).expect("stored null output serializes");
+
+    assert_eq!(
+        missing_json,
+        json!({
+            "type": "json_value",
+            "data": {
+                "found": false,
+                "value": null,
+            },
+        })
+    );
+    assert_eq!(
+        stored_null_json,
+        json!({
+            "type": "json_value",
+            "data": {
+                "found": true,
+                "value": null,
+            },
+        })
+    );
+    assert_ne!(missing_json, stored_null_json);
+    assert_eq!(
+        serde_json::from_value::<Output>(missing_json).expect("missing output deserializes"),
+        missing
+    );
+    assert_eq!(
+        serde_json::from_value::<Output>(stored_null_json)
+            .expect("stored null output deserializes"),
+        stored_null
+    );
+
+    let versioned_null = JsonVersionedValue::new(Value::Null, 1, 10, 2);
+    let missing_versioned = Output::JsonVersionedValue(MaybeJsonVersionedValue::missing());
+    let stored_versioned_null =
+        Output::JsonVersionedValue(MaybeJsonVersionedValue::found(versioned_null));
+    let missing_versioned_json =
+        serde_json::to_value(&missing_versioned).expect("missing versioned output serializes");
+    let stored_versioned_null_json = serde_json::to_value(&stored_versioned_null)
+        .expect("stored versioned null output serializes");
+
+    assert_eq!(missing_versioned_json["data"]["found"], false);
+    assert!(missing_versioned_json["data"]
+        .as_object()
+        .expect("versioned data is an object")
+        .contains_key("value"));
+    assert_eq!(missing_versioned_json["data"]["value"], Value::Null);
+    assert_eq!(stored_versioned_null_json["data"]["found"], true);
+    assert_eq!(
+        stored_versioned_null_json["data"]["value"]["value"],
+        Value::Null
+    );
+    assert_ne!(missing_versioned_json, stored_versioned_null_json);
+    assert_eq!(
+        serde_json::from_value::<Output>(missing_versioned_json)
+            .expect("missing versioned output deserializes"),
+        missing_versioned
+    );
+    assert_eq!(
+        serde_json::from_value::<Output>(stored_versioned_null_json)
+            .expect("stored versioned null output deserializes"),
+        stored_versioned_null
+    );
+
+    let inconsistent_versioned = serde_json::from_value::<MaybeJsonVersionedValue>(json!({
+        "found": false,
+        "value": {
+            "value": null,
+            "version": 1,
+            "timestamp": 10,
+            "document_version": 2,
+        },
+    }))
+    .expect("inconsistent versioned result deserializes");
+    assert!(inconsistent_versioned.value().is_none());
+    assert_eq!(inconsistent_versioned.into_option(), None);
+
+    let batch_missing = JsonBatchGetItemResult::new(None, None, None, None);
+    let batch_stored_null =
+        JsonBatchGetItemResult::new(Some(Value::Null), Some(1), Some(10), Some(2));
+    let batch_missing_json =
+        serde_json::to_value(&batch_missing).expect("batch missing serializes");
+    let batch_stored_null_json =
+        serde_json::to_value(&batch_stored_null).expect("batch stored null serializes");
+
+    assert_eq!(batch_missing_json["found"], false);
+    assert_eq!(batch_missing_json["value"], Value::Null);
+    assert_eq!(batch_stored_null_json["found"], true);
+    assert_eq!(batch_stored_null_json["value"], Value::Null);
+    assert_ne!(batch_missing_json, batch_stored_null_json);
+    assert_eq!(
+        serde_json::from_value::<JsonBatchGetItemResult>(batch_missing_json)
+            .expect("batch missing deserializes"),
+        batch_missing
+    );
+    assert_eq!(
+        serde_json::from_value::<JsonBatchGetItemResult>(batch_stored_null_json)
+            .expect("batch stored null deserializes"),
+        batch_stored_null
+    );
 }
 
 #[test]
@@ -1782,15 +1892,15 @@ fn kv_outputs() -> Vec<Output> {
 
 fn json_outputs() -> Vec<Output> {
     vec![
-        Output::JsonValue(Some(json!({"name": "Ada"}))),
-        Output::JsonValue(None),
-        Output::JsonVersionedValue(Some(JsonVersionedValue::new(
+        Output::JsonValue(MaybeJsonValue::found(json!({"name": "Ada"}))),
+        Output::JsonValue(MaybeJsonValue::missing()),
+        Output::JsonVersionedValue(MaybeJsonVersionedValue::found(JsonVersionedValue::new(
             json!({"name": "Ada"}),
             1,
             10,
             2,
         ))),
-        Output::JsonVersionedValue(None),
+        Output::JsonVersionedValue(MaybeJsonVersionedValue::missing()),
         Output::JsonVersionHistory(Some(vec![JsonHistoryItem::new(
             Some(json!({"name": "Ada"})),
             1,
