@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed follow-on to
+Active follow-on to
 `docs/architecture/implementation-plans/v1-response-error-contract-implementation-plan.md`.
 
 The failure path now has the core V1 facts needed for Stripe-grade SDK, CLI,
@@ -19,11 +19,12 @@ MCP, and agent responses:
 9. structured details and hints;
 10. source-chain preservation for diagnostics.
 
-The remaining response-quality gap is the success path. Executor success
-outputs are typed and serde-tested, but they are still command-shaped instead
-of contract-shaped. Downstream SDKs can consume them, but they must infer
-repeated concepts such as commits, no-ops, pagination, missing values, and batch
-item status from many command-specific variants.
+The remaining response-quality gap is the higher-level success contract.
+Executor success outputs are typed and serde-tested, and mutation outputs now
+expose shared commit/effect facts across rebuilt primitives. Downstream SDKs can
+consume those mutation facts directly, but they still need normalized optional
+read, pagination, shared batch wrapper, and golden fixture coverage before the
+IDL can freeze.
 
 This plan closes that gap before freezing the V1 IDL.
 
@@ -110,25 +111,25 @@ Executor has a stable tagged `Output` enum and command/output serde tests.
 Strengths:
 
 1. Every output variant round-trips through serde.
-2. KV and JSON point write/delete outputs expose shared `commit` and `effect`
-   facts.
-3. KV and JSON batch write/delete item results expose shared `commit` and
-   `effect` facts.
+2. KV, JSON, vector, event, graph, and space mutation outputs expose shared
+   `commit` and `effect` facts where applicable.
+3. KV, JSON, vector, event, and graph batch mutation item results expose shared
+   `commit` and `effect` facts where applicable.
 4. Page-like outputs usually have `has_more` and `cursor`.
 5. Batch outputs are positional.
 6. Vector indexed queries include planner diagnostics.
 
 Executor gaps:
 
-1. Vector, event, graph, space, and admin mutation outputs have not all moved
-   to the shared `commit` and `effect` concepts yet.
-2. Optional reads are represented with `Option<T>`, which is not always safe on
+1. Optional reads are represented with `Option<T>`, which is not always safe on
    the wire. In particular, `JsonValue(Option<Value>)` serializes a missing
    value and a stored JSON `null` as the same JSON `null`.
-3. Pagination fields use consistent names but not one public model.
-4. Batch item shapes differ across KV, JSON, vector, event, and graph.
-5. Success outputs have round-trip tests, but not golden JSON snapshots for
+2. Pagination fields use consistent names but not one public model.
+3. Batch wrapper shapes differ across KV, JSON, vector, event, and graph.
+4. Success outputs have round-trip tests, but not golden JSON snapshots for
    every command family.
+5. Future admin mutations must join the same `commit` and `effect` contract;
+   the current admin surface is read/status oriented.
 
 ## Target Public Concepts
 
@@ -165,7 +166,7 @@ Represents what the successful command did at product level.
 ```text
 MutationEffect {
   applied: bool,
-  kind: "created" | "updated" | "deleted" | "appended" | "replaced" | "noop",
+  kind: "created" | "updated" | "deleted" | "unchanged" | "not_found",
   matched: bool,
   affected_count: u64,
 }
@@ -502,9 +503,10 @@ Exit criteria:
 ### 7. Normalize Batch Results
 
 Status: partially implemented. Executor-next batch item failures now serialize
-`ErrorStatus`, successful batch items serialize `error: null`, and KV/JSON/event
-item validation preserves stable engine codes. Batch wrappers and item status
-fields remain primitive-specific.
+`ErrorStatus`, successful batch items serialize `error: null`, KV/JSON/event
+item validation preserves stable engine codes, and KV/JSON/vector/event/graph
+mutation item successes expose commit/effect facts where applicable. Batch
+wrappers and explicit item status fields remain primitive-specific.
 
 Define batch mode and item status consistently.
 
@@ -525,6 +527,9 @@ Exit criteria:
 4. Golden snapshots cover all batch families.
 
 ### 8. Golden Public JSON Snapshots
+
+Status: implemented for executor-next representative V1 response families in
+`crates/executor-next/tests/fixtures/responses/v1/`.
 
 Add fixture-driven golden tests for public success responses.
 

@@ -3,9 +3,9 @@
 use serde_json::json;
 use strata_engine_next::{CacheOpenOptions, Database};
 use strata_executor_next::{
-    BatchVectorEntry, Command, Executor, ExecutorErrorClass, Output, VectorDistanceMetric,
-    VectorFilterCondition, VectorFilterOp, VectorMetadataFilter, VectorScalar, VectorVersionedData,
-    DEFAULT_BRANCH,
+    BatchStatus, BatchVectorEntry, Command, Executor, ExecutorErrorClass, MutationEffect, Output,
+    VectorDistanceMetric, VectorFilterCondition, VectorFilterOp, VectorMetadataFilter,
+    VectorScalar, VectorVersionedData, DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -407,10 +407,10 @@ fn vector_mapping_bulk_commands() -> Vec<Command> {
 
 fn assert_vector_mapping_outputs(outputs: &[Output]) {
     assert_eq!(outputs.len(), 19);
-    assert!(matches!(outputs[0], Output::VectorCollectionList(_)));
+    assert!(matches!(outputs[0], Output::VectorCollectionList { .. }));
     assert!(matches!(outputs[1], Output::Bool(_)));
-    assert!(matches!(outputs[2], Output::VectorCollectionList(_)));
-    assert!(matches!(outputs[3], Output::VectorCollectionList(_)));
+    assert!(matches!(outputs[2], Output::VectorCollectionList { .. }));
+    assert!(matches!(outputs[3], Output::VectorCollectionList { .. }));
     assert!(matches!(outputs[4], Output::Uint(_)));
     assert!(matches!(outputs[5], Output::VectorWriteResult { .. }));
     assert!(matches!(outputs[6], Output::VectorData(_)));
@@ -721,15 +721,15 @@ fn assert_vector_mutation_patch_and_delete_edges(executor: &mut Executor) {
 fn assert_vector_batch_filter_and_delete_all_edges(executor: &mut Executor) {
     create_collection(executor, "docs", VectorDistanceMetric::Cosine);
     assert_vector_batch_outputs_empty(executor, "docs");
-    assert_failed_batch_leaves_no_writes(executor);
+    assert_mixed_validity_batch_returns_positional_errors(executor);
     assert_duplicate_batch_upsert_and_batch_reads(executor);
     assert_batch_delete_edges(executor);
     assert_filtered_delete_edges(executor);
     assert_delete_all_edges(executor);
 }
 
-fn assert_failed_batch_leaves_no_writes(executor: &mut Executor) {
-    let error = executor
+fn assert_mixed_validity_batch_returns_positional_errors(executor: &mut Executor) {
+    let Output::VectorBatchUpsertResults(results) = executor
         .execute(Command::VectorBatchUpsert {
             branch: None,
             space: None,
@@ -739,8 +739,26 @@ fn assert_failed_batch_leaves_no_writes(executor: &mut Executor) {
                 BatchVectorEntry::new("invalid", vec![1.0], Some(json!({"group": "doc"}))),
             ],
         })
-        .expect_err("invalid batch fails");
-    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+        .expect("mixed-validity batch succeeds")
+    else {
+        panic!("unexpected vector batch output");
+    };
+    assert_eq!(results.status(), BatchStatus::Partial);
+    assert_eq!(results.len(), 2);
+    assert!(results[0].applied());
+    assert!(results[0].commit().is_some());
+    assert_eq!(results[0].index(), 0);
+    assert!(!results[1].applied());
+    assert_eq!(results[1].index(), 1);
+    assert_eq!(
+        results[1]
+            .error_status()
+            .expect("dimension item error")
+            .code(),
+        "invalid_argument.executor.vector_dimension"
+    );
+    assert_eq!(vector_count(executor, "docs"), 1);
+    assert!(delete_vector(executor, "docs", "valid"));
     assert_eq!(vector_count(executor, "docs"), 0);
 }
 
@@ -761,9 +779,7 @@ fn assert_duplicate_batch_upsert_and_batch_reads(executor: &mut Executor) {
         panic!("unexpected batch upsert output");
     };
     assert_eq!(results.len(), 3);
-    assert!(results
-        .iter()
-        .all(strata_executor_next::VectorBatchItemResult::applied));
+    assert!(results.iter().all(strata_executor_next::BatchItem::applied));
     assert_eq!(results[0].vector_revision(), Some(1));
     assert_eq!(results[1].vector_revision(), Some(1));
     assert_eq!(results[2].vector_revision(), Some(2));
@@ -790,6 +806,28 @@ fn assert_duplicate_batch_upsert_and_batch_reads(executor: &mut Executor) {
     assert!(values[1].value().is_none());
     assert_eq!(values[2].value().expect("a exists").key(), "a");
     assert_eq!(values[3].value().expect("b exists").key(), "b");
+
+    let Output::VectorBatchGetResults(invalid_values) = executor
+        .execute(Command::VectorBatchGet {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            keys: vec!["bad\0key".to_owned(), "a".to_owned()],
+        })
+        .expect("mixed-validity batch get succeeds")
+    else {
+        panic!("unexpected batch get output");
+    };
+    assert_eq!(invalid_values.status(), BatchStatus::Partial);
+    assert_eq!(
+        invalid_values[0]
+            .error_status()
+            .expect("invalid key item error")
+            .code(),
+        "invalid_argument.engine.vector_key"
+    );
+    assert_eq!(invalid_values[0].index(), 0);
+    assert_eq!(invalid_values[1].value().expect("a exists").key(), "a");
 }
 
 fn assert_batch_delete_edges(executor: &mut Executor) {
@@ -807,7 +845,7 @@ fn assert_batch_delete_edges(executor: &mut Executor) {
     assert_eq!(
         results
             .iter()
-            .map(strata_executor_next::VectorBatchItemResult::applied)
+            .map(strata_executor_next::BatchItem::applied)
             .collect::<Vec<_>>(),
         vec![true, false, false]
     );
@@ -816,6 +854,29 @@ fn assert_batch_delete_edges(executor: &mut Executor) {
         list_vector_keys(executor, None, None, "docs", None, None, Some(10)).0,
         vec!["b"]
     );
+
+    let Output::VectorBatchDeleteResults(invalid_delete) = executor
+        .execute(Command::VectorBatchDelete {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            keys: vec!["bad\0key".to_owned(), "missing".to_owned()],
+        })
+        .expect("mixed-validity batch delete succeeds")
+    else {
+        panic!("unexpected batch delete output");
+    };
+    assert_eq!(invalid_delete.status(), BatchStatus::Partial);
+    assert_eq!(
+        invalid_delete[0]
+            .error_status()
+            .expect("invalid key item error")
+            .code(),
+        "invalid_argument.engine.vector_key"
+    );
+    assert_eq!(invalid_delete[0].index(), 0);
+    assert!(!invalid_delete[1].applied());
+    assert_eq!(invalid_delete[1].index(), 1);
 }
 
 fn assert_filtered_delete_edges(executor: &mut Executor) {
@@ -1199,7 +1260,9 @@ fn create_vector_fixture_collections(executor: &mut Executor) {
 }
 
 fn assert_vector_collection_list_contains(executor: &mut Executor, collection: &str) {
-    let Output::VectorCollectionList(collections) = executor
+    let Output::VectorCollectionList {
+        items: collections, ..
+    } = executor
         .execute(Command::VectorListCollections {
             branch: None,
             space: None,
@@ -1230,11 +1293,16 @@ fn seed_vector_versions(executor: &mut Executor) -> u64 {
         })
         .expect("second upsert succeeds");
     let Output::VectorWriteResult {
-        vector_revision, ..
+        effect,
+        commit,
+        vector_revision,
+        ..
     } = second
     else {
         panic!("unexpected upsert output");
     };
+    assert_eq!(effect, MutationEffect::updated());
+    assert!(commit.version() > 0);
     assert_eq!(vector_revision, 2);
 
     let Output::VectorBatchUpsertResults(batch) = executor
@@ -1257,6 +1325,10 @@ fn seed_vector_versions(executor: &mut Executor) -> u64 {
         panic!("unexpected batch upsert output");
     };
     assert_eq!(batch.len(), 3);
+    assert_eq!(batch[0].effect(), Some(&MutationEffect::created()));
+    assert!(batch[0].commit().is_some());
+    assert_eq!(batch[1].effect(), Some(&MutationEffect::created()));
+    assert_eq!(batch[2].effect(), Some(&MutationEffect::updated()));
     assert_eq!(batch[2].vector_revision(), Some(3));
 
     assert_eq!(vector_count(executor, "docs"), 3);
@@ -1297,11 +1369,7 @@ fn assert_vector_current_and_historical_reads(executor: &mut Executor, first_tim
 }
 
 fn assert_vector_listing_metadata_and_query(executor: &mut Executor) {
-    let Output::VectorKeyPage {
-        keys,
-        has_more,
-        cursor,
-    } = executor
+    let Output::VectorKeyPage { items: keys, page } = executor
         .execute(Command::VectorListKeys {
             branch: None,
             space: None,
@@ -1315,11 +1383,13 @@ fn assert_vector_listing_metadata_and_query(executor: &mut Executor) {
         panic!("unexpected key page output");
     };
     assert_eq!(keys, vec!["doc-a"]);
-    assert!(has_more);
-    assert_eq!(cursor, Some("doc-a".to_owned()));
+    assert!(page.has_more());
+    assert_eq!(page.cursor(), Some(&"doc-a".to_owned()));
 
     let Output::VectorMetadataUpdateResult {
         updated,
+        effect,
+        commit,
         vector_revision,
         ..
     } = executor
@@ -1335,6 +1405,8 @@ fn assert_vector_listing_metadata_and_query(executor: &mut Executor) {
         panic!("unexpected metadata update output");
     };
     assert!(updated);
+    assert_eq!(effect, MutationEffect::updated());
+    assert!(commit.is_some());
     assert_eq!(vector_revision, Some(2));
 
     let Output::VectorMatches(matches) = executor
@@ -1383,12 +1455,23 @@ fn assert_vector_batch_delete_and_bulk_deletes(executor: &mut Executor) {
     assert_eq!(
         deleted
             .iter()
-            .map(strata_executor_next::VectorBatchItemResult::applied)
+            .map(strata_executor_next::BatchItem::applied)
             .collect::<Vec<_>>(),
         vec![true, false, false]
     );
+    assert_eq!(deleted[0].effect(), Some(&MutationEffect::deleted()));
+    assert!(deleted[0].commit().is_some());
+    assert_eq!(deleted[1].effect(), Some(&MutationEffect::not_found()));
+    assert_eq!(deleted[1].commit(), None);
+    assert_eq!(deleted[2].effect(), Some(&MutationEffect::not_found()));
+    assert_eq!(deleted[2].commit(), None);
 
-    let Output::VectorBulkDeleteResult { deleted_count, .. } = executor
+    let Output::VectorBulkDeleteResult {
+        deleted_count,
+        effect,
+        commit,
+        ..
+    } = executor
         .execute(Command::VectorDeleteByFilter {
             branch: None,
             space: None,
@@ -1400,10 +1483,18 @@ fn assert_vector_batch_delete_and_bulk_deletes(executor: &mut Executor) {
         panic!("unexpected filtered delete output");
     };
     assert_eq!(deleted_count, 1);
+    assert!(effect.applied());
+    assert_eq!(effect.affected_count(), 1);
+    assert!(commit.is_some());
 
     assert_vector_history_has_tombstone(executor, "docs", "doc-b");
 
-    let Output::VectorDeleteResult { deleted, .. } = executor
+    let Output::VectorDeleteResult {
+        deleted,
+        effect,
+        commit,
+        ..
+    } = executor
         .execute(Command::VectorDelete {
             branch: None,
             space: None,
@@ -1415,8 +1506,15 @@ fn assert_vector_batch_delete_and_bulk_deletes(executor: &mut Executor) {
         panic!("unexpected delete output");
     };
     assert!(!deleted);
+    assert_eq!(effect, MutationEffect::not_found());
+    assert_eq!(commit, None);
 
-    let Output::VectorBulkDeleteResult { deleted_count, .. } = executor
+    let Output::VectorBulkDeleteResult {
+        deleted_count,
+        effect,
+        commit,
+        ..
+    } = executor
         .execute(Command::VectorDeleteAll {
             branch: None,
             space: None,
@@ -1427,10 +1525,14 @@ fn assert_vector_batch_delete_and_bulk_deletes(executor: &mut Executor) {
         panic!("unexpected delete-all output");
     };
     assert_eq!(deleted_count, 0);
+    assert_eq!(effect, MutationEffect::not_found());
+    assert_eq!(commit, None);
 }
 
 fn collection_names(executor: &mut Executor) -> Vec<String> {
-    let Output::VectorCollectionList(collections) = executor
+    let Output::VectorCollectionList {
+        items: collections, ..
+    } = executor
         .execute(Command::VectorListCollections {
             branch: None,
             space: None,
@@ -1446,7 +1548,9 @@ fn collection_names(executor: &mut Executor) -> Vec<String> {
 }
 
 fn collection_metric(executor: &mut Executor, collection: &str) -> VectorDistanceMetric {
-    let Output::VectorCollectionList(collections) = executor
+    let Output::VectorCollectionList {
+        items: collections, ..
+    } = executor
         .execute(Command::VectorCollectionStats {
             branch: None,
             space: None,
@@ -1724,11 +1828,7 @@ fn list_vector_keys(
     cursor: Option<&str>,
     limit: Option<u64>,
 ) -> (Vec<String>, bool, Option<String>) {
-    let Output::VectorKeyPage {
-        keys,
-        has_more,
-        cursor,
-    } = executor
+    let Output::VectorKeyPage { items: keys, page } = executor
         .execute(Command::VectorListKeys {
             branch: branch.map(str::to_owned),
             space: space.map(str::to_owned),
@@ -1741,6 +1841,8 @@ fn list_vector_keys(
     else {
         panic!("unexpected key page output");
     };
+    let has_more = page.has_more();
+    let cursor = page.cursor().cloned();
     (keys, has_more, cursor)
 }
 

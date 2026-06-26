@@ -10,6 +10,10 @@ use strata_engine_next::{
     CommitOutcomeStatus, EngineError, EngineErrorStatus, ErrorClass, ErrorDetail, RetryPolicy,
 };
 
+use crate::error_registry::{
+    public_error_code_entry, unregistered_code_entry, ERROR_REGISTRY_DOC_PAGE,
+};
+
 const DEFAULT_DOCS_BASE_URL: &str = "https://strata.dev/docs/errors";
 
 /// Source of user-visible error reference ids.
@@ -72,8 +76,11 @@ impl ErrorRenderConfig {
         }
     }
 
-    fn docs_url_for(&self, code: &str) -> String {
-        format!("{}/{code}", self.docs_base_url.trim_end_matches('/'))
+    fn docs_url_for(&self, docs_slug: &str) -> String {
+        format!(
+            "{}/{ERROR_REGISTRY_DOC_PAGE}#{docs_slug}",
+            self.docs_base_url.trim_end_matches('/')
+        )
     }
 
     fn next_reference_id(&self) -> String {
@@ -177,19 +184,19 @@ impl ErrorStatus {
         hints: Vec<String>,
     ) -> Self {
         let code = code.into();
-        Self {
+        normalize_explicit_status(
             class,
-            docs_url: docs_url_for(&code),
             code,
             retry_policy,
             commit_outcome,
-            message: message.into(),
-            suggested_fix: suggested_fix.into(),
-            reference_id: reference_id.into(),
+            message.into(),
+            suggested_fix.into(),
+            None,
+            reference_id.into(),
             trace_id,
             details,
             hints,
-        }
+        )
     }
 
     /// Creates a public error status with a boundary-rendered docs URL.
@@ -208,19 +215,19 @@ impl ErrorStatus {
         details: Vec<ErrorDetail>,
         hints: Vec<String>,
     ) -> Self {
-        Self {
+        normalize_explicit_status(
             class,
-            code: code.into(),
+            code.into(),
             retry_policy,
             commit_outcome,
-            message: message.into(),
-            suggested_fix: suggested_fix.into(),
-            docs_url: docs_url.into(),
-            reference_id: reference_id.into(),
+            message.into(),
+            suggested_fix.into(),
+            Some(docs_url.into()),
+            reference_id.into(),
             trace_id,
             details,
             hints,
-        }
+        )
     }
 
     /// Returns the public class.
@@ -340,8 +347,10 @@ impl ExecutorError {
 
     /// Creates an executor error from an existing public status.
     #[must_use]
-    pub const fn from_status(status: ErrorStatus) -> Self {
-        Self { status }
+    pub fn from_status(status: ErrorStatus) -> Self {
+        Self {
+            status: normalize_status(status),
+        }
     }
 
     /// Returns the public status.
@@ -456,10 +465,6 @@ impl fmt::Display for ExecutorError {
 
 impl Error for ExecutorError {}
 
-fn docs_url_for(code: &str) -> String {
-    format!("{DEFAULT_DOCS_BASE_URL}/{code}")
-}
-
 fn default_reference_id_source() -> Arc<dyn ErrorReferenceIdSource> {
     static SOURCE: OnceLock<Arc<SequentialErrorReferenceIdSource>> = OnceLock::new();
     SOURCE
@@ -469,6 +474,84 @@ fn default_reference_id_source() -> Arc<dyn ErrorReferenceIdSource> {
 
 fn current_error_render_config() -> ErrorRenderConfig {
     ERROR_RENDER_CONFIG.with(|current| current.borrow().clone())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn normalize_explicit_status(
+    class: ErrorClass,
+    requested_code: String,
+    retry_policy: RetryPolicy,
+    commit_outcome: CommitOutcomeStatus,
+    message: String,
+    suggested_fix: String,
+    docs_url: Option<String>,
+    reference_id: String,
+    trace_id: Option<String>,
+    mut details: Vec<ErrorDetail>,
+    hints: Vec<String>,
+) -> ErrorStatus {
+    let registry_entry = public_error_code_entry(&requested_code);
+    let entry = registry_entry.unwrap_or_else(unregistered_code_entry);
+    let code = if registry_entry.is_some() {
+        requested_code
+    } else {
+        details.push(ErrorDetail::new("unregistered_code", requested_code));
+        entry.code.to_owned()
+    };
+    let suggested_fix = if suggested_fix.trim().is_empty()
+        || suggested_fix == default_suggested_fix(class)
+        || registry_entry.is_none()
+    {
+        entry.suggested_fix.to_owned()
+    } else {
+        suggested_fix
+    };
+    ErrorStatus {
+        class: entry.class,
+        code,
+        retry_policy: override_retry_policy(retry_policy, entry.retry_policy),
+        commit_outcome: override_commit_outcome(commit_outcome, entry.commit_outcome),
+        message,
+        suggested_fix,
+        docs_url: normalize_docs_url(docs_url, entry.docs_slug),
+        reference_id,
+        trace_id,
+        details,
+        hints,
+    }
+}
+
+fn normalize_status(status: ErrorStatus) -> ErrorStatus {
+    normalize_explicit_status(
+        status.class,
+        status.code,
+        status.retry_policy,
+        status.commit_outcome,
+        status.message,
+        status.suggested_fix,
+        Some(status.docs_url),
+        status.reference_id,
+        status.trace_id,
+        status.details,
+        status.hints,
+    )
+}
+
+fn normalize_docs_url(docs_url: Option<String>, docs_slug: &str) -> String {
+    if let Some(url) = docs_url {
+        let base = url
+            .split_once('#')
+            .map_or(url.as_str(), |(base, _anchor)| base);
+        let base = base.trim_end_matches('/');
+        if base
+            .rsplit('/')
+            .next()
+            .is_some_and(|segment| segment == ERROR_REGISTRY_DOC_PAGE)
+        {
+            return format!("{base}#{docs_slug}");
+        }
+    }
+    current_error_render_config().docs_url_for(docs_slug)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -484,20 +567,59 @@ fn render_status(
     hints: Vec<String>,
 ) -> ErrorStatus {
     let config = current_error_render_config();
-    let code = code.into();
+    let requested_code = code.into();
+    let message = message.into();
+    let supplied_fix = suggested_fix.into();
+    let registry_entry = public_error_code_entry(&requested_code);
+    let entry = registry_entry.unwrap_or_else(unregistered_code_entry);
+    let mut details = details;
+    let code = if registry_entry.is_some() {
+        requested_code
+    } else {
+        details.push(ErrorDetail::new("unregistered_code", requested_code));
+        entry.code.to_owned()
+    };
+    let suggested_fix = if supplied_fix.trim().is_empty()
+        || supplied_fix == default_suggested_fix(class)
+        || registry_entry.is_none()
+    {
+        entry.suggested_fix.to_owned()
+    } else {
+        supplied_fix
+    };
     ErrorStatus::new_with_docs_url(
-        class,
+        entry.class,
         code.clone(),
-        retry_policy,
-        commit_outcome,
+        override_retry_policy(retry_policy, entry.retry_policy),
+        override_commit_outcome(commit_outcome, entry.commit_outcome),
         message,
         suggested_fix,
-        config.docs_url_for(&code),
+        config.docs_url_for(entry.docs_slug),
         config.next_reference_id(),
         trace_id,
         details,
         hints,
     )
+}
+
+const fn override_retry_policy(
+    supplied: RetryPolicy,
+    registry_default: RetryPolicy,
+) -> RetryPolicy {
+    match supplied {
+        RetryPolicy::Never => registry_default,
+        _ => supplied,
+    }
+}
+
+const fn override_commit_outcome(
+    supplied: CommitOutcomeStatus,
+    registry_default: CommitOutcomeStatus,
+) -> CommitOutcomeStatus {
+    match supplied {
+        CommitOutcomeStatus::NotApplicable | CommitOutcomeStatus::NotStarted => registry_default,
+        _ => supplied,
+    }
 }
 
 pub(crate) fn batch_item_error_status(message: impl Into<String>) -> ErrorStatus {

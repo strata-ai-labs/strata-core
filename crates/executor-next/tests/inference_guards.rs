@@ -31,7 +31,7 @@ fn executor_sources_do_not_import_inference_internals() {
 
     let forbidden = [
         "provider::",
-        "registry::",
+        "strata_inference_next::registry::",
         "llama::",
         "ffi",
         "CloudEmbeddingEngine",

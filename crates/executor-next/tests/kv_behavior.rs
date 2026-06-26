@@ -260,7 +260,10 @@ fn branch_commands_delegate_to_engine_branch_service() {
     let listed = executor
         .execute(Command::BranchList)
         .expect("branch list succeeds");
-    let Output::Branches(branches) = listed else {
+    let Output::Branches {
+        items: branches, ..
+    } = listed
+    else {
         panic!("branch list output");
     };
     assert!(branches
@@ -379,8 +382,8 @@ fn command_to_output_mapping_is_explicit_for_every_variant() {
     assert!(matches!(outputs[0], Output::WriteResult { .. }));
     assert!(matches!(outputs[1], Output::KvVersionedValue(_)));
     assert!(matches!(outputs[2], Output::DeleteResult { .. }));
-    assert!(matches!(outputs[3], Output::Keys(_)));
-    assert!(matches!(outputs[4], Output::KvScanResult(_)));
+    assert!(matches!(outputs[3], Output::Keys { .. }));
+    assert!(matches!(outputs[4], Output::KvScanResult { .. }));
     assert!(matches!(outputs[5], Output::BatchResults(_)));
     assert!(matches!(outputs[6], Output::BatchGetResults(_)));
     assert!(matches!(outputs[7], Output::BatchResults(_)));
@@ -413,7 +416,7 @@ fn duplicate_batch_writes_fail_before_partial_application() {
 fn empty_batches_return_empty_outputs() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
 
-    assert_eq!(
+    assert!(matches!(
         executor
             .execute(Command::KvBatchPut {
                 branch: None,
@@ -421,9 +424,9 @@ fn empty_batches_return_empty_outputs() {
                 entries: Vec::new(),
             })
             .expect("empty batch put succeeds"),
-        Output::BatchResults(Vec::new())
-    );
-    assert_eq!(
+        Output::BatchResults(results) if results.is_empty() && !results.applied()
+    ));
+    assert!(matches!(
         executor
             .execute(Command::KvBatchDelete {
                 branch: None,
@@ -431,9 +434,9 @@ fn empty_batches_return_empty_outputs() {
                 keys: Vec::new(),
             })
             .expect("empty batch delete succeeds"),
-        Output::BatchResults(Vec::new())
-    );
-    assert_eq!(
+        Output::BatchResults(results) if results.is_empty() && !results.applied()
+    ));
+    assert!(matches!(
         executor
             .execute(Command::KvBatchGet {
                 branch: None,
@@ -441,8 +444,8 @@ fn empty_batches_return_empty_outputs() {
                 keys: Vec::new(),
             })
             .expect("empty batch get succeeds"),
-        Output::BatchGetResults(Vec::new())
-    );
+        Output::BatchGetResults(results) if results.is_empty() && !results.applied()
+    ));
 }
 
 #[test]
@@ -666,9 +669,7 @@ fn batch_put(executor: &mut Executor, entries: Vec<(&str, &str)>) {
         .expect("batch put succeeds")
     {
         Output::BatchResults(results) => {
-            assert!(results
-                .iter()
-                .all(strata_executor_next::BatchItemResult::applied));
+            assert!(results.iter().all(strata_executor_next::BatchItem::applied));
         }
         output => panic!("unexpected batch put output: {output:?}"),
     }
@@ -752,7 +753,7 @@ fn execute_list(executor: &mut Executor, prefix: Option<&str>) -> Vec<Bytes> {
         })
         .expect("list succeeds")
     {
-        Output::Keys(keys) => keys,
+        Output::Keys { items: keys, .. } => keys,
         output => panic!("unexpected list output: {output:?}"),
     }
 }
@@ -774,7 +775,7 @@ fn execute_list_page(
         })
         .expect("list page succeeds")
     {
-        Output::KeysPage { keys, has_more, .. } => (keys, has_more),
+        Output::KeysPage { items: keys, page } => (keys, page.has_more()),
         output => panic!("unexpected list page output: {output:?}"),
     }
 }
@@ -791,7 +792,7 @@ fn execute_list_as_of(executor: &mut Executor, prefix: Option<&str>, as_of: u64)
         })
         .expect("historical list succeeds")
     {
-        Output::Keys(keys) => keys,
+        Output::Keys { items: keys, .. } => keys,
         output => panic!("unexpected historical list output: {output:?}"),
     }
 }
@@ -810,7 +811,7 @@ fn execute_scan(
         })
         .expect("scan succeeds")
     {
-        Output::KvScanResult(rows) => rows
+        Output::KvScanResult { items: rows, .. } => rows
             .into_iter()
             .take_while(|row| row.key().as_slice().starts_with(b"prefix-"))
             .map(|row| (row.key().clone(), row.value().clone()))
@@ -904,7 +905,9 @@ fn execute_sample(executor: &mut Executor, prefix: Option<&str>, count: u64) -> 
         })
         .expect("sample succeeds")
     {
-        Output::SampleResult { total_count, items } => (
+        Output::SampleResult {
+            total_count, items, ..
+        } => (
             total_count,
             items.into_iter().map(|item| item.key().clone()).collect(),
         ),

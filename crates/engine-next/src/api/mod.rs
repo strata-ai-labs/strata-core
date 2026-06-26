@@ -64,6 +64,7 @@ pub use vector::{
 pub use crate::branch::{BranchName, BranchService};
 pub use crate::commit::CommitOutcome;
 pub use crate::diagnostics::{
-    CommitOutcomeStatus, EngineError, EngineErrorClass, EngineErrorStatus, EngineResult,
-    ErrorClass, ErrorDetail, RetryPolicy,
+    error_code_registry_entries, error_code_registry_entry, CommitOutcomeStatus, EngineError,
+    EngineErrorClass, EngineErrorStatus, EngineResult, ErrorClass, ErrorCodeRegistryEntry,
+    ErrorDetail, RetryPolicy,
 };

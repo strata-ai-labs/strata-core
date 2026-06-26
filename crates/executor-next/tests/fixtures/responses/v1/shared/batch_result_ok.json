@@ -1,0 +1,53 @@
+{
+  "data": {
+    "applied": true,
+    "commit": {
+      "delete_count": 0,
+      "durable": true,
+      "put_count": 1,
+      "timestamp": 70,
+      "version": 7
+    },
+    "items": [
+      {
+        "applied": true,
+        "commit": {
+          "delete_count": 0,
+          "durable": true,
+          "put_count": 1,
+          "timestamp": 70,
+          "version": 7
+        },
+        "effect": {
+          "affected_count": 1,
+          "applied": true,
+          "kind": "created",
+          "matched": false
+        },
+        "error": null,
+        "index": 0,
+        "result": {
+          "commit": {
+            "delete_count": 0,
+            "durable": true,
+            "put_count": 1,
+            "timestamp": 70,
+            "version": 7
+          },
+          "document_version": 1,
+          "effect": {
+            "affected_count": 1,
+            "applied": true,
+            "kind": "created",
+            "matched": false
+          },
+          "error": null
+        },
+        "status": "ok"
+      }
+    ],
+    "mode": "itemwise",
+    "status": "ok"
+  },
+  "type": "json_batch_results"
+}

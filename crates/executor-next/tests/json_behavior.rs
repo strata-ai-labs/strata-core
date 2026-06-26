@@ -194,7 +194,7 @@ fn durable_executor_reopens_json_documents_history_and_indexes() {
     assert_eq!(execute_json_count(&mut reopened, Some("doc-")), 4);
     assert_json_history_has_tombstone(&mut reopened, "doc-delete");
 
-    let Output::JsonIndexList(indexes) = reopened
+    let Output::JsonIndexList { items: indexes, .. } = reopened
         .execute(Command::JsonListIndexes {
             branch: None,
             space: None,
@@ -504,7 +504,7 @@ fn assert_json_mapping_outputs(outputs: &[Output]) {
     assert!(matches!(outputs[10], Output::JsonSampleResult { .. }));
     assert!(matches!(outputs[11], Output::JsonIndexDefinition(_)));
     assert!(matches!(outputs[12], Output::Bool(_)));
-    assert!(matches!(outputs[13], Output::JsonIndexList(_)));
+    assert!(matches!(outputs[13], Output::JsonIndexList { .. }));
 }
 
 #[test]
@@ -750,7 +750,7 @@ fn assert_json_batch_edges(executor: &mut Executor) {
 }
 
 fn assert_empty_json_batches(executor: &mut Executor) {
-    assert_eq!(
+    assert!(matches!(
         executor
             .execute(Command::JsonBatchSet {
                 branch: None,
@@ -758,9 +758,9 @@ fn assert_empty_json_batches(executor: &mut Executor) {
                 entries: Vec::new(),
             })
             .expect("empty batch set succeeds"),
-        Output::JsonBatchResults(Vec::new())
-    );
-    assert_eq!(
+        Output::JsonBatchResults(results) if results.is_empty() && !results.applied()
+    ));
+    assert!(matches!(
         executor
             .execute(Command::JsonBatchGet {
                 branch: None,
@@ -768,9 +768,9 @@ fn assert_empty_json_batches(executor: &mut Executor) {
                 entries: Vec::new(),
             })
             .expect("empty batch get succeeds"),
-        Output::JsonBatchGetResults(Vec::new())
-    );
-    assert_eq!(
+        Output::JsonBatchGetResults(results) if results.is_empty() && !results.applied()
+    ));
+    assert!(matches!(
         executor
             .execute(Command::JsonBatchDelete {
                 branch: None,
@@ -778,8 +778,8 @@ fn assert_empty_json_batches(executor: &mut Executor) {
                 entries: Vec::new(),
             })
             .expect("empty batch delete succeeds"),
-        Output::JsonBatchResults(Vec::new())
-    );
+        Output::JsonBatchResults(results) if results.is_empty() && !results.applied()
+    ));
 }
 
 fn assert_json_list_count_sample_edges(executor: &mut Executor) {
@@ -1029,7 +1029,7 @@ fn assert_json_batch_item_error_boundaries(executor: &mut Executor) {
     assert!(
         results
             .iter()
-            .filter_map(strata_executor_next::JsonBatchItemResult::error)
+            .filter_map(|result| result.error())
             .all(error_message_is_public),
         "batch item errors leaked lower-layer details: {results:?}"
     );
@@ -1328,7 +1328,7 @@ fn list_json_indexes_in(
     branch: Option<&str>,
     space: Option<&str>,
 ) -> Vec<strata_executor_next::JsonIndexDefinition> {
-    let Output::JsonIndexList(indexes) = executor
+    let Output::JsonIndexList { items: indexes, .. } = executor
         .execute(Command::JsonListIndexes {
             branch: branch.map(str::to_owned),
             space: space.map(str::to_owned),
@@ -1580,7 +1580,7 @@ fn execute_json_list(
         })
         .expect("JSON list succeeds")
     {
-        Output::JsonListResult { keys, has_more, .. } => (keys, has_more),
+        Output::JsonListResult { items: keys, page } => (keys, page.has_more()),
         output => panic!("unexpected JSON list output: {output:?}"),
     }
 }
@@ -1601,7 +1601,7 @@ fn execute_json_list_as_of(
         })
         .expect("historical JSON list succeeds")
     {
-        Output::JsonListResult { keys, .. } => keys,
+        Output::JsonListResult { items: keys, .. } => keys,
         output => panic!("unexpected historical JSON list output: {output:?}"),
     }
 }
@@ -1679,7 +1679,9 @@ fn execute_json_sample_items_in(
         })
         .expect("JSON sample succeeds")
     {
-        Output::JsonSampleResult { total_count, items } => (
+        Output::JsonSampleResult {
+            total_count, items, ..
+        } => (
             total_count,
             items
                 .into_iter()

@@ -93,8 +93,8 @@ fn import_kv(
             let Output::BatchResults(results) = output else {
                 return Err(unexpected_output("kv_batch_put"));
             };
-            for result in results {
-                if result.error().is_some() || !result.applied() {
+            for item in results.items() {
+                if item.error_status().is_some() || !item.applied() {
                     counts.rows_skipped += 1;
                 } else {
                     counts.rows_imported += 1;
@@ -139,8 +139,8 @@ fn import_json(
             let Output::JsonBatchResults(results) = output else {
                 return Err(unexpected_output("json_batch_set"));
             };
-            for result in results {
-                if result.error().is_some() {
+            for item in results.items() {
+                if item.error_status().is_some() {
                     counts.rows_skipped += 1;
                 } else {
                     counts.rows_imported += 1;
@@ -196,8 +196,8 @@ fn import_vector(
             let Output::VectorBatchUpsertResults(results) = output else {
                 return Err(unexpected_output("vector_batch_upsert"));
             };
-            for result in results {
-                if result.error().is_some() || !result.applied() {
+            for item in results.items() {
+                if item.error_status().is_some() || !item.applied() {
                     counts.rows_skipped += 1;
                 } else {
                     counts.rows_imported += 1;
@@ -219,7 +219,10 @@ fn collection_exists(
         branch: branch.map(str::to_owned),
         space: space.map(str::to_owned),
     })?;
-    let Output::VectorCollectionList(collections) = output else {
+    let Output::VectorCollectionList {
+        items: collections, ..
+    } = output
+    else {
         return Err(unexpected_output("vector_list_collections"));
     };
     Ok(collections.iter().any(|entry| entry.name() == collection))
@@ -245,7 +248,7 @@ fn create_vector_collection(
         dimension,
         metric: VectorDistanceMetric::Cosine,
     })?;
-    let Output::VectorCollectionList(_) = output else {
+    let Output::VectorCollectionList { .. } = output else {
         return Err(unexpected_output("vector_create_collection"));
     };
     Ok(())

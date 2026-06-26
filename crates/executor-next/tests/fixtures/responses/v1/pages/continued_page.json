@@ -1,0 +1,10 @@
+{
+  "data": {
+    "cursor": "doc-b",
+    "has_more": true,
+    "items": [
+      "doc-b"
+    ]
+  },
+  "type": "json_list_result"
+}

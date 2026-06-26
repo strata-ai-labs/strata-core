@@ -149,12 +149,10 @@ fn export_kv(
             as_of: None,
         })?;
         let (keys, has_more, next_cursor) = match output {
-            Output::KeysPage {
-                keys,
-                has_more,
-                cursor,
-            } => (keys, has_more, cursor),
-            Output::Keys(keys) => (keys, false, None),
+            Output::KeysPage { items: keys, page } => {
+                (keys, page.has_more(), page.cursor().cloned())
+            }
+            Output::Keys { items: keys, page } => (keys, page.has_more(), page.cursor().cloned()),
             _ => return Err(unexpected_output("kv_list")),
         };
         if keys.is_empty() {
@@ -168,10 +166,13 @@ fn export_kv(
         let Output::BatchGetResults(results) = output else {
             return Err(unexpected_output("kv_batch_get"));
         };
-        for result in results {
+        for item in results.items() {
             if written >= max {
                 break;
             }
+            let Some(result) = item.result() else {
+                continue;
+            };
             if let Some(value) = result.value() {
                 let (key_text, key_encoding) = encode_bytes(result.key().as_slice());
                 let (value_text, value_encoding) = encode_bytes(value.as_slice());
@@ -237,14 +238,11 @@ fn export_json(
             limit: Some(page_limit),
             as_of: None,
         })?;
-        let Output::JsonListResult {
-            keys,
-            has_more,
-            cursor: next_cursor,
-        } = output
-        else {
+        let Output::JsonListResult { items: keys, page } = output else {
             return Err(unexpected_output("json_list"));
         };
+        let has_more = page.has_more();
+        let next_cursor = page.cursor().cloned();
         if keys.is_empty() {
             break;
         }
@@ -316,7 +314,7 @@ fn export_events(
         direction: EventRangeDirection::Forward,
         event_type,
     })?;
-    let Output::EventRangeResult { events, .. } = output else {
+    let Output::EventRangeResult { items: events, .. } = output else {
         return Err(unexpected_output("event_range"));
     };
     let mut sequence_builder = UInt64Builder::new();
@@ -403,14 +401,11 @@ fn export_vector(
             cursor,
             limit: Some(page_limit),
         })?;
-        let Output::VectorKeyPage {
-            keys,
-            has_more,
-            cursor: next_cursor,
-        } = output
-        else {
+        let Output::VectorKeyPage { items: keys, page } = output else {
             return Err(unexpected_output("vector_list_keys"));
         };
+        let has_more = page.has_more();
+        let next_cursor = page.cursor().cloned();
         if keys.is_empty() {
             break;
         }
@@ -423,10 +418,13 @@ fn export_vector(
         let Output::VectorBatchGetResults(results) = output else {
             return Err(unexpected_output("vector_batch_get"));
         };
-        for result in results {
+        for item in results.items() {
             if written >= max {
                 break;
             }
+            let Some(result) = item.result() else {
+                continue;
+            };
             let Some(value) = result.value() else {
                 continue;
             };
@@ -502,14 +500,11 @@ fn export_graph_nodes(
             cursor,
             limit: Some(page_limit),
         })?;
-        let Output::GraphNodePage {
-            nodes,
-            has_more,
-            cursor: next_cursor,
-        } = output
-        else {
+        let Output::GraphNodePage { items: nodes, page } = output else {
             return Err(unexpected_output("graph_list_nodes"));
         };
+        let has_more = page.has_more();
+        let next_cursor = page.cursor().cloned();
         if nodes.is_empty() {
             break;
         }
@@ -592,13 +587,14 @@ fn export_graph_edges(
                 limit: Some(page_limit),
             })?;
             let Output::GraphNeighborPage {
-                neighbors,
-                has_more,
-                cursor: next_cursor,
+                items: neighbors,
+                page,
             } = output
             else {
                 return Err(unexpected_output("graph_neighbors"));
             };
+            let has_more = page.has_more();
+            let next_cursor = page.cursor().cloned();
             if neighbors.is_empty() {
                 break;
             }
@@ -661,7 +657,11 @@ fn vector_collection_info(
         space: space.map(str::to_owned),
         collection: collection.to_owned(),
     })?;
-    let Output::VectorCollectionList(mut collections) = output else {
+    let Output::VectorCollectionList {
+        items: mut collections,
+        ..
+    } = output
+    else {
         return Err(unexpected_output("vector_collection_stats"));
     };
     collections.pop().ok_or_else(|| {
@@ -689,14 +689,11 @@ fn graph_node_ids(
             cursor,
             limit: Some(PAGE_LIMIT),
         })?;
-        let Output::GraphNodePage {
-            nodes,
-            has_more,
-            cursor: next_cursor,
-        } = output
-        else {
+        let Output::GraphNodePage { items: nodes, page } = output else {
             return Err(unexpected_output("graph_list_nodes"));
         };
+        let has_more = page.has_more();
+        let next_cursor = page.cursor().cloned();
         if nodes.is_empty() {
             break;
         }

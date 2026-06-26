@@ -244,6 +244,7 @@ impl<'a> VectorService<'a> {
         let record = self.branch_record()?;
         let config = self.require_collection_config(&record, &collection)?;
         embedding.validate_dimension(config.dimension())?;
+        let visible = self.visible_vector_exists(&record, &collection, &key)?;
         let revision = self
             .latest_vector_revision(&record, &collection, &key)?
             .unwrap_or(0)
@@ -254,7 +255,7 @@ impl<'a> VectorService<'a> {
             &record,
             vec![RowMutation::put(address, encode_vector_record(&vector)?)],
         )?;
-        Ok(VectorWriteOutcome::new(commit, revision))
+        Ok(VectorWriteOutcome::new(commit, revision, !visible))
     }
 
     /// Reads the latest visible vector entry.
@@ -479,15 +480,17 @@ impl<'a> VectorService<'a> {
         let record = self.branch_record()?;
         let config = self.require_collection_config(&record, collection)?;
         if entries.is_empty() {
-            return Ok(VectorBatchUpsertOutcome::new(Vec::new(), None));
+            return Ok(VectorBatchUpsertOutcome::new(Vec::new(), Vec::new(), None));
         }
         for entry in entries {
             entry.embedding().validate_dimension(config.dimension())?;
         }
 
         let mut revisions_by_key = BTreeMap::<VectorKey, u64>::new();
+        let mut seen_in_batch = BTreeSet::<VectorKey>::new();
         let mut final_records = BTreeMap::<VectorKey, VectorRecord>::new();
         let mut revisions = Vec::with_capacity(entries.len());
+        let mut created = Vec::with_capacity(entries.len());
         for entry in entries {
             let previous_revision = if let Some(revision) = revisions_by_key.get(entry.key()) {
                 *revision
@@ -495,9 +498,16 @@ impl<'a> VectorService<'a> {
                 self.latest_vector_revision(&record, collection, entry.key())?
                     .unwrap_or(0)
             };
+            let existed_before_item = if seen_in_batch.contains(entry.key()) {
+                true
+            } else {
+                self.visible_vector_exists(&record, collection, entry.key())?
+            };
             let revision = previous_revision.saturating_add(1);
             revisions_by_key.insert(entry.key().clone(), revision);
+            seen_in_batch.insert(entry.key().clone());
             revisions.push(revision);
+            created.push(!existed_before_item);
             final_records.insert(
                 entry.key().clone(),
                 VectorRecord::new(
@@ -519,7 +529,11 @@ impl<'a> VectorService<'a> {
             })
             .collect::<EngineResult<Vec<_>>>()?;
         let commit = self.commit_batch(&record, mutations)?;
-        Ok(VectorBatchUpsertOutcome::new(revisions, Some(commit)))
+        Ok(VectorBatchUpsertOutcome::new(
+            revisions,
+            created,
+            Some(commit),
+        ))
     }
 
     /// Reads multiple latest visible vector entries with metadata.
@@ -2558,6 +2572,19 @@ impl<'a> VectorService<'a> {
         }
         keys.sort();
         Ok(keys)
+    }
+
+    fn visible_vector_exists(
+        &mut self,
+        record: &BranchCatalogRecord,
+        collection: &VectorCollectionName,
+        key: &VectorKey,
+    ) -> EngineResult<bool> {
+        let address = self.vector_address(record, collection, key);
+        Ok(self
+            .persistence
+            .read_row(&address, ReadSelector::Latest)?
+            .is_some_and(|row| !row.is_tombstone()))
     }
 
     fn latest_vector_revision(

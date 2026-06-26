@@ -1,0 +1,13 @@
+{
+  "type": "database_info",
+  "data": {
+    "version": "1.0.0",
+    "target": "cache",
+    "created": true,
+    "durable": false,
+    "default_branch": "default",
+    "branch_count": 1,
+    "space_count": 1,
+    "open": true
+  }
+}

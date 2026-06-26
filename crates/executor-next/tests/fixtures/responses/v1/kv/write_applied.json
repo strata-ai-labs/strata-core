@@ -1,0 +1,21 @@
+{
+  "type": "write_result",
+  "data": {
+    "key": [
+      97
+    ],
+    "effect": {
+      "applied": true,
+      "kind": "created",
+      "matched": false,
+      "affected_count": 1
+    },
+    "commit": {
+      "version": 1,
+      "timestamp": 10,
+      "durable": true,
+      "put_count": 1,
+      "delete_count": 0
+    }
+  }
+}

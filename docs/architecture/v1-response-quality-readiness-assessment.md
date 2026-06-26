@@ -11,6 +11,8 @@ Related documents:
 2. `docs/architecture/v1-error-and-diagnostics-contract.md`
 3. `docs/architecture/implementation-plans/v1-response-error-contract-implementation-plan.md`
 4. `docs/architecture/implementation-plans/v1-success-response-contract-implementation-plan.md`
+5. `docs/architecture/implementation-plans/v1-response-contract-completion-implementation-plan.md`
+6. `docs/architecture/implementation-plans/v1-response-contract-completion-test-plan.md`
 
 ## Bottom Line
 
@@ -20,11 +22,12 @@ The failure path is close to the V1 bar. Engine and executor now expose stable
 error classes, codes, retry policy, commit outcome, user messages, suggested
 fixes, docs URLs, reference IDs, optional trace IDs, details, and hints.
 
-The success path is not yet at the same quality bar. Engine and storage usually
-have the facts needed to produce good success responses, but executor still
-presents many of those facts through command-specific output variants. SDKs,
-CLIs, MCP tools, and AI agents would still need command-specific inference to
-answer basic questions:
+The success path is now close for mutation responses. Engine and storage have
+the facts needed to produce good success responses, and executor now exposes
+shared commit and mutation-effect facts for KV, JSON, vector, event, graph, and
+space mutations. SDKs, CLIs, MCP tools, and AI agents still need contract work
+for pages, optional reads, shared batch wrappers, and golden response fixtures
+before the V1 IDL can be frozen.
 
 1. Did this mutation apply?
 2. Was this operation a no-op?
@@ -34,7 +37,8 @@ answer basic questions:
 6. How should pagination continue?
 7. Which batch items succeeded, failed, or missed?
 
-Do not freeze the V1 IDL until success responses are normalized.
+Do not freeze the V1 IDL until the remaining page, optional-read, batch-wrapper,
+and golden-fixture work is complete.
 
 ## Response Quality Bar
 
@@ -150,13 +154,11 @@ Engine has many product-level success facts:
 
 Engine gaps:
 
-1. not every write outcome exposes a full `CommitOutcome`;
-2. no-op versus miss versus unchanged is not represented through one shared
-   mutation model;
-3. batch item outcomes are primitive-specific;
-4. durability is available in commits but not consistently surfaced through
-   executor-facing outcomes;
-5. success diagnostics are not uniformly categorized.
+1. outcomes remain primitive-specific even when they carry the facts executor
+   needs;
+2. batch item outcomes are primitive-specific;
+3. optional reads and pages do not use one shared engine-facing model;
+4. success diagnostics are not uniformly categorized.
 
 ### Executor
 
@@ -171,17 +173,21 @@ Recent improvements:
 5. JSON batch gets distinguish missing from stored JSON `null`.
 6. KV and JSON point write/delete outputs expose `commit` and `effect`.
 7. KV and JSON batch write/delete item results expose `commit` and `effect`.
-8. Batch item failures serialize structured `ErrorStatus`.
-9. Batch item successes serialize explicit `error: null`.
+8. Vector write, metadata update, delete, delete-by-filter, delete-all, and
+   batch mutation item results expose `commit` and `effect`.
+9. Event append and batch append item results expose `commit` and `effect`.
+10. Graph node write, edge write, delete, batch write, and graph batch item
+   results expose `commit` and `effect`.
+11. Space create/delete exposes `effect` and optional `commit`.
+12. Batch item failures serialize structured `ErrorStatus`.
+13. Batch item successes serialize explicit `error: null`.
 
 Executor gaps:
 
-1. Vector, event, graph, space, and admin write outputs have not all migrated
-   to the shared success concepts yet.
-2. Batch outputs still use primitive-specific item shapes.
-3. Page outputs still use command-specific variants.
-4. Golden JSON snapshots cover only selected shapes.
-5. SDK-ready response models are not yet generated or enforced.
+1. Page outputs still use command-specific variants.
+2. SDK-ready response models are not yet generated or enforced.
+3. Admin has read/status outputs only in the current public surface; future
+   admin mutations must join the same commit/effect contract.
 
 ## Readiness Matrix
 
@@ -191,17 +197,17 @@ Executor gaps:
 | Engine error mapping | Ready | Storage and engine errors preserve V1 facts. |
 | Executor error rendering | Ready | Adds docs URL and reference ID at boundary. |
 | Error code registry | Partial | Codes exist in code, but registry/docs are not final. |
-| Commit receipt type | Partial | Type exists and is wired for KV/JSON point and batch write/delete outputs; other primitives remain. |
-| Mutation effect type | Partial | Type exists and is wired for KV/JSON point and batch write/delete outputs; other primitives remain. |
+| Commit receipt type | Ready for mutation outputs | Wired for KV, JSON, vector, event, graph, and space mutation outputs where a commit exists. |
+| Mutation effect type | Ready for mutation outputs | Wired for KV, JSON, vector, event, graph, and space mutation/no-op/miss outputs. |
 | JSON missing/null distinction | Ready | Fixed for point reads and batch gets. |
 | KV optional reads | Acceptable | Bytes do not have JSON null ambiguity, but IDL shape is still command-specific. |
-| Vector optional reads | Partial | Semantics are clear in Rust, but not normalized with a shared `Maybe`. |
-| Pagination | Partial | Common fields exist, common public model does not. |
-| Batch success items | Partial | KV/JSON write items now include shared commit/effect facts, but batch wrappers remain primitive-specific. |
+| Vector optional reads | Ready for this slice | Top-level reads map through IDL `Maybe`; batch get items expose explicit `found`. |
+| Pagination | Ready for this slice | Common `items`, `has_more`, and `cursor` facts exist through `PageInfo`. |
+| Batch success items | Ready for this slice | Batch wrappers use shared `BatchResult<T>` and `BatchItem<T>` with primitive payloads under `result`. |
 | Batch item failures | Ready for this slice | Batch item failures now carry structured public `ErrorStatus`; KV/JSON/event item validation preserves stable engine codes. |
 | Success diagnostics | Partial | Vector is strong; other primitives are mostly plain acknowledgements. |
-| Golden response snapshots | Partial | Serde round-trip is broad; golden contract coverage is not. |
-| SDK response ergonomics | Not ready | SDKs would still need command-specific inference. |
+| Golden response snapshots | Ready for this slice | Representative family fixtures and direct shared-concept fixtures are checked in and tested. |
+| SDK response ergonomics | Partial | Mutation responses expose common facts, but pages, optional reads, batch wrappers, and generated models remain command-specific. |
 
 ## Required V1 Success Concepts
 
@@ -293,24 +299,29 @@ Finalize the public shape for:
 
 Add golden JSON tests for each shared type.
 
-### 2. Wire KV and JSON Writes
+### 2. Wire Mutation Writes
 
-Status: implemented for KV/JSON point write/delete and KV/JSON batch
-write/delete item success facts and structured item-level failures. Remaining
-work in this area is to decide whether the outer batch wrappers should be
-normalized before IDL freeze.
+Status: implemented at the executor boundary for KV, JSON, vector, event,
+graph, and space mutation outputs, plus KV/JSON/vector/event/graph batch
+mutation item success facts and structured item-level failures. Remaining work
+in this area is to decide whether the outer batch wrappers should be normalized
+before IDL freeze.
 
-Migrate:
+Completed migration:
 
 1. `WriteResult`;
 2. `DeleteResult`;
 3. `JsonBatchResults`;
 4. `BatchResults`;
-5. JSON set/delete point outputs.
+5. JSON set/delete point outputs;
+6. vector create/upsert/update/delete/delete-by-filter/delete-all;
+7. event append/batch append;
+8. graph node/edge/batch writes and deletes;
+9. space create/delete.
 
 Exit criteria:
 
-1. every KV/JSON write has `commit` when applied;
+1. every current mutation output has `commit` when applied;
 2. every delete/no-op has `effect`;
 3. durability is exposed when a commit exists;
 4. existing behavior tests pass through the new shape.
@@ -350,7 +361,11 @@ Exit criteria:
 
 ### 5. Wire Vector, Event, and Graph Writes
 
-Migrate:
+Status: implemented. This section is retained for traceability; future work in
+this area is limited to any new mutation commands added before the V1 surface is
+frozen.
+
+Completed migration:
 
 1. vector create/upsert/update/delete/delete-by-filter/delete-all;
 2. event append/batch append;
@@ -364,6 +379,8 @@ Exit criteria:
    envelope.
 
 ### 6. Add Full Response Golden Snapshots
+
+Status: implemented for executor-next representative response families.
 
 For every command family, add stable JSON snapshots for:
 

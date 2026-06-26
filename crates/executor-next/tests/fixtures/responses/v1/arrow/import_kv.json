@@ -1,0 +1,10 @@
+{
+  "type": "arrow_import_result",
+  "data": {
+    "target": "kv",
+    "file_path": "input.parquet",
+    "rows_imported": 10,
+    "rows_skipped": 1,
+    "batches_processed": 2
+  }
+}

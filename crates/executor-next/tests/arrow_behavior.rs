@@ -593,7 +593,7 @@ fn kv_keys(executor: &mut Executor) -> Vec<Bytes> {
         })
         .expect("kv list succeeds");
     match output {
-        Output::Keys(keys) | Output::KeysPage { keys, .. } => keys,
+        Output::Keys { items: keys, .. } | Output::KeysPage { items: keys, .. } => keys,
         output => panic!("unexpected kv list output: {output:?}"),
     }
 }

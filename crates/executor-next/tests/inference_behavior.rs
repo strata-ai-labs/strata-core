@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use strata_executor_next::{
     Command, CommitOutcomeStatus, ErrorClass, Executor, ExecutorError, ExecutorErrorClass, Output,
-    RetryPolicy,
+    PageInfo, RetryPolicy,
 };
 use strata_inference_next::{
     EmbedRequest, EmbedResponse, EmbedRuntimeOutcome, GenerateRequest, GenerateResponse,
@@ -105,7 +105,10 @@ fn inference_outputs_round_trip_through_json() {
         embedding_dim: 0,
     };
     let cases = vec![
-        Output::InferenceModels(vec![model]),
+        Output::InferenceModels {
+            items: vec![model],
+            page: PageInfo::terminal(),
+        },
         Output::InferenceModelPulled(PullModelOutput {
             model: "miniLM".to_owned(),
             path: PathBuf::from("/tmp/miniLM.gguf"),
@@ -201,7 +204,7 @@ fn model_list_and_capability_execute_with_default_cloud_providers() {
     let output = executor
         .execute(Command::InferenceModelsList)
         .expect("model list succeeds");
-    let Output::InferenceModels(models) = output else {
+    let Output::InferenceModels { items: models, .. } = output else {
         panic!("expected inference model output");
     };
     assert!(models.iter().any(|model| model.name == "miniLM"));

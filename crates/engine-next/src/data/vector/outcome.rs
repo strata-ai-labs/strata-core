@@ -365,13 +365,15 @@ impl VectorKeyPage {
 pub struct VectorWriteOutcome {
     commit: CommitOutcome,
     vector_revision: u64,
+    created: bool,
 }
 
 impl VectorWriteOutcome {
-    pub(crate) const fn new(commit: CommitOutcome, vector_revision: u64) -> Self {
+    pub(crate) const fn new(commit: CommitOutcome, vector_revision: u64, created: bool) -> Self {
         Self {
             commit,
             vector_revision,
+            created,
         }
     }
 
@@ -385,6 +387,12 @@ impl VectorWriteOutcome {
     /// Returns the product vector revision after the write.
     pub const fn vector_revision(self) -> u64 {
         self.vector_revision
+    }
+
+    #[must_use]
+    /// Returns true when the write created a visible vector.
+    pub const fn created(self) -> bool {
+        self.created
     }
 }
 
@@ -505,13 +513,24 @@ impl VectorBulkDeleteOutcome {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VectorBatchUpsertOutcome {
     vector_revisions: Vec<u64>,
+    created: Vec<bool>,
     commit: Option<CommitOutcome>,
 }
 
 impl VectorBatchUpsertOutcome {
-    pub(crate) const fn new(vector_revisions: Vec<u64>, commit: Option<CommitOutcome>) -> Self {
+    pub(crate) fn new(
+        vector_revisions: Vec<u64>,
+        created: Vec<bool>,
+        commit: Option<CommitOutcome>,
+    ) -> Self {
+        assert_eq!(
+            vector_revisions.len(),
+            created.len(),
+            "vector batch upsert revisions and create facts must stay positional"
+        );
         Self {
             vector_revisions,
+            created,
             commit,
         }
     }
@@ -520,6 +539,12 @@ impl VectorBatchUpsertOutcome {
     /// Returns positional vector revisions.
     pub fn vector_revisions(&self) -> &[u64] {
         &self.vector_revisions
+    }
+
+    #[must_use]
+    /// Returns positional create/update facts.
+    pub fn created(&self) -> &[bool] {
+        &self.created
     }
 
     #[must_use]
@@ -673,9 +698,10 @@ mod tests {
     #[test]
     fn vector_write_metadata_and_batch_outcomes_are_positional() {
         let commit = commit(11, 110, 3, 0);
-        let write = VectorWriteOutcome::new(commit, 6);
+        let write = VectorWriteOutcome::new(commit, 6, true);
         assert_eq!(write.commit(), commit);
         assert_eq!(write.vector_revision(), 6);
+        assert!(write.created());
 
         let update = VectorMetadataUpdateOutcome::new(key("a"), true, Some(7), Some(commit));
         assert_eq!(update.key(), &key("a"));
@@ -683,8 +709,10 @@ mod tests {
         assert_eq!(update.vector_revision(), Some(7));
         assert_eq!(update.commit(), Some(commit));
 
-        let upsert = VectorBatchUpsertOutcome::new(vec![1, 2, 3], Some(commit));
+        let upsert =
+            VectorBatchUpsertOutcome::new(vec![1, 2, 3], vec![true, false, true], Some(commit));
         assert_eq!(upsert.vector_revisions(), &[1, 2, 3]);
+        assert_eq!(upsert.created(), &[true, false, true]);
         assert_eq!(upsert.commit(), Some(commit));
 
         let get = VectorBatchGetOutcome::new(vec![

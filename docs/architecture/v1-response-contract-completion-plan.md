@@ -15,6 +15,9 @@ Related documents:
 3. `docs/architecture/v1-response-quality-readiness-assessment.md`
 4. `docs/architecture/implementation-plans/v1-response-error-contract-implementation-plan.md`
 5. `docs/architecture/implementation-plans/v1-success-response-contract-implementation-plan.md`
+6. `docs/architecture/implementation-plans/v1-response-contract-completion-implementation-plan.md`
+7. `docs/architecture/implementation-plans/v1-response-contract-completion-test-plan.md`
+8. `docs/architecture/v1-public-output-inventory.md`
 
 ## Bottom Line
 
@@ -25,13 +28,20 @@ errors now expose stable classes, stable codes, retry policy, commit outcome,
 message, suggested fix, docs URL, reference ID, optional trace ID, details, and
 hints.
 
-The success path is only partially normalized. KV and JSON writes now expose
-shared commit and mutation-effect facts, but vector, event, graph, space, and
-admin writes still use command-specific response shapes. Batch item failures now
-carry structured public error status, and successful batch items serialize an
-explicit `error: null`, but batch wrappers are still primitive-specific.
-Pagination is still command-specific. SDKs would still need special-case logic
-to answer basic questions across primitives.
+The success path is structurally close for mutation responses. KV, JSON,
+vector, event, graph, and space mutations now expose shared commit and
+mutation-effect facts while retaining primitive-specific convenience fields.
+Batch item failures carry structured public error status, successful batch
+items serialize an explicit `error: null`, and rebuilt primitive batch item
+successes expose commit/effect facts where the item can mutate state. Page
+outputs now expose shared `items`, `has_more`, and `cursor` facts, and batch
+outputs now expose shared `BatchResult<T>` and `BatchItem<T>` wrappers.
+Optional reads now have an explicit V1 mapping decision: JSON uses wire-level
+maybe wrappers because `null` is a valid stored value; KV/vector batch get
+items expose explicit `found` facts; non-JSON top-level optional reads remain
+IDL-mapped `Maybe<T>` values. The remaining gaps are broader golden response
+fixtures, error-code registry documentation, and SDK/IDL models that expose
+these common facts without variant-specific parsing.
 
 ## Product Bar
 
@@ -102,11 +112,11 @@ It should expose:
 
 Current gap:
 
-1. Some primitive outcomes expose version/timestamp without full durable commit
-   facts.
-2. Some no-op and miss outcomes are represented with primitive-specific booleans
-   rather than a shared effect model.
-3. Batch item outcomes are still primitive-specific.
+1. Engine outcomes remain primitive-specific, even when they carry the facts
+   executor needs.
+2. Batch item outcomes are still primitive-specific.
+3. Pagination and optional-read facts are not represented through one shared
+   engine-facing response model.
 
 ### Executor-Next
 
@@ -124,11 +134,13 @@ It should expose:
 
 Current gap:
 
-1. KV/JSON write/delete outputs are mostly aligned.
-2. Vector/event/graph/space/admin mutation outputs are not aligned.
-3. Batch wrappers are primitive-specific.
-4. Page outputs are command-specific.
-5. Golden response snapshots are incomplete.
+1. Mutation outputs are aligned at the executor boundary for KV, JSON, vector,
+   event, graph, and space.
+2. Admin currently exposes read/status outputs rather than user mutations.
+3. Batch wrappers use a shared executor `BatchResult<T>` model.
+4. Page outputs use a shared executor `PageInfo` model.
+5. Golden response snapshots now cover representative public response
+   families and shared V1 concepts.
 
 ## Current Readiness Matrix
 
@@ -143,14 +155,15 @@ Current gap:
 | KV write success | Ready for this slice | Uses `CommitReceipt` and `MutationEffect`. |
 | JSON write success | Ready for this slice | Uses `CommitReceipt` and `MutationEffect`. |
 | JSON missing/null reads | Ready | Uses explicit maybe wrappers. |
-| Vector write success | Partial | Still command-specific. |
-| Event write success | Partial | Still command-specific. |
-| Graph write success | Partial | Still command-specific. |
-| Space/admin mutation success | Partial | Still command-specific. |
-| Batch item success | Partial | KV/JSON write items improved; wrappers remain primitive-specific. |
+| Vector write success | Ready for this slice | Exposes `CommitReceipt` and `MutationEffect` plus vector revision facts. |
+| Event write success | Ready for this slice | Append and batch append expose commit/effect facts. |
+| Graph write success | Ready for this slice | Node, edge, delete, and batch write expose commit/effect facts. |
+| Space/admin mutation success | Ready for this slice | Space create/delete expose effect and optional commit; admin has no user mutation output in this slice. |
+| Batch item success | Partial | KV/JSON/vector/event/graph write items expose shared facts where applicable; wrappers remain primitive-specific. |
 | Batch item failure | Ready for this slice | Batch item failures carry structured `ErrorStatus`; executor-created KV/JSON and engine-created event item errors preserve stable engine codes. |
-| Pagination | Partial | Similar fields, no shared public model. |
-| Golden response snapshots | Partial | Broad serde coverage, incomplete golden fixtures. |
+| Pagination | Ready for this slice | Executor page outputs expose `items`, `has_more`, and `cursor` through shared `PageInfo`. |
+| Optional read normalization | Ready for this slice | JSON wire-level maybe wrappers; KV/vector batch get item `found`; top-level non-JSON optional reads map through IDL `Maybe<T>`. |
+| Golden response snapshots | Ready for this slice | Representative public response family fixtures and direct shared-concept fixtures are checked in and tested. |
 | SDK response ergonomics | Not ready | SDKs still need command-specific inference. |
 
 ## Completion Slices
@@ -195,16 +208,25 @@ Exit criteria:
 
 ### 2. Mutation Output Normalization
 
-Migrate every mutation response to expose shared commit and effect facts.
+Status: implemented at the executor boundary for rebuilt primitive mutation
+outputs.
 
-Work items:
+Every current executor mutation response now exposes shared commit and effect
+facts where applicable. Primitive-specific fields remain for compatibility and
+ergonomics, but SDKs no longer need to infer basic mutation state from variant
+names alone.
+
+Completed work items:
 
 1. Vector create/upsert/update/delete/delete-by-filter/delete-all.
-2. Event append and batch append.
-3. Graph node write, edge write, delete, and batch write.
-4. Space create/delete.
-5. Branch delete if it is exposed as a user mutation response.
-6. Admin mutation commands if any are added later.
+2. Vector batch upsert/delete item success effects and commit receipts.
+3. Event append and batch append item success effects and commit receipts.
+4. Graph node write, edge write, delete, and batch write.
+5. Graph batch item success effects and commit receipts.
+6. Space create/delete.
+7. Empty graph batch reports `unchanged` instead of `not_found`.
+8. Admin mutation commands remain deferred because no user-facing admin
+   mutation output exists in this slice.
 
 Target model:
 
@@ -248,16 +270,23 @@ Exit criteria:
 
 ### 3. Optional Read Normalization
 
-JSON has the highest-risk ambiguity and is already fixed. The remaining work is
-to decide how far to normalize other primitives before V1.
+Status: implemented at the executor boundary for V1.
+
+JSON has the highest-risk ambiguity and uses explicit maybe wrappers on the
+wire. KV, vector, event, graph, and admin top-level optional reads keep their
+existing `Option<T>` wire shape and map to shared SDK/IDL `Maybe<T>` accessors.
+KV and vector batch get item payloads expose explicit `found` fields so
+itemwise batch reads do not require plain JSON clients to infer misses from a
+nullable `value` field.
 
 Work items:
 
 1. Keep JSON on explicit maybe wrappers.
-2. Decide whether KV `Option<Bytes>` should become a named maybe wrapper.
-3. Decide whether vector, event, graph node, graph edge, and graph info reads
-   should become named maybe wrappers.
-4. Ensure generated SDKs do not collapse missing into null where null is a
+2. Keep KV `Option<Bytes>` top-level outputs as SDK-mapped `Maybe<Bytes>`.
+3. Keep vector, event, graph node, graph edge, graph info, and admin optional
+   top-level outputs as SDK-mapped `Maybe<T>`.
+4. Add explicit `found` to KV and vector batch get item payloads.
+5. Ensure generated SDKs do not collapse missing into null where null is a
    valid returned value.
 
 Rules:
@@ -266,6 +295,8 @@ Rules:
 2. Other primitives may keep command-specific wrappers only if SDKs produce a
    consistent found/missing ergonomic model.
 3. Optional read wrappers must preserve version facts when present.
+4. Batch get item DTOs should expose `found` directly when consumed outside a
+   generated SDK.
 
 Exit criteria:
 
@@ -316,16 +347,19 @@ Exit criteria:
 
 ### 6. Golden Response Snapshots
 
+Status: implemented for the executor-next representative fixture matrix.
+
 Serde round-trip tests are necessary but not sufficient for an SDK freeze.
 
 Work items:
 
-1. Add golden JSON fixtures for all public response families.
-2. Cover top-level success, top-level failure, item success, item failure,
-   optional reads, pages, and diagnostics.
-3. Cover durable and cache commit receipts.
-4. Cover no-op/miss responses.
-5. Keep fixtures stable and reviewed.
+1. Added golden JSON fixtures for every public response family.
+2. Covered top-level success, top-level failure status, item success, item
+   failure, optional reads, pages, and diagnostics.
+3. Covered durable and cache commit receipts.
+4. Covered no-op/miss responses.
+5. Added a review rule that public response shape changes require fixture
+   updates.
 
 Exit criteria:
 
@@ -371,14 +405,17 @@ Exit criteria:
 
 ## Implementation Order
 
-1. Structured batch item errors.
-2. Mutation output normalization for vector/event/graph.
-3. Mutation output normalization for space/admin/branch.
-4. Optional read normalization.
-5. Pagination normalization.
-6. Golden response snapshots.
-7. Error registry and docs URL publication.
-8. SDK and CLI conformance.
+1. Structured batch item errors. Complete.
+2. Mutation output normalization for vector/event/graph. Complete.
+3. Mutation output normalization for space/admin/branch. Space complete; admin
+   and branch user mutations are deferred until those commands exist in the
+   public V1 surface.
+4. Pagination normalization. Complete.
+5. Batch wrapper normalization. Complete.
+6. Optional read normalization.
+7. Golden response snapshots.
+8. Error registry and docs URL publication.
+9. SDK and CLI conformance.
 
 This order fixes the most visible quality gap first, then makes mutation
 responses consistent, then freezes read/page ergonomics, then locks the public
