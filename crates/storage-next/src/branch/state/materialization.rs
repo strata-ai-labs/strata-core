@@ -636,7 +636,7 @@ impl BranchLocalState {
             .collect::<Vec<_>>();
         validate_materialization_output_identities(
             &output_identities,
-            &self.owned_levels,
+            self.owned_levels(),
             &self.inherited_layers,
         )?;
         // Materialized rows represent an inherited snapshot, so they sit behind
@@ -645,7 +645,7 @@ impl BranchLocalState {
         let level_index = usize::from(BranchLevel::ZERO.raw());
         for table in replacement_tables {
             self.validate_install(BranchLevel::ZERO, &table)?;
-            self.owned_levels[level_index].push(table);
+            self.layout.levels_mut()[level_index].push(table);
         }
         self.refresh_observed_row_facts();
         Ok(())
@@ -677,7 +677,7 @@ impl BranchLocalState {
         layer_index: usize,
     ) -> Option<ExistingMaterializationReplacementSummary> {
         let mut summary = ExistingMaterializationReplacementSummary::default();
-        for table in self.owned_levels.iter().flatten() {
+        for table in self.owned_levels().iter().flatten() {
             if table.materialization_source() == Some(source) {
                 let Ok(row_count) = u64::try_from(table.rows().len()) else {
                     return None;
@@ -791,7 +791,7 @@ impl BranchLocalState {
                     .push(row.row().clone());
             }
         }
-        for table in self.owned_levels.iter().flatten() {
+        for table in self.owned_levels().iter().flatten() {
             for row in table.rows() {
                 rows_by_key
                     .entry(row.key().clone())

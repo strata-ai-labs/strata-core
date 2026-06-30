@@ -80,7 +80,7 @@ impl BranchLocalState {
     }
 
     pub(crate) fn owned_levels(&self) -> &[Vec<BranchOwnedTable>] {
-        &self.owned_levels
+        self.layout.levels()
     }
 
     pub(crate) fn inherited_layers(&self) -> &[BranchInheritedLayer] {
@@ -109,7 +109,7 @@ impl BranchLocalState {
     /// materialize each table in memory, so this is the dominant steady-state read footprint and
     /// must be counted toward the database memory total.
     pub(crate) fn owned_table_byte_count(&self) -> u64 {
-        self.owned_levels
+        self.owned_levels()
             .iter()
             .flatten()
             .fold(0u64, |total, table| {
@@ -118,7 +118,7 @@ impl BranchLocalState {
     }
 
     pub(crate) fn owned_table_count(&self) -> usize {
-        self.owned_levels.iter().map(Vec::len).sum()
+        self.owned_levels().iter().map(Vec::len).sum()
     }
 
     pub(crate) fn inherited_layer_count(&self) -> usize {
@@ -133,7 +133,7 @@ impl BranchLocalState {
         source_layout_from_sources(
             &self.active,
             &self.frozen,
-            &self.owned_levels,
+            self.owned_levels(),
             &self.inherited_layers,
         )
     }
@@ -164,7 +164,7 @@ impl BranchLocalState {
         perf_trace::record_branch_timestamp_rows(source_row_counts(
             &self.active,
             &self.frozen,
-            &self.owned_levels,
+            self.owned_levels(),
             &self.inherited_layers,
             |_| true,
         ));
@@ -187,7 +187,7 @@ impl BranchLocalState {
                 }
             }
         }
-        for tables in &self.owned_levels {
+        for tables in self.owned_levels() {
             for table in tables {
                 for row in table.rows() {
                     if row.row().commit_timestamp() <= timestamp {
@@ -258,7 +258,7 @@ impl BranchLocalState {
             self.branch_id,
             self.active.clone_for_read_view(),
             self.frozen.clone(),
-            self.owned_levels.clone(),
+            self.owned_levels().to_vec(),
             self.inherited_layers.clone(),
             self.facts()?,
         )
@@ -270,7 +270,7 @@ impl BranchLocalState {
             self.branch_id,
             self.active.clone_for_read_view(),
             self.frozen.clone(),
-            self.owned_levels.clone(),
+            self.owned_levels().to_vec(),
             self.inherited_layers.clone(),
             self.facts()?,
         )

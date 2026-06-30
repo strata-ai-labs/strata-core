@@ -5,7 +5,7 @@ use super::error::{BranchRuntimeError, BranchRuntimeResult};
 use super::facts::{BranchLevel, BranchReachabilitySnapshot, BranchTableRef, InheritedLayerStatus};
 use super::read::{
     require_table_physical_first_key, table_physical_ranges_overlap, BranchInheritedLayer,
-    BranchOwnedTable, BranchTimestampCoverage,
+    BranchLayout, BranchOwnedTable, BranchTimestampCoverage,
 };
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
@@ -68,7 +68,7 @@ pub(crate) struct BranchLocalState {
     config: BranchRuntimeConfig,
     active: MutableTable,
     frozen: Vec<FrozenTable>,
-    owned_levels: Vec<Vec<BranchOwnedTable>>,
+    layout: BranchLayout,
     compact_pointers: Vec<Option<TablePhysicalKeyBytes>>,
     inherited_layers: Vec<BranchInheritedLayer>,
     max_commit_version: Option<CommitVersion>,
@@ -90,7 +90,7 @@ impl BranchLocalState {
             config,
             active: MutableTable::new(),
             frozen: Vec::new(),
-            owned_levels: vec![Vec::new(); config.max_level_count()],
+            layout: BranchLayout::with_level_count(config.max_level_count()),
             compact_pointers: vec![None; config.max_level_count()],
             inherited_layers: Vec::new(),
             max_commit_version: None,
@@ -126,7 +126,7 @@ impl BranchLocalState {
 
     pub(crate) fn reachability_snapshot(&self) -> BranchRuntimeResult<BranchReachabilitySnapshot> {
         let mut table_refs = Vec::new();
-        for tables in &self.owned_levels {
+        for tables in self.owned_levels() {
             for (table_index, table) in tables.iter().enumerate() {
                 let table_ref = if let Some(materialization_source) = table.materialization_source()
                 {
@@ -205,10 +205,10 @@ impl BranchLocalState {
     ) -> BranchRuntimeResult<BranchImmutableInstallOutcome> {
         let level_index = self.validate_install(level, &table)?;
         let table_index = if level == BranchLevel::ZERO {
-            self.owned_levels[level_index].insert(0, table);
+            self.layout.levels_mut()[level_index].insert(0, table);
             0
         } else {
-            insert_sorted_by_range(&mut self.owned_levels[level_index], table)?
+            insert_sorted_by_range(&mut self.layout.levels_mut()[level_index], table)?
         };
         self.refresh_observed_row_facts();
         Ok(self.install_outcome(level, table_index, None))
@@ -235,7 +235,7 @@ impl BranchLocalState {
         };
         let level_index = self.validate_install_identity_and_range(BranchLevel::ZERO, &table)?;
 
-        self.owned_levels[level_index].insert(0, table);
+        self.layout.levels_mut()[level_index].insert(0, table);
         self.frozen.remove(replacement_index);
         // A flush moves the same rows from a frozen table into a new L0 table, so
         // the observed-row facts are unchanged and need no refresh. This is the
@@ -268,7 +268,7 @@ impl BranchLocalState {
         if self.active.get(key).is_some()
             || self.frozen.iter().any(|table| table.get(key).is_some())
             || self
-                .owned_levels
+                .owned_levels()
                 .iter()
                 .flatten()
                 .any(|table| table.reader().get_exact(key).is_some())
@@ -310,14 +310,14 @@ impl BranchLocalState {
             });
         }
         let level_index = usize::from(level.raw());
-        if level_index >= self.owned_levels.len() {
+        if level_index >= self.owned_levels().len() {
             return Err(BranchRuntimeError::InvalidBranchState {
                 reason: "branch-owned table level is outside configured level count",
             });
         }
         if branch_reachable_table_identity_exists(
             table.descriptor().identity(),
-            &self.owned_levels,
+            self.owned_levels(),
             &self.inherited_layers,
         ) {
             return Err(BranchRuntimeError::InvalidBranchState {
@@ -335,7 +335,7 @@ impl BranchLocalState {
         level_index: usize,
         table: &BranchOwnedTable,
     ) -> BranchRuntimeResult<()> {
-        if self.owned_levels[level_index]
+        if self.owned_levels()[level_index]
             .iter()
             .any(|existing| table_physical_ranges_overlap(existing, table))
         {
@@ -357,7 +357,7 @@ impl BranchLocalState {
             branch_id: self.branch_id,
             level,
             table_index,
-            level_table_count: self.owned_levels[level_index].len(),
+            level_table_count: self.owned_levels()[level_index].len(),
             owned_table_count: self.owned_table_count(),
             replaced_frozen_index,
         }
@@ -421,7 +421,7 @@ impl BranchLocalState {
                 observed.record(row.row());
             }
         }
-        for table in self.owned_levels.iter().flatten() {
+        for table in self.owned_levels().iter().flatten() {
             observed.record_owned_table(table);
         }
         for layer in &self.inherited_layers {
@@ -440,7 +440,7 @@ impl BranchLocalState {
                 observed.record(row.row());
             }
         }
-        for table in self.owned_levels.iter().flatten() {
+        for table in self.owned_levels().iter().flatten() {
             for row in table.rows() {
                 observed.record(row.row());
             }

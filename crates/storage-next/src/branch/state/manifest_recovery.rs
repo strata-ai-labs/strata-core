@@ -4,7 +4,9 @@ use super::{compaction, BranchLocalState};
 use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::branch::facts::InheritedLayerStatus;
-use crate::branch::read::{BranchInheritedLayer, BranchOwnedTable, BranchTimestampCoverage};
+use crate::branch::read::{
+    BranchInheritedLayer, BranchLayout, BranchOwnedTable, BranchTimestampCoverage,
+};
 use std::collections::BTreeSet;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -146,19 +148,20 @@ impl BranchLocalState {
         request.validate_against_config(self.config)?;
 
         let mut staged = Self::new(self.branch_id, self.config)?;
-        staged.owned_levels = request.owned_levels;
+        staged.layout = BranchLayout::from_levels(request.owned_levels);
         staged
-            .owned_levels
+            .layout
+            .levels_mut()
             .resize_with(self.config.max_level_count(), Vec::new);
         staged
             .compact_pointers
             .resize_with(self.config.max_level_count(), || None);
         staged.inherited_layers = request.inherited_layers;
         staged.timestamp_coverage = request.timestamp_coverage;
-        compaction::validate_compaction_levels(&staged.owned_levels)?;
+        compaction::validate_compaction_levels(staged.owned_levels())?;
         validate_manifest_recovery_inherited_layers(staged.branch_id, &staged.inherited_layers)?;
         validate_manifest_recovery_table_identities(
-            &staged.owned_levels,
+            staged.owned_levels(),
             &staged.inherited_layers,
         )?;
         staged.refresh_observed_row_facts();

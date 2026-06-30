@@ -6,7 +6,7 @@ use crate::branch::facts::BranchTableReferenceKind;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor, BranchTableRef};
 use crate::branch::pruning::{BranchCompactionPruningPolicy, BranchCompactionPruningProof};
 use crate::branch::read::{
-    table_physical_ranges_overlap, BranchInheritedLayer, BranchMaterializationSource,
+    table_physical_ranges_overlap, BranchInheritedLayer, BranchLayout, BranchMaterializationSource,
     BranchOwnedTable, BranchTimestampCoverage,
 };
 use crate::observability::perf_trace;
@@ -617,18 +617,18 @@ impl BranchLocalState {
             .collect::<Vec<_>>();
         validate_compaction_output_identities(
             &output_identities,
-            &self.owned_levels,
+            self.owned_levels(),
             &self.inherited_layers,
         )?;
         self.require_candidate_current(candidate)?;
         let compact_pointer = self.next_compact_pointer_after_success(request.kind(), candidate);
 
-        let mut replacement_levels = self.owned_levels.clone();
+        let mut replacement_levels = self.owned_levels().to_vec();
         remove_compacted_tables(&mut replacement_levels, candidate)?;
         insert_compaction_outputs(&mut replacement_levels, candidate, output_tables)?;
         validate_compaction_levels(&replacement_levels)?;
 
-        self.owned_levels = replacement_levels;
+        self.layout = BranchLayout::from_levels(replacement_levels);
         self.advance_compact_pointer(compact_pointer);
         self.refresh_observed_row_facts();
         if report.dropped_rows() != 0 {
@@ -673,7 +673,7 @@ impl BranchLocalState {
         let promoted_table = self.promoted_compaction_table(candidate)?;
         let output_identity = promoted_table.descriptor().identity().clone();
         let compact_pointer = self.next_compact_pointer_after_success(request.kind(), candidate);
-        let mut replacement_levels = self.owned_levels.clone();
+        let mut replacement_levels = self.owned_levels().to_vec();
         remove_compacted_tables(&mut replacement_levels, candidate)?;
         validate_promoted_table_identity(
             &output_identity,
@@ -683,7 +683,7 @@ impl BranchLocalState {
         insert_compaction_outputs(&mut replacement_levels, candidate, vec![promoted_table])?;
         validate_compaction_levels(&replacement_levels)?;
 
-        self.owned_levels = replacement_levels;
+        self.layout = BranchLayout::from_levels(replacement_levels);
         self.advance_compact_pointer(compact_pointer);
         self.refresh_observed_row_facts();
 
@@ -742,7 +742,7 @@ impl BranchLocalState {
         kind: BranchCompactionKind,
     ) -> BranchRuntimeResult<BranchCompactionPlan> {
         let level_index = 0;
-        let input_count = self.owned_levels[level_index].len();
+        let input_count = self.owned_levels()[level_index].len();
         if input_count == 0 {
             return Ok(BranchCompactionPlan::no_candidate(
                 self.branch_id,
@@ -780,14 +780,14 @@ impl BranchLocalState {
         request: &BranchCompactionRequest,
     ) -> BranchRuntimeResult<BranchCompactionPlan> {
         let kind = request.kind();
-        if self.owned_levels.len() < 2 {
+        if self.owned_levels().len() < 2 {
             return Ok(BranchCompactionPlan::no_candidate(
                 self.branch_id,
                 kind,
                 BranchCompactionNoopReason::LastLevel,
             ));
         }
-        let input_count = self.owned_levels[0].len();
+        let input_count = self.owned_levels()[0].len();
         if input_count == 0 {
             return Ok(BranchCompactionPlan::no_candidate(
                 self.branch_id,
@@ -847,7 +847,7 @@ impl BranchLocalState {
                 ),
             });
         }
-        if level_index >= self.owned_levels.len() {
+        if level_index >= self.owned_levels().len() {
             return Err(BranchRuntimeError::InvalidCompaction {
                 reason: BranchCompactionInvalidity::Generic(
                     "compaction level is outside configured level count",
@@ -862,7 +862,7 @@ impl BranchLocalState {
                         "compaction output level index overflowed",
                     ),
                 })?;
-        if output_level_index >= self.owned_levels.len()
+        if output_level_index >= self.owned_levels().len()
             || u8::try_from(output_level_index).is_err()
         {
             return Ok(BranchCompactionPlan::no_candidate(
@@ -871,14 +871,14 @@ impl BranchLocalState {
                 BranchCompactionNoopReason::LastLevel,
             ));
         }
-        if self.owned_levels[level_index].is_empty() {
+        if self.owned_levels()[level_index].is_empty() {
             return Ok(BranchCompactionPlan::no_candidate(
                 self.branch_id,
                 kind,
                 BranchCompactionNoopReason::EmptyInputLevel,
             ));
         }
-        if table_index >= self.owned_levels[level_index].len() {
+        if table_index >= self.owned_levels()[level_index].len() {
             return Err(BranchRuntimeError::InvalidCompaction {
                 reason: BranchCompactionInvalidity::Generic(
                     "compaction table index is outside requested level",
@@ -993,21 +993,21 @@ impl BranchLocalState {
                 ),
             });
         }
-        if level_index >= self.owned_levels.len() {
+        if level_index >= self.owned_levels().len() {
             return Err(BranchRuntimeError::InvalidCompaction {
                 reason: BranchCompactionInvalidity::Generic(
                     "bottommost compaction level is outside configured level count",
                 ),
             });
         }
-        if level_index + 1 != self.owned_levels.len() {
+        if level_index + 1 != self.owned_levels().len() {
             return Err(BranchRuntimeError::InvalidCompaction {
                 reason: BranchCompactionInvalidity::Generic(
                     "bottommost compaction must target the final configured level",
                 ),
             });
         }
-        if self.owned_levels[level_index].is_empty() {
+        if self.owned_levels()[level_index].is_empty() {
             return Ok(BranchCompactionPlan::no_candidate(
                 self.branch_id,
                 kind,
@@ -1028,7 +1028,7 @@ impl BranchLocalState {
                 ),
             },
         )?;
-        if end_table_index > self.owned_levels[level_index].len() {
+        if end_table_index > self.owned_levels()[level_index].len() {
             return Err(BranchRuntimeError::InvalidCompaction {
                 reason: BranchCompactionInvalidity::Generic(
                     "bottommost compaction input range is outside requested level",
@@ -1068,7 +1068,7 @@ impl BranchLocalState {
         })?);
         range
             .map(|table_index| {
-                let table = self.owned_levels[level_index].get(table_index).ok_or(
+                let table = self.owned_levels()[level_index].get(table_index).ok_or(
                     BranchRuntimeError::InvalidCompaction {
                         reason: BranchCompactionInvalidity::Generic(
                             "compaction table index must exist",
@@ -1093,7 +1093,7 @@ impl BranchLocalState {
             }
         })?);
         let mut refs = Vec::new();
-        for (table_index, table) in self.owned_levels[target_level_index].iter().enumerate() {
+        for (table_index, table) in self.owned_levels()[target_level_index].iter().enumerate() {
             if input_refs.iter().any(|input_ref| {
                 self.table_for_ref(input_ref)
                     .is_some_and(|input_table| table_physical_ranges_overlap(input_table, table))
@@ -1121,7 +1121,7 @@ impl BranchLocalState {
                 ),
             }
         })?);
-        let Some(target_tables) = self.owned_levels.get(target_level_index) else {
+        let Some(target_tables) = self.owned_levels().get(target_level_index) else {
             return Err(BranchRuntimeError::InvalidCompaction {
                 reason: BranchCompactionInvalidity::Generic("compaction target level must exist"),
             });
@@ -1176,7 +1176,7 @@ impl BranchLocalState {
         span_first: &TablePhysicalKeyBytes,
         span_last: &TablePhysicalKeyBytes,
     ) -> BranchRuntimeResult<Option<(usize, usize)>> {
-        let Some(level) = self.owned_levels.get(level_index) else {
+        let Some(level) = self.owned_levels().get(level_index) else {
             return Err(BranchRuntimeError::InvalidCompaction {
                 reason: BranchCompactionInvalidity::Generic("compaction source level must exist"),
             });
@@ -1201,7 +1201,7 @@ impl BranchLocalState {
         input_refs: &[BranchTableRef],
         target_level_index: usize,
     ) -> u64 {
-        let Some(target_level) = self.owned_levels.get(target_level_index) else {
+        let Some(target_level) = self.owned_levels().get(target_level_index) else {
             return 0;
         };
         let mut byte_count = 0u64;
@@ -1254,7 +1254,7 @@ impl BranchLocalState {
 
     fn table_for_ref(&self, table_ref: &BranchTableRef) -> Option<&BranchOwnedTable> {
         let level_index = usize::from(table_ref.level().raw());
-        self.owned_levels
+        self.owned_levels()
             .get(level_index)?
             .get(table_ref.table_index())
             .filter(|table| {
@@ -1277,14 +1277,14 @@ impl BranchLocalState {
         if !candidate_ref_allows_l0_index_rebase(candidate, table_ref) {
             return None;
         }
-        self.owned_levels
+        self.owned_levels()
             .first()?
             .iter()
             .find(|table| table_matches_ref(table, candidate.branch_id(), table_ref))
     }
 
     fn is_bottommost_output_level(&self, output_level_index: usize) -> bool {
-        self.owned_levels
+        self.owned_levels()
             .iter()
             .enumerate()
             .skip(output_level_index + 1)
@@ -1464,7 +1464,7 @@ impl BranchLocalState {
     ) -> BranchRuntimeResult<Vec<BranchTableRef>> {
         let level_index = usize::from(output_level.raw());
         let level =
-            self.owned_levels
+            self.owned_levels()
                 .get(level_index)
                 .ok_or(BranchRuntimeError::InvalidCompaction {
                     reason: BranchCompactionInvalidity::Generic(

@@ -95,7 +95,7 @@ impl BranchLocalState {
                 InheritedLayerStatus::Active,
                 self.owned_table_count(),
             ),
-            self.owned_levels.clone(),
+            self.owned_levels().to_vec(),
         )?);
         for layer in &self.inherited_layers {
             if let Some(layer) = layer.clone_active_for_fork()? {

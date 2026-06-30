@@ -655,6 +655,44 @@ impl BranchOwnedTable {
     }
 }
 
+/// Immutable snapshot of a branch's own on-disk table levels (L0..Ln) — the unit that
+/// flush / compaction / materialization install replaces. Introduced for M4P-L8I Group D:
+/// it becomes the `ArcSwap`-published layout so reads / compaction scoring / flush-watermark
+/// coverage take no runtime lock. Per-table facts (commit/key ranges) live in each
+/// `BranchOwnedTable`, so a reader holding a layout snapshot is self-consistent; branch-total
+/// aggregate facts (max commit version, row counts, timestamp span) stay on `BranchLocalState`
+/// because they also count the active/frozen memtable and are not layout-derived. In D.1 this
+/// is a plain field with in-place mutation; D.2 makes it `ArcSwap<Arc<BranchLayout>>`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BranchLayout {
+    owned_levels: Vec<Vec<BranchOwnedTable>>,
+}
+
+impl BranchLayout {
+    pub(crate) fn with_level_count(level_count: usize) -> Self {
+        Self {
+            owned_levels: vec![Vec::new(); level_count],
+        }
+    }
+
+    pub(crate) fn from_levels(owned_levels: Vec<Vec<BranchOwnedTable>>) -> Self {
+        Self { owned_levels }
+    }
+
+    pub(crate) fn levels(&self) -> &[Vec<BranchOwnedTable>] {
+        &self.owned_levels
+    }
+
+    pub(crate) fn levels_mut(&mut self) -> &mut Vec<Vec<BranchOwnedTable>> {
+        &mut self.owned_levels
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn into_levels(self) -> Vec<Vec<BranchOwnedTable>> {
+        self.owned_levels
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchInheritedLayer {
     descriptor: InheritedLayerDescriptor,

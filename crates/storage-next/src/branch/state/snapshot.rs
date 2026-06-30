@@ -349,7 +349,7 @@ impl BranchLocalState {
                 )?;
             }
         }
-        for table in self.owned_levels.iter().flatten() {
+        for table in self.owned_levels().iter().flatten() {
             for row in table.rows() {
                 insert_own_fork_snapshot_row(
                     &mut rows_by_key,
@@ -557,7 +557,7 @@ fn stage_snapshot_install_branches(
             if branches.iter().any(|branch| {
                 branch_reachable_table_identity_exists(
                     identity,
-                    &branch.owned_levels,
+                    branch.owned_levels(),
                     &branch.inherited_layers,
                 )
             }) {
