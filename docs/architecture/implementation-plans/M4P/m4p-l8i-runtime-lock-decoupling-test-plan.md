@@ -50,7 +50,7 @@ The suite must fail if any change:
 | Cache regression | L8G cache absence counters and behavior unchanged. | Durable change leaked into cache. |
 | Format goldens | All format golden vectors pass. | On-disk format drift. |
 | Simulation boundary | All waits use the injected clock; deterministic-inline path stays deterministic. | Wall-clock dependency re-enters drive path. |
-| Benchmark closeout | Settle-to-quiescence 100K–10M vs old, standard + always. | Result explained by a shortcut. |
+| Benchmark closeout | Settle-to-quiescence 100K–10M vs old, standard + always; **plus YCSB-F run-phase throughput at 10M (≥ ~100K ops/s / ≤ 2× old) and the interleaved control-vs-fixed crawl-rate A/B (convoy rate → ~0)** — the sharp convoy signal (F collapses to ~81 ops/s pre-fix). | Result explained by a shortcut; convoy persists at 10M. |
 
 ## A — Admission wait-loop (lock-free + condvar)
 
