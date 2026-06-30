@@ -884,6 +884,73 @@ fn assemble_shell(
     )
 }
 
+// Safety guard for the lock-convoy fix: the interval-bounded coverage scan (which
+// skips non-overlapping tables via `commit_range()` and collects only `[floor,
+// candidate]`) must produce exactly the same versions as a full row scan filtered to
+// the interval, and `branch_checkpoint_flush_boundary` the same max — for every
+// floor/candidate/visible. A divergence here is a recovery-coverage correctness bug.
+// See docs/design/performance/durable-background-lock-convoy.md.
+#[test]
+fn bounded_coverage_scan_matches_full_scan_over_interval() {
+    use crate::lifecycle::checkpoint::{
+        branch_checkpoint_flush_boundary, branch_durable_commit_versions_in_interval,
+    };
+
+    let branch = branch_id(0xc1);
+    let mut state = BranchLocalState::empty(branch);
+    // Tables that sit below / straddle / above the swept domain, plus an inter-table
+    // gap (9->15, 16->30) and a cross-table duplicate version (7 in both b and c).
+    let tables: &[(&str, std::ops::RangeInclusive<u64>, &'static [u8])] = &[
+        ("scan-a", 1..=3, b"scan-a"),
+        ("scan-b", 5..=7, b"scan-b"),
+        ("scan-c", 7..=9, b"scan-c"),
+        ("scan-d", 15..=16, b"scan-d"),
+        ("scan-e", 30..=31, b"scan-e"),
+    ];
+    let mut all_versions: Vec<u64> = Vec::new();
+    for &(identity, ref range, prefix) in tables {
+        let rows = rows_for_versions(branch, range.clone(), prefix);
+        all_versions.extend(range.clone());
+        install_l0_table_for_test(&mut state, branch, identity, &rows);
+    }
+    all_versions.sort_unstable();
+    all_versions.dedup();
+
+    for floor in 0..=33u64 {
+        for candidate in 0..=33u64 {
+            let bounded: Vec<u64> = branch_durable_commit_versions_in_interval(
+                &state,
+                CommitVersion::new(floor),
+                CommitVersion::new(candidate),
+            )
+            .into_iter()
+            .map(CommitVersion::as_u64)
+            .collect();
+            let reference: Vec<u64> = all_versions
+                .iter()
+                .copied()
+                .filter(|version| *version >= floor && *version <= candidate)
+                .collect();
+            assert_eq!(
+                bounded, reference,
+                "interval [{floor}, {candidate}] mismatch"
+            );
+        }
+        let visible = floor;
+        let expected_boundary = all_versions
+            .iter()
+            .copied()
+            .filter(|version| *version <= visible)
+            .max();
+        let actual_boundary = branch_checkpoint_flush_boundary(&state, CommitVersion::new(visible))
+            .map(CommitVersion::as_u64);
+        assert_eq!(
+            actual_boundary, expected_boundary,
+            "boundary at visible={visible}"
+        );
+    }
+}
+
 fn install_l0_table_for_test(
     state: &mut BranchLocalState,
     branch: BranchId,

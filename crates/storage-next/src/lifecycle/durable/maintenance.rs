@@ -932,11 +932,24 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             .branch_catalog
             .branch_state(branch_id)
             .expect("seeded branch is always present in the catalog");
-        let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest(
+        let current_manifest = self
+            .services
+            .manifest()
+            .load_required()
+            .map_err(manifest_error)?;
+        let floor = wal_retention_watermark(
+            current_manifest
+                .snapshot_watermark()
+                .map(CommitVersion::new),
+            current_manifest.flushed_through_commit_id(),
+        )
+        .unwrap_or(CommitVersion::ZERO);
+        let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest_with_floor(
             candidate,
             branch,
             &manifest,
             &self.current_recovery_health,
+            floor,
         )?;
         // Forward-compat guard. The current durable runtime opens exactly one
         // branch, so this check passes. If multi-branch runtimes land, the
@@ -2228,7 +2241,20 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             .branch_catalog
             .branch_state(branch_id)
             .expect("seeded branch is always present in the catalog");
-        match self.flush_watermark_candidate_has_table_coverage(candidate, branch, &manifest) {
+        let current_manifest = self
+            .services
+            .manifest()
+            .load_required()
+            .map_err(manifest_error)?;
+        let floor = wal_retention_watermark(
+            current_manifest
+                .snapshot_watermark()
+                .map(CommitVersion::new),
+            current_manifest.flushed_through_commit_id(),
+        )
+        .unwrap_or(CommitVersion::ZERO);
+        match self.flush_watermark_candidate_has_table_coverage(candidate, branch, &manifest, floor)
+        {
             Ok(()) => Ok(self.branch_catalog.registry().active_branch_ids() == vec![branch_id]),
             Err(LifecycleError::WalRetentionProofIncomplete { .. }) => Ok(false),
             Err(error) => Err(error),
@@ -2265,12 +2291,15 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             .branch_catalog
             .branch_state(branch_id)
             .expect("seeded branch is always present in the catalog");
+        let floor = retention_watermark.unwrap_or(CommitVersion::ZERO);
         for candidate in flush_watermark_candidates_from_manifest(
             &manifest,
             self.visible.visible_version(),
-            retention_watermark.unwrap_or(CommitVersion::ZERO),
+            floor,
         ) {
-            match self.flush_watermark_candidate_has_table_coverage(candidate, branch, &manifest) {
+            match self
+                .flush_watermark_candidate_has_table_coverage(candidate, branch, &manifest, floor)
+            {
                 Ok(()) => return Ok(Some(candidate)),
                 Err(LifecycleError::WalRetentionProofIncomplete { .. }) => {}
                 Err(error) => return Err(error),
@@ -2284,27 +2313,19 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         candidate: CommitVersion,
         branch: &BranchLocalState,
         manifest: &TableManifest,
+        floor: CommitVersion,
     ) -> LifecycleResult<()> {
-        let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest(
+        // `floor` is the current checkpoint watermark — the same value
+        // `validate_extends_checkpoint` proves the candidate extends — so it both
+        // bounds the coverage scan to the needed tail and validates the extension.
+        let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest_with_floor(
             candidate,
             branch,
             manifest,
             &self.current_recovery_health,
+            floor,
         )?;
-        let current_manifest = self
-            .services
-            .manifest()
-            .load_required()
-            .map_err(manifest_error)?;
-        proof.validate_extends_checkpoint(
-            wal_retention_watermark(
-                current_manifest
-                    .snapshot_watermark()
-                    .map(CommitVersion::new),
-                current_manifest.flushed_through_commit_id(),
-            )
-            .unwrap_or(CommitVersion::ZERO),
-        )
+        proof.validate_extends_checkpoint(floor)
     }
 
     #[allow(
@@ -3167,11 +3188,20 @@ impl MaintenanceTaskRunner for DurableFlushWatermarkMaintenanceRunner<'_, '_> {
             )
             .with_reason("table manifest coverage is missing"));
         };
-        let proof = match LifecycleTableManifestFlushCoverageProof::from_branch_manifest(
+        let current_manifest = self.manifest.load_required().map_err(manifest_error)?;
+        let floor = wal_retention_watermark(
+            current_manifest
+                .snapshot_watermark()
+                .map(CommitVersion::new),
+            current_manifest.flushed_through_commit_id(),
+        )
+        .unwrap_or(CommitVersion::ZERO);
+        let proof = match LifecycleTableManifestFlushCoverageProof::from_branch_manifest_with_floor(
             candidate,
             self.branch,
             &table_manifest,
             self.health,
+            floor,
         ) {
             Ok(proof) => proof,
             Err(error @ LifecycleError::WalRetentionProofIncomplete { .. }) => {

@@ -617,6 +617,26 @@ impl LifecycleTableManifestFlushCoverageProof {
         manifest: &TableManifest,
         health: &RecoveryHealth,
     ) -> LifecycleResult<Self> {
+        Self::from_branch_manifest_with_floor(
+            candidate,
+            branch,
+            manifest,
+            health,
+            CommitVersion::ZERO,
+        )
+    }
+
+    /// Like [`Self::from_branch_manifest`], but bounds the per-commit coverage scan to
+    /// `[floor, candidate]`. Runtime callers pass the current checkpoint watermark as
+    /// `floor` so already-flushed history is skipped (the lock-convoy fix); tests use
+    /// `from_branch_manifest`, which passes `CommitVersion::ZERO` (unbounded).
+    pub(crate) fn from_branch_manifest_with_floor(
+        candidate: CommitVersion,
+        branch: &BranchLocalState,
+        manifest: &TableManifest,
+        health: &RecoveryHealth,
+        floor: CommitVersion,
+    ) -> LifecycleResult<Self> {
         if branch.branch_id() != manifest.branch_id() {
             return Err(LifecycleError::WalRetentionProofIncomplete {
                 reason: "table manifest flush proof branch does not match branch state",
@@ -629,7 +649,8 @@ impl LifecycleTableManifestFlushCoverageProof {
             });
         }
         let recovery_health_epoch = recovery_health_epoch(health)?;
-        let branch_coverage = branch_coverage_from_state_and_manifest(candidate, branch, manifest)?;
+        let branch_coverage =
+            branch_coverage_from_state_and_manifest(candidate, branch, manifest, floor)?;
         Self::new(
             candidate,
             manifest.manifest_sequence(),
@@ -1023,9 +1044,10 @@ fn branch_coverage_from_state_and_manifest(
     candidate: CommitVersion,
     branch: &BranchLocalState,
     manifest: &TableManifest,
+    floor: CommitVersion,
 ) -> LifecycleResult<LifecycleTableManifestBranchCoverage> {
     let base = branch_coverage_from_manifest(candidate, manifest)?;
-    let covered_versions = branch_durable_commit_versions_at_or_below(branch, candidate);
+    let covered_versions = branch_durable_commit_versions_in_interval(branch, floor, candidate);
     LifecycleTableManifestBranchCoverage::new_with_versions(
         base.branch_id(),
         base.covered_min(),
@@ -1038,31 +1060,40 @@ fn branch_coverage_from_state_and_manifest(
     )
 }
 
-pub(crate) fn branch_durable_commit_versions_at_or_below(
+/// Commit versions in `[floor, candidate]` held by the branch's durable owned-level
+/// tables (and inherited layers). Tables whose `commit_range()` does not overlap the
+/// interval are skipped without touching their rows, so when `floor` is the current
+/// checkpoint watermark only the few recent tables are scanned. Equivalent to filtering
+/// every row to the interval, but `O(tables) + O(rows in overlapping tables)` rather
+/// than `O(total rows)` — the fix for the durable maintenance lock convoy
+/// (see `docs/design/performance/durable-background-lock-convoy.md`).
+pub(crate) fn branch_durable_commit_versions_in_interval(
     branch: &BranchLocalState,
+    floor: CommitVersion,
     candidate: CommitVersion,
 ) -> Vec<CommitVersion> {
-    let mut versions = Vec::new();
-    for table in branch.owned_levels().iter().flatten() {
-        versions.extend(
+    let mut versions: Vec<CommitVersion> = branch
+        .owned_levels()
+        .iter()
+        .flatten()
+        .chain(
+            branch
+                .inherited_layers()
+                .iter()
+                .flat_map(|layer| layer.owned_levels().iter().flatten()),
+        )
+        .filter(|table| {
+            let range = table.facts().commit_range();
+            range.max() >= floor && range.min() <= candidate
+        })
+        .flat_map(|table| {
             table
                 .rows()
                 .iter()
                 .map(crate::table::TableRow::commit_version)
-                .filter(|version| *version <= candidate),
-        );
-    }
-    for layer in branch.inherited_layers() {
-        for table in layer.owned_levels().iter().flatten() {
-            versions.extend(
-                table
-                    .rows()
-                    .iter()
-                    .map(crate::table::TableRow::commit_version)
-                    .filter(|version| *version <= candidate),
-            );
-        }
-    }
+                .filter(|version| *version >= floor && *version <= candidate)
+        })
+        .collect();
     versions.sort();
     versions.dedup();
     versions
@@ -1084,9 +1115,37 @@ pub(crate) fn branch_checkpoint_flush_boundary(
     branch: &BranchLocalState,
     visible_version: CommitVersion,
 ) -> Option<CommitVersion> {
-    branch_durable_commit_versions_at_or_below(branch, visible_version)
-        .into_iter()
-        .max()
+    let tables = branch.owned_levels().iter().flatten().chain(
+        branch
+            .inherited_layers()
+            .iter()
+            .flat_map(|layer| layer.owned_levels().iter().flatten()),
+    );
+    let mut boundary: Option<CommitVersion> = None;
+    for table in tables {
+        let range = table.facts().commit_range();
+        if range.min() > visible_version {
+            continue;
+        }
+        // Whole-table fast path uses the O(1) range max; only a table that straddles
+        // `visible_version` needs a row scan to find its largest covered version.
+        let table_boundary = if range.max() <= visible_version {
+            range.max()
+        } else {
+            let Some(max_covered) = table
+                .rows()
+                .iter()
+                .map(crate::table::TableRow::commit_version)
+                .filter(|version| *version <= visible_version)
+                .max()
+            else {
+                continue;
+            };
+            max_covered
+        };
+        boundary = Some(boundary.map_or(table_boundary, |current| current.max(table_boundary)));
+    }
+    boundary
 }
 
 pub(crate) fn branch_durable_rows_cover_interval(
@@ -1102,7 +1161,11 @@ pub(crate) fn branch_durable_rows_cover_interval(
         .checked_add(1)
         .is_some_and(|first| {
             versions_cover_interval(
-                &branch_durable_commit_versions_at_or_below(branch, candidate),
+                &branch_durable_commit_versions_in_interval(
+                    branch,
+                    checkpoint_watermark,
+                    candidate,
+                ),
                 first,
                 candidate.as_u64(),
             )
