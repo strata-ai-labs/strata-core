@@ -132,6 +132,104 @@ Order: D.1 → D.2 → D.3. D.1 and D.3 are low-risk; D.2 is the keystone and th
 concentrates there (Clone/Eq, read-borrow plumbing, atomic-publish read correctness).
 Each slice ≤ ~1,500 LOC.
 
+## Update — 2026-06-30: D.2 reachability finding + re-slice
+
+A pre-implementation trace of the runtime-lock scope (citations below) found the
+D.2 sketch above is **necessary but not sufficient** and would have been a third
+inert "fix" if shipped as written. Recording the correction here; D.2 is
+re-sliced into D.2a (structural) + D.2b (the actual off-lock move).
+
+**Finding — `BranchLocalState` is reachable only through the global mutex.** The
+ownership chain from the runtime mutex to the layout is entirely by-value:
+`Arc<Mutex<LifecycleDurableLocalRuntime>>` → `branch_catalog` (by value,
+`bootstrap.rs:59`) → `entries: Vec<LifecycleBranchEntry>` (`branch_lifecycle.rs:118`)
+→ `state: Option<BranchLocalState>` (**no `Arc`**, `branch_lifecycle.rs:105`) →
+`layout` (`state.rs:71`). `branch_catalog.branch_state(id)` returns
+`&BranchLocalState` borrowed from the `MutexGuard` (`branch_lifecycle.rs:475`).
+So placing `ArcSwap` *inside* `BranchLocalState` does **not** by itself let any
+scan run off-lock — a reader still needs `&self`, hence the guard, to reach
+`.load()`. The two O(rows) convoy scans confirmed under the guard today:
+- flush-watermark coverage: `branch_durable_commit_versions_in_interval`
+  (`checkpoint.rs:1070`) via `persist_table_manifest_flush_watermark`
+  (`durable/maintenance.rs:947`), invoked under the drain guard at
+  `api/runtime/maintenance.rs:579`;
+- compaction scoring: `selected_compaction_score` (`compaction.rs:2203`) via
+  `collect_storage_pressure_with_budget` (`compaction.rs:1757`), per branch under
+  the coverage pass.
+
+**Corrected mechanism — snapshot-under-brief-lock, scan off-lock.** Make the layout
+an immutable, reference-counted `Arc<BranchLayout>` (plain `std::sync::Arc`, **not**
+`ArcSwap` — see the type decision below). Under a brief runtime lock, `Arc::clone`
+the branch's layout (plus copy the manifest watermarks the proof correlates against,
+read under the *same* lock so layout and watermark stay consistent), drop the lock,
+then run the O(rows) scan on the owned `Arc` with no lock held. Lock hold goes
+O(rows) → O(1), and the scan is **data-race-free by construction**: the installer
+builds a brand-new `BranchLayout` and reassigns the field under the lock, while the
+scanner reads its own clone of the old immutable one — disjoint memory, no atomics
+beyond the `Arc` refcount. Truly *zero*-lock reads (no lock at all) would need the
+layout reachable outside the mutex — a per-branch registry or Group E sharding — and
+stay **out of D's scope**; D delivers the O(rows)→O(1) reduction, which is the
+measured convoy.
+
+**Type decision (2026-06-30): plain `Arc<BranchLayout>`, not `ArcSwap`.** The old
+engine uses `ArcSwap` because its branches live in a `DashMap` with no global lock,
+so installer and readers race and need atomic store/load. V1 serializes every
+install under the runtime mutex (below), so Group D has no store-vs-load race and an
+immutable `Arc` snapshot suffices. `Arc` keeps the derived `Clone`/`Eq`/`Debug`,
+leaves `owned_levels(&self) -> &[…]` a borrow (zero read-site churn), makes the
+branch clone cheaper, and needs no loom (no lock-free swap to model). `ArcSwap`'s
+only extra power — atomic store/load *without* the lock — is unused until **Group C**
+moves the install off-lock; adopt it there (a ~5-site field re-migration).
+
+**Confirmed guardrail — installs are serialized by the mutex.** Every `install_*`
+mutates `self.layout` through `branch_state_mut` under the lock
+(`durable/maintenance.rs:1848`, `state/compaction.rs:631/686`,
+`state/materialization.rs:648`), so reassigning the `Arc` field under the lock needs
+no CAS/reconciliation. Off-lock store (and the `ArcSwap` it then requires) composes
+with Group C later.
+
+### D.2a — `Arc<BranchLayout>` field + build-new installs (behavior-preserving)
+
+Structural only; no path moves off-lock yet, so the existing suite + goldens are the
+gate (like D.1). Small: field type + ~5 install sites, derives and read accessors
+unchanged.
+- `BranchLocalState.layout: BranchLayout` → `Arc<BranchLayout>` (`state.rs:71`;
+  `new()` at `:93` wraps in `Arc::new`). Keep the derived `Clone`/`Debug`/`Eq`/
+  `PartialEq` — `Arc` provides all four; the branch clone becomes an `Arc` clone
+  sharing the immutable snapshot (COW: a later install reassigns the field, never
+  mutates through the shared `Arc`).
+- Incremental installs (`state.rs` L0/level inserts, `state/materialization.rs`
+  push) use `Arc::make_mut(&mut self.layout)` — copy-on-write: it clones the inner
+  `BranchLayout` only if the `Arc` is shared (a read-view/checkpoint-build clone
+  outstanding), else mutates in place, exactly reproducing the pre-D.2a value
+  semantics and preserving `materialization`'s accumulating-validation loop. The
+  whole-layout rebuilds (`state/compaction.rs:631/686`, `state/manifest_recovery.rs`)
+  reassign `self.layout = Arc::new(BranchLayout::from_levels(..))` directly. All under
+  the runtime lock. (No `install_into_layout` helper — `make_mut` already centralizes
+  the clone-if-shared; the fallible `insert_sorted_by_range` error path is byte-for-byte
+  the pre-D.2a in-place behavior, gated by `validate_install` first.)
+- Reads: **unchanged.** `owned_levels(&self) -> &[Vec<BranchOwnedTable>]`
+  (`read_hooks.rs:82`) still returns `self.layout.levels()` — `Arc` derefs to the
+  borrow. The ~40 under-lock callers and the `read.rs` free functions are untouched.
+- No new accessor here — `layout_snapshot()` lands in D.2b where it is first used
+  (D.2a stays free of unused API).
+- **Exit gate:** full `cargo test -p strata-storage-next` + goldens pass unchanged;
+  no in-place mutation of a shared layout remains; no public-surface change.
+
+### D.2b — move the maintenance coverage + scoring scans off-lock (the convoy fix)
+
+- Add `fn layout_snapshot(&self) -> Arc<BranchLayout>` (`Arc::clone(&self.layout)`).
+  Restructure the two convoy call sites (`persist_table_manifest_flush_watermark`
+  coverage; `collect_storage_pressure_with_budget` scoring) to: brief lock →
+  `layout_snapshot()` + copy needed manifest watermarks → drop lock →
+  scan the owned `Arc<BranchLayout>` off-lock. Keep the query path
+  (`capture_read_view`) as-is (it is not the convoy — reads stay sub-µs during the
+  crawl).
+- **Exit gate:** the two maintenance scans hold the runtime lock O(1) not O(rows);
+  layout/watermark captured consistently under one lock; concurrency oracle green;
+  **convoy crawl-rate A/B + workload-F throughput at 10M (n ≥ 9)** shows the
+  worker-side stall gone. This is the ledger row that must move.
+
 ## Verification
 
 - **Correctness gate (per slice):** full `cargo test -p strata-storage-next`, the
