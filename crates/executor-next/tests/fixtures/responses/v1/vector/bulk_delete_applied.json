@@ -1,0 +1,22 @@
+{
+  "type": "vector_bulk_delete_result",
+  "data": {
+    "collection": "docs",
+    "deleted_count": 2,
+    "effect": {
+      "applied": true,
+      "kind": "deleted",
+      "matched": true,
+      "affected_count": 2
+    },
+    "commit": {
+      "version": 4,
+      "timestamp": 40,
+      "durable": true,
+      "put_count": 0,
+      "delete_count": 2
+    },
+    "version": 4,
+    "timestamp": 40
+  }
+}

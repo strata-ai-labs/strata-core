@@ -1,0 +1,55 @@
+{
+  "type": "batch_results",
+  "data": {
+    "mode": "itemwise",
+    "status": "ok",
+    "applied": true,
+    "commit": {
+      "version": 1,
+      "timestamp": 10,
+      "durable": true,
+      "put_count": 1,
+      "delete_count": 0
+    },
+    "items": [
+      {
+        "index": 0,
+        "status": "ok",
+        "applied": true,
+        "effect": {
+          "applied": true,
+          "kind": "created",
+          "matched": false,
+          "affected_count": 1
+        },
+        "commit": {
+          "version": 1,
+          "timestamp": 10,
+          "durable": true,
+          "put_count": 1,
+          "delete_count": 0
+        },
+        "result": {
+          "key": [
+            97
+          ],
+          "effect": {
+            "applied": true,
+            "kind": "created",
+            "matched": false,
+            "affected_count": 1
+          },
+          "commit": {
+            "version": 1,
+            "timestamp": 10,
+            "durable": true,
+            "put_count": 1,
+            "delete_count": 0
+          },
+          "error": null
+        },
+        "error": null
+      }
+    ]
+  }
+}

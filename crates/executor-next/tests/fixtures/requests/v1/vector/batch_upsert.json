@@ -1,0 +1,16 @@
+{
+  "type": "vector_batch_upsert",
+  "collection": "docs",
+  "entries": [
+    {
+      "key": "doc-a",
+      "vector": [
+        1.0,
+        0.0
+      ],
+      "metadata": {
+        "kind": "doc"
+      }
+    }
+  ]
+}

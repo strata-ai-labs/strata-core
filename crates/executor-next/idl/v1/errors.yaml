@@ -1,0 +1,21 @@
+errors:
+  - failed_precondition.engine.runtime_closed
+  - invalid_argument.engine.product_space
+  - invalid_argument.engine.kv_key
+  - invalid_argument.engine.kv_batch
+  - invalid_argument.engine.kv_batch_duplicate_key
+  - invalid_argument.executor.kv_batch_duplicate_key
+  - not_found.engine.branch
+  - invalid_argument.engine.vector_collection
+  - invalid_argument.engine.vector_collection_reserved
+  - invalid_argument.engine.vector_key
+  - invalid_argument.engine.vector_dimension
+  - invalid_argument.engine.vector_embedding
+  - invalid_argument.engine.vector_filter
+  - invalid_argument.engine.vector_metadata
+  - invalid_argument.engine.vector_metadata_patch
+  - invalid_argument.engine.vector_batch
+  - invalid_argument.executor.vector_dimension
+  - invalid_argument.executor.vector_limit
+  - not_found.engine.vector_collection
+  - not_found.executor.vector_collection

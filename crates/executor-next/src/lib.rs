@@ -14,6 +14,9 @@ pub mod command;
 pub mod error;
 pub mod error_registry;
 pub mod executor;
+#[cfg(feature = "idl-tooling")]
+#[doc(hidden)]
+pub mod idl_tooling;
 pub mod output;
 pub mod types;
 

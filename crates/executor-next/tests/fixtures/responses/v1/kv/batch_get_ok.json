@@ -1,0 +1,33 @@
+{
+  "type": "batch_get_results",
+  "data": {
+    "mode": "itemwise",
+    "status": "ok",
+    "applied": false,
+    "commit": null,
+    "items": [
+      {
+        "index": 0,
+        "status": "ok",
+        "applied": false,
+        "effect": null,
+        "commit": null,
+        "result": {
+          "key": [
+            97
+          ],
+          "found": true,
+          "value": [
+            111,
+            110,
+            101
+          ],
+          "version": 1,
+          "timestamp": 10,
+          "error": null
+        },
+        "error": null
+      }
+    ]
+  }
+}

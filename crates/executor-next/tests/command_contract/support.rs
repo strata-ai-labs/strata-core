@@ -34,7 +34,7 @@ pub(super) fn assert_pretty_fixture(fixture: &str) {
 }
 
 pub(super) fn response_fixture_texts() -> Vec<&'static str> {
-    let mut fixtures = vec![
+    let fixtures = vec![
         include_str!("../fixtures/responses/v1/admin/database_info_cache.json"),
         include_str!("../fixtures/responses/v1/arrow/export_graph.json"),
         include_str!("../fixtures/responses/v1/arrow/import_kv.json"),
@@ -43,6 +43,7 @@ pub(super) fn response_fixture_texts() -> Vec<&'static str> {
         include_str!("../fixtures/responses/v1/graph/node_write_applied.json"),
         include_str!("../fixtures/responses/v1/json/get_found.json"),
         include_str!("../fixtures/responses/v1/kv/delete_missing.json"),
+        include_str!("../fixtures/responses/v1/kv/list_keys.json"),
         include_str!("../fixtures/responses/v1/kv/write_applied.json"),
         include_str!("../fixtures/responses/v1/optional_reads/event_get_missing.json"),
         include_str!("../fixtures/responses/v1/optional_reads/json_get_missing.json"),
@@ -72,9 +73,16 @@ pub(super) fn response_fixture_texts() -> Vec<&'static str> {
     ];
 
     #[cfg(feature = "inference")]
-    fixtures.push(include_str!("../fixtures/responses/v1/inference/text.json"));
+    {
+        let mut fixtures = fixtures;
+        fixtures.push(include_str!("../fixtures/responses/v1/inference/text.json"));
+        fixtures
+    }
 
-    fixtures
+    #[cfg(not(feature = "inference"))]
+    {
+        fixtures
+    }
 }
 
 pub(super) fn error_status_fixture() -> ErrorStatus {

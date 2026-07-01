@@ -1,0 +1,9 @@
+{
+  "type": "kv_get",
+  "branch": "feature",
+  "space": "space-a",
+  "key": [
+    97
+  ],
+  "as_of": 42
+}

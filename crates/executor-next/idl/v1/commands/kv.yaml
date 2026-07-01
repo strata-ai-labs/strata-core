@@ -1,0 +1,150 @@
+commands:
+  - id: kv.put
+    kind: mutation.put
+    title: Put KV value
+    input: Command::KvPut
+    output: Output::WriteResult
+    result: KvWrite
+    prose: commands/kv.put.md
+    fixtures:
+      request: requests/v1/kv/put.json
+      response: responses/v1/kv/write_applied.json
+  - id: kv.get
+    kind: read.get
+    title: Get KV value
+    input: Command::KvGet
+    output: Output::KvValue
+    result: Bytes
+    prose: commands/kv.get.md
+    fixtures:
+      request: requests/v1/kv/get.json
+      response: responses/v1/kv/get_found.json
+  - id: kv.delete
+    kind: mutation.delete
+    title: Delete KV value
+    input: Command::KvDelete
+    output: Output::DeleteResult
+    result: KvDelete
+    prose: commands/kv.delete.md
+    fixtures:
+      request: requests/v1/kv/delete.json
+      response: responses/v1/kv/delete_missing.json
+  - id: kv.list
+    kind: read.page
+    title: List KV keys
+    input: Command::KvList
+    output: Output::KeysPage
+    outputs:
+      - Output::Keys
+      - Output::KeysPage
+    result: Bytes
+    response_model: Page<Bytes, Bytes>
+    prose: commands/kv.list.md
+    fixtures:
+      request: requests/v1/kv/list.json
+      response: responses/v1/kv/list_page.json
+      responses:
+        - responses/v1/kv/list_keys.json
+  - id: kv.scan
+    kind: read.page
+    title: Scan KV rows
+    input: Command::KvScan
+    output: Output::KvScanResult
+    result: ScanItem
+    response_model: Page<ScanItem, Bytes>
+    prose: commands/kv.scan.md
+    fixtures:
+      request: requests/v1/kv/scan.json
+      response: responses/v1/kv/scan_page.json
+  - id: kv.batch_put
+    kind: batch.itemwise_mutation
+    title: Batch put KV values
+    input: Command::KvBatchPut
+    output: Output::BatchResults
+    result: KvMutationItem
+    prose: commands/kv.batch_put.md
+    errors+:
+      - invalid_argument.engine.kv_batch
+      - invalid_argument.engine.kv_batch_duplicate_key
+      - invalid_argument.executor.kv_batch_duplicate_key
+    fixtures:
+      request: requests/v1/kv/batch_put.json
+      response: responses/v1/kv/batch_mutation_ok.json
+  - id: kv.batch_get
+    kind: batch.itemwise_read
+    title: Batch get KV values
+    input: Command::KvBatchGet
+    output: Output::BatchGetResults
+    result: Maybe<Bytes>
+    prose: commands/kv.batch_get.md
+    errors+:
+      - invalid_argument.engine.kv_batch
+    fixtures:
+      request: requests/v1/kv/batch_get.json
+      response: responses/v1/kv/batch_get_ok.json
+  - id: kv.batch_delete
+    kind: batch.itemwise_mutation
+    title: Batch delete KV values
+    input: Command::KvBatchDelete
+    output: Output::BatchResults
+    result: KvMutationItem
+    prose: commands/kv.batch_delete.md
+    errors+:
+      - invalid_argument.engine.kv_batch
+      - invalid_argument.engine.kv_batch_duplicate_key
+      - invalid_argument.executor.kv_batch_duplicate_key
+    fixtures:
+      request: requests/v1/kv/batch_delete.json
+      response: responses/v1/kv/batch_mutation_partial.json
+  - id: kv.batch_exists
+    kind: batch.itemwise_status
+    title: Batch check KV existence
+    input: Command::KvBatchExists
+    output: Output::BoolList
+    result: StatusValue<bool>
+    prose: commands/kv.batch_exists.md
+    errors+:
+      - invalid_argument.engine.kv_batch
+    fixtures:
+      request: requests/v1/kv/batch_exists.json
+      response: responses/v1/kv/batch_exists.json
+  - id: kv.exists
+    kind: read.status
+    title: Check KV existence
+    input: Command::KvExists
+    output: Output::Bool
+    result: bool
+    prose: commands/kv.exists.md
+    fixtures:
+      request: requests/v1/kv/exists.json
+      response: responses/v1/status/bool_true.json
+  - id: kv.history
+    kind: read.history
+    title: Read KV history
+    input: Command::KvGetv
+    output: Output::VersionHistory
+    result: HistoryItem
+    prose: commands/kv.history.md
+    fixtures:
+      request: requests/v1/kv/history.json
+      response: responses/v1/kv/history_found.json
+  - id: kv.count
+    kind: read.status
+    title: Count KV keys
+    input: Command::KvCount
+    output: Output::Uint
+    result: u64
+    prose: commands/kv.count.md
+    fixtures:
+      request: requests/v1/kv/count.json
+      response: responses/v1/status/uint_count.json
+  - id: kv.sample
+    kind: read.sample
+    title: Sample KV rows
+    input: Command::KvSample
+    output: Output::SampleResult
+    result: SampleItem
+    prose: commands/kv.sample.md
+    fixtures:
+      request: requests/v1/kv/sample.json
+      response: responses/v1/kv/sample_page.json

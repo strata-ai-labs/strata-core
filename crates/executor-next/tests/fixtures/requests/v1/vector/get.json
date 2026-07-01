@@ -1,0 +1,6 @@
+{
+  "type": "vector_get",
+  "collection": "docs",
+  "key": "doc-a",
+  "as_of": 42
+}

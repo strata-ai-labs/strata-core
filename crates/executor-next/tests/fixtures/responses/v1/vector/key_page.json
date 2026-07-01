@@ -1,0 +1,10 @@
+{
+  "type": "vector_key_page",
+  "data": {
+    "items": [
+      "doc-a"
+    ],
+    "has_more": true,
+    "cursor": "doc-a"
+  }
+}

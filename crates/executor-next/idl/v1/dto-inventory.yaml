@@ -1,0 +1,28 @@
+response_models:
+  - MutationAck<KvWrite>
+  - Maybe<Bytes>
+  - MutationAck<KvDelete>
+  - Page<Bytes, Bytes>
+  - Page<ScanItem, Bytes>
+  - BatchResult<KvMutationItem>
+  - BatchResult<Maybe<Bytes>>
+  - BatchResult<StatusValue<bool>>
+  - StatusValue<bool>
+  - Maybe<Vec<HistoryItem>>
+  - StatusValue<u64>
+  - SamplePage<SampleItem>
+  - MutationAck<VectorCollectionCreate>
+  - MutationAck<VectorCollectionDelete>
+  - Page<VectorCollectionInfo, String>
+  - StatusResponse<VectorCollectionInfo>
+  - MutationAck<VectorWrite>
+  - Maybe<VectorVersionedData>
+  - Maybe<Vec<VectorHistoryItem>>
+  - Page<String, String>
+  - MutationAck<VectorMetadataUpdate>
+  - MutationAck<VectorDelete>
+  - MutationAck<VectorBulkDelete>
+  - SearchResult<VectorMatch>
+  - SearchResult<VectorMatch> + IndexDiagnostics
+  - BatchResult<VectorMutationItem>
+  - BatchResult<Maybe<VectorVersionedData>>

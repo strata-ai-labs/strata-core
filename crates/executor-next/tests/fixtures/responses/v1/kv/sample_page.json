@@ -1,0 +1,22 @@
+{
+  "type": "sample_result",
+  "data": {
+    "total_count": 3,
+    "items": [
+      {
+        "key": [
+          97
+        ],
+        "value": [
+          111,
+          110,
+          101
+        ],
+        "version": 1,
+        "timestamp": 10
+      }
+    ],
+    "has_more": false,
+    "cursor": null
+  }
+}

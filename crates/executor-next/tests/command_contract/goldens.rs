@@ -54,7 +54,7 @@ fn shared_concept_goldens_match_public_json() {
 #[test]
 #[allow(clippy::too_many_lines)]
 fn public_response_family_goldens_match_public_json() {
-    let mut cases = vec![
+    let cases = vec![
         (
             Output::DatabaseInfo(AdminDatabaseInfo {
                 version: "1.0.0".to_owned(),
@@ -90,6 +90,13 @@ fn public_response_family_goldens_match_public_json() {
                 commit: commit_receipt(1, 10, 1, 0),
             },
             include_str!("../fixtures/responses/v1/kv/write_applied.json"),
+        ),
+        (
+            Output::Keys {
+                items: vec![bytes("a")],
+                page: PageInfo::terminal(),
+            },
+            include_str!("../fixtures/responses/v1/kv/list_keys.json"),
         ),
         (
             Output::DeleteResult {
@@ -182,15 +189,15 @@ fn public_response_family_goldens_match_public_json() {
         ),
     ];
 
-    #[cfg(feature = "inference")]
-    cases.push((
-        Output::InferenceText("hello".to_owned()),
-        include_str!("../fixtures/responses/v1/inference/text.json"),
-    ));
-
     for (output, expected) in cases {
         assert_json_fixture(&output, expected);
     }
+
+    #[cfg(feature = "inference")]
+    assert_json_fixture(
+        &Output::InferenceText("hello".to_owned()),
+        include_str!("../fixtures/responses/v1/inference/text.json"),
+    );
 }
 
 #[test]

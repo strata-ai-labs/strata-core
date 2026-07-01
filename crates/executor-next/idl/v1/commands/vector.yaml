@@ -1,0 +1,224 @@
+commands:
+  - id: vector.collection.create
+    kind: mutation.create
+    title: Create vector collection
+    input: Command::VectorCreateCollection
+    output: Output::VectorCollectionList
+    result: VectorCollectionCreate
+    prose: commands/vector.collection.create.md
+    wire_status: transitional
+    errors+:
+      - invalid_argument.engine.vector_dimension
+      - invalid_argument.executor.vector_dimension
+    fixtures:
+      request: requests/v1/vector/collection_create.json
+      response: responses/v1/vector/collection_list.json
+  - id: vector.collection.delete
+    kind: mutation.delete
+    title: Delete vector collection
+    input: Command::VectorDeleteCollection
+    output: Output::Bool
+    result: VectorCollectionDelete
+    prose: commands/vector.collection.delete.md
+    wire_status: transitional
+    fixtures:
+      request: requests/v1/vector/collection_delete.json
+      response: responses/v1/status/bool_true.json
+  - id: vector.collection.list
+    kind: read.page
+    title: List vector collections
+    input: Command::VectorListCollections
+    output: Output::VectorCollectionList
+    result: VectorCollectionInfo
+    response_model: Page<VectorCollectionInfo, String>
+    prose: commands/vector.collection.list.md
+    fixtures:
+      request: requests/v1/vector/collection_list.json
+      response: responses/v1/vector/collection_list.json
+  - id: vector.collection.stats
+    kind: read.status
+    title: Read vector collection stats
+    input: Command::VectorCollectionStats
+    output: Output::VectorCollectionList
+    result: VectorCollectionInfo
+    response_model: StatusResponse<VectorCollectionInfo>
+    prose: commands/vector.collection.stats.md
+    wire_status: transitional
+    fixtures:
+      request: requests/v1/vector/collection_stats.json
+      response: responses/v1/vector/collection_list.json
+  - id: vector.count
+    kind: read.status
+    title: Count vectors
+    input: Command::VectorCount
+    output: Output::Uint
+    result: u64
+    prose: commands/vector.count.md
+    fixtures:
+      request: requests/v1/vector/count.json
+      response: responses/v1/status/uint_count.json
+  - id: vector.upsert
+    kind: mutation.put
+    title: Upsert vector
+    input: Command::VectorUpsert
+    output: Output::VectorWriteResult
+    result: VectorWrite
+    prose: commands/vector.upsert.md
+    errors+:
+      - invalid_argument.engine.vector_dimension
+      - invalid_argument.engine.vector_embedding
+      - invalid_argument.engine.vector_metadata
+      - invalid_argument.executor.vector_dimension
+    fixtures:
+      request: requests/v1/vector/upsert.json
+      response: responses/v1/vector/upsert_applied.json
+  - id: vector.get
+    kind: read.get
+    title: Get vector
+    input: Command::VectorGet
+    output: Output::VectorData
+    result: VectorVersionedData
+    prose: commands/vector.get.md
+    fixtures:
+      request: requests/v1/vector/get.json
+      response: responses/v1/vector/get_found.json
+  - id: vector.history
+    kind: read.history
+    title: Read vector history
+    input: Command::VectorGetv
+    output: Output::VectorVersionHistory
+    result: VectorHistoryItem
+    prose: commands/vector.history.md
+    fixtures:
+      request: requests/v1/vector/history.json
+      response: responses/v1/vector/history_found.json
+  - id: vector.exists
+    kind: read.status
+    title: Check vector existence
+    input: Command::VectorExists
+    output: Output::Bool
+    result: bool
+    prose: commands/vector.exists.md
+    fixtures:
+      request: requests/v1/vector/exists.json
+      response: responses/v1/status/bool_true.json
+  - id: vector.keys
+    kind: read.page
+    title: List vector keys
+    input: Command::VectorListKeys
+    output: Output::VectorKeyPage
+    result: String
+    response_model: Page<String, String>
+    prose: commands/vector.keys.md
+    fixtures:
+      request: requests/v1/vector/keys.json
+      response: responses/v1/vector/key_page.json
+  - id: vector.metadata.update
+    kind: mutation.metadata_update
+    title: Update vector metadata
+    input: Command::VectorUpdateMetadata
+    output: Output::VectorMetadataUpdateResult
+    result: VectorMetadataUpdate
+    prose: commands/vector.metadata.update.md
+    errors+:
+      - invalid_argument.engine.vector_metadata_patch
+    fixtures:
+      request: requests/v1/vector/metadata_update.json
+      response: responses/v1/vector/metadata_update_applied.json
+  - id: vector.delete
+    kind: mutation.delete
+    title: Delete vector
+    input: Command::VectorDelete
+    output: Output::VectorDeleteResult
+    result: VectorDelete
+    prose: commands/vector.delete.md
+    fixtures:
+      request: requests/v1/vector/delete.json
+      response: responses/v1/vector/delete_applied.json
+  - id: vector.delete_by_filter
+    kind: mutation.bulk_delete
+    title: Delete vectors by filter
+    input: Command::VectorDeleteByFilter
+    output: Output::VectorBulkDeleteResult
+    result: VectorBulkDelete
+    prose: commands/vector.delete_by_filter.md
+    errors+:
+      - invalid_argument.engine.vector_filter
+    fixtures:
+      request: requests/v1/vector/delete_by_filter.json
+      response: responses/v1/vector/bulk_delete_applied.json
+  - id: vector.delete_all
+    kind: mutation.bulk_delete
+    title: Delete all vectors
+    input: Command::VectorDeleteAll
+    output: Output::VectorBulkDeleteResult
+    result: VectorBulkDelete
+    prose: commands/vector.delete_all.md
+    fixtures:
+      request: requests/v1/vector/delete_all.json
+      response: responses/v1/vector/bulk_delete_applied.json
+  - id: vector.query
+    kind: read.search
+    title: Query vectors
+    input: Command::VectorQuery
+    output: Output::VectorMatches
+    result: VectorMatch
+    prose: commands/vector.query.md
+    errors+:
+      - invalid_argument.engine.vector_filter
+      - invalid_argument.executor.vector_limit
+    fixtures:
+      request: requests/v1/vector/query.json
+      response: responses/v1/vector/search.json
+  - id: vector.index.query
+    kind: read.diagnostics
+    title: Query vector index
+    input: Command::VectorIndexQuery
+    output: Output::VectorIndexQuery
+    result: VectorMatch
+    prose: commands/vector.index.query.md
+    errors+:
+      - invalid_argument.engine.vector_filter
+      - invalid_argument.executor.vector_limit
+    fixtures:
+      request: requests/v1/vector/index_query.json
+      response: responses/v1/vector/search_with_index_diagnostics.json
+  - id: vector.batch_upsert
+    kind: batch.itemwise_mutation
+    title: Batch upsert vectors
+    input: Command::VectorBatchUpsert
+    output: Output::VectorBatchUpsertResults
+    result: VectorMutationItem
+    prose: commands/vector.batch_upsert.md
+    errors+:
+      - invalid_argument.engine.vector_batch
+      - invalid_argument.engine.vector_dimension
+      - invalid_argument.engine.vector_embedding
+      - invalid_argument.executor.vector_dimension
+    fixtures:
+      request: requests/v1/vector/batch_upsert.json
+      response: responses/v1/vector/batch_upsert_ok.json
+  - id: vector.batch_get
+    kind: batch.itemwise_read
+    title: Batch get vectors
+    input: Command::VectorBatchGet
+    output: Output::VectorBatchGetResults
+    result: Maybe<VectorVersionedData>
+    prose: commands/vector.batch_get.md
+    errors+:
+      - invalid_argument.engine.vector_batch
+    fixtures:
+      request: requests/v1/vector/batch_get.json
+      response: responses/v1/vector/batch_get_ok.json
+  - id: vector.batch_delete
+    kind: batch.itemwise_mutation
+    title: Batch delete vectors
+    input: Command::VectorBatchDelete
+    output: Output::VectorBatchDeleteResults
+    result: VectorMutationItem
+    prose: commands/vector.batch_delete.md
+    errors+:
+      - invalid_argument.engine.vector_batch
+    fixtures:
+      request: requests/v1/vector/batch_delete.json
+      response: responses/v1/vector/batch_delete_ok.json

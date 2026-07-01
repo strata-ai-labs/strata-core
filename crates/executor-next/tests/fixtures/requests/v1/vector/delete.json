@@ -1,0 +1,5 @@
+{
+  "type": "vector_delete",
+  "collection": "docs",
+  "key": "doc-a"
+}

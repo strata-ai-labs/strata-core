@@ -2,6 +2,9 @@ use super::{
     ArrowExportPrimitive, ArrowFileFormat, ArrowImportTarget, Executor, ExecutorResult, Output,
 };
 
+#[cfg(not(feature = "arrow"))]
+use super::{admin_convert::arrow_feature_disabled, ExecutorError};
+
 impl Executor {
     #[allow(clippy::too_many_arguments)]
     #[cfg(feature = "arrow")]

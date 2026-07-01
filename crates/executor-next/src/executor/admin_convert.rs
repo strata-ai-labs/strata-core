@@ -11,6 +11,9 @@ use super::{
 };
 
 #[cfg(not(feature = "arrow"))]
+use super::ExecutorError;
+
+#[cfg(not(feature = "arrow"))]
 pub(super) fn arrow_feature_disabled() -> ExecutorError {
     ExecutorError::invalid_input(
         "invalid_argument.executor.arrow_feature_disabled",

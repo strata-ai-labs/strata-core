@@ -1,0 +1,4 @@
+{
+  "type": "vector_delete_all",
+  "collection": "docs"
+}

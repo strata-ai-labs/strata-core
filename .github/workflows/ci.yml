@@ -53,6 +53,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
         run: cargo test --workspace
+      - name: Executor IDL overlay check
+        run: |
+          cargo run -p strata-executor-next --features idl-tooling --bin strata-idl -- check
+          cargo test -p strata-executor-next --features idl-tooling --test idl_kv_vector_overlay
       - name: Doc tests
         run: cargo test --workspace --doc --all-features --exclude strata-inference
 

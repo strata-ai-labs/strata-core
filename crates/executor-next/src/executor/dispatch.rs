@@ -1,4 +1,4 @@
-use super::{Command, Executor, ExecutorError, ExecutorResult, Output, PageInfo};
+use super::{Command, Executor, ExecutorResult, Output};
 
 impl Executor {
     /// Executes one serialized command.
