@@ -6,6 +6,7 @@ use super::{
     MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskScope,
     RecoveryDegradationClass, RecoveryHealth, StorageBudgetLedger,
 };
+use crate::branch::read::{BranchInheritedLayer, BranchOwnedTable};
 use crate::branch::state::BranchLocalState;
 use crate::commit::CommitBranchGuardSet;
 use crate::format::{
@@ -649,8 +650,13 @@ impl LifecycleTableManifestFlushCoverageProof {
             });
         }
         let recovery_health_epoch = recovery_health_epoch(health)?;
-        let branch_coverage =
-            branch_coverage_from_state_and_manifest(candidate, branch, manifest, floor)?;
+        let branch_coverage = branch_coverage_from_state_and_manifest(
+            candidate,
+            branch.owned_levels(),
+            branch.inherited_layers(),
+            manifest,
+            floor,
+        )?;
         Self::new(
             candidate,
             manifest.manifest_sequence(),
@@ -1042,12 +1048,18 @@ fn branch_coverage_from_manifest(
 
 fn branch_coverage_from_state_and_manifest(
     candidate: CommitVersion,
-    branch: &BranchLocalState,
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
     manifest: &TableManifest,
     floor: CommitVersion,
 ) -> LifecycleResult<LifecycleTableManifestBranchCoverage> {
     let base = branch_coverage_from_manifest(candidate, manifest)?;
-    let covered_versions = branch_durable_commit_versions_in_interval(branch, floor, candidate);
+    let covered_versions = branch_durable_commit_versions_in_interval(
+        owned_levels,
+        inherited_layers,
+        floor,
+        candidate,
+    );
     LifecycleTableManifestBranchCoverage::new_with_versions(
         base.branch_id(),
         base.covered_min(),
@@ -1068,17 +1080,16 @@ fn branch_coverage_from_state_and_manifest(
 /// than `O(total rows)` — the fix for the durable maintenance lock convoy
 /// (see `docs/design/performance/durable-background-lock-convoy.md`).
 pub(crate) fn branch_durable_commit_versions_in_interval(
-    branch: &BranchLocalState,
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
     floor: CommitVersion,
     candidate: CommitVersion,
 ) -> Vec<CommitVersion> {
-    let mut versions: Vec<CommitVersion> = branch
-        .owned_levels()
+    let mut versions: Vec<CommitVersion> = owned_levels
         .iter()
         .flatten()
         .chain(
-            branch
-                .inherited_layers()
+            inherited_layers
                 .iter()
                 .flat_map(|layer| layer.owned_levels().iter().flatten()),
         )
@@ -1112,12 +1123,12 @@ pub(crate) fn branch_durable_commit_versions_in_interval(
 /// per-branch fix that lifts the guard (a durable per-branch flushed-branch set + per-branch
 /// recovery, re-enabling the global fold) is tracked in multi-branch-orphaned-delta-recovery-gap.md.
 pub(crate) fn branch_checkpoint_flush_boundary(
-    branch: &BranchLocalState,
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
     visible_version: CommitVersion,
 ) -> Option<CommitVersion> {
-    let tables = branch.owned_levels().iter().flatten().chain(
-        branch
-            .inherited_layers()
+    let tables = owned_levels.iter().flatten().chain(
+        inherited_layers
             .iter()
             .flat_map(|layer| layer.owned_levels().iter().flatten()),
     );
@@ -1149,7 +1160,8 @@ pub(crate) fn branch_checkpoint_flush_boundary(
 }
 
 pub(crate) fn branch_durable_rows_cover_interval(
-    branch: &BranchLocalState,
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
     checkpoint_watermark: CommitVersion,
     candidate: CommitVersion,
 ) -> bool {
@@ -1162,7 +1174,8 @@ pub(crate) fn branch_durable_rows_cover_interval(
         .is_some_and(|first| {
             versions_cover_interval(
                 &branch_durable_commit_versions_in_interval(
-                    branch,
+                    owned_levels,
+                    inherited_layers,
                     checkpoint_watermark,
                     candidate,
                 ),
@@ -1423,7 +1436,11 @@ pub(crate) fn checkpoint_durable_branch_with_budget(
             let rows = branch
                 .checkpoint_rows(visible_version)
                 .map_err(branch_error)?;
-            let flush_boundary = branch_checkpoint_flush_boundary(branch, visible_version);
+            let flush_boundary = branch_checkpoint_flush_boundary(
+                branch.owned_levels(),
+                branch.inherited_layers(),
+                visible_version,
+            );
             Ok((rows, branch.owned_table_count() > 0, flush_boundary))
         },
     )
@@ -1469,7 +1486,11 @@ pub(crate) fn checkpoint_durable_runtime_with_budget(
             for descriptor in &active_descriptors {
                 let branch = branch_catalog.branch_state(descriptor.branch_id())?;
                 has_durable_rows |= branch.owned_table_count() > 0;
-                if let Some(boundary) = branch_checkpoint_flush_boundary(branch, visible_version) {
+                if let Some(boundary) = branch_checkpoint_flush_boundary(
+                    branch.owned_levels(),
+                    branch.inherited_layers(),
+                    visible_version,
+                ) {
                     flush_boundary = Some(flush_boundary.map_or(boundary, |f| f.max(boundary)));
                 }
                 let mut rows = branch

@@ -217,9 +217,11 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                 let mut flush_boundary: Option<CommitVersion> = None;
                 for branch in &branches {
                     has_durable_rows |= branch.owned_table_count() > 0;
-                    if let Some(boundary) =
-                        branch_checkpoint_flush_boundary(branch, visible_version)
-                    {
+                    if let Some(boundary) = branch_checkpoint_flush_boundary(
+                        branch.owned_levels(),
+                        branch.inherited_layers(),
+                        visible_version,
+                    ) {
                         flush_boundary = Some(flush_boundary.map_or(boundary, |f| f.max(boundary)));
                     }
                     let mut branch_rows = branch

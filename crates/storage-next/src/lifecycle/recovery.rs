@@ -875,7 +875,12 @@ fn table_manifest_covers_flush_watermark(
         return false;
     }
     staged_branch.is_some_and(|branch| {
-        branch_durable_rows_cover_interval(branch, checkpoint_watermark, flush_watermark)
+        branch_durable_rows_cover_interval(
+            branch.owned_levels(),
+            branch.inherited_layers(),
+            checkpoint_watermark,
+            flush_watermark,
+        )
     })
 }
 

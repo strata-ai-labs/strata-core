@@ -919,7 +919,8 @@ fn bounded_coverage_scan_matches_full_scan_over_interval() {
     for floor in 0..=33u64 {
         for candidate in 0..=33u64 {
             let bounded: Vec<u64> = branch_durable_commit_versions_in_interval(
-                &state,
+                state.owned_levels(),
+                state.inherited_layers(),
                 CommitVersion::new(floor),
                 CommitVersion::new(candidate),
             )
@@ -942,8 +943,12 @@ fn bounded_coverage_scan_matches_full_scan_over_interval() {
             .copied()
             .filter(|version| *version <= visible)
             .max();
-        let actual_boundary = branch_checkpoint_flush_boundary(&state, CommitVersion::new(visible))
-            .map(CommitVersion::as_u64);
+        let actual_boundary = branch_checkpoint_flush_boundary(
+            state.owned_levels(),
+            state.inherited_layers(),
+            CommitVersion::new(visible),
+        )
+        .map(CommitVersion::as_u64);
         assert_eq!(
             actual_boundary, expected_boundary,
             "boundary at visible={visible}"
