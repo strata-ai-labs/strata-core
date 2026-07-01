@@ -662,7 +662,10 @@ impl BranchOwnedTable {
 /// `BranchOwnedTable`, so a reader holding a layout snapshot is self-consistent; branch-total
 /// aggregate facts (max commit version, row counts, timestamp span) stay on `BranchLocalState`
 /// because they also count the active/frozen memtable and are not layout-derived. In D.1 this
-/// is a plain field with in-place mutation; D.2 makes it `ArcSwap<Arc<BranchLayout>>`.
+/// was a plain field with in-place mutation; D.2a makes the `BranchLocalState` field
+/// `Arc<BranchLayout>` (plain `Arc`, not `ArcSwap`: installs are serialized under the runtime
+/// mutex, so an install builds a new value via `Arc::make_mut` and off-lock readers hold a
+/// cheap immutable snapshot). `ArcSwap` for off-lock install composes later with Group C.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchLayout {
     owned_levels: Vec<Vec<BranchOwnedTable>>,

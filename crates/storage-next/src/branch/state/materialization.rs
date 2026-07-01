@@ -1,5 +1,7 @@
 //! Inherited-layer materialization helpers for branch-local state.
 
+use std::sync::Arc;
+
 use super::{branch_reachable_table_identity_exists, BranchLocalState};
 use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::branch::facts::{
@@ -645,7 +647,7 @@ impl BranchLocalState {
         let level_index = usize::from(BranchLevel::ZERO.raw());
         for table in replacement_tables {
             self.validate_install(BranchLevel::ZERO, &table)?;
-            self.layout.levels_mut()[level_index].push(table);
+            Arc::make_mut(&mut self.layout).levels_mut()[level_index].push(table);
         }
         self.refresh_observed_row_facts();
         Ok(())

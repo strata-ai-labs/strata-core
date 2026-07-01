@@ -1,5 +1,7 @@
 //! Branch-local state and descriptor shells.
 
+use std::sync::Arc;
+
 use super::config::BranchRuntimeConfig;
 use super::error::{BranchRuntimeError, BranchRuntimeResult};
 use super::facts::{BranchLevel, BranchReachabilitySnapshot, BranchTableRef, InheritedLayerStatus};
@@ -68,7 +70,7 @@ pub(crate) struct BranchLocalState {
     config: BranchRuntimeConfig,
     active: MutableTable,
     frozen: Vec<FrozenTable>,
-    layout: BranchLayout,
+    layout: Arc<BranchLayout>,
     compact_pointers: Vec<Option<TablePhysicalKeyBytes>>,
     inherited_layers: Vec<BranchInheritedLayer>,
     max_commit_version: Option<CommitVersion>,
@@ -90,7 +92,7 @@ impl BranchLocalState {
             config,
             active: MutableTable::new(),
             frozen: Vec::new(),
-            layout: BranchLayout::with_level_count(config.max_level_count()),
+            layout: Arc::new(BranchLayout::with_level_count(config.max_level_count())),
             compact_pointers: vec![None; config.max_level_count()],
             inherited_layers: Vec::new(),
             max_commit_version: None,
@@ -205,10 +207,13 @@ impl BranchLocalState {
     ) -> BranchRuntimeResult<BranchImmutableInstallOutcome> {
         let level_index = self.validate_install(level, &table)?;
         let table_index = if level == BranchLevel::ZERO {
-            self.layout.levels_mut()[level_index].insert(0, table);
+            Arc::make_mut(&mut self.layout).levels_mut()[level_index].insert(0, table);
             0
         } else {
-            insert_sorted_by_range(&mut self.layout.levels_mut()[level_index], table)?
+            insert_sorted_by_range(
+                &mut Arc::make_mut(&mut self.layout).levels_mut()[level_index],
+                table,
+            )?
         };
         self.refresh_observed_row_facts();
         Ok(self.install_outcome(level, table_index, None))
@@ -235,7 +240,7 @@ impl BranchLocalState {
         };
         let level_index = self.validate_install_identity_and_range(BranchLevel::ZERO, &table)?;
 
-        self.layout.levels_mut()[level_index].insert(0, table);
+        Arc::make_mut(&mut self.layout).levels_mut()[level_index].insert(0, table);
         self.frozen.remove(replacement_index);
         // A flush moves the same rows from a frozen table into a new L0 table, so
         // the observed-row facts are unchanged and need no refresh. This is the

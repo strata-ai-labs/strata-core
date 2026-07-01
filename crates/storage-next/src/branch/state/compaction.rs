@@ -1,5 +1,7 @@
 //! Branch-owned table compaction planning and installation.
 
+use std::sync::Arc;
+
 use super::{branch_reachable_table_identity_exists, insert_sorted_by_range, BranchLocalState};
 use crate::branch::error::{BranchCompactionInvalidity, BranchRuntimeError, BranchRuntimeResult};
 use crate::branch::facts::BranchTableReferenceKind;
@@ -628,7 +630,7 @@ impl BranchLocalState {
         insert_compaction_outputs(&mut replacement_levels, candidate, output_tables)?;
         validate_compaction_levels(&replacement_levels)?;
 
-        self.layout = BranchLayout::from_levels(replacement_levels);
+        self.layout = Arc::new(BranchLayout::from_levels(replacement_levels));
         self.advance_compact_pointer(compact_pointer);
         self.refresh_observed_row_facts();
         if report.dropped_rows() != 0 {
@@ -683,7 +685,7 @@ impl BranchLocalState {
         insert_compaction_outputs(&mut replacement_levels, candidate, vec![promoted_table])?;
         validate_compaction_levels(&replacement_levels)?;
 
-        self.layout = BranchLayout::from_levels(replacement_levels);
+        self.layout = Arc::new(BranchLayout::from_levels(replacement_levels));
         self.advance_compact_pointer(compact_pointer);
         self.refresh_observed_row_facts();
 

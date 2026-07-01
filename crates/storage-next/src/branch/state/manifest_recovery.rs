@@ -8,6 +8,7 @@ use crate::branch::read::{
     BranchInheritedLayer, BranchLayout, BranchOwnedTable, BranchTimestampCoverage,
 };
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchTableManifestRecoveryRequest {
@@ -148,11 +149,11 @@ impl BranchLocalState {
         request.validate_against_config(self.config)?;
 
         let mut staged = Self::new(self.branch_id, self.config)?;
-        staged.layout = BranchLayout::from_levels(request.owned_levels);
-        staged
-            .layout
+        let mut layout = BranchLayout::from_levels(request.owned_levels);
+        layout
             .levels_mut()
             .resize_with(self.config.max_level_count(), Vec::new);
+        staged.layout = Arc::new(layout);
         staged
             .compact_pointers
             .resize_with(self.config.max_level_count(), || None);
