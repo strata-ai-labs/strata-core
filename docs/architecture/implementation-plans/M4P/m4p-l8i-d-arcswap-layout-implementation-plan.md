@@ -218,17 +218,41 @@ unchanged.
 
 ### D.2b — move the maintenance coverage + scoring scans off-lock (the convoy fix)
 
-- Add `fn layout_snapshot(&self) -> Arc<BranchLayout>` (`Arc::clone(&self.layout)`).
-  Restructure the two convoy call sites (`persist_table_manifest_flush_watermark`
-  coverage; `collect_storage_pressure_with_budget` scoring) to: brief lock →
-  `layout_snapshot()` + copy needed manifest watermarks → drop lock →
-  scan the owned `Arc<BranchLayout>` off-lock. Keep the query path
-  (`capture_read_view`) as-is (it is not the convoy — reads stay sub-µs during the
-  crawl).
-- **Exit gate:** the two maintenance scans hold the runtime lock O(1) not O(rows);
-  layout/watermark captured consistently under one lock; concurrency oracle green;
-  **convoy crawl-rate A/B + workload-F throughput at 10M (n ≥ 9)** shows the
-  worker-side stall gone. This is the ledger row that must move.
+Investigation finding (2026-06-30): the runtime lock is held by the **caller**
+(`drain_durable_background_round`, `api/runtime/maintenance.rs:573`), not inside the
+runtime methods, and flush-watermark maintenance runs via the synchronous
+`Completed` step (`:580`) — entirely under that guard — whereas flush/compaction
+already use a 3-phase `Build` step (capture under lock → `build()` off-lock →
+publish under lock). So the fix gives flush-watermark coverage the same
+capture→off-lock→apply shape. Also: the flush proof's memtable check
+(`branch_has_unflushed_rows_at_or_below`, reads active/frozen) is O(memtable) =
+bounded, so it stays under the lock; only the O(owned-rows) durable coverage scan
+moves off-lock. Sub-sliced:
+
+**D.2b-1 — decouple the durable coverage scans from `&BranchLocalState` (done).**
+`branch_durable_commit_versions_in_interval`, `branch_checkpoint_flush_boundary`,
+`branch_durable_rows_cover_interval`, `branch_coverage_from_state_and_manifest` take
+`(owned_levels: &[Vec<BranchOwnedTable>], inherited_layers: &[BranchInheritedLayer])`
+instead of `&BranchLocalState`, so they can run on a captured snapshot.
+Behavior-preserving; suite + the exhaustive coverage-equivalence test green.
+
+**D.2b-2 — move the flush-watermark coverage computation off-lock (the measured fix).**
+Add `layout_snapshot()`. Restructure `drain_durable_background_round` so
+flush-watermark maintenance: (A) under the lock, does the cheap memtable check and
+captures the snapshot (`layout_snapshot()` + `inherited_layers().to_vec()` + current
+table manifest + snapshot/flush watermarks → floor + visible_version + task); (B)
+off-lock, runs the durable coverage scan on the captured snapshot to find the
+coverable candidate + proof; (C) under the lock, re-validates the proof's manifest /
+branch epochs (`validate_current_epochs` / `validate_current_branch_epochs` already
+exist) and persists — a stale snapshot (a flush/compaction advanced the manifest in
+the gap) aborts and retries next round (optimistic, mirroring the `Build` publish
+re-validation). Compaction scoring (`collect_storage_pressure_with_budget`) gets the
+same treatment only if the A/B still shows contention after the coverage move.
+- **Exit gate:** the durable coverage scan holds the runtime lock O(1) not O(rows);
+  snapshot/watermark captured consistently under one lock; the apply re-validates
+  epochs; concurrency oracle + recovery oracle green; **convoy crawl-rate A/B +
+  workload-F throughput at 10M (n ≥ 9)** shows the worker-side stall gone. This is
+  the ledger row that must move.
 
 ## Verification
 
