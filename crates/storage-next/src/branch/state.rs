@@ -109,6 +109,16 @@ impl BranchLocalState {
             .expect("default branch-local state configuration is valid")
     }
 
+    /// Cheap O(1) clone of the branch's immutable durable layout snapshot. The
+    /// flush-watermark coverage scan captures this under a brief runtime lock, then
+    /// runs the O(rows) scan on the owned `Arc` off-lock, so the lock hold stops
+    /// scaling with dataset size (D.2b). The snapshot is immutable: a
+    /// concurrent install under the lock reassigns the branch's `Arc` (via
+    /// `Arc::make_mut`), leaving this clone untouched.
+    pub(crate) fn layout_snapshot(&self) -> Arc<BranchLayout> {
+        Arc::clone(&self.layout)
+    }
+
     pub(crate) fn compact_pointer(&self, level: BranchLevel) -> Option<&TablePhysicalKeyBytes> {
         self.compact_pointers
             .get(usize::from(level.raw()))

@@ -656,7 +656,7 @@ impl BranchOwnedTable {
 }
 
 /// Immutable snapshot of a branch's own on-disk table levels (L0..Ln) — the unit that
-/// flush / compaction / materialization install replaces. Introduced for M4P-L8I Group D:
+/// flush / compaction / materialization install replaces. Introduced for Group D:
 /// it becomes the `ArcSwap`-published layout so reads / compaction scoring / flush-watermark
 /// coverage take no runtime lock. Per-table facts (commit/key ranges) live in each
 /// `BranchOwnedTable`, so a reader holding a layout snapshot is self-consistent; branch-total

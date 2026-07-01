@@ -665,6 +665,45 @@ impl LifecycleTableManifestFlushCoverageProof {
         )
     }
 
+    /// Build the coverage proof from an owned durable-layout snapshot (owned levels +
+    /// inherited layers) so the O(rows) scan can run off the runtime lock (D.2b).
+    /// Unlike [`Self::from_branch_manifest_with_floor`] this does NOT run the
+    /// memtable (`active`/`frozen`) check: that re-runs under the lock at apply time
+    /// against the *current* memtable, because a concurrent commit could land a row at
+    /// or below the candidate after this off-lock scan. `recovery_health_epoch` is
+    /// captured under the lock and stamped into the proof; the apply step re-reads the
+    /// current manifest/health epochs and calls `validate_current_epochs` /
+    /// `validate_current_branch_epochs`, which reject a proof built before a concurrent
+    /// flush/compaction advanced the table-manifest sequence.
+    pub(crate) fn from_durable_snapshot(
+        candidate: CommitVersion,
+        branch_id: BranchId,
+        owned_levels: &[Vec<BranchOwnedTable>],
+        inherited_layers: &[BranchInheritedLayer],
+        manifest: &TableManifest,
+        recovery_health_epoch: u64,
+        floor: CommitVersion,
+    ) -> LifecycleResult<Self> {
+        if branch_id != manifest.branch_id() {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof branch does not match branch state",
+            });
+        }
+        let branch_coverage = branch_coverage_from_state_and_manifest(
+            candidate,
+            owned_levels,
+            inherited_layers,
+            manifest,
+            floor,
+        )?;
+        Self::new(
+            candidate,
+            manifest.manifest_sequence(),
+            recovery_health_epoch,
+            vec![branch_coverage],
+        )
+    }
+
     pub(crate) fn validate_for_candidate(&self, candidate: CommitVersion) -> LifecycleResult<()> {
         self.validate()?;
         if self.candidate != candidate {
@@ -1185,7 +1224,7 @@ pub(crate) fn branch_durable_rows_cover_interval(
         })
 }
 
-fn branch_has_unflushed_rows_at_or_below(
+pub(crate) fn branch_has_unflushed_rows_at_or_below(
     branch: &BranchLocalState,
     candidate: CommitVersion,
 ) -> bool {
@@ -1235,7 +1274,7 @@ fn manifest_table_refs(manifest: &TableManifest) -> impl Iterator<Item = &TableM
         )
 }
 
-fn recovery_health_epoch(health: &RecoveryHealth) -> LifecycleResult<u64> {
+pub(crate) fn recovery_health_epoch(health: &RecoveryHealth) -> LifecycleResult<u64> {
     match health {
         RecoveryHealth::Healthy => Ok(1),
         RecoveryHealth::Degraded {

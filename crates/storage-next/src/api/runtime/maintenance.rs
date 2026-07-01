@@ -564,6 +564,11 @@ pub(super) fn drain_durable_background_round(
     let start = clock.now();
     let mut tasks_completed = 0;
     let mut made_progress = false;
+    // D.2b-2: once an off-lock flush-watermark coverage scan finds nothing coverable this
+    // round, skip flush-watermark for the rest of the round so the maintenance that runs
+    // after it (WAL truncation, table rewrite, durable) is not starved — mirrors the
+    // pre-D.2b under-lock fall-through.
+    let mut flush_watermark_exhausted = false;
     while tasks_completed < limits.max_tasks
         && clock.now().saturating_duration_since(start) < limits.max_runtime
     {
@@ -576,33 +581,39 @@ pub(super) fn drain_durable_background_round(
                 Ok(Some(step)) => Ok(Some(step)),
                 Ok(None) => match runtime.start_next_background_checkpoint_maintenance() {
                     Ok(Some(step)) => Ok(Some(step)),
-                    Ok(None) => match runtime.run_next_background_flush_watermark_maintenance() {
-                        Ok(Some(outcome)) => {
-                            Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)))
-                        }
-                        Ok(None) => {
-                            match runtime.start_next_background_wal_truncation_maintenance() {
-                                Ok(Some(step)) => Ok(Some(step)),
-                                Ok(None) => {
-                                    match runtime.start_next_background_table_rewrite_maintenance()
-                                    {
-                                        Ok(Some(step)) => Ok(Some(step)),
-                                        Ok(None) => {
-                                            run_next_background_durable_maintenance(&mut runtime)
-                                                .map(|outcome| {
-                                                    outcome.map(
-                                                        DurableBackgroundMaintenanceStep::completed,
-                                                    )
-                                                })
+                    Ok(None) => {
+                        let flush_watermark_step = if flush_watermark_exhausted {
+                            Ok(None)
+                        } else {
+                            runtime.start_next_background_flush_watermark_maintenance()
+                        };
+                        match flush_watermark_step {
+                            Ok(Some(step)) => Ok(Some(step)),
+                            Ok(None) => {
+                                match runtime.start_next_background_wal_truncation_maintenance() {
+                                    Ok(Some(step)) => Ok(Some(step)),
+                                    Ok(None) => {
+                                        match runtime
+                                            .start_next_background_table_rewrite_maintenance()
+                                        {
+                                            Ok(Some(step)) => Ok(Some(step)),
+                                            Ok(None) => run_next_background_durable_maintenance(
+                                                &mut runtime,
+                                            )
+                                            .map(|outcome| {
+                                                outcome.map(
+                                                    DurableBackgroundMaintenanceStep::completed,
+                                                )
+                                            }),
+                                            Err(error) => Err(map_lifecycle_error(error)),
                                         }
-                                        Err(error) => Err(map_lifecycle_error(error)),
                                     }
+                                    Err(error) => Err(map_lifecycle_error(error)),
                                 }
-                                Err(error) => Err(map_lifecycle_error(error)),
                             }
+                            Err(error) => Err(map_lifecycle_error(error)),
                         }
-                        Err(error) => Err(map_lifecycle_error(error)),
-                    },
+                    }
                     Err(error) => Err(map_lifecycle_error(error)),
                 },
                 Err(error) => Err(map_lifecycle_error(error)),
@@ -691,6 +702,37 @@ pub(super) fn drain_durable_background_round(
                 } else {
                     perf_trace::record_lifecycle_background_task_publish_failure();
                     break;
+                }
+            }
+            DurableBackgroundMaintenanceStep::FlushWatermarkCompute(inputs) => {
+                // The O(rows) flush-watermark coverage scan runs with the runtime lock
+                // RELEASED (D.2b-2); only the O(1) capture and apply take the lock.
+                let compute_start = perf_trace::start_timer();
+                let computed = inputs.compute_coverage();
+                perf_trace::record_lifecycle_background_task_unlocked_build(
+                    perf_trace::timer_elapsed(compute_start),
+                );
+                let apply = {
+                    let mut runtime = runtime.lock();
+                    runtime.apply_flush_watermark_coverage(&inputs, computed)
+                };
+                perf_trace::record_lifecycle_background_task_total(perf_trace::timer_elapsed(
+                    task_start,
+                ));
+                match apply {
+                    Ok(Some(_outcome)) => {
+                        tasks_completed += 1;
+                        made_progress = true;
+                    }
+                    Ok(None) => {
+                        // Nothing coverable this round; skip flush-watermark for the rest
+                        // of the round so later maintenance is not starved.
+                        flush_watermark_exhausted = true;
+                    }
+                    Err(_error) => {
+                        perf_trace::record_lifecycle_background_task_publish_failure();
+                        break;
+                    }
                 }
             }
         }

@@ -2,19 +2,21 @@
 
 use super::bootstrap::{BranchPublishGuard, LifecycleDurableLocalRuntime};
 use super::{branch_error, commit_error, require_admitted};
+use crate::branch::read::{BranchInheritedLayer, BranchLayout};
 use crate::branch::state::{BranchLocalState, BranchRotationOutcome};
 use crate::commit::{
     CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchRegistry, VisibleVersionTracker,
 };
 use crate::format::TableManifest;
 use crate::lifecycle::checkpoint::{
-    branch_checkpoint_flush_boundary, checkpoint_durable_rows_with_budget,
-    checkpoint_durable_runtime_with_budget,
+    branch_checkpoint_flush_boundary, branch_has_unflushed_rows_at_or_below,
+    checkpoint_durable_rows_with_budget, checkpoint_durable_runtime_with_budget,
     checkpoint_request_from_maintenance_task_with_snapshot_id, non_seeded_branch_has_durable_base,
-    persist_flush_watermark, persist_flush_watermark_with_table_manifest_proof, truncate_wal,
-    wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
-    LifecycleCheckpointRequest, LifecycleFlushWatermarkOutcome, LifecycleFlushWatermarkProof,
-    LifecycleTableManifestFlushCoverageProof, LifecycleWalTruncationOutcome,
+    persist_flush_watermark, persist_flush_watermark_with_table_manifest_proof,
+    recovery_health_epoch, truncate_wal, wal_truncation_request_from_maintenance_task,
+    LifecycleCheckpointOutcome, LifecycleCheckpointRequest, LifecycleFlushWatermarkOutcome,
+    LifecycleFlushWatermarkProof, LifecycleTableManifestFlushCoverageProof,
+    LifecycleWalTruncationOutcome,
 };
 use crate::lifecycle::compaction::{
     bind_materialization_task_for_enqueue, collect_storage_pressure_with_budget,
@@ -85,17 +87,43 @@ use crate::service::{
     QuarantineService, TableManifestService, TableManifestWrite, TableObjectReaderService,
     TableObjectService, WalGrowthFacts, WalRetentionProof, WalService,
 };
+use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 pub(crate) enum DurableBackgroundMaintenanceStep<'a> {
     Completed(Box<MaintenanceOutcome>),
     Build(Box<DurableBackgroundMaintenanceBuild<'a>>),
+    /// A pending flush-watermark coverage computation: the O(rows) coverage scan runs
+    /// off the runtime lock on the captured snapshot, then the result is applied under
+    /// the lock (D.2b-2). Inputs are fully owned so the value survives the
+    /// lock release.
+    FlushWatermarkCompute(Box<FlushWatermarkCoverageInputs>),
 }
 
 impl DurableBackgroundMaintenanceStep<'_> {
     pub(crate) fn completed(outcome: MaintenanceOutcome) -> Self {
         Self::Completed(Box::new(outcome))
     }
+}
+
+/// Inputs captured under the runtime lock for an off-lock flush-watermark coverage
+/// scan (D.2b-2). The owned durable-layout snapshot (`owned_levels`) plus the
+/// inherited layers let the O(rows) coverage scan run with the lock released;
+/// `min_unflushed_commit` lets candidate selection match the under-lock behavior
+/// off-lock (the apply step re-checks the *current* memtable under the lock, which is
+/// the anti-corruption gate). Every field is owned so the value crosses the
+/// lock-release boundary.
+pub(crate) struct FlushWatermarkCoverageInputs {
+    task: MaintenanceTask,
+    branch_id: BranchId,
+    owned_levels: Arc<BranchLayout>,
+    inherited_layers: Vec<BranchInheritedLayer>,
+    table_manifest: TableManifest,
+    floor: CommitVersion,
+    recovery_health_epoch: u64,
+    task_candidate: Option<CommitVersion>,
+    candidates: Vec<CommitVersion>,
+    min_unflushed_commit: Option<CommitVersion>,
 }
 
 pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
@@ -2147,6 +2175,186 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         outcome
     }
 
+    /// D.2b-2 background flush-watermark entry: the checkpoint-covered fast path (no
+    /// coverage scan) persists synchronously under the lock; otherwise it captures an
+    /// owned snapshot and returns `FlushWatermarkCompute`, so the O(rows) coverage scan
+    /// runs off the lock. Returns `None` (fall through to the maintenance after
+    /// flush-watermark) when there is no task or no candidate to try.
+    pub(crate) fn start_next_background_flush_watermark_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::FlushWatermark)
+        else {
+            return Ok(None);
+        };
+        if let Some(outcome) = self.run_background_flush_watermark_if_checkpoint_covered(task)? {
+            return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+        }
+        match self.capture_flush_watermark_coverage_inputs(task)? {
+            Some(inputs) => Ok(Some(
+                DurableBackgroundMaintenanceStep::FlushWatermarkCompute(Box::new(inputs)),
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Capture (under the runtime lock) the owned inputs the off-lock coverage scan
+    /// needs. Returns `None` when there is nothing to try (not a single-branch runtime,
+    /// no durable table manifest, or no candidate), so the drain falls through.
+    fn capture_flush_watermark_coverage_inputs(
+        &self,
+        task: MaintenanceTask,
+    ) -> LifecycleResult<Option<FlushWatermarkCoverageInputs>> {
+        let branch_id = self.initial_branch_id;
+        // Single-branch guard: matches the existing coverage checks. Multi-branch
+        // runtimes must capture every active branch before this relaxes.
+        if self.branch_catalog.registry().active_branch_ids() != vec![branch_id] {
+            return Ok(None);
+        }
+        let Some(table_manifest) = self
+            .services
+            .table_manifest()
+            .load_current(branch_id)
+            .map_err(manifest_error)?
+        else {
+            return Ok(None);
+        };
+        let current_manifest = self
+            .services
+            .manifest()
+            .load_required()
+            .map_err(manifest_error)?;
+        let floor = wal_retention_watermark(
+            current_manifest
+                .snapshot_watermark()
+                .map(CommitVersion::new),
+            current_manifest.flushed_through_commit_id(),
+        )
+        .unwrap_or(CommitVersion::ZERO);
+        let visible_version = self.visible.visible_version();
+        let candidates =
+            flush_watermark_candidates_from_manifest(&table_manifest, visible_version, floor);
+        let task_candidate = task.flush_watermark_candidate();
+        if candidates.is_empty() && task_candidate.is_none() {
+            return Ok(None);
+        }
+        let recovery_health_epoch = recovery_health_epoch(&self.current_recovery_health)?;
+        let branch = self
+            .branch_catalog
+            .branch_state(branch_id)
+            .expect("seeded branch is always present in the catalog");
+        let owned_levels = branch.layout_snapshot();
+        let inherited_layers = branch.inherited_layers().to_vec();
+        // The lowest commit still in the memtable: a candidate at or above it is not
+        // durably flushed. Bounds candidate selection off-lock; the apply step re-checks
+        // the current memtable under the lock.
+        let min_unflushed_commit = branch
+            .active()
+            .iter()
+            .map(|row| row.row().commit_version())
+            .chain(
+                branch
+                    .frozen()
+                    .iter()
+                    .flat_map(|table| table.iter().map(|row| row.row().commit_version())),
+            )
+            .min();
+        Ok(Some(FlushWatermarkCoverageInputs {
+            task,
+            branch_id,
+            owned_levels,
+            inherited_layers,
+            table_manifest,
+            floor,
+            recovery_health_epoch,
+            task_candidate,
+            candidates,
+            min_unflushed_commit,
+        }))
+    }
+
+    /// Apply (under the runtime lock) the result of the off-lock coverage scan. `None`
+    /// means nothing was coverable — the task stays pending and the drain falls through.
+    /// Otherwise it claims the task, persists with the pre-built proof (re-validating
+    /// epochs and the memtable against current state), and finishes the task.
+    pub(crate) fn apply_flush_watermark_coverage(
+        &mut self,
+        inputs: &FlushWatermarkCoverageInputs,
+        computed: Option<(CommitVersion, LifecycleTableManifestFlushCoverageProof)>,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let Some((candidate, proof)) = computed else {
+            return Ok(None);
+        };
+        let state = self.state;
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == inputs.task.id())?
+        else {
+            return Ok(None);
+        };
+        let result = self.persist_off_lock_flush_watermark_coverage(candidate, proof);
+        let maintenance = match result {
+            Ok(outcome) => outcome.maintenance_outcome(),
+            Err(error) => MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                .with_source_error(error),
+        };
+        let outcome = self.maintenance.finish_started(task, maintenance, false)?;
+        self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+        Ok(Some(outcome))
+    }
+
+    /// Persist a flush watermark from a proof built off-lock. The proof carries its
+    /// build-time epochs; here we re-read the *current* table-manifest sequence and
+    /// recovery-health epoch and validate the proof against those, so a concurrent
+    /// flush/compaction that advanced the manifest rejects the stale proof. The current
+    /// memtable is re-checked as the anti-corruption gate.
+    fn persist_off_lock_flush_watermark_coverage(
+        &mut self,
+        candidate: CommitVersion,
+        proof: LifecycleTableManifestFlushCoverageProof,
+    ) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let branch_id = self.initial_branch_id;
+        let manifest = self
+            .services
+            .table_manifest()
+            .load_current(branch_id)
+            .map_err(manifest_error)?
+            .ok_or(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof requires durable table manifest",
+            })?;
+        let branch = self
+            .branch_catalog
+            .branch_state(branch_id)
+            .expect("seeded branch is always present in the catalog");
+        if branch_has_unflushed_rows_at_or_below(branch, candidate) {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason:
+                    "mutable rows at or below flush watermark are not covered by table manifest",
+            });
+        }
+        let active_branches = self.branch_catalog.registry().active_branch_ids();
+        if active_branches != vec![branch_id] {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof requires all active branches to be loaded",
+            });
+        }
+        let recovery_health_epoch = recovery_health_epoch(&self.current_recovery_health)?;
+        let outcome = persist_flush_watermark_with_table_manifest_proof(
+            self.services.manifest(),
+            self.visible.visible_version(),
+            candidate,
+            &LifecycleFlushWatermarkProof::TableManifestCovered(proof),
+            manifest.manifest_sequence(),
+            recovery_health_epoch,
+            &[(branch_id, manifest.manifest_sequence())],
+        )?;
+        self.invalidate_retention_watermark_cache();
+        Ok(outcome)
+    }
+
     pub(crate) fn run_next_background_flush_watermark_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
@@ -3866,6 +4074,49 @@ fn append_released_table_names(
         }
     }
     outcome.with_affected_object_names(names)
+}
+
+/// Off-lock flush-watermark coverage scan (D.2b-2): runs the O(rows) durable
+/// coverage scan on the captured snapshot with the runtime lock released, returning the
+/// coverable candidate and its proof, or `None`. Matches the under-lock selection order
+/// — the task's own candidate first, then the highest coverable manifest candidate. The
+/// memtable filter mirrors the under-lock behavior; the apply step re-checks the current
+/// memtable under the lock (the anti-corruption gate).
+impl FlushWatermarkCoverageInputs {
+    pub(crate) fn compute_coverage(
+        &self,
+    ) -> Option<(CommitVersion, LifecycleTableManifestFlushCoverageProof)> {
+        let build = |candidate: CommitVersion| -> Option<LifecycleTableManifestFlushCoverageProof> {
+            if let Some(min_unflushed) = self.min_unflushed_commit {
+                if min_unflushed <= candidate {
+                    return None;
+                }
+            }
+            let proof = LifecycleTableManifestFlushCoverageProof::from_durable_snapshot(
+                candidate,
+                self.branch_id,
+                self.owned_levels.levels(),
+                &self.inherited_layers,
+                &self.table_manifest,
+                self.recovery_health_epoch,
+                self.floor,
+            )
+            .ok()?;
+            proof.validate_extends_checkpoint(self.floor).ok()?;
+            Some(proof)
+        };
+        if let Some(candidate) = self.task_candidate {
+            if let Some(proof) = build(candidate) {
+                return Some((candidate, proof));
+            }
+        }
+        for &candidate in &self.candidates {
+            if let Some(proof) = build(candidate) {
+                return Some((candidate, proof));
+            }
+        }
+        None
+    }
 }
 
 fn flush_watermark_candidates_from_manifest(
