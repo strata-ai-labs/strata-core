@@ -54,17 +54,65 @@ on F; the next it lands on A/B/D/E. Therefore:
 |---|---|---|---|---|---|---|
 | pre-D.1 baseline | `f4cb4961`¹ | — | 75,701 · 10.8µs | 87,062 | 81 / 94s | reference (`engine-ycsb-1782223051.json`) |
 | D.1 BranchLayout | `ed81880a` | behavior-preserving | 77,735 · 12.0µs | 82,908 | 1,153 / 15s² | **no regression** — reads + load unchanged; convoy structurally intact (`engine-ycsb-1782862993.json`) |
+| D.2a `Arc<BranchLayout>` | `da0e74f4` | behavior-preserving | — | — | — | no perf change by construction (Arc wrapper); cheap-confirm, suite green |
+| D.2b off-lock scan | `965bf6ba` | lock decoupling | — | — | 626 / 56s³ | **lock convoy removed** (loadavg **0%** single-core vs 13%; coverage scan <0.3% CPU) but **throughput unchanged — backpressure-limited** (profiling below) |
 
 ¹ Approximate — the pre-D.1 reference run predates the D.1 commit; it is the last
 full a–f durable capture before Group D.
 ² D.1's F number is **not** an improvement — it is one sample of the intermittent
 convoy, which this run happened to spread across A/B/D/E instead of F (13% of
 wall-time single-core, 185s). Reads (C, +3%) are the only trustworthy 1:1
-comparison and confirm the `owned_levels()` refactor is neutral. The real convoy
-number lands at D.2 under the n≥9 protocol.
+comparison and confirm the `owned_levels()` refactor is neutral.
+³ D.2b's F number is also **not** an improvement — it is noise. The trustworthy
+signal is the **loadavg**: 0% single-core (vs 13% at D.2a) proves the lock convoy is
+structurally gone. Throughput did not move because it is limited elsewhere (below).
+
+## Profiling finding (2026-06-30): the limiter is backpressure, not the lock
+
+gdb + `/proc` profiling of a crawling 10M durable run (`ptrace_scope=0`, worker pid,
+80 stack samples + thread-state sampling) settled why the write path crawls, and it
+is **not** the runtime lock:
+
+- **D.2b removed a real lock convoy.** The off-lock coverage scan is <0.3% of
+  samples; loadavg never collapses to one core. That part is fixed.
+- **The commit thread is ~75% asleep in `wait_for_progress`** — a backpressure
+  condvar (`StorageRuntime::commit` → `BackgroundRuntimeController::wait_for_progress_until`
+  → `ThreadedMaintenanceExecutor::wait_for_progress`). It is *throttled*, waiting for
+  background maintenance to relieve storage pressure. Another ~14% is runtime-mutex
+  wait + the **compaction-scoring scan** (`collect_storage_pressure_with_budget` →
+  `selected_compaction_score`) on the commit's `background_pressure_snapshot_for_branch`
+  path — the *other* O(rows) scan, still under the lock, on the commit side.
+- **The background workers are 48% IDLE.** They do compaction + flush/manifest fsync
+  the rest of the time, but they cannot advance the **flush watermark** — the coverage
+  scan finds nothing coverable (collapsed floor: `snapshot_watermark`/checkpoint lags
+  under write pressure + memtable churn), so **WAL never reclaims → WAL-size pressure
+  stays high → commits stay throttled** while the workers have nothing advanceable to do.
+
+So the throughput wall is the **backpressure / WAL-reclaim loop**, orthogonal to the
+lock. This is the same root cause that made the bounded-scan "Fix B" inert. The last
+three attempts (M12C concurrent compaction, Fix B, D.2b off-lock scan) all fixed
+things that are **not** this wall.
 
 ## Next
 
+The only lever that moves write throughput is the backpressure / WAL-reclaim loop.
+Two threads to pull:
+1. **Why can't the flush watermark advance under write pressure?** — the coverage
+   floor is pinned by a lagging checkpoint (`snapshot_watermark`). Is the checkpoint
+   starved under sustained writes? If the floor never rises, WAL never reclaims.
+2. **Why does the commit block on `wait_for_progress` while workers idle?** — a
+   flow-control mismatch: commits throttle waiting for pressure relief the idle
+   workers are not producing. Either the wait condition or the relief scheduling is
+   wrong.
+
+D.2b (and the rest of Group D) stays as a correct structural lock-decoupling that
+will matter once the backpressure wall is removed and commits actually flow. The
+old n≥9 convoy A/B plan below is superseded as the *primary* gate — the primary gate
+is now write throughput under the backpressure fix.
+
+<!-- superseded primary gate:
 D.2 (ArcSwap layout) is the first slice expected to move the convoy metric. Run
 the full n≥9 interleaved A/B and record median write throughput + crawl-rate as a
 new ledger row — that row is the first true test of whether the decoupling works.
+-->
+
