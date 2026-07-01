@@ -1702,6 +1702,148 @@ fn optional_maintenance_is_deferred_under_global_memory_pressure() {
 }
 
 #[test]
+fn compaction_is_surfaced_independently_of_the_flush_first_task() {
+    let branch = branch_id(0x5a);
+    // A backed-up L0 (four tables) alongside a frozen memtable. The single
+    // `suggested_task` is the flush (frozen wins the priority cascade), but the
+    // decoupled `compaction_task` still surfaces the eligible compaction so the
+    // backlog is scheduled rather than starved behind flush.
+    let mut state = BranchLocalState::empty(branch);
+    for index in 0_u64..4 {
+        install_l0_table(
+            &mut state,
+            branch,
+            &format!("decoupled-{index}"),
+            vec![put_row(
+                branch,
+                format!("decoupled-{index}").as_bytes(),
+                index + 2,
+                (index + 2) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    state
+        .append_committed_row(put_row(branch, b"frozen", 9, 9_000, b"value"))
+        .expect("append");
+    state.rotate_active();
+
+    let pressure = collect_storage_pressure(&state, empty_maintenance_status());
+    assert_eq!(pressure.frozen_tables(), 1);
+    assert_eq!(pressure.level_zero_tables(), 4);
+    // Flush still wins the single suggestion...
+    assert_eq!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Flush)
+    );
+    // ...but the compaction is surfaced independently.
+    assert_eq!(
+        crate::lifecycle::compaction::eligible_compaction_task(
+            &state,
+            None,
+            StorageBudgetPressureSeverity::Normal,
+        )
+        .map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Compaction)
+    );
+}
+
+#[test]
+fn compaction_task_is_none_below_the_rewrite_trigger() {
+    let branch = branch_id(0x5b);
+    // Three L0 tables are below the compaction trigger, with a frozen memtable
+    // present: no compaction task is surfaced, so the post-commit enqueue cannot
+    // flood the queue with sub-threshold work.
+    let mut state = BranchLocalState::empty(branch);
+    for index in 0_u64..3 {
+        install_l0_table(
+            &mut state,
+            branch,
+            &format!("below-trigger-{index}"),
+            vec![put_row(
+                branch,
+                format!("below-trigger-{index}").as_bytes(),
+                index + 2,
+                (index + 2) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    state
+        .append_committed_row(put_row(branch, b"frozen", 9, 9_000, b"value"))
+        .expect("append");
+    state.rotate_active();
+
+    let pressure = collect_storage_pressure(&state, empty_maintenance_status());
+    assert_eq!(pressure.level_zero_tables(), 3);
+    assert_eq!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Flush)
+    );
+    assert!(crate::lifecycle::compaction::eligible_compaction_task(
+        &state,
+        None,
+        StorageBudgetPressureSeverity::Normal,
+    )
+    .is_none());
+}
+
+#[test]
+fn optional_compaction_is_deferred_under_memory_pressure_even_when_frozen() {
+    let branch = branch_id(0x5c);
+    // An optional (Background) L0 compaction plus a frozen memtable: the overall
+    // severity is Urgent (frozen), so the whole-pressure neutralization does not fire,
+    // but the decoupled optional compaction must still be held back under memory
+    // pressure while the required flush is kept.
+    let mut state = BranchLocalState::empty(branch);
+    for index in 0_u64..4 {
+        install_l0_table(
+            &mut state,
+            branch,
+            &format!("defer-frozen-{index}"),
+            vec![put_row(
+                branch,
+                format!("defer-frozen-{index}").as_bytes(),
+                index + 2,
+                (index + 2) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    state
+        .append_committed_row(put_row(branch, b"frozen", 9, 9_000, b"value"))
+        .expect("append");
+    state.rotate_active();
+
+    let pressure = collect_storage_pressure(&state, empty_maintenance_status());
+    assert_eq!(
+        pressure.severity(),
+        LifecycleStoragePressureSeverity::Urgent
+    );
+    assert_eq!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Flush)
+    );
+
+    // No memory pressure: the compaction is surfaced.
+    assert!(crate::lifecycle::compaction::eligible_compaction_task(
+        &state,
+        None,
+        StorageBudgetPressureSeverity::Normal,
+    )
+    .is_some());
+
+    // Under memory pressure: the optional compaction is deferred (the required flush,
+    // surfaced via `suggested_task`, is unaffected).
+    assert!(crate::lifecycle::compaction::eligible_compaction_task(
+        &state,
+        None,
+        StorageBudgetPressureSeverity::DeferOptionalMaintenance,
+    )
+    .is_none());
+}
+
+#[test]
 fn storage_pressure_reports_active_mutable_byte_pressure_before_rotation() {
     let branch = branch_id(0x68);
     let rotation_bytes = 1024 * 1024;

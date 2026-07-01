@@ -9,7 +9,9 @@ use crate::branch::state::materialization::{
 };
 use crate::branch::state::BranchLocalState;
 use crate::lifecycle::compaction::{
-    current_compaction_request_from_maintenance_task, stale_compaction_maintenance_outcome,
+    current_compaction_request_from_maintenance_task, defer_compaction_for_resource_policy,
+    stale_compaction_maintenance_outcome, table_rewrite_outcome_was_flush_preempted,
+    FROZEN_BLOCKING_FLUSH_THRESHOLD,
 };
 use crate::lifecycle::tests::checkpoint::shared::{
     open_runtime, CheckpointBackendEvent, CheckpointTestBackend,
@@ -18,6 +20,60 @@ use crate::table::{
     sort_table_rows_by_key, ImmutableTableBuilder, TableBuilderConfig, TableIdentity, TableRow,
 };
 use strata_core_next::{CommitVersion, Timestamp};
+
+#[test]
+fn compaction_flush_preemption_gate_yields_only_at_the_blocking_threshold() {
+    let branch = branch_id(0x72);
+    let request =
+        LifecycleCompactionRequest::new(branch, BranchCompactionKind::CompactL0, "a3-gate")
+            .expect("compaction request");
+
+    let with_frozen = |count: usize| -> BranchLocalState {
+        let mut state = BranchLocalState::empty(branch);
+        for i in 0..count {
+            let n = u64::try_from(i).expect("index fits");
+            state
+                .append_committed_row(put_row(
+                    branch,
+                    format!("frozen-{i}").as_bytes(),
+                    n + 1,
+                    (n + 1) * 1_000,
+                    b"value",
+                ))
+                .expect("append");
+            state.rotate_active();
+        }
+        assert_eq!(state.frozen_table_count(), count);
+        state
+    };
+
+    // Below the blocking threshold: compaction is NOT flush-preempted. With the
+    // Unlimited io policy the gate has no other reason to defer, so it returns None.
+    for frozen in 1..FROZEN_BLOCKING_FLUSH_THRESHOLD {
+        let state = with_frozen(frozen);
+        assert!(
+            defer_compaction_for_resource_policy(
+                &state,
+                &request,
+                crate::lifecycle::config::LifecycleCompactionIoPolicy::Unlimited,
+            )
+            .expect("defer")
+            .is_none(),
+            "frozen={frozen} (< {FROZEN_BLOCKING_FLUSH_THRESHOLD}) must not flush-preempt compaction"
+        );
+    }
+
+    // At the blocking threshold: flush is blocking admission, so compaction yields.
+    let state = with_frozen(FROZEN_BLOCKING_FLUSH_THRESHOLD);
+    let outcome = defer_compaction_for_resource_policy(
+        &state,
+        &request,
+        crate::lifecycle::config::LifecycleCompactionIoPolicy::Unlimited,
+    )
+    .expect("defer")
+    .expect("compaction is flush-preempted at the blocking threshold");
+    assert!(table_rewrite_outcome_was_flush_preempted(&outcome));
+}
 
 #[test]
 fn table_rewrite_requests_reject_bad_components_and_wrong_branch_execution() {

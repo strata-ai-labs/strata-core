@@ -675,6 +675,32 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         let outcome = schedule_suggested_post_commit_maintenance(policy, pressure, |request| {
             self.enqueue_maintenance(request)
         });
+        // Compaction is orthogonal to the flush-first `suggested_task`: with frozen
+        // memtables essentially always present under load, a backed-up level would never
+        // be scheduled. Derive the eligible table-rewrite directly from the branch and
+        // enqueue it independently; coalescing bounds it to one task per (branch, level).
+        if matches!(
+            policy,
+            LifecycleMaintenanceSchedulingPolicy::EvaluateAndEnqueue
+                | LifecycleMaintenanceSchedulingPolicy::Background
+        ) {
+            let compaction = self
+                .branch_catalog
+                .branch_state(branch_id)
+                .ok()
+                .and_then(|branch| {
+                    crate::lifecycle::compaction::eligible_compaction_task(
+                        branch,
+                        Some(self.open_plan.lifecycle_config().storage_budget()),
+                        global_pressure,
+                    )
+                });
+            if let Some(compaction) = compaction {
+                // Best-effort: a full queue or coalesce is non-fatal — the next commit
+                // re-derives and re-enqueues.
+                let _ = self.enqueue_maintenance(compaction);
+            }
+        }
         let outcome = if policy == LifecycleMaintenanceSchedulingPolicy::DeterministicInline {
             self.run_inline_post_commit_maintenance(outcome)
         } else {

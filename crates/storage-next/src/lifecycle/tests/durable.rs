@@ -1089,6 +1089,82 @@ fn durable_commit_schedules_flush_when_post_commit_pressure_suggests_it() {
 }
 
 #[test]
+fn durable_post_commit_schedules_compaction_even_while_a_flush_is_suggested() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x6d);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+
+    // Build an L0 backlog at the compaction trigger (four flushed L0 tables)...
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 4);
+    // ...then leave a frozen memtable so the single flush-first suggested task is a flush.
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"post-compact-frozen", b"value"),
+            generation_guard(),
+        )
+        .expect("frozen-seed commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate to freeze");
+
+    // Precondition: the single suggested task is the flush (frozen wins the cascade), so
+    // before Lever A nothing would have scheduled the L0 compaction on the source branch.
+    let pressure = runtime.storage_pressure();
+    assert_eq!(pressure.frozen_tables(), 1);
+    assert_eq!(pressure.level_zero_tables(), 4);
+    assert_eq!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Flush)
+    );
+
+    // Post-commit scheduling now enqueues the compaction independently of the flush;
+    // the rewrite dispatcher finds it (it returns `None` when nothing is queued).
+    let _ = runtime.schedule_post_commit_maintenance_for_test(branch);
+    let outcome = runtime
+        .run_next_table_rewrite_maintenance()
+        .expect("run table rewrite")
+        .expect("a compaction task was queued");
+    assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Compaction);
+}
+
+#[test]
+fn durable_compaction_runs_with_a_frozen_table_below_the_blocking_threshold() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x6e);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+
+    // L0 backlog at the trigger, plus a single frozen memtable (below the blocking
+    // threshold of 4).
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 4);
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"a3-frozen", b"value"),
+            generation_guard(),
+        )
+        .expect("frozen-seed commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate to freeze");
+    assert_eq!(runtime.storage_pressure().frozen_tables(), 1);
+    assert_eq!(runtime.storage_pressure().level_zero_tables(), 4);
+
+    // Post-commit enqueues the compaction (A.1); with one frozen table it is below the
+    // blocking threshold, so the compaction RUNS instead of flush-preempting (A.3).
+    let _ = runtime.schedule_post_commit_maintenance_for_test(branch);
+    let outcome = runtime
+        .run_next_table_rewrite_maintenance()
+        .expect("run table rewrite")
+        .expect("a compaction task was queued");
+    assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Compaction);
+    assert!(
+        !crate::lifecycle::compaction::table_rewrite_outcome_was_flush_preempted(&outcome),
+        "compaction must run (not flush-preempt) with frozen below the blocking threshold"
+    );
+    // The L0 backlog was compacted down (L0->L1), so fewer L0 tables remain.
+    assert!(runtime.storage_pressure().level_zero_tables() < 4);
+}
+
+#[test]
 fn durable_post_commit_coverage_discovers_quiet_branch_flush_backlog() {
     let backend = DurableTestBackend::new();
     let active = branch_id(0x8a);

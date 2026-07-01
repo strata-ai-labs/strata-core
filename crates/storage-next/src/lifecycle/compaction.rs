@@ -44,7 +44,7 @@ const NONZERO_LEVEL_BLOCKING_TARGET_MULTIPLIER: u64 = 4;
 const INHERITED_LAYER_MATERIALIZATION_THRESHOLD: usize = 1;
 const INHERITED_LAYER_URGENT_MATERIALIZATION_THRESHOLD: usize = 4;
 const INHERITED_LAYER_BLOCKING_MATERIALIZATION_THRESHOLD: usize = 16;
-const FROZEN_BLOCKING_FLUSH_THRESHOLD: usize = 4;
+pub(crate) const FROZEN_BLOCKING_FLUSH_THRESHOLD: usize = 4;
 const PENDING_MAINTENANCE_BLOCKING_THRESHOLD: usize = 16;
 const DEFAULT_COMPACTION_DRAIN_PASS_LIMIT: usize = 16;
 const BOTTOMMOST_COMPACTION_INPUT_LIMIT: usize = 4;
@@ -1370,7 +1370,11 @@ pub(crate) fn defer_compaction_for_resource_policy(
     request: &LifecycleCompactionRequest,
     policy: LifecycleCompactionIoPolicy,
 ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-    if branch.frozen_table_count() > 0 {
+    // Yield to flush only when the frozen backlog is at the blocking threshold — i.e.
+    // flush is so far behind it is blocking write admission. Below that, compaction runs
+    // concurrently with flush (different lanes, owned-table-only inputs) instead of
+    // churning on preempt/requeue while a single frozen memtable exists.
+    if branch.frozen_table_count() >= FROZEN_BLOCKING_FLUSH_THRESHOLD {
         return Ok(Some(flush_pressure_preempted_compaction_outcome()));
     }
     let Some(limit_bytes) = policy.max_bytes_per_task() else {
@@ -1824,6 +1828,26 @@ pub(crate) fn collect_storage_pressure_with_budget(
         pending_maintenance,
         throttle_ratio_permille,
     }
+}
+
+/// The eligible table-rewrite task (compaction/materialization) for the most-backed-up
+/// level, decoupled from the flush-first `suggested_task` cascade so a backed-up level is
+/// scheduled even while frozen memtables pin the single suggestion to flush. Returns
+/// `None` when no level is at its rewrite trigger, or when an optional (Background)
+/// rewrite is held back under global memory pressure (mirroring the `suggested_task`
+/// deferral, but keyed on the rewrite's own severity rather than the overall pressure).
+pub(crate) fn eligible_compaction_task(
+    branch: &BranchLocalState,
+    budget: Option<StorageRuntimeBudget>,
+    global: StorageBudgetPressureSeverity,
+) -> Option<MaintenanceTaskRequest> {
+    let score = selected_table_rewrite_score(branch, budget)?;
+    if score.severity == LifecycleStoragePressureSeverity::Background
+        && global.defers_optional_maintenance()
+    {
+        return None;
+    }
+    Some(score.task_request(branch.branch_id()))
 }
 
 fn storage_pressure_decision(
