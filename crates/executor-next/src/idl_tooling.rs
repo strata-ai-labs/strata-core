@@ -3,6 +3,7 @@
 #![deny(unsafe_code)]
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -12,6 +13,12 @@ use crate::{public_error_code_entries, Command, Output};
 
 const IDL_DIR: &str = "crates/executor-next/idl/v1";
 const FIXTURE_ROOT: &str = "crates/executor-next/tests/fixtures";
+const COMMAND_INDEX_FILE: &str = "command-index.json";
+const CLI_COMMAND_INDEX_FILE: &str = "cli-command-index.json";
+const SUPPORTED_COMMAND_SCHEMA_VERSION: &str = "strata.idl.v1";
+const SUPPORTED_COMMAND_GENERATOR_VERSION: &str = "strata-executor-idl.1";
+const CLI_SCHEMA_VERSION: &str = "strata.cli.v1";
+const CLI_GENERATOR_VERSION: &str = "strata-executor-cli-idl.1";
 const COMMAND_SOURCE_FIELDS: &[&str] = &[
     "id",
     "kind",
@@ -83,6 +90,14 @@ pub enum IdlError {
         "{path} is stale; run `cargo run -p strata-executor-next --features idl-tooling --bin strata-idl -- generate`"
     )]
     Stale {
+        /// Generated file path.
+        path: PathBuf,
+    },
+    /// Generated CLI output is stale.
+    #[error(
+        "{path} is stale; run `cargo run -p strata-executor-next --features idl-tooling --bin strata-idl -- generate-cli`"
+    )]
+    CliStale {
         /// Generated file path.
         path: PathBuf,
     },
@@ -197,6 +212,107 @@ pub struct SourceInfo {
     pub command: String,
     /// Prose Markdown path relative to `crates/executor-next/idl/v1/prose`.
     pub prose: String,
+}
+
+/// Generated CLI command metadata index.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CliCommandIndex {
+    /// Generated-file marker.
+    pub generated: bool,
+    /// CLI artifact schema version.
+    pub schema_version: String,
+    /// CLI artifact generator version.
+    pub generator_version: String,
+    /// Source command-index facts.
+    pub source: CliIndexSourceInfo,
+    /// Number of commands included.
+    pub command_count: usize,
+    /// Command families sorted by family id.
+    pub families: Vec<CliFamilyGroup>,
+    /// Commands sorted by CLI path.
+    pub commands: Vec<CliCommandEntry>,
+    /// Lookup tables for runtime command resolution.
+    pub lookup: CliLookupTables,
+}
+
+/// Source command-index facts for a generated CLI index.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CliIndexSourceInfo {
+    /// Source command-index path relative to the repo root.
+    pub path: String,
+    /// SHA-256 checksum of the source command-index JSON bytes.
+    pub checksum_sha256: String,
+    /// Source command-index schema version.
+    pub schema_version: String,
+    /// Source command-index generator version.
+    pub generator_version: String,
+}
+
+/// CLI command family group.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CliFamilyGroup {
+    /// Family id.
+    pub id: String,
+    /// Number of commands in the family.
+    pub command_count: usize,
+    /// Command ids in CLI listing order.
+    pub commands: Vec<String>,
+}
+
+/// CLI command entry optimized for command discovery and explanation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CliCommandEntry {
+    /// Stable command id.
+    pub id: String,
+    /// CLI path segments.
+    pub path: Vec<String>,
+    /// Display form of the CLI path.
+    pub path_display: String,
+    /// Command family.
+    pub family: String,
+    /// Operation id within the family.
+    pub op: String,
+    /// Operation kind id.
+    pub kind: String,
+    /// User-facing title.
+    pub title: String,
+    /// One-line summary.
+    pub summary: String,
+    /// Long Markdown description.
+    pub description: String,
+    /// Documentation path.
+    pub docs: String,
+    /// Product feature.
+    pub feature: String,
+    /// Access mode.
+    pub access: String,
+    /// Commit behavior.
+    pub commit: String,
+    /// Pagination behavior.
+    pub pagination: String,
+    /// Batch behavior.
+    pub batch: String,
+    /// Executor command variant reference.
+    pub input: String,
+    /// All executor output variants this command can produce on the current wire.
+    pub outputs: Vec<String>,
+    /// Shared response concept.
+    pub response_model: String,
+    /// Registered public errors that can be surfaced for this command.
+    pub errors: Vec<ErrorRef>,
+    /// Checked-in fixture references.
+    pub fixtures: FixtureRefs,
+    /// Stability marker for the current executor wire shape.
+    pub wire_status: String,
+}
+
+/// CLI runtime lookup tables.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CliLookupTables {
+    /// Command id to entry offset.
+    pub by_id: BTreeMap<String, usize>,
+    /// CLI path display string to command id.
+    pub by_path: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -526,10 +642,7 @@ pub fn to_generated_json(index: &CommandIndex) -> Result<String> {
 pub fn generate(repo_root: &Path) -> Result<()> {
     let index = resolve_index(repo_root)?;
     let json = to_generated_json(&index)?;
-    let path = repo_root
-        .join(IDL_DIR)
-        .join("generated")
-        .join("command-index.json");
+    let path = command_index_path(repo_root);
     fs::write(&path, json).map_err(|source| IdlError::Write { path, source })
 }
 
@@ -537,10 +650,7 @@ pub fn generate(repo_root: &Path) -> Result<()> {
 pub fn check(repo_root: &Path) -> Result<()> {
     let index = resolve_index(repo_root)?;
     let expected = to_generated_json(&index)?;
-    let path = repo_root
-        .join(IDL_DIR)
-        .join("generated")
-        .join("command-index.json");
+    let path = command_index_path(repo_root);
     let actual = fs::read_to_string(&path).map_err(|source| IdlError::Read {
         path: path.clone(),
         source,
@@ -550,6 +660,293 @@ pub fn check(repo_root: &Path) -> Result<()> {
     } else {
         Err(IdlError::Stale { path })
     }
+}
+
+/// Resolves generated CLI command metadata from the checked-in command index.
+pub fn resolve_default_cli_index() -> Result<CliCommandIndex> {
+    resolve_cli_index(&default_repo_root())
+}
+
+/// Resolves generated CLI command metadata under `repo_root`.
+pub fn resolve_cli_index(repo_root: &Path) -> Result<CliCommandIndex> {
+    let path = command_index_path(repo_root);
+    let text = fs::read_to_string(&path).map_err(|source| IdlError::Read {
+        path: path.clone(),
+        source,
+    })?;
+    let source_checksum = checksum_sha256(text.as_bytes());
+    let command_index: CommandIndex =
+        serde_json::from_str(&text).map_err(|source| IdlError::Json {
+            path: path.clone(),
+            source,
+        })?;
+    cli_index_from_command_index(repo_root, &path, source_checksum, command_index)
+}
+
+/// Serializes generated CLI command metadata with stable formatting.
+pub fn to_generated_cli_json(index: &CliCommandIndex) -> Result<String> {
+    let mut json = serde_json::to_string_pretty(index).map_err(|source| IdlError::Json {
+        path: PathBuf::from(CLI_COMMAND_INDEX_FILE),
+        source,
+    })?;
+    json.push('\n');
+    Ok(json)
+}
+
+/// Generates `crates/executor-next/idl/v1/generated/cli-command-index.json`.
+pub fn generate_cli(repo_root: &Path) -> Result<()> {
+    let index = resolve_cli_index(repo_root)?;
+    let json = to_generated_cli_json(&index)?;
+    let path = cli_command_index_path(repo_root);
+    fs::write(&path, json).map_err(|source| IdlError::Write { path, source })
+}
+
+/// Checks whether the generated CLI command metadata is fresh.
+pub fn check_cli(repo_root: &Path) -> Result<()> {
+    let index = resolve_cli_index(repo_root)?;
+    let expected = to_generated_cli_json(&index)?;
+    let path = cli_command_index_path(repo_root);
+    let actual = fs::read_to_string(&path).map_err(|source| IdlError::Read {
+        path: path.clone(),
+        source,
+    })?;
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(IdlError::CliStale { path })
+    }
+}
+
+fn cli_index_from_command_index(
+    repo_root: &Path,
+    source_path: &Path,
+    source_checksum: String,
+    command_index: CommandIndex,
+) -> Result<CliCommandIndex> {
+    validate_cli_source_index(&command_index)?;
+    let source = CliIndexSourceInfo {
+        path: relative_to(source_path, repo_root),
+        checksum_sha256: source_checksum,
+        schema_version: command_index.schema_version.clone(),
+        generator_version: command_index.generator_version.clone(),
+    };
+
+    let mut seen_ids = BTreeSet::new();
+    let mut seen_paths = BTreeMap::new();
+    let mut commands = Vec::with_capacity(command_index.commands.len());
+    for command in command_index.commands {
+        let entry = cli_entry_from_resolved(command)?;
+        if !seen_ids.insert(entry.id.clone()) {
+            return Err(invalid(format!(
+                "duplicate command id `{}` in command index",
+                entry.id
+            )));
+        }
+        let path_key = cli_path_key(&entry.path);
+        if let Some(existing) = seen_paths.insert(path_key.clone(), entry.id.clone()) {
+            return Err(invalid(format!(
+                "duplicate cli path `{path_key}` for `{existing}` and `{}`",
+                entry.id
+            )));
+        }
+        commands.push(entry);
+    }
+
+    commands.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+
+    let mut by_id = BTreeMap::new();
+    let mut by_path = BTreeMap::new();
+    let mut family_commands: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (index, command) in commands.iter().enumerate() {
+        by_id.insert(command.id.clone(), index);
+        by_path.insert(command.path_display.clone(), command.id.clone());
+        family_commands
+            .entry(command.family.clone())
+            .or_default()
+            .push(command.id.clone());
+    }
+
+    let families = family_commands
+        .into_iter()
+        .map(|(id, commands)| CliFamilyGroup {
+            command_count: commands.len(),
+            id,
+            commands,
+        })
+        .collect::<Vec<_>>();
+
+    Ok(CliCommandIndex {
+        generated: true,
+        schema_version: CLI_SCHEMA_VERSION.to_owned(),
+        generator_version: CLI_GENERATOR_VERSION.to_owned(),
+        source,
+        command_count: commands.len(),
+        families,
+        commands,
+        lookup: CliLookupTables { by_id, by_path },
+    })
+}
+
+fn validate_cli_source_index(index: &CommandIndex) -> Result<()> {
+    if !index.generated {
+        return Err(invalid("command index must be marked generated"));
+    }
+    if index.schema_version != SUPPORTED_COMMAND_SCHEMA_VERSION {
+        return Err(invalid(format!(
+            "unsupported command index schema `{}`",
+            index.schema_version
+        )));
+    }
+    if index.generator_version != SUPPORTED_COMMAND_GENERATOR_VERSION {
+        return Err(invalid(format!(
+            "unsupported command index generator `{}`",
+            index.generator_version
+        )));
+    }
+    if index.commands.is_empty() {
+        return Err(invalid("command index must contain at least one command"));
+    }
+    Ok(())
+}
+
+fn cli_entry_from_resolved(command: ResolvedCommand) -> Result<CliCommandEntry> {
+    let entry = CliCommandEntry {
+        id: command.id,
+        path_display: cli_path_key(&command.cli.path),
+        path: command.cli.path,
+        family: command.family,
+        op: command.op,
+        kind: command.kind,
+        title: command.title,
+        summary: command.summary,
+        description: command.description,
+        docs: command.docs,
+        feature: command.feature,
+        access: command.access,
+        commit: command.commit,
+        pagination: command.pagination,
+        batch: command.batch,
+        input: command.input,
+        outputs: command.outputs,
+        response_model: command.response_model,
+        errors: command.errors,
+        fixtures: command.fixtures,
+        wire_status: command.wire_status,
+    };
+    validate_cli_entry(&entry)?;
+    Ok(entry)
+}
+
+fn validate_cli_entry(entry: &CliCommandEntry) -> Result<()> {
+    validate_command_id(&entry.id)?;
+    validate_cli_path(&entry.path, &entry.id)?;
+    let expected_path_display = cli_path_key(&entry.path);
+    if entry.path_display != expected_path_display {
+        return Err(invalid(format!(
+            "command `{}` has mismatched path_display `{}`",
+            entry.id, entry.path_display
+        )));
+    }
+    for (field, value) in [
+        ("family", entry.family.as_str()),
+        ("op", entry.op.as_str()),
+        ("kind", entry.kind.as_str()),
+        ("title", entry.title.as_str()),
+        ("summary", entry.summary.as_str()),
+        ("description", entry.description.as_str()),
+        ("docs", entry.docs.as_str()),
+        ("feature", entry.feature.as_str()),
+        ("access", entry.access.as_str()),
+        ("commit", entry.commit.as_str()),
+        ("pagination", entry.pagination.as_str()),
+        ("batch", entry.batch.as_str()),
+        ("input", entry.input.as_str()),
+        ("response_model", entry.response_model.as_str()),
+        ("wire_status", entry.wire_status.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(invalid(format!(
+                "command `{}` has empty `{field}`",
+                entry.id
+            )));
+        }
+        if contains_placeholder(value) {
+            return Err(invalid(format!(
+                "command `{}` has unresolved placeholder in `{field}`",
+                entry.id
+            )));
+        }
+    }
+    validate_docs_path(&entry.docs, &entry.id)?;
+    validate_executor_ref_prefix(&entry.input, "Command")?;
+    if entry.outputs.is_empty() {
+        return Err(invalid(format!(
+            "command `{}` has no output references",
+            entry.id
+        )));
+    }
+    for output in &entry.outputs {
+        validate_executor_ref_prefix(output, "Output")?;
+    }
+    if entry.errors.is_empty() {
+        return Err(invalid(format!(
+            "command `{}` has no public error references",
+            entry.id
+        )));
+    }
+    for error in &entry.errors {
+        if error.code.trim().is_empty() || error.docs.trim().is_empty() {
+            return Err(invalid(format!(
+                "command `{}` has incomplete public error reference",
+                entry.id
+            )));
+        }
+    }
+    validate_wire_status(&entry.id, &entry.wire_status)?;
+    Ok(())
+}
+
+fn validate_executor_ref_prefix(reference: &str, prefix: &str) -> Result<()> {
+    variant_name(reference, prefix).map(|_| ())
+}
+
+fn cli_path_key(path: &[String]) -> String {
+    path.join(" ")
+}
+
+fn default_cli_path_for_command_id(command_id: &str) -> Vec<String> {
+    command_id
+        .split('.')
+        .map(|segment| segment.replace('_', "-"))
+        .collect()
+}
+
+fn command_index_path(repo_root: &Path) -> PathBuf {
+    repo_root
+        .join(IDL_DIR)
+        .join("generated")
+        .join(COMMAND_INDEX_FILE)
+}
+
+fn cli_command_index_path(repo_root: &Path) -> PathBuf {
+    repo_root
+        .join(IDL_DIR)
+        .join("generated")
+        .join(CLI_COMMAND_INDEX_FILE)
+}
+
+fn checksum_sha256(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write as _;
+        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    output
 }
 
 fn resolve_command(
@@ -608,7 +1005,7 @@ fn resolve_command(
 
     let cli_path = match layer.cli_path {
         Some(path) => expand_cli_path(path, &context, &command.id)?,
-        None => command.id.split('.').map(ToOwned::to_owned).collect(),
+        None => default_cli_path_for_command_id(&command.id),
     };
     validate_cli_path(&cli_path, &command.id)?;
 

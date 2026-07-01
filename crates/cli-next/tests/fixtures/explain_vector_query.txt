@@ -1,0 +1,30 @@
+vector query
+Query vectors
+
+Search a vector collection.
+
+Runs vector search through the engine planner and returns the best matches with scores and optional metadata.
+
+Search responses return a bounded list of matches ordered by the engine. They are not cursor pages unless a later command explicitly advertises pagination.
+
+Facts:
+  ID: vector.query
+  Docs: /docs/vector/query
+  Access: read
+  Commit: none
+  Pagination: bounded
+  Batch: none
+  Input: Command::VectorQuery
+  Outputs: Output::VectorMatches
+  Response: SearchResult<VectorMatch>
+  Wire: stable
+
+Errors:
+  failed_precondition.engine.runtime_closed
+  not_found.engine.branch
+  invalid_argument.engine.product_space
+  invalid_argument.engine.vector_collection
+  invalid_argument.engine.vector_key
+  not_found.executor.vector_collection
+  invalid_argument.engine.vector_filter
+  invalid_argument.executor.vector_limit

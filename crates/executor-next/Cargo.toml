@@ -12,7 +12,7 @@ description = "Serializable command boundary for the rebuilt engine"
 [features]
 default = ["localfs", "arrow"]
 arrow = ["dep:arrow", "dep:base64", "dep:parquet"]
-idl-tooling = ["dep:serde_yaml"]
+idl-tooling = ["dep:serde_yaml", "dep:sha2"]
 inference = ["dep:strata-inference-next"]
 inference-anthropic = ["inference"]
 inference-google = ["inference"]
@@ -29,6 +29,7 @@ serde = { workspace = true }
 serde_bytes = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 strata-core-next = { path = "../core-next" }
 strata-engine-next = { path = "../engine-next", default-features = false }
 strata-inference-next = { path = "../inference-next", optional = true }

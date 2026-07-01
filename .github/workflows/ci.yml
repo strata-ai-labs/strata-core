@@ -56,7 +56,9 @@ jobs:
       - name: Executor IDL overlay check
         run: |
           cargo run -p strata-executor-next --features idl-tooling --bin strata-idl -- check
+          cargo run -p strata-executor-next --features idl-tooling --bin strata-idl -- check-cli
           cargo test -p strata-executor-next --features idl-tooling --test idl_kv_vector_overlay
+          cargo test -p strata-cli-next --test idl_cli_discovery
       - name: Doc tests
         run: cargo test --workspace --doc --all-features --exclude strata-inference
 

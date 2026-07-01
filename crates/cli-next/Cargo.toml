@@ -1,0 +1,25 @@
+[package]
+name = "strata-cli-next"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "IDL-driven command discovery shell for Strata V1"
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "strata-next"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+strata-executor-next = { path = "../executor-next", default-features = false }
+
+[dev-dependencies]
+tempfile = { workspace = true }

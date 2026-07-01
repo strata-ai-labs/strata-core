@@ -10,6 +10,7 @@
 
 #[cfg(feature = "arrow")]
 mod arrow;
+pub mod cli_metadata;
 pub mod command;
 pub mod error;
 pub mod error_registry;

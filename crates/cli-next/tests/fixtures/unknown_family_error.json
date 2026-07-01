@@ -1,0 +1,14 @@
+{
+  "schema_version": "strata.cli.output.v1",
+  "kind": "error",
+  "error": {
+    "code": "invalid_argument.cli.family_unknown",
+    "message": "unknown Strata command family `missing`",
+    "docs": "/docs/cli/commands",
+    "details": {
+      "type": "unknown_family",
+      "family": "missing",
+      "suggestions": []
+    }
+  }
+}

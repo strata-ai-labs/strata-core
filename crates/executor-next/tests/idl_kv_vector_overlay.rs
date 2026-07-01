@@ -7,7 +7,8 @@ use std::fs;
 use std::path::Path;
 
 use strata_executor_next::idl_tooling::{
-    check, default_repo_root, resolve_default_index, to_generated_json,
+    check, check_cli, default_repo_root, resolve_cli_index, resolve_default_cli_index,
+    resolve_default_index, to_generated_cli_json, to_generated_json,
 };
 
 const REQUIRED_KV: &[&str] = &[
@@ -216,7 +217,7 @@ fn transitional_vector_collection_wire_shapes_are_explicit() {
 }
 
 #[test]
-fn slice_one_does_not_add_downstream_generators() {
+fn idl_tooling_does_not_add_downstream_generators() {
     let root = default_repo_root();
     let mut source = String::new();
     for path in [
@@ -229,13 +230,13 @@ fn slice_one_does_not_add_downstream_generators() {
     for forbidden in ["OpenAPI", "TypeScript", "Python SDK", "MCP server"] {
         assert!(
             !source.contains(forbidden),
-            "Slice 1 must not add downstream generator code for {forbidden}"
+            "IDL tooling must not add downstream generator code for {forbidden}"
         );
     }
 }
 
 #[test]
-fn slice_one_b_packaging_is_executor_owned() {
+fn idl_packaging_is_executor_owned() {
     let root = default_repo_root();
     assert!(
         !root.join("crates/idl-next").exists(),
@@ -266,9 +267,174 @@ fn slice_one_b_packaging_is_executor_owned() {
 
     let executor_toml = fs::read_to_string(root.join("crates/executor-next/Cargo.toml"))
         .expect("executor Cargo.toml reads");
-    assert!(executor_toml.contains("idl-tooling = [\"dep:serde_yaml\"]"));
+    assert!(executor_toml.contains("idl-tooling = ["));
+    assert!(executor_toml.contains("\"dep:serde_yaml\""));
+    assert!(executor_toml.contains("\"dep:sha2\""));
     assert!(executor_toml.contains("name = \"strata-idl\""));
     assert!(executor_toml.contains("required-features = [\"idl-tooling\"]"));
+}
+
+#[test]
+fn generated_cli_command_index_is_fresh_and_deterministic() {
+    let root = default_repo_root();
+    check_cli(&root).expect("generated CLI IDL is fresh");
+
+    let first = resolve_default_cli_index().expect("first CLI resolve succeeds");
+    let second = resolve_default_cli_index().expect("second CLI resolve succeeds");
+    assert_eq!(first, second);
+    assert!(first.generated);
+    assert_eq!(first.schema_version, "strata.cli.v1");
+    assert_eq!(first.generator_version, "strata-executor-cli-idl.1");
+    assert_eq!(first.source.schema_version, "strata.idl.v1");
+    assert_eq!(first.source.generator_version, "strata-executor-idl.1");
+    assert_eq!(first.source.checksum_sha256.len(), 64);
+    assert!(first
+        .source
+        .checksum_sha256
+        .chars()
+        .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()));
+    assert_eq!(
+        first.command_count,
+        REQUIRED_KV.len() + REQUIRED_VECTOR.len()
+    );
+    assert_eq!(first.command_count, first.commands.len());
+
+    let generated = to_generated_cli_json(&first).expect("CLI index serializes");
+    let path = root
+        .join("crates/executor-next/idl/v1/generated")
+        .join("cli-command-index.json");
+    let checked_in = fs::read_to_string(path).expect("generated CLI file is readable");
+    assert_eq!(generated, checked_in);
+}
+
+#[test]
+fn cli_command_index_has_required_coverage_and_lookup_tables() {
+    let index = resolve_default_cli_index().expect("CLI IDL resolves");
+    let ids: BTreeSet<&str> = index
+        .commands
+        .iter()
+        .map(|command| command.id.as_str())
+        .collect();
+    for id in REQUIRED_KV.iter().chain(REQUIRED_VECTOR.iter()) {
+        assert!(ids.contains(id), "missing required CLI command `{id}`");
+    }
+
+    let mut sorted_paths = index
+        .commands
+        .iter()
+        .map(|command| command.path.clone())
+        .collect::<Vec<_>>();
+    let actual_paths = sorted_paths.clone();
+    sorted_paths.sort();
+    assert_eq!(actual_paths, sorted_paths, "commands must sort by CLI path");
+
+    for (offset, command) in index.commands.iter().enumerate() {
+        assert_eq!(command.path_display, command.path.join(" "));
+        assert!(
+            command.path.iter().all(|segment| !segment.contains('_')),
+            "generated CLI path for `{}` should not leak command-id underscores",
+            command.id
+        );
+        assert_eq!(index.lookup.by_id.get(&command.id), Some(&offset));
+        assert_eq!(
+            index.lookup.by_path.get(&command.path_display),
+            Some(&command.id)
+        );
+        assert!(!command.title.trim().is_empty());
+        assert!(!command.summary.trim().is_empty());
+        assert!(!command.description.trim().is_empty());
+        assert!(command.docs.starts_with("/docs/"));
+        assert!(command.input.starts_with("Command::"));
+        assert!(!command.outputs.is_empty());
+        assert!(command
+            .outputs
+            .iter()
+            .all(|output| output.starts_with("Output::")));
+        assert!(!command.errors.is_empty());
+    }
+
+    let kv = index
+        .families
+        .iter()
+        .find(|family| family.id == "kv")
+        .expect("KV family exists");
+    assert_eq!(kv.command_count, REQUIRED_KV.len());
+    let vector = index
+        .families
+        .iter()
+        .find(|family| family.id == "vector")
+        .expect("vector family exists");
+    assert_eq!(vector.command_count, REQUIRED_VECTOR.len());
+
+    let path_for = |id: &str| {
+        index
+            .commands
+            .iter()
+            .find(|command| command.id == id)
+            .map(|command| command.path_display.as_str())
+            .expect("command exists")
+    };
+    assert_eq!(path_for("kv.batch_get"), "kv batch-get");
+    assert_eq!(
+        path_for("vector.delete_by_filter"),
+        "vector delete-by-filter"
+    );
+    assert_eq!(
+        path_for("vector.collection.create"),
+        "vector collection create"
+    );
+}
+
+#[test]
+fn cli_generation_reads_resolved_index_not_authored_yaml_or_prose() {
+    let root = default_repo_root();
+    let temp = tempfile::tempdir().expect("tempdir creates");
+    let generated_dir = temp.path().join("crates/executor-next/idl/v1/generated");
+    fs::create_dir_all(&generated_dir).expect("generated dir creates");
+    fs::copy(
+        root.join("crates/executor-next/idl/v1/generated/command-index.json"),
+        generated_dir.join("command-index.json"),
+    )
+    .expect("command index copies");
+
+    let index =
+        resolve_cli_index(temp.path()).expect("CLI index resolves from generated JSON only");
+    assert_eq!(
+        index.command_count,
+        REQUIRED_KV.len() + REQUIRED_VECTOR.len()
+    );
+    assert_eq!(
+        index.source.path,
+        "crates/executor-next/idl/v1/generated/command-index.json"
+    );
+    assert!(
+        !temp
+            .path()
+            .join("crates/executor-next/idl/v1/commands/kv.yaml")
+            .exists(),
+        "test fixture intentionally excludes authored YAML"
+    );
+    assert!(
+        !temp
+            .path()
+            .join("crates/executor-next/idl/v1/prose/commands/kv.put.md")
+            .exists(),
+        "test fixture intentionally excludes authored prose"
+    );
+}
+
+#[test]
+fn strata_idl_generates_cli_artifacts_without_user_explain() {
+    let root = default_repo_root();
+    let source = fs::read_to_string(root.join("crates/executor-next/src/bin/strata-idl/main.rs"))
+        .expect("strata-idl source reads");
+
+    assert!(source.contains("\"generate-cli\""));
+    assert!(source.contains("\"check-cli\""));
+    assert!(
+        !source.contains("\"explain\""),
+        "strata-idl must not introduce explain; user explain belongs to strata"
+    );
 }
 
 trait ResolvedCommandExt {
