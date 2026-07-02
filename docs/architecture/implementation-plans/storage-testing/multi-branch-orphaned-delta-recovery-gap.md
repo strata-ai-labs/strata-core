@@ -56,7 +56,8 @@ Record, in the **database manifest** (which survives the manifest-loss crash), t
 
 - Recommended: a per-branch **flushed-branch set**. It is the exact signal recovery needs ("this branch has a base"), is lighter than per-branch floors, and subsumes the seed-155 global `flushed_through` for orphan detection. Keep the existing global `flushed_through` for its other uses (replay_start, WAL-truncation proofs).
 - Files: `src/format/manifest.rs` (`DatabaseManifest` encode/decode + a format-version bump or an explicit extension section — V1 is a clean break, so a version bump is acceptable), `src/service/manifest.rs` (`with_recovery_facts` / a new `persist_*` surface that writes the set atomically with the snapshot facts).
-- Constraint: this is the frozen-format change. It needs the format-version handling + golden regeneration (`storage_next_type_inventory` is unaffected; `format_golden` will need new/updated vectors).
+- Constraint: this is the frozen-format change. It needs the format-version
+  handling + golden regeneration; `format_golden` will need new/updated vectors.
 
 ### 2. Write-side: the checkpoint records the flushed-branch set
 
@@ -82,7 +83,8 @@ The three `active_branch_ids() != vec![branch_id]` guards (`durable/maintenance.
 2. **Write-side unit tests:** a multi-branch checkpoint records the flushed-branch set correctly; a never-flushed branch is absent from the set; the set round-trips through manifest encode/decode (extend the `service/manifest.rs` proptest).
 3. **Recovery unit tests (per-branch):** (a) non-seeded branch flushed + manifest dropped → clean prefix + `DataLoss`; (b) non-seeded branch **never flushed** (full snapshot) → fully retained (guard against the over-aggressive false positive); (c) seeded branch flushed + manifest dropped in a multi-branch DB → clean prefix using its own floor (not the global max); (d) both branches healthy → both fully recovered.
 4. **Multi-branch crash harness (new infra — the larger item):** the STH-2/3/4 fault + crash harnesses are single-branch (`default_branch` only) and the recovery oracle/model are per-branch-single. Extend them to N branches: create + flush + delta per branch, crash dropping seed-chosen objects (including per-branch table manifests), and oracle-verify **every** branch recovers a clean prefix (no gap). Add the deep multi-branch soak alongside the existing single-branch one.
-5. **Golden vectors:** regenerate `format_golden` vectors for the new manifest field/version; confirm `storage_next_type_inventory` (line-count snapshot) and the manifest proptest.
+5. **Golden vectors:** regenerate `format_golden` vectors for the new manifest
+   field/version; confirm the manifest proptest.
 6. **Full gate:** `--lib` + integration (crash/fs-model/recovery/maintenance/simulation), `clippy --all-features --all-targets -D warnings`, fmt, default + no-default builds, and the multi-branch soak clean end-to-end.
 
 ## Risks + scope

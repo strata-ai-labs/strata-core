@@ -1,6 +1,6 @@
 # Storage-Next Type Proliferation Phase 2 Plan
 
-Status: draft cleanup plan
+Status: historical cleanup plan; temporary inventory guard retired
 
 ## Context
 
@@ -8,7 +8,10 @@ The first storage-next type cleanup phase established the workflow, split large
 branch-state ownership areas, localized some private helpers, and added
 closeout guards. It did not aggressively reduce the total type count.
 
-Current post-CLN-T10 inventory:
+The generated inventory tooling was temporary cleanup scaffolding for this work.
+It is now retired and should not be regenerated.
+
+Historical post-CLN-T10 inventory:
 
 | Metric | Count |
 |---|---:|
@@ -79,8 +82,8 @@ Each Phase 2 slice must:
    replaces them;
 6. preserve existing behavior tests where possible, with test edits limited to
    imports and naming fallout;
-7. regenerate the inventory snapshot;
-8. lower CLN-T11 guard ceilings when counts go down.
+7. document any new named storage boundary type in the slice notes;
+8. avoid broad facade re-growth unless the slice explains the boundary need.
 
 Proof merges require extra care:
 
@@ -94,7 +97,6 @@ Proof merges require extra care:
 Every slice should run focused tests for the touched operation plus:
 
 ```sh
-cargo test -p strata-storage-next --locked --test type_inventory_closeout
 cargo test -p strata-storage-next --locked --test api_source_guard
 cargo clippy -p strata-storage-next --all-targets --all-features --locked -- -D warnings
 cargo fmt --all -- --check
@@ -114,26 +116,18 @@ cargo test -p strata-storage-next --locked --features testkit --test api_propert
 cargo test -p strata-storage-next --locked --features fault-injection --test api_faults
 ```
 
-## Guard Update Policy
+## Retired Guard Policy
 
-CLN-T11 pins the cleanup state with the inventory script and
-`tests/type_inventory_closeout.rs`.
+The temporary inventory guard is no longer part of the storage-next gate. Do
+not generate new inventory artifacts or update retired closeout ceilings.
 
-For every Phase 2 slice:
+For future cleanup slices, keep the same intent through lighter-weight gates:
 
-1. generate a new inventory file named
-   `docs/architecture/cleanup/storage-next-type-inventory-after-cln2-tX.md`;
-2. update the exact inventory snapshot path in `type_inventory_closeout.rs`;
-3. lower any affected ceilings:
-   - all struct/enum definitions;
-   - cleanup-target production definitions;
-   - parent facade re-export counts;
-   - operation-family suffix counts;
-   - scaffold allowance marker counts;
-4. do not raise a ceiling without documenting the reason in the slice.
-
-This makes type reductions sticky. Future additions must pay for themselves or
-explicitly justify the growth.
+1. run focused operation tests and the relevant source guards;
+2. keep public API and durable format surfaces explicit;
+3. document any new named boundary type in the implementation notes;
+4. reject convenience facade re-exports unless they are a real layer boundary;
+5. rely on review to challenge private operation scaffolding.
 
 ## Roadmap
 
@@ -200,7 +194,7 @@ After editing:
 4. Did parent re-export counts go down or stay flat?
 5. Did scaffold allowance markers go down or stay flat?
 6. Did focused behavior tests still pass?
-7. Did CLN-T11 closeout guards pass with lowered ceilings?
+7. Did focused behavior tests and source guards pass?
 
 ## Stop Conditions
 

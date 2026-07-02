@@ -131,16 +131,10 @@ manifest sequence behaves differently. This is the key gotcha for any future man
   branch table-manifest object only (table-data publishes pass through). A flush publishes
   table-data *before* the manifest, so an untargeted one-shot fault hits the wrong object — target
   by object name.
-- **Type-inventory guard** (`scripts/architecture/storage_next_type_inventory.py`, asserted by
-  `tests/type_inventory_closeout.rs`): counts **named** `struct`/`enum`/`type` definitions
-  (limits 1092 all / 644 cleanup-target) **and** snapshots per-file LOC in
-  `docs/architecture/cleanup/storage-next-type-inventory-after-cln2-t10.md`. Consequences:
-  - A test-only type **counts** toward the production budget — inline it (a tuple) instead of
-    naming a `struct`/`enum`/`type` alias.
-  - Adding test LOC changes the snapshot → regenerate it:
-    `python3 scripts/architecture/storage_next_type_inventory.py > docs/architecture/cleanup/storage-next-type-inventory-after-cln2-t10.md`.
-    **The regenerated doc must be committed with the crate** or the test fails — a necessary
-    exception to "crates-only" commits.
+- **Retired type-inventory guard:** this note originally referenced temporary
+  generated type-inventory tooling. That cleanup scaffold has been retired. Do
+  not regenerate inventory artifacts for this plan; use focused tests, source
+  guards, and review of any new named boundary type instead.
 - **`cargo test` takes one positional filter.** Multiple names → `unexpected argument`. Use
   `cargo test ... -- name1 name2` (filters after `--`).
 - **Benchmark CLI / output** (`benchmarks/src/bin/storage_next_l9_scale.rs`):

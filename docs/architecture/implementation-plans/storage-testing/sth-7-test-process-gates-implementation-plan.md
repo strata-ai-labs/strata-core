@@ -35,8 +35,8 @@ so the map itself gets a guard.
   cheap and high-signal; sanitizers matter at the backend/FFI edge.
 - Fuzz corpus: 28 targets in `fuzz/fuzz_targets/` + 39 goldens — present but not
   run continuously or structure-aware.
-- The source-guard/closeout pattern (`tests/*_source_guard.rs`,
-  `type_inventory_closeout.rs`) — the model for a self-verifying charter guard.
+- The source-guard/closeout pattern (`tests/*_source_guard.rs`) — the model for
+  a self-verifying charter guard.
 
 ## Coverage target (not line count)
 

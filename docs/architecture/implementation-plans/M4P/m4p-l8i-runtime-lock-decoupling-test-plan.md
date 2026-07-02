@@ -158,8 +158,8 @@ Correctness:
    for correctness; the durable changes do not import into cache policy (source guard).
 3. All format golden vectors pass unchanged (`format_golden`, table-manifest /
    checkpoint / WAL goldens) — proves zero on-disk format change.
-4. Type-inventory snapshot regenerated and within caps (bump with rationale only if
-   new types are added).
+4. Any new named storage boundary type is documented with its owning layer and
+   rationale.
 
 ## Benchmark gates
 
