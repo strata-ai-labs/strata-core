@@ -1318,6 +1318,275 @@ fn durable_global_total_reflects_committed_resident_bytes() {
     );
 }
 
+/// Independent full fold of a branch's resident bytes, computed directly from the tables
+/// (active memtable + frozen tables + owned-level tables) rather than the BS1 cached shape
+/// aggregates. This is the reference the runtime memory total must equal; because it reads
+/// table sizes directly, it also validates the total in release, where BS1.1's per-branch
+/// debug oracle is compiled out.
+fn fold_resident_bytes(state: &BranchLocalState) -> u64 {
+    let active = u64::try_from(state.active().approximate_size_bytes()).unwrap_or(u64::MAX);
+    let frozen = state.frozen().iter().fold(0u64, |total, table| {
+        total.saturating_add(u64::try_from(table.approximate_size_bytes()).unwrap_or(u64::MAX))
+    });
+    let owned = state
+        .owned_levels()
+        .iter()
+        .flatten()
+        .fold(0u64, |total, table| {
+            total.saturating_add(table.approximate_size_bytes())
+        });
+    active.saturating_add(frozen).saturating_add(owned)
+}
+
+#[test]
+fn durable_runtime_total_matches_independent_full_fold() {
+    // The block cache is disabled (`budget_parts` sets `block_cache_bytes = 0`), so the published
+    // runtime total is exactly the branch resident bytes and can be checked against an independent
+    // fold over the tables after a real flush + compaction sequence. This catches drift in the
+    // O(branches) memory-total composition (the fold + publish in `refresh_runtime_memory_total`),
+    // which the per-branch BS1.1 oracle does not cover, and holds in release.
+    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
+    let branch = branch_id(0x74);
+    let mut parts = budget_parts(256 * 1024);
+    parts.table_reader_bytes = 1024 * 1024;
+    parts.generated_artifact_bytes = 1024 * 1024;
+    parts.frozen_mutable_bytes = 256 * 1024;
+    parts.max_frozen_tables = 8;
+    parts.max_open_readers = 64;
+    parts.total_bytes = pool_sum(parts);
+    let mut runtime = open_durable_runtime(
+        branch,
+        &backend,
+        StorageRuntimeBudget::from_parts(parts).expect("budget"),
+    );
+
+    // Two owned L0 tables via the real flush path (commit -> rotate -> flush), then compact them.
+    for tag in ["a", "b"] {
+        runtime
+            .execute_durable_commit(
+                durable_put_batch(
+                    branch,
+                    physical_key(branch, tag.as_bytes()),
+                    vec![0x33; 512],
+                ),
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("commit");
+        runtime.rotate_active_for_maintenance().expect("rotate");
+        runtime
+            .flush_frozen(&flush_request(branch, tag))
+            .expect("flush");
+    }
+    runtime
+        .compact_branch_tables(
+            &LifecycleCompactionRequest::new(
+                branch,
+                BranchCompactionKind::CompactL0,
+                "drift-compact-output",
+            )
+            .expect("compaction request"),
+        )
+        .expect("compact");
+
+    // Leave a rotated-but-unflushed frozen table plus a populated active memtable, so all three
+    // resident components (active + frozen + owned) contribute to the total.
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(
+                branch,
+                physical_key(branch, b"frozen-tail"),
+                vec![0x35; 512],
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit");
+    runtime.rotate_active_for_maintenance().expect("rotate");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(
+                branch,
+                physical_key(branch, b"active-tail"),
+                vec![0x36; 512],
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit");
+
+    let _ = runtime.budget_snapshot();
+    let state = runtime.branch_state();
+    assert!(
+        state.owned_table_count() > 0,
+        "compaction left owned tables"
+    );
+    assert_eq!(state.frozen_table_count(), 1, "one frozen table remains");
+    assert!(state.active_row_count() > 0, "active memtable populated");
+    assert_eq!(
+        runtime.runtime_total_bytes(),
+        fold_resident_bytes(state),
+        "durable runtime memory total must equal an independent full table fold"
+    );
+}
+
+#[test]
+fn cache_runtime_total_matches_independent_full_fold() {
+    // Cache mode has no block-cache term at all (`refresh_runtime_memory_total` sets the total to
+    // the branch resident sum), so the published total must equal the independent fold over active
+    // + frozen tables regardless of the budget.
+    let branch = branch_id(0x76);
+    let mut runtime = open_cache_runtime(branch, storage_budget(256 * 1024));
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"cache-frozen"),
+                vec![0x33; 512],
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("commit");
+    runtime.rotate_active_for_maintenance().expect("rotate");
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"cache-active"),
+                vec![0x34; 512],
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("commit");
+
+    let _ = runtime.budget_snapshot();
+    let state = runtime.branch_state();
+    assert_eq!(state.frozen_table_count(), 1, "one frozen table remains");
+    assert!(state.active_row_count() > 0, "active memtable populated");
+    assert_eq!(
+        runtime.runtime_total_bytes(),
+        fold_resident_bytes(state),
+        "cache runtime memory total must equal an independent full table fold"
+    );
+}
+
+#[test]
+fn durable_runtime_total_sums_resident_bytes_across_all_branches() {
+    // The runtime total is the O(branches) sum of every branch's resident bytes. Verify it equals
+    // the exact per-branch fold across two asymmetric branches, so a fold bug that skips a branch
+    // or double-counts one would be caught (the combined-over-budget rejection test only proves the
+    // sum is large enough to trip the budget, not that it is exact). Block cache disabled -> total
+    // is exactly the branch sum.
+    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
+    let branch_a = branch_id(0x77);
+    let branch_b = branch_id(0x78);
+    let mut parts = budget_parts(1024 * 1024);
+    parts.total_bytes = pool_sum(parts);
+    let mut runtime = open_durable_runtime(
+        branch_a,
+        &backend,
+        StorageRuntimeBudget::from_parts(parts).expect("budget"),
+    );
+    runtime
+        .create_branch(
+            branch_b,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create branch b");
+
+    // Asymmetric resident sizes so `fold_a != fold_b` — a bug that counts one branch for both would
+    // not produce the correct sum.
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch_a, physical_key(branch_a, b"a"), vec![0x33; 1024]),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit a");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch_b, physical_key(branch_b, b"b"), vec![0x34; 4096]),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit b");
+
+    let _ = runtime.budget_snapshot();
+    let fold_a = fold_resident_bytes(
+        runtime
+            .branch_catalog()
+            .branch_state(branch_a)
+            .expect("branch a state"),
+    );
+    let fold_b = fold_resident_bytes(
+        runtime
+            .branch_catalog()
+            .branch_state(branch_b)
+            .expect("branch b state"),
+    );
+    assert!(
+        fold_a > 0 && fold_b > 0,
+        "both branches hold resident bytes"
+    );
+    assert_ne!(fold_a, fold_b, "branches are asymmetric");
+    assert_eq!(
+        runtime.runtime_total_bytes(),
+        fold_a.saturating_add(fold_b),
+        "runtime memory total must sum resident bytes across all branches"
+    );
+}
+
+#[test]
+fn cache_runtime_total_sums_resident_bytes_across_all_branches() {
+    // Cache mode folds resident bytes across all branches on its own (separate) refresh path,
+    // with no block-cache term. Verify the published total equals the exact per-branch fold across
+    // two asymmetric branches (the cache cross-branch fold is a distinct copy of the durable one).
+    let branch_a = branch_id(0x79);
+    let branch_b = branch_id(0x7a);
+    let mut runtime = open_cache_runtime(branch_a, storage_budget(1024 * 1024));
+    runtime
+        .create_branch(
+            branch_b,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create branch b");
+    runtime
+        .execute_cache_commit(
+            put_batch(branch_a, physical_key(branch_a, b"a"), vec![0x33; 1024]),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("commit a");
+    runtime
+        .execute_cache_commit(
+            put_batch(branch_b, physical_key(branch_b, b"b"), vec![0x34; 4096]),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("commit b");
+
+    let _ = runtime.budget_snapshot();
+    let fold_a = fold_resident_bytes(
+        runtime
+            .branch_catalog()
+            .branch_state(branch_a)
+            .expect("branch a state"),
+    );
+    let fold_b = fold_resident_bytes(
+        runtime
+            .branch_catalog()
+            .branch_state(branch_b)
+            .expect("branch b state"),
+    );
+    assert!(
+        fold_a > 0 && fold_b > 0,
+        "both branches hold resident bytes"
+    );
+    assert_ne!(fold_a, fold_b, "branches are asymmetric");
+    assert_eq!(
+        runtime.runtime_total_bytes(),
+        fold_a.saturating_add(fold_b),
+        "cache runtime memory total must sum resident bytes across all branches"
+    );
+}
+
 #[test]
 fn multi_branch_combined_resident_over_budget_refuses_commit() {
     // total_bytes is just above active_mutable_bytes, so a single branch can never exceed the

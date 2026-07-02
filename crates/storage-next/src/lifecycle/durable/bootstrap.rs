@@ -526,6 +526,15 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.budget.total_used_bytes()
     }
 
+    /// The isolated database-wide runtime memory total (branch resident bytes + block cache),
+    /// without the in-flight ledger pool reservations that `budget_total_used_bytes` adds.
+    /// Test-only: lets the budget drift test assert the published total against an independent
+    /// full fold.
+    #[cfg(test)]
+    pub(crate) fn runtime_total_bytes(&self) -> u64 {
+        self.budget.runtime_total_bytes()
+    }
+
     pub(crate) fn budget_global_pressure(&self) -> StorageBudgetPressureSeverity {
         self.budget.global_pressure()
     }
