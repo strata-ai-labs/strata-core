@@ -238,11 +238,29 @@ fn help_adapter_renders_groups_family_and_command_from_metadata() {
     let command_help = strata_cli_next::render_command_help(kv_put);
 
     assert!(top_level.contains("strata explain kv.put"));
+    assert!(top_level.contains("strata --db ./my-db kv put user Claude"));
+    assert!(top_level.contains("kv          Execute KV commands against a database."));
     assert!(top_level.contains("kv       13 commands"));
     assert!(kv_help.contains("kv put"));
     assert!(kv_help.contains("Store or replace a KV value by key."));
     assert!(command_help.contains("MutationAck<KvWrite>"));
     assert!(command_help.contains("/docs/kv/put"));
+}
+
+#[test]
+fn executable_kv_help_uses_runtime_cli_shape() {
+    let kv_help = run_success(&["kv", "--help"]);
+    let kv_put_help = run_success(&["kv", "put", "--help"]);
+
+    let kv_help = stdout(&kv_help);
+    assert!(kv_help.contains("Usage: strata --db <path> kv <operation> [options]"));
+    assert!(kv_help.contains("--                    Treat following tokens as KV operands."));
+    assert!(kv_help.contains("strata --db ./my-db kv put flag -- --json"));
+
+    let kv_put_help = stdout(&kv_put_help);
+    assert!(kv_put_help.contains("kv put"));
+    assert!(kv_put_help.contains("Put KV value"));
+    assert!(kv_put_help.contains("MutationAck<KvWrite>"));
 }
 
 #[test]

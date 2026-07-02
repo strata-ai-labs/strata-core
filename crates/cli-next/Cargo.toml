@@ -19,7 +19,7 @@ path = "src/main.rs"
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-strata-executor-next = { path = "../executor-next", default-features = false }
+strata-executor-next = { path = "../executor-next", default-features = false, features = ["localfs"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -5,11 +5,15 @@
 #![allow(clippy::result_large_err)]
 
 use std::ffi::OsString;
+use std::path::PathBuf;
 
 use serde::Serialize;
 use strata_executor_next::cli_metadata::{
     CliCommandCatalog, CliCommandEntry, CliCommandSuggestions, CliFamilyGroup, CliMetadataError,
 };
+use strata_executor_next::{ErrorStatus, ExecutorError};
+
+mod kv_execution;
 
 /// Production CLI name used in user-facing help text.
 pub const PRODUCTION_COMMAND_NAME: &str = "strata";
@@ -18,6 +22,7 @@ const OUTPUT_SCHEMA_VERSION: &str = "strata.cli.output.v1";
 const COMMAND_DISCOVERY_DOCS: &str = "/docs/cli/commands";
 const UNKNOWN_COMMAND_CODE: &str = "invalid_argument.cli.command_unknown";
 const UNKNOWN_FAMILY_CODE: &str = "invalid_argument.cli.family_unknown";
+const ARGUMENT_DELIMITER: &str = "--";
 
 /// Captured CLI process output.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -65,6 +70,7 @@ pub fn render_top_level_help(catalog: &CliCommandCatalog) -> String {
         "Commands:".to_string(),
         "  commands    List generated command metadata.".to_string(),
         "  explain     Explain a command from generated metadata.".to_string(),
+        "  kv          Execute KV commands against a database.".to_string(),
         String::new(),
         "Families:".to_string(),
     ];
@@ -78,6 +84,7 @@ pub fn render_top_level_help(catalog: &CliCommandCatalog) -> String {
     lines.push("Examples:".to_string());
     lines.push("  strata commands --family kv".to_string());
     lines.push("  strata explain kv.put".to_string());
+    lines.push("  strata --db ./my-db kv put user Claude".to_string());
     lines.push("  strata explain vector query".to_string());
     join_lines(lines)
 }
@@ -106,6 +113,7 @@ pub fn render_command_help(command: &CliCommandEntry) -> String {
 
 fn run_inner(mut args: Vec<String>) -> Result<String, CliError> {
     let format = extract_format(&mut args)?;
+    let db = extract_db(&mut args, format)?;
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         args.retain(|arg| arg != "--help" && arg != "-h");
         return render_help_for(&args, format);
@@ -127,6 +135,10 @@ fn run_inner(mut args: Vec<String>) -> Result<String, CliError> {
         "explain" => {
             args.remove(0);
             run_explain(&args, format)
+        }
+        "kv" => {
+            args.remove(0);
+            kv_execution::run_kv(args, format, db)
         }
         _ => Err(CliError::unknown_command(args.join(" "), format)),
     }
@@ -150,6 +162,22 @@ fn render_help_for(args: &[String], format: OutputFormat) -> Result<String, CliE
             OutputFormat::Human => render_explain_help(),
             OutputFormat::Json => json_output(&TopLevelHelpJson::from_catalog(&catalog)),
         }),
+        Some("kv") => {
+            if args.len() == 1 {
+                return Ok(match format {
+                    OutputFormat::Human => render_kv_help(&catalog),
+                    OutputFormat::Json => json_output(&TopLevelHelpJson::from_catalog(&catalog)),
+                });
+            }
+            let selector = args.join(" ");
+            let Some(command) = catalog.command(&selector) else {
+                return Err(CliError::unknown_command(selector, format));
+            };
+            Ok(match format {
+                OutputFormat::Human => render_command_help(command),
+                OutputFormat::Json => json_output(&ExplainJson::new(&catalog, command)),
+            })
+        }
         Some(selector) => {
             if let Some(family) = catalog.family(selector) {
                 Ok(render_family_help(&catalog, family))
@@ -219,6 +247,7 @@ fn extract_format(args: &mut Vec<String>) -> Result<OutputFormat, CliError> {
     let mut offset = 0;
     while offset < args.len() {
         match args[offset].as_str() {
+            ARGUMENT_DELIMITER => break,
             "--json" => {
                 format = OutputFormat::Json;
                 args.remove(offset);
@@ -238,6 +267,32 @@ fn extract_format(args: &mut Vec<String>) -> Result<OutputFormat, CliError> {
         }
     }
     Ok(format)
+}
+
+fn extract_db(args: &mut Vec<String>, format: OutputFormat) -> Result<Option<PathBuf>, CliError> {
+    let mut db = None;
+    let mut offset = 0;
+    while offset < args.len() {
+        match args[offset].as_str() {
+            ARGUMENT_DELIMITER => break,
+            "--db" | "--database" => {
+                let flag = args.remove(offset);
+                if db.is_some() {
+                    return Err(CliError::usage(format!("duplicate {flag}"), format));
+                }
+                let Some(value) = args.get(offset).cloned() else {
+                    return Err(CliError::usage(format!("missing value for {flag}"), format));
+                };
+                if value.starts_with("--") {
+                    return Err(CliError::usage(format!("missing value for {flag}"), format));
+                }
+                args.remove(offset);
+                db = Some(PathBuf::from(value));
+            }
+            _ => offset += 1,
+        }
+    }
+    Ok(db)
 }
 
 fn extract_family(
@@ -315,6 +370,38 @@ fn render_commands_help(catalog: &CliCommandCatalog) -> String {
     join_lines(lines)
 }
 
+fn render_kv_help(catalog: &CliCommandCatalog) -> String {
+    let family = catalog
+        .family("kv")
+        .expect("embedded metadata has KV family");
+    let mut lines = vec![
+        "KV commands".to_string(),
+        String::new(),
+        "Usage: strata --db <path> kv <operation> [options]".to_string(),
+        String::new(),
+        "Operations:".to_string(),
+    ];
+    for command in commands_for_group(catalog, family) {
+        lines.push(format!(
+            "  {:<24} {}",
+            command.path_display, command.summary
+        ));
+    }
+    lines.push(String::new());
+    lines.push("Common options:".to_string());
+    lines.push("  --branch <name>       Target branch.".to_string());
+    lines.push("  --space <name>        Target product space.".to_string());
+    lines.push("  --format human|json   Select output format.".to_string());
+    lines.push("  --                    Treat following tokens as KV operands.".to_string());
+    lines.push(String::new());
+    lines.push("Examples:".to_string());
+    lines.push("  strata --db ./my-db kv put user Claude".to_string());
+    lines.push("  strata --db ./my-db kv put flag -- --json".to_string());
+    lines.push("  strata --db ./my-db kv get user --format json".to_string());
+    lines.push("  strata kv put --help".to_string());
+    join_lines(lines)
+}
+
 fn render_explain_help() -> String {
     join_lines(vec![
         "Explain a Strata command".to_string(),
@@ -369,7 +456,7 @@ fn commands_for_group<'a>(
         .collect()
 }
 
-fn json_output<T: Serialize>(value: &T) -> String {
+pub(crate) fn json_output<T: Serialize>(value: &T) -> String {
     serde_json::to_string_pretty(value).expect("CLI JSON output must be serializable")
 }
 
@@ -385,7 +472,7 @@ fn join_lines(lines: impl IntoIterator<Item = String>) -> String {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum OutputFormat {
+pub(crate) enum OutputFormat {
     Human,
     Json,
 }
@@ -404,7 +491,7 @@ impl OutputFormat {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct CliError {
+pub(crate) struct CliError {
     code: String,
     message: String,
     docs: String,
@@ -414,7 +501,7 @@ struct CliError {
 }
 
 impl CliError {
-    fn usage(message: String, format: OutputFormat) -> Self {
+    pub(crate) fn usage(message: String, format: OutputFormat) -> Self {
         Self {
             code: "invalid_argument.cli.usage".to_string(),
             message,
@@ -422,6 +509,18 @@ impl CliError {
             exit_code: 2,
             format,
             details: CliErrorDetails::Usage,
+        }
+    }
+
+    pub(crate) fn executor(error: &ExecutorError, format: OutputFormat) -> Self {
+        let status = error.status().clone();
+        Self {
+            code: status.code().to_owned(),
+            message: status.message().to_owned(),
+            docs: status.docs_url().to_owned(),
+            exit_code: 1,
+            format,
+            details: CliErrorDetails::Executor(status),
         }
     }
 
@@ -487,7 +586,16 @@ impl CliError {
                 "error: {}\ncode: {}\ndocs: {}\n",
                 self.message, self.code, self.docs
             ),
-            OutputFormat::Json => ensure_trailing_newline(json_output(&CliErrorJson::from(self))),
+            OutputFormat::Json => match &self.details {
+                CliErrorDetails::Executor(status) => {
+                    ensure_trailing_newline(json_output(&ExecutorErrorJson {
+                        schema_version: OUTPUT_SCHEMA_VERSION,
+                        kind: "error",
+                        error: status,
+                    }))
+                }
+                _ => ensure_trailing_newline(json_output(&CliErrorJson::from(self))),
+            },
         };
         CliProcessOutput {
             exit_code,
@@ -508,6 +616,7 @@ enum CliErrorDetails {
         family: String,
         suggestions: Vec<String>,
     },
+    Executor(ErrorStatus),
     Metadata,
 }
 
@@ -574,9 +683,16 @@ impl From<CliErrorDetails> for ErrorDetailsJson {
                 family,
                 suggestions,
             },
-            CliErrorDetails::Metadata => Self::Metadata,
+            CliErrorDetails::Executor(_) | CliErrorDetails::Metadata => Self::Metadata,
         }
     }
+}
+
+#[derive(Serialize)]
+struct ExecutorErrorJson<'a> {
+    schema_version: &'static str,
+    kind: &'static str,
+    error: &'a ErrorStatus,
 }
 
 #[derive(Serialize)]
