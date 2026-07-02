@@ -13,6 +13,7 @@ use strata_executor_next::cli_metadata::{
 };
 use strata_executor_next::{ErrorStatus, ExecutorError};
 
+mod execution;
 mod kv_execution;
 
 /// Production CLI name used in user-facing help text.
@@ -22,7 +23,6 @@ const OUTPUT_SCHEMA_VERSION: &str = "strata.cli.output.v1";
 const COMMAND_DISCOVERY_DOCS: &str = "/docs/cli/commands";
 const UNKNOWN_COMMAND_CODE: &str = "invalid_argument.cli.command_unknown";
 const UNKNOWN_FAMILY_CODE: &str = "invalid_argument.cli.family_unknown";
-const ARGUMENT_DELIMITER: &str = "--";
 
 /// Captured CLI process output.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -247,7 +247,7 @@ fn extract_format(args: &mut Vec<String>) -> Result<OutputFormat, CliError> {
     let mut offset = 0;
     while offset < args.len() {
         match args[offset].as_str() {
-            ARGUMENT_DELIMITER => break,
+            execution::ARGUMENT_DELIMITER => break,
             "--json" => {
                 format = OutputFormat::Json;
                 args.remove(offset);
@@ -274,7 +274,7 @@ fn extract_db(args: &mut Vec<String>, format: OutputFormat) -> Result<Option<Pat
     let mut offset = 0;
     while offset < args.len() {
         match args[offset].as_str() {
-            ARGUMENT_DELIMITER => break,
+            execution::ARGUMENT_DELIMITER => break,
             "--db" | "--database" => {
                 let flag = args.remove(offset);
                 if db.is_some() {

@@ -2,9 +2,13 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use serde::Serialize;
-use strata_executor_next::{Bytes, Command, Executor, Output};
+use strata_executor_next::{Bytes, Command, Output};
 
-use crate::{json_output, CliError, OutputFormat, ARGUMENT_DELIMITER};
+use crate::execution::{
+    bytes, execute_durable, reject_unknown_flags, require_positional_len, strip_argument_delimiter,
+    take_string, take_u64, CommandScope,
+};
+use crate::{json_output, CliError, OutputFormat};
 
 pub(crate) fn run_kv(
     mut args: Vec<String>,
@@ -18,20 +22,7 @@ pub(crate) fn run_kv(
         ));
     };
     let command = parse_kv_command(&mut args, format)?;
-    let mut executor =
-        Executor::open_durable_local(db).map_err(|error| CliError::executor(&error, format))?;
-    let output = match executor.execute(command) {
-        Ok(output) => output,
-        Err(error) => {
-            // Preserve the command failure, but do not leave embedded callers
-            // with an explicitly opened durable handle.
-            let _ = executor.close();
-            return Err(CliError::executor(&error, format));
-        }
-    };
-    executor
-        .close()
-        .map_err(|error| CliError::executor(&error, format))?;
+    let output = execute_durable(db, command, format)?;
     Ok(render_output(&output, format))
 }
 
@@ -56,7 +47,7 @@ fn parse_kv_command(args: &mut Vec<String>, format: OutputFormat) -> Result<Comm
 }
 
 fn parse_put(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
-    let scope = KvScope::extract(args, format)?;
+    let scope = CommandScope::extract(args, format)?;
     reject_unknown_flags(args, format)?;
     strip_argument_delimiter(args);
     require_positional_len(args, 2, "kv put <key> <value>", format)?;
@@ -69,7 +60,7 @@ fn parse_put(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, Cl
 }
 
 fn parse_get(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
-    let scope = KvScope::extract(args, format)?;
+    let scope = CommandScope::extract(args, format)?;
     let as_of = take_u64(args, "--as-of", format)?;
     reject_unknown_flags(args, format)?;
     strip_argument_delimiter(args);
@@ -83,7 +74,7 @@ fn parse_get(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, Cl
 }
 
 fn parse_delete(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
-    let scope = KvScope::extract(args, format)?;
+    let scope = CommandScope::extract(args, format)?;
     reject_unknown_flags(args, format)?;
     strip_argument_delimiter(args);
     require_positional_len(args, 1, "kv delete <key>", format)?;
@@ -95,7 +86,7 @@ fn parse_delete(args: &mut Vec<String>, format: OutputFormat) -> Result<Command,
 }
 
 fn parse_list(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
-    let scope = KvScope::extract(args, format)?;
+    let scope = CommandScope::extract(args, format)?;
     let prefix = take_string(args, "--prefix", format)?.map(|value| bytes(&value));
     let cursor = take_string(args, "--cursor", format)?.map(|value| bytes(&value));
     let limit = take_u64(args, "--limit", format)?;
@@ -114,7 +105,7 @@ fn parse_list(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, C
 }
 
 fn parse_scan(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
-    let scope = KvScope::extract(args, format)?;
+    let scope = CommandScope::extract(args, format)?;
     let start = take_string(args, "--start", format)?.map(|value| bytes(&value));
     let limit = take_u64(args, "--limit", format)?;
     reject_unknown_flags(args, format)?;
@@ -129,7 +120,7 @@ fn parse_scan(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, C
 }
 
 fn parse_exists(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
-    let scope = KvScope::extract(args, format)?;
+    let scope = CommandScope::extract(args, format)?;
     reject_unknown_flags(args, format)?;
     strip_argument_delimiter(args);
     require_positional_len(args, 1, "kv exists <key>", format)?;
@@ -141,7 +132,7 @@ fn parse_exists(args: &mut Vec<String>, format: OutputFormat) -> Result<Command,
 }
 
 fn parse_count(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
-    let scope = KvScope::extract(args, format)?;
+    let scope = CommandScope::extract(args, format)?;
     let prefix = take_string(args, "--prefix", format)?.map(|value| bytes(&value));
     reject_unknown_flags(args, format)?;
     strip_argument_delimiter(args);
@@ -151,102 +142,6 @@ fn parse_count(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, 
         space: scope.space,
         prefix,
     })
-}
-
-#[derive(Default)]
-struct KvScope {
-    branch: Option<String>,
-    space: Option<String>,
-}
-
-impl KvScope {
-    fn extract(args: &mut Vec<String>, format: OutputFormat) -> Result<Self, CliError> {
-        Ok(Self {
-            branch: take_string(args, "--branch", format)?,
-            space: take_string(args, "--space", format)?,
-        })
-    }
-}
-
-fn take_string(
-    args: &mut Vec<String>,
-    flag: &'static str,
-    format: OutputFormat,
-) -> Result<Option<String>, CliError> {
-    let mut value = None;
-    let mut offset = 0;
-    while offset < args.len() {
-        if args[offset] == ARGUMENT_DELIMITER {
-            break;
-        }
-        if args[offset] == flag {
-            args.remove(offset);
-            if value.is_some() {
-                return Err(CliError::usage(format!("duplicate {flag}"), format));
-            }
-            let Some(next) = args.get(offset).cloned() else {
-                return Err(CliError::usage(format!("missing value for {flag}"), format));
-            };
-            if next.starts_with("--") {
-                return Err(CliError::usage(format!("missing value for {flag}"), format));
-            }
-            args.remove(offset);
-            value = Some(next);
-        } else {
-            offset += 1;
-        }
-    }
-    Ok(value)
-}
-
-fn take_u64(
-    args: &mut Vec<String>,
-    flag: &'static str,
-    format: OutputFormat,
-) -> Result<Option<u64>, CliError> {
-    let Some(value) = take_string(args, flag, format)? else {
-        return Ok(None);
-    };
-    value.parse::<u64>().map(Some).map_err(|_| {
-        CliError::usage(
-            format!("invalid integer value `{value}` for {flag}"),
-            format,
-        )
-    })
-}
-
-fn reject_unknown_flags(args: &[String], format: OutputFormat) -> Result<(), CliError> {
-    let scan_len = args
-        .iter()
-        .position(|arg| arg == ARGUMENT_DELIMITER)
-        .unwrap_or(args.len());
-    if let Some(flag) = args[..scan_len].iter().find(|arg| arg.starts_with("--")) {
-        return Err(CliError::usage(format!("unknown option `{flag}`"), format));
-    }
-    Ok(())
-}
-
-fn strip_argument_delimiter(args: &mut Vec<String>) {
-    if let Some(offset) = args.iter().position(|arg| arg == ARGUMENT_DELIMITER) {
-        args.remove(offset);
-    }
-}
-
-fn require_positional_len(
-    args: &[String],
-    expected: usize,
-    usage: &'static str,
-    format: OutputFormat,
-) -> Result<(), CliError> {
-    if args.len() == expected {
-        Ok(())
-    } else {
-        Err(CliError::usage(format!("usage: strata {usage}"), format))
-    }
-}
-
-fn bytes(value: &str) -> Bytes {
-    Bytes::from(value)
 }
 
 fn render_output(output: &Output, format: OutputFormat) -> String {
