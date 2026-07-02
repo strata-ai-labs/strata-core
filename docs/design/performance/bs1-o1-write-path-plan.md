@@ -172,17 +172,26 @@ behavior must be byte-identical (existing `StorageBudgetExceeded` tests).
   enqueue semantics BS1 must not alter).
 - Admission tests already assert on error class/code — unchanged, re-run.
 
-### BS1.4 — backpressure retry de-amplification (measure-first)
+### BS1.4 — backpressure retry de-amplification (measure-first) — MEASURED: amplifier gone, closed
 
-With BS1.1–1.3, each retry's pressure snapshot is O(levels) and its forced-enqueue coalesces —
-the amplifier may already be gone. **Measure before building**: re-run the 10 M workload-A
-admission diagnostic (the `l0_paced` counter probe, temporary). If retry overhead still
-registers, implement enqueue-once-per-backpressure-episode (a flag beside
-`pressure_wait_deadline` in `execute_commit`, `mod.rs:2630`) and cache the wait-path pressure
-snapshot for the episode. If not, close BS1.4 with the measurement recorded.
+Measured on BS1.3 (10 M workload-A crawl, 30 K ops → 88 s, run = 340 ops/s) with a temporary
+retry-path probe: **1.1 M retries** (~37 per successful op). Per-retry timing split the cost:
 
-**Tests (if built).** Existing backpressure-wait tests (`retryable` pacing, stall-deadline
-watchdog) unchanged; one new test that a multi-retry episode enqueues its relief task once.
+- **The fold amplifier is gone.** The pressure snapshot taken *before* the wait (lock
+  uncontended) cost ~0.1 µs each — the O(1) pressure BS1.3 delivered. BS1.4's stated target (the
+  O(tables) pressure re-collected per retry) no longer exists.
+- **The residual retry cost is lock contention, not folds.** The snapshot taken *after* the wait
+  (while background workers hold the runtime mutex, draining) cost ~12 µs each — **13.7 s total,
+  ~15 % of the crawl** — dominated by `parking_lot` mutex contention (RC1), not the pressure
+  computation. Non-snapshot retry overhead (enqueue + stats locks) was ~2.6 s (~3 %); the enqueue
+  is already coalesced/cheap.
+
+**Decision: closed, no code change.** The amplifier (BS1.4's target) is eliminated by BS1.3. The
+remaining retry cost is RC1 lock churn — BS2 makes those pressure snapshots lock-free via
+`ArcSwap`, erasing the ~15 % — and the wait (BS3, the crawl itself). `enqueue-once-per-episode`
+would be a marginal band-aid on an RC1/BS3-bound path, so it was not built. The measurement
+instead *quantifies* why BS2 matters: the retry path alone burns ~15 % of the crawl on lock
+contention that lock-free reads erase.
 
 ## Perf validation (exit criteria)
 
@@ -197,6 +206,18 @@ methodology (load is the stable signal; probes stripped before commit):
 3. **No-regression:** 100 K cells within noise; run C/B/D/E cells within noise (BS1 touches
    no read path).
 4. Ledger row recorded per the standing convention.
+
+**Measured outcome (BS1 complete — the exit criterion was falsified).** BS1.3 control-first A/B
+(BS1.2 vs BS1.3, 100 K / 1 M / 10 M load, `STRATA_SUBCOMPACTIONS=1`, 48 GB): **neutral** — 10 M
+load 92 K → ~90 K (n=4, ±10 % noise). The load decay (324 K → 114 K → 90 K) is **not fold-shaped**:
+the biggest drop is 100 K→1 M, and neither BS1.1's memory-total folds nor BS1.3's scoring folds
+moved it. At 1000-row batches, single-threaded, the folds amortize to ~nothing; the decay is
+**compaction / write-amp / lock-bound** (RC1 lock churn + LSM write amplification) — BS2's and
+BS3's targets. **So the "10 M load ≥ 75 % of 100 K" exit is not achievable by BS1 alone and is
+reassigned to BS2 + BS3.** BS1's delivered value is architectural: an **O(1) commit path** (the
+prerequisite BS2 named — "shrink what the lock does before changing who takes it" — and what BS5's
+multi-writer contention rewards) plus the retry de-amplification confirmed in §BS1.4. Honest
+falsification recorded, not re-litigated — the measured evidence points to BS2 next.
 
 ## Correctness gates (every slice)
 

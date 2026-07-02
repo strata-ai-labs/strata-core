@@ -160,9 +160,17 @@ others (n≥9 for crawl-class metrics; load throughput is the stable signal).
 
 **Out of scope.** Any locking change; any read-path change.
 
-**Exit criteria.** (a) Load throughput flat across 100 K→10 M records (≤25 % decay vs ≥72 %
-today); (b) zero O(tables) work in the commit path (assert-verified); (c) workload A/F crawl
+**Exit criteria.** (a) ~~Load throughput flat across 100 K→10 M records~~ **falsified — see
+below**; (b) zero O(tables) work in the commit path (assert-verified); (c) workload A/F crawl
 frequency reduced (convoy relief) — measured, not gated; (d) all standing gates green.
+
+**Status: COMPLETE (BS1.1–1.3 landed `8490900e`/`e7124f6e`/`7458aae8`; BS1.4 closed by
+measurement).** Correctness (b)/(d) met and mutation-proven. But the load-flatness goal (a) was
+**falsified** by the BS1.3 A/B: single-threaded load is neutral (10 M ~90 K, ±10 %). The decay is
+compaction / write-amp / lock-bound, not fold-bound — at 1000-row batches the folds amortize to
+nothing. BS1's value is the **O(1) commit path** (prerequisite for BS2's lock decoupling and BS5's
+write concurrency), not a standalone single-threaded win; the flatness/throughput targets move to
+BS2 + BS3. Details + the BS1.4 retry measurement: `bs1-o1-write-path-plan.md`.
 
 **Size: S (days).** Risk: stale-aggregate bugs — mitigated by the debug-assert oracle and the
 existing suite.
