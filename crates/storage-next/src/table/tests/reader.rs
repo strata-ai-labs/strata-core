@@ -1809,6 +1809,35 @@ fn immutable_reader_rejects_supplied_filter_when_table_content_drift() {
 }
 
 #[test]
+fn filter_clone_shares_bloom_allocation() {
+    // BS2.1: the bloom is `Arc`-shared, so cloning a filter (and thus any reader / owned table that
+    // holds it) is a refcount bump, not a deep byte-copy of the bloom bits. A revert to `Box` breaks
+    // this two ways: `bloom_alloc_addr` (Arc::as_ptr) stops compiling, and the two clones would land
+    // at distinct allocations.
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let (artifact, _) = build_artifact(
+        "filter-clone-share",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let filter = reader_filter_for_table_bytes("filter-clone-share", artifact.bytes(), 10);
+    let original_addr = filter
+        .bloom_alloc_addr()
+        .expect("a built filter over real keys is a bloom, not unavailable");
+    let cloned = filter.clone();
+    assert_eq!(
+        cloned.bloom_alloc_addr(),
+        Some(original_addr),
+        "cloned filter must share the original bloom allocation by Arc refcount"
+    );
+}
+
+#[test]
 fn immutable_reader_rejects_available_filter_without_exact_table_proof() {
     let rows = vec![
         put_row(b"alpha".to_vec(), 1),

@@ -110,7 +110,9 @@ impl TableContentFingerprint {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum TableReaderFilterState {
     Unavailable,
-    Bloom(Box<TableReaderBloomFilterState>),
+    // `Arc`, not `Box`: the bloom is immutable once built, so cloning a reader (and thus a
+    // `BranchOwnedTable`) shares the filter by refcount instead of deep-copying its bits.
+    Bloom(Arc<TableReaderBloomFilterState>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -158,12 +160,22 @@ impl TableReaderFilter {
             bits_per_key,
         )?;
         Ok(Self {
-            state: TableReaderFilterState::Bloom(Box::new(TableReaderBloomFilterState {
+            state: TableReaderFilterState::Bloom(Arc::new(TableReaderBloomFilterState {
                 facts,
                 fingerprint,
                 filter,
             })),
         })
+    }
+
+    /// Allocation address of the shared bloom state, or `None` when unavailable. Test-only: lets a
+    /// clone-sharing test assert the filter is shared by `Arc` refcount rather than deep-copied.
+    #[cfg(test)]
+    pub(crate) fn bloom_alloc_addr(&self) -> Option<usize> {
+        match &self.state {
+            TableReaderFilterState::Unavailable => None,
+            TableReaderFilterState::Bloom(state) => Some(Arc::as_ptr(state) as usize),
+        }
     }
 
     pub(crate) fn probe_physical_key(&self, key: &TablePhysicalKeyBytes) -> TableBloomProbe {
