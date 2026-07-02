@@ -44,7 +44,15 @@ const fn tib(value: u64) -> u64 {
 
 #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
 fn target_bytes_for_state(state: &BranchLocalState) -> Vec<u64> {
-    let level_bytes = state
+    nonzero_level_targets_from_level_bytes(&independent_level_bytes(state))
+}
+
+/// Independent per-level byte fold, reimplementing `level_byte_count` via `facts().byte_count()`.
+/// BS1.3 makes the compaction scoring/eligibility path read BS1.1's cached `per_level_bytes()`
+/// instead of folding; this is the reference that cached vector must equal, including in release
+/// where the debug shape oracle is compiled out.
+fn independent_level_bytes(state: &BranchLocalState) -> Vec<u64> {
+    state
         .owned_levels()
         .iter()
         .map(|tables| {
@@ -52,8 +60,178 @@ fn target_bytes_for_state(state: &BranchLocalState) -> Vec<u64> {
                 total.saturating_add(table.facts().byte_count())
             })
         })
-        .collect::<Vec<_>>();
-    nonzero_level_targets_from_level_bytes(&level_bytes)
+        .collect()
+}
+
+#[test]
+fn per_level_bytes_matches_independent_fold_across_shapes() {
+    // BS1.3: compaction scoring/eligibility read `branch.per_level_bytes()` instead of folding
+    // level bytes. The rewrite is byte-identical only if the cached vector equals the fold, so
+    // assert that across a matrix of owned-table shapes (L0 at the 4/8/16 scoring thresholds and a
+    // multi-level shape) and drive the rewired scoring path per shape. Meaningful in release, where
+    // the per-branch debug oracle is off and the scoring depends on the cache being correct.
+    let mut shapes: Vec<(String, BranchLocalState)> = vec![(
+        "empty".to_string(),
+        BranchLocalState::empty(branch_id(0x60)),
+    )];
+
+    for (label, count, seed) in [
+        ("l0-4", 4u8, 0x61u8),
+        ("l0-8", 8, 0x62),
+        ("l0-16", 16, 0x63),
+    ] {
+        let branch = branch_id(seed);
+        let mut state = BranchLocalState::empty(branch);
+        for i in 0..count {
+            install_l0_table(
+                &mut state,
+                branch,
+                &format!("{label}-{i}"),
+                vec![put_row(
+                    branch,
+                    format!("k{i}").as_bytes(),
+                    u64::from(i) + 1,
+                    (u64::from(i) + 1) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+        shapes.push((label.to_string(), state));
+    }
+
+    // Multi-level with asymmetric per-level byte totals (exercises the non-zero-level scoring that
+    // reads `per_level_bytes()[level_index]`).
+    let branch = branch_id(0x64);
+    let mut multi = BranchLocalState::empty(branch);
+    install_owned_table(
+        &mut multi,
+        branch,
+        BranchLevel::ZERO,
+        "ml-l0",
+        vec![put_row(branch, b"a", 1, 1_000, b"x")],
+    );
+    install_owned_table(
+        &mut multi,
+        branch,
+        BranchLevel::new(1),
+        "ml-l1",
+        vec![put_row(branch, b"b", 2, 2_000, b"xxxxxxxx")],
+    );
+    install_owned_table(
+        &mut multi,
+        branch,
+        BranchLevel::new(2),
+        "ml-l2",
+        vec![put_row(branch, b"c", 3, 3_000, b"xxxxxxxxxxxxxxxx")],
+    );
+    shapes.push(("multi-level".to_string(), multi));
+
+    // Flush-install path: `per_level_bytes[0]` is maintained by the incremental delta rather than
+    // the hook recompute (as the other shapes use), so this covers the delta in release too.
+    let flush_branch = branch_id(0x68);
+    shapes.push((
+        "flush-install".to_string(),
+        flush_install_state(
+            flush_branch,
+            "flush-shape",
+            vec![
+                put_row(flush_branch, b"fa", 1, 1_000, b"payload"),
+                put_row(flush_branch, b"fb", 2, 2_000, b"payload"),
+            ],
+        ),
+    ));
+
+    for (label, state) in &shapes {
+        assert_eq!(
+            state.per_level_bytes(),
+            independent_level_bytes(state).as_slice(),
+            "per_level_bytes drifted from the fold for shape {label}"
+        );
+        // Drive the rewired scoring path and tie its L0 counter back to the shape.
+        let pressure = collect_storage_pressure(state, empty_maintenance_status());
+        let expected_l0 = state.owned_levels().first().map_or(0, Vec::len);
+        assert_eq!(
+            pressure.level_zero_tables(),
+            expected_l0,
+            "level_zero_tables mismatch for shape {label}"
+        );
+    }
+}
+
+#[test]
+fn compaction_score_bytes_track_the_independent_fold() {
+    // BS1.3: the compaction score's reported bytes come from the rewired `per_level_bytes()` read.
+    // For a *triggered* level, tie the scoring OUTPUT (`table_rewrite_bytes`) back to the
+    // independent fold — so a wrong byte consumption in the scoring (reading the wrong level or a
+    // stale value), not just a cache drift, is caught. The `per_level_bytes == fold` matrix alone
+    // cannot catch this: its shapes never cross a compaction trigger, so the byte value never
+    // affects the outcome.
+
+    // L0 triggered (>= LEVEL_ZERO_COMPACTION_THRESHOLD tables): the L0 score is the winner, and its
+    // reported bytes must equal the independent L0 fold.
+    let branch = branch_id(0x66);
+    let mut l0 = BranchLocalState::empty(branch);
+    for i in 0..8u8 {
+        install_l0_table(
+            &mut l0,
+            branch,
+            &format!("scb-l0-{i}"),
+            vec![put_row(
+                branch,
+                format!("z{i}").as_bytes(),
+                u64::from(i) + 1,
+                (u64::from(i) + 1) * 1_000,
+                b"payload",
+            )],
+        );
+    }
+    let l0_pressure = collect_storage_pressure(&l0, empty_maintenance_status());
+    assert!(
+        l0_pressure.table_rewrite_bytes() > 0,
+        "L0 compaction is triggered"
+    );
+    assert_eq!(
+        l0_pressure.table_rewrite_bytes(),
+        independent_level_bytes(&l0)[0],
+        "L0 compaction score bytes must equal the independent L0 fold"
+    );
+
+    // Non-zero level triggered (>= NONZERO_LEVEL_COMPACTION_THRESHOLD tables at L1, with a deeper L2
+    // so L1 is not the final level): L1 is the winner, its bytes must equal the independent L1 fold.
+    let branch = branch_id(0x67);
+    let mut ml = BranchLocalState::empty(branch);
+    for i in 0..4u8 {
+        install_owned_table(
+            &mut ml,
+            branch,
+            BranchLevel::new(1),
+            &format!("scb-l1-{i}"),
+            vec![put_row(
+                branch,
+                format!("l1k{i}").as_bytes(),
+                u64::from(i) + 1,
+                (u64::from(i) + 1) * 1_000,
+                b"payload",
+            )],
+        );
+    }
+    install_owned_table(
+        &mut ml,
+        branch,
+        BranchLevel::new(2),
+        "scb-l2",
+        vec![put_row(branch, b"l2k", 99, 99_000, b"payload")],
+    );
+    let ml_pressure = collect_storage_pressure(&ml, empty_maintenance_status());
+    assert!(
+        ml_pressure.table_rewrite_bytes() > 0,
+        "L1 compaction is triggered"
+    );
+    assert_eq!(
+        ml_pressure.table_rewrite_bytes(),
+        independent_level_bytes(&ml)[1],
+        "L1 compaction score bytes must equal the independent L1 fold"
+    );
 }
 
 fn table_last_physical_key(table: &crate::branch::read::BranchOwnedTable) -> TablePhysicalKeyBytes {

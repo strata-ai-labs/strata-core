@@ -546,12 +546,10 @@ pub(super) fn nonzero_level_targets_from_level_bytes(level_bytes: &[u64]) -> Vec
 }
 
 fn nonzero_level_targets_for_branch(branch: &BranchLocalState) -> Vec<u64> {
-    let level_bytes = branch
-        .owned_levels()
-        .iter()
-        .map(|tables| level_byte_count(tables))
-        .collect::<Vec<_>>();
-    nonzero_level_targets_from_level_bytes(&level_bytes)
+    // The cached per-level bytes are the same fold `level_byte_count` computes for each level
+    // (`facts().byte_count()` sum), maintained at structural-mutation cadence, so this is O(1) in
+    // the number of tables and byte-identical to the previous per-level fold.
+    nonzero_level_targets_from_level_bytes(branch.per_level_bytes())
 }
 
 fn nonzero_level_target_bytes_for_branch(
@@ -2323,7 +2321,8 @@ fn level_zero_compaction_score(branch: &BranchLocalState) -> Option<LifecycleCom
     if table_count < LEVEL_ZERO_COMPACTION_THRESHOLD {
         return None;
     }
-    let byte_count = level_byte_count(tables);
+    // Cached `per_level_bytes()[0]` — byte-identical to `level_byte_count(tables)`, O(1).
+    let byte_count = branch.per_level_bytes().first().copied().unwrap_or(0);
     let severity = if table_count >= LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD {
         LifecycleStoragePressureSeverity::BlockMutatingAdmission
     } else if table_count >= LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD {
@@ -2353,12 +2352,14 @@ fn level_zero_compaction_score(branch: &BranchLocalState) -> Option<LifecycleCom
 fn nonzero_compaction_score(
     level_index: usize,
     tables: &[crate::branch::read::BranchOwnedTable],
+    byte_count: u64,
     target_bytes: u64,
 ) -> Option<LifecycleCompactionScore> {
     let level = u8::try_from(level_index).ok()?;
     crate::observability::perf_trace::record_lifecycle_compaction_level_target(level, target_bytes);
     let table_count = tables.len();
-    let byte_count = level_byte_count(tables);
+    // `byte_count` is the caller's cached `per_level_bytes()[level_index]` — identical to
+    // `level_byte_count(tables)` but O(1). `tables` is retained only for the O(1) `table_count`.
     let (severity, score, target_bytes) =
         nonzero_compaction_pressure_for_target(table_count, byte_count, target_bytes)?;
     crate::observability::perf_trace::record_lifecycle_compaction_score_candidate(
@@ -2388,7 +2389,12 @@ fn nonzero_compaction_score_for_branch(
     if is_final_configured_level(branch, level_index) {
         return None;
     }
-    let mut score = nonzero_compaction_score(level_index, tables, target_bytes)?;
+    let byte_count = branch
+        .per_level_bytes()
+        .get(level_index)
+        .copied()
+        .unwrap_or(0);
+    let mut score = nonzero_compaction_score(level_index, tables, byte_count, target_bytes)?;
     score.table_index = selected_nonzero_compaction_table_index_for_branch(branch, level_index);
     Some(score)
 }
