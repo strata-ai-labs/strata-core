@@ -251,6 +251,8 @@ fn help_adapter_renders_groups_family_and_command_from_metadata() {
 fn executable_kv_help_uses_runtime_cli_shape() {
     let kv_help = run_success(&["kv", "--help"]);
     let kv_put_help = run_success(&["kv", "put", "--help"]);
+    let vector_help = run_success(&["vector", "--help"]);
+    let vector_query_help = run_success(&["vector", "query", "--help"]);
 
     let kv_help = stdout(&kv_help);
     assert!(kv_help.contains("Usage: strata --db <path> kv <operation> [options]"));
@@ -261,6 +263,15 @@ fn executable_kv_help_uses_runtime_cli_shape() {
     assert!(kv_put_help.contains("kv put"));
     assert!(kv_put_help.contains("Put KV value"));
     assert!(kv_put_help.contains("MutationAck<KvWrite>"));
+
+    let vector_help = stdout(&vector_help);
+    assert!(vector_help.contains("Usage: strata --db <path> vector <operation> [options]"));
+    assert!(vector_help.contains("strata --db ./my-db vector upsert docs key --vector 1,0"));
+
+    let vector_query_help = stdout(&vector_query_help);
+    assert!(vector_query_help.contains("vector query"));
+    assert!(vector_query_help.contains("Query vectors"));
+    assert!(vector_query_help.contains("SearchResult<VectorMatch>"));
 }
 
 #[test]

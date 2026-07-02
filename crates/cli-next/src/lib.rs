@@ -15,6 +15,7 @@ use strata_executor_next::{ErrorStatus, ExecutorError};
 
 mod execution;
 mod kv_execution;
+mod vector_execution;
 
 /// Production CLI name used in user-facing help text.
 pub const PRODUCTION_COMMAND_NAME: &str = "strata";
@@ -71,6 +72,7 @@ pub fn render_top_level_help(catalog: &CliCommandCatalog) -> String {
         "  commands    List generated command metadata.".to_string(),
         "  explain     Explain a command from generated metadata.".to_string(),
         "  kv          Execute KV commands against a database.".to_string(),
+        "  vector      Execute vector commands against a database.".to_string(),
         String::new(),
         "Families:".to_string(),
     ];
@@ -140,6 +142,10 @@ fn run_inner(mut args: Vec<String>) -> Result<String, CliError> {
             args.remove(0);
             kv_execution::run_kv(args, format, db)
         }
+        "vector" => {
+            args.remove(0);
+            vector_execution::run_vector(args, format, db)
+        }
         _ => Err(CliError::unknown_command(args.join(" "), format)),
     }
 }
@@ -166,6 +172,22 @@ fn render_help_for(args: &[String], format: OutputFormat) -> Result<String, CliE
             if args.len() == 1 {
                 return Ok(match format {
                     OutputFormat::Human => render_kv_help(&catalog),
+                    OutputFormat::Json => json_output(&TopLevelHelpJson::from_catalog(&catalog)),
+                });
+            }
+            let selector = args.join(" ");
+            let Some(command) = catalog.command(&selector) else {
+                return Err(CliError::unknown_command(selector, format));
+            };
+            Ok(match format {
+                OutputFormat::Human => render_command_help(command),
+                OutputFormat::Json => json_output(&ExplainJson::new(&catalog, command)),
+            })
+        }
+        Some("vector") => {
+            if args.len() == 1 {
+                return Ok(match format {
+                    OutputFormat::Human => render_vector_help(&catalog),
                     OutputFormat::Json => json_output(&TopLevelHelpJson::from_catalog(&catalog)),
                 });
             }
@@ -353,6 +375,43 @@ fn render_commands_human(catalog: &CliCommandCatalog, family: Option<&CliFamilyG
     join_lines(lines)
 }
 
+fn render_command_family_help(
+    catalog: &CliCommandCatalog,
+    family_id: &str,
+    title: &str,
+    usage: &str,
+    options: &[&str],
+    examples: &[&str],
+) -> String {
+    let family = catalog
+        .family(family_id)
+        .expect("embedded metadata has requested command family");
+    let mut lines = vec![
+        title.to_string(),
+        String::new(),
+        format!("Usage: {usage}"),
+        String::new(),
+        "Operations:".to_string(),
+    ];
+    for command in commands_for_group(catalog, family) {
+        lines.push(format!(
+            "  {:<32} {}",
+            command.path_display, command.summary
+        ));
+    }
+    if !options.is_empty() {
+        lines.push(String::new());
+        lines.push("Common options:".to_string());
+        lines.extend(options.iter().map(|line| (*line).to_string()));
+    }
+    if !examples.is_empty() {
+        lines.push(String::new());
+        lines.push("Examples:".to_string());
+        lines.extend(examples.iter().map(|line| (*line).to_string()));
+    }
+    join_lines(lines)
+}
+
 fn render_commands_help(catalog: &CliCommandCatalog) -> String {
     let mut lines = vec![
         "List Strata commands".to_string(),
@@ -371,35 +430,45 @@ fn render_commands_help(catalog: &CliCommandCatalog) -> String {
 }
 
 fn render_kv_help(catalog: &CliCommandCatalog) -> String {
-    let family = catalog
-        .family("kv")
-        .expect("embedded metadata has KV family");
-    let mut lines = vec![
-        "KV commands".to_string(),
-        String::new(),
-        "Usage: strata --db <path> kv <operation> [options]".to_string(),
-        String::new(),
-        "Operations:".to_string(),
-    ];
-    for command in commands_for_group(catalog, family) {
-        lines.push(format!(
-            "  {:<24} {}",
-            command.path_display, command.summary
-        ));
-    }
-    lines.push(String::new());
-    lines.push("Common options:".to_string());
-    lines.push("  --branch <name>       Target branch.".to_string());
-    lines.push("  --space <name>        Target product space.".to_string());
-    lines.push("  --format human|json   Select output format.".to_string());
-    lines.push("  --                    Treat following tokens as KV operands.".to_string());
-    lines.push(String::new());
-    lines.push("Examples:".to_string());
-    lines.push("  strata --db ./my-db kv put user Claude".to_string());
-    lines.push("  strata --db ./my-db kv put flag -- --json".to_string());
-    lines.push("  strata --db ./my-db kv get user --format json".to_string());
-    lines.push("  strata kv put --help".to_string());
-    join_lines(lines)
+    render_command_family_help(
+        catalog,
+        "kv",
+        "KV commands",
+        "strata --db <path> kv <operation> [options]",
+        &[
+            "  --branch <name>       Target branch.",
+            "  --space <name>        Target product space.",
+            "  --format human|json   Select output format.",
+            "  --                    Treat following tokens as KV operands.",
+        ],
+        &[
+            "  strata --db ./my-db kv put user Claude",
+            "  strata --db ./my-db kv put flag -- --json",
+            "  strata --db ./my-db kv get user --format json",
+            "  strata kv put --help",
+        ],
+    )
+}
+
+fn render_vector_help(catalog: &CliCommandCatalog) -> String {
+    render_command_family_help(
+        catalog,
+        "vector",
+        "Vector commands",
+        "strata --db <path> vector <operation> [options]",
+        &[
+            "  --branch <name>       Target branch.",
+            "  --space <name>        Target product space.",
+            "  --format human|json   Select output format.",
+            "  --                    Treat following tokens as vector operands.",
+        ],
+        &[
+            "  strata --db ./my-db vector collection create docs --dimension 2",
+            "  strata --db ./my-db vector upsert docs key --vector 1,0",
+            "  strata --db ./my-db vector query docs --vector 1,0 --k 5",
+            "  strata vector query --help",
+        ],
+    )
 }
 
 fn render_explain_help() -> String {
