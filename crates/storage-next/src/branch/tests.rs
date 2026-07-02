@@ -68,6 +68,7 @@ mod row_pruning;
 #[cfg(feature = "perf-trace")]
 mod scan_pruning;
 mod scan_runtime;
+mod shape_aggregates;
 mod snapshot_install;
 mod source_layout;
 

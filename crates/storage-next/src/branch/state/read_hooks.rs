@@ -100,25 +100,34 @@ impl BranchLocalState {
     }
 
     pub(crate) fn frozen_byte_count(&self) -> u64 {
-        self.frozen.iter().fold(0u64, |total, table| {
-            total.saturating_add(u64::try_from(table.approximate_size_bytes()).unwrap_or(u64::MAX))
-        })
+        #[cfg(debug_assertions)]
+        self.debug_assert_shape_consistent();
+        self.shape.frozen_bytes
     }
 
     /// Approximate resident bytes held by this branch's durable owned tables. Whole-object readers
     /// materialize each table in memory, so this is the dominant steady-state read footprint and
-    /// must be counted toward the database memory total.
+    /// must be counted toward the database memory total. O(1): served from the cached shape
+    /// aggregates, maintained at structural-mutation cadence.
     pub(crate) fn owned_table_byte_count(&self) -> u64 {
-        self.owned_levels()
-            .iter()
-            .flatten()
-            .fold(0u64, |total, table| {
-                total.saturating_add(table.approximate_size_bytes())
-            })
+        #[cfg(debug_assertions)]
+        self.debug_assert_shape_consistent();
+        self.shape.owned_bytes
+    }
+
+    /// Per-level logical byte totals (`facts().byte_count()`), index-aligned with
+    /// `owned_levels()`. O(1): served from the cached shape aggregates. Consumed by
+    /// compaction level-target scoring.
+    pub(crate) fn per_level_bytes(&self) -> &[u64] {
+        #[cfg(debug_assertions)]
+        self.debug_assert_shape_consistent();
+        &self.shape.per_level_bytes
     }
 
     pub(crate) fn owned_table_count(&self) -> usize {
-        self.owned_levels().iter().map(Vec::len).sum()
+        #[cfg(debug_assertions)]
+        self.debug_assert_shape_consistent();
+        self.shape.owned_tables
     }
 
     pub(crate) fn inherited_layer_count(&self) -> usize {
@@ -126,7 +135,9 @@ impl BranchLocalState {
     }
 
     pub(crate) fn inherited_table_count(&self) -> usize {
-        inherited_table_count(&self.inherited_layers)
+        #[cfg(debug_assertions)]
+        self.debug_assert_shape_consistent();
+        self.shape.inherited_tables
     }
 
     pub(crate) fn source_layout(&self) -> BranchSourceLayout {

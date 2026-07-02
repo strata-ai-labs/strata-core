@@ -79,6 +79,7 @@ pub(crate) struct BranchLocalState {
     timestamp_coverage: BranchTimestampCoverage,
     put_rows: u64,
     tombstone_rows: u64,
+    shape: BranchShapeAggregates,
 }
 
 impl BranchLocalState {
@@ -101,6 +102,7 @@ impl BranchLocalState {
             timestamp_coverage: BranchTimestampCoverage::unknown(),
             put_rows: 0,
             tombstone_rows: 0,
+            shape: BranchShapeAggregates::empty(config.max_level_count()),
         })
     }
 
@@ -250,12 +252,27 @@ impl BranchLocalState {
         };
         let level_index = self.validate_install_identity_and_range(BranchLevel::ZERO, &table)?;
 
+        // A flush moves the same rows from a frozen table into a new L0 table, so the
+        // observed-row facts are unchanged and need no full rescan. This is the hot
+        // flush-install path; the rescan here was the dominant publish-lock cost (a
+        // full resident-dataset scan) before per-table summaries. Only the table-shape
+        // aggregates shift (frozen -1 table, L0 +1 table), applied as an incremental
+        // delta below. Capture the sizes before `table` is moved into the layout and
+        // the frozen table is removed.
+        let new_l0_resident = table.approximate_size_bytes();
+        let new_l0_logical = table.facts().byte_count();
+        let removed_frozen_resident =
+            u64::try_from(self.frozen[replacement_index].approximate_size_bytes())
+                .unwrap_or(u64::MAX);
+
         Arc::make_mut(&mut self.layout).levels_mut()[level_index].insert(0, table);
         self.frozen.remove(replacement_index);
-        // A flush moves the same rows from a frozen table into a new L0 table, so
-        // the observed-row facts are unchanged and need no refresh. This is the
-        // hot flush-install path; the refresh here was the dominant publish-lock
-        // cost (a full resident-dataset rescan) before per-table summaries.
+        self.apply_flush_install_shape_delta(
+            level_index,
+            new_l0_resident,
+            new_l0_logical,
+            removed_frozen_resident,
+        );
         Ok(self.install_outcome(BranchLevel::ZERO, 0, Some(replacement_index)))
     }
 
@@ -419,6 +436,11 @@ impl BranchLocalState {
         self.timestamp_max = observed.timestamp_max;
         self.put_rows = observed.put_rows;
         self.tombstone_rows = observed.tombstone_rows;
+        // Structural mutations route through this hook, so recomputing the table-shape
+        // aggregates here (O(tables), at event cadence) keeps them correct without a
+        // per-commit fold. The two hot-path mutators that skip this hook (rotation,
+        // flush install) apply incremental deltas instead.
+        self.shape = self.recompute_shape_aggregates();
     }
 
     /// Aggregate observed-row facts from cached per-table summaries instead of a
@@ -470,12 +492,115 @@ impl BranchLocalState {
         }
         observed
     }
+
+    /// Recompute the cached table-shape aggregates from the branch's tables. Called
+    /// at the `refresh_observed_row_facts` hook (every structural mutation) and by the
+    /// debug oracle. Reads raw fields directly — never the cached accessors — so it is
+    /// the independent reference the oracle checks against.
+    fn recompute_shape_aggregates(&self) -> BranchShapeAggregates {
+        let levels = self.owned_levels();
+        let mut per_level_bytes = vec![0u64; levels.len()];
+        let mut owned_bytes = 0u64;
+        let mut owned_tables = 0usize;
+        for (level_index, tables) in levels.iter().enumerate() {
+            let mut level_logical = 0u64;
+            for table in tables {
+                level_logical = level_logical.saturating_add(table.facts().byte_count());
+                owned_bytes = owned_bytes.saturating_add(table.approximate_size_bytes());
+                owned_tables += 1;
+            }
+            per_level_bytes[level_index] = level_logical;
+        }
+        let frozen_bytes = self.frozen.iter().fold(0u64, |total, table| {
+            total.saturating_add(u64::try_from(table.approximate_size_bytes()).unwrap_or(u64::MAX))
+        });
+        let inherited_tables = self
+            .inherited_layers
+            .iter()
+            .map(BranchInheritedLayer::table_count)
+            .sum();
+        BranchShapeAggregates {
+            per_level_bytes,
+            owned_bytes,
+            owned_tables,
+            frozen_bytes,
+            inherited_tables,
+        }
+    }
+
+    /// Incremental shape update for the hot flush-install path (frozen table -> new L0
+    /// table). Uses resident bytes for `owned_bytes`/`frozen_bytes` and logical bytes
+    /// for `per_level_bytes`, matching `recompute_shape_aggregates` field-for-field.
+    fn apply_flush_install_shape_delta(
+        &mut self,
+        level_index: usize,
+        new_l0_resident: u64,
+        new_l0_logical: u64,
+        removed_frozen_resident: u64,
+    ) {
+        self.shape.owned_bytes = self.shape.owned_bytes.saturating_add(new_l0_resident);
+        if let Some(level) = self.shape.per_level_bytes.get_mut(level_index) {
+            *level = level.saturating_add(new_l0_logical);
+        }
+        self.shape.owned_tables = self.shape.owned_tables.saturating_add(1);
+        self.shape.frozen_bytes = self
+            .shape
+            .frozen_bytes
+            .saturating_sub(removed_frozen_resident);
+        #[cfg(debug_assertions)]
+        self.debug_assert_shape_consistent();
+    }
+
+    /// Debug oracle: the cached shape aggregates must equal a fresh fold. Called from
+    /// every cached-shape accessor and after each incremental delta, so the whole test
+    /// suite (which exercises every structural mutation) detects a stale cache. Compiled
+    /// out of release builds.
+    #[cfg(debug_assertions)]
+    fn debug_assert_shape_consistent(&self) {
+        debug_assert_eq!(
+            self.shape,
+            self.recompute_shape_aggregates(),
+            "branch shape aggregate cache diverged from a fresh fold"
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InheritedReferenceKind {
     Active,
     Materializing,
+}
+
+/// Cached table-shape aggregates for `BranchLocalState`, maintained at structural
+/// mutation cadence (the `refresh_observed_row_facts` hook plus the rotation and
+/// flush-install deltas) so per-commit pressure / budget / scoring reads are O(1)
+/// instead of folding over every owned table. A pure function of the branch's tables;
+/// the debug oracle `debug_assert_shape_consistent` proves it against a fresh fold.
+///
+/// Two distinct byte sources are cached and must not be crossed: `owned_bytes` and
+/// `frozen_bytes` are *resident* bytes (`approximate_size_bytes`, the in-RAM footprint
+/// for the memory budget), while `per_level_bytes` is *logical* bytes
+/// (`facts().byte_count()`, what compaction scoring sums). `sum(per_level_bytes)` does
+/// not equal `owned_bytes` in general.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BranchShapeAggregates {
+    per_level_bytes: Vec<u64>,
+    owned_bytes: u64,
+    owned_tables: usize,
+    frozen_bytes: u64,
+    inherited_tables: usize,
+}
+
+impl BranchShapeAggregates {
+    fn empty(level_count: usize) -> Self {
+        Self {
+            per_level_bytes: vec![0u64; level_count],
+            owned_bytes: 0,
+            owned_tables: 0,
+            frozen_bytes: 0,
+            inherited_tables: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
