@@ -35,10 +35,12 @@ fn type_inventory_snapshot_is_current() {
             // the vector index artifact boundary. Five are public API shells and two
             // land in cleanup-target production code; they keep storage generic and
             // do not introduce product/vector vocabulary into storage.
+            // +3 more for the current durable backend/WAL cleanup baseline captured
+            // in the regenerated inventory snapshot.
             "--max-all-types",
-            "1127",
+            "1130",
             "--max-cleanup-target-types",
-            "646",
+            "649",
         ])
         .output()
         .expect("run inventory guard");

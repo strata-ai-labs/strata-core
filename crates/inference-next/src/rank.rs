@@ -15,6 +15,7 @@ use std::sync::Mutex;
 use tracing::info;
 
 use crate::llama::context::LlamaCppContext;
+use crate::llama::ffi::llama_api_lock;
 use crate::InferenceError;
 
 /// High-level ranking engine backed by llama.cpp.
@@ -113,6 +114,7 @@ impl RankingEngine {
             .ctx
             .lock()
             .map_err(|e| InferenceError::LlamaCpp(format!("mutex poisoned: {}", e)))?;
+        let _api_guard = llama_api_lock();
 
         let mut scores = Vec::with_capacity(passages.len());
 

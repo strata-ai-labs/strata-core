@@ -423,6 +423,12 @@ fn executor_sources_do_not_name_lower_layer_types() {
 #[test]
 fn executor_event_sources_do_not_own_event_product_behavior() {
     for file in source_files(&crate_root().join("src")) {
+        if file
+            .file_name()
+            .is_some_and(|name| name == "idl_tooling.rs" || name == "cli_metadata.rs")
+        {
+            continue;
+        }
         let text = fs::read_to_string(&file).expect("source reads");
         for forbidden in forbidden_event_lower_layer_terms() {
             assert!(

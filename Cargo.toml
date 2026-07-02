@@ -75,7 +75,7 @@ toml = "0.8"
 # Archive/Compression (RunBundle)
 tar = "0.4"
 zstd = "0.13"
-zstd-pure-rs = "0.1.1"
+zstd-pure-rs = "0.1.2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 # HTTP client (model download)

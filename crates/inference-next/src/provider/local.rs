@@ -39,6 +39,8 @@ impl LocalProvider {
         &mut self,
         request: &GenerateRequest,
     ) -> Result<GenerateResponse, InferenceError> {
+        let _api_guard = llama_api_lock();
+
         // 1. Tokenize prompt
         let mut prompt_tokens = self.ctx.tokenize(&request.prompt, true);
         let prompt_token_count = prompt_tokens.len();
@@ -197,6 +199,7 @@ impl LocalProvider {
 
     /// Encode text to token IDs using the model's tokenizer.
     pub(crate) fn encode(&self, text: &str, add_special: bool) -> Vec<u32> {
+        let _api_guard = llama_api_lock();
         self.ctx
             .tokenize(text, add_special)
             .into_iter()
@@ -206,6 +209,7 @@ impl LocalProvider {
 
     /// Decode token IDs back to text using the model's tokenizer.
     pub(crate) fn decode(&self, ids: &[u32]) -> String {
+        let _api_guard = llama_api_lock();
         let i32_ids: Vec<i32> = ids.iter().map(|&id| id as i32).collect();
         self.ctx.detokenize(&i32_ids)
     }

@@ -132,16 +132,7 @@ fn llama_cpp_dir() -> std::path::PathBuf {
     let manifest_dir = std::path::PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
     );
-    let crate_vendor = manifest_dir.join("vendor").join("llama.cpp");
-    if crate_vendor.join("CMakeLists.txt").exists() {
-        return crate_vendor;
-    }
-    manifest_dir
-        .parent()
-        .expect("crate has parent directory")
-        .join("inference")
-        .join("vendor")
-        .join("llama.cpp")
+    manifest_dir.join("vendor").join("llama.cpp")
 }
 
 /// Check if CUDA toolkit is available by looking for `nvcc`.
