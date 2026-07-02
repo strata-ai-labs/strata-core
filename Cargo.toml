@@ -1,31 +1,19 @@
-[package]
-name = "stratadb"
-version = "0.6.1"
-edition = "2021"
-license = "Apache-2.0"
-description = "Production-grade embedded database for AI agents"
-
-[lints]
-workspace = true
-
 [workspace]
 resolver = "2"
-default-members = ["crates/executor", "crates/cli", "crates/engine"]
-exclude = ["benchmarks"]
-members = [
-    "crates/core",
+default-members = [
     "crates/core-next",
     "crates/storage-next",
     "crates/engine-next",
     "crates/executor-next",
     "crates/inference-next",
-    "crates/cli-next",
-    "crates/storage",
-    "crates/engine",
-    "crates/inference",
-    "crates/intelligence",
-    "crates/cli",
-    "crates/executor",
+]
+exclude = ["benchmarks"]
+members = [
+    "crates/core-next",
+    "crates/storage-next",
+    "crates/engine-next",
+    "crates/executor-next",
+    "crates/inference-next",
 ]
 
 [workspace.package]
@@ -151,51 +139,3 @@ debug = false
 
 [profile.bench]
 inherits = "release"
-
-[features]
-default = ["jemalloc"]
-jemalloc = ["dep:tikv-jemallocator"]
-perf-trace = ["strata-engine/perf-trace"]  # Enable per-operation timing instrumentation
-# Basic comparison benchmarks (redb, LMDB, SQLite)
-comparison-benchmarks = ["dep:redb", "dep:heed", "dep:rusqlite"]
-# Enable USearch for vector comparisons (requires C++ build tools)
-usearch-enabled = ["dep:usearch"]
-# Enable auto-embedding (MiniLM-L6-v2 inference, GPU auto-detected)
-embed = ["strata-executor/embed"]
-# Cloud generation providers
-anthropic = ["strata-executor/anthropic"]
-openai = ["strata-executor/openai"]
-google = ["strata-executor/google"]
-# Arrow-based import/export (Parquet, CSV, JSONL)
-arrow = ["strata-executor/arrow"]
-
-[dependencies]
-strata-executor = { path = "crates/executor" }
-thiserror = { workspace = true }
-serde_json = { workspace = true }
-uuid = { workspace = true }
-tikv-jemallocator = { version = "0.6", optional = true }
-
-# Optional SOTA comparison dependencies (enable with --features=comparison-benchmarks)
-redb = { version = "2.0", optional = true }
-heed = { version = "0.20", optional = true }
-rusqlite = { version = "0.32", features = ["bundled", "serde_json"], optional = true }
-usearch = { version = "2.0", optional = true }
-
-[dev-dependencies]
-criterion = { workspace = true }
-tempfile = { workspace = true }
-chrono = { workspace = true }
-serde = { workspace = true }
-rmp-serde = { workspace = true }
-rustc-hash = { workspace = true }
-parking_lot = { workspace = true }
-proptest = { workspace = true }
-# Internal crates for testing only
-strata-core = { package = "strata-core", path = "crates/core" }
-strata-storage = { path = "crates/storage" }
-strata-engine = { path = "crates/engine", features = ["test-support"] }
-strata-intelligence = { path = "crates/intelligence" }
-uuid = { workspace = true }
-crc32fast = { workspace = true }
-base64 = { workspace = true }

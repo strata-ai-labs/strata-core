@@ -1,3 +1,0 @@
-[submodule "crates/inference/vendor/llama.cpp"]
-	path = crates/inference/vendor/llama.cpp
-	url = https://github.com/ggerganov/llama.cpp.git

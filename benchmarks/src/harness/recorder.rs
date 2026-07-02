@@ -5,7 +5,6 @@
 
 use super::{read_cpu_model, read_total_ram_gb, Percentiles};
 use crate::schema::*;
-use stratadb::WalCounters;
 
 use std::collections::HashMap;
 use std::io;
@@ -50,7 +49,7 @@ impl ResultRecorder {
         name: &str,
         parameters: HashMap<String, serde_json::Value>,
         p: &Percentiles,
-        wal: Option<&WalCounters>,
+        wal: Option<WalCounterSnapshot>,
         iterations: u64,
     ) {
         let (wal_appends_per_op, wal_syncs_per_op) = match wal {
@@ -105,6 +104,13 @@ impl ResultRecorder {
         eprintln!("Results saved to {}", path.display());
         Ok(path)
     }
+}
+
+/// Minimal WAL counter shape for benchmark result recording.
+#[derive(Debug, Clone, Copy)]
+pub struct WalCounterSnapshot {
+    pub wal_appends: u64,
+    pub sync_calls: u64,
 }
 
 // ---------------------------------------------------------------------------
