@@ -1418,6 +1418,15 @@ pub(crate) fn record_lifecycle_compaction_outcome(outcome: &LifecycleCompactionO
             crate::observability::perf_trace::LifecycleCompactionOperationKind::Bottommost
         }
     };
+    crate::debug_trace::trace(format_args!(
+        "compact level={} input={} overlap={} in_bytes={} ms={} promo={}",
+        candidate.output_level().raw(),
+        candidate.input_refs().len(),
+        candidate.overlap_refs().len(),
+        io_facts.input_bytes(),
+        outcome.elapsed().as_millis(),
+        candidate.is_metadata_promotion(),
+    ));
     crate::observability::perf_trace::record_lifecycle_compaction_operation(
         candidate.output_level().raw(),
         operation_kind,

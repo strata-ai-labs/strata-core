@@ -1700,6 +1700,19 @@ pub(crate) fn compaction_lane_cap() -> usize {
         .map_or(DEFAULT_COMPACTION_LANES, |lanes| lanes.max(1))
 }
 
+/// Default number of subcompactions (parallel key-range builds) per L0-to-next compaction.
+const DEFAULT_SUBCOMPACTIONS: usize = 4;
+
+/// The subcompaction fan-out for one L0-to-next compaction, env-overridable for the perf A/B
+/// sweep (`STRATA_SUBCOMPACTIONS`, e.g. `1` for a serial control). The effective count is
+/// additionally bounded by the computed key-range boundaries and available parallelism.
+pub(crate) fn subcompaction_cap() -> usize {
+    std::env::var("STRATA_SUBCOMPACTIONS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .map_or(DEFAULT_SUBCOMPACTIONS, |count| count.max(1))
+}
+
 fn require_admitted(
     state: LifecycleStateMachine,
     operation: LifecycleOperationKind,

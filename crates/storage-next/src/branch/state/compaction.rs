@@ -18,7 +18,8 @@ use crate::table::{
     BuiltTableArtifact, ImmutableTableReader, TableBuilderConfig, TableCompactionConfig,
     TableCompactionDecision, TableCompactionInput, TableCompactionPolicy, TableCompactionReport,
     TableCompactionRowContext, TableCompactionSourceId, TableCompactor, TableCursor, TableIdentity,
-    TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeResult,
+    TableKeyBounds, TablePhysicalKeyBound, TablePhysicalKeyBytes, TableReaderConfig, TableRow,
+    TableRuntimeResult,
 };
 use std::collections::BTreeSet;
 use strata_core_next::BranchId;
@@ -424,11 +425,18 @@ impl BranchCompactionOutcome {
 struct BranchTableCompactionSource<'a> {
     id: TableCompactionSourceId,
     table: &'a BranchOwnedTable,
+    /// Optional physical-key range restricting the cursor to one subcompaction's slice; `None`
+    /// scans the whole table (serial compaction).
+    bounds: Option<TableKeyBounds>,
 }
 
 impl<'a> BranchTableCompactionSource<'a> {
-    const fn new(id: TableCompactionSourceId, table: &'a BranchOwnedTable) -> Self {
-        Self { id, table }
+    fn new(
+        id: TableCompactionSourceId,
+        table: &'a BranchOwnedTable,
+        bounds: Option<TableKeyBounds>,
+    ) -> Self {
+        Self { id, table, bounds }
     }
 }
 
@@ -439,7 +447,10 @@ impl TableCompactionInput for BranchTableCompactionSource<'_> {
 
     fn open_cursor(&self) -> TableRuntimeResult<Box<dyn TableCursor + '_>> {
         perf_trace::record_branch_compaction_source_opens(1);
-        Ok(Box::new(self.table.reader().cursor()))
+        match &self.bounds {
+            Some(bounds) => Ok(Box::new(self.table.reader().bounded_cursor(bounds.clone()))),
+            None => Ok(Box::new(self.table.reader().cursor())),
+        }
     }
 
     fn requires_source_order_validation(&self) -> bool {
@@ -485,6 +496,22 @@ impl BranchLocalState {
         request: &BranchCompactionRequest,
         plan: &BranchCompactionPlan,
     ) -> BranchRuntimeResult<Option<(Vec<BuiltTableArtifact>, TableCompactionReport)>> {
+        self.prepare_branch_compaction_plan_bounded(request, plan, None, 0)
+    }
+
+    /// Build one subcompaction's slice of a compaction: identical to
+    /// [`prepare_branch_compaction_plan`] but restricting every input cursor to `bounds` (a
+    /// half-open physical-key range) and salting the output-table identities with
+    /// `subcompaction_index`, so N disjoint ranges can be built in parallel without colliding on
+    /// output identities (each range restarts its output index at 0). `None` bounds + index 0 is
+    /// the whole compaction (serial, unchanged).
+    pub(crate) fn prepare_branch_compaction_plan_bounded(
+        &self,
+        request: &BranchCompactionRequest,
+        plan: &BranchCompactionPlan,
+        bounds: Option<&TableKeyBounds>,
+        subcompaction_index: usize,
+    ) -> BranchRuntimeResult<Option<(Vec<BuiltTableArtifact>, TableCompactionReport)>> {
         self.validate_compaction_request(request)?;
         if plan.branch_id() != self.branch_id || plan.kind() != request.kind() {
             return Err(BranchRuntimeError::InvalidCompaction {
@@ -501,7 +528,7 @@ impl BranchLocalState {
             return Ok(None);
         }
         self.require_candidate_current(candidate)?;
-        let sources = self.compaction_sources(candidate)?;
+        let sources = self.compaction_sources(candidate, bounds)?;
         let source_refs = sources
             .iter()
             .map(|source| source as &dyn TableCompactionInput)
@@ -511,11 +538,22 @@ impl BranchLocalState {
             request.table_builder_config(),
         )
         .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        // Salt the output-table identity seed per subcompaction so parallel ranges (each of which
+        // restarts its output index at 0) never produce colliding output-table identities.
+        let output_identity_seed = if subcompaction_index == 0 {
+            request.output_identity_seed().clone()
+        } else {
+            TableIdentity::new(format!(
+                "{}-sc{subcompaction_index}",
+                request.output_identity_seed().as_str(),
+            ))
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?
+        };
         let output = match request.retention_policy() {
             BranchCompactionRetentionPolicy::KeepAll => {
                 let mut policy = keep_all_policy();
                 compactor
-                    .compact_inputs(request.output_identity_seed(), &source_refs, &mut policy)
+                    .compact_inputs(&output_identity_seed, &source_refs, &mut policy)
                     .map_err(|source| BranchRuntimeError::TableRuntime { source })?
             }
             BranchCompactionRetentionPolicy::DropOlderVersions
@@ -531,7 +569,7 @@ impl BranchLocalState {
                 let mut policy =
                     BranchCompactionPruningPolicy::new(request.retention_policy(), proof);
                 compactor
-                    .compact_inputs(request.output_identity_seed(), &source_refs, &mut policy)
+                    .compact_inputs(&output_identity_seed, &source_refs, &mut policy)
                     .map_err(|source| BranchRuntimeError::TableRuntime { source })?
             }
         };
@@ -1339,6 +1377,7 @@ impl BranchLocalState {
     fn compaction_sources(
         &self,
         candidate: &BranchCompactionCandidate,
+        bounds: Option<&TableKeyBounds>,
     ) -> BranchRuntimeResult<Vec<BranchTableCompactionSource<'_>>> {
         candidate
             .input_refs()
@@ -1357,9 +1396,85 @@ impl BranchLocalState {
                 let source_id =
                     TableCompactionSourceId::new(format!("s{source_index}-h{source_hash:016x}",))
                         .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
-                Ok(BranchTableCompactionSource::new(source_id, table))
+                Ok(BranchTableCompactionSource::new(
+                    source_id,
+                    table,
+                    bounds.cloned(),
+                ))
             })
             .collect()
+    }
+
+    /// Compute up to `n - 1` half-open physical-key boundaries that split the compaction's input
+    /// into ~equal-byte ranges for parallel subcompaction builds (a size-weighted
+    /// one-anchor-per-table sweep). Returns fewer boundaries — or none, meaning "run serially" —
+    /// when the input is small (`target_range_size >= total`) or the keys are insufficiently
+    /// distinct. Boundaries fall on table `last_key`s (physical keys), so every version of a key
+    /// stays on one side.
+    pub(crate) fn compaction_subcompaction_boundaries(
+        &self,
+        candidate: &BranchCompactionCandidate,
+        n: usize,
+        target_output_bytes: u64,
+    ) -> BranchRuntimeResult<Vec<TablePhysicalKeyBytes>> {
+        if n <= 1 {
+            return Ok(Vec::new());
+        }
+        let mut anchors: Vec<(TablePhysicalKeyBytes, u64)> = Vec::new();
+        let mut total_bytes: u64 = 0;
+        for table_ref in candidate
+            .input_refs()
+            .iter()
+            .chain(candidate.overlap_refs().iter())
+        {
+            let table = self.table_for_candidate_ref(candidate, table_ref).ok_or(
+                BranchRuntimeError::InvalidCompaction {
+                    reason: BranchCompactionInvalidity::Generic(
+                        "compaction candidate source table must exist",
+                    ),
+                },
+            )?;
+            let (_first, last) = compaction_table_physical_key_bounds(table)?;
+            let bytes = table.facts().byte_count();
+            total_bytes = total_bytes.saturating_add(bytes);
+            anchors.push((last, bytes));
+        }
+        if total_bytes == 0 {
+            return Ok(Vec::new());
+        }
+        anchors.sort_by(|a, b| a.0.cmp(&b.0));
+        let n_u64 = u64::try_from(n).unwrap_or(u64::MAX).max(1);
+        let target_range_size = (total_bytes / n_u64).max(target_output_bytes);
+        if target_range_size == 0 || target_range_size >= total_bytes {
+            return Ok(Vec::new());
+        }
+        let mut boundaries: Vec<TablePhysicalKeyBytes> = Vec::new();
+        let mut cumulative: u64 = 0;
+        let mut next_threshold = target_range_size;
+        for (last_key, bytes) in anchors {
+            cumulative = cumulative.saturating_add(bytes);
+            if cumulative > next_threshold && boundaries.last() != Some(&last_key) {
+                boundaries.push(last_key);
+                next_threshold = next_threshold.saturating_add(target_range_size);
+                if boundaries.len() >= n - 1 {
+                    break;
+                }
+            }
+        }
+        Ok(boundaries)
+    }
+
+    /// The `n` half-open physical-key ranges to build in parallel for this candidate (or a single
+    /// unbounded range when the input is too small or the keys too few to split).
+    pub(crate) fn subcompaction_ranges_for_candidate(
+        &self,
+        candidate: &BranchCompactionCandidate,
+        n: usize,
+        target_output_bytes: u64,
+    ) -> BranchRuntimeResult<Vec<Option<TableKeyBounds>>> {
+        let boundaries =
+            self.compaction_subcompaction_boundaries(candidate, n, target_output_bytes)?;
+        subcompaction_ranges(&boundaries)
     }
 
     pub(crate) fn compaction_output_tables(
@@ -1957,4 +2072,33 @@ fn compaction_table_physical_key_bounds(
         TablePhysicalKeyBytes::from_encoded_internal_key(first_key),
         TablePhysicalKeyBytes::from_encoded_internal_key(last_key),
     ))
+}
+
+/// Convert `n-1` subcompaction boundaries into `n` half-open physical-key ranges (unbounded on
+/// the open ends). An empty boundary list yields a single unbounded range (`vec![None]`), i.e. a
+/// serial build.
+pub(crate) fn subcompaction_ranges(
+    boundaries: &[TablePhysicalKeyBytes],
+) -> BranchRuntimeResult<Vec<Option<TableKeyBounds>>> {
+    if boundaries.is_empty() {
+        return Ok(vec![None]);
+    }
+    let empty_prefix = TablePhysicalKeyBytes::empty();
+    let mut ranges = Vec::with_capacity(boundaries.len() + 1);
+    for index in 0..=boundaries.len() {
+        let lower = if index == 0 {
+            TablePhysicalKeyBound::Unbounded
+        } else {
+            TablePhysicalKeyBound::Included(boundaries[index - 1].clone())
+        };
+        let upper = if index == boundaries.len() {
+            TablePhysicalKeyBound::Unbounded
+        } else {
+            TablePhysicalKeyBound::Excluded(boundaries[index].clone())
+        };
+        let bounds = TableKeyBounds::physical_range(&empty_prefix, lower, upper)
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        ranges.push(Some(bounds));
+    }
+    Ok(ranges)
 }

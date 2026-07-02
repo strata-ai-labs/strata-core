@@ -450,6 +450,33 @@ impl TableCompactionReport {
         summary.increment();
         self.drop_summaries.push(summary);
     }
+
+    /// Fold another range-build's report into this one, so N subcompaction reports aggregate
+    /// into the single report of the whole compaction. `input_sources` is retained (identical
+    /// across ranges — it is the candidate's source count, not per-range); `split_count` is
+    /// recomputed as `output_tables - 1` to match the single-merge semantics.
+    pub(crate) fn accumulate(&mut self, other: &Self) {
+        self.input_rows = self.input_rows.saturating_add(other.input_rows);
+        self.kept_rows = self.kept_rows.saturating_add(other.kept_rows);
+        self.dropped_rows = self.dropped_rows.saturating_add(other.dropped_rows);
+        self.output_tables = self.output_tables.saturating_add(other.output_tables);
+        self.output_bytes = self.output_bytes.saturating_add(other.output_bytes);
+        self.peak_buffered_rows = self.peak_buffered_rows.max(other.peak_buffered_rows);
+        for summary in &other.drop_summaries {
+            if let Some(existing) = self
+                .drop_summaries
+                .iter_mut()
+                .find(|existing| existing.reason == summary.reason)
+            {
+                existing.rows = existing.rows.saturating_add(summary.rows);
+            } else {
+                self.drop_summaries.push(*summary);
+            }
+        }
+        self.split_count = u64::try_from(self.output_tables)
+            .unwrap_or(u64::MAX)
+            .saturating_sub(1);
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

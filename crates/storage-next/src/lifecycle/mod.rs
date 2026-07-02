@@ -163,14 +163,14 @@ pub(crate) use health::{
 )]
 pub(crate) use maintenance::{
     compaction_lane_cap, evaluate_mutating_write_admission, maintenance_ready_for_recovery_health,
-    telemetry_health_debt, LifecycleMaintenanceExecutor, LifecycleMaintenanceStats,
-    LifecyclePostCommitMaintenanceOutcome, LifecyclePostCommitMaintenanceStatus,
-    LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus, MaintenanceCancelOutcome,
-    MaintenanceCheckpointOptions, MaintenanceClosePolicy, MaintenanceCoalesceKey,
-    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceFaultHook,
-    MaintenanceFaultPoint, MaintenanceRetentionOptions, MaintenanceTask, MaintenanceTaskId,
-    MaintenanceTaskPolicy, MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner,
-    MaintenanceTaskScope,
+    subcompaction_cap, telemetry_health_debt, LifecycleMaintenanceExecutor,
+    LifecycleMaintenanceStats, LifecyclePostCommitMaintenanceOutcome,
+    LifecyclePostCommitMaintenanceStatus, LifecycleWriteAdmissionOutcome,
+    LifecycleWriteAdmissionStatus, MaintenanceCancelOutcome, MaintenanceCheckpointOptions,
+    MaintenanceClosePolicy, MaintenanceCoalesceKey, MaintenanceEnqueueOutcome,
+    MaintenanceExecutorStatus, MaintenanceFaultHook, MaintenanceFaultPoint,
+    MaintenanceRetentionOptions, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskPolicy,
+    MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope,
 };
 #[allow(
     unused_imports,

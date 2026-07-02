@@ -7,14 +7,16 @@ use super::compaction::{
 };
 use super::{
     publish_table_manifest_for_branch_with_budget, require_generated_artifact_budget,
-    require_table_reader_budget, LifecycleDurableTableCatalog, LifecycleError, LifecycleResult,
-    StorageBudgetLedger,
+    require_table_reader_budget, subcompaction_cap, LifecycleDurableTableCatalog, LifecycleError,
+    LifecycleResult, StorageBudgetLedger,
 };
 use crate::backend::{PublishError, PublishFailureKind};
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::{BranchMaterializationSource, BranchOwnedTable};
-use crate::branch::state::compaction::{BranchCompactionPlan, BranchCompactionRequest};
+use crate::branch::state::compaction::{
+    BranchCompactionKind, BranchCompactionPlan, BranchCompactionRequest,
+};
 use crate::branch::state::materialization::{
     BranchMaterializationHandle, BranchMaterializationOutcome, BranchMaterializationPreparedOutput,
     BranchMaterializationRecovery, BranchMaterializationRequest,
@@ -26,7 +28,7 @@ use crate::service::{
     TableManifestService, TableObjectFacts, TableObjectReadError, TableObjectReaderService,
     TableObjectService, TableObjectServiceError,
 };
-use crate::table::{BuiltTableArtifact, TableCompactionReport, TableReaderConfig};
+use crate::table::{BuiltTableArtifact, TableCompactionReport, TableKeyBounds, TableReaderConfig};
 use strata_core_next::BranchId;
 
 pub(crate) struct PreparedDurableCompaction {
@@ -104,26 +106,17 @@ pub(crate) fn prepare_durable_compaction_publication(
         .plan_branch_compaction(&branch_request)
         .map_err(branch_error)?;
     let io_facts = LifecycleCompactionIoFacts::from_plan(branch, &plan);
-    let output = match branch
-        .prepare_branch_compaction_plan(&branch_request, &plan)
-        .map_err(branch_error)?
-    {
-        Some((artifacts, report)) => {
-            let Some(output_level) = plan.output_level() else {
-                return Err(LifecycleError::RewritePublicationFailed {
-                    reason: "prepared compaction output requires a candidate plan",
-                    source: None,
-                });
-            };
-            let published = publish_compaction_outputs(
-                branch.branch_id(),
-                output_level,
-                plan.materialization_source(),
-                table_service,
-                reader_service,
-                artifacts,
-                budget,
-            )?;
+    let ranges = subcompaction_ranges_for_publication(branch, &branch_request, &plan)?;
+    let output = match build_and_publish_compaction(
+        branch,
+        &branch_request,
+        &plan,
+        table_service,
+        reader_service,
+        budget,
+        &ranges,
+    )? {
+        Some((published, report)) => {
             PreparedDurableCompactionOutput::Published { report, published }
         }
         None => PreparedDurableCompactionOutput::MetadataOnly,
@@ -136,6 +129,122 @@ pub(crate) fn prepare_durable_compaction_publication(
         output,
         elapsed: started.elapsed(),
     })
+}
+
+/// The subcompaction key ranges for one compaction: `vec![None]` (a single serial build) unless
+/// the candidate is an L0-to-L1 table rewrite large enough to split, in which case up to
+/// `subcompaction_cap()` disjoint half-open physical-key ranges.
+fn subcompaction_ranges_for_publication(
+    branch: &BranchLocalState,
+    branch_request: &BranchCompactionRequest,
+    plan: &BranchCompactionPlan,
+) -> LifecycleResult<Vec<Option<TableKeyBounds>>> {
+    let Some(candidate) = plan.candidate() else {
+        return Ok(vec![None]);
+    };
+    if candidate.is_metadata_promotion()
+        || branch_request.kind() != BranchCompactionKind::CompactL0ToLevelOne
+    {
+        return Ok(vec![None]);
+    }
+    let n = subcompaction_cap();
+    if n <= 1 {
+        return Ok(vec![None]);
+    }
+    let target_output_bytes = branch_request
+        .table_compaction_config()
+        .target_output_bytes();
+    branch
+        .subcompaction_ranges_for_candidate(candidate, n, target_output_bytes)
+        .map_err(branch_error)
+}
+
+/// Build and publish a compaction as `ranges.len()` parallel subcompactions (or one serial build
+/// when `ranges` is a single unbounded range), then aggregate their published output tables and
+/// reports into one result. Returns `None` for a metadata promotion (no build). Any subcompaction
+/// failure aborts the whole compaction and cleans up already-published objects as an orphaned
+/// partial publish.
+fn build_and_publish_compaction(
+    branch: &BranchLocalState,
+    branch_request: &BranchCompactionRequest,
+    plan: &BranchCompactionPlan,
+    table_service: &TableObjectService<'_>,
+    reader_service: &TableObjectReaderService<'_>,
+    budget: Option<&StorageBudgetLedger>,
+    ranges: &[Option<TableKeyBounds>],
+) -> SubcompactionBuildResult {
+    let build_range = |index: usize, bounds: Option<&TableKeyBounds>| -> SubcompactionBuildResult {
+        let Some((artifacts, report)) = branch
+            .prepare_branch_compaction_plan_bounded(branch_request, plan, bounds, index)
+            .map_err(branch_error)?
+        else {
+            return Ok(None);
+        };
+        let output_level = plan
+            .output_level()
+            .ok_or(LifecycleError::RewritePublicationFailed {
+                reason: "prepared compaction output requires a candidate plan",
+                source: None,
+            })?;
+        let published = publish_compaction_outputs(
+            branch.branch_id(),
+            output_level,
+            plan.materialization_source(),
+            table_service,
+            reader_service,
+            artifacts,
+            budget,
+        )?;
+        Ok(Some((published, report)))
+    };
+
+    if ranges.len() <= 1 {
+        return build_range(0, ranges.first().and_then(Option::as_ref));
+    }
+
+    let results: Vec<SubcompactionBuildResult> = std::thread::scope(|scope| {
+        let handles: Vec<_> = ranges
+            .iter()
+            .enumerate()
+            .map(|(index, bounds)| scope.spawn(move || build_range(index, bounds.as_ref())))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err(LifecycleError::RewritePublicationFailed {
+                        reason: "subcompaction build thread panicked",
+                        source: None,
+                    })
+                })
+            })
+            .collect()
+    });
+
+    let mut all_published: Vec<PublishedRewriteTable> = Vec::new();
+    let mut merged_report: Option<TableCompactionReport> = None;
+    let mut first_error: Option<LifecycleError> = None;
+    for result in results {
+        match result {
+            Ok(Some((published, report))) => {
+                all_published.extend(published);
+                match &mut merged_report {
+                    Some(existing) => existing.accumulate(&report),
+                    None => merged_report = Some(report),
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+    }
+    if let Some(error) = first_error {
+        return Err(partial_publish_error(&all_published, error));
+    }
+    Ok(merged_report.map(|report| (all_published, report)))
 }
 
 pub(crate) fn install_prepared_durable_compaction(
@@ -523,6 +632,11 @@ type PublishedRewriteTable = (
     TableObjectFacts,
     TableManifestTableProvenance,
 );
+
+/// One subcompaction's published output tables plus its compaction report.
+type SubcompactionBuildOutput = (Vec<PublishedRewriteTable>, TableCompactionReport);
+/// Result of building one subcompaction range (`None` = a metadata promotion, no build).
+type SubcompactionBuildResult = LifecycleResult<Option<SubcompactionBuildOutput>>;
 
 struct PublishedRewriteObject {
     facts: TableObjectFacts,
