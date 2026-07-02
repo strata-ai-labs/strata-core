@@ -188,6 +188,27 @@ fn vector_query_and_index_query_return_executor_json_shapes() {
     assert_eq!(index_query["type"], "vector_index_query");
     assert!(index_query["data"]["matches"].is_array());
     assert!(index_query["data"]["diagnostics"]["manifest_status"].is_string());
+
+    let full_filter = run_success(args_with_db(
+        &db,
+        &[
+            "vector",
+            "query",
+            "docs",
+            "--vector",
+            "1,0",
+            "--k",
+            "2",
+            "--filter",
+            r#"{"conditions":[{"field":"kind","op":"eq","value":{"type":"string","value":"doc"}}]}"#,
+            "--format",
+            "json",
+        ],
+    ));
+    let full_filter = stdout_json(&full_filter);
+    assert_eq!(full_filter["type"], "vector_matches");
+    assert_eq!(full_filter["data"].as_array().expect("matches").len(), 1);
+    assert_eq!(full_filter["data"][0]["key"], "a");
 }
 
 #[test]
@@ -232,6 +253,111 @@ fn vector_metadata_update_and_delete_paths_execute() {
 }
 
 #[test]
+fn vector_collection_history_delete_all_and_batch_commands_execute() {
+    let temp = TempDir::new().expect("temp db parent");
+    let db = db_path(&temp);
+    create_collection(&db);
+    upsert(&db, "a", "1,0", r#"{"kind":"doc"}"#);
+    upsert(&db, "b", "0,1", r#"{"kind":"note"}"#);
+
+    let list = run_success(args_with_db(
+        &db,
+        &["vector", "collection", "list", "--format", "json"],
+    ));
+    let list = stdout_json(&list);
+    assert_eq!(list["type"], "vector_collection_list");
+    assert_eq!(list["data"]["items"][0]["name"], "docs");
+
+    let stats = run_success(args_with_db(
+        &db,
+        &["vector", "collection", "stats", "docs", "--format", "json"],
+    ));
+    let stats = stdout_json(&stats);
+    assert_eq!(stats["type"], "vector_collection_list");
+    assert_eq!(stats["data"]["items"][0]["count"], 2);
+
+    let history = run_success(args_with_db(
+        &db,
+        &["vector", "history", "docs", "a", "--format", "json"],
+    ));
+    let history = stdout_json(&history);
+    assert_eq!(history["type"], "vector_version_history");
+    assert_eq!(history["data"].as_array().expect("history").len(), 1);
+
+    let batch_upsert = run_success(args_with_db(
+        &db,
+        &[
+            "vector",
+            "batch-upsert",
+            "docs",
+            "--entries",
+            r#"[{"key":"c","vector":[1,1],"metadata":{"kind":"doc"}},{"key":"d","vector":"0.5,0.5"}]"#,
+            "--format",
+            "json",
+        ],
+    ));
+    let batch_upsert = stdout_json(&batch_upsert);
+    assert_eq!(batch_upsert["type"], "vector_batch_upsert_results");
+    assert_eq!(batch_upsert["data"]["mode"], "itemwise");
+    assert_eq!(
+        batch_upsert["data"]["items"]
+            .as_array()
+            .expect("batch items")
+            .len(),
+        2
+    );
+
+    let batch_get = run_success(args_with_db(
+        &db,
+        &[
+            "vector",
+            "batch-get",
+            "docs",
+            "--keys",
+            r#"["c","missing"]"#,
+            "--format",
+            "json",
+        ],
+    ));
+    let batch_get = stdout_json(&batch_get);
+    assert_eq!(batch_get["type"], "vector_batch_get_results");
+    assert_eq!(batch_get["data"]["items"][0]["result"]["found"], true);
+    assert_eq!(batch_get["data"]["items"][1]["result"]["found"], false);
+
+    let batch_delete = run_success(args_with_db(
+        &db,
+        &[
+            "vector",
+            "batch-delete",
+            "docs",
+            "--keys",
+            r#"["c","d"]"#,
+            "--format",
+            "json",
+        ],
+    ));
+    let batch_delete = stdout_json(&batch_delete);
+    assert_eq!(batch_delete["type"], "vector_batch_delete_results");
+    assert_eq!(batch_delete["data"]["applied"], true);
+
+    let delete_all = run_success(args_with_db(
+        &db,
+        &["vector", "delete-all", "docs", "--format", "json"],
+    ));
+    let delete_all = stdout_json(&delete_all);
+    assert_eq!(delete_all["type"], "vector_bulk_delete_result");
+    assert_eq!(delete_all["data"]["deleted_count"], 2);
+
+    let delete_collection = run_success(args_with_db(
+        &db,
+        &["vector", "collection", "delete", "docs", "--format", "json"],
+    ));
+    let delete_collection = stdout_json(&delete_collection);
+    assert_eq!(delete_collection["type"], "bool");
+    assert_eq!(delete_collection["data"], true);
+}
+
+#[test]
 fn vector_parser_errors_are_structured_cli_errors() {
     let temp = TempDir::new().expect("temp db parent");
     let db = db_path(&temp);
@@ -270,6 +396,50 @@ fn vector_parser_errors_are_structured_cli_errors() {
     assert_eq!(
         unknown["error"]["message"],
         "unknown vector operation `nope`"
+    );
+
+    let missing_batch_keys = run_failure(args_with_db(
+        &db,
+        &["vector", "batch-get", "docs", "--format", "json"],
+    ));
+    let missing_batch_keys = stderr_json(&missing_batch_keys);
+    assert_eq!(missing_batch_keys["error"]["message"], "missing --keys");
+
+    let invalid_batch_entries = run_failure(args_with_db(
+        &db,
+        &[
+            "vector",
+            "batch-upsert",
+            "docs",
+            "--entries",
+            r#"[{"key":"a","vector":{}}]"#,
+            "--format",
+            "json",
+        ],
+    ));
+    let invalid_batch_entries = stderr_json(&invalid_batch_entries);
+    assert_eq!(
+        invalid_batch_entries["error"]["message"],
+        "vector value for --entries.vector must be an array or string literal"
+    );
+
+    create_collection(&db);
+    let empty_filter = run_failure(args_with_db(
+        &db,
+        &[
+            "vector",
+            "delete-by-filter",
+            "docs",
+            "--filter",
+            "{}",
+            "--format",
+            "json",
+        ],
+    ));
+    let empty_filter = stderr_json(&empty_filter);
+    assert_eq!(
+        empty_filter["error"]["code"],
+        "invalid_argument.engine.vector_filter"
     );
 }
 

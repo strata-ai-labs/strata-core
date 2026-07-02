@@ -1,11 +1,12 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use strata_executor_next::{
-    Command, Output, VectorDistanceMetric, VectorFilterCondition, VectorFilterOp, VectorMatch,
-    VectorMetadataFilter, VectorScalar,
+    BatchResult, BatchVectorEntry, Command, Output, VectorBatchGetItemResult,
+    VectorBatchItemResult, VectorDistanceMetric, VectorFilterCondition, VectorFilterOp,
+    VectorMatch, VectorMetadataFilter, VectorScalar,
 };
 
 use crate::execution::{
@@ -52,15 +53,80 @@ fn parse_vector_command(args: &mut Vec<String>, format: OutputFormat) -> Result<
         "count" => parse_count(args, format),
         "query" => parse_query(args, format, false),
         "index" => parse_index(args, format),
-        "batch-delete" | "batch-get" | "batch-upsert" => Err(CliError::usage(
-            format!("vector operation `{op}` is not implemented by cli-next yet"),
-            format,
-        )),
+        "batch-upsert" => parse_batch_upsert(args, format),
+        "batch-get" => parse_batch_get(args, format),
+        "batch-delete" => parse_batch_delete(args, format),
         _ => Err(CliError::usage(
             format!("unknown vector operation `{op}`"),
             format,
         )),
     }
+}
+
+fn parse_batch_upsert(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
+    let scope = CommandScope::extract(args, format)?;
+    let entries =
+        parse_vector_batch_entries(&take_required_string(args, "--entries", format)?, format)?;
+    reject_unknown_flags(args, format)?;
+    strip_argument_delimiter(args);
+    require_positional_len(
+        args,
+        1,
+        "vector batch-upsert <collection> --entries <json>",
+        format,
+    )?;
+    Ok(Command::VectorBatchUpsert {
+        branch: scope.branch,
+        space: scope.space,
+        collection: args[0].clone(),
+        entries,
+    })
+}
+
+fn parse_batch_get(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
+    let scope = CommandScope::extract(args, format)?;
+    let keys = parse_string_array(
+        &take_required_string(args, "--keys", format)?,
+        "--keys",
+        format,
+    )?;
+    reject_unknown_flags(args, format)?;
+    strip_argument_delimiter(args);
+    require_positional_len(
+        args,
+        1,
+        "vector batch-get <collection> --keys <json>",
+        format,
+    )?;
+    Ok(Command::VectorBatchGet {
+        branch: scope.branch,
+        space: scope.space,
+        collection: args[0].clone(),
+        keys,
+    })
+}
+
+fn parse_batch_delete(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
+    let scope = CommandScope::extract(args, format)?;
+    let keys = parse_string_array(
+        &take_required_string(args, "--keys", format)?,
+        "--keys",
+        format,
+    )?;
+    reject_unknown_flags(args, format)?;
+    strip_argument_delimiter(args);
+    require_positional_len(
+        args,
+        1,
+        "vector batch-delete <collection> --keys <json>",
+        format,
+    )?;
+    Ok(Command::VectorBatchDelete {
+        branch: scope.branch,
+        space: scope.space,
+        collection: args[0].clone(),
+        keys,
+    })
 }
 
 fn parse_collection(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
@@ -472,6 +538,53 @@ fn parse_json_literal(
         .map_err(|_| CliError::usage(format!("invalid JSON value for {flag}"), format))
 }
 
+fn parse_string_array(
+    value: &str,
+    flag: &'static str,
+    format: OutputFormat,
+) -> Result<Vec<String>, CliError> {
+    serde_json::from_str(value)
+        .map_err(|_| CliError::usage(format!("{flag} must be a JSON array of strings"), format))
+}
+
+fn parse_vector_batch_entries(
+    value: &str,
+    format: OutputFormat,
+) -> Result<Vec<BatchVectorEntry>, CliError> {
+    let entries = serde_json::from_str::<Vec<VectorBatchEntryArg>>(value).map_err(|_| {
+        CliError::usage(
+            "--entries must be a JSON array of vector batch entry objects".to_string(),
+            format,
+        )
+    })?;
+    entries
+        .into_iter()
+        .map(|entry| {
+            Ok(BatchVectorEntry::new(
+                entry.key,
+                parse_vector_json_value(entry.vector, "--entries.vector", format)?,
+                entry.metadata,
+            ))
+        })
+        .collect()
+}
+
+fn parse_vector_json_value(
+    value: Value,
+    flag: &'static str,
+    format: OutputFormat,
+) -> Result<Vec<f32>, CliError> {
+    match value {
+        Value::String(value) => parse_vector_literal(&value, flag, format),
+        Value::Array(_) => serde_json::from_value::<Vec<f32>>(value)
+            .map_err(|_| CliError::usage(format!("invalid vector literal for {flag}"), format)),
+        _ => Err(CliError::usage(
+            format!("vector value for {flag} must be an array or string literal"),
+            format,
+        )),
+    }
+}
+
 fn parse_filter_value(
     value: Value,
     flag: &'static str,
@@ -615,6 +728,10 @@ fn render_human(output: &Output) -> String {
         Output::VectorKeyPage { items, page } => {
             render_string_page(items.iter().cloned(), page.has_more(), page.cursor())
         }
+        Output::VectorBatchUpsertResults(results) | Output::VectorBatchDeleteResults(results) => {
+            render_vector_batch_results(results)
+        }
+        Output::VectorBatchGetResults(results) => render_vector_batch_get_results(results),
         Output::Bool(value) => value.to_string(),
         Output::Uint(value) => value.to_string(),
         other => json_output(&StableDebugFallback { output: other }),
@@ -650,6 +767,62 @@ fn render_vector_history(items: &[strata_executor_next::VectorHistoryItem]) -> S
         false,
         None,
     )
+}
+
+fn render_vector_batch_results(results: &BatchResult<VectorBatchItemResult>) -> String {
+    let mut lines = batch_header(results);
+    lines.extend(results.items().iter().map(|item| {
+        let Some(result) = item.result() else {
+            return format!("{}\tstatus={:?}", item.index(), item.status());
+        };
+        let mut line = format!(
+            "{}\tstatus={:?}\tapplied={}",
+            item.index(),
+            item.status(),
+            item.applied()
+        );
+        if let Some(effect) = result.effect() {
+            write!(&mut line, "\teffect={}", effect_label(effect))
+                .expect("writing to String should not fail");
+        }
+        if let Some(version) = result.version() {
+            write!(&mut line, "\tversion={version}").expect("writing to String should not fail");
+        }
+        if let Some(vector_revision) = result.vector_revision() {
+            write!(&mut line, "\tvector_revision={vector_revision}")
+                .expect("writing to String should not fail");
+        }
+        if let Some(error) = item.error() {
+            write!(&mut line, "\terror={error}").expect("writing to String should not fail");
+        }
+        line
+    }));
+    lines.join("\n")
+}
+
+fn render_vector_batch_get_results(results: &BatchResult<VectorBatchGetItemResult>) -> String {
+    let mut lines = batch_header(results);
+    lines.extend(results.items().iter().map(|item| {
+        let Some(result) = item.result() else {
+            return format!("{}\tstatus={:?}", item.index(), item.status());
+        };
+        let mut line = format!(
+            "{}\tstatus={:?}\tfound={}",
+            item.index(),
+            item.status(),
+            result.found()
+        );
+        if let Some(value) = result.value() {
+            write!(&mut line, "\tkey={}", value.key()).expect("writing to String should not fail");
+            write!(&mut line, "\tversion={}", value.version())
+                .expect("writing to String should not fail");
+        }
+        if let Some(error) = item.error() {
+            write!(&mut line, "\terror={error}").expect("writing to String should not fail");
+        }
+        line
+    }));
+    lines.join("\n")
 }
 
 fn render_index_query(result: &strata_executor_next::VectorIndexQueryResult) -> String {
@@ -723,6 +896,19 @@ fn render_matches(matches: &[VectorMatch]) -> String {
     )
 }
 
+fn batch_header<T>(results: &BatchResult<T>) -> Vec<String> {
+    let mut lines = vec![
+        format!("mode: {:?}", results.mode()).to_ascii_lowercase(),
+        format!("status: {:?}", results.status()).to_ascii_lowercase(),
+        format!("applied: {}", results.applied()),
+    ];
+    if let Some(commit) = results.commit() {
+        lines.push(format!("version: {}", commit.version()));
+        lines.push(format!("timestamp: {}", commit.timestamp()));
+    }
+    lines
+}
+
 fn render_string_page(
     rows: impl IntoIterator<Item = String>,
     has_more: bool,
@@ -751,4 +937,12 @@ fn effect_label(effect: &strata_executor_next::MutationEffect) -> String {
 #[derive(Serialize)]
 struct StableDebugFallback<'a> {
     output: &'a Output,
+}
+
+#[derive(Deserialize)]
+struct VectorBatchEntryArg {
+    key: String,
+    vector: Value,
+    #[serde(default)]
+    metadata: Option<Value>,
 }

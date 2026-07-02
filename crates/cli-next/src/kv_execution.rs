@@ -1,8 +1,11 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use serde::Serialize;
-use strata_executor_next::{Bytes, Command, Output};
+use serde::{Deserialize, Serialize};
+use strata_executor_next::{
+    BatchGetItemResult, BatchItemResult, BatchKvEntry, BatchResult, Bytes, Command, HistoryItem,
+    Output, SampleItem,
+};
 
 use crate::execution::{
     bytes, execute_durable, reject_unknown_flags, require_positional_len, strip_argument_delimiter,
@@ -35,10 +38,16 @@ fn parse_kv_command(args: &mut Vec<String>, format: OutputFormat) -> Result<Comm
         "put" => parse_put(args, format),
         "get" => parse_get(args, format),
         "delete" => parse_delete(args, format),
+        "batch-put" => parse_batch_put(args, format),
+        "batch-get" => parse_batch_get(args, format),
+        "batch-delete" => parse_batch_delete(args, format),
+        "batch-exists" => parse_batch_exists(args, format),
         "list" => parse_list(args, format),
         "scan" => parse_scan(args, format),
         "exists" => parse_exists(args, format),
+        "history" => parse_history(args, format),
         "count" => parse_count(args, format),
+        "sample" => parse_sample(args, format),
         _ => Err(CliError::usage(
             format!("unknown kv operation `{op}`"),
             format,
@@ -82,6 +91,80 @@ fn parse_delete(args: &mut Vec<String>, format: OutputFormat) -> Result<Command,
         branch: scope.branch,
         space: scope.space,
         key: bytes(&args[0]),
+    })
+}
+
+fn parse_batch_put(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
+    let scope = CommandScope::extract(args, format)?;
+    let entries =
+        parse_kv_batch_entries(&take_required_string(args, "--entries", format)?, format)?;
+    reject_unknown_flags(args, format)?;
+    strip_argument_delimiter(args);
+    require_positional_len(args, 0, "kv batch-put --entries <json>", format)?;
+    Ok(Command::KvBatchPut {
+        branch: scope.branch,
+        space: scope.space,
+        entries,
+    })
+}
+
+fn parse_batch_get(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
+    let scope = CommandScope::extract(args, format)?;
+    let keys = parse_string_array(
+        &take_required_string(args, "--keys", format)?,
+        "--keys",
+        format,
+    )?
+    .into_iter()
+    .map(|key| bytes(&key))
+    .collect();
+    reject_unknown_flags(args, format)?;
+    strip_argument_delimiter(args);
+    require_positional_len(args, 0, "kv batch-get --keys <json>", format)?;
+    Ok(Command::KvBatchGet {
+        branch: scope.branch,
+        space: scope.space,
+        keys,
+    })
+}
+
+fn parse_batch_delete(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
+    let scope = CommandScope::extract(args, format)?;
+    let keys = parse_string_array(
+        &take_required_string(args, "--keys", format)?,
+        "--keys",
+        format,
+    )?
+    .into_iter()
+    .map(|key| bytes(&key))
+    .collect();
+    reject_unknown_flags(args, format)?;
+    strip_argument_delimiter(args);
+    require_positional_len(args, 0, "kv batch-delete --keys <json>", format)?;
+    Ok(Command::KvBatchDelete {
+        branch: scope.branch,
+        space: scope.space,
+        keys,
+    })
+}
+
+fn parse_batch_exists(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
+    let scope = CommandScope::extract(args, format)?;
+    let keys = parse_string_array(
+        &take_required_string(args, "--keys", format)?,
+        "--keys",
+        format,
+    )?
+    .into_iter()
+    .map(|key| bytes(&key))
+    .collect();
+    reject_unknown_flags(args, format)?;
+    strip_argument_delimiter(args);
+    require_positional_len(args, 0, "kv batch-exists --keys <json>", format)?;
+    Ok(Command::KvBatchExists {
+        branch: scope.branch,
+        space: scope.space,
+        keys,
     })
 }
 
@@ -131,6 +214,18 @@ fn parse_exists(args: &mut Vec<String>, format: OutputFormat) -> Result<Command,
     })
 }
 
+fn parse_history(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
+    let scope = CommandScope::extract(args, format)?;
+    reject_unknown_flags(args, format)?;
+    strip_argument_delimiter(args);
+    require_positional_len(args, 1, "kv history <key>", format)?;
+    Ok(Command::KvGetv {
+        branch: scope.branch,
+        space: scope.space,
+        key: bytes(&args[0]),
+    })
+}
+
 fn parse_count(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
     let scope = CommandScope::extract(args, format)?;
     let prefix = take_string(args, "--prefix", format)?.map(|value| bytes(&value));
@@ -142,6 +237,55 @@ fn parse_count(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, 
         space: scope.space,
         prefix,
     })
+}
+
+fn parse_sample(args: &mut Vec<String>, format: OutputFormat) -> Result<Command, CliError> {
+    let scope = CommandScope::extract(args, format)?;
+    let prefix = take_string(args, "--prefix", format)?.map(|value| bytes(&value));
+    let count = take_u64(args, "--count", format)?;
+    reject_unknown_flags(args, format)?;
+    strip_argument_delimiter(args);
+    require_positional_len(args, 0, "kv sample", format)?;
+    Ok(Command::KvSample {
+        branch: scope.branch,
+        space: scope.space,
+        prefix,
+        count,
+    })
+}
+
+fn take_required_string(
+    args: &mut Vec<String>,
+    flag: &'static str,
+    format: OutputFormat,
+) -> Result<String, CliError> {
+    take_string(args, flag, format)?
+        .ok_or_else(|| CliError::usage(format!("missing {flag}"), format))
+}
+
+fn parse_string_array(
+    value: &str,
+    flag: &'static str,
+    format: OutputFormat,
+) -> Result<Vec<String>, CliError> {
+    serde_json::from_str(value)
+        .map_err(|_| CliError::usage(format!("{flag} must be a JSON array of strings"), format))
+}
+
+fn parse_kv_batch_entries(
+    value: &str,
+    format: OutputFormat,
+) -> Result<Vec<BatchKvEntry>, CliError> {
+    let entries = serde_json::from_str::<Vec<KvBatchEntryArg>>(value).map_err(|_| {
+        CliError::usage(
+            "--entries must be a JSON array of {\"key\",\"value\"} objects".to_string(),
+            format,
+        )
+    })?;
+    Ok(entries
+        .into_iter()
+        .map(|entry| BatchKvEntry::new(bytes(&entry.key), bytes(&entry.value)))
+        .collect())
 }
 
 fn render_output(output: &Output, format: OutputFormat) -> String {
@@ -194,6 +338,8 @@ fn render_human(output: &Output) -> String {
             page.has_more(),
             page.cursor(),
         ),
+        Output::VersionHistory(Some(items)) => render_history(items),
+        Output::VersionHistory(None) => "missing".to_string(),
         Output::KvScanResult { items, page } => {
             let rows = items.iter().map(|item| {
                 format!(
@@ -206,8 +352,16 @@ fn render_human(output: &Output) -> String {
             });
             render_page(rows, page.has_more(), page.cursor())
         }
+        Output::BatchResults(results) => render_batch_results(results),
+        Output::BatchGetResults(results) => render_batch_get_results(results),
         Output::Bool(value) => value.to_string(),
+        Output::BoolList(values) => render_page(values.iter().map(bool::to_string), false, None),
         Output::Uint(value) => value.to_string(),
+        Output::SampleResult {
+            total_count,
+            items,
+            page,
+        } => render_sample(*total_count, items, page.has_more(), page.cursor()),
         other => json_output(&StableDebugFallback { output: other }),
     }
 }
@@ -231,6 +385,108 @@ fn render_optional_bytes(
         lines.push(format!("timestamp: {timestamp}"));
     }
     lines.join("\n")
+}
+
+fn render_history(items: &[HistoryItem]) -> String {
+    render_page(
+        items.iter().map(|item| {
+            let value = item.value().map_or("null".to_string(), display_bytes);
+            format!(
+                "{value}\tversion={}\ttimestamp={}\ttombstone={}",
+                item.version(),
+                item.timestamp(),
+                item.is_tombstone()
+            )
+        }),
+        false,
+        None,
+    )
+}
+
+fn render_batch_results(results: &BatchResult<BatchItemResult>) -> String {
+    let mut lines = batch_header(results);
+    lines.extend(results.items().iter().map(|item| {
+        let Some(result) = item.result() else {
+            return format!("{}\tstatus={:?}", item.index(), item.status());
+        };
+        let mut line = format!(
+            "{}\t{}\tstatus={:?}\tapplied={}",
+            item.index(),
+            display_bytes(result.key()),
+            item.status(),
+            item.applied()
+        );
+        if let Some(effect) = result.effect() {
+            write!(&mut line, "\teffect={}", effect_label(effect))
+                .expect("writing to String should not fail");
+        }
+        if let Some(version) = result.version() {
+            write!(&mut line, "\tversion={version}").expect("writing to String should not fail");
+        }
+        if let Some(error) = item.error() {
+            write!(&mut line, "\terror={error}").expect("writing to String should not fail");
+        }
+        line
+    }));
+    lines.join("\n")
+}
+
+fn render_batch_get_results(results: &BatchResult<BatchGetItemResult>) -> String {
+    let mut lines = batch_header(results);
+    lines.extend(results.items().iter().map(|item| {
+        let Some(result) = item.result() else {
+            return format!("{}\tstatus={:?}", item.index(), item.status());
+        };
+        let mut line = format!(
+            "{}\t{}\tstatus={:?}\tfound={}",
+            item.index(),
+            display_bytes(result.key()),
+            item.status(),
+            result.found()
+        );
+        if let Some(value) = result.value() {
+            write!(&mut line, "\tvalue={}", display_bytes(value))
+                .expect("writing to String should not fail");
+        }
+        if let Some(error) = item.error() {
+            write!(&mut line, "\terror={error}").expect("writing to String should not fail");
+        }
+        line
+    }));
+    lines.join("\n")
+}
+
+fn render_sample(
+    total_count: u64,
+    items: &[SampleItem],
+    has_more: bool,
+    cursor: Option<&Bytes>,
+) -> String {
+    let rows = items.iter().map(|item| {
+        format!(
+            "{}\t{}\t{}\t{}",
+            display_bytes(item.key()),
+            display_bytes(item.value()),
+            item.version(),
+            item.timestamp()
+        )
+    });
+    let mut lines = vec![format!("total_count: {total_count}")];
+    lines.push(render_page(rows, has_more, cursor));
+    lines.join("\n")
+}
+
+fn batch_header<T>(results: &BatchResult<T>) -> Vec<String> {
+    let mut lines = vec![
+        format!("mode: {:?}", results.mode()).to_ascii_lowercase(),
+        format!("status: {:?}", results.status()).to_ascii_lowercase(),
+        format!("applied: {}", results.applied()),
+    ];
+    if let Some(commit) = results.commit() {
+        lines.push(format!("version: {}", commit.version()));
+        lines.push(format!("timestamp: {}", commit.timestamp()));
+    }
+    lines
 }
 
 fn render_page(
@@ -268,4 +524,10 @@ fn effect_label(effect: &strata_executor_next::MutationEffect) -> String {
 #[derive(Serialize)]
 struct StableDebugFallback<'a> {
     output: &'a Output,
+}
+
+#[derive(Deserialize)]
+struct KvBatchEntryArg {
+    key: String,
+    value: String,
 }

@@ -213,6 +213,99 @@ fn kv_list_scan_and_count_return_executor_json_shapes() {
 }
 
 #[test]
+fn kv_history_sample_and_batch_commands_execute() {
+    let temp = TempDir::new().expect("temp db parent");
+    let db = db_path(&temp);
+
+    put(&db, "user:1", "Ada");
+    put(&db, "user:1", "Lovelace");
+    put(&db, "user:2", "Grace");
+
+    let history = run_success(args_with_db(
+        &db,
+        &["kv", "history", "user:1", "--format", "json"],
+    ));
+    let history = stdout_json(&history);
+    assert_eq!(history["type"], "version_history");
+    assert_eq!(history["data"].as_array().expect("history").len(), 2);
+
+    let sample = run_success(args_with_db(
+        &db,
+        &[
+            "kv", "sample", "--prefix", "user:", "--count", "1", "--format", "json",
+        ],
+    ));
+    let sample = stdout_json(&sample);
+    assert_eq!(sample["type"], "sample_result");
+    assert_eq!(sample["data"]["items"].as_array().expect("sample").len(), 1);
+
+    let batch_put = run_success(args_with_db(
+        &db,
+        &[
+            "kv",
+            "batch-put",
+            "--entries",
+            r#"[{"key":"batch:1","value":"one"},{"key":"batch:2","value":"two"}]"#,
+            "--format",
+            "json",
+        ],
+    ));
+    let batch_put = stdout_json(&batch_put);
+    assert_eq!(batch_put["type"], "batch_results");
+    assert_eq!(batch_put["data"]["mode"], "itemwise");
+    assert_eq!(
+        batch_put["data"]["items"].as_array().expect("items").len(),
+        2
+    );
+
+    let batch_get = run_success(args_with_db(
+        &db,
+        &[
+            "kv",
+            "batch-get",
+            "--keys",
+            r#"["batch:1","missing"]"#,
+            "--format",
+            "json",
+        ],
+    ));
+    let batch_get = stdout_json(&batch_get);
+    assert_eq!(batch_get["type"], "batch_get_results");
+    assert_eq!(batch_get["data"]["items"][0]["result"]["found"], true);
+    assert_eq!(batch_get["data"]["items"][1]["result"]["found"], false);
+
+    let batch_exists = run_success(args_with_db(
+        &db,
+        &[
+            "kv",
+            "batch-exists",
+            "--keys",
+            r#"["batch:1","missing"]"#,
+            "--format",
+            "json",
+        ],
+    ));
+    let batch_exists = stdout_json(&batch_exists);
+    assert_eq!(batch_exists["type"], "bool_list");
+    assert_eq!(batch_exists["data"], json!([true, false]));
+
+    let batch_delete = run_success(args_with_db(
+        &db,
+        &[
+            "kv",
+            "batch-delete",
+            "--keys",
+            r#"["batch:1","batch:2"]"#,
+            "--format",
+            "json",
+        ],
+    ));
+    let batch_delete = stdout_json(&batch_delete);
+    assert_eq!(batch_delete["type"], "batch_results");
+    assert_eq!(batch_delete["data"]["applied"], true);
+}
+
+#[test]
 fn kv_parser_errors_are_structured_cli_errors() {
     let no_db = run_failure([
         OsStr::new("kv"),
@@ -264,6 +357,24 @@ fn kv_parser_errors_are_structured_cli_errors() {
     assert_usage_error(
         args_with_db(&db, &["kv", "nope", "--format", "json"]),
         "unknown kv operation `nope`",
+    );
+    assert_usage_error(
+        args_with_db(&db, &["kv", "batch-get", "--format", "json"]),
+        "missing --keys",
+    );
+    assert_usage_error(
+        args_with_db(
+            &db,
+            &[
+                "kv",
+                "batch-get",
+                "--keys",
+                r#"["a", 1]"#,
+                "--format",
+                "json",
+            ],
+        ),
+        "--keys must be a JSON array of strings",
     );
 }
 
