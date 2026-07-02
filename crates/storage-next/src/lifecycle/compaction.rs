@@ -1850,6 +1850,56 @@ pub(crate) fn eligible_compaction_task(
     Some(score.task_request(branch.branch_id()))
 }
 
+/// Every eligible compaction level for the branch as a separate task request (plus
+/// materialization if eligible), rather than only the single top-scored one. Per-(branch,
+/// level) coalescing keeps re-enqueues idempotent; concurrent workers then pick disjoint
+/// levels. Applies the same background/global-pressure defer gate per level as
+/// [`eligible_compaction_task`].
+pub(crate) fn eligible_compaction_tasks(
+    branch: &BranchLocalState,
+    _budget: Option<StorageRuntimeBudget>,
+    global: StorageBudgetPressureSeverity,
+) -> Vec<MaintenanceTaskRequest> {
+    let mut compaction_scores: Vec<LifecycleCompactionScore> =
+        level_zero_compaction_score(branch).into_iter().collect();
+    let level_targets = nonzero_level_targets_for_branch(branch);
+    for (level_index, tables) in branch
+        .owned_levels()
+        .iter()
+        .enumerate()
+        .skip(usize::from(BranchLevel::ZERO.raw()) + 1)
+    {
+        let Some(target_bytes) = level_targets.get(level_index).copied() else {
+            continue;
+        };
+        if is_final_configured_level(branch, level_index) {
+            continue;
+        }
+        if let Some(score) =
+            nonzero_compaction_score_for_branch(branch, level_index, tables, target_bytes)
+        {
+            compaction_scores.push(score);
+        }
+    }
+
+    let defers = global.defers_optional_maintenance();
+    let branch_id = branch.branch_id();
+    let mut requests = Vec::new();
+    for score in compaction_scores {
+        let rewrite = LifecycleTableRewriteScore::from(score);
+        if rewrite.severity == LifecycleStoragePressureSeverity::Background && defers {
+            continue;
+        }
+        requests.push(rewrite.task_request(branch_id));
+    }
+    if let Some(score) = materialization_score(branch) {
+        if !(score.severity == LifecycleStoragePressureSeverity::Background && defers) {
+            requests.push(score.task_request(branch_id));
+        }
+    }
+    requests
+}
+
 fn storage_pressure_decision(
     branch_id: BranchId,
     frozen_tables: usize,

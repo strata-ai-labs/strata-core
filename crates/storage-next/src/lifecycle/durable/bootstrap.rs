@@ -17,7 +17,7 @@ use crate::commit::{
 };
 use crate::format::WalRecord;
 use crate::lifecycle::{
-    branch_resident_bytes, estimate_commit_batch_active_bytes,
+    branch_resident_bytes, compaction_lane_cap, estimate_commit_batch_active_bytes,
     maintenance_ready_for_recovery_health, projected_commit_rotation_would_exceed_frozen_budget,
     BudgetedCommitBranch, LifecycleBranchCatalog, LifecycleDurableTableCatalog, LifecycleError,
     LifecycleMaintenanceExecutor, LifecycleOperationKind, LifecycleRecoveryOutcome,
@@ -242,10 +242,20 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             branch_catalog_sequence,
             pending_releases_sequence,
             branch_publish_locks: HashMap::new(),
-            maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
+            maintenance: Self::build_maintenance_executor(max_maintenance_queue_depth)?,
             maintenance_coverage_idle_rounds: 0,
             close_retry_state: None,
         })
+    }
+
+    /// Build the maintenance executor with the durable runtime's Rewrite-lane concurrency cap
+    /// (env-tunable during the perf sweep; see [`compaction_lane_cap`]).
+    fn build_maintenance_executor(
+        max_queue_depth: usize,
+    ) -> LifecycleResult<LifecycleMaintenanceExecutor> {
+        let mut maintenance = LifecycleMaintenanceExecutor::new(max_queue_depth)?;
+        maintenance.set_rewrite_lane_cap(compaction_lane_cap());
+        Ok(maintenance)
     }
 
     /// Build the runtime catalog, replay durable manifests, and dispatch

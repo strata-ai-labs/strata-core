@@ -105,7 +105,7 @@ fn table_rewrite_requests_reject_bad_components_and_wrong_branch_execution() {
 }
 
 #[test]
-fn compaction_chain_tasks_coalesce_by_branch_scope() {
+fn compaction_chain_tasks_coalesce_per_branch_and_level() {
     let branch = branch_id(0x72);
     let other = branch_id(0x73);
     let mut executor = LifecycleMaintenanceExecutor::new(8).expect("executor");
@@ -137,15 +137,18 @@ fn compaction_chain_tasks_coalesce_by_branch_scope() {
 
     assert_eq!(duplicate.task_id(), first.task_id());
     assert!(duplicate.was_coalesced());
-    assert_eq!(other_level.task_id(), first.task_id());
-    assert!(other_level.was_coalesced());
+    // Per-(branch, level) coalescing: a different level on the same branch is now its own
+    // pending task (previously collapsed into the branch's single compaction task), so
+    // concurrent workers have distinct non-conflicting levels to pick.
+    assert_ne!(other_level.task_id(), first.task_id());
+    assert!(!other_level.was_coalesced());
     assert_ne!(other_branch.task_id(), first.task_id());
     assert_eq!(
         duplicate_materialization.task_id(),
         materialization.task_id()
     );
-    assert_eq!(executor.status().pending_tasks(), 3);
-    assert_eq!(executor.stats().coalesced(), 3);
+    assert_eq!(executor.status().pending_tasks(), 4);
+    assert_eq!(executor.stats().coalesced(), 2);
 }
 
 #[test]

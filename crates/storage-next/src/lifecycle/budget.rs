@@ -1150,8 +1150,29 @@ fn check_available(
     Ok(())
 }
 
-fn active_rotation_bytes_from_budget(budget: StorageRuntimeBudget) -> usize {
-    usize::try_from(budget.pool_limit_bytes(StorageBudgetPool::ActiveMutable)).unwrap_or(usize::MAX)
+/// RocksDB-aligned upper bound on the per-memtable rotation (flush) size, independent of the
+/// memory budget: the write buffer stays fixed rather than growing with RAM, so the freed
+/// budget can go to the block cache. A budget-scaled memtable makes `L0` files huge and lets
+/// one compaction monopolize the maintenance lane. The `ActiveMutable` pool still bounds total
+/// active plus frozen memory; this caps only a single rotation.
+pub(crate) const MAX_ACTIVE_ROTATION_BYTES: usize = 64 * 1024 * 1024;
+
+pub(crate) fn active_rotation_bytes_from_budget(budget: StorageRuntimeBudget) -> usize {
+    let pool = usize::try_from(budget.pool_limit_bytes(StorageBudgetPool::ActiveMutable))
+        .unwrap_or(usize::MAX);
+    pool.min(write_buffer_rotation_cap())
+}
+
+fn write_buffer_rotation_cap() -> usize {
+    // TEMPORARY A/B hook: STRATA_WRITE_BUFFER_MB overrides the cap for the perf sweep
+    // (control vs treatment on one binary). Reverted before commit; the shipped cap is the
+    // fixed RocksDB-aligned constant.
+    std::env::var("STRATA_WRITE_BUFFER_MB")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .map_or(MAX_ACTIVE_ROTATION_BYTES, |mb| {
+            mb.saturating_mul(1024 * 1024)
+        })
 }
 
 const fn empty_budget_counters() -> StorageBudgetCounters {

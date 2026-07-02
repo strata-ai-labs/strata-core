@@ -162,7 +162,7 @@ pub(crate) use health::{
     reason = "maintenance executor exports define the local surface for later slices"
 )]
 pub(crate) use maintenance::{
-    evaluate_mutating_write_admission, maintenance_ready_for_recovery_health,
+    compaction_lane_cap, evaluate_mutating_write_admission, maintenance_ready_for_recovery_health,
     telemetry_health_debt, LifecycleMaintenanceExecutor, LifecycleMaintenanceStats,
     LifecyclePostCommitMaintenanceOutcome, LifecyclePostCommitMaintenanceStatus,
     LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus, MaintenanceCancelOutcome,

@@ -154,6 +154,44 @@ fn from_total_bytes_scales_pools_proportionally() {
 }
 
 #[test]
+fn large_budget_caps_rotation_at_write_buffer_max() {
+    // RocksDB-aligned: the per-memtable rotation size is capped independent of the memory
+    // budget, so L0 files stay small even when RAM is large. A 48 GiB budget would otherwise
+    // give an ActiveMutable pool of 6 GiB (48 GiB * 64/512) and 6 GiB L0 flushes.
+    let budget =
+        StorageRuntimeBudget::from_total_bytes(48_u64 * 1024 * 1024 * 1024).expect("derive");
+    let cap =
+        u64::try_from(crate::lifecycle::budget::MAX_ACTIVE_ROTATION_BYTES).expect("cap fits u64");
+    assert!(
+        budget.pool_limit_bytes(StorageBudgetPool::ActiveMutable) > cap,
+        "precondition: a large budget's ActiveMutable pool exceeds the rotation cap"
+    );
+    assert_eq!(
+        crate::lifecycle::budget::active_rotation_bytes_from_budget(budget),
+        crate::lifecycle::budget::MAX_ACTIVE_ROTATION_BYTES,
+        "large-budget rotation is capped at the RocksDB-aligned write-buffer max"
+    );
+}
+
+#[test]
+fn small_budget_rotation_uses_pool_fraction_below_cap() {
+    // A small budget's ActiveMutable fraction is below the cap and is used unchanged, so
+    // low-memory targets keep their proportional (smaller) write buffer.
+    let budget = StorageRuntimeBudget::from_total_bytes(256_u64 * 1024 * 1024).expect("derive");
+    let pool = budget.pool_limit_bytes(StorageBudgetPool::ActiveMutable);
+    let pool_usize = usize::try_from(pool).expect("pool fits usize");
+    assert!(
+        pool_usize < crate::lifecycle::budget::MAX_ACTIVE_ROTATION_BYTES,
+        "precondition: a small budget's ActiveMutable pool is below the cap (got {pool})"
+    );
+    assert_eq!(
+        crate::lifecycle::budget::active_rotation_bytes_from_budget(budget),
+        pool_usize,
+        "small-budget rotation uses the proportional pool fraction unchanged"
+    );
+}
+
+#[test]
 fn storage_budget_rejects_zero_mandatory_active_pool() {
     let parts = StorageRuntimeBudgetParts {
         active_mutable_bytes: 0,

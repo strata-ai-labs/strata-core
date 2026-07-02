@@ -186,6 +186,10 @@ pub(crate) struct LifecycleMaintenanceExecutor {
     queue: Vec<MaintenanceTask>,
     active: Vec<MaintenanceTask>,
     stats: LifecycleMaintenanceStats,
+    /// Max number of concurrent Rewrite-lane tasks (compaction/materialization). `1` is the
+    /// legacy single-lane behavior; the durable runtime raises this to run non-conflicting
+    /// compactions concurrently. Every other lane is always effectively `1`.
+    rewrite_lane_cap: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -1106,7 +1110,15 @@ impl LifecycleMaintenanceExecutor {
             queue: Vec::new(),
             active: Vec::new(),
             stats: LifecycleMaintenanceStats::default(),
+            rewrite_lane_cap: 1,
         })
+    }
+
+    /// Set the max number of concurrent Rewrite-lane tasks (compaction/materialization). `1`
+    /// is the legacy single-lane behavior; the durable runtime raises this to run
+    /// non-conflicting compactions concurrently. Clamped to at least `1`.
+    pub(crate) fn set_rewrite_lane_cap(&mut self, cap: usize) {
+        self.rewrite_lane_cap = cap.max(1);
     }
 
     pub(crate) fn enqueue(
@@ -1424,14 +1436,39 @@ impl LifecycleMaintenanceExecutor {
         self.queue
             .iter()
             .enumerate()
-            .filter(|(_, task)| predicate(task) && !self.task_lane_is_active(**task))
+            .filter(|(_, task)| predicate(task) && !self.lane_at_capacity(**task))
             .min_by_key(|(_, task)| (task.priority().rank(), task.sequence()))
             .map(|(index, _)| index)
     }
 
-    fn task_lane_is_active(&self, task: MaintenanceTask) -> bool {
+    /// Whether the task's lane already has its maximum concurrent tasks in flight. The
+    /// Rewrite lane admits up to `rewrite_lane_cap` concurrent tasks; every other lane is
+    /// single-occupancy. The cap alone does not guarantee non-conflicting inputs — the
+    /// dispatch scorer skips conflicting levels, and correctness is enforced at publish by
+    /// candidate revalidation regardless.
+    fn lane_at_capacity(&self, task: MaintenanceTask) -> bool {
         let lane = task.lane();
-        self.active.iter().any(|active| active.lane() == lane)
+        let cap = if lane == MaintenanceTaskLane::Rewrite {
+            self.rewrite_lane_cap
+        } else {
+            1
+        };
+        self.active
+            .iter()
+            .filter(|active| active.lane() == lane)
+            .count()
+            >= cap
+    }
+
+    /// Whether a candidate Rewrite task would contend with any in-flight rewrite (same branch,
+    /// equal or adjacent level). Dispatch uses this to hand concurrent workers non-conflicting
+    /// levels; it is a waste-avoidance filter, not a correctness guard (publish-time candidate
+    /// revalidation is authoritative).
+    pub(crate) fn rewrite_conflicts_with_active(&self, candidate: MaintenanceTask) -> bool {
+        self.active
+            .iter()
+            .filter(|active| active.lane() == MaintenanceTaskLane::Rewrite)
+            .any(|active| rewrite_tasks_conflict(*active, candidate))
     }
 
     fn run_index(
@@ -1442,7 +1479,7 @@ impl LifecycleMaintenanceExecutor {
         draining: bool,
     ) -> LifecycleResult<MaintenanceOutcome> {
         let task = self.queue.remove(index);
-        if self.task_lane_is_active(task) {
+        if self.lane_at_capacity(task) {
             self.queue.insert(index, task);
             return Err(LifecycleError::MaintenanceTaskFailed {
                 reason: "maintenance task lane is already active",
@@ -1605,11 +1642,62 @@ const fn normalized_coalesce_scope(
         (MaintenanceTaskKind::Checkpoint, MaintenanceTaskScope::Global) => {
             MaintenanceTaskScope::Checkpoint
         }
-        (MaintenanceTaskKind::Compaction, MaintenanceTaskScope::TableLevel { branch_id, .. }) => {
-            MaintenanceTaskScope::Branch(branch_id)
-        }
+        // Compaction keeps its full `TableLevel { branch, level }` scope so a branch can hold
+        // one pending compaction per level, giving concurrent workers non-conflicting levels
+        // to pick. (Previously collapsed to `Branch`, allowing only one compaction per branch.)
         (_, scope) => scope,
     }
+}
+
+/// Whether two Rewrite-lane tasks would contend for overlapping inputs. A level-`L` compaction
+/// reads level `L` and writes `L+1`, so two same-branch compactions conflict when their levels
+/// are equal or adjacent. Materialization (a non-`TableLevel` rewrite) is treated as conflicting
+/// with any rewrite on the same branch. Different branches never conflict.
+fn rewrite_tasks_conflict(a: MaintenanceTask, b: MaintenanceTask) -> bool {
+    if let (
+        MaintenanceTaskScope::TableLevel {
+            branch_id: branch_a,
+            level: level_a,
+        },
+        MaintenanceTaskScope::TableLevel {
+            branch_id: branch_b,
+            level: level_b,
+        },
+    ) = (a.scope(), b.scope())
+    {
+        return branch_a == branch_b && level_a.abs_diff(level_b) <= 1;
+    }
+    match (
+        rewrite_scope_branch(a.scope()),
+        rewrite_scope_branch(b.scope()),
+    ) {
+        (Some(branch_a), Some(branch_b)) => branch_a == branch_b,
+        _ => false,
+    }
+}
+
+const fn rewrite_scope_branch(scope: MaintenanceTaskScope) -> Option<BranchId> {
+    match scope {
+        MaintenanceTaskScope::Branch(branch_id)
+        | MaintenanceTaskScope::TableLevel { branch_id, .. }
+        | MaintenanceTaskScope::InheritedLayer { branch_id, .. } => Some(branch_id),
+        _ => None,
+    }
+}
+
+/// Default Rewrite-lane concurrency for the durable runtime — matches the default background
+/// worker count. Concurrent compaction is correctness-gated (recovery oracle + fault sweep pass
+/// at cap > 1); the throughput/admission tuning that will set the final value is ongoing.
+const DEFAULT_COMPACTION_LANES: usize = 4;
+
+/// The Rewrite-lane concurrency cap for the durable runtime, env-overridable for the perf A/B
+/// sweep (`STRATA_COMPACTION_LANES`, e.g. `1` for a single-lane control). Actual concurrency is
+/// additionally bounded by the background worker count.
+pub(crate) fn compaction_lane_cap() -> usize {
+    std::env::var("STRATA_COMPACTION_LANES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .map_or(DEFAULT_COMPACTION_LANES, |lanes| lanes.max(1))
 }
 
 fn require_admitted(
