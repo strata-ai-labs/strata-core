@@ -359,7 +359,7 @@ fn open_durable_with_backend_deterministic_inline_uses_inline_background_driver(
     )
     .expect("durable deterministic-inline open should use owned inline background driver");
     let summary = outcome.summary();
-    let mut runtime = outcome.into_runtime();
+    let runtime = outcome.into_runtime();
 
     assert_eq!(
         summary.maintenance_scheduling_policy(),

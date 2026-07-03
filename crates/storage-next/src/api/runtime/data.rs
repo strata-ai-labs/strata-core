@@ -200,6 +200,12 @@ pub(super) fn row_is_expired_at_selected_frontier(
 /// a batch mid-apply on another thread). A no-op when the requested version is already `≤ V`.
 /// `resolve_read_bound` always yields `AtVersion` for a versioned request; the other arms are
 /// defensive.
+///
+/// KNOWN GAP (deferred): when the version is capped down (`req > V`, reachable only in
+/// `applied_not_visible` with a landed timeline entry), the caller keeps `selected_timestamp` at
+/// `req`'s rather than the served version `V`'s — a narrow, conservative TTL-frontier over-hide.
+/// The `AtVersion` vs `AtTimestamp` frontier semantics are subtle (for `AtTimestamp` the requested
+/// time may be the correct frontier), so the fix is intentionally left to a focused later slice.
 pub(super) fn cap_bound_at_visible(bound: BranchReadBound, visible: u64) -> BranchReadBound {
     match bound {
         BranchReadBound::AtVersion(version) => {

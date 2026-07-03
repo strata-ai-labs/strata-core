@@ -10,7 +10,7 @@ use super::*;
 fn lifecycle_background_closed_loop_scaled_cache_converges_without_public_drain() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let value = vec![0x5A; SCALED_CLOSED_LOOP_CACHE_VALUE_BYTES];
-    let mut runtime = StorageRuntime::open(
+    let runtime = StorageRuntime::open(
         StorageOpenOptions::cache()
             .with_storage_budget_for_test(
                 crate::lifecycle::StorageRuntimeBudget::scaled_closed_loop_test_profile(),
@@ -136,7 +136,7 @@ fn lifecycle_background_closed_loop_scaled_durable_bounds_wal_without_public_dra
     let value = vec![0x6B; SCALED_CLOSED_LOOP_DURABLE_VALUE_BYTES];
     let root = temp_dir_for_api_test("scaled-durable-liveness");
     let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
-    let mut runtime = StorageRuntime::open_with_backend(
+    let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
             .with_storage_budget_for_test(
                 crate::lifecycle::StorageRuntimeBudget::scaled_closed_loop_test_profile(),
@@ -312,7 +312,7 @@ fn wal_retention_deletes_segments_without_public_drain() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let root = temp_dir_for_api_test("wal-retention-deletes-segments");
     let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
-    let mut runtime = StorageRuntime::open_with_backend(
+    let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
             .with_wal_growth_policy(StorageWalGrowthPolicy::thresholds(2 * 1024, 2, 3))
             .with_wal_segment_size_for_test(1024)

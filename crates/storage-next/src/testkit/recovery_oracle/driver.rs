@@ -263,7 +263,7 @@ pub(crate) fn run_one(
     let mut model = ExpectedState::new(durability);
 
     {
-        let mut runtime = open_durable(root, durability)?;
+        let runtime = open_durable(root, durability)?;
         for mutations in workload.iter().take(crash_index) {
             let batch = CommitBatch::new(
                 branch,
@@ -482,7 +482,7 @@ mod tests {
         let branch = default_branch();
         let mut model = ExpectedState::new(OracleDurability::Standard);
         {
-            let mut runtime = open_durable(dir, OracleDurability::Standard).expect("open");
+            let runtime = open_durable(dir, OracleDurability::Standard).expect("open");
             for mutations in ops {
                 let batch = CommitBatch::new(
                     branch,
@@ -544,7 +544,7 @@ mod tests {
         let ops = [vec![put(0, 10)], vec![put(1, 11)], vec![put(2, 12)]];
         let mut model = ExpectedState::new(OracleDurability::Standard);
         {
-            let mut runtime = open_durable(dir.path(), OracleDurability::Standard).expect("open");
+            let runtime = open_durable(dir.path(), OracleDurability::Standard).expect("open");
             for (index, mutations) in ops.iter().enumerate() {
                 let batch = CommitBatch::new(
                     branch,
@@ -583,7 +583,7 @@ mod tests {
         let branch = default_branch();
         let mut model = ExpectedState::new(OracleDurability::Standard);
         {
-            let mut runtime = open_durable(dir.path(), OracleDurability::Standard).expect("open");
+            let runtime = open_durable(dir.path(), OracleDurability::Standard).expect("open");
             for index in 0u8..5 {
                 let mutations = vec![put(index, 100 + index)];
                 let batch = CommitBatch::new(
@@ -634,7 +634,7 @@ mod tests {
     fn commit_n_and_segment_len(dir: &std::path::Path, n: u8) -> u64 {
         let branch = default_branch();
         {
-            let mut runtime = open_durable(dir, OracleDurability::Standard).expect("open");
+            let runtime = open_durable(dir, OracleDurability::Standard).expect("open");
             for index in 0..n {
                 let mutations = [put(index, 100 + index)];
                 let batch = CommitBatch::new(

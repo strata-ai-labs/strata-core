@@ -86,6 +86,10 @@ name = "storage-next-point-spike"
 path = "src/bin/storage_next_point_spike.rs"
 
 [[bin]]
+name = "storage-next-concurrent-reads"
+path = "src/bin/storage_next_concurrent_reads.rs"
+
+[[bin]]
 name = "engine-kv-scan-regression"
 path = "src/bin/engine_kv_scan_regression.rs"
 

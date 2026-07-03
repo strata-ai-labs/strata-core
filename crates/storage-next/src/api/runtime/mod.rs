@@ -879,11 +879,18 @@ impl<'a> StorageRuntime<'a> {
         }
     }
 
-    pub fn commit(&mut self, batch: &CommitBatch) -> StorageApiResult<CommitSummary> {
+    /// Commit a batch. Takes `&self` (BS2.4b) so a shared runtime can serve reads and forks
+    /// concurrently with a writer; concurrent `commit` calls are serialized by the runtime lock.
+    /// Commit **versions** are always strictly monotonic. Commit **timestamps** are strictly
+    /// monotonic under the intended single-writer pattern; concurrent writers may share a timestamp
+    /// (the base is read before the commit lock), which the MVCC timeline keeps both of — resolved
+    /// by version, with `AtTimestamp` returning the latest. Serialize commits for strict timestamp
+    /// monotonicity.
+    pub fn commit(&self, batch: &CommitBatch) -> StorageApiResult<CommitSummary> {
         self.execute_commit(batch, None)
     }
 
-    pub fn branch(&mut self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
+    pub fn branch(&self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
         match request.action() {
             BranchAction::Create => self.create_branch_request(request),
             BranchAction::Describe => self.describe_branch_request(request),
@@ -1124,13 +1131,13 @@ impl<'a> StorageRuntime<'a> {
     }
 
     pub fn enqueue_maintenance(
-        &mut self,
+        &self,
         request: &MaintenanceRequest,
     ) -> StorageApiResult<MaintenanceQueueSummary> {
         self.require_open("maintenance enqueue requires an open runtime")?;
         validate_maintenance_request(request)?;
         let task = map_maintenance_task_request(self, request)?;
-        match &mut self.inner {
+        match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
                 let status = {
                     let mut runtime = slot.lock();
@@ -1237,6 +1244,21 @@ impl<'a> StorageRuntime<'a> {
         };
         let snapshot = snapshot.ok_or(StorageApiError::BranchNotFound { branch_id })?;
         Ok((visible, snapshot))
+    }
+
+    /// Load a branch's published snapshot off-lock, for the BS2.4b snapshot-lifetime probe (holding
+    /// an `Arc<BranchReadView>` across compaction/flush installs). `None` if the branch has no slot.
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn load_snapshot_for_test(
+        &self,
+        branch_id: BranchId,
+    ) -> Option<Arc<BranchReadView>> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => slot.load_snapshot(branch_id),
+            StorageRuntimeInner::Durable(slot) => slot.load_snapshot(branch_id),
+            StorageRuntimeInner::DurableOwned(slot) => slot.load_snapshot(branch_id),
+            StorageRuntimeInner::Closed => None,
+        }
     }
 
     pub fn read_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
@@ -2066,12 +2088,12 @@ impl<'a> StorageRuntime<'a> {
     }
 
     fn create_branch(
-        &mut self,
+        &self,
         branch_id: BranchId,
         generation: CommitBranchGeneration,
         created_at: Option<CommitVersion>,
     ) -> StorageApiResult<crate::lifecycle::LifecycleBranchCreateOutcome> {
-        match &mut self.inner {
+        match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
                 let mut runtime = slot.lock();
                 runtime.create_branch(branch_id, generation, created_at)
@@ -2093,10 +2115,7 @@ impl<'a> StorageRuntime<'a> {
         .map_err(map_lifecycle_error)
     }
 
-    fn create_branch_request(
-        &mut self,
-        request: &BranchRequest,
-    ) -> StorageApiResult<BranchOutcome> {
+    fn create_branch_request(&self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
         require_valid_branch_identifier(request.branch_id(), "branch_id")?;
         let generation_before = self.recreate_generation_before(request.branch_id())?;
         let generation = branch_generation_or_default(request.expected_generation())?;
@@ -2233,7 +2252,7 @@ impl<'a> StorageRuntime<'a> {
     }
 
     fn fork_branch_at_version(
-        &mut self,
+        &self,
         request: &BranchRequest,
         source: BranchId,
         version: CommitVersion,
@@ -2241,7 +2260,7 @@ impl<'a> StorageRuntime<'a> {
     ) -> StorageApiResult<BranchOutcome> {
         let generation = branch_generation_or_default(request.expected_generation())?;
         let retained_floor = self.retained_floor(source)?;
-        let outcome = match &mut self.inner {
+        let outcome = match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
                 let mut runtime = slot.lock();
                 runtime.fork_at_retained_version(
@@ -2289,11 +2308,11 @@ impl<'a> StorageRuntime<'a> {
             ))
     }
 
-    fn clear_branch_request(&mut self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
+    fn clear_branch_request(&self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
         require_valid_branch_identifier(request.branch_id(), "branch_id")?;
         let before = self.describe_branch(request.branch_id())?;
         let guard = map_generation_guard(request.expected_generation())?;
-        let outcome = match &mut self.inner {
+        let outcome = match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
                 let mut runtime = slot.lock();
                 runtime.clear_branch(request.branch_id(), guard)
@@ -2319,10 +2338,7 @@ impl<'a> StorageRuntime<'a> {
             .with_cleanup(map_branch_cleanup(outcome.release_plan())))
     }
 
-    fn delete_branch_request(
-        &mut self,
-        request: &BranchRequest,
-    ) -> StorageApiResult<BranchOutcome> {
+    fn delete_branch_request(&self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
         require_valid_branch_identifier(request.branch_id(), "branch_id")?;
         let before = self.describe_branch(request.branch_id())?;
         if before.status() == BranchStatus::Active && self.active_branch_count()? <= 1 {
@@ -2332,7 +2348,7 @@ impl<'a> StorageRuntime<'a> {
         }
         let guard = map_generation_guard(request.expected_generation())?;
         let deleted_at = current_visible(self);
-        let outcome = match &mut self.inner {
+        let outcome = match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
                 let mut runtime = slot.lock();
                 runtime.delete_branch(request.branch_id(), guard, deleted_at)
@@ -2532,7 +2548,7 @@ impl<'a> StorageRuntime<'a> {
 
     #[cfg(any(test, feature = "testkit"))]
     pub(crate) fn commit_for_test(
-        &mut self,
+        &self,
         batch: &CommitBatch,
         timestamp: Timestamp,
     ) -> StorageApiResult<CommitSummary> {
@@ -2580,7 +2596,7 @@ impl<'a> StorageRuntime<'a> {
     }
 
     fn execute_commit(
-        &mut self,
+        &self,
         batch: &CommitBatch,
         explicit_timestamp: Option<Timestamp>,
     ) -> StorageApiResult<CommitSummary> {
@@ -2600,7 +2616,7 @@ impl<'a> StorageRuntime<'a> {
         let mut pressure_wait_deadline = None;
         loop {
             let (outcome_result, admission, pending_tasks, wal_growth, throttle_delay_millis) =
-                match &mut self.inner {
+                match &self.inner {
                     StorageRuntimeInner::Cache(slot) => {
                         let mut runtime = slot.lock();
                         let result =
@@ -2818,7 +2834,7 @@ impl<'a> StorageRuntime<'a> {
     }
 
     fn background_wait_after_pressure_rejection(
-        &mut self,
+        &self,
         error: &LifecycleError,
         deadline: &mut Option<MaintenanceInstant>,
     ) -> bool {
@@ -2912,7 +2928,7 @@ impl<'a> StorageRuntime<'a> {
     }
 
     fn background_wait_after_wal_growth_enqueue(
-        &mut self,
+        &self,
         wal_growth: Option<&LifecycleWalGrowthOutcome>,
     ) {
         if wal_growth.is_none() {
@@ -3018,7 +3034,7 @@ impl<'a> StorageRuntime<'a> {
     /// waits it sleeps the FULL delay (see the `u64::MAX` baseline below) — a deliberate pace, not
     /// a wait-for-relief. No runtime lock is held across the wait, so the background flusher can
     /// take it and drain — the throttle softens, never stalls.
-    fn background_wait_after_write_throttle(&mut self, delay_millis: u64) {
+    fn background_wait_after_write_throttle(&self, delay_millis: u64) {
         if delay_millis == 0 || !self.has_background_runtime() {
             return;
         }
@@ -3043,8 +3059,8 @@ impl<'a> StorageRuntime<'a> {
         };
     }
 
-    fn evaluate_wal_growth_policy_for_background_wait(&mut self) {
-        match &mut self.inner {
+    fn evaluate_wal_growth_policy_for_background_wait(&self) {
+        match &self.inner {
             StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => {}
             StorageRuntimeInner::Durable(slot) => {
                 slot.lock().evaluate_and_record_wal_growth_policy();
@@ -3108,11 +3124,11 @@ impl<'a> StorageRuntime<'a> {
     }
 
     fn enqueue_pressure_maintenance_for_background_wait(
-        &mut self,
+        &self,
         branch_id: BranchId,
         pressure_reason: LifecycleStoragePressureReason,
     ) -> usize {
-        match &mut self.inner {
+        match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
                 let mut runtime = slot.lock();
                 let _ = runtime.schedule_post_commit_maintenance_for_branch(branch_id);

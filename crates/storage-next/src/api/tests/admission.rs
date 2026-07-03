@@ -468,7 +468,7 @@ fn durable_admission_changes_do_not_disturb_cache_absence_counters() {
     // background maintenance, admission waits, or manifest persistence into the
     // volatile cache path.
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache())
         .expect("cache open")
         .into_runtime();
     for index in 0..64 {

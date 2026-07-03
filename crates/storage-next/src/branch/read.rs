@@ -926,6 +926,12 @@ impl BranchReadView {
         self.frozen.len()
     }
 
+    /// Strong-count of a frozen table's backing `Arc`, for the BS2.4b snapshot-lifetime probe.
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn frozen_table_strong_count(&self, index: usize) -> Option<usize> {
+        Some(self.frozen.get(index)?.memory_state_strong_count())
+    }
+
     pub(crate) fn owned_table_count(&self) -> usize {
         owned_table_count(&self.owned_levels)
     }

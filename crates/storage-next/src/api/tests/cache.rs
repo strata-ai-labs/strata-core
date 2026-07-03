@@ -130,7 +130,7 @@ fn open_cache_ignores_configured_background_worker_count() {
 
 #[test]
 fn cache_load_records_no_source_table_maintenance() {
-    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache())
         .expect("cache open should succeed")
         .into_runtime();
 
@@ -155,7 +155,7 @@ fn cache_load_records_no_source_table_maintenance() {
 #[test]
 fn cache_load_records_zero_durable_and_maintenance_counters() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache())
         .expect("cache open should succeed")
         .into_runtime();
 
@@ -198,7 +198,7 @@ fn cache_over_budget_load_is_refused() {
     // Cache now obeys its memory budget (the Default profile). A sustained load that would grow
     // past the finite pools is refused with a typed resource error instead of growing unbounded,
     // and the runtime stays open.
-    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache())
         .expect("cache open should succeed")
         .into_runtime();
 
@@ -233,7 +233,7 @@ fn cache_over_budget_load_is_refused() {
 #[test]
 fn cache_unlimited_override_allows_large_load() {
     // The named test-only override still lets a cache run unbounded for workloads that need it.
-    let mut runtime = StorageRuntime::open(
+    let runtime = StorageRuntime::open(
         StorageOpenOptions::cache()
             .with_storage_budget_for_test(crate::lifecycle::StorageRuntimeBudget::unlimited()),
     )
@@ -285,7 +285,7 @@ fn cache_multi_branch_over_global_budget_is_refused() {
         max_pending_maintenance_tasks: 4,
     };
     let budget = crate::lifecycle::StorageRuntimeBudget::from_parts(parts).expect("budget");
-    let mut runtime =
+    let runtime =
         StorageRuntime::open(StorageOpenOptions::cache().with_storage_budget_for_test(budget))
             .expect("cache open should succeed")
             .into_runtime();

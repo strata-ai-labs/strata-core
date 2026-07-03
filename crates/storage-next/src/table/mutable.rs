@@ -345,6 +345,14 @@ impl FrozenTable {
         self.facts.row_count()
     }
 
+    /// Strong-count of the backing memtable `Arc`, for the BS2.4b snapshot-lifetime probe: a held
+    /// snapshot keeps a frozen table alive after the runtime retires it (flush), and it dies by
+    /// `Arc` drop once the snapshot is dropped (`RocksDB` `Version::Unref`).
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn memory_state_strong_count(&self) -> usize {
+        Arc::strong_count(&self.inner)
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }

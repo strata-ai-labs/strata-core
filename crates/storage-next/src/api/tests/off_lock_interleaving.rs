@@ -88,3 +88,50 @@ fn off_lock_history_hides_applied_not_visible() {
         b"acked"
     );
 }
+
+/// BS2.4b snapshot lifetime: a loaded snapshot keeps a table alive after the runtime retires it
+/// (flush frozen → owned); the runtime drops its own reference (`RocksDB` `Version::Unref`), and the
+/// table dies by `Arc` drop once the snapshot is dropped. Proven via `Arc::strong_count` on the
+/// frozen table's backing memtable.
+#[test]
+fn held_snapshot_keeps_a_retired_table_alive() {
+    let mut runtime = StorageRuntime::open_ephemeral()
+        .expect("open ephemeral runtime")
+        .into_runtime();
+    let branch = StorageRuntime::default_branch_id_for_test();
+    // Seed a row into the active memtable, then rotate it to a frozen table.
+    runtime
+        .append_raw_row_for_test(background_raw_row_with_value(b"lifetime", 1, b"v".to_vec()))
+        .expect("seed active row");
+    runtime
+        .rotate_default_branch_for_test()
+        .expect("rotate active -> frozen");
+
+    // Hold the published snapshot; it references the frozen table alongside the runtime.
+    let held = runtime
+        .load_snapshot_for_test(branch)
+        .expect("published snapshot");
+    assert_eq!(held.frozen_table_count(), 1, "expected one frozen table");
+    let before = held
+        .frozen_table_strong_count(0)
+        .expect("frozen strong count");
+    assert_eq!(
+        before, 2,
+        "frozen table held by both the runtime and the snapshot"
+    );
+
+    // Flush retires the frozen table (frozen -> owned) in the runtime; the held snapshot keeps it.
+    runtime
+        .flush_default_branch_for_test()
+        .expect("flush frozen -> owned");
+    let after = held
+        .frozen_table_strong_count(0)
+        .expect("frozen strong count");
+    assert_eq!(
+        after, 1,
+        "the runtime released the frozen table; only the held snapshot keeps it alive"
+    );
+
+    drop(held);
+    runtime.close().expect("close runtime");
+}

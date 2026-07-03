@@ -82,7 +82,7 @@ fn read_value(runtime: &StorageRuntime<'_>, branch_id: BranchId, key: &[u8]) -> 
 
 #[test]
 fn branch_create_returns_generation() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let new_branch = branch_with(0x20);
 
     let outcome = runtime
@@ -99,7 +99,7 @@ fn branch_create_returns_generation() {
 
 #[test]
 fn branch_create_duplicate_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .branch(&create_request(branch()))
@@ -110,7 +110,7 @@ fn branch_create_duplicate_rejects() {
 
 #[test]
 fn branch_create_invalid_identifier_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let zero = BranchId::from_bytes([0; BranchId::BYTE_LEN]);
 
     let error = runtime
@@ -123,7 +123,7 @@ fn branch_create_invalid_identifier_rejects() {
 
 #[test]
 fn branch_list_is_deterministic() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     runtime
         .branch(&create_request(branch_with(0x33)))
         .expect("create third");
@@ -144,7 +144,7 @@ fn branch_list_is_deterministic() {
 
 #[test]
 fn branch_describe_reports_generation() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let outcome = runtime
         .branch(&describe_request(branch()))
@@ -159,7 +159,7 @@ fn branch_describe_reports_generation() {
 
 #[test]
 fn branch_describe_unknown_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .branch(&describe_request(branch_with(0x41)))
@@ -286,7 +286,7 @@ fn branch_fork_at_unretained_version_rejects() {
 
 #[test]
 fn branch_fork_from_empty_source_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .branch(&branch_request(
@@ -300,7 +300,7 @@ fn branch_fork_from_empty_source_rejects() {
 
 #[test]
 fn branch_fork_invalid_source_identifier_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let zero = BranchId::from_bytes([0; BranchId::BYTE_LEN]);
 
     let error = runtime
@@ -428,7 +428,7 @@ fn branch_clear_preserves_branch_identity() {
 
 #[test]
 fn branch_clear_generation_mismatch_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .branch(&BranchRequest::new(
@@ -471,7 +471,7 @@ fn branch_clear_with_pinned_view_reports_protected_release() {
 
 #[test]
 fn branch_delete_removes_from_list() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let child = branch_with(0x4a);
     runtime.branch(&create_request(child)).expect("create");
 
@@ -488,7 +488,7 @@ fn branch_delete_removes_from_list() {
 
 #[test]
 fn branch_delete_generation_mismatch_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let child = branch_with(0x4b);
     runtime.branch(&create_request(child)).expect("create");
 
@@ -535,7 +535,7 @@ fn branch_delete_with_pinned_view_reports_protected_release() {
 
 #[test]
 fn branch_recreate_deleted_reports_generation_transition() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let child = branch_with(0x58);
     runtime.branch(&create_request(child)).expect("create");
     runtime
@@ -581,7 +581,7 @@ fn durable_branch_catalog_round_trips_after_reopen() {
     drop(runtime);
 
     let backend = StorageBackend::local_fs(root);
-    let mut runtime = StorageRuntime::open_with_backend(
+    let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
         &backend,
     )
@@ -608,7 +608,7 @@ fn durable_branch_catalog_round_trips_after_reopen() {
 
 #[test]
 fn branch_delete_unknown_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .branch(&branch_request(branch_with(0x4d), BranchAction::Delete))
@@ -619,7 +619,7 @@ fn branch_delete_unknown_rejects() {
 
 #[test]
 fn branch_delete_already_deleted_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let child = branch_with(0x5b);
     runtime.branch(&create_request(child)).expect("create");
     runtime
@@ -636,7 +636,7 @@ fn branch_delete_already_deleted_rejects() {
 
 #[test]
 fn branch_delete_reports_cleanup_facts() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let child = branch_with(0x4e);
     runtime.branch(&create_request(child)).expect("create");
 
@@ -653,7 +653,7 @@ fn branch_delete_reports_cleanup_facts() {
 
 #[test]
 fn branch_delete_last_required_branch_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .branch(&branch_request(branch(), BranchAction::Delete))

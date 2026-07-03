@@ -234,7 +234,7 @@ fn committed_rows_are_durable_via_wal_before_any_checkpoint() {
     {
         let backend: &'static StorageBackend =
             Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
-        let mut runtime = StorageRuntime::open_with_backend(
+        let runtime = StorageRuntime::open_with_backend(
             StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
                 .with_maintenance_scheduling_policy(
                     StorageMaintenanceSchedulingPolicy::DeterministicInline,

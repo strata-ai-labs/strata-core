@@ -676,7 +676,7 @@ fn api_wal_growth_trigger_runs_supported_path() {
 
 #[test]
 fn api_wal_growth_enqueue_rejects_direct_queueing() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let request = MaintenanceRequest::new(MaintenanceTask::WalGrowth, MaintenanceScope::Global);
 
     let error = runtime
@@ -711,7 +711,7 @@ fn api_maintenance_enqueue_and_drain_are_deterministic() {
 
 #[test]
 fn api_maintenance_queue_status_reports_pending_only() {
-    let mut runtime = open_manual_runtime();
+    let runtime = open_manual_runtime();
     runtime
         .commit(&put_batch(b"status", b"value"))
         .expect("commit");
@@ -732,7 +732,7 @@ fn api_maintenance_queue_status_reports_pending_only() {
 
 #[test]
 fn api_cache_durable_only_enqueue_rejects_without_stranding_tasks() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let cases = [
         MaintenanceRequest::new(MaintenanceTask::Checkpoint, MaintenanceScope::Global),
         MaintenanceRequest::new(MaintenanceTask::Retain, MaintenanceScope::Global),
