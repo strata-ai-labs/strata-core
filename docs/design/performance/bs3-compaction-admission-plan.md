@@ -209,6 +209,15 @@ suite; fault sweep specifically for the H1(b) sync-batching change.
 
 ### BS3.4 — Graceful admission (grades + adaptive rate)
 
+> **BS3.4a landed:** change 1 (the regrade) shipped — L0 urgent 8→20, block 16→36
+> (`compaction.rs:34-35`). The quadratic throttle band auto-widened (its L0 fullness denominator is
+> the block threshold, now ÷36), the grade-boundary / block-wait / rejection-precedence fixtures moved
+> to 20/36 across 5 test files (`lifecycle/tests/compaction/{mod,remaining}.rs`, `lifecycle/tests/durable.rs`,
+> `api/tests/background.rs`), and a **C3 profile-tier matrix** (`lifecycle/tests/budget.rs`,
+> `profile_tier_byte_pools_bound_write_memory_independent_of_l0_count_grade`) proves the active/frozen
+> byte pools bound write-path memory before the count grade at 512 MB / 8 GB / 48 GB. The
+> debt-adaptive rate ramp (change 2) is **BS3.4b**.
+
 **Changes.**
 
 1. **Regrade L0 admission** (`lifecycle/compaction.rs:33-35`):

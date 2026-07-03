@@ -30,9 +30,17 @@ use crate::table::{
 };
 use strata_core_next::BranchId;
 
+/// L0 write-admission grades, aligned to `RocksDB`'s slowdown/stop triggers
+/// (`durable-write-pipeline-scaling.md:184`, `db/column_family.cc:992`): compaction is scheduled at
+/// 4, writes enter the slowdown (delay) band at 20, and mutating admission hard-blocks at 36 — matching
+/// `RocksDB`'s L0 defaults. Strata's earlier 8/16 blocked ~2x sooner, collapsing the update-heavy crawl
+/// into a stall with little compaction runway (G10, BS3.4a). The block ceiling is 36 x 64 MiB ~=
+/// 2.3 GiB of L0 *on disk* worst-case; write-path memory stays bounded by the active/frozen byte pools
+/// independently of this count grade (see the profile-tier matrix test). BS3.4b replaces the quadratic
+/// delay band between 20 and 36 with a debt-adaptive rate ramp.
 const LEVEL_ZERO_COMPACTION_THRESHOLD: usize = 4;
-const LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD: usize = 8;
-const LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD: usize = 16;
+const LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD: usize = 20;
+const LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD: usize = 36;
 const NONZERO_LEVEL_COMPACTION_THRESHOLD: usize = 4;
 const NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD: usize = 8;
 const NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD: usize = 16;

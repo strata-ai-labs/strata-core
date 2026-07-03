@@ -329,7 +329,7 @@ fn deterministic_inline_block_pressure_wait_uses_manual_clock_executor() {
         "deterministic-inline background runtime should expose test block wait limits"
     );
 
-    for index in 0..16 {
+    for index in 0..36 {
         let key = format!("inline-block-clock-seed-{index}");
         runtime
             .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))
@@ -386,7 +386,7 @@ fn deterministic_inline_block_pressure_deadline_uses_manual_clock_without_progre
         "deterministic-inline background runtime should expose test block wait limits"
     );
 
-    for index in 0..16 {
+    for index in 0..36 {
         let key = format!("inline-block-deadline-seed-{index}");
         runtime
             .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))
@@ -1476,7 +1476,7 @@ fn background_block_pressure_wait_has_deadline_when_worker_is_busy() {
     );
     ready.wait();
 
-    for index in 0..16 {
+    for index in 0..36 {
         let key = format!("block-timeout-seed-{index}");
         runtime
             .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))

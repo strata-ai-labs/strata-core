@@ -1759,7 +1759,7 @@ fn durable_unresolved_gate_rejection_takes_precedence_over_blocking_pressure() {
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x82);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
-    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 36);
     assert_eq!(
         runtime.storage_pressure().severity(),
         LifecycleStoragePressureSeverity::BlockMutatingAdmission
@@ -1812,7 +1812,7 @@ fn durable_unresolved_rejection_under_pressure_keeps_pressure_counters_separate(
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x86);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
-    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 36);
     let unresolved = CommitUnresolvedDurable::durable_not_applied_with_facts(
         CommitStamp::new(branch, CommitVersion::new(4), Timestamp::from_micros(8_004))
             .expect("stamp"),
@@ -1848,7 +1848,7 @@ fn durable_branch_guard_rejection_takes_precedence_over_blocking_pressure() {
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x87);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
-    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 36);
     assert_eq!(
         runtime.storage_pressure().severity(),
         LifecycleStoragePressureSeverity::BlockMutatingAdmission
@@ -1883,7 +1883,7 @@ fn durable_branch_guard_rejection_under_pressure_keeps_pressure_counters_separat
     let backend = DurableTestBackend::new();
     let branch = branch_id(0x88);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
-    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 16);
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 36);
     let guard = runtime
         .guard_set()
         .try_acquire_branch_guard(branch)
@@ -1911,10 +1911,10 @@ fn durable_branch_guard_rejection_under_pressure_keeps_pressure_counters_separat
 fn cache_and_durable_l0_pressure_facts_diverge_for_equivalent_source_shapes() {
     for (index, table_count, expected_durable_severity) in [
         (0_u8, 4_usize, LifecycleStoragePressureSeverity::Background),
-        (1, 8, LifecycleStoragePressureSeverity::Urgent),
+        (1, 20, LifecycleStoragePressureSeverity::Urgent),
         (
             2,
-            16,
+            36,
             LifecycleStoragePressureSeverity::BlockMutatingAdmission,
         ),
     ] {

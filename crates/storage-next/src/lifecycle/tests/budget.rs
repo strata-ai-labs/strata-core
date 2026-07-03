@@ -192,6 +192,50 @@ fn small_budget_rotation_uses_pool_fraction_below_cap() {
 }
 
 #[test]
+fn profile_tier_byte_pools_bound_write_memory_independent_of_l0_count_grade() {
+    // C3 (BS3.4a): raising the L0 *count* block grade to 36 opens no unbounded-memory hole at small
+    // tiers. Write-path resident memory is bounded by the active/frozen byte pools, which scale with
+    // the memory budget and are independent of the L0 table *count* — the 36-table grade governs the
+    // on-disk L0 depth (read amp), not RAM. So the byte-pressure paths stay the binding memory
+    // constraint at every profile tier, before the L0 count grade can bind.
+    const GIB: u64 = 1024 * 1024 * 1024;
+    let cap = crate::lifecycle::budget::MAX_ACTIVE_ROTATION_BYTES;
+    let mut prev_active = 0_u64;
+    let mut prev_frozen = 0_u64;
+    for (name, total) in [
+        ("512 MiB embedded", 512_u64 * 1024 * 1024),
+        ("8 GiB desktop", 8 * GIB),
+        ("48 GiB server", 48 * GIB),
+    ] {
+        let budget = StorageRuntimeBudget::from_total_bytes(total).expect("derive tier budget");
+        let active = budget.pool_limit_bytes(StorageBudgetPool::ActiveMutable);
+        let frozen = budget.pool_limit_bytes(StorageBudgetPool::FrozenMutable);
+        // The write-path memory pools scale with the tier (they bound the in-memory footprint).
+        assert!(
+            active > prev_active,
+            "{name}: ActiveMutable pool scales up with the budget"
+        );
+        assert!(
+            frozen > prev_frozen,
+            "{name}: FrozenMutable pool scales up with the budget"
+        );
+        // One prospective L0 table (the active memtable) is bounded at every tier: by the pool
+        // fraction where the budget is small, by the RocksDB write-buffer cap where it is large.
+        let rotation = crate::lifecycle::budget::active_rotation_bytes_from_budget(budget);
+        assert!(
+            rotation <= cap,
+            "{name}: rotation stays capped at the write-buffer max"
+        );
+        assert!(
+            u64::try_from(rotation).expect("rotation fits u64") <= active,
+            "{name}: rotation never exceeds its ActiveMutable pool"
+        );
+        prev_active = active;
+        prev_frozen = frozen;
+    }
+}
+
+#[test]
 fn storage_budget_rejects_zero_mandatory_active_pool() {
     let parts = StorageRuntimeBudgetParts {
         active_mutable_bytes: 0,

@@ -2290,7 +2290,7 @@ fn storage_pressure_prefers_clearable_table_rewrite_when_active_block_has_no_flu
     );
     assert!(active_only_pressure.suggested_task().is_none());
 
-    for index in 0..16 {
+    for index in 0..36 {
         install_l0_table(
             &mut state,
             branch,
@@ -2337,7 +2337,7 @@ fn storage_pressure_reports_none_urgent_and_deterministic_facts() {
     assert!(empty_pressure.suggested_task().is_none());
 
     let mut urgent = BranchLocalState::empty(branch);
-    for index in 0_u64..8 {
+    for index in 0_u64..20 {
         install_l0_table(
             &mut urgent,
             branch,
@@ -2359,7 +2359,7 @@ fn storage_pressure_reports_none_urgent_and_deterministic_facts() {
         first.reason(),
         LifecycleStoragePressureReason::LevelZeroTableBacklog
     );
-    assert_eq!(first.level_zero_tables(), 8);
+    assert_eq!(first.level_zero_tables(), 20);
     assert!(matches!(
         first.suggested_task().map(MaintenanceTaskRequest::kind),
         Some(MaintenanceTaskKind::Compaction)
@@ -2391,10 +2391,10 @@ fn storage_pressure_reports_l0_table_backlog_boundaries() {
     for (table_count, expected_severity) in [
         (3, LifecycleStoragePressureSeverity::None),
         (4, LifecycleStoragePressureSeverity::Background),
-        (7, LifecycleStoragePressureSeverity::Background),
-        (8, LifecycleStoragePressureSeverity::Urgent),
-        (15, LifecycleStoragePressureSeverity::Urgent),
-        (16, LifecycleStoragePressureSeverity::BlockMutatingAdmission),
+        (19, LifecycleStoragePressureSeverity::Background),
+        (20, LifecycleStoragePressureSeverity::Urgent),
+        (35, LifecycleStoragePressureSeverity::Urgent),
+        (36, LifecycleStoragePressureSeverity::BlockMutatingAdmission),
     ] {
         let pressure = pressure_for_l0_table_count(table_count);
 
@@ -2440,12 +2440,12 @@ fn storage_pressure_throttle_ratio_tracks_l0_backlog() {
     }
 
     // With no active/frozen bytes, the throttle ratio is the L0 fullness against the blocking
-    // threshold (16): count/16 in permille, clamped to 1000 when over-full.
+    // threshold (36): count/36 in permille, clamped to 1000 when over-full.
     assert_eq!(ratio_for_l0(0), 0);
-    assert_eq!(ratio_for_l0(4), 250);
-    assert_eq!(ratio_for_l0(8), 500);
-    assert_eq!(ratio_for_l0(16), 1000);
-    assert_eq!(ratio_for_l0(20), 1000);
+    assert_eq!(ratio_for_l0(9), 250);
+    assert_eq!(ratio_for_l0(18), 500);
+    assert_eq!(ratio_for_l0(36), 1000);
+    assert_eq!(ratio_for_l0(40), 1000);
 }
 
 #[test]
@@ -2480,7 +2480,7 @@ fn storage_pressure_throttle_ratio_tracks_frozen_table_backlog() {
 fn storage_pressure_suggests_flush_before_blocking_l0_compaction() {
     let branch = branch_id(0x6c);
     let mut state = BranchLocalState::empty(branch);
-    for index in 0..16 {
+    for index in 0..36 {
         install_l0_table(
             &mut state,
             branch,
@@ -2505,7 +2505,7 @@ fn storage_pressure_suggests_flush_before_blocking_l0_compaction() {
         pressure.reason(),
         LifecycleStoragePressureReason::FrozenBacklog
     );
-    assert_eq!(pressure.level_zero_tables(), 16);
+    assert_eq!(pressure.level_zero_tables(), 36);
     assert_eq!(pressure.frozen_tables(), 1);
     assert!(matches!(
         pressure.suggested_task().map(MaintenanceTaskRequest::kind),

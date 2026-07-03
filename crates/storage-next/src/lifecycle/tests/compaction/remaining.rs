@@ -660,7 +660,7 @@ fn pressure_debug_output_uses_storage_vocabulary() {
 fn storage_pressure_blocks_mutating_admission_for_large_table_backlog() {
     let branch = branch_id(0x82);
     let mut state = BranchLocalState::empty(branch);
-    for index in 0_u64..16 {
+    for index in 0_u64..36 {
         install_l0_table(
             &mut state,
             branch,
@@ -685,7 +685,7 @@ fn storage_pressure_blocks_mutating_admission_for_large_table_backlog() {
         pressure.reason(),
         LifecycleStoragePressureReason::LevelZeroTableBacklog
     );
-    assert_eq!(pressure.level_zero_tables(), 16);
+    assert_eq!(pressure.level_zero_tables(), 36);
     assert!(matches!(
         pressure.suggested_task().map(MaintenanceTaskRequest::kind),
         Some(MaintenanceTaskKind::Compaction)
