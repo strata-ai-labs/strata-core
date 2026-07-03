@@ -3520,6 +3520,11 @@ impl<'a> StorageRuntime<'a> {
     #[cfg(test)]
     pub(crate) fn append_raw_row_for_test(&mut self, row: StorageRow) -> StorageApiResult<()> {
         let branch_id = row.physical_key().branch_id();
+        // Raw appends bypass the commit executor, so this seam maintains the executor's
+        // invariant itself: the visible frontier covers every committed row (BS2.2 bounded
+        // Latest reads would otherwise hide the injected rows).
+        let commit_version = row.commit_version();
+        let commit_timestamp = row.commit_timestamp();
         match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => {
                 let mut runtime = slot.lock();
@@ -3535,7 +3540,11 @@ impl<'a> StorageRuntime<'a> {
                     .map_err(map_lifecycle_error)?
                     .append_committed_row(row)
                     .map(|_| ())
-                    .map_err(branch_error)
+                    .map_err(branch_error)?;
+                if commit_version > runtime.visible_version() {
+                    runtime.catch_up_commit_frontier_for_test(commit_version, commit_timestamp);
+                }
+                Ok(())
             }
             StorageRuntimeInner::Durable(slot) => {
                 let mut runtime = slot.lock();
@@ -3551,7 +3560,11 @@ impl<'a> StorageRuntime<'a> {
                     .map_err(map_lifecycle_error)?
                     .append_committed_row(row)
                     .map(|_| ())
-                    .map_err(branch_error)
+                    .map_err(branch_error)?;
+                if commit_version > runtime.visible_version() {
+                    runtime.catch_up_commit_frontier_for_test(commit_version, commit_timestamp);
+                }
+                Ok(())
             }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
@@ -3567,7 +3580,11 @@ impl<'a> StorageRuntime<'a> {
                     .map_err(map_lifecycle_error)?
                     .append_committed_row(row)
                     .map(|_| ())
-                    .map_err(branch_error)
+                    .map_err(branch_error)?;
+                if commit_version > runtime.visible_version() {
+                    runtime.catch_up_commit_frontier_for_test(commit_version, commit_timestamp);
+                }
+                Ok(())
             }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "raw row append requires an open runtime",

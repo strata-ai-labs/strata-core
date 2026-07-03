@@ -34,7 +34,7 @@ use crate::service::WalGrowthFacts;
 use crate::table::TableRuntimeError;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -61,6 +61,10 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) guard_set: CommitBranchGuardSet,
     pub(super) allocator: CommitFactAllocator<S>,
     pub(super) visible: VisibleVersionTracker,
+    /// BS2.2: release-published mirror of `visible.visible_version()` so a future off-lock reader
+    /// (BS2.4) observes the visibility bound without the runtime lock. Stored under the lock on
+    /// commit success; initial value tracks the recovered visible version (`0` == `CommitVersion::ZERO`).
+    pub(super) visible_commit_version: Arc<AtomicU64>,
     pub(super) durable_gate: CommitUnresolvedDurableGate,
     pub(super) commit_config: crate::commit::CommitRuntimeConfig,
     pub(super) table_catalog: LifecycleDurableTableCatalog,
@@ -225,6 +229,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             guard_set: self.guard_set,
             allocator: self.allocator,
             visible: self.visible,
+            visible_commit_version: visible_version_mirror(self.visible),
             durable_gate: self.durable_gate,
             commit_config: self.commit_config,
             table_catalog: self.table_catalog,
@@ -824,6 +829,10 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.visible
             .catch_up_visible_after_replay(version)
             .expect("test commit frontier must not regress");
+        // Keep the release-published mirror in lockstep with the tracker (BS2.2): bounded
+        // Latest reads load the atomic, so a tracker-only advance would strand them.
+        self.visible_commit_version
+            .store(self.visible.visible_version().as_u64(), Ordering::Release);
     }
 
     pub(crate) const fn allocator(&self) -> &CommitFactAllocator<S> {
@@ -847,6 +856,23 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         branch.capture_read_view().map_err(branch_error)
     }
 
+    /// BS2.2: the visibility bound for a Latest read — `visible` loaded from the release-published
+    /// atomic — with a debug check that bounding by it drops nothing under the lock (a no-op except
+    /// in the deliberate `applied_not_visible` state, where the durable gate is tripped).
+    fn latest_visibility_bound(&self, branch: &BranchLocalState) -> BranchReadBound {
+        let visible = CommitVersion::new(self.visible_commit_version.load(Ordering::Acquire));
+        debug_assert!(
+            !self.durable_gate.is_clean()
+                || branch
+                    .max_commit_version()
+                    .is_none_or(|max| max.as_u64() <= visible.as_u64()),
+            "BS2.2 visibility bound must be a no-op under the lock: branch max {:?} > visible {:?} with a clean gate",
+            branch.max_commit_version(),
+            visible,
+        );
+        BranchReadBound::at_version(visible)
+    }
+
     pub(crate) fn read_latest_point_or_tombstone_for_branch(
         &self,
         branch_id: strata_core_next::BranchId,
@@ -854,8 +880,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<Option<BranchHistoryRow>> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
         let branch = self.branch_catalog.branch_state(branch_id)?;
+        let bound = self.latest_visibility_bound(branch);
         branch
-            .read_point_or_tombstone_borrowed(key, BranchReadBound::Latest)
+            .read_point_or_tombstone_borrowed(key, bound)
             .map_err(branch_error)
     }
 
@@ -867,13 +894,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<Vec<BranchHistoryRow>> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
         let branch = self.branch_catalog.branch_state(branch_id)?;
+        let bound = self.latest_visibility_bound(branch);
         branch
-            .scan_including_tombstones_borrowed(
-                bounds,
-                BranchReadBound::Latest,
-                visible_limit,
-                None,
-            )
+            .scan_including_tombstones_borrowed(bounds, bound, visible_limit, None)
             .map_err(branch_error)
     }
 
@@ -1274,6 +1297,11 @@ where
                 .map_err(commit_error)
         };
         if outcome.is_ok() {
+            // BS2.2: mirror the just-advanced visible version to the atomic (release) so off-lock
+            // readers (BS2.4) observe it without the runtime lock. On the `applied_not_visible`
+            // error path `outcome` is `Err`, so the atomic correctly does not advance.
+            self.visible_commit_version
+                .store(self.visible.visible_version().as_u64(), Ordering::Release);
             let wal_growth_start = perf_trace::start_timer();
             self.evaluate_and_record_wal_growth_policy();
             perf_trace::record_commit_post_wal_growth_elapsed(wal_growth_start);
@@ -1609,6 +1637,12 @@ fn rebuild_fork_snapshot_rows(branch_catalog: &mut LifecycleBranchCatalog) -> Li
     Ok(())
 }
 
+/// Fresh release-published mirror cell seeded from the tracker's current visible version
+/// (BS2.2; constructed after recovery so the seed covers the recovered frontier).
+fn visible_version_mirror(visible: VisibleVersionTracker) -> Arc<AtomicU64> {
+    Arc::new(AtomicU64::new(visible.visible_version().as_u64()))
+}
+
 /// Replay WAL records against the rebuilt catalog. Each record is routed
 /// to its branch's slot in the catalog. After all records replay, advance
 /// the allocator and the visibility tracker to the highest version
@@ -1647,7 +1681,28 @@ fn replay_wal_into_catalog<S>(
         .map_err(commit_error)?;
         report.record_replay(&replay_report);
     }
-    let recovered_visible_version = checkpoint_watermark.max(replayed_max);
+    // Fold in the highest committed version present in the restored branch states. Flushed
+    // tables can be ahead of both the checkpoint watermark and the surviving WAL (e.g. a
+    // checkpoint publish fault after a successful flush pruned the covering WAL segments);
+    // without this term those durable, acknowledged rows would sit above `visible` — the
+    // branch would reject all mutating commits (`require_branch_not_ahead_of_visible` fails
+    // closed) and the allocator would re-issue their commit versions.
+    let restored_catalog_max = branch_catalog
+        .list_branches(false)
+        .into_iter()
+        .map(|descriptor| {
+            Ok(branch_catalog
+                .branch_state(descriptor.branch_id())?
+                .max_commit_version()
+                .unwrap_or(CommitVersion::ZERO))
+        })
+        .try_fold(
+            CommitVersion::ZERO,
+            |max, version: LifecycleResult<CommitVersion>| version.map(|version| max.max(version)),
+        )?;
+    let recovered_visible_version = checkpoint_watermark
+        .max(replayed_max)
+        .max(restored_catalog_max);
     allocator.catch_up_to_recovered_version(recovered_visible_version);
     if let Some(timestamp) = recovery.checkpoint().timestamp_max() {
         allocator.catch_up_to_recovered_timestamp(timestamp);

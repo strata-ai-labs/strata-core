@@ -715,6 +715,97 @@ fn durable_close_does_not_report_complete_with_unresolved_durable_gate() {
         .any(|operation| matches!(operation, Operation::SyncObject(_))));
 }
 
+/// BS2.2 deliberate behavior change (durable mirror of the cache test): a row applied above
+/// `visible` — the `applied_not_visible` publish-failure state — is hidden from the bounded
+/// runtime Latest read while the gate blocks follow-on commits.
+#[test]
+fn durable_bounded_latest_read_hides_applied_not_visible_row_while_gate_blocks_commits() {
+    let backend = DurableTestBackend::new();
+    let branch = branch_id(0x27);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+
+    // A normally committed row: `visible` covers it.
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"vis-acked", b"value"),
+            generation_guard(),
+        )
+        .expect("acked durable commit");
+    assert_eq!(runtime.visible_version(), CommitVersion::new(1));
+
+    // Recreate the applied-not-visible shape: trip the gate, then apply a row above `visible`.
+    let hidden_version = CommitVersion::new(2);
+    let unresolved = CommitUnresolvedDurable::applied_not_visible(
+        CommitStamp::new(branch, hidden_version, Timestamp::from_micros(2_000)).expect("stamp"),
+        CommitDurabilityClass::Standard,
+        "test: visible publication failed after apply",
+    )
+    .expect("unresolved fact");
+    runtime
+        .durable_gate()
+        .record_unresolved(unresolved)
+        .expect("trip the unresolved gate");
+    let generation = runtime
+        .branch_catalog()
+        .registry()
+        .lookup(branch)
+        .expect("branch lookup")
+        .generation();
+    let hidden_key = physical_key(branch, b"vis-hidden");
+    runtime
+        .branch_catalog_mut_for_test()
+        .branch_state_mut(branch, CommitBranchGenerationGuard::exact(generation))
+        .expect("branch state")
+        .append_committed_row(StorageRow::put(
+            hidden_key.clone(),
+            hidden_version,
+            Timestamp::from_micros(2_000),
+            Timestamp::EPOCH,
+            b"hidden-value".to_vec(),
+        ))
+        .expect("apply row above visible");
+
+    // The bounded Latest point read hides the unacknowledged row; acked rows stay served.
+    assert!(runtime
+        .read_latest_point_or_tombstone_for_branch(branch, &hidden_key)
+        .expect("bounded point read")
+        .is_none());
+    let acked = runtime
+        .read_latest_point_or_tombstone_for_branch(branch, &physical_key(branch, b"vis-acked"))
+        .expect("bounded point read")
+        .expect("acked row stays visible");
+    assert_eq!(acked.row().commit_version(), CommitVersion::new(1));
+    let bounds = crate::branch::read::BranchScanBounds::prefix(&physical_key(branch, b"vis-"));
+    let scanned = runtime
+        .scan_latest_including_tombstones_for_branch(branch, &bounds, None)
+        .expect("bounded scan");
+    assert_eq!(scanned.len(), 1);
+    assert_eq!(scanned[0].row().physical_key().user_key(), b"vis-acked");
+
+    // The gate blocks the next mutating commit at the runtime level.
+    let error = runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"vis-blocked", b"blocked"),
+            generation_guard(),
+        )
+        .expect_err("unresolved gate blocks the follow-on commit");
+    let LifecycleError::LowerLayer {
+        layer: LifecycleLowerLayer::CommitRuntime,
+        source: Some(source),
+        ..
+    } = error
+    else {
+        panic!("expected commit-runtime lower-layer error, got {error:?}");
+    };
+    let commit_error = source
+        .downcast_ref::<CommitRuntimeError>()
+        .expect("commit runtime source");
+    assert!(matches!(
+        commit_error,
+        CommitRuntimeError::UnresolvedDurableCommit { .. }
+    ));
+}
+
 #[test]
 fn durable_close_does_not_truncate_wal_prune_snapshots_or_purge_quarantine_implicitly() {
     let backend = DurableTestBackend::new();

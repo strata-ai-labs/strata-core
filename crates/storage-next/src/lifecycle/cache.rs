@@ -64,6 +64,8 @@ use crate::lifecycle::maintenance::{
 };
 use crate::row::PhysicalKey;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -84,6 +86,10 @@ pub(crate) struct LifecycleCacheRuntime<S = CommitManualTimestampSource> {
     guard_set: CommitBranchGuardSet,
     allocator: CommitFactAllocator<S>,
     visible: VisibleVersionTracker,
+    /// BS2.2: release-published mirror of `visible.visible_version()` so a future off-lock reader
+    /// (BS2.4) observes the visibility bound without the runtime lock. Cache mode starts at
+    /// `CommitVersion::ZERO` (no recovery).
+    visible_commit_version: Arc<AtomicU64>,
     durable_gate: CommitUnresolvedDurableGate,
     commit_config: CommitRuntimeConfig,
     maintenance: LifecycleMaintenanceExecutor,
@@ -426,6 +432,7 @@ impl<S> LifecycleCacheRuntime<S> {
                 timestamp_source,
             ),
             visible: VisibleVersionTracker::default(),
+            visible_commit_version: Arc::new(AtomicU64::new(0)),
             durable_gate: CommitUnresolvedDurableGate::new(),
             commit_config,
             maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
@@ -535,10 +542,21 @@ impl<S> LifecycleCacheRuntime<S> {
         self.visible
             .catch_up_visible_after_replay(version)
             .expect("test commit frontier must not regress");
+        // Keep the release-published mirror in lockstep with the tracker (BS2.2): bounded
+        // Latest reads load the atomic, so a tracker-only advance would strand them.
+        self.visible_commit_version
+            .store(self.visible.visible_version().as_u64(), Ordering::Release);
     }
 
     pub(crate) fn unresolved_durable(&self) -> LifecycleResult<Option<CommitUnresolvedDurable>> {
         self.durable_gate.unresolved().map_err(commit_error)
+    }
+
+    /// Test seam: direct gate access so tests can recreate the `applied_not_visible` state
+    /// (row applied above `visible`, gate tripped) without a publish-failure injection point.
+    #[cfg(test)]
+    pub(crate) const fn durable_gate_for_test(&self) -> &CommitUnresolvedDurableGate {
+        &self.durable_gate
     }
 
     pub(crate) fn read_view(&self) -> LifecycleResult<BranchReadView> {
@@ -554,6 +572,23 @@ impl<S> LifecycleCacheRuntime<S> {
         branch.capture_read_view().map_err(branch_error)
     }
 
+    /// BS2.2: the visibility bound for a Latest read — `visible` loaded from the release-published
+    /// atomic — with a debug check that bounding by it drops nothing under the lock (a no-op except
+    /// in the deliberate `applied_not_visible` state, where the durable gate is tripped).
+    fn latest_visibility_bound(&self, branch: &BranchLocalState) -> BranchReadBound {
+        let visible = CommitVersion::new(self.visible_commit_version.load(Ordering::Acquire));
+        debug_assert!(
+            !self.durable_gate.is_clean()
+                || branch
+                    .max_commit_version()
+                    .is_none_or(|max| max.as_u64() <= visible.as_u64()),
+            "BS2.2 visibility bound must be a no-op under the lock: branch max {:?} > visible {:?} with a clean gate",
+            branch.max_commit_version(),
+            visible,
+        );
+        BranchReadBound::at_version(visible)
+    }
+
     pub(crate) fn read_latest_point_or_tombstone_for_branch(
         &self,
         branch_id: strata_core_next::BranchId,
@@ -561,8 +596,9 @@ impl<S> LifecycleCacheRuntime<S> {
     ) -> LifecycleResult<Option<BranchHistoryRow>> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
         let branch = self.branch_catalog.branch_state(branch_id)?;
+        let bound = self.latest_visibility_bound(branch);
         branch
-            .read_point_or_tombstone_borrowed(key, BranchReadBound::Latest)
+            .read_point_or_tombstone_borrowed(key, bound)
             .map_err(branch_error)
     }
 
@@ -574,13 +610,9 @@ impl<S> LifecycleCacheRuntime<S> {
     ) -> LifecycleResult<Vec<BranchHistoryRow>> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
         let branch = self.branch_catalog.branch_state(branch_id)?;
+        let bound = self.latest_visibility_bound(branch);
         branch
-            .scan_including_tombstones_borrowed(
-                bounds,
-                BranchReadBound::Latest,
-                visible_limit,
-                None,
-            )
+            .scan_including_tombstones_borrowed(bounds, bound, visible_limit, None)
             .map_err(branch_error)
     }
 
@@ -2322,6 +2354,13 @@ where
             .execute(batch, generation_guard)
             .map_err(commit_error)
         };
+        if outcome.is_ok() {
+            // BS2.2: mirror the just-advanced visible version to the atomic (release) so off-lock
+            // readers (BS2.4) observe it without the runtime lock. On the `applied_not_visible`
+            // error path `outcome` is `Err`, so the atomic correctly does not advance.
+            self.visible_commit_version
+                .store(self.visible.visible_version().as_u64(), Ordering::Release);
+        }
         if outcome.is_ok()
             && self
                 .open_plan

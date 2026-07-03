@@ -236,6 +236,16 @@ impl CommitUnresolvedDurableGate {
         Ok(self.lock()?.unresolved)
     }
 
+    /// Whether the gate currently holds no unresolved durable commit. Debug-assert helper for the
+    /// BS2.2 visibility-bound equivalence check (type-checked in release, evaluated only in
+    /// debug); a poisoned lock relaxes to `true` so a panic in flight is not compounded by a
+    /// spurious assert.
+    pub(crate) fn is_clean(&self) -> bool {
+        self.lock()
+            .map(|state| state.unresolved.is_none())
+            .unwrap_or(true)
+    }
+
     pub(crate) fn require_admission_available(&self) -> CommitRuntimeResult<()> {
         let state = self.lock()?;
         if let Some(unresolved) = state.unresolved {

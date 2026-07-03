@@ -441,6 +441,10 @@ mod tests {
     /// Minimal deterministic repro: 4 puts, checkpoint, 4 puts, then a batched
     /// `[Checkpoint, Flush]` with the fault swept across publish positions; every position
     /// that opens must recover all acknowledged commits.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "multi-phase durability scenario: fault sweep, reopen, verify, rewrite"
+    )]
     #[test]
     fn regression_publish_fault_during_checkpoint_flush_loses_no_data() {
         use crate::api::{
@@ -519,7 +523,7 @@ mod tests {
                 let _ = rt.drain_maintenance();
             }
             let reopen = StorageBackend::local_fs(dir.path().to_path_buf());
-            let runtime = StorageRuntime::open_with_backend(
+            let mut runtime = StorageRuntime::open_with_backend(
                 StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
                     .with_maintenance_scheduling_policy(
                         StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
@@ -542,6 +546,14 @@ mod tests {
                 usize::from(acked),
                 "publish fault #{fault_publish} silently lost committed data \
                  (recovered {recovered} of {acked} acknowledged commits)"
+            );
+            // Regression guard: the recovered visible frontier must cover rows restored from
+            // flushed tables, not just the checkpoint/WAL — otherwise the branch has applied
+            // rows above `visible` and rejects every mutating commit (fails closed).
+            assert!(
+                put(&mut runtime, 200),
+                "publish fault #{fault_publish} left the branch unwritable after recovery \
+                 (visible frontier below restored table rows)"
             );
         }
     }

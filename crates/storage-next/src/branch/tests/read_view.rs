@@ -2200,3 +2200,75 @@ fn branch_read_view_rejects_wrong_branch_before_timestamp_reads_without_payload(
         Err(BranchRuntimeError::InvalidReadBound { .. })
     ));
 }
+
+/// BS2.2: batch atomicity comes from the visibility bound, not the mutex. Every row of one
+/// commit batch shares the batch's commit version, so a read bounded at `V-1` (the visible
+/// frontier before the batch publishes) sees none of the batch, and a read bounded at `V`
+/// (after publish) sees all of it — there is no bound under which a torn batch is observable.
+#[test]
+fn batch_rows_are_all_or_nothing_at_the_version_bound() {
+    let branch = branch_id(47);
+    let mut state = BranchLocalState::empty(branch);
+    let batch_version = 5;
+    let keys: [&[u8]; 3] = [b"batch-a", b"batch-b", b"batch-c"];
+    state
+        .append_committed_rows_atomically(keys.iter().map(|key| {
+            storage_row_with(
+                branch,
+                key.to_vec(),
+                batch_version,
+                5_000,
+                Timestamp::EPOCH,
+                b"batch-value".to_vec(),
+            )
+        }))
+        .expect("atomic batch append");
+
+    let view = state
+        .capture_read_view()
+        .expect("view")
+        .with_timestamp_coverage(BranchTimestampCoverage::complete());
+    let bounds = BranchScanBounds::prefix(&physical_key(branch, b"batch-".to_vec()));
+
+    // Bounded below the batch: no key of the batch is visible (point and scan agree).
+    for key in keys {
+        assert_eq!(
+            view.at_version(
+                &physical_key(branch, key.to_vec()),
+                CommitVersion::new(batch_version - 1)
+            )
+            .expect("pre-batch point read"),
+            None,
+            "pre-batch bound must hide every batch row"
+        );
+    }
+    assert!(view
+        .scan_prefix(
+            &bounds,
+            BranchReadBound::at_version(CommitVersion::new(batch_version - 1))
+        )
+        .expect("pre-batch scan")
+        .is_empty());
+
+    // Bounded at the batch version: every key is visible.
+    for key in keys {
+        let row = view
+            .at_version(
+                &physical_key(branch, key.to_vec()),
+                CommitVersion::new(batch_version),
+            )
+            .expect("batch point read")
+            .expect("batch row visible at the batch bound");
+        assert_eq!(
+            row.row().commit_version(),
+            CommitVersion::new(batch_version)
+        );
+    }
+    let scanned = view
+        .scan_prefix(
+            &bounds,
+            BranchReadBound::at_version(CommitVersion::new(batch_version)),
+        )
+        .expect("batch scan");
+    assert_eq!(scanned.len(), keys.len());
+}
