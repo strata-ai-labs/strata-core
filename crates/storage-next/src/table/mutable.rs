@@ -107,6 +107,7 @@ impl MutableTable {
     }
 
     pub(crate) fn clone_for_read_view(&self) -> Self {
+        crate::observability::perf_trace::record_read_pin();
         let (sequence_upper_bound, facts) = self.capture_view_state();
         Self {
             inner: Arc::clone(&self.inner),

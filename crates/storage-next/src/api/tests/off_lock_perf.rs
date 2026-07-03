@@ -60,3 +60,49 @@ fn commit_does_not_scale_snapshot_captures() {
         "per-commit snapshot capture regressed (Model 1): {captures} captures for {COMMITS} commits"
     );
 }
+
+/// BS2.5: point reads do NOT pin the (live) active memtable — the visible bound (gate B) suffices.
+/// N Latest point reads must produce 0 `read_pins`. This is the regression guard for the pin
+/// removal (a re-added `pinned_active()` on the point path would fail here).
+#[cfg(feature = "perf-trace")]
+#[test]
+fn read_point_does_not_pin_the_active() {
+    use crate::observability::perf_trace;
+    const READS: usize = 32;
+
+    let runtime = StorageRuntime::open_ephemeral()
+        .expect("open ephemeral runtime")
+        .into_runtime();
+    let branch = StorageRuntime::default_branch_id_for_test();
+    // Seed a key first (no conflict check, so the commit does not capture a read view).
+    let seed = CommitBatch::new(
+        branch,
+        vec![CommitMutation::Put {
+            storage_space: background_space(),
+            key: key(b"pin-probe"),
+            value: StorageValue::new(vec![1]),
+            ttl: None,
+        }],
+        CommitOptions::default().require_conflict_check(false),
+    )
+    .expect("valid seed batch");
+    runtime.commit(&seed).expect("seed commit");
+
+    let _perf_trace = perf_trace::begin_test_capture();
+    for _ in 0..READS {
+        runtime
+            .read_point(&PointReadRequest::new(
+                branch,
+                background_space(),
+                key(b"pin-probe"),
+                ReadBound::Latest,
+            ))
+            .expect("latest point read");
+    }
+
+    assert_eq!(
+        perf_trace::snapshot().read_pins(),
+        0,
+        "point reads must not pin the active memtable ({READS} reads)"
+    );
+}

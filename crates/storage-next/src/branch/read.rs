@@ -990,10 +990,18 @@ impl BranchReadView {
         self.require_matching_branch(key.branch_id())?;
         let effective_bound = effective_own_read_bound(bound);
         self.require_timestamp_coverage(bound)?;
-        let active = self.pinned_active();
+        // BS2.5: point reads do NOT pin the (live) active. Gate B (`commit_version <= V`, carried in
+        // `effective_bound`) already filters everything the sequence pin (gate A) would, because
+        // appends are monotonic in BOTH sequence and commit_version and each happens-before the
+        // `visible` bump the reader's Acquire load synchronizes with — so no `<= V` row is ever
+        // back-dated into the active after V is observed, and any row appended after has
+        // `commit_version > V` and is dropped by gate B regardless of gate A. The conflict/
+        // diagnostics callers pass an already-pinned view (`Some` bound), so `&self.active` still
+        // applies gate A there. Saves a per-read RwLock acquire + a reader-reader-contended
+        // `Arc<TableMemoryState>` refcount RMW + 2 heap allocs.
         let selected = select_ordered_visible_point_candidate(
             self.branch_id,
-            &active,
+            &self.active,
             &self.frozen,
             &self.owned_levels,
             &self.inherited_layers,
@@ -1018,10 +1026,10 @@ impl BranchReadView {
         self.require_matching_branch(key.branch_id())?;
         self.require_timestamp_coverage(bound)?;
         let effective_bound = effective_own_read_bound(bound);
-        let active = self.pinned_active();
+        // BS2.5: unpinned — gate B (the visible bound) suffices; see `read_point`.
         let selected = select_ordered_visible_point_candidate(
             self.branch_id,
-            &active,
+            &self.active,
             &self.frozen,
             &self.owned_levels,
             &self.inherited_layers,

@@ -129,15 +129,25 @@ fn read_checked(runtime: &StorageRuntime<'_>, branch: BranchId, num_keys: usize)
 fn reader_loop(runtime: &StorageRuntime<'_>, branch: BranchId, done: &AtomicBool, start: &Barrier) {
     start.wait();
     let mut max_batch = 0u64;
+    let mut point_max = 0u64;
     let mut reads = 0u64;
     while !done.load(Ordering::Acquire) {
         if let Some(observed) = read_checked(runtime, branch, STRESS_KEYS) {
             assert!(
                 observed >= max_batch,
-                "visible version regressed for a reader: {observed} < {max_batch}"
+                "visible version regressed for a reader (scan): {observed} < {max_batch}"
             );
             max_batch = observed;
             reads += 1;
+        }
+        // BS2.5: also race the UNPINNED point path (`read_point`) against the committing writer —
+        // its version must never regress. This is the direct concurrency gate for the pin removal.
+        if let Some(point) = read_point_batch(runtime, branch) {
+            assert!(
+                point >= point_max,
+                "visible version regressed for a reader (unpinned point): {point} < {point_max}"
+            );
+            point_max = point;
         }
         // Cooperate so the (durable) writer and the maintenance workers make progress on a busy box
         // instead of being starved by a hot read loop.

@@ -304,6 +304,7 @@ pub struct StoragePerfSnapshot {
     append_rows_applied: u64,
     branch_facts_rows_observed: u64,
     read_view_captures: u64,
+    read_pins: u64,
     read_view_source_handles_cloned: u64,
     read_view_rows_cloned: u64,
     read_view_row_clone_bytes: u64,
@@ -1662,6 +1663,11 @@ impl StoragePerfSnapshot {
         self.read_view_captures
     }
 
+    /// Number of per-read active-memtable pins (`clone_for_read_view`) taken on the read path.
+    pub const fn read_pins(self) -> u64 {
+        self.read_pins
+    }
+
     /// Number of branch source handles copied into captured read views.
     pub const fn read_view_source_handles_cloned(self) -> u64 {
         self.read_view_source_handles_cloned
@@ -2847,6 +2853,8 @@ static BRANCH_FACTS_ROWS_OBSERVED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static READ_VIEW_CAPTURES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static READ_PINS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static READ_VIEW_SOURCE_HANDLES_CLONED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static READ_VIEW_ROWS_CLONED: AtomicU64 = AtomicU64::new(0);
@@ -3442,6 +3450,7 @@ pub fn reset() {
     APPEND_ROWS_APPLIED.store(0, Ordering::Relaxed);
     BRANCH_FACTS_ROWS_OBSERVED.store(0, Ordering::Relaxed);
     READ_VIEW_CAPTURES.store(0, Ordering::Relaxed);
+    READ_PINS.store(0, Ordering::Relaxed);
     READ_VIEW_SOURCE_HANDLES_CLONED.store(0, Ordering::Relaxed);
     READ_VIEW_ROWS_CLONED.store(0, Ordering::Relaxed);
     READ_VIEW_ROW_CLONE_BYTES.store(0, Ordering::Relaxed);
@@ -4007,6 +4016,7 @@ pub fn snapshot() -> StoragePerfSnapshot {
         append_rows_applied: APPEND_ROWS_APPLIED.load(Ordering::Relaxed),
         branch_facts_rows_observed: BRANCH_FACTS_ROWS_OBSERVED.load(Ordering::Relaxed),
         read_view_captures: READ_VIEW_CAPTURES.load(Ordering::Relaxed),
+        read_pins: READ_PINS.load(Ordering::Relaxed),
         read_view_source_handles_cloned: READ_VIEW_SOURCE_HANDLES_CLONED.load(Ordering::Relaxed),
         read_view_rows_cloned: READ_VIEW_ROWS_CLONED.load(Ordering::Relaxed),
         read_view_row_clone_bytes: READ_VIEW_ROW_CLONE_BYTES.load(Ordering::Relaxed),
@@ -6093,6 +6103,18 @@ pub(crate) fn record_read_view_capture(
     READ_VIEW_SOURCE_HANDLES_CLONED.fetch_add(as_u64(source_handles_cloned), Ordering::Relaxed);
     READ_VIEW_ROWS_CLONED.fetch_add(as_u64(rows_cloned), Ordering::Relaxed);
     READ_VIEW_ROW_CLONE_BYTES.fetch_add(as_u64(row_clone_bytes), Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_read_pin() {}
+
+/// Count one per-read active-memtable pin (`clone_for_read_view` on the read path).
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_read_pin() {
+    if !recording_enabled() {
+        return;
+    }
+    READ_PINS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

@@ -16,6 +16,15 @@
 //!   8           791_807                    8_713_633        11.0x
 //! The locked control *regresses* as threads rise (a lock convoy); off-lock scales ~4.7x across
 //! 1->8 threads. Consistent with the plan's hypothesis; the >=3x band is met at >=4 threads here.
+//!
+//! BS2.5 removed the per-read active pin (gate B suffices). Re-measured, ops/s:
+//!   threads   off-lock pinned (BS2.4)   off-lock unpinned (BS2.5)   delta
+//!   1         1_842_491                 2_052_954                   +11%  (now > the locked 1.94M)
+//!   2         3_258_331                 3_543_800                   +9%
+//!   4         5_488_310                 6_355_484                   +16%
+//!   8         7_868_796                10_498_568                   +33%
+//! Single-thread now beats the locked control (regression gone); the slope improves to ~5.1x across
+//! 1->8 threads as the contended Arc<TableMemoryState> refcount RMW is removed.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
