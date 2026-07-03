@@ -202,6 +202,12 @@ fn build_and_publish_compaction(
         return build_range(0, ranges.first().and_then(Option::as_ref));
     }
 
+    // BS3.1 (G23 / constraint C1): the subcompaction fan-out spawns threads, unsupported on wasm32.
+    // `mod lifecycle` is compiled for wasm (only `localfs` is forbidden — see lib.rs), so the spawn
+    // must be cfg'd out of the wasm build, not merely left unreached. On wasm the ranges build
+    // serially (n_eff = 1); env vars don't exist there, so `subcompaction_cap()` is already 1 and
+    // this arm is effectively dead, but it stays correct if `ranges.len() > 1` is ever forced.
+    #[cfg(not(target_arch = "wasm32"))]
     let results: Vec<SubcompactionBuildResult> = std::thread::scope(|scope| {
         let handles: Vec<_> = ranges
             .iter()
@@ -220,6 +226,12 @@ fn build_and_publish_compaction(
             })
             .collect()
     });
+    #[cfg(target_arch = "wasm32")]
+    let results: Vec<SubcompactionBuildResult> = ranges
+        .iter()
+        .enumerate()
+        .map(|(index, bounds)| build_range(index, bounds.as_ref()))
+        .collect();
 
     let mut all_published: Vec<PublishedRewriteTable> = Vec::new();
     let mut merged_report: Option<TableCompactionReport> = None;

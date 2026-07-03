@@ -1701,7 +1701,12 @@ pub(crate) fn compaction_lane_cap() -> usize {
 }
 
 /// Default number of subcompactions (parallel key-range builds) per L0-to-next compaction.
-const DEFAULT_SUBCOMPACTIONS: usize = 4;
+///
+/// Off by default (`1` = serial): the parallel fan-out is a measured ~25% L0→L1 regression in the
+/// memory-bound (resident) regime, where the merge is CPU-bound and the extra threads only add
+/// contention. The machinery stays reachable via `STRATA_SUBCOMPACTIONS` for its honest re-test in
+/// BS4, when compaction becomes I/O-bound and the range parallelism should finally pay off.
+const DEFAULT_SUBCOMPACTIONS: usize = 1;
 
 /// The subcompaction fan-out for one L0-to-next compaction, env-overridable for the perf A/B
 /// sweep (`STRATA_SUBCOMPACTIONS`, e.g. `1` for a serial control). The effective count is
