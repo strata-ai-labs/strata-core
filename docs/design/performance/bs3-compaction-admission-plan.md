@@ -98,6 +98,92 @@ budget-ledger locks). Temporary `STRATA_TRACE` probes inside
 **Exit of the slice:** a decomposition table (ms and % per stage at ~300 MB and at a larger
 synthetic compaction) + the ranked fix list for BS3.3. No production code change.
 
+#### Measured decomposition (BS3.2 complete)
+
+Driver: `benchmarks/src/bin/storage_next_l0_compact.rs` (committed; public API only, durable-local).
+The runtime auto-compacts L0 at `LEVEL_ZERO_COMPACTION_THRESHOLD` (4) and the frozen byte budget
+blocks a 2nd un-flushed rotation, so the public-API ceiling for a *single* L0→L1 is ~3×~47 MiB L0
+tables (~142 MB) — not the 300 MB the plan assumed. This **under-states** publish: at 300 MB / 5
+tables the merge scales with bytes but the publish syscalls + reader rebuild scale with the
+*output-table count*, so the publish share only grows. Two operating points vary row-density at equal
+bytes to separate per-row from per-byte cost (this dev box, temporary `STRATA_TRACE` stage probes now
+stripped; coarse split from committed `perf-trace` timers, reproducible via the bin):
+
+```
+single durable L0→L1, lifecycle-rewrite elapsed (plan + merge + per-artifact publish):
+
+                          arm A  1 KB / 129k rows      arm B  8 KB / 18k rows
+  merge loop                 150 ms  (36%)                129 ms  (34%)
+  plan + finish + publish    260 ms  (63%)                241 ms  (65%)   <- dominates
+  ----------------------------------------------------------------------
+  lifecycle elapsed          410 ms  (~350 MB/s)          370 ms  (~386 MB/s)
+
+  full attribution (arm A, ~410 ms, summed over the 4 output tables; publish stages
+  probed at both the syscall and publish-step granularity — now ~96% attributed):
+    merge loop                              150 ms  (36%)
+    publish_io  write+temp_fsync+dir_fsync  108 ms  (26%)   [write ~20, temp_fsync ~63, dir_fsync ~25]
+    byte_validate  re-read + full memcmp     67 ms  (16%)   <- redundant; CONFIRMED (see below)
+    reader_handoff  build in-memory reader   67 ms  (16%)   <- byte-bound; not in H1–H4
+    budget + plan + final_finish + catalog  ~18 ms  ( 4%)
+```
+
+Key facts the profile establishes:
+- **Publish, not merge, dominates** (~63% vs ~36%). Within `publish_io` the *durability syscalls*
+  (`temp_fsync` ~63 + `dir_fsync` ~25 ≈ 88 ms) dwarf the actual data write (~20 ms) — NVMe sequential
+  write is fast; the per-output-table fsyncs are the cost. **H1 confirmed.**
+- **`byte_validate` (~67 ms) is a redundant re-read.** `publish_or_load_rewrite_output` returns
+  `exact_bytes_validated = false` on the Create success path (`rewrite_publication.rs:853`), so
+  `publish_rewrite_artifact` then calls `require_exact_bytes`, which **re-reads the entire
+  just-written+fsynced object from the backend and full-`memcmp`s it** against the in-memory bytes
+  (`service/table.rs:759`, `read_all_table_object_for_exact_match`). A whole extra read pass over
+  every output table (~184 MB here) to re-verify bytes we hold in memory and already fsynced.
+- **The in-memory reader build (`open_reader_from_validated_rows`, ~67 ms) is as large as the
+  fsyncs** and is **byte-bound** (~21 ms/46 MB in *both* arms despite 6.6× fewer rows in B). The rows
+  are *already* reused (`record_table_rewrite_reader_rows_reused`), so the cost is building the
+  reader's in-memory index/filter structure, not re-parsing rows. Not in the plan's H1–H4.
+- **H2 refuted:** merge is byte-bound, not row-bound — a 7× row-density drop (A→B) moved merge share
+  by ~2 pts and `row_clones = 0`; `policy.decide` is static dispatch (monomorphized), no vtable.
+- **H3 refuted as a separate stage:** block encode + per-block CRC is incremental inside
+  `builder.append` (already inside the 36% merge); the trailing `finish_current` is ~0.5 ms.
+- **H4 deprioritized:** the merge loop is the minority cost (~36%) and byte-bound.
+
+#### Ranked fix list for BS3.3
+
+> **Status: BS3.3 paused.** A prototype of fix #1 (byte_validate elision) confirmed the +16% win
+> (A/B: 401→347 ms, 354→410 MB/s, merge unchanged) but also disproved its "redundant / lowest-risk"
+> framing — see the correction on #1. Decision (owner): keep both integrity checks for now; do not
+> take on the H1b Backend-trait + fault-sweep work yet; move to BS3.4 (graceful admission, the
+> primary A/F-crawl exit lever) and revisit publish efficiency later.
+
+1. **~~Elide the `byte_validate` re-read~~ — NOT redundant; do not elide lightly** (~67 ms ≈ 16%,
+   measured). Correction: the Create-path `require_exact_bytes` is the compaction path's **only
+   backend-write-integrity check**, not belt-and-suspenders — it re-reads the durable object and
+   catches a backend that corrupts on write. It is *deliberately* tested: 8 tests
+   (`lifecycle/tests/compaction/publication_plan.rs` + `remaining.rs`,
+   `corrupt_table_object_create_on_call`) assert it raises `rewrite_publication_orphan` with no
+   install. The reader can't stand in (it serves the correct in-memory bytes and never reads the
+   backend); there is no cheaper equivalent (any CRC check still re-reads the whole object). Eliding
+   it is a **durability-posture change** — corruption then surfaces only on a later reopen (CRC-on-open),
+   not at publish — and requires rewriting those 8 tests. Viable (RocksDB's `paranoid_file_checks` is
+   off by default) but a deliberate safety reduction, not a free win.
+2. **H1b — batch the durability syscalls** (~88 ms ≈ 21%; biggest raw lever, safety-PRESERVING —
+   keeps all corruption detection, just batches fsyncs): one `sync_all` pass + one parent-dir fsync
+   per compaction instead of per output table saves ~(N−1)/N of both. Larger implementation: extend
+   the `Backend` trait with staged-publish primitives, add `BackendOperation` variants so the STH-2
+   fault sweep still covers the new syscalls, and rewrite the 5 per-step publish-fault tests. Gated by
+   the recovery oracle + fault sweep (objects unreferenced until the manifest fsync). Win *grows* at
+   the production 5-table size. **The safety-preserving alternative to #1.**
+3. **Defer the reader build** (~67 ms ≈ 16%; new — not in H1–H4): NOTE — not cleanly deferrable as
+   first hoped. The 67 ms is the eager SHA-256 content digest (`table_content_digest`), not the
+   reader structure (the bloom is already `eager_filter_unavailable`); the digest is needed later to
+   bind a filter (`matches_exact_content`) and the eager reader doesn't retain the bytes to recompute
+   it. Deferring would force retaining ~46 MB×N resident or weakening the filter-content guard.
+   Revisit only with a redesign of how the content fingerprint is carried.
+4. **H1a — pipeline publish with merge** (~20 ms data write): lower priority; the write is already
+   cheap, so overlap buys little until the fsyncs (H1b) are batched.
+5. **Merge internals (H2/H3/H4): deprioritized** — refuted or minority; revisit only if the above
+   don't reach the throughput target.
+
 ### BS3.3 — Pipeline efficiency fixes (profile-driven)
 
 Implement the top offenders from BS3.2; each fix gets its own control-first A/B (compaction
