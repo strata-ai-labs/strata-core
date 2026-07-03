@@ -19,6 +19,7 @@ mod checkpoint;
 mod commit;
 mod diagnostics;
 mod maintenance;
+mod off_lock_interleaving;
 mod open_close;
 mod open_options;
 mod read;

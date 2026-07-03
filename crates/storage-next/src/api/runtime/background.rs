@@ -10,8 +10,20 @@ use super::{
     DEFAULT_BACKGROUND_BLOCK_WAIT_SLICE,
 };
 
+use std::sync::atomic::AtomicU64;
+
+use strata_core_next::BranchId;
+
+use crate::branch::read::BranchReadView;
+use crate::branch::snapshot::{load_from_registry, BranchSnapshotRegistry};
+use crate::lifecycle::RuntimeReadHandles;
+
 pub(super) struct RuntimeSlot<R> {
     runtime: Arc<ParkingMutex<R>>,
+    /// Off-lock read handles (BS2.4): the visible-version bound `V` and the published-snapshot
+    /// registry, cloned out of the runtime at construction so a read never takes the runtime lock.
+    visible: Arc<AtomicU64>,
+    snapshot_registry: Arc<BranchSnapshotRegistry>,
     background: Option<BackgroundRuntimeController>,
     background_drain: Option<BackgroundDrainFn>,
     #[cfg(test)]
@@ -35,6 +47,8 @@ where
         let mut debug = formatter.debug_struct("RuntimeSlot");
         debug
             .field("runtime", &self.runtime)
+            .field("visible", &self.visible.load(Ordering::Relaxed))
+            .field("published_branches", &self.snapshot_registry.load().len())
             .field("background", &self.background)
             .field("background_drain", &self.background_drain.is_some());
         #[cfg(test)]
@@ -203,14 +217,31 @@ pub(super) const fn lifecycle_storage_pressure_severity_rank(
 }
 
 impl<R> RuntimeSlot<R> {
-    pub(super) fn new(runtime: R, _config: LifecycleConfig) -> Self {
+    pub(super) fn new(runtime: R, _config: LifecycleConfig) -> Self
+    where
+        R: RuntimeReadHandles,
+    {
+        let visible = runtime.visible_handle();
+        let snapshot_registry = runtime.snapshot_registry();
         Self {
             runtime: Arc::new(ParkingMutex::new(runtime)),
+            visible,
+            snapshot_registry,
             background: None,
             background_drain: None,
             #[cfg(test)]
             background_block_wait: BackgroundBlockWaitConfig::default(),
         }
+    }
+
+    /// The current visible-commit-version bound `V`, loaded off-lock (Acquire).
+    pub(super) fn visible(&self) -> u64 {
+        self.visible.load(Ordering::Acquire)
+    }
+
+    /// The published snapshot for `branch_id`, loaded off-lock from the shared registry.
+    pub(super) fn load_snapshot(&self, branch_id: BranchId) -> Option<Arc<BranchReadView>> {
+        load_from_registry(&self.snapshot_registry, branch_id)
     }
 
     pub(super) fn lock(&self) -> ParkingMutexGuard<'_, R> {
@@ -386,7 +417,7 @@ impl<R> RuntimeSlot<R> {
 
 impl<R> RuntimeSlot<R>
 where
-    R: Send + 'static,
+    R: Send + RuntimeReadHandles + 'static,
 {
     pub(super) fn new_with_background_arc_drain(
         runtime: R,
@@ -396,6 +427,8 @@ where
         mode_policy: ModeLifecyclePolicy,
         drain: BackgroundArcDrain<R>,
     ) -> Self {
+        let visible = runtime.visible_handle();
+        let snapshot_registry = runtime.snapshot_registry();
         let runtime = Arc::new(ParkingMutex::new(runtime));
         // The maintenance scheduling policy selects the executor flavor, but the
         // mode policy is authoritative: volatile modes (cache) never run a
@@ -418,6 +451,8 @@ where
         });
         Self {
             runtime,
+            visible,
+            snapshot_registry,
             background,
             background_drain,
             #[cfg(test)]

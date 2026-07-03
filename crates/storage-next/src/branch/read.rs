@@ -966,6 +966,16 @@ impl BranchReadView {
         self.read_point(key, BranchReadBound::at_version(version))
     }
 
+    /// Pin the (in Model 2, live) active memtable for the duration of one read: a consistent
+    /// sequence cut plus fresh facts, so the multi-source read observes a stable active while
+    /// commits may be appending off-lock. Idempotent on an already-pinned active (the under-lock
+    /// conflict-validation and diagnostics paths), so it is O(1) there. Structural sources
+    /// (`frozen`/`owned_levels`/`inherited_layers`) are immutable once published and read by
+    /// reference — the pin never clones them.
+    fn pinned_active(&self) -> MutableTable {
+        self.active.clone_for_read_view()
+    }
+
     pub(crate) fn read_point(
         &self,
         key: &PhysicalKey,
@@ -974,9 +984,10 @@ impl BranchReadView {
         self.require_matching_branch(key.branch_id())?;
         let effective_bound = effective_own_read_bound(bound);
         self.require_timestamp_coverage(bound)?;
+        let active = self.pinned_active();
         let selected = select_ordered_visible_point_candidate(
             self.branch_id,
-            &self.active,
+            &active,
             &self.frozen,
             &self.owned_levels,
             &self.inherited_layers,
@@ -989,12 +1000,59 @@ impl BranchReadView {
         }))
     }
 
+    /// Latest-style point read that returns the newest row **including tombstones** (a delete is a
+    /// tombstone row, not `None`), for the off-lock `read_point` Latest verb. Mirrors
+    /// [`BranchLocalState::read_point_or_tombstone_borrowed`] but on a published snapshot, pinning
+    /// the active at read time.
+    pub(crate) fn read_point_or_tombstone(
+        &self,
+        key: &PhysicalKey,
+        bound: BranchReadBound,
+    ) -> BranchRuntimeResult<Option<BranchHistoryRow>> {
+        self.require_matching_branch(key.branch_id())?;
+        self.require_timestamp_coverage(bound)?;
+        let effective_bound = effective_own_read_bound(bound);
+        let active = self.pinned_active();
+        let selected = select_ordered_visible_point_candidate(
+            self.branch_id,
+            &active,
+            &self.frozen,
+            &self.owned_levels,
+            &self.inherited_layers,
+            key,
+            bound,
+            effective_bound,
+        )?;
+        Ok(selected.and_then(|candidate| {
+            if row_is_expired_at(
+                candidate_row_ref(&candidate),
+                effective_bound.max_commit_timestamp(),
+            ) {
+                None
+            } else {
+                Some(candidate_into_history_row(candidate))
+            }
+        }))
+    }
+
     pub(crate) fn history(
         &self,
         key: &PhysicalKey,
         options: BranchHistoryOptions,
     ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
-        self.collect_history(key, options, None)
+        self.collect_history(key, options, BranchReadBound::latest(), None)
+    }
+
+    /// Off-lock history capped at the visible version `V`: identical to [`history`](Self::history)
+    /// but the candidate collection is bounded so rows newer than the visibility bound (e.g. an
+    /// `applied_not_visible` commit, or a batch mid-apply on another thread) are hidden.
+    pub(crate) fn history_visible(
+        &self,
+        key: &PhysicalKey,
+        options: BranchHistoryOptions,
+        visible: CommitVersion,
+    ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
+        self.collect_history(key, options, BranchReadBound::at_version(visible), None)
     }
 
     pub(crate) fn history_with_source_probe_count(
@@ -1003,7 +1061,12 @@ impl BranchReadView {
         options: BranchHistoryOptions,
     ) -> BranchRuntimeResult<(Vec<BranchHistoryRow>, usize)> {
         let mut source_probes = 0usize;
-        let history = self.collect_history(key, options, Some(&mut source_probes))?;
+        let history = self.collect_history(
+            key,
+            options,
+            BranchReadBound::latest(),
+            Some(&mut source_probes),
+        )?;
         Ok((history, source_probes))
     }
 
@@ -1011,6 +1074,7 @@ impl BranchReadView {
         &self,
         key: &PhysicalKey,
         options: BranchHistoryOptions,
+        candidate_bound: BranchReadBound,
         source_probes: Option<&mut usize>,
     ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
         self.require_matching_branch(key.branch_id())?;
@@ -1018,15 +1082,16 @@ impl BranchReadView {
             return Ok(Vec::new());
         }
 
+        let active = self.pinned_active();
         let mut rows = history_candidates(
             self.branch_id,
-            &self.active,
+            &active,
             &self.frozen,
             &self.owned_levels,
             &self.inherited_layers,
             key,
-            BranchReadBound::latest(),
-            effective_own_read_bound(BranchReadBound::latest()),
+            candidate_bound,
+            effective_own_read_bound(candidate_bound),
             source_probes,
         )?;
         sort_candidates_newest_first(&mut rows);
@@ -1122,9 +1187,10 @@ impl BranchReadView {
         self.require_matching_branch(bounds.branch_id())?;
         let effective_bound = effective_own_read_bound(bound);
         self.require_timestamp_coverage(bound)?;
+        let active = self.pinned_active();
         let rows = scan_including_tombstones_from_sources(
             self.branch_id,
-            &self.active,
+            &active,
             &self.frozen,
             &self.owned_levels,
             &self.inherited_layers,
@@ -1151,9 +1217,10 @@ impl BranchReadView {
     ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
         self.require_matching_branch(bounds.branch_id())?;
         self.require_timestamp_coverage(bound)?;
+        let active = self.pinned_active();
         scan_including_tombstones_from_sources(
             self.branch_id,
-            &self.active,
+            &active,
             &self.frozen,
             &self.owned_levels,
             &self.inherited_layers,
@@ -1162,6 +1229,35 @@ impl BranchReadView {
             after_version,
             None,
             effective_own_read_bound(bound).max_commit_timestamp(),
+            true,
+        )
+    }
+
+    /// Latest-style scan including tombstones with a visible-row limit, for the off-lock
+    /// `scan_prefix`/`scan_range` Latest verbs. Mirrors
+    /// [`BranchLocalState::scan_including_tombstones_borrowed`] on a published snapshot (the
+    /// deleted Latest bridge passed `visible_limit_timestamp = None`), pinning the active at read
+    /// time.
+    pub(crate) fn scan_including_tombstones_visible(
+        &self,
+        bounds: &BranchScanBounds,
+        bound: BranchReadBound,
+        visible_limit: Option<usize>,
+    ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
+        self.require_matching_branch(bounds.branch_id())?;
+        self.require_timestamp_coverage(bound)?;
+        let active = self.pinned_active();
+        scan_including_tombstones_from_sources(
+            self.branch_id,
+            &active,
+            &self.frozen,
+            &self.owned_levels,
+            &self.inherited_layers,
+            bounds,
+            bound,
+            None,
+            visible_limit,
+            None,
             true,
         )
     }

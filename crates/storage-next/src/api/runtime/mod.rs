@@ -92,8 +92,8 @@ use background::{
 };
 
 use data::{
-    flush_request_for_boundary, map_api_commit_batch, map_commit_summary, map_immutable_sources,
-    map_scan_rows, map_storage_space, physical_key, read_row_from_storage,
+    cap_bound_at_visible, flush_request_for_boundary, map_api_commit_batch, map_commit_summary,
+    map_immutable_sources, map_scan_rows, map_storage_space, physical_key, read_row_from_storage,
     read_row_from_storage_if_visible, require_version_retained, resolve_read_bound,
     visible_tombstone_at_bound,
 };
@@ -1213,43 +1213,21 @@ impl<'a> StorageRuntime<'a> {
         Ok(MaintenanceDrainSummary::new(drained_tasks, outcomes, queue))
     }
 
-    pub fn read_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
-        if request.bound() == ReadBound::Latest {
-            return self.read_latest_point(request);
-        }
-        let view = self.read_view_for_branch(request.branch_id())?;
-        let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
-        let resolved = resolve_read_bound(&view, request.bound())?;
-        let row = match view
-            .read_point(&key, resolved.branch_bound)
-            .map_err(branch_error)?
-        {
-            Some(row) => read_row_from_storage_if_visible(row.row(), resolved.selected_timestamp)?,
-            None => visible_tombstone_at_bound(&view, &key, resolved)?,
-        };
-        Ok(PointReadOutcome::new(row))
-    }
-
-    fn read_latest_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
-        let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
-        let row = match &self.inner {
-            StorageRuntimeInner::Cache(slot) => {
-                let runtime = slot.lock();
-                runtime
-                    .read_latest_point_or_tombstone_for_branch(request.branch_id(), &key)
-                    .map_err(map_lifecycle_error)?
-            }
-            StorageRuntimeInner::Durable(slot) => {
-                let runtime = slot.lock();
-                runtime
-                    .read_latest_point_or_tombstone_for_branch(request.branch_id(), &key)
-                    .map_err(map_lifecycle_error)?
-            }
+    /// Load the off-lock read handles for a branch: the visible-version bound `V` (Acquire) FIRST,
+    /// then the published snapshot `S` (a single `ArcSwap` load). V-before-S is the read protocol's
+    /// ordering guarantee — a reader seeing `V=v` observes a snapshot at least as new as any
+    /// structural change published under the lock before `v`. A `None` snapshot means the branch
+    /// has no published slot (never created, or deleted) → not found.
+    fn load_published_snapshot(
+        &self,
+        branch_id: BranchId,
+    ) -> StorageApiResult<(u64, Arc<BranchReadView>)> {
+        // Tuple evaluation is left-to-right, so `V` (Acquire) is loaded before `S`.
+        let (visible, snapshot) = match &self.inner {
+            StorageRuntimeInner::Cache(slot) => (slot.visible(), slot.load_snapshot(branch_id)),
+            StorageRuntimeInner::Durable(slot) => (slot.visible(), slot.load_snapshot(branch_id)),
             StorageRuntimeInner::DurableOwned(slot) => {
-                let runtime = slot.lock();
-                runtime
-                    .read_latest_point_or_tombstone_for_branch(request.branch_id(), &key)
-                    .map_err(map_lifecycle_error)?
+                (slot.visible(), slot.load_snapshot(branch_id))
             }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
@@ -1257,10 +1235,32 @@ impl<'a> StorageRuntime<'a> {
                 });
             }
         };
-        let row = row
-            .as_ref()
-            .map(|row| read_row_from_storage(row.row()))
-            .transpose()?;
+        let snapshot = snapshot.ok_or(StorageApiError::BranchNotFound { branch_id })?;
+        Ok((visible, snapshot))
+    }
+
+    pub fn read_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
+        let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
+        let (visible, view) = self.load_published_snapshot(request.branch_id())?;
+        if request.bound() == ReadBound::Latest {
+            let row = view
+                .read_point_or_tombstone(
+                    &key,
+                    BranchReadBound::at_version(CommitVersion::new(visible)),
+                )
+                .map_err(branch_error)?;
+            let row = row
+                .as_ref()
+                .map(|row| read_row_from_storage(row.row()))
+                .transpose()?;
+            return Ok(PointReadOutcome::new(row));
+        }
+        let resolved = resolve_read_bound(&view, request.bound())?;
+        let capped = cap_bound_at_visible(resolved.branch_bound, visible);
+        let row = match view.read_point(&key, capped).map_err(branch_error)? {
+            Some(row) => read_row_from_storage_if_visible(row.row(), resolved.selected_timestamp)?,
+            None => visible_tombstone_at_bound(&view, &key, capped)?,
+        };
         Ok(PointReadOutcome::new(row))
     }
 
@@ -1268,7 +1268,7 @@ impl<'a> StorageRuntime<'a> {
         &self,
         request: &HistoryReadRequest,
     ) -> StorageApiResult<HistoryReadOutcome> {
-        let view = self.read_view_for_branch(request.branch_id())?;
+        let (visible, view) = self.load_published_snapshot(request.branch_id())?;
         let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
         if let Some(version) = request.before_version_bound() {
             require_version_retained(&view, version)?;
@@ -1282,7 +1282,7 @@ impl<'a> StorageRuntime<'a> {
             options = options.limit(limit.get());
         }
         let rows = view
-            .history(&key, options)
+            .history_visible(&key, options, CommitVersion::new(visible))
             .map_err(branch_error)?
             .iter()
             .map(|row| read_row_from_storage(row.row()))
@@ -1299,16 +1299,19 @@ impl<'a> StorageRuntime<'a> {
             request.storage_space(),
             request.prefix(),
         )?;
+        let (visible, view) = self.load_published_snapshot(request.branch_id())?;
+        let bounds = BranchScanBounds::prefix(&prefix);
         // The Latest fast path does not apply a version lower bound, so route `after_version`
         // reads through the resolving view path (which honors the bound at selection).
         if matches!(request.bound(), ReadBound::Latest) && request.after_version().is_none() {
-            let bounds = BranchScanBounds::prefix(&prefix);
             let scan_timer = perf_trace::start_timer();
-            let rows = self.scan_latest_including_tombstones_for_branch(
-                request.branch_id(),
-                &bounds,
-                request.limit().map(ReadLimit::get),
-            )?;
+            let rows = view
+                .scan_including_tombstones_visible(
+                    &bounds,
+                    BranchReadBound::at_version(CommitVersion::new(visible)),
+                    request.limit().map(ReadLimit::get),
+                )
+                .map_err(branch_error)?;
             perf_trace::record_api_scan_runtime_elapsed(scan_timer);
             let map_timer = perf_trace::start_timer();
             let outcome = map_scan_rows(
@@ -1320,15 +1323,10 @@ impl<'a> StorageRuntime<'a> {
             return outcome;
         }
 
-        let view = self.read_view_for_branch(request.branch_id())?;
         let resolved = resolve_read_bound(&view, request.bound())?;
-        let bounds = BranchScanBounds::prefix(&prefix);
+        let capped = cap_bound_at_visible(resolved.branch_bound, visible);
         let rows = view
-            .scan_prefix_including_tombstones(
-                &bounds,
-                resolved.branch_bound,
-                request.after_version(),
-            )
+            .scan_prefix_including_tombstones(&bounds, capped, request.after_version())
             .map_err(branch_error)?;
         map_scan_rows(
             rows.iter().map(crate::branch::read::BranchHistoryRow::row),
@@ -1359,13 +1357,16 @@ impl<'a> StorageRuntime<'a> {
         )
         .map_err(branch_error)?;
         perf_trace::record_api_scan_bounds_elapsed(bounds_timer);
+        let (visible, view) = self.load_published_snapshot(request.branch_id())?;
         if matches!(request.bound(), ReadBound::Latest) {
             let scan_timer = perf_trace::start_timer();
-            let rows = self.scan_latest_including_tombstones_for_branch(
-                request.branch_id(),
-                &bounds,
-                request.limit().map(ReadLimit::get),
-            )?;
+            let rows = view
+                .scan_including_tombstones_visible(
+                    &bounds,
+                    BranchReadBound::at_version(CommitVersion::new(visible)),
+                    request.limit().map(ReadLimit::get),
+                )
+                .map_err(branch_error)?;
             perf_trace::record_api_scan_runtime_elapsed(scan_timer);
             let map_timer = perf_trace::start_timer();
             let outcome = map_scan_rows(
@@ -1377,10 +1378,10 @@ impl<'a> StorageRuntime<'a> {
             return outcome;
         }
 
-        let view = self.read_view_for_branch(request.branch_id())?;
         let resolved = resolve_read_bound(&view, request.bound())?;
+        let capped = cap_bound_at_visible(resolved.branch_bound, visible);
         let rows = view
-            .scan_range_including_tombstones(&bounds, resolved.branch_bound)
+            .scan_range_including_tombstones(&bounds, capped)
             .map_err(branch_error)?;
         map_scan_rows(
             rows.iter().map(crate::branch::read::BranchHistoryRow::row),
@@ -2459,37 +2460,6 @@ impl<'a> StorageRuntime<'a> {
         }
     }
 
-    fn scan_latest_including_tombstones_for_branch(
-        &self,
-        branch_id: BranchId,
-        bounds: &BranchScanBounds,
-        visible_limit: Option<usize>,
-    ) -> StorageApiResult<Vec<crate::branch::read::BranchHistoryRow>> {
-        match &self.inner {
-            StorageRuntimeInner::Cache(slot) => {
-                let runtime = slot.lock();
-                runtime
-                    .scan_latest_including_tombstones_for_branch(branch_id, bounds, visible_limit)
-                    .map_err(map_lifecycle_error)
-            }
-            StorageRuntimeInner::Durable(slot) => {
-                let runtime = slot.lock();
-                runtime
-                    .scan_latest_including_tombstones_for_branch(branch_id, bounds, visible_limit)
-                    .map_err(map_lifecycle_error)
-            }
-            StorageRuntimeInner::DurableOwned(slot) => {
-                let runtime = slot.lock();
-                runtime
-                    .scan_latest_including_tombstones_for_branch(branch_id, bounds, visible_limit)
-                    .map_err(map_lifecycle_error)
-            }
-            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
-                reason: "read requires an open runtime",
-            }),
-        }
-    }
-
     fn timeline_view(&self, branch_id: BranchId) -> StorageApiResult<CommitTimelineView> {
         let view = self.read_view_for_branch(branch_id)?;
         let bounds = BranchScanBounds::unbounded(
@@ -3525,10 +3495,28 @@ impl<'a> StorageRuntime<'a> {
 
     #[cfg(test)]
     pub(crate) fn append_raw_row_for_test(&mut self, row: StorageRow) -> StorageApiResult<()> {
+        self.append_row_for_test_inner(row, true)
+    }
+
+    /// Append a committed row **above** the visible frontier without advancing it — the
+    /// `applied_not_visible` shape (a commit whose visible publish failed after apply). Off-lock
+    /// reads bounded by the visible version must hide the row (BS2.4 interleaving seam).
+    #[cfg(test)]
+    pub(crate) fn append_unacked_row_for_test(&mut self, row: StorageRow) -> StorageApiResult<()> {
+        self.append_row_for_test_inner(row, false)
+    }
+
+    #[cfg(test)]
+    fn append_row_for_test_inner(
+        &mut self,
+        row: StorageRow,
+        advance_visible: bool,
+    ) -> StorageApiResult<()> {
         let branch_id = row.physical_key().branch_id();
         // Raw appends bypass the commit executor, so this seam maintains the executor's
-        // invariant itself: the visible frontier covers every committed row (BS2.2 bounded
-        // Latest reads would otherwise hide the injected rows).
+        // invariant itself: with `advance_visible` the visible frontier covers every committed row
+        // (BS2.2 bounded Latest reads would otherwise hide the injected rows); without it the row
+        // stays above the frontier to reproduce `applied_not_visible`.
         let commit_version = row.commit_version();
         let commit_timestamp = row.commit_timestamp();
         match &mut self.inner {
@@ -3547,10 +3535,12 @@ impl<'a> StorageRuntime<'a> {
                     .append_committed_row(row)
                     .map(|_| ())
                     .map_err(branch_error)?;
-                if commit_version > runtime.visible_version() {
+                if advance_visible && commit_version > runtime.visible_version() {
                     runtime.catch_up_commit_frontier_for_test(commit_version, commit_timestamp);
                 }
-                // BS2.3: raw appends bypass the commit publish; republish the branch snapshot.
+                // Model 2 commits do not republish, but this seam bypasses the commit path, so
+                // refresh the snapshot's facts explicitly (harmless: the live active already sees
+                // the append).
                 runtime.publish_branch_snapshot_for_test(branch_id);
                 Ok(())
             }
@@ -3569,10 +3559,12 @@ impl<'a> StorageRuntime<'a> {
                     .append_committed_row(row)
                     .map(|_| ())
                     .map_err(branch_error)?;
-                if commit_version > runtime.visible_version() {
+                if advance_visible && commit_version > runtime.visible_version() {
                     runtime.catch_up_commit_frontier_for_test(commit_version, commit_timestamp);
                 }
-                // BS2.3: raw appends bypass the commit publish; republish the branch snapshot.
+                // Model 2 commits do not republish, but this seam bypasses the commit path, so
+                // refresh the snapshot's facts explicitly (harmless: the live active already sees
+                // the append).
                 runtime.publish_branch_snapshot_for_test(branch_id);
                 Ok(())
             }
@@ -3591,10 +3583,12 @@ impl<'a> StorageRuntime<'a> {
                     .append_committed_row(row)
                     .map(|_| ())
                     .map_err(branch_error)?;
-                if commit_version > runtime.visible_version() {
+                if advance_visible && commit_version > runtime.visible_version() {
                     runtime.catch_up_commit_frontier_for_test(commit_version, commit_timestamp);
                 }
-                // BS2.3: raw appends bypass the commit publish; republish the branch snapshot.
+                // Model 2 commits do not republish, but this seam bypasses the commit path, so
+                // refresh the snapshot's facts explicitly (harmless: the live active already sees
+                // the append).
                 runtime.publish_branch_snapshot_for_test(branch_id);
                 Ok(())
             }

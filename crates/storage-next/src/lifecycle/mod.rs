@@ -34,6 +34,22 @@ mod table_manifest;
 mod table_reachability;
 mod wal_growth;
 
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+
+use crate::branch::snapshot::BranchSnapshotRegistry;
+
+/// Off-lock read handles a runtime exposes so the API slot can bound (the visible-commit-version
+/// atomic `V`) and load (the published per-branch snapshot) a branch read without taking the
+/// runtime lock (BS2.4). Both concrete runtimes hold these as shared `Arc`s already; this trait
+/// lets `RuntimeSlot<R>` clone them out at construction.
+pub(crate) trait RuntimeReadHandles {
+    /// The shared visible-commit-version atomic (the read visibility bound `V`).
+    fn visible_handle(&self) -> Arc<AtomicU64>;
+    /// The shared per-branch published-snapshot registry.
+    fn snapshot_registry(&self) -> Arc<BranchSnapshotRegistry>;
+}
+
 #[allow(
     unused_imports,
     reason = "background scheduler exports define the local lifecycle surface"

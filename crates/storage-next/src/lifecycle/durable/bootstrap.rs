@@ -6,7 +6,7 @@ use super::{
 };
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::read::{BranchHistoryRow, BranchReadBound, BranchReadView, BranchScanBounds};
-use crate::branch::snapshot::BranchSnapshotPublisher;
+use crate::branch::snapshot::{BranchSnapshotPublisher, BranchSnapshotRegistry};
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBatchKind, CommitBranchGeneration, CommitBranchGenerationGuard,
@@ -25,9 +25,9 @@ use crate::lifecycle::{
     LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
     LifecycleStoragePressureReason, LifecycleStoragePressureSeverity, LifecycleTransitionTrigger,
     LifecycleWalGrowthOutcome, LifecycleWalGrowthTrigger, LifecycleWriteAdmissionOutcome,
-    RecoveryExclusivityToken, RecoveryHealth, StorageBudgetLedger, StorageBudgetPool,
-    StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageMode, StorageOpenOutcome,
-    StorageOpenPlan,
+    RecoveryExclusivityToken, RecoveryHealth, RuntimeReadHandles, StorageBudgetLedger,
+    StorageBudgetPool, StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageMode,
+    StorageOpenOutcome, StorageOpenPlan,
 };
 use crate::observability::perf_trace;
 use crate::row::PhysicalKey;
@@ -487,6 +487,16 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
     }
 }
 
+impl<S> RuntimeReadHandles for LifecycleDurableLocalRuntime<'_, S> {
+    fn visible_handle(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.visible_commit_version)
+    }
+
+    fn snapshot_registry(&self) -> Arc<BranchSnapshotRegistry> {
+        self.snapshot_publisher.registry_handle()
+    }
+}
+
 impl<S> LifecycleDurableLocalRuntime<'_, S> {
     /// Try to claim the per-branch publish slot for the off-lock publish phase. Returns the guard
     /// when no other publish is in flight for this branch; `None` (the caller should defer the
@@ -860,12 +870,12 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     /// post-mutation state — the prior snapshot is kept. Called at every branch mutation site.
     pub(super) fn publish_branch_snapshot(&mut self, branch_id: BranchId) {
         let view = match self.branch_catalog.branch_state(branch_id) {
-            Ok(state) => match state.capture_read_view() {
+            Ok(state) => match state.capture_snapshot() {
                 Ok(view) => Arc::new(view),
                 Err(_error) => {
                     debug_assert!(
                         false,
-                        "BS2.3 snapshot capture failed post-mutation for {branch_id:?}"
+                        "snapshot capture failed post-mutation for {branch_id:?}"
                     );
                     return;
                 }
@@ -897,35 +907,6 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.publish_branch_snapshot(branch_id);
     }
 
-    /// BS2.3 equivalence oracle: the snapshot a future off-lock reader would load. `None` means the
-    /// branch has no published slot — a missed-creation bug the oracle flags.
-    #[cfg(debug_assertions)]
-    fn published_branch_snapshot(&self, branch_id: BranchId) -> Option<Arc<BranchReadView>> {
-        self.snapshot_publisher.load(branch_id)
-    }
-
-    /// BS2.3 equivalence oracle: assert the published snapshot equals the live branch state, so a
-    /// future off-lock read of the snapshot returns exactly what the locked read returns. Fires on
-    /// any mutation site that failed to republish. Compiled out of release; armed across the suite.
-    #[cfg(debug_assertions)]
-    fn debug_assert_snapshot_fresh(&self, branch_id: BranchId, branch: &BranchLocalState) {
-        let Some(published) = self.published_branch_snapshot(branch_id) else {
-            debug_assert!(
-                false,
-                "BS2.3: a readable branch must have a published snapshot slot for {branch_id:?}"
-            );
-            return;
-        };
-        // If the fresh capture fails, the real read surfaces the same error — skip the oracle
-        // rather than masking it with a panic.
-        if let Ok(fresh) = branch.capture_read_view() {
-            debug_assert_eq!(
-                *published, fresh,
-                "BS2.3: published snapshot diverged from the live branch state for {branch_id:?}"
-            );
-        }
-    }
-
     pub(crate) fn read_view(&self) -> LifecycleResult<BranchReadView> {
         self.read_view_for_branch(self.initial_branch_id)
     }
@@ -936,8 +917,6 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<BranchReadView> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
         let branch = self.branch_catalog.branch_state(branch_id)?;
-        #[cfg(debug_assertions)]
-        self.debug_assert_snapshot_fresh(branch_id, branch);
         branch.capture_read_view().map_err(branch_error)
     }
 
@@ -965,8 +944,6 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<Option<BranchHistoryRow>> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
         let branch = self.branch_catalog.branch_state(branch_id)?;
-        #[cfg(debug_assertions)]
-        self.debug_assert_snapshot_fresh(branch_id, branch);
         let bound = self.latest_visibility_bound(branch);
         branch
             .read_point_or_tombstone_borrowed(key, bound)
@@ -981,8 +958,6 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<Vec<BranchHistoryRow>> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
         let branch = self.branch_catalog.branch_state(branch_id)?;
-        #[cfg(debug_assertions)]
-        self.debug_assert_snapshot_fresh(branch_id, branch);
         let bound = self.latest_visibility_bound(branch);
         branch
             .scan_including_tombstones_borrowed(bounds, bound, visible_limit, None)
@@ -1406,10 +1381,10 @@ where
             let _ = self.schedule_post_commit_maintenance_for_branch(branch_id);
             perf_trace::record_commit_post_maintenance_elapsed(maintenance_start);
         }
-        // BS2.3: republish unconditionally after the executor ran — the batch may be applied even
-        // when its visible publish failed (`applied_not_visible`); a bounded read hides the
-        // un-visible rows, and on a pre-apply rejection the recapture is an idempotent no-op.
-        self.publish_branch_snapshot(branch_id);
+        // BS2.4 Model 2: commits do NOT republish the snapshot. The published snapshot holds the
+        // live (unpinned) active handle, so it already sees this commit's appends; each off-lock
+        // read pins the active at read time and bounds by the visible version. Only structural
+        // changes (rotation/flush/compaction/materialization/fork/lifecycle) republish.
         outcome
     }
 

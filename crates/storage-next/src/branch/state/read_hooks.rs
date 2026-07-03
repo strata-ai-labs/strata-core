@@ -276,6 +276,25 @@ impl BranchLocalState {
         .map(|view| view.with_timestamp_coverage(self.timestamp_coverage))
     }
 
+    /// Capture a snapshot for off-lock publication (BS2.4 Model 2): identical to
+    /// [`capture_read_view`](Self::capture_read_view) but holds the **live** (unpinned) active
+    /// handle, so the published snapshot sees commits appended to the shared memtable without a
+    /// per-commit republish. Each off-lock read pins the active at read time. Called only under the
+    /// runtime lock, where `active.len()` and `self.facts()` observe the same `inner`, so the
+    /// construction validation (`facts.active_rows == active.len()`) holds at capture.
+    pub(crate) fn capture_snapshot(&self) -> BranchRuntimeResult<BranchReadView> {
+        perf_trace::record_read_view_capture(read_view_source_handle_count(self), 0, 0);
+        BranchReadView::new_from_validated_state(
+            self.branch_id,
+            self.active.clone(),
+            self.frozen.clone(),
+            self.owned_levels().to_vec(),
+            self.inherited_layers.clone(),
+            self.facts()?,
+        )
+        .map(|view| view.with_timestamp_coverage(self.timestamp_coverage))
+    }
+
     pub(crate) fn validate_read_view_sources(&self) -> BranchRuntimeResult<()> {
         BranchReadView::new_with_inherited(
             self.branch_id,
