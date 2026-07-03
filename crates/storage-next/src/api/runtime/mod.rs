@@ -3340,6 +3340,8 @@ impl<'a> StorageRuntime<'a> {
                     .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
                     .map_err(map_lifecycle_error)?
                     .set_timestamp_coverage(coverage);
+                // BS2.3: coverage is part of the read view; republish after this test-only mutation.
+                runtime.publish_branch_snapshot_for_test(branch_id);
                 Ok(())
             }
             StorageRuntimeInner::Durable(slot) => {
@@ -3355,6 +3357,8 @@ impl<'a> StorageRuntime<'a> {
                     .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
                     .map_err(map_lifecycle_error)?
                     .set_timestamp_coverage(coverage);
+                // BS2.3: coverage is part of the read view; republish after this test-only mutation.
+                runtime.publish_branch_snapshot_for_test(branch_id);
                 Ok(())
             }
             StorageRuntimeInner::DurableOwned(slot) => {
@@ -3370,6 +3374,8 @@ impl<'a> StorageRuntime<'a> {
                     .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
                     .map_err(map_lifecycle_error)?
                     .set_timestamp_coverage(coverage);
+                // BS2.3: coverage is part of the read view; republish after this test-only mutation.
+                runtime.publish_branch_snapshot_for_test(branch_id);
                 Ok(())
             }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
@@ -3544,6 +3550,8 @@ impl<'a> StorageRuntime<'a> {
                 if commit_version > runtime.visible_version() {
                     runtime.catch_up_commit_frontier_for_test(commit_version, commit_timestamp);
                 }
+                // BS2.3: raw appends bypass the commit publish; republish the branch snapshot.
+                runtime.publish_branch_snapshot_for_test(branch_id);
                 Ok(())
             }
             StorageRuntimeInner::Durable(slot) => {
@@ -3564,6 +3572,8 @@ impl<'a> StorageRuntime<'a> {
                 if commit_version > runtime.visible_version() {
                     runtime.catch_up_commit_frontier_for_test(commit_version, commit_timestamp);
                 }
+                // BS2.3: raw appends bypass the commit publish; republish the branch snapshot.
+                runtime.publish_branch_snapshot_for_test(branch_id);
                 Ok(())
             }
             StorageRuntimeInner::DurableOwned(slot) => {
@@ -3584,6 +3594,8 @@ impl<'a> StorageRuntime<'a> {
                 if commit_version > runtime.visible_version() {
                     runtime.catch_up_commit_frontier_for_test(commit_version, commit_timestamp);
                 }
+                // BS2.3: raw appends bypass the commit publish; republish the branch snapshot.
+                runtime.publish_branch_snapshot_for_test(branch_id);
                 Ok(())
             }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {

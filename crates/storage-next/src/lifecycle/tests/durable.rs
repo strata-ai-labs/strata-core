@@ -764,6 +764,8 @@ fn durable_bounded_latest_read_hides_applied_not_visible_row_while_gate_blocks_c
             b"hidden-value".to_vec(),
         ))
         .expect("apply row above visible");
+    // BS2.3: this test mutates branch state directly (bypassing the commit publish); resync.
+    runtime.publish_branch_snapshot_for_test(branch);
 
     // The bounded Latest point read hides the unacknowledged row; acked rows stay served.
     assert!(runtime
@@ -2058,6 +2060,8 @@ fn durable_commit_rejects_blocking_active_bytes_before_allocating_version() {
         .branch_catalog_mut_for_test()
         .branch_state_mut(branch, generation_guard())
         .expect("branch state") = blocked_active_byte_pressure_state(branch, 512 * 1024);
+    // BS2.3: synthetic state was written directly (bypassing the commit publish); resync.
+    runtime.publish_branch_snapshot_for_test(branch);
     assert_eq!(runtime.visible_version(), CommitVersion::ZERO);
     assert_eq!(
         runtime.allocator().version_allocator().last_allocated(),

@@ -416,6 +416,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
             branch.rotate_active()
         };
+        // BS2.3: rotation sealed active into a frozen table; republish the branch snapshot.
+        self.publish_branch_snapshot(branch_id);
         Ok(outcome)
     }
 
@@ -469,6 +471,9 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 self.record_recovery_health(Some(&health));
             }
         }
+        // BS2.3: flush installed an L0 table (rows stay visible even if the manifest publish is
+        // deferred); republish the branch snapshot.
+        self.publish_branch_snapshot(branch_id);
         Ok(outcome)
     }
 
@@ -556,6 +561,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 },
             )
         };
+        // BS2.3: compaction promoted/rewrote the branch's tables; republish the branch snapshot.
+        self.publish_branch_snapshot(branch_id);
         outcome
     }
 
@@ -1362,6 +1369,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let outcome = self.maintenance.run_next(self.state, runner);
         self.record_optional_maintenance_health(&outcome);
+        // BS2.3: the runner may have rewritten any branch's tables; republish snapshots.
+        self.republish_all_branch_snapshots();
         outcome
     }
 
@@ -1376,6 +1385,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             return Ok(None);
         };
         let outcome = self.run_flush_maintenance_task(task.id())?;
+        // BS2.3: flush installed L0 tables (a global flush touches every active branch); republish.
+        self.republish_all_branch_snapshots();
         // Flush-driven WAL reclaim for the inline scheduling path (the background path reclaims
         // in `finish_publish_phase`). Best-effort; only when the flush actually completed.
         if matches!(&outcome, Some(outcome) if outcome.status() == MaintenanceOutcomeStatus::Completed)
@@ -2142,6 +2153,9 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         if flush_published {
             self.reclaim_wal_after_flush();
         }
+        // BS2.3: the background publish phase installed flushed/compacted/materialized tables;
+        // republish snapshots (a flush drain can touch several branches).
+        self.republish_all_branch_snapshots();
         result
     }
 
@@ -2720,6 +2734,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             };
             maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
         }?;
+        // BS2.3: compaction rewrote the branch's tables; republish the branch snapshot.
+        self.publish_branch_snapshot(branch_id);
         if outcome
             .as_ref()
             .is_some_and(table_rewrite_outcome_was_flush_preempted)

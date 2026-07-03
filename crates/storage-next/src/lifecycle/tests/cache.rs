@@ -2563,6 +2563,8 @@ fn cache_bounded_latest_read_hides_applied_not_visible_row_while_gate_blocks_com
             b"hidden-value".to_vec(),
         ))
         .expect("apply row above visible");
+    // BS2.3: this test mutates branch state directly (bypassing the commit publish); resync.
+    runtime.publish_branch_snapshot_for_test(branch);
 
     // The bounded Latest point read hides the unacknowledged row...
     assert!(runtime
