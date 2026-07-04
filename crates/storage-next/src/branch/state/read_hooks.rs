@@ -198,26 +198,30 @@ impl BranchLocalState {
                 }
             }
         }
-        for tables in self.owned_levels() {
-            for table in tables {
-                for row in table.rows() {
-                    if row.row().commit_timestamp() <= timestamp {
-                        consider(row.row().commit_version());
-                    }
-                }
+        for table in self.owned_levels().iter().flatten() {
+            let version = owned_timestamp_commit_version(table, timestamp);
+            #[cfg(debug_assertions)]
+            debug_assert_eq!(
+                version,
+                owned_timestamp_commit_version_by_scan(table, timestamp),
+                "owned timestamp resolution diverged from a full row scan",
+            );
+            if let Some(version) = version {
+                consider(version);
             }
         }
         for layer in &self.inherited_layers {
             let fork_version = layer.fork_version();
-            for tables in layer.owned_levels() {
-                for table in tables {
-                    for row in table.rows() {
-                        if row.row().commit_timestamp() <= timestamp
-                            && row.row().commit_version().as_u64() <= fork_version.as_u64()
-                        {
-                            consider(row.row().commit_version());
-                        }
-                    }
+            for table in layer.owned_levels().iter().flatten() {
+                let version = inherited_timestamp_commit_version(table, timestamp, fork_version);
+                #[cfg(debug_assertions)]
+                debug_assert_eq!(
+                    version,
+                    inherited_timestamp_commit_version_by_scan(table, timestamp, fork_version),
+                    "inherited timestamp resolution diverged from a full row scan",
+                );
+                if let Some(version) = version {
+                    consider(version);
                 }
             }
         }
@@ -306,6 +310,69 @@ impl BranchLocalState {
         )
         .map(|_| ())
     }
+}
+
+/// BS4.4c: the max commit version among an owned table's rows stamped at or before `timestamp`. The
+/// table's timestamp extras skip the row scan when the whole table is on one side of the query; only a
+/// table straddling the query timestamp is scanned (`by_scan`; BS4.4d cursor-izes that fallback).
+fn owned_timestamp_commit_version(
+    table: &BranchOwnedTable,
+    timestamp: Timestamp,
+) -> Option<CommitVersion> {
+    let extras = table.extras();
+    if extras.timestamp_max().is_some_and(|max| max <= timestamp) {
+        Some(table.facts().commit_range().max())
+    } else if extras.timestamp_min().is_some_and(|min| min > timestamp) {
+        None
+    } else {
+        owned_timestamp_commit_version_by_scan(table, timestamp)
+    }
+}
+
+fn owned_timestamp_commit_version_by_scan(
+    table: &BranchOwnedTable,
+    timestamp: Timestamp,
+) -> Option<CommitVersion> {
+    let mut best: Option<CommitVersion> = None;
+    for row in table.rows() {
+        if row.row().commit_timestamp() <= timestamp {
+            let version = row.row().commit_version();
+            best = Some(best.map_or(version, |current| current.max(version)));
+        }
+    }
+    best
+}
+
+/// BS4.4c: like [`owned_timestamp_commit_version`] but for an inherited table, excluding rows past the
+/// layer's fork. A validly-constructed layer has no rows past the fork, so the fork check is a no-op and
+/// the owned fast path applies; the fork-straddle branch is reachable only via unchecked test construction.
+fn inherited_timestamp_commit_version(
+    table: &BranchOwnedTable,
+    timestamp: Timestamp,
+    fork_version: CommitVersion,
+) -> Option<CommitVersion> {
+    if table.facts().commit_range().max().as_u64() <= fork_version.as_u64() {
+        owned_timestamp_commit_version(table, timestamp)
+    } else {
+        inherited_timestamp_commit_version_by_scan(table, timestamp, fork_version)
+    }
+}
+
+fn inherited_timestamp_commit_version_by_scan(
+    table: &BranchOwnedTable,
+    timestamp: Timestamp,
+    fork_version: CommitVersion,
+) -> Option<CommitVersion> {
+    let mut best: Option<CommitVersion> = None;
+    for row in table.rows() {
+        if row.row().commit_timestamp() <= timestamp
+            && row.row().commit_version().as_u64() <= fork_version.as_u64()
+        {
+            let version = row.row().commit_version();
+            best = Some(best.map_or(version, |current| current.max(version)));
+        }
+    }
+    best
 }
 
 fn read_view_source_handle_count(state: &BranchLocalState) -> usize {

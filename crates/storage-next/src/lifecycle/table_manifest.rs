@@ -20,13 +20,14 @@ use crate::format::{
     TableManifestTableFacts, TableManifestTableProvenance, TableManifestTableRef,
 };
 use crate::object::ObjectName;
+use crate::row::StorageRow;
 use crate::service::{
     ManifestRole, ManifestServiceError, TableManifestService, TableManifestWrite, TableObjectFacts,
     TableObjectReadError, TableObjectReaderService,
 };
 use crate::table::{
-    ImmutableTableReader, TableIdentity, TablePhysicalKeyBytes, TableReaderConfig, TableRow,
-    TableRuntimeFacts,
+    ImmutableTableReader, TableCursor, TableIdentity, TablePhysicalKeyBytes, TableReaderConfig,
+    TableRow, TableRuntimeFacts,
 };
 use std::collections::BTreeMap;
 use strata_core_next::{BranchId, Timestamp};
@@ -370,26 +371,49 @@ pub(crate) fn preflight_table_manifest_with_checkpoint(
     checkpoint_branch: &BranchLocalState,
     staged_branch: &BranchLocalState,
 ) -> LifecycleResult<bool> {
-    let mut checkpoint_rows = BTreeMap::<&[u8], &TableRow>::new();
+    // BS4.4c: stream owned tables through the cursor; the checkpoint map is now keyed + valued by owned
+    // bytes (cursor rows are transient) rather than borrowing into a materialized row slice.
+    let mut checkpoint_rows = BTreeMap::<Vec<u8>, StorageRow>::new();
     for table in checkpoint_branch.owned_levels().iter().flatten() {
-        for row in table.rows() {
-            checkpoint_rows.insert(row.key().as_slice(), row);
-        }
+        try_for_each_reader_row(table.reader(), |row| {
+            checkpoint_rows.insert(row.key().as_slice().to_vec(), row.row().clone());
+            Ok(())
+        })?;
     }
     let mut any_overlap = false;
     for table in staged_branch.owned_levels().iter().flatten() {
-        for row in table.rows() {
+        try_for_each_reader_row(table.reader(), |row| {
             if let Some(checkpoint_row) = checkpoint_rows.get(row.key().as_slice()) {
-                if checkpoint_row.row() != row.row() {
+                if checkpoint_row != row.row() {
                     return Err(LifecycleError::table_manifest_checkpoint_conflict(
                         "manifest row bytes diverge from checkpoint at internal key",
                     ));
                 }
                 any_overlap = true;
             }
-        }
+            Ok(())
+        })?;
     }
     Ok(any_overlap)
+}
+
+/// BS4.4c: walk a durable table's rows through its cursor (ascending internal-key order), applying the
+/// fallible `f` per row without materializing the whole table. Cursor failures map to a manifest error.
+fn try_for_each_reader_row(
+    reader: &ImmutableTableReader<'_>,
+    mut f: impl FnMut(&TableRow) -> LifecycleResult<()>,
+) -> LifecycleResult<()> {
+    let mut cursor = reader.cursor();
+    cursor
+        .seek_to_first()
+        .map_err(|_| manifest_reader_scan_failed())?;
+    while let Some(row) = cursor.current() {
+        f(row)?;
+        cursor
+            .advance()
+            .map_err(|_| manifest_reader_scan_failed())?;
+    }
+    Ok(())
 }
 
 #[allow(
@@ -803,6 +827,9 @@ fn validate_catalog_entry_matches_table(
     Ok(())
 }
 
+/// BS4.4c oracle: the old full-scan manifest facts, kept as the `debug_assert` reference for the
+/// one-pass cursor computation in `validate_manifest_reader_facts`.
+#[cfg(debug_assertions)]
 fn manifest_table_facts(
     facts: &TableRuntimeFacts,
     rows: &[TableRow],
@@ -820,6 +847,7 @@ fn manifest_table_facts(
     .map_err(format_error)
 }
 
+#[cfg(debug_assertions)]
 fn manifest_table_bounds(rows: &[TableRow]) -> LifecycleResult<TableManifestTableBounds> {
     let Some(first_row) = rows.first() else {
         return Err(LifecycleError::TableManifestPublicationFailed {
@@ -874,23 +902,94 @@ fn validate_manifest_reader_facts(
     table: &TableManifestTableRef,
     reader: &ImmutableTableReader,
 ) -> LifecycleResult<()> {
-    let facts = manifest_table_facts(reader.facts(), reader.rows())?;
+    // BS4.4c: one cursor pass computes the only row-derived values — timestamp bounds and physical-key
+    // bounds. Byte/row/block counts and commit range come from facts(); internal-key bounds from
+    // facts().key_range(). The old two-scan path stays as a debug oracle.
+    let mut cursor = reader.cursor();
+    cursor
+        .seek_to_first()
+        .map_err(|_| manifest_reader_scan_failed())?;
+    let mut timestamp_min: Option<Timestamp> = None;
+    let mut timestamp_max: Option<Timestamp> = None;
+    let mut physical_first: Option<TablePhysicalKeyBytes> = None;
+    let mut physical_last: Option<TablePhysicalKeyBytes> = None;
+    while let Some(row) = cursor.current() {
+        let timestamp = row.commit_timestamp();
+        timestamp_min = Some(timestamp_min.map_or(timestamp, |current| current.min(timestamp)));
+        timestamp_max = Some(timestamp_max.map_or(timestamp, |current| current.max(timestamp)));
+        let physical = TablePhysicalKeyBytes::from_row(row.row());
+        match &physical_first {
+            Some(first) if &physical >= first => {}
+            _ => physical_first = Some(physical.clone()),
+        }
+        match &physical_last {
+            Some(last) if &physical <= last => {}
+            _ => physical_last = Some(physical),
+        }
+        cursor
+            .advance()
+            .map_err(|_| manifest_reader_scan_failed())?;
+    }
+    let (Some(physical_first), Some(physical_last)) = (physical_first, physical_last) else {
+        return Err(LifecycleError::TableManifestPublicationFailed {
+            reason: "reachable table must not be empty",
+            source: None,
+        });
+    };
+
+    let facts = TableManifestTableFacts::new(
+        reader.facts().byte_count(),
+        reader.facts().row_count(),
+        reader.facts().data_block_count(),
+        reader.facts().commit_range().min(),
+        reader.facts().commit_range().max(),
+        timestamp_min,
+        timestamp_max,
+    )
+    .map_err(format_error)?;
     if &facts != table.facts() {
         return Err(LifecycleError::TableManifestRecoveryMismatch {
             reason: "table manifest facts do not match table object",
             source: None,
         });
     }
-    let bounds = manifest_table_bounds(reader.rows())?;
+    let bounds = TableManifestTableBounds::new(
+        physical_first.as_slice().to_vec(),
+        physical_last.as_slice().to_vec(),
+        reader.facts().key_range().first_key().to_vec(),
+        reader.facts().key_range().last_key().to_vec(),
+    )
+    .map_err(format_error)?;
     if &bounds != table.bounds() {
         return Err(LifecycleError::TableManifestRecoveryMismatch {
             reason: "table manifest bounds do not match table object",
             source: None,
         });
     }
+    #[cfg(debug_assertions)]
+    {
+        debug_assert_eq!(
+            facts,
+            manifest_table_facts(reader.facts(), reader.rows())?,
+            "manifest facts one-pass diverged from a full scan",
+        );
+        debug_assert_eq!(
+            bounds,
+            manifest_table_bounds(reader.rows())?,
+            "manifest bounds one-pass diverged from a full scan",
+        );
+    }
     Ok(())
 }
 
+fn manifest_reader_scan_failed() -> LifecycleError {
+    LifecycleError::TableManifestRecoveryMismatch {
+        reason: "table manifest verify cursor scan failed",
+        source: None,
+    }
+}
+
+#[cfg(debug_assertions)]
 fn timestamp_bounds(rows: &[TableRow]) -> (Option<Timestamp>, Option<Timestamp>) {
     let mut timestamps = rows.iter().map(TableRow::commit_timestamp);
     let Some(first) = timestamps.next() else {

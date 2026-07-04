@@ -23,7 +23,7 @@ use crate::row::StorageRow;
 use crate::service::{
     QuarantineServiceError, SnapshotServiceError, WalRepair, WalServiceError, WalTruncation,
 };
-use crate::table::TableIdentity;
+use crate::table::{ImmutableTableReader, TableCursor, TableIdentity, TableRow};
 use strata_core_next::{CommitVersion, Timestamp};
 
 #[derive(Debug)]
@@ -181,7 +181,7 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                     &recovered_branch,
                     stage.staged_branch(),
                 )?;
-                let delta = checkpoint_delta_rows(&recovered_branch, stage.staged_branch());
+                let delta = checkpoint_delta_rows(&recovered_branch, stage.staged_branch())?;
                 self.shell.apply_table_manifest_recovery(stage);
                 if !delta.is_empty() {
                     self.shell
@@ -782,22 +782,49 @@ fn install_checkpoint_rows(
 fn checkpoint_delta_rows(
     checkpoint_branch: &BranchLocalState,
     staged_manifest_branch: &BranchLocalState,
-) -> Vec<StorageRow> {
-    let mut manifest_keys = BTreeSet::<&[u8]>::new();
+) -> LifecycleResult<Vec<StorageRow>> {
+    // BS4.4c: stream the owned tables through the cursor instead of materializing every row. The
+    // manifest key set is now owned (cursor rows are transient), and the function becomes fallible.
+    let mut manifest_keys = BTreeSet::<Vec<u8>>::new();
     for table in staged_manifest_branch.owned_levels().iter().flatten() {
-        for row in table.rows() {
-            manifest_keys.insert(row.key().as_slice());
-        }
+        for_each_reader_row(table.reader(), |row| {
+            manifest_keys.insert(row.key().as_slice().to_vec());
+        })?;
     }
     let mut delta = Vec::new();
     for table in checkpoint_branch.owned_levels().iter().flatten() {
-        for row in table.rows() {
+        for_each_reader_row(table.reader(), |row| {
             if !manifest_keys.contains(row.key().as_slice()) {
                 delta.push(row.row().clone());
             }
-        }
+        })?;
     }
-    delta
+    Ok(delta)
+}
+
+/// BS4.4c: walk a durable table's rows through its cursor (ascending internal-key order), applying `f`
+/// per row without materializing the whole table. Cursor failures map to a recovery error.
+fn for_each_reader_row(
+    reader: &ImmutableTableReader<'_>,
+    mut f: impl FnMut(&TableRow),
+) -> LifecycleResult<()> {
+    let mut cursor = reader.cursor();
+    cursor
+        .seek_to_first()
+        .map_err(|_| checkpoint_delta_scan_failed())?;
+    while let Some(row) = cursor.current() {
+        f(row);
+        cursor
+            .advance()
+            .map_err(|_| checkpoint_delta_scan_failed())?;
+    }
+    Ok(())
+}
+
+fn checkpoint_delta_scan_failed() -> LifecycleError {
+    LifecycleError::RecoveryFailed {
+        reason: "checkpoint delta cursor scan failed",
+    }
 }
 
 fn trusted_replay_start(

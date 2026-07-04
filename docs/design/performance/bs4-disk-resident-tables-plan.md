@@ -66,13 +66,13 @@ becomes small and revertable. BS4.1, BS4.2/4.3, and BS4.4a are mutually independ
 | BS4.2a | Filter-frame **format codec** + goldens + spec + negatives **(✓ landed, dark)** | — |
 | BS4.2b | Reader wiring: `open_bytes`/`open_source` load + attach the filter **(✓ landed, dark)** | 4.2a, 4.1 |
 | BS4.3 | Filter frame **writer** (config-gated) **(✓ landed, dark — off by default)** | 4.2 shipped |
-| BS4.4a-i | Mechanical count conversions (→ `facts().row_count()`) + PartialEq materialization fix **(✓ landed)** | — |
-| BS4.4a-ii-a | Full-scan → cursor conversions (behavior-identical STREAM/PAIRED sites + `try_for_each_reader_row` helper) **(✓ landed)** | 4a-i |
-| BS4.4a-ii-b | Facts/extras + fork-filtered aggregate folds (fast-path + cursor fallback + debug oracles); lifecycle `checkpoint_delta_rows`/`preflight` + `require_absent`-adjacent | 4a-ii-a |
-| BS4.4a-iii | Materialization guard (policy + `DenyRuntime` + `rows()` gate/rename + source-guard + counter) + fallibility audit | 4a-i, 4a-ii |
-| BS4.4b | The six design-forcing sites | 4a |
-| BS4.4c | The lazy constructor flip + write-side installs | 4a, 4b, 4.1, 4.2 |
-| BS4.5 | Fast open + budget remodel | 4c |
+| BS4.4a | Count conversions (→ `facts().row_count()`) + PartialEq materialization fix **(✓ landed; committed as 4.4a-i)** | — |
+| BS4.4b | Full-scan → cursor conversions (STREAM/PAIRED sites + `try_for_each_reader_row` helper) **(✓ landed; committed as 4.4a-ii-a)** | 4.4a |
+| BS4.4c | Facts/extras + fork-filtered aggregate folds (fast-path + cursor fallback + debug oracles) + the 2 lifecycle conversions (`checkpoint_delta_rows`, `preflight`) **(✓ landed)** | 4.4b |
+| BS4.4d | Materialization guard (policy + `DenyRuntime` + `rows()` gate/rename + source-guard + counter) + fallibility audit (incl. `resolve_timestamp` straddle-cursor + fallible signature) | 4.4c |
+| BS4.4e | The six design-forcing sites (§ below; formerly 4.4b) | 4.4d |
+| BS4.4f | The lazy constructor flip + write-side installs (§ below; formerly 4.4c) | 4.4e, 4.1, 4.2 |
+| BS4.5 | Fast open + budget remodel | 4.4f |
 | BS4.6 | Re-baseline + exit runs | all |
 
 ### BS4.1 — O(1) sharded block cache
@@ -148,7 +148,11 @@ probe integration; crash sweeps over the filter-frame write window (torn/truncat
 quarantine, never load a partial filter); mixed stores (old zero-slot + new filtered tables
 read side by side).
 
-### BS4.4a — Consumer conversions + the OnceLock guard (behavior-neutral)
+### BS4.4a–d — Consumer conversions + the materialization guard (behavior-neutral)
+
+*(Flattened from the original single "BS4.4a" slice: 4.4a = count/PartialEq, 4.4b = cursor
+conversions, 4.4c = aggregate folds + lifecycle, 4.4d = guard + fallibility. The narrative below
+describes the whole family.)*
 
 **The guard (three layers):**
 1. `TableMaterializationPolicy { Allow, DenyRuntime }` on `TableReaderConfig`:
@@ -182,7 +186,7 @@ wrappers become test-only; `require_absent_internal_key` (`state.rs:289`) propag
 **Tests.** Per-conversion debug oracles (facts-based == full-scan on small tables); the
 full suite green; source-guard; counter units.
 
-### BS4.4b — The six design-forcing sites
+### BS4.4e — The six design-forcing sites
 
 1. **Pruning proof (`pruning.rs:651, 679-707`).** Verified: the proof is in-memory-only
    (`Copy`, never serialized), built and validated by the *same* fingerprint function in the
@@ -229,7 +233,7 @@ full suite green; source-guard; counter units.
    (sound: fixed-width prefix + lexicographic row order bounds every row); non-empty ⟺ free
    (`TableRuntimeFacts` rejects `row_count == 0`).
 
-### BS4.4c — The flip
+### BS4.4f — The flip
 
 - **Constructor:** delete `into_materialized()` (`read.rs:586-588`) and
   `TableSummaryExtras::from_rows` (`:608`); new signature
@@ -338,16 +342,16 @@ zstd/readahead assessment recorded for BS6; ledger rows + umbrella gap-table upd
 - **C2 (cache mode):** cache-mode tables **stay Eager** (its dataset is genuinely
   RAM-resident by product policy — `open_bytes`, no backend objects) and it **keeps** its
   `would_exceed_total` rejection; only the durable path changes regime. Cache suites run
-  unmodified as a gate on 4.4c and 4.5.
+  unmodified as a gate on 4.4f and 4.5.
 - **C3 (profiles):** the pool rebalance preserves proportional `from_total_bytes` scaling —
   one code path for the 512 MB edge tier through the 64 GB server tier; validated at the
   explicit tier matrix (512 MB / 8 GB / 64 GB) including block-cache minimums (a tier must
   never produce a zero/degenerate cache while enabled). The budget model change (caches
   bound RAM, not dataset) is precisely what makes small-RAM/large-disk profiles (Raspberry
   Pi) possible.
-- **C4 (branching):** inherited-layer validation is facts-based (4.4b §6), materialization
-  precedence uses per-key probes with the branch-id prefix swap (4.4b §2), the pruning
-  fingerprint hashes inherited layers identically (4.4b §1), and the cold-read suite's
+- **C4 (branching):** inherited-layer validation is facts-based (4.4e §6), materialization
+  precedence uses per-key probes with the branch-id prefix swap (4.4e §2), the pruning
+  fingerprint hashes inherited layers identically (4.4e §1), and the cold-read suite's
   branching cases (above) gate reopen correctness. Fork remains O(1): snapshot/aggregate
   publication at fork is Arc-cloning, pinned by a fork-latency assert.
 
@@ -366,17 +370,17 @@ zstd/readahead assessment recorded for BS6; ledger rows + umbrella gap-table upd
 
 ## Sequencing & PR discipline
 
-BS4.1 ∥ BS4.2→4.3 ∥ BS4.4a, then 4.4b → 4.4c → 4.5 → 4.6. One PR per slice, `BS4.{n}`
+BS4.1 ∥ BS4.2→4.3 ∥ BS4.4, then 4.4a→4.4b→4.4c→4.4d→4.4e→4.4f → 4.5 → 4.6. One PR per slice, `BS4.{n}`
 titles, ≤1,500 LOC net each, standing gates every slice; format-touching slices (4.2/4.3,
-the manifest extension in 4.4c) additionally gate on goldens + fuzz + crash sweeps. The
+the manifest extension in 4.4f) additionally gate on goldens + fuzz + crash sweeps. The
 umbrella plan's "table-reader cache" step is amended: **deferred to the 1B tier** (G15),
 with the sizing arithmetic recorded.
 
 ## Open items
 
 - Whether `open_source` can carry the exact content digest for replacement verify
-  (3) or the cursor-zip fallback is permanent — decide in 4.4b.
-- Manifest put/tombstone fields vs Option-degrade — decide in 4.4c (default: add fields).
+  (3) or the cursor-zip fallback is permanent — decide in 4.4e.
+- Manifest put/tombstone fields vs Option-degrade — decide in 4.4f (default: add fields).
 - Block-size tuning (64 KB blocks vs RocksDB's 4–64 KB) and decoded-row-block caching —
   measure in 4.6, feed BS6.
 - Parallel manifest-replay opens for the 1 s gate — build only if the measurement demands.

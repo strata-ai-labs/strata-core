@@ -3988,18 +3988,28 @@ fn validate_read_view_inputs(
             )?;
         }
     }
-    for tables in owned_levels {
-        for table in tables {
-            for row in table.rows() {
-                record_read_view_row_facts(
-                    branch_id,
-                    row.row(),
-                    &mut max_commit_version,
-                    &mut timestamp_min,
-                    &mut timestamp_max,
-                )?;
-            }
+    for table in owned_levels.iter().flatten() {
+        // BS4.4c: owned tables are branch-validated at construction, so fold their sealed-time
+        // aggregates (facts + extras) instead of scanning every row.
+        let commit_max = table.facts().commit_range().max();
+        let extras = table.extras();
+        record_commit_version(&mut max_commit_version, commit_max);
+        if let Some(timestamp) = extras.timestamp_min() {
+            record_timestamp(&mut timestamp_min, &mut timestamp_max, timestamp);
         }
+        if let Some(timestamp) = extras.timestamp_max() {
+            record_timestamp(&mut timestamp_min, &mut timestamp_max, timestamp);
+        }
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            (
+                Some(commit_max),
+                extras.timestamp_min(),
+                extras.timestamp_max()
+            ),
+            owned_read_view_facts_by_scan(table),
+            "read-view owned facts diverged from a full row scan",
+        );
     }
     for layer in inherited_layers {
         record_inherited_layer_read_view_facts(
@@ -4363,20 +4373,63 @@ fn record_inherited_layer_read_view_facts(
     if layer.status() == InheritedLayerStatus::Materialized {
         return Ok(());
     }
+    let fork_version = layer.fork_version();
     for table in layer.owned_levels().iter().flatten() {
-        for row in table.rows() {
-            if row.physical_key().branch_id() != layer.source_branch_id() {
-                return Err(BranchRuntimeError::InvalidInheritedLayer {
-                    reason: "inherited read view source rows must match layer source branch",
-                });
+        // BS4.4c: inherited rows are branch- and fork-validated at layer construction. When the whole
+        // table sits at or below the fork (always, for a validly-constructed layer), fold its facts +
+        // extras; the straddle branch (reachable only via unchecked test construction) streams the
+        // in-fork rows through the cursor.
+        if table.facts().commit_range().max().as_u64() <= fork_version.as_u64() {
+            let commit_max = table.facts().commit_range().max();
+            let extras = table.extras();
+            record_commit_version(max_commit_version, commit_max);
+            if let Some(timestamp) = extras.timestamp_min() {
+                record_timestamp(timestamp_min, timestamp_max, timestamp);
             }
-            if row.commit_version().as_u64() <= layer.fork_version().as_u64() {
-                record_commit_version(max_commit_version, row.commit_version());
-                record_timestamp(timestamp_min, timestamp_max, row.commit_timestamp());
+            if let Some(timestamp) = extras.timestamp_max() {
+                record_timestamp(timestamp_min, timestamp_max, timestamp);
             }
+            #[cfg(debug_assertions)]
+            debug_assert_eq!(
+                (
+                    Some(commit_max),
+                    extras.timestamp_min(),
+                    extras.timestamp_max()
+                ),
+                owned_read_view_facts_by_scan(table),
+                "read-view inherited facts diverged from a full row scan",
+            );
+        } else {
+            try_for_each_reader_row(table.reader(), |row| {
+                if row.commit_version().as_u64() <= fork_version.as_u64() {
+                    record_commit_version(max_commit_version, row.commit_version());
+                    record_timestamp(timestamp_min, timestamp_max, row.commit_timestamp());
+                }
+                Ok(())
+            })?;
         }
     }
     Ok(())
+}
+
+/// BS4.4c oracle: fold a durable table's read-view facts (max commit version + timestamp bounds) by
+/// scanning every row — the reference the facts/extras fast path is `debug_assert`'d against.
+#[cfg(debug_assertions)]
+fn owned_read_view_facts_by_scan(
+    table: &BranchOwnedTable,
+) -> (Option<CommitVersion>, Option<Timestamp>, Option<Timestamp>) {
+    let mut max_commit_version = None;
+    let mut timestamp_min = None;
+    let mut timestamp_max = None;
+    for row in table.rows() {
+        record_commit_version(&mut max_commit_version, row.commit_version());
+        record_timestamp(
+            &mut timestamp_min,
+            &mut timestamp_max,
+            row.commit_timestamp(),
+        );
+    }
+    (max_commit_version, timestamp_min, timestamp_max)
 }
 
 fn record_commit_version(
