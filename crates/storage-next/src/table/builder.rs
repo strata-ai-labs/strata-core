@@ -1,13 +1,13 @@
 //! Immutable table builder.
 
 use super::{
-    FrozenTable, MutableTable, TableBuilderConfig, TableCommitRange, TableIdentity,
-    TableInternalKeyBytes, TableKeyRange, TableRow, TableRuntimeConfig, TableRuntimeError,
-    TableRuntimeFacts, TableRuntimeResult,
+    FrozenTable, MutableTable, TableBloomFilter, TableBuilderConfig, TableCommitRange,
+    TableIdentity, TableInternalKeyBytes, TableKeyRange, TableRow, TableRuntimeConfig,
+    TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
 };
 use crate::format::{
     ImmutableTableStreamingEncoder, ImmutableTableStreamingOutput, StreamingTableRow,
-    MAX_TABLE_BLOCK_DECODED_BYTES, MAX_TABLE_BLOCK_ENTRIES, MAX_TABLE_KEY_BYTES,
+    TableFilterFrame, MAX_TABLE_BLOCK_DECODED_BYTES, MAX_TABLE_BLOCK_ENTRIES, MAX_TABLE_KEY_BYTES,
     MAX_TABLE_ROW_BYTES,
 };
 use crate::observability::perf_trace;
@@ -178,9 +178,15 @@ impl ImmutableTableStreamingBuilder {
             return Err(TableRuntimeError::InvalidRange { field: "row_count" });
         }
         let materialized_rows = self.materialized_rows;
+        // BS4.3: compute + emit a persisted bloom filter over the rows' physical keys when the config
+        // enables it (`filter_bits_per_key`); otherwise write an unfiltered (zero-slot) table.
+        let filter = match self.config.filter_bits_per_key() {
+            Some(bits_per_key) => Some(build_filter_frame(&materialized_rows, bits_per_key)?),
+            None => None,
+        };
         let output = self
             .encoder
-            .finish_with_metadata()
+            .finish_with_metadata(filter.as_ref())
             .map_err(|source| TableRuntimeError::BuildFormat { source })?;
         build_table_artifact_from_streaming_output(self.identity, output, materialized_rows)
     }
@@ -215,6 +221,33 @@ impl ImmutableTableStreamingBuilder {
         }
         Ok(())
     }
+}
+
+/// BS4.3: build the persisted filter frame from a bloom over the rows' physical keys — the exact key
+/// bytes the reader probes with (`TablePhysicalKeyBytes::from_physical_key`), so a live key never
+/// probes `DefinitelyAbsent`. The format layer stays bloom-agnostic: it receives these parts.
+fn build_filter_frame(
+    rows: &[TableRow],
+    bits_per_key: usize,
+) -> TableRuntimeResult<TableFilterFrame> {
+    let bloom = TableBloomFilter::build(
+        rows.iter().map(|row| row.key().physical_key_bytes()),
+        bits_per_key,
+    )?;
+    Ok(TableFilterFrame {
+        probes: bloom.probes(),
+        key_count: u64::try_from(bloom.key_count()).map_err(|_| {
+            TableRuntimeError::InvalidRange {
+                field: "filter_key_count",
+            }
+        })?,
+        bit_count: u64::try_from(bloom.bit_count()).map_err(|_| {
+            TableRuntimeError::InvalidRange {
+                field: "filter_bit_count",
+            }
+        })?,
+        bits: bloom.bits().to_vec(),
+    })
 }
 
 fn build_table_artifact_from_streaming_output(

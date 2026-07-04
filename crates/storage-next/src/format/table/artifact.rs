@@ -264,8 +264,13 @@ impl ImmutableTableStreamingEncoder {
         self.peak_buffered_rows
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "linear table assembly; splitting hurts readability"
+    )]
     pub(crate) fn finish_with_metadata(
         mut self,
+        filter: Option<&TableFilterFrame>,
     ) -> Result<ImmutableTableStreamingOutput, FormatError> {
         self.flush_current_block()?;
         let data_block_count = self.index_entries.len();
@@ -313,6 +318,26 @@ impl ImmutableTableStreamingEncoder {
         let header_bytes = encode_table_header(&header);
         self.table_bytes[..TABLE_HEADER_SIZE].copy_from_slice(&header_bytes);
 
+        // BS4.3: a supplied filter frame (if any) sits between the data region and the index.
+        let (filter_block_offset, filter_block_frame_len) = match filter {
+            Some(filter) => {
+                let filter_frame_bytes = encode_filter_frame(filter)?;
+                let offset = u64::try_from(self.table_bytes.len()).map_err(|_| {
+                    FormatError::InvalidLength {
+                        field: "filter_block_offset",
+                    }
+                })?;
+                let len = u32::try_from(filter_frame_bytes.len()).map_err(|_| {
+                    FormatError::InvalidLength {
+                        field: "filter_block_frame_len",
+                    }
+                })?;
+                self.table_bytes.extend_from_slice(&filter_frame_bytes);
+                (offset, len)
+            }
+            None => (0, 0),
+        };
+
         let index = TableIndexBlock::new(self.index_entries)?;
         let index_frame = TableBlockFrame::new(
             TableBlockKind::Index,
@@ -348,10 +373,11 @@ impl ImmutableTableStreamingEncoder {
             })?;
         self.table_bytes.extend_from_slice(&properties_frame_bytes);
 
-        // BS4.2: the streaming builder does not yet emit a filter frame (BS4.3 does); zero-slot footer.
-        let footer = TableFooter::new(
+        let footer = TableFooter::new_with_filter(
             index_block_offset,
             index_block_frame_len,
+            filter_block_offset,
+            filter_block_frame_len,
             properties_block_offset,
             properties_block_frame_len,
         )?;
