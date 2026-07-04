@@ -8,7 +8,7 @@ use crate::branch::facts::{
     BranchLevel, BranchReachabilitySnapshot, BranchTableDescriptor, InheritedLayerStatus,
 };
 use crate::branch::identity::rewrite_row_branch;
-use crate::branch::read::{BranchMaterializationSource, BranchOwnedTable};
+use crate::branch::read::{try_for_each_reader_row, BranchMaterializationSource, BranchOwnedTable};
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
 use crate::table::{
@@ -793,12 +793,13 @@ impl BranchLocalState {
             }
         }
         for table in self.owned_levels().iter().flatten() {
-            for row in table.rows() {
+            try_for_each_reader_row(table.reader(), |row| {
                 rows_by_key
                     .entry(row.key().clone())
                     .or_default()
                     .push(row.row().clone());
-            }
+                Ok(())
+            })?;
         }
         for layer in self.inherited_layers.iter().take(target_layer_index) {
             match layer.status() {
@@ -812,9 +813,9 @@ impl BranchLocalState {
                 }
             }
             for table in layer.owned_levels().iter().flatten() {
-                for row in table.rows() {
+                try_for_each_reader_row(table.reader(), |row| {
                     if row.commit_version().as_u64() > layer.fork_version().as_u64() {
-                        continue;
+                        return Ok(());
                     }
                     let rewritten =
                         rewrite_row_branch(row.row(), layer.source_branch_id(), self.branch_id)
@@ -825,7 +826,8 @@ impl BranchLocalState {
                         .entry(TableInternalKeyBytes::from_row(&rewritten))
                         .or_default()
                         .push(rewritten);
-                }
+                    Ok(())
+                })?;
             }
         }
         Ok(rows_by_key)
@@ -1056,13 +1058,24 @@ fn validate_prepared_materialization_replacement_tables(
             TableReaderConfig::default(),
         )
         .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
-        if reader.rows().len() != table.rows().len() {
+        // BS4.4a-ii-a: `reader` is a fresh eager reader (open_bytes); pair its rows against the owned
+        // table's cursor so the owned side streams in ascending internal-key order instead of
+        // materializing. Row counts are compared via facts (no scan) before the paired walk.
+        if reader.rows().len() as u64 != table.facts().row_count() {
             return Err(materialization_replacement_mismatch());
         }
-        for (expected, actual) in reader.rows().iter().zip(table.rows()) {
-            if expected.row() != actual.row() {
-                return Err(materialization_replacement_mismatch());
+        let mut actual = table.reader().cursor();
+        actual
+            .seek_to_first()
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        for expected in reader.rows() {
+            match actual.current() {
+                Some(row) if expected.row() == row.row() => {}
+                _ => return Err(materialization_replacement_mismatch()),
             }
+            actual
+                .advance()
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
         }
     }
     Ok(())

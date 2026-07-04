@@ -67,7 +67,8 @@ becomes small and revertable. BS4.1, BS4.2/4.3, and BS4.4a are mutually independ
 | BS4.2b | Reader wiring: `open_bytes`/`open_source` load + attach the filter **(✓ landed, dark)** | 4.2a, 4.1 |
 | BS4.3 | Filter frame **writer** (config-gated) **(✓ landed, dark — off by default)** | 4.2 shipped |
 | BS4.4a-i | Mechanical count conversions (→ `facts().row_count()`) + PartialEq materialization fix **(✓ landed)** | — |
-| BS4.4a-ii | Full-scan + extras/fork-filtered bounds conversions (cursor/probe + debug oracles) + `require_absent_internal_key` | 4a-i |
+| BS4.4a-ii-a | Full-scan → cursor conversions (behavior-identical STREAM/PAIRED sites + `try_for_each_reader_row` helper) **(✓ landed)** | 4a-i |
+| BS4.4a-ii-b | Facts/extras + fork-filtered aggregate folds (fast-path + cursor fallback + debug oracles); lifecycle `checkpoint_delta_rows`/`preflight` + `require_absent`-adjacent | 4a-ii-a |
 | BS4.4a-iii | Materialization guard (policy + `DenyRuntime` + `rows()` gate/rename + source-guard + counter) + fallibility audit | 4a-i, 4a-ii |
 | BS4.4b | The six design-forcing sites | 4a |
 | BS4.4c | The lazy constructor flip + write-side installs | 4a, 4b, 4.1, 4.2 |

@@ -6,14 +6,14 @@ use super::config::BranchRuntimeConfig;
 use super::error::{BranchRuntimeError, BranchRuntimeResult};
 use super::facts::{BranchLevel, BranchReachabilitySnapshot, BranchTableRef, InheritedLayerStatus};
 use super::read::{
-    require_table_physical_first_key, table_physical_ranges_overlap, BranchInheritedLayer,
-    BranchLayout, BranchOwnedTable, BranchTimestampCoverage,
+    require_table_physical_first_key, table_physical_ranges_overlap, try_for_each_reader_row,
+    BranchInheritedLayer, BranchLayout, BranchOwnedTable, BranchTimestampCoverage,
 };
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
 use crate::table::{
-    FrozenTable, MutableTable, TableIdentity, TableInternalKeyBytes, TablePhysicalKeyBytes,
-    TableRuntimeError,
+    FrozenTable, MutableTable, TableCursor, TableIdentity, TableInternalKeyBytes,
+    TablePhysicalKeyBytes, TableRuntimeError,
 };
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -320,9 +320,9 @@ impl BranchLocalState {
         table: &BranchOwnedTable,
     ) -> BranchRuntimeResult<usize> {
         let level_index = self.validate_install_identity_and_range(level, table)?;
-        for row in table.rows() {
-            self.require_absent_internal_key(row.key())?;
-        }
+        try_for_each_reader_row(table.reader(), |row| {
+            self.require_absent_internal_key(row.key())
+        })?;
         Ok(level_index)
     }
 
@@ -737,10 +737,24 @@ fn insert_sorted_by_range(
 }
 
 fn frozen_rows_match_table(table: &BranchOwnedTable, frozen: &FrozenTable) -> bool {
-    table.rows().len() == frozen.len()
-        && table
-            .rows()
-            .iter()
-            .zip(frozen.iter())
-            .all(|(left, right)| left.row() == right.row())
+    if table.facts().row_count() != frozen.len() as u64 {
+        return false;
+    }
+    // BS4.4a-ii-a: row counts match, so walk the owned table's cursor (ascending internal-key order,
+    // same as the frozen rows) in lockstep rather than materializing the whole table. A cursor error
+    // (unreachable on today's eager readers) is treated as a mismatch.
+    let mut cursor = table.reader().cursor();
+    if cursor.seek_to_first().is_err() {
+        return false;
+    }
+    for right in frozen.iter() {
+        match cursor.current() {
+            Some(left) if left.row() == right.row() => {}
+            _ => return false,
+        }
+        if cursor.advance().is_err() {
+            return false;
+        }
+    }
+    cursor.current().is_none()
 }

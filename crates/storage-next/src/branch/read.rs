@@ -591,15 +591,15 @@ impl BranchOwnedTable {
                 reason: "branch-owned table must not be empty",
             });
         }
-        if reader
-            .rows()
-            .iter()
-            .any(|row| row.physical_key().branch_id() != branch_id)
-        {
-            return Err(BranchRuntimeError::InvalidBranchRow {
-                reason: "branch-owned table rows must match the target branch",
-            });
-        }
+        try_for_each_reader_row(&reader, |row| {
+            if row.physical_key().branch_id() == branch_id {
+                Ok(())
+            } else {
+                Err(BranchRuntimeError::InvalidBranchRow {
+                    reason: "branch-owned table rows must match the target branch",
+                })
+            }
+        })?;
         // A sealed table is immutable, so compute its summary (timestamp +
         // physical-key bounds, put/tombstone split) once here — in the off-lock
         // build phase that already materializes the rows — and read it O(1)
@@ -727,15 +727,15 @@ impl BranchInheritedLayer {
                     reason: "inherited table branch id must match source branch",
                 });
             }
-            if table
-                .rows()
-                .iter()
-                .any(|row| row.physical_key().branch_id() != descriptor.source_branch_id())
-            {
-                return Err(BranchRuntimeError::InvalidInheritedLayer {
-                    reason: "inherited table rows must match source branch",
-                });
-            }
+            try_for_each_reader_row(table.reader(), |row| {
+                if row.physical_key().branch_id() == descriptor.source_branch_id() {
+                    Ok(())
+                } else {
+                    Err(BranchRuntimeError::InvalidInheritedLayer {
+                        reason: "inherited table rows must match source branch",
+                    })
+                }
+            })?;
             // BS4.4a-i: the sealed table's max commit version is on facts — no need to scan rows.
             if table.facts().commit_range().max().as_u64() > descriptor.fork_version().as_u64() {
                 return Err(BranchRuntimeError::InvalidInheritedLayer {
@@ -3439,6 +3439,31 @@ fn collect_immutable_table_rows(
     Ok(rows)
 }
 
+/// BS4.4a-ii-a: stream a reader's rows through its cursor — in ascending internal-key order, the same
+/// order `rows()` yields — applying `f` to each row without materializing the whole table. `f` returning
+/// `Err` stops the walk early (so `.any()`-style validations map to an error-returning closure). Cursor
+/// seek/advance failures map to `InvalidBranchState`, matching `collect_immutable_table_rows`.
+pub(crate) fn try_for_each_reader_row(
+    reader: &ImmutableTableReader<'_>,
+    mut f: impl FnMut(&TableRow) -> BranchRuntimeResult<()>,
+) -> BranchRuntimeResult<()> {
+    let mut cursor = reader.cursor();
+    cursor
+        .seek_to_first()
+        .map_err(|_| BranchRuntimeError::InvalidBranchState {
+            reason: "reader cursor seek failed",
+        })?;
+    while let Some(row) = cursor.current() {
+        f(row)?;
+        cursor
+            .advance()
+            .map_err(|_| BranchRuntimeError::InvalidBranchState {
+                reason: "reader cursor advance failed",
+            })?;
+    }
+    Ok(())
+}
+
 fn immutable_source_history_row(
     row: &StorageRow,
     source: ImmutableTableSourceKind,
@@ -4192,13 +4217,15 @@ fn validate_inherited_layer_unique_keys(
 ) -> BranchRuntimeResult<()> {
     let mut keys = BTreeSet::<TableInternalKeyBytes>::new();
     for table in owned_levels.iter().flatten() {
-        for row in table.rows() {
-            if !keys.insert(row.key().clone()) {
-                return Err(BranchRuntimeError::InvalidInheritedLayer {
+        try_for_each_reader_row(table.reader(), |row| {
+            if keys.insert(row.key().clone()) {
+                Ok(())
+            } else {
+                Err(BranchRuntimeError::InvalidInheritedLayer {
                     reason: "inherited layer tables must not contain duplicate internal keys",
-                });
+                })
             }
-        }
+        })?;
     }
     Ok(())
 }
@@ -4244,15 +4271,15 @@ fn validate_inherited_layers(
                     reason: "inherited table source branch must match layer",
                 });
             }
-            if table
-                .rows()
-                .iter()
-                .any(|row| row.physical_key().branch_id() != layer.source_branch_id())
-            {
-                return Err(BranchRuntimeError::InvalidInheritedLayer {
-                    reason: "inherited table rows must match layer source branch",
-                });
-            }
+            try_for_each_reader_row(table.reader(), |row| {
+                if row.physical_key().branch_id() == layer.source_branch_id() {
+                    Ok(())
+                } else {
+                    Err(BranchRuntimeError::InvalidInheritedLayer {
+                        reason: "inherited table rows must match layer source branch",
+                    })
+                }
+            })?;
         }
     }
     Ok(())
