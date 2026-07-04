@@ -113,7 +113,7 @@ Every known gap, with its evidence and its home milestone. "Done" = landed this 
 | G7 | Update-under-load crawl: L0→L1 throughput + retry convoy (A/F @10 M = ~110 ops/s) | diagnostic: 1.8 M `l0_paced`, 0 flush-paced | compaction keeps up + gradual admission + O(1) retries | **BS3** (with BS1/BS2) |
 | G8 | Compaction ~350 MB/s single L0→L1; publish dominates ~63% (durable fsyncs ~88 ms + backend-integrity byte re-read ~67 ms + SHA-256 content digest ~67 ms), merge byte-bound — per-row policy/encode overhead **refuted** (H2/H3) | BS3.2 decomposition (`storage_next_l0_compact` bin) | H1b batch fsyncs (safety-preserving); byte-validate elision = posture change (re-read is the only backend-write-corruption check, +16% measured); digest not cleanly deferrable | **BS3.3 (paused)** |
 | G9 | Subcompactions land no win in the memory-bound regime (WIP, `3bceb4c3`) | Slice 4 A/B | subcompactions pay off when I/O-bound | **BS3** re-eval, **BS4** re-A/B |
-| G10 | Admission thresholds tight + abrupt vs RocksDB (L0 urgent/block 8/16 vs slowdown/stop 20/36) | `compaction.rs:33-47`, `admission_ramp.rs`, config comment | grades regraded to 20/36 + C3 tier matrix (BS3.4a ✓); debt-adaptive rate ramp (`SetupDelay` port) landed **dark behind `STRATA_ADMISSION`** (BS3.4b ✓); bake `graded` after out-of-band A/B (BS3.4c) | **BS3.4a+b done (b dark); BS3.4c bake pending** |
+| G10 | Admission thresholds tight + abrupt vs RocksDB (L0 urgent/block 8/16 vs slowdown/stop 20/36) | `compaction.rs:33-47`, `admission_ramp.rs`, config comment | grades regraded to 20/36 + C3 tier matrix (BS3.4a ✓); debt-adaptive rate ramp (`SetupDelay` port) + per-commit delay cap landed **dark behind `STRATA_ADMISSION`** (BS3.4b ✓). A/B verdict: graceful admission smooths tail latency (graded strictly ≥ legacy) but the ≥50 K gate is **compaction-bound** — legacy ≈ graded ≈ 18 K ops/s. Throughput half (BS3.3) and the `graded` bake (BS3.4c) both **fold into BS4's re-baseline**. | **Admission done (dark); throughput + bake → BS4** |
 | G11 | Tables fully resident + decoded; dataset ≤ budget; budget counts encoded (under-counts) | `read.rs:586/651`, `bootstrap.rs:673` | disk-resident blocks; block cache = the RAM bound | **BS4** |
 | G12 | Open/recovery O(dataset) (decode every table) | open path | manifest replay + ≤16-file warmup (`version_builder.cc:1641`) | **BS4** |
 | G13 | Block cache: O(n) recency scan under shard mutex; shards clamp to 1 | `table/cache.rs:606/623` | sharded O(1) intrusive-LRU (`lru_cache.cc:232`) | **BS4** (prereq) |
@@ -245,6 +245,16 @@ BS6 tuning.
 blocks on demand, memory is bounded by caches. **This is the milestone that makes billion
 scale possible.** Gaps: G11–G16 (+ unblocks G9, G20, G21).
 
+**Folded in from BS3 (decided post-BS3.4b A/B).** The compaction-*throughput* work (BS3.3 —
+chiefly the H1b fsync-batching Backend extension, gated by the recovery oracle + fault sweep,
+plus the surviving CPU micro-opts) lands here, not before. The A/B confirmed compaction is the
+bottleneck in the resident regime (≥50 K gate is compaction-bound), but BS3.2's resident-regime
+profile (publish/fsync-dominated) shifts once tables are disk-resident, and H1b overlaps this
+milestone's Backend rework — so the compaction-throughput work is tuned **once, in the final
+regime** (this milestone is already the "honest re-test" for subcompactions too). BS3's graceful
+admission (BS3.4, dark) holds the fort meanwhile — no catastrophic crawls. Candidate list and the
+byte-validate/digest constraints: `bs3-compaction-admission-plan.md` §BS3.3.
+
 **Scope (ordered — each step shippable).**
 1. **Block cache rewrite**: sharded, byte-bounded, O(1) intrusive-LRU (per-shard mutex, never
    clamping to one shard). This becomes the read hot path; it must be RocksDB-grade first.
@@ -332,8 +342,12 @@ BS1 (O(1) writes)  ──►  BS2 (lock-free reads)  ──►  BS3 (compaction/
 
 - **BS1 → BS2**: shrink what the lock does before changing who takes it.
 - **BS2 → BS3**: read/write separation must exist before judging sustained-mixed-load fixes.
-- **BS3 → BS4**: compaction must keep up in the easy (resident) regime before adding disk I/O
-  to it; BS4 then re-baselines everything (and is where subcompactions get their honest re-test).
+- **BS3 → BS4**: BS3's *admission* half (graceful degradation — regrade + rate ramp + delay cap,
+  dark) ships before BS4 so the disk regime can't catastrophically crawl during development. BS3's
+  *throughput* half (BS3.3) **folds into BS4's re-baseline** (post-BS3.4b decision): the A/B showed
+  compaction is the resident-regime bottleneck, but its profile shifts under disk and H1b overlaps
+  BS4's Backend rework, so compaction-throughput is done once, there. BS4 then re-baselines
+  everything (and is where subcompactions get their honest re-test).
 - **BS4 → BS5/BS6**: concurrency and validation build on the final regime.
 - After every milestone: scoreboard run + a ledger row; after BS4: full re-baseline.
 

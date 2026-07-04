@@ -186,6 +186,20 @@ Key facts the profile establishes:
 
 ### BS3.3 — Pipeline efficiency fixes (profile-driven)
 
+> **Parked — folded into BS4 (decided post-BS3.4b A/B).** Two constraints killed the cheap wins:
+> the byte-validate re-read is the **only** backend-write-corruption check (`require_exact_bytes`,
+> `service/table.rs:738`; 8+ `corrupt_table_object_create_on_call` tests assert it raises
+> `rewrite_publication_orphan`) — **not redundant**, cannot be elided; and the SHA-256 reader-handoff
+> digest isn't cleanly deferrable (the reader doesn't retain the bytes). What survives is the H1b
+> fsync-batching **Backend trait extension** (heavy, recovery-oracle + fault-sweep-gated) plus
+> uncertain CPU micro-opts (H1a/H1c/H2/H3/H4). The BS3.4b A/B established the ≥50 K primary gate is
+> **compaction-bound** (legacy ≈ graded ≈ 18 K ops/s) — the throughput work is real, but its
+> resident-regime profile (publish/fsync-dominated) shifts under BS4's disk-resident tables and H1b
+> overlaps BS4's Backend rework. **Decision:** do compaction-throughput **once, in BS4's re-baseline**
+> (its natural home — where subcompactions also get their honest re-test); graceful admission
+> (BS3.4, dark) prevents catastrophic crawls in the interim. The candidate list below is preserved as
+> the BS4 input.
+
 Implement the top offenders from BS3.2; each fix gets its own control-first A/B (compaction
 wall-time per input MB is the metric; load/crawl cells as secondary). Pre-scoped candidates:
 
@@ -232,7 +246,8 @@ suite; fault sweep specifically for the H1(b) sync-batching change.
 > is deferred, as its 64 GiB constant isn't yet tier-scaled). Debt = `Σ (level_bytes − target)` with
 > `targets[0]=0`, so all L0 bytes count. The commit path branches on `is_graded_admission()` (graded →
 > token bucket paced by the batch's active bytes; legacy → the untouched quadratic). Default-legacy
-> regression: full `--lib` suite unchanged (3182). **BS3.4c** bakes `graded` after the out-of-band A/B.
+> regression: full `--lib` suite unchanged (3182). **BS3.4c** bakes `graded` (strip legacy + flag)
+> after the **post-BS4 re-baseline A/B**, when the throughput picture is final (see §BS3.3 parked note).
 
 > **BS3.4b A/B + delay-cap fix** (`STRATA_ADMISSION` graded vs legacy, workload A, durable, 1 M / 4 M
 > @ 1 KB, dev box). The crawl reproduces — run throughput collapses from ~168 K (uncontended) to ~18 K
@@ -311,13 +326,21 @@ suite; fault sweep specifically for the H1(b) sync-batching change.
 
 ## Perf validation (milestone exit)
 
+> **Status (post-BS3.4b A/B): BS3 parked, not closed.** The *admission* half is done — BS3.1/3.2 +
+> BS3.4a (regrade) + BS3.4b (rate ramp + delay cap, dark) — and delivers the graceful-degradation
+> behavior (graded strictly ≥ legacy on tail latency, no catastrophic crawls). The two **primary
+> throughput gates below are deferred to BS4**: the A/B proved they are **compaction-bound** (legacy ≈
+> graded ≈ 18 K ops/s), so they cannot be met by admission and are met by the compaction-throughput
+> work now folded into BS4's re-baseline (§BS3.3). BS3.4c (bake `graded` as default, strip legacy +
+> flag) waits for that post-BS4 A/B, when the throughput picture is final.
+
 Control = BS2-final binary, treatment = BS3-final; standard methodology; env hooks and
 probes stripped before the closing commit.
 
-1. **Primary (gate):** workload A and F @10 M run throughput **≥50 K ops/s** (from ~110)
-   with **zero deep-crawls in n≥9** interleaved runs.
-2. **Primary (gate):** L0 table count at steady state stays below the delay grade (20)
-   under sustained workload-A load — measured via the compaction trace.
+1. **Primary (gate — deferred to BS4):** workload A and F @10 M run throughput **≥50 K ops/s**
+   (from ~110) with **zero deep-crawls in n≥9** interleaved runs.
+2. **Primary (gate — deferred to BS4):** L0 table count at steady state stays below the delay
+   grade (20) under sustained workload-A load — measured via the compaction trace.
 3. **Secondary:** sustained load within 25 % of burst load; aggregate compaction
    throughput ≥500 MB/s across lanes (the budget arithmetic); compaction wall-time per MB
    from BS3.3's A/Bs.
