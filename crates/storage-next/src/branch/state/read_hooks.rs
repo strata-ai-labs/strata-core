@@ -5,8 +5,8 @@ use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::branch::facts::{BranchSourceLayout, BranchStateFacts};
 use crate::branch::read::{
-    inherited_table_count, source_layout_from_sources, BranchInheritedLayer, BranchOwnedTable,
-    BranchReadView, BranchTimestampCoverage,
+    inherited_table_count, source_layout_from_sources, try_for_each_reader_row,
+    BranchInheritedLayer, BranchOwnedTable, BranchReadView, BranchTimestampCoverage,
 };
 use crate::observability::perf_trace;
 use crate::table::{FrozenTable, MutableTable};
@@ -171,7 +171,7 @@ impl BranchLocalState {
     pub(crate) fn resolve_timestamp_to_commit_version(
         &self,
         timestamp: Timestamp,
-    ) -> Option<CommitVersion> {
+    ) -> BranchRuntimeResult<Option<CommitVersion>> {
         perf_trace::record_branch_timestamp_rows(source_row_counts(
             &self.active,
             &self.frozen,
@@ -199,13 +199,15 @@ impl BranchLocalState {
             }
         }
         for table in self.owned_levels().iter().flatten() {
-            let version = owned_timestamp_commit_version(table, timestamp);
+            let version = owned_timestamp_commit_version(table, timestamp)?;
             #[cfg(debug_assertions)]
-            debug_assert_eq!(
-                version,
-                owned_timestamp_commit_version_by_scan(table, timestamp),
-                "owned timestamp resolution diverged from a full row scan",
-            );
+            {
+                let scan = owned_timestamp_commit_version_by_scan(table, timestamp)?;
+                debug_assert_eq!(
+                    version, scan,
+                    "owned timestamp resolution diverged from a full row scan",
+                );
+            }
             if let Some(version) = version {
                 consider(version);
             }
@@ -213,19 +215,22 @@ impl BranchLocalState {
         for layer in &self.inherited_layers {
             let fork_version = layer.fork_version();
             for table in layer.owned_levels().iter().flatten() {
-                let version = inherited_timestamp_commit_version(table, timestamp, fork_version);
+                let version = inherited_timestamp_commit_version(table, timestamp, fork_version)?;
                 #[cfg(debug_assertions)]
-                debug_assert_eq!(
-                    version,
-                    inherited_timestamp_commit_version_by_scan(table, timestamp, fork_version),
-                    "inherited timestamp resolution diverged from a full row scan",
-                );
+                {
+                    let scan =
+                        inherited_timestamp_commit_version_by_scan(table, timestamp, fork_version)?;
+                    debug_assert_eq!(
+                        version, scan,
+                        "inherited timestamp resolution diverged from a full row scan",
+                    );
+                }
                 if let Some(version) = version {
                     consider(version);
                 }
             }
         }
-        best
+        Ok(best)
     }
 
     pub(crate) const fn timestamp_min(&self) -> Option<Timestamp> {
@@ -318,12 +323,12 @@ impl BranchLocalState {
 fn owned_timestamp_commit_version(
     table: &BranchOwnedTable,
     timestamp: Timestamp,
-) -> Option<CommitVersion> {
+) -> BranchRuntimeResult<Option<CommitVersion>> {
     let extras = table.extras();
     if extras.timestamp_max().is_some_and(|max| max <= timestamp) {
-        Some(table.facts().commit_range().max())
+        Ok(Some(table.facts().commit_range().max()))
     } else if extras.timestamp_min().is_some_and(|min| min > timestamp) {
-        None
+        Ok(None)
     } else {
         owned_timestamp_commit_version_by_scan(table, timestamp)
     }
@@ -332,15 +337,16 @@ fn owned_timestamp_commit_version(
 fn owned_timestamp_commit_version_by_scan(
     table: &BranchOwnedTable,
     timestamp: Timestamp,
-) -> Option<CommitVersion> {
+) -> BranchRuntimeResult<Option<CommitVersion>> {
     let mut best: Option<CommitVersion> = None;
-    for row in table.rows() {
+    try_for_each_reader_row(table.reader(), |row| {
         if row.row().commit_timestamp() <= timestamp {
             let version = row.row().commit_version();
             best = Some(best.map_or(version, |current| current.max(version)));
         }
-    }
-    best
+        Ok(())
+    })?;
+    Ok(best)
 }
 
 /// BS4.4c: like [`owned_timestamp_commit_version`] but for an inherited table, excluding rows past the
@@ -350,7 +356,7 @@ fn inherited_timestamp_commit_version(
     table: &BranchOwnedTable,
     timestamp: Timestamp,
     fork_version: CommitVersion,
-) -> Option<CommitVersion> {
+) -> BranchRuntimeResult<Option<CommitVersion>> {
     if table.facts().commit_range().max().as_u64() <= fork_version.as_u64() {
         owned_timestamp_commit_version(table, timestamp)
     } else {
@@ -362,17 +368,18 @@ fn inherited_timestamp_commit_version_by_scan(
     table: &BranchOwnedTable,
     timestamp: Timestamp,
     fork_version: CommitVersion,
-) -> Option<CommitVersion> {
+) -> BranchRuntimeResult<Option<CommitVersion>> {
     let mut best: Option<CommitVersion> = None;
-    for row in table.rows() {
+    try_for_each_reader_row(table.reader(), |row| {
         if row.row().commit_timestamp() <= timestamp
             && row.row().commit_version().as_u64() <= fork_version.as_u64()
         {
             let version = row.row().commit_version();
             best = Some(best.map_or(version, |current| current.max(version)));
         }
-    }
-    best
+        Ok(())
+    })?;
+    Ok(best)
 }
 
 fn read_view_source_handle_count(state: &BranchLocalState) -> usize {

@@ -1307,8 +1307,12 @@ fn branch_scan_history_timestamp_and_facts_perf_trace_split_source_classes() {
             BranchHistoryOptions::all(),
         )
         .expect("inherited history");
-    let _ = own_state.resolve_timestamp_to_commit_version(Timestamp::from_micros(500));
-    let _ = inherited_state.resolve_timestamp_to_commit_version(Timestamp::from_micros(500));
+    let _ = own_state
+        .resolve_timestamp_to_commit_version(Timestamp::from_micros(500))
+        .expect("resolve timestamp");
+    let _ = inherited_state
+        .resolve_timestamp_to_commit_version(Timestamp::from_micros(500))
+        .expect("resolve timestamp");
     let _ = own_state.facts().expect("own facts");
     let _ = inherited_state.facts().expect("inherited facts");
     let perf = crate::observability::perf_trace::snapshot();

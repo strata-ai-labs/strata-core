@@ -1487,7 +1487,10 @@ fn collect_owned_level_history_candidates(
     if level_index == 0 {
         for (table_index, table) in tables.iter().enumerate() {
             add_history_source_probes(source_probes, 1);
-            let (table_rows, visited) = table.reader().physical_key_rows(key);
+            let (table_rows, visited) = table
+                .reader()
+                .try_physical_key_rows(key)
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             *rows_visited = (*rows_visited).saturating_add(visited);
             history_counts.owned_l0 = history_counts.owned_l0.saturating_add(visited);
             push_history_rows(
@@ -1512,7 +1515,10 @@ fn collect_owned_level_history_candidates(
     };
     let table = &tables[table_index];
     add_history_source_probes(source_probes, 1);
-    let (table_rows, visited) = table.reader().physical_key_rows(key);
+    let (table_rows, visited) = table
+        .reader()
+        .try_physical_key_rows(key)
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
     *rows_visited = (*rows_visited).saturating_add(visited);
     history_counts.owned_nonzero = history_counts.owned_nonzero.saturating_add(visited);
     push_history_rows(
@@ -1587,7 +1593,10 @@ fn collect_inherited_level_history_candidates(
     if level_index == 0 {
         for table in tables {
             add_history_source_probes(source_probes, 1);
-            let (table_rows, visited) = table.reader().physical_key_rows(source_key);
+            let (table_rows, visited) = table
+                .reader()
+                .try_physical_key_rows(source_key)
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             *rows_visited = (*rows_visited).saturating_add(visited);
             history_counts.inherited_l0 = history_counts.inherited_l0.saturating_add(visited);
             push_history_rows(
@@ -1612,7 +1621,10 @@ fn collect_inherited_level_history_candidates(
         return Ok(());
     };
     add_history_source_probes(source_probes, 1);
-    let (table_rows, visited) = tables[table_index].reader().physical_key_rows(source_key);
+    let (table_rows, visited) = tables[table_index]
+        .reader()
+        .try_physical_key_rows(source_key)
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
     *rows_visited = (*rows_visited).saturating_add(visited);
     history_counts.inherited_nonzero = history_counts.inherited_nonzero.saturating_add(visited);
     push_history_rows(
@@ -2013,7 +2025,10 @@ fn select_owned_level_point_candidate<'a>(
                 .saturating_add(1);
             selection.source_counts.table_seeks =
                 selection.source_counts.table_seeks.saturating_add(1);
-            let (row, visited) = table.reader().seek_prepared_point_candidate(lookup);
+            let (row, visited) = table
+                .reader()
+                .try_seek_prepared_point_candidate(lookup)
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             selection.add_rows_visited(visited);
             if let Some(row) = row {
                 selection.consider_lookup_table_row(
@@ -2045,7 +2060,10 @@ fn select_owned_level_point_candidate<'a>(
         .owned_nonzero_table_probes
         .saturating_add(1);
     selection.source_counts.table_seeks = selection.source_counts.table_seeks.saturating_add(1);
-    let (row, visited) = table.reader().seek_prepared_point_candidate(lookup);
+    let (row, visited) = table
+        .reader()
+        .try_seek_prepared_point_candidate(lookup)
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
     selection.add_rows_visited(visited);
     if let Some(row) = row {
         selection.consider_lookup_table_row(
@@ -2081,7 +2099,7 @@ fn select_inherited_level_point_candidate<'a>(
                 table,
                 lookup,
                 selection,
-            );
+            )?;
         }
         return Ok(());
     }
@@ -2108,7 +2126,7 @@ fn select_inherited_level_point_candidate<'a>(
         &tables[table_index],
         lookup,
         selection,
-    );
+    )?;
     Ok(())
 }
 
@@ -2119,9 +2137,12 @@ fn append_ordered_inherited_point_table_candidate<'a>(
     table: &'a BranchOwnedTable,
     lookup: &TablePreparedPointLookup,
     selection: &mut PointSelection<'a>,
-) {
+) -> BranchRuntimeResult<()> {
     selection.source_counts.table_seeks = selection.source_counts.table_seeks.saturating_add(1);
-    let (row, visited) = table.reader().seek_prepared_point_candidate(lookup);
+    let (row, visited) = table
+        .reader()
+        .try_seek_prepared_point_candidate(lookup)
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
     selection.add_rows_visited(visited);
     if let Some(row) = row {
         selection.consider_inherited_table_row(
@@ -2131,6 +2152,7 @@ fn append_ordered_inherited_point_table_candidate<'a>(
             layer_index,
         );
     }
+    Ok(())
 }
 
 fn ordered_point_can_stop(

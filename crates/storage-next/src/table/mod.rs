@@ -62,8 +62,8 @@ pub(crate) use compaction::{
     )
 )]
 pub(crate) use config::{
-    TableBuilderConfig, TableCacheConfig, TableCompactionConfig, TableReaderConfig,
-    TableReaderEagerFilterMode, TableReaderValidationMode, TableRuntimeConfig,
+    TableBuilderConfig, TableCacheConfig, TableCompactionConfig, TableMaterializationPolicy,
+    TableReaderConfig, TableReaderEagerFilterMode, TableReaderValidationMode, TableRuntimeConfig,
 };
 #[cfg_attr(
     all(not(test), not(feature = "testkit")),

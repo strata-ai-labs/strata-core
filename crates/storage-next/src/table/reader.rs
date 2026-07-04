@@ -7,9 +7,9 @@ use super::key::table_internal_physical_key_bytes;
 use super::{
     BoundedTableCursor, TableBlockAddress, TableBlockCache, TableBlockCacheKey,
     TableBlockCacheKind, TableBloomFilter, TableBloomProbe, TableCacheTableId, TableCommitRange,
-    TableIdentity, TableInternalKeyBytes, TableKeyBounds, TableKeyRange, TablePhysicalKeyBytes,
-    TablePreparedPointLookup, TableReaderConfig, TableReaderEagerFilterMode, TableRow,
-    TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
+    TableIdentity, TableInternalKeyBytes, TableKeyBounds, TableKeyRange,
+    TableMaterializationPolicy, TablePhysicalKeyBytes, TablePreparedPointLookup, TableReaderConfig,
+    TableReaderEagerFilterMode, TableRow, TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
 };
 use crate::format::seek_immutable_table_data_block_point;
 use crate::format::{
@@ -470,13 +470,18 @@ struct LazyTableRows<'a> {
 }
 
 impl<'a> LazyTableRows<'a> {
-    fn new(source: SharedTableSource<'a>, metadata: ImmutableTableMetadata) -> Self {
+    fn new(
+        source: SharedTableSource<'a>,
+        metadata: ImmutableTableMetadata,
+        materialization_policy: TableMaterializationPolicy,
+    ) -> Self {
         Self {
             state: LazyTableState {
                 source,
                 metadata,
                 cache: None,
                 filter: None,
+                materialization_policy,
             },
             rows: OnceLock::new(),
         }
@@ -586,6 +591,7 @@ struct LazyTableState<'a> {
     metadata: ImmutableTableMetadata,
     cache: Option<LazyTableBlockCache>,
     filter: Option<TableReaderFilter>,
+    materialization_policy: TableMaterializationPolicy,
 }
 
 impl LazyTableState<'_> {
@@ -1036,7 +1042,7 @@ impl<'a> ImmutableTableReader<'a> {
         // `content_sha256` (no full-content read), so the `matches_table` exact-content gate — meant
         // for externally supplied filters — would spuriously reject it. The frame's CRC (verified in
         // `decode_filter_frame`) is the real integrity guarantee.
-        let mut lazy = LazyTableRows::new(source, metadata);
+        let mut lazy = LazyTableRows::new(source, metadata, config.materialization_policy());
         let filter_available = match filter {
             Some(filter) => lazy.with_filter(filter),
             None => false,
@@ -1139,14 +1145,6 @@ impl<'a> ImmutableTableReader<'a> {
             .expect("lazy table physical key seek failed")
     }
 
-    pub(crate) fn seek_prepared_point_candidate(
-        &self,
-        lookup: &TablePreparedPointLookup,
-    ) -> (Option<TablePointLookupRow<'_>>, usize) {
-        self.try_seek_prepared_point_candidate(lookup)
-            .expect("lazy table physical key seek failed")
-    }
-
     pub(crate) fn try_seek_physical_key(
         &self,
         key: &PhysicalKey,
@@ -1169,11 +1167,6 @@ impl<'a> ImmutableTableReader<'a> {
         lookup: &TablePreparedPointLookup,
     ) -> TableRuntimeResult<(Option<TablePointLookupRow<'_>>, usize)> {
         self.rows.try_seek_prepared_point_candidate(lookup)
-    }
-
-    pub(crate) fn physical_key_rows(&self, key: &PhysicalKey) -> (Vec<TableRow>, usize) {
-        self.try_physical_key_rows(key)
-            .expect("lazy table physical key history failed")
     }
 
     pub(crate) fn try_physical_key_rows(
@@ -1859,6 +1852,19 @@ fn read_rows_from_metadata(state: &LazyTableState<'_>) -> TableRuntimeResult<Vec
 }
 
 fn read_and_validate_rows(state: &LazyTableState<'_>) -> TableRuntimeResult<Vec<TableRow>> {
+    // BS4.4d: the single choke point where a lazy reader decodes every row (reached by `try_rows` and
+    // `into_materialized`). Under `DenyRuntime` a full read is a bug on the durable path — debug-assert
+    // to fail loudly in tests, then return a typed error in release. `Allow` readers tally the counter.
+    if state.materialization_policy == TableMaterializationPolicy::DenyRuntime {
+        debug_assert!(
+            false,
+            "lazy table materialized all rows under DenyRuntime — a durable consumer forced a full read"
+        );
+        return Err(TableRuntimeError::LazyMaterializationDenied {
+            reason: "lazy reader full materialization denied by runtime policy",
+        });
+    }
+    perf_trace::record_lazy_full_materialization();
     let rows = read_rows_from_metadata(state)?;
     super::validate_strictly_sorted_unique_rows(&rows)?;
     Ok(rows)

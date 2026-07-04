@@ -415,6 +415,7 @@ pub struct StoragePerfSnapshot {
     scan_candidate_row_clones: u64,
     scan_candidate_row_clone_bytes: u64,
     table_reader_opens: u64,
+    table_lazy_full_materializations: u64,
     table_metadata_read_bytes: u64,
     table_index_read_bytes: u64,
     table_properties_read_bytes: u64,
@@ -2223,6 +2224,12 @@ impl StoragePerfSnapshot {
         self.table_reader_opens
     }
 
+    /// BS4.4d: number of lazy (disk-backed) readers that materialized all their rows. Asserted zero on
+    /// the durable read paths — a nonzero count means a consumer forced a full-table read.
+    pub const fn table_lazy_full_materializations(self) -> u64 {
+        self.table_lazy_full_materializations
+    }
+
     /// Bytes read for table header/footer metadata.
     pub const fn table_metadata_read_bytes(self) -> u64 {
         self.table_metadata_read_bytes
@@ -3073,6 +3080,8 @@ static SCAN_CANDIDATE_ROW_CLONE_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_READER_OPENS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static TABLE_LAZY_FULL_MATERIALIZATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static TABLE_METADATA_READ_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_INDEX_READ_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -3560,6 +3569,7 @@ pub fn reset() {
     SCAN_CANDIDATE_ROW_CLONES.store(0, Ordering::Relaxed);
     SCAN_CANDIDATE_ROW_CLONE_BYTES.store(0, Ordering::Relaxed);
     TABLE_READER_OPENS.store(0, Ordering::Relaxed);
+    TABLE_LAZY_FULL_MATERIALIZATIONS.store(0, Ordering::Relaxed);
     TABLE_METADATA_READ_BYTES.store(0, Ordering::Relaxed);
     TABLE_INDEX_READ_BYTES.store(0, Ordering::Relaxed);
     TABLE_PROPERTIES_READ_BYTES.store(0, Ordering::Relaxed);
@@ -4167,6 +4177,7 @@ pub fn snapshot() -> StoragePerfSnapshot {
         scan_candidate_row_clones: SCAN_CANDIDATE_ROW_CLONES.load(Ordering::Relaxed),
         scan_candidate_row_clone_bytes: SCAN_CANDIDATE_ROW_CLONE_BYTES.load(Ordering::Relaxed),
         table_reader_opens: TABLE_READER_OPENS.load(Ordering::Relaxed),
+        table_lazy_full_materializations: TABLE_LAZY_FULL_MATERIALIZATIONS.load(Ordering::Relaxed),
         table_metadata_read_bytes: TABLE_METADATA_READ_BYTES.load(Ordering::Relaxed),
         table_index_read_bytes: TABLE_INDEX_READ_BYTES.load(Ordering::Relaxed),
         table_properties_read_bytes: TABLE_PROPERTIES_READ_BYTES.load(Ordering::Relaxed),
@@ -6805,6 +6816,17 @@ pub(crate) fn record_table_reader_open() {
         return;
     }
     TABLE_READER_OPENS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lazy_full_materialization() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lazy_full_materialization() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_LAZY_FULL_MATERIALIZATIONS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

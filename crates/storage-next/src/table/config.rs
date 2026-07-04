@@ -156,6 +156,7 @@ impl Default for TableBuilderConfig {
 pub(crate) struct TableReaderConfig {
     validation: TableReaderValidationMode,
     eager_filter: TableReaderEagerFilterMode,
+    materialization_policy: TableMaterializationPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,11 +170,22 @@ pub(crate) enum TableReaderEagerFilterMode {
     Unavailable,
 }
 
+/// BS4.4d: whether a lazy (disk-backed) reader may materialize all of its rows at runtime. `DenyRuntime`
+/// makes `try_rows`/`into_materialized` refuse (a typed error, debug-asserted first) so an accidental
+/// full-table read on the durable path is caught once the constructor flips to lazy (BS4.4f). Eager
+/// readers never reach the lazy materialization path, so the policy is irrelevant to them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TableMaterializationPolicy {
+    Allow,
+    DenyRuntime,
+}
+
 impl TableReaderConfig {
     pub(crate) const fn new() -> Self {
         Self {
             validation: TableReaderValidationMode::ValidateOnOpen,
             eager_filter: TableReaderEagerFilterMode::BuildOnOpen,
+            materialization_policy: TableMaterializationPolicy::Allow,
         }
     }
 
@@ -188,6 +200,15 @@ impl TableReaderConfig {
 
     pub(crate) const fn eager_filter_mode(self) -> TableReaderEagerFilterMode {
         self.eager_filter
+    }
+
+    pub(crate) const fn deny_runtime_materialization(mut self) -> Self {
+        self.materialization_policy = TableMaterializationPolicy::DenyRuntime;
+        self
+    }
+
+    pub(crate) const fn materialization_policy(self) -> TableMaterializationPolicy {
+        self.materialization_policy
     }
 }
 

@@ -819,6 +819,7 @@ impl LifecycleBranchCatalog {
         }
         let resolved = source
             .resolve_timestamp_to_commit_version(timestamp)
+            .map_err(branch_error)?
             .ok_or(LifecycleError::InsufficientTimestampHistory {
                 branch_id: source_branch_id,
                 reason: "branch has no rows at or before requested timestamp",

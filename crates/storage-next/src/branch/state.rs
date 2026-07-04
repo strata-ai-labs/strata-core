@@ -297,14 +297,24 @@ impl BranchLocalState {
 
     fn require_absent_internal_key(&self, key: &TableInternalKeyBytes) -> BranchRuntimeResult<()> {
         perf_trace::record_append_absent_internal_key_check();
-        if self.active.get(key).is_some()
-            || self.frozen.iter().any(|table| table.get(key).is_some())
-            || self
-                .owned_levels()
-                .iter()
-                .flatten()
-                .any(|table| table.reader().get_exact(key).is_some())
-        {
+        let mut present = self.active.get(key).is_some()
+            || self.frozen.iter().any(|table| table.get(key).is_some());
+        // BS4.4d: the owned-side probe is fallible (a lazy reader can fail its targeted read), so thread
+        // the error out of the `.any()` via an explicit loop.
+        if !present {
+            for table in self.owned_levels().iter().flatten() {
+                if table
+                    .reader()
+                    .try_get_exact(key)
+                    .map_err(|source| BranchRuntimeError::TableRuntime { source })?
+                    .is_some()
+                {
+                    present = true;
+                    break;
+                }
+            }
+        }
+        if present {
             return Err(BranchRuntimeError::TableRuntime {
                 source: TableRuntimeError::DuplicateInternalKey {
                     key: key.as_slice().to_vec(),

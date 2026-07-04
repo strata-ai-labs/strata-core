@@ -41,6 +41,9 @@ pub(crate) enum TableRuntimeError {
     CompactionPolicy {
         reason: &'static str,
     },
+    LazyMaterializationDenied {
+        reason: &'static str,
+    },
 }
 
 impl TableRuntimeError {
@@ -91,9 +94,11 @@ impl PartialEq for TableRuntimeError {
             ) => left == right,
             (Self::InvalidRange { field: left }, Self::InvalidRange { field: right })
             | (Self::Cache { reason: left }, Self::Cache { reason: right })
-            | (Self::CompactionPolicy { reason: left }, Self::CompactionPolicy { reason: right }) => {
-                left == right
-            }
+            | (Self::CompactionPolicy { reason: left }, Self::CompactionPolicy { reason: right })
+            | (
+                Self::LazyMaterializationDenied { reason: left },
+                Self::LazyMaterializationDenied { reason: right },
+            ) => left == right,
             (Self::BuildFormat { source: left }, Self::BuildFormat { source: right })
             | (Self::DecodeFormat { source: left }, Self::DecodeFormat { source: right }) => {
                 left == right
@@ -158,6 +163,12 @@ impl fmt::Display for TableRuntimeError {
             Self::CompactionPolicy { reason } => {
                 write!(formatter, "table compaction policy failed: {reason}")
             }
+            Self::LazyMaterializationDenied { reason } => {
+                write!(
+                    formatter,
+                    "lazy table full materialization denied: {reason}"
+                )
+            }
         }
     }
 }
@@ -176,7 +187,8 @@ impl std::error::Error for TableRuntimeError {
             | Self::InvalidRange { .. }
             | Self::SourceRead { source: None, .. }
             | Self::Cache { .. }
-            | Self::CompactionPolicy { .. } => None,
+            | Self::CompactionPolicy { .. }
+            | Self::LazyMaterializationDenied { .. } => None,
         }
     }
 }

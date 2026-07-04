@@ -4473,3 +4473,98 @@ fn reader_row_count_matches_materialized_length() {
         reader.rows().len(),
     );
 }
+
+// ---- BS4.4d: the materialization guard ----
+
+fn deny_runtime_lazy_reader() -> ImmutableTableReader<'static> {
+    let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)]);
+    let artifact = builder(1, TableCompression::Uncompressed)
+        .build_from_rows(identity("bs44d-deny"), &rows)
+        .expect("build deny-runtime source");
+    ImmutableTableReader::open_source(
+        identity("bs44d-deny"),
+        BytesTableSource::new(artifact.bytes().to_vec()),
+        TableReaderConfig::default().deny_runtime_materialization(),
+    )
+    .expect("open lazy deny-runtime reader")
+}
+
+#[cfg(not(debug_assertions))]
+#[test]
+fn deny_runtime_reader_refuses_full_materialization() {
+    // In release the guard returns a typed error instead of panicking.
+    assert!(matches!(
+        deny_runtime_lazy_reader().try_rows(),
+        Err(TableRuntimeError::LazyMaterializationDenied { .. })
+    ));
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "DenyRuntime")]
+fn deny_runtime_reader_debug_asserts_on_full_materialization() {
+    // In debug/test builds the guard fails loudly at the site so accidental materialization is caught.
+    let _ = deny_runtime_lazy_reader().try_rows();
+}
+
+#[test]
+fn deny_runtime_reader_still_serves_targeted_and_streaming_reads() {
+    // The guard blocks only full materialization; facts and cursor streaming never trip it.
+    let reader = deny_runtime_lazy_reader();
+    assert_eq!(reader.facts().row_count(), 2);
+    let mut cursor = reader.cursor();
+    cursor.seek_to_first().expect("seek");
+    let mut count = 0;
+    while cursor.current().is_some() {
+        count += 1;
+        cursor.advance().expect("advance");
+    }
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn allow_lazy_reader_materializes() {
+    let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1)]);
+    let artifact = builder(1, TableCompression::Uncompressed)
+        .build_from_rows(identity("bs44d-allow"), &rows)
+        .expect("build allow source");
+    let reader = ImmutableTableReader::open_source(
+        identity("bs44d-allow"),
+        BytesTableSource::new(artifact.bytes().to_vec()),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy allow reader");
+    assert_eq!(reader.try_rows().expect("allow materializes").len(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn allow_lazy_materialization_increments_counter_once() {
+    let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1)]);
+    let artifact = builder(1, TableCompression::Uncompressed)
+        .build_from_rows(identity("bs44d-count"), &rows)
+        .expect("build count source");
+    let reader = ImmutableTableReader::open_source(
+        identity("bs44d-count"),
+        BytesTableSource::new(artifact.bytes().to_vec()),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy allow reader");
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    assert_eq!(
+        crate::observability::perf_trace::snapshot().table_lazy_full_materializations(),
+        0
+    );
+    assert_eq!(reader.try_rows().expect("materialize").len(), 1);
+    assert_eq!(
+        crate::observability::perf_trace::snapshot().table_lazy_full_materializations(),
+        1
+    );
+    // Repeat reads hit the OnceLock cache — the counter must not climb (no double materialization).
+    assert_eq!(reader.try_rows().expect("cached").len(), 1);
+    assert_eq!(
+        crate::observability::perf_trace::snapshot().table_lazy_full_materializations(),
+        1
+    );
+}
