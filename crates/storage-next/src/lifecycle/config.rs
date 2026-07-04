@@ -27,6 +27,11 @@ const DEFAULT_WRITE_THROTTLE_MAX_DELAY_MILLIS: u64 = 20;
 /// stop. Only consulted on the `graded` admission path; the `legacy` quadratic path ignores them.
 const DEFAULT_WRITE_THROTTLE_MAX_RATE_BYTES_PER_SEC: u64 = 16 * 1024 * 1024;
 const DEFAULT_WRITE_THROTTLE_MIN_RATE_BYTES_PER_SEC: u64 = 16 * 1024;
+/// BS3.4b graded per-commit delay cap (ms). Bounds a single commit's token-bucket sleep so a large
+/// batch at the near-stop floor rate (a 115 KB batch / 16 KiB/s would be ~7 s) cannot stall for
+/// seconds; the L0 hard-stop grade handles the sustained extreme instead. Well above the effective
+/// in-band pacing (single-digit ms), so it clips only the pathological tail. Graded path only.
+const DEFAULT_WRITE_THROTTLE_MAX_GRADED_DELAY_MILLIS: u64 = 250;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleConfig {
@@ -79,9 +84,10 @@ pub(crate) struct LifecycleWriteThrottlePolicy {
     soft_ratio_permille: u16,
     max_delay_millis: u64,
     /// BS3.4b graded path: the un-throttled ceiling and the near-stop floor for the debt-adaptive
-    /// rate ramp (bytes/sec). Unused on the legacy quadratic path.
+    /// rate ramp (bytes/sec), plus the per-commit delay cap (ms). Unused on the legacy quadratic path.
     max_rate_bytes_per_sec: u64,
     min_rate_bytes_per_sec: u64,
+    max_graded_delay_millis: u64,
 }
 
 impl LifecycleWriteThrottlePolicy {
@@ -92,6 +98,7 @@ impl LifecycleWriteThrottlePolicy {
             max_delay_millis,
             max_rate_bytes_per_sec: DEFAULT_WRITE_THROTTLE_MAX_RATE_BYTES_PER_SEC,
             min_rate_bytes_per_sec: DEFAULT_WRITE_THROTTLE_MIN_RATE_BYTES_PER_SEC,
+            max_graded_delay_millis: DEFAULT_WRITE_THROTTLE_MAX_GRADED_DELAY_MILLIS,
         }
     }
 
@@ -103,6 +110,7 @@ impl LifecycleWriteThrottlePolicy {
             max_delay_millis: DEFAULT_WRITE_THROTTLE_MAX_DELAY_MILLIS,
             max_rate_bytes_per_sec: DEFAULT_WRITE_THROTTLE_MAX_RATE_BYTES_PER_SEC,
             min_rate_bytes_per_sec: DEFAULT_WRITE_THROTTLE_MIN_RATE_BYTES_PER_SEC,
+            max_graded_delay_millis: DEFAULT_WRITE_THROTTLE_MAX_GRADED_DELAY_MILLIS,
         }
     }
 
@@ -126,6 +134,10 @@ impl LifecycleWriteThrottlePolicy {
         self.min_rate_bytes_per_sec
     }
 
+    pub(crate) const fn max_graded_delay_millis(self) -> u64 {
+        self.max_graded_delay_millis
+    }
+
     pub(crate) fn validate(self) -> LifecycleResult<()> {
         if self.enabled && (self.soft_ratio_permille == 0 || self.soft_ratio_permille >= 1000) {
             return Err(LifecycleError::InvalidConfig {
@@ -146,6 +158,12 @@ impl LifecycleWriteThrottlePolicy {
             return Err(LifecycleError::InvalidConfig {
                 field: "write_throttle_rate_bounds",
                 reason: "min rate must be nonzero and not exceed max rate",
+            });
+        }
+        if self.enabled && self.max_graded_delay_millis == 0 {
+            return Err(LifecycleError::InvalidConfig {
+                field: "write_throttle_max_graded_delay_millis",
+                reason: "must be nonzero when the write throttle is enabled",
             });
         }
         Ok(())

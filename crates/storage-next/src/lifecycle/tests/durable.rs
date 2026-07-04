@@ -3172,6 +3172,33 @@ fn graded_admission_paces_a_commit_only_when_the_rate_is_throttled() {
     );
 }
 
+#[test]
+fn graded_admission_caps_the_per_commit_delay() {
+    let branch = branch_id(0x95);
+    let backend = DurableTestBackend::new();
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime.with_admission_mode_for_test(LifecycleAdmissionMode::Graded);
+    runtime.with_admission_clock_for_test(Arc::new(ManualMaintenanceClock::default()));
+
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 25);
+    // A 1 GiB batch at the throttled near-stop rate would pace for many seconds uncapped; the cap
+    // bounds a single commit to the policy's max_graded_delay_millis (250 ms default).
+    let cap = runtime
+        .open_plan()
+        .lifecycle_config()
+        .write_throttle_policy()
+        .max_graded_delay_millis();
+    let delay = runtime.graded_write_throttle_delay_millis(1024 * 1024 * 1024);
+    assert!(
+        delay > 0,
+        "a large commit at a throttled rate must still be paced"
+    );
+    assert!(
+        delay <= cap,
+        "the per-commit graded delay must be capped at {cap} ms, got {delay} ms"
+    );
+}
+
 fn build_durable_l0_tables_with_scheduled_flushes(
     runtime: &mut LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
     branch: BranchId,

@@ -732,19 +732,20 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         if self.admission_mode != LifecycleAdmissionMode::Graded {
             return 0;
         }
+        let policy = self.open_plan.lifecycle_config().write_throttle_policy();
         let rate = self.admission_current_rate.get();
-        let max = self
-            .open_plan
-            .lifecycle_config()
-            .write_throttle_policy()
-            .max_rate_bytes_per_sec();
-        if rate >= max {
+        if rate >= policy.max_rate_bytes_per_sec() {
             return 0;
         }
         let mut bucket = self.admission_bucket.get();
         let delay = bucket.charge(batch_bytes, rate, self.admission_clock.now());
         self.admission_bucket.set(bucket);
-        u64::try_from(delay.as_millis()).unwrap_or(u64::MAX)
+        // Cap a single commit's sleep: at the near-stop floor rate a large batch would otherwise pace
+        // for seconds (batch_bytes / 16 KiB/s). Beyond the cap, admit the write — it grows L0 toward
+        // the hard stop, which then rejects with a bounded retry-wait instead of a multi-second sleep.
+        u64::try_from(delay.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(policy.max_graded_delay_millis())
     }
 
     #[cfg(test)]

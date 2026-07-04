@@ -234,6 +234,22 @@ suite; fault sweep specifically for the H1(b) sync-batching change.
 > token bucket paced by the batch's active bytes; legacy → the untouched quadratic). Default-legacy
 > regression: full `--lib` suite unchanged (3182). **BS3.4c** bakes `graded` after the out-of-band A/B.
 
+> **BS3.4b A/B + delay-cap fix** (`STRATA_ADMISSION` graded vs legacy, workload A, durable, 1 M / 4 M
+> @ 1 KB, dev box). The crawl reproduces — run throughput collapses from ~168 K (uncontended) to ~18 K
+> as L0 backs into the delay band. **Decisive result: throughput is compaction-bound, not
+> admission-bound** — legacy and graded land at the *same* ~18 K ops/s, because the mechanism only
+> redistributes the unavoidable wait, it does not raise the L0→L1 drain ceiling. So graceful admission
+> (BS3.4) cannot clear the ≥50 K primary gate on its own — **BS3.3 (compaction throughput) is the
+> required lever.** Graded *does* deliver its intended benefit: smoother mid-tail (update p99.9
+> 20 ms→9 ms, read max 139 ms→29 ms). One regression the A/B surfaced: uncapped, a large batch at the
+> near-stop floor rate paced for **7.2 s** in a single commit — worse than legacy's 3.6 s block-stall
+> (`115 KB / 16 KiB/s`). **Fix (landed):** a per-commit delay cap `max_graded_delay_millis` (250 ms
+> default) on `LifecycleWriteThrottlePolicy`; beyond it the write is admitted and the L0 hard-stop
+> handles the sustained extreme (a bounded retry-wait, not a multi-second sleep). Post-fix graded update
+> max **7.2 s → 2.0 s** (now below legacy's 3.6 s), p99.9 still ahead of legacy, throughput unchanged —
+> graded is now strictly ≥ legacy on latency. The residual ~2 s max is the shared L0 hard-stop wait,
+> which BS3.3 shortens by draining L0 faster.
+
 **Changes.**
 
 1. **Regrade L0 admission** (`lifecycle/compaction.rs:33-35`):
