@@ -63,7 +63,8 @@ becomes small and revertable. BS4.1, BS4.2/4.3, and BS4.4a are mutually independ
 | Slice | Content | Depends on |
 |---|---|---|
 | BS4.1 | O(1) sharded block cache **(✓ landed, dark)** | — (cache unreachable until 4c — safe window) |
-| BS4.2 | Filter frame **reader** + goldens + spec | — |
+| BS4.2a | Filter-frame **format codec** + goldens + spec + negatives **(✓ landed, dark)** | — |
+| BS4.2b | Reader wiring: `open_bytes`/`open_source` load + attach the filter | 4.2a, 4.1 |
 | BS4.3 | Filter frame **writer** (config-gated) | 4.2 shipped |
 | BS4.4a | `.rows()` conversions + OnceLock guard + equality fix + fallibility audit | — |
 | BS4.4b | The six design-forcing sites | 4a |

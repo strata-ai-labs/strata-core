@@ -748,6 +748,55 @@ impl TableBloomFilter {
         self.probes
     }
 
+    pub(crate) const fn bit_count(&self) -> usize {
+        self.bit_count
+    }
+
+    pub(crate) fn bits(&self) -> &[u8] {
+        &self.bits
+    }
+
+    /// BS4.2: reconstruct a filter from a persisted frame's raw parts (the inverse of the
+    /// `probes`/`key_count`/`bit_count`/`bits` accessors). Re-validates the bounds so a direct caller
+    /// is as safe as the frame decoder; a byte-exact round-trip of `{bits, bit_count, probes}`
+    /// reproduces every `might_contain` result, and `key_count` drives the empty short-circuit.
+    pub(crate) fn from_frame_parts(
+        probes: u8,
+        key_count: u64,
+        bit_count: u64,
+        bits: Vec<u8>,
+    ) -> TableRuntimeResult<Self> {
+        if probes > MAX_BLOOM_PROBES {
+            return Err(TableRuntimeError::InvalidRange {
+                field: "bloom_probes",
+            });
+        }
+        if bits.len() > MAX_BLOOM_BYTES {
+            return Err(TableRuntimeError::InvalidRange {
+                field: "bloom_bytes",
+            });
+        }
+        let bit_count =
+            usize::try_from(bit_count).map_err(|_| TableRuntimeError::InvalidRange {
+                field: "bloom_bits",
+            })?;
+        if bits.len() != bit_count.div_ceil(8) {
+            return Err(TableRuntimeError::InvalidRange {
+                field: "bloom_bits",
+            });
+        }
+        let key_count =
+            usize::try_from(key_count).map_err(|_| TableRuntimeError::InvalidRange {
+                field: "bloom_key_count",
+            })?;
+        Ok(Self {
+            bits,
+            bit_count,
+            probes,
+            key_count,
+        })
+    }
+
     fn insert_key(&mut self, key: &[u8]) {
         for probe in 0..self.probes {
             let bit = bloom_bit(key, probe, self.bit_count);

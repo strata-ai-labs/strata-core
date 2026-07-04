@@ -267,6 +267,9 @@ fn table_footer_rejects_magic_reserved_and_filter_fields_after_valid_crc() {
         Err(FormatError::InvalidValue { field: "reserved" })
     );
 
+    // BS4.2: a nonzero filter slot is no longer blanket-rejected; instead the layout validator rejects
+    // malformed ones — an offset without a length, or a filter that would sit inside the 64-byte
+    // header. All three cases here are malformed and must still be refused.
     for (filter_offset, filter_len) in [(1u64, 0u32), (0, 1), (1, 1)] {
         let mut filter = table_with_footer(&footer);
         let footer_start = filter.len() - TABLE_FOOTER_SIZE;
@@ -275,8 +278,8 @@ fn table_footer_rejects_magic_reserved_and_filter_fields_after_valid_crc() {
         refresh_table_crc(&mut filter);
         assert_eq!(
             decode_table_footer(&filter),
-            Err(FormatError::InvalidValue {
-                field: "filter_block"
+            Err(FormatError::InvalidLength {
+                field: "filter_block_offset"
             })
         );
     }
@@ -454,7 +457,8 @@ fn table_block_frame_rejects_empty_payloads_for_all_table_block_kinds() {
 
 #[test]
 fn table_block_frame_rejects_reserved_or_unknown_block_type() {
-    for block_type in [3u8, 99] {
+    // BS4.2 assigned block type 3 (filter); 0, 5, and 99 remain unassigned and must be rejected.
+    for block_type in [0u8, 5, 99] {
         let frame = frame(TableBlockKind::Data, TableCompression::Uncompressed);
         let mut bytes = encode_table_block_frame(&frame).expect("encode frame");
         bytes[0] = block_type;

@@ -88,6 +88,10 @@ pub(crate) use wal::{
     encode_wal_record_envelope_bytes_into, encode_wal_record_into_reusing,
     encode_wal_segment_header, WalRecord, WalSegmentHeader,
 };
+// BS4.2: the filter-frame codec + parts, re-exported for the bloom round-trip test. BS4.2b promotes
+// this to a non-test export when the reader consumes the loaded filter.
+#[cfg(test)]
+pub(crate) use table::{decode_filter_frame, encode_filter_frame, TableFilterFrame};
 #[cfg(test)]
 pub(crate) use wal::{encode_wal_record, encode_wal_record_envelope, WalRecordEnvelope};
 
