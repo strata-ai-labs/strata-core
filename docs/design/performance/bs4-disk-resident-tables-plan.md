@@ -62,7 +62,7 @@ becomes small and revertable. BS4.1, BS4.2/4.3, and BS4.4a are mutually independ
 
 | Slice | Content | Depends on |
 |---|---|---|
-| BS4.1 | O(1) sharded block cache | — (cache unreachable until 4c — safe window) |
+| BS4.1 | O(1) sharded block cache **(✓ landed, dark)** | — (cache unreachable until 4c — safe window) |
 | BS4.2 | Filter frame **reader** + goldens + spec | — |
 | BS4.3 | Filter frame **writer** (config-gated) | 4.2 shipped |
 | BS4.4a | `.rows()` conversions + OnceLock guard + equality fix + fallibility audit | — |
@@ -72,6 +72,17 @@ becomes small and revertable. BS4.1, BS4.2/4.3, and BS4.4a are mutually independ
 | BS4.6 | Re-baseline + exit runs | all |
 
 ### BS4.1 — O(1) sharded block cache
+
+> **Landed (dark).** `LruSlab` intrusive slab-index LRU (`Vec<LruSlot>` + `HashMap` index + `u32`
+> prev/next links + free list, no `unsafe`) replaces the `BTreeMap`+`VecDeque`; `CacheState` delegates
+> with the public API / stats / `current_bytes` contract byte-identical. One refinement from the sketch:
+> the CPU-derived `[4,64]` shard count is **capped by capacity** so no shard is smaller than one
+> `TARGET_SHARD_BYTES` block — a pure-CPU count would give a small cache sub-block shards that
+> oversized-reject every insert (the pre-existing `..._without_tiny_shards` guard). This also keeps the
+> small-capacity eviction tests deterministic (they stay at their old shard count). Coverage: a
+> deterministic `LruSlab`-vs-reference proptest (eviction-victim exactness), machine-independent
+> shard-count units, and a concurrent hammer smoke. Verified `--lib` debug 3186 / release 3181,
+> clippy + fmt + wasm clean.
 
 Replace `CacheState { entries: BTreeMap, recency: VecDeque }` — whose `touch_recency` does
 an O(n) linear scan under the shard mutex (`table/cache.rs:606-615`) — with an intrusive

@@ -2,7 +2,7 @@
 
 use super::{TableCacheConfig, TableRuntimeError, TableRuntimeResult};
 use crate::observability::perf_trace;
-use std::collections::{hash_map::DefaultHasher, BTreeMap, VecDeque};
+use std::collections::{hash_map::DefaultHasher, HashMap};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -11,8 +11,14 @@ const MAX_TABLE_CACHE_ID_BYTES: usize = 512;
 const MAX_BLOOM_BYTES: usize = 16 * 1024 * 1024;
 const MAX_BLOOM_PROBES: u8 = 30;
 const MAX_DEBUG_BYTES: usize = 16;
-const TABLE_BLOCK_CACHE_MAX_SHARDS: usize = 16;
-const TABLE_BLOCK_CACHE_TARGET_SHARD_BYTES: usize = 64 * 1024;
+/// BS4.1: shard count is sized from CPU parallelism, clamped to this band (was capacity-derived,
+/// capped at 16 — a low ceiling on many-core boxes). More shards = less lock contention on the read
+/// hot path once BS4.4c routes lazy reads through the cache. The count is still capped by capacity so
+/// no shard is smaller than one block (`TARGET_SHARD_BYTES`): a shard that can't hold a block would
+/// oversized-reject every insert.
+const MIN_SHARDS: usize = 4;
+const MAX_SHARDS: usize = 64;
+const TARGET_SHARD_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct TableCacheTableId {
@@ -228,13 +234,212 @@ struct CacheShard {
     state: Mutex<CacheState>,
 }
 
+/// Null slot index for the intrusive LRU links and free list.
+const LRU_NIL: u32 = u32::MAX;
+
+/// One slot in the [`LruSlab`] slab. `entry` is `None` while the slot is on the free list — its key
+/// and value are dropped then, so real memory tracks the byte charge, not the slab's high-water mark.
+/// `next` doubles as the free-list link for a free slot.
+#[derive(Debug)]
+struct LruSlot {
+    entry: Option<(TableBlockCacheKey, Arc<[u8]>)>,
+    prev: u32,
+    next: u32,
+}
+
+/// BS4.1: an O(1) intrusive slab-index LRU. Replaces the `BTreeMap` + `VecDeque` whose `touch_recency`
+/// did an O(n) linear scan on every hit and insert. A `HashMap` gives O(1) lookup; a doubly-linked
+/// list threaded through the slab by `u32` indices (pointer-free, all-safe) gives O(1) ops. `head`
+/// is the LRU end (the eviction victim); `tail` is the MRU end (touch/insert target).
+#[derive(Debug)]
+struct LruSlab {
+    slots: Vec<LruSlot>,
+    index: HashMap<TableBlockCacheKey, u32>,
+    head: u32,
+    tail: u32,
+    free: u32,
+    bytes: usize,
+}
+
+impl LruSlab {
+    fn new() -> Self {
+        Self {
+            slots: Vec::new(),
+            index: HashMap::new(),
+            head: LRU_NIL,
+            tail: LRU_NIL,
+            free: LRU_NIL,
+            bytes: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.index.len()
+    }
+
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Look up `key`, moving it to the MRU end (touch-on-hit). Returns a clone of the cached bytes.
+    fn get(&mut self, key: &TableBlockCacheKey) -> Option<Arc<[u8]>> {
+        let idx = *self.index.get(key)?;
+        self.unlink(idx);
+        self.push_tail(idx);
+        Some(Arc::clone(
+            &self.slots[idx as usize]
+                .entry
+                .as_ref()
+                .expect("occupied slot has an entry")
+                .1,
+        ))
+    }
+
+    /// Insert a fresh entry at the MRU end. The caller guarantees `key` is absent and that eviction
+    /// has already made room; the byte charge is added here.
+    fn insert(&mut self, key: TableBlockCacheKey, value: Arc<[u8]>) {
+        self.bytes = self.bytes.saturating_add(value.len());
+        let idx = self.alloc();
+        self.slots[idx as usize].entry = Some((key.clone(), value));
+        self.index.insert(key, idx);
+        self.push_tail(idx);
+    }
+
+    /// Remove `key` if present, refunding its byte charge. Returns whether it was present.
+    fn remove(&mut self, key: &TableBlockCacheKey) -> bool {
+        let Some(idx) = self.index.remove(key) else {
+            return false;
+        };
+        self.detach_slot(idx);
+        true
+    }
+
+    /// Evict the LRU entry (the `head`). Returns whether one was evicted.
+    fn evict_lru(&mut self) -> bool {
+        if self.head == LRU_NIL {
+            return false;
+        }
+        let idx = self.head;
+        let key = self.detach_slot(idx);
+        self.index.remove(&key);
+        true
+    }
+
+    /// Remove every entry whose key belongs to `table`, refunding their byte charge. O(n) — used only
+    /// for invalidation, never on the read hot path.
+    fn remove_table(&mut self, table: &TableCacheTableId) -> usize {
+        let victims: Vec<u32> = self
+            .index
+            .iter()
+            .filter(|(key, _)| key.table() == table)
+            .map(|(_, &idx)| idx)
+            .collect();
+        let removed = victims.len();
+        for idx in victims {
+            let key = self.detach_slot(idx);
+            self.index.remove(&key);
+        }
+        removed
+    }
+
+    fn clear(&mut self) {
+        self.slots.clear();
+        self.index.clear();
+        self.head = LRU_NIL;
+        self.tail = LRU_NIL;
+        self.free = LRU_NIL;
+        self.bytes = 0;
+    }
+
+    /// Unlink slot `idx`, take its entry (dropping the value's memory), refund the byte charge, and
+    /// return it to the free list. Returns the entry's key so callers can drop it from the index
+    /// without a second borrow of `slots`.
+    fn detach_slot(&mut self, idx: u32) -> TableBlockCacheKey {
+        self.unlink(idx);
+        let (key, value) = self.slots[idx as usize]
+            .entry
+            .take()
+            .expect("occupied slot has an entry");
+        self.bytes = self.bytes.saturating_sub(value.len());
+        self.free(idx);
+        key
+    }
+
+    fn alloc(&mut self) -> u32 {
+        if self.free == LRU_NIL {
+            let idx = u32::try_from(self.slots.len()).expect("block cache slab fits in u32");
+            self.slots.push(LruSlot {
+                entry: None,
+                prev: LRU_NIL,
+                next: LRU_NIL,
+            });
+            idx
+        } else {
+            let idx = self.free;
+            self.free = self.slots[idx as usize].next;
+            idx
+        }
+    }
+
+    fn free(&mut self, idx: u32) {
+        self.slots[idx as usize].entry = None;
+        self.slots[idx as usize].prev = LRU_NIL;
+        self.slots[idx as usize].next = self.free;
+        self.free = idx;
+    }
+
+    fn unlink(&mut self, idx: u32) {
+        let prev = self.slots[idx as usize].prev;
+        let next = self.slots[idx as usize].next;
+        if prev == LRU_NIL {
+            self.head = next;
+        } else {
+            self.slots[prev as usize].next = next;
+        }
+        if next == LRU_NIL {
+            self.tail = prev;
+        } else {
+            self.slots[next as usize].prev = prev;
+        }
+    }
+
+    fn push_tail(&mut self, idx: u32) {
+        let old_tail = self.tail;
+        self.slots[idx as usize].prev = old_tail;
+        self.slots[idx as usize].next = LRU_NIL;
+        if old_tail == LRU_NIL {
+            self.head = idx;
+        } else {
+            self.slots[old_tail as usize].next = idx;
+        }
+        self.tail = idx;
+    }
+
+    /// Walk the list head→tail (LRU→MRU) — the observable recency order, for the property test.
+    #[cfg(test)]
+    fn lru_order(&self) -> Vec<TableBlockCacheKey> {
+        let mut order = Vec::with_capacity(self.index.len());
+        let mut cursor = self.head;
+        while cursor != LRU_NIL {
+            let slot = &self.slots[cursor as usize];
+            order.push(
+                slot.entry
+                    .as_ref()
+                    .expect("occupied slot has an entry")
+                    .0
+                    .clone(),
+            );
+            cursor = slot.next;
+        }
+        order
+    }
+}
+
 #[derive(Debug)]
 struct CacheState {
     enabled: bool,
     capacity_bytes: usize,
-    bytes: usize,
-    entries: BTreeMap<TableBlockCacheKey, Arc<[u8]>>,
-    recency: VecDeque<TableBlockCacheKey>,
+    lru: LruSlab,
     stats: TableBlockCacheStats,
 }
 
@@ -248,9 +453,7 @@ impl TableBlockCache {
                     state: Mutex::new(CacheState {
                         enabled: config.enabled(),
                         capacity_bytes,
-                        bytes: 0,
-                        entries: BTreeMap::new(),
-                        recency: VecDeque::new(),
+                        lru: LruSlab::new(),
                         stats: TableBlockCacheStats {
                             capacity_bytes,
                             ..TableBlockCacheStats::default()
@@ -279,17 +482,15 @@ impl TableBlockCache {
     /// total so cached blocks count against the budget.
     pub(crate) fn current_bytes(&self) -> u64 {
         self.shards.iter().fold(0u64, |total, shard| {
-            total.saturating_add(u64::try_from(shard.lock_state().bytes).unwrap_or(u64::MAX))
+            total.saturating_add(u64::try_from(shard.lock_state().lru.bytes()).unwrap_or(u64::MAX))
         })
     }
 
     pub(crate) fn get(&self, key: &TableBlockCacheKey) -> Option<Arc<[u8]>> {
         let mut state = self.shard_for_key(key).lock_state();
-        let bytes = state.entries.get(key).cloned();
-        if let Some(bytes) = bytes {
+        if let Some(bytes) = state.lru.get(key) {
             state.stats.hits = state.stats.hits.saturating_add(1);
             perf_trace::record_table_cache_hit();
-            touch_recency(&mut state.recency, key);
             Some(bytes)
         } else {
             state.stats.misses = state.stats.misses.saturating_add(1);
@@ -316,9 +517,8 @@ impl TableBlockCache {
             return Ok(CacheInsert::SkippedDisabled(bytes));
         }
 
-        if let Some(existing) = state.entries.get(&key).cloned() {
+        if let Some(existing) = state.lru.get(&key) {
             state.stats.duplicate_inserts = state.stats.duplicate_inserts.saturating_add(1);
-            touch_recency(&mut state.recency, &key);
             return Ok(CacheInsert::DuplicateExisting(existing));
         }
 
@@ -329,16 +529,13 @@ impl TableBlockCache {
         }
 
         evict_to_fit(&mut state, bytes.len());
-        if state.bytes.saturating_add(bytes.len()) > state.capacity_bytes {
+        if state.lru.bytes().saturating_add(bytes.len()) > state.capacity_bytes {
             state.stats.skipped_oversized = state.stats.skipped_oversized.saturating_add(1);
             perf_trace::record_table_cache_skipped_insert();
             return Ok(CacheInsert::SkippedOversized(bytes));
         }
 
-        state.bytes = state.bytes.saturating_add(bytes.len());
-        let recency_key = key.clone();
-        state.entries.insert(key, Arc::clone(&bytes));
-        touch_recency(&mut state.recency, &recency_key);
+        state.lru.insert(key, Arc::clone(&bytes));
         state.stats.inserts = state.stats.inserts.saturating_add(1);
         perf_trace::record_table_cache_insert();
         refresh_gauges(&mut state);
@@ -347,9 +544,7 @@ impl TableBlockCache {
 
     pub(crate) fn remove(&self, key: &TableBlockCacheKey) -> bool {
         let mut state = self.shard_for_key(key).lock_state();
-        if let Some(bytes) = state.entries.remove(key) {
-            state.bytes = state.bytes.saturating_sub(bytes.len());
-            remove_from_recency(&mut state.recency, key);
+        if state.lru.remove(key) {
             state.stats.removes = state.stats.removes.saturating_add(1);
             refresh_gauges(&mut state);
             true
@@ -362,19 +557,7 @@ impl TableBlockCache {
         let mut removed = 0usize;
         let mut states = self.lock_all_states();
         for state in &mut states {
-            let keys = state
-                .entries
-                .keys()
-                .filter(|key| key.table() == table)
-                .cloned()
-                .collect::<Vec<_>>();
-            removed = removed.saturating_add(keys.len());
-            for key in keys {
-                if let Some(bytes) = state.entries.remove(&key) {
-                    state.bytes = state.bytes.saturating_sub(bytes.len());
-                }
-                remove_from_recency(&mut state.recency, &key);
-            }
+            removed = removed.saturating_add(state.lru.remove_table(table));
             refresh_gauges(state);
         }
         if removed > 0 {
@@ -391,9 +574,7 @@ impl TableBlockCache {
     pub(crate) fn clear(&self) {
         let mut states = self.lock_all_states();
         for state in &mut states {
-            state.entries.clear();
-            state.recency.clear();
-            state.bytes = 0;
+            state.lru.clear();
             refresh_gauges(state);
         }
         let first_state = states
@@ -419,8 +600,8 @@ impl TableBlockCache {
         let shard_guards = self.lock_all_states();
         for cache_state in &shard_guards {
             let mut shard_stats = cache_state.stats;
-            shard_stats.entries = cache_state.entries.len();
-            shard_stats.bytes = cache_state.bytes;
+            shard_stats.entries = cache_state.lru.len();
+            shard_stats.bytes = cache_state.lru.bytes();
             shard_stats.capacity_bytes = cache_state.capacity_bytes;
             stats = merge_cache_stats(stats, shard_stats);
         }
@@ -576,7 +757,7 @@ impl TableBloomFilter {
 }
 
 fn evict_to_fit(state: &mut CacheState, incoming_bytes: usize) {
-    while state.bytes.saturating_add(incoming_bytes) > state.capacity_bytes {
+    while state.lru.bytes().saturating_add(incoming_bytes) > state.capacity_bytes {
         if !evict_one(state) {
             break;
         }
@@ -584,7 +765,7 @@ fn evict_to_fit(state: &mut CacheState, incoming_bytes: usize) {
 }
 
 fn evict_to_capacity(state: &mut CacheState) {
-    while state.bytes > state.capacity_bytes {
+    while state.lru.bytes() > state.capacity_bytes {
         if !evict_one(state) {
             break;
         }
@@ -592,31 +773,18 @@ fn evict_to_capacity(state: &mut CacheState) {
 }
 
 fn evict_one(state: &mut CacheState) -> bool {
-    while let Some(key) = state.recency.pop_front() {
-        if let Some(bytes) = state.entries.remove(&key) {
-            state.bytes = state.bytes.saturating_sub(bytes.len());
-            state.stats.evictions = state.stats.evictions.saturating_add(1);
-            refresh_gauges(state);
-            return true;
-        }
-    }
-    false
-}
-
-fn touch_recency(recency: &mut VecDeque<TableBlockCacheKey>, key: &TableBlockCacheKey) {
-    remove_from_recency(recency, key);
-    recency.push_back(key.clone());
-}
-
-fn remove_from_recency(recency: &mut VecDeque<TableBlockCacheKey>, key: &TableBlockCacheKey) {
-    if let Some(index) = recency.iter().position(|candidate| candidate == key) {
-        recency.remove(index);
+    if state.lru.evict_lru() {
+        state.stats.evictions = state.stats.evictions.saturating_add(1);
+        refresh_gauges(state);
+        true
+    } else {
+        false
     }
 }
 
 fn refresh_gauges(state: &mut CacheState) {
-    state.stats.entries = state.entries.len();
-    state.stats.bytes = state.bytes;
+    state.stats.entries = state.lru.len();
+    state.stats.bytes = state.lru.bytes();
     state.stats.capacity_bytes = state.capacity_bytes;
 }
 
@@ -624,8 +792,16 @@ fn cache_shard_count(config: TableCacheConfig) -> usize {
     if !config.enabled() || config.capacity_bytes() == 0 {
         return 1;
     }
-    (config.capacity_bytes() / TABLE_BLOCK_CACHE_TARGET_SHARD_BYTES)
-        .clamp(1, TABLE_BLOCK_CACHE_MAX_SHARDS)
+    // BS4.1: size shards from CPU parallelism (was capacity-derived, capped at 16 — a low ceiling on
+    // many-core boxes). `available_parallelism` is a query, not a thread spawn — it errors on wasm,
+    // where we fall back to the floor (C1: no new threads). Cap by capacity so no shard is smaller
+    // than one block: a shard that can't hold a block would oversized-reject every insert.
+    let by_cpu = std::thread::available_parallelism()
+        .map(std::num::NonZero::get)
+        .unwrap_or(MIN_SHARDS)
+        .clamp(MIN_SHARDS, MAX_SHARDS);
+    let by_capacity = (config.capacity_bytes() / TARGET_SHARD_BYTES).max(1);
+    by_cpu.min(by_capacity)
 }
 
 fn shard_capacities(capacity_bytes: usize, shard_count: usize) -> Vec<usize> {
@@ -703,4 +879,156 @@ fn fmt_bounded_bytes(formatter: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::R
         write!(formatter, "...({} bytes)", bytes.len())?;
     }
     Ok(())
+}
+
+/// BS4.1: property test for the intrusive `LruSlab` — it must produce byte-for-byte the same recency
+/// order, eviction victims, byte charge, and length as a naive reference LRU under every op sequence.
+/// Lives in-file because `LruSlab` and its links are private; deterministic (no sharding), so it is
+/// the home for eviction-victim exactness. `wasm32` is excluded like the other proptest suites.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod lru_slab_property_tests {
+    use super::{
+        LruSlab, TableBlockAddress, TableBlockCacheKey, TableBlockCacheKind, TableCacheTableId,
+    };
+    use proptest::collection::vec;
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    // A small key space so reuse, collisions, and free-slot recycling all occur under short sequences.
+    const KEY_SPACE: u8 = 6;
+
+    fn test_key(id: u8) -> TableBlockCacheKey {
+        TableBlockCacheKey::new(
+            TableCacheTableId::new([id]).expect("cache id"),
+            TableBlockAddress::new(
+                TableBlockCacheKind::Data,
+                u64::from(id),
+                4,
+                Some(u32::from(id)),
+            )
+            .expect("block address"),
+        )
+    }
+
+    fn payload(len: usize) -> Arc<[u8]> {
+        Arc::<[u8]>::from(vec![0u8; len])
+    }
+
+    /// Naive reference LRU: `order` runs LRU (front) → MRU (back), mirroring `LruSlab` head → tail.
+    #[derive(Default)]
+    struct ReferenceLru {
+        order: Vec<TableBlockCacheKey>,
+        sizes: HashMap<TableBlockCacheKey, usize>,
+        bytes: usize,
+    }
+
+    impl ReferenceLru {
+        fn contains(&self, key: &TableBlockCacheKey) -> bool {
+            self.sizes.contains_key(key)
+        }
+
+        fn insert(&mut self, key: TableBlockCacheKey, len: usize) {
+            self.bytes += len;
+            self.sizes.insert(key.clone(), len);
+            self.order.push(key);
+        }
+
+        fn get(&mut self, key: &TableBlockCacheKey) -> bool {
+            if self.sizes.contains_key(key) {
+                self.order.retain(|candidate| candidate != key);
+                self.order.push(key.clone());
+                true
+            } else {
+                false
+            }
+        }
+
+        fn remove(&mut self, key: &TableBlockCacheKey) -> bool {
+            match self.sizes.remove(key) {
+                Some(len) => {
+                    self.bytes -= len;
+                    self.order.retain(|candidate| candidate != key);
+                    true
+                }
+                None => false,
+            }
+        }
+
+        fn evict(&mut self) -> bool {
+            if self.order.is_empty() {
+                return false;
+            }
+            let victim = self.order.remove(0);
+            let len = self.sizes.remove(&victim).expect("evicted key is sized");
+            self.bytes -= len;
+            true
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    enum Op {
+        Insert { id: u8, len: usize },
+        Get { id: u8 },
+        Remove { id: u8 },
+        Evict,
+    }
+
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            (0u8..KEY_SPACE, 1usize..8usize).prop_map(|(id, len)| Op::Insert { id, len }),
+            (0u8..KEY_SPACE).prop_map(|id| Op::Get { id }),
+            (0u8..KEY_SPACE).prop_map(|id| Op::Remove { id }),
+            Just(Op::Evict),
+        ]
+    }
+
+    fn run_sequence(ops: &[Op]) -> Result<(), TestCaseError> {
+        let mut slab = LruSlab::new();
+        let mut model = ReferenceLru::default();
+        for op in ops {
+            match op {
+                // `LruSlab::insert` requires an absent key (CacheState screens duplicates upstream);
+                // mirror that contract.
+                Op::Insert { id, len } => {
+                    let key = test_key(*id);
+                    if !model.contains(&key) {
+                        slab.insert(key.clone(), payload(*len));
+                        model.insert(key, *len);
+                    }
+                }
+                Op::Get { id } => {
+                    let key = test_key(*id);
+                    prop_assert_eq!(slab.get(&key).is_some(), model.get(&key));
+                }
+                Op::Remove { id } => {
+                    let key = test_key(*id);
+                    prop_assert_eq!(slab.remove(&key), model.remove(&key));
+                }
+                Op::Evict => {
+                    prop_assert_eq!(slab.evict_lru(), model.evict());
+                }
+            }
+            // Identical recency order after every op ⇒ identical future eviction victims. Bytes and
+            // length must also track exactly.
+            prop_assert_eq!(slab.lru_order(), model.order.clone());
+            prop_assert_eq!(slab.bytes(), model.bytes);
+            prop_assert_eq!(slab.len(), model.order.len());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn lru_slab_matches_reference_under_every_op_sequence() {
+        let mut runner = TestRunner::new(Config {
+            failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+                "proptest-regressions/table/cache_lru_slab.txt",
+            ))),
+            ..Config::default()
+        });
+        runner
+            .run(&vec(op_strategy(), 1..=200), |ops| run_sequence(&ops))
+            .expect("LruSlab must match the reference LRU under every op sequence");
+    }
 }
