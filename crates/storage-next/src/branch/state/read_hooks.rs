@@ -331,9 +331,9 @@ fn source_row_counts(
     for (level_index, tables) in owned_levels.iter().enumerate() {
         for table in tables {
             if level_index == 0 {
-                counts.owned_l0 = counts.owned_l0.saturating_add(table.rows().len());
+                counts.owned_l0 = counts.owned_l0.saturating_add(table.row_count_usize());
             } else {
-                counts.owned_nonzero = counts.owned_nonzero.saturating_add(table.rows().len());
+                counts.owned_nonzero = counts.owned_nonzero.saturating_add(table.row_count_usize());
             }
         }
     }
@@ -344,10 +344,12 @@ fn source_row_counts(
         for (level_index, tables) in layer.owned_levels().iter().enumerate() {
             for table in tables {
                 if level_index == 0 {
-                    counts.inherited_l0 = counts.inherited_l0.saturating_add(table.rows().len());
+                    counts.inherited_l0 =
+                        counts.inherited_l0.saturating_add(table.row_count_usize());
                 } else {
-                    counts.inherited_nonzero =
-                        counts.inherited_nonzero.saturating_add(table.rows().len());
+                    counts.inherited_nonzero = counts
+                        .inherited_nonzero
+                        .saturating_add(table.row_count_usize());
                 }
             }
         }

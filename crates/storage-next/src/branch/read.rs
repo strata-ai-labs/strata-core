@@ -586,7 +586,7 @@ impl BranchOwnedTable {
         let reader = reader
             .into_materialized()
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
-        if reader.rows().is_empty() {
+        if reader.facts().row_count() == 0 {
             return Err(BranchRuntimeError::InvalidBranchState {
                 reason: "branch-owned table must not be empty",
             });
@@ -626,6 +626,12 @@ impl BranchOwnedTable {
 
     pub(crate) const fn facts(&self) -> &TableRuntimeFacts {
         self.descriptor.facts()
+    }
+
+    /// BS4.4a-i: the table's row count as `usize`, without materializing rows. Saturating — a table's
+    /// row count always fits `usize` (it equals a `usize` row length), so this never truncates.
+    pub(crate) fn row_count_usize(&self) -> usize {
+        usize::try_from(self.facts().row_count()).unwrap_or(usize::MAX)
     }
 
     pub(crate) const fn level(&self) -> BranchLevel {
@@ -730,11 +736,8 @@ impl BranchInheritedLayer {
                     reason: "inherited table rows must match source branch",
                 });
             }
-            if table
-                .rows()
-                .iter()
-                .any(|row| row.commit_version().as_u64() > descriptor.fork_version().as_u64())
-            {
+            // BS4.4a-i: the sealed table's max commit version is on facts — no need to scan rows.
+            if table.facts().commit_range().max().as_u64() > descriptor.fork_version().as_u64() {
                 return Err(BranchRuntimeError::InvalidInheritedLayer {
                     reason: "inherited table rows must not be newer than the fork version",
                 });
@@ -4043,7 +4046,7 @@ fn read_view_validation_row_count(
             owned_levels
                 .iter()
                 .flatten()
-                .map(|table| table.rows().len())
+                .map(BranchOwnedTable::row_count_usize)
                 .sum::<usize>(),
         )
         .saturating_add(
@@ -4051,7 +4054,7 @@ fn read_view_validation_row_count(
                 .iter()
                 .filter(|layer| layer.status() != InheritedLayerStatus::Materialized)
                 .flat_map(|layer| layer.owned_levels().iter().flatten())
-                .map(|table| table.rows().len())
+                .map(BranchOwnedTable::row_count_usize)
                 .sum::<usize>(),
         )
 }

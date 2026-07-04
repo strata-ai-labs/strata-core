@@ -4424,3 +4424,52 @@ fn open_source_propagates_filter_frame_read_failure() {
         "the failure must be the filter read, after the four metadata reads"
     );
 }
+
+// ---- BS4.4a-i: materialization-free reader equality + the row_count == rows().len() invariant ----
+
+#[test]
+fn reader_equality_compares_fingerprint_without_materializing() {
+    let (bytes, _, _) = build_filtered_table_bytes(&persisted_filter_rows(), 2, 10);
+    let mut other = persisted_filter_rows();
+    other.push(put_row(b"echo".to_vec(), 5));
+    let (other_bytes, _, _) = build_filtered_table_bytes(&other, 2, 10);
+
+    let eager = |b: Vec<u8>| {
+        ImmutableTableReader::open_bytes(identity("bs44-eq"), b, TableReaderConfig::default())
+            .expect("open eager")
+    };
+    let lazy = |b: Vec<u8>| {
+        ImmutableTableReader::open_source(
+            identity("bs44-eq"),
+            BytesTableSource::new(b),
+            TableReaderConfig::default(),
+        )
+        .expect("open lazy")
+    };
+
+    // Same bytes compare equal in both open modes — and a lazy reader never materializes to compare.
+    assert_eq!(eager(bytes.clone()), eager(bytes.clone()));
+    assert_eq!(lazy(bytes.clone()), lazy(bytes.clone()));
+    // An eager and a lazy reader of the same table still compare equal (behavior-neutral vs the old
+    // row compare), even though only the eager fingerprint carries a content sha256.
+    assert_eq!(eager(bytes.clone()), lazy(bytes.clone()));
+    // Different content compares unequal.
+    assert_ne!(eager(bytes), eager(other_bytes));
+}
+
+#[test]
+fn reader_row_count_matches_materialized_length() {
+    let (bytes, _, table_rows) = build_filtered_table_bytes(&persisted_filter_rows(), 2, 10);
+    let reader = ImmutableTableReader::open_bytes(
+        identity("bs44-count"),
+        bytes,
+        TableReaderConfig::default(),
+    )
+    .expect("open");
+    // The invariant every COUNT conversion relies on: facts().row_count() == the materialized length.
+    assert_eq!(reader.facts().row_count(), table_rows.len() as u64);
+    assert_eq!(
+        usize::try_from(reader.facts().row_count()).expect("row count fits usize"),
+        reader.rows().len(),
+    );
+}

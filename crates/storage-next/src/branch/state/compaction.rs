@@ -1266,13 +1266,8 @@ impl BranchLocalState {
                             "compaction table ref must exist",
                         ),
                     })?;
-            count = count.saturating_add(u64::try_from(table.rows().len()).map_err(|_| {
-                BranchRuntimeError::InvalidCompaction {
-                    reason: BranchCompactionInvalidity::Generic(
-                        "compaction input row count must fit in u64",
-                    ),
-                }
-            })?);
+            // BS4.4a-i: the row count is on facts (u64) — no materialization needed.
+            count = count.saturating_add(table.facts().row_count());
         }
         Ok(count)
     }

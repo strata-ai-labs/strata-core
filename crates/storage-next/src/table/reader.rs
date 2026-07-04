@@ -106,6 +106,20 @@ impl TableContentFingerprint {
                 (Some(left), Some(right)) if left == right
             )
     }
+
+    /// BS4.4a-i: content equality without requiring a SHA-256 on both sides. Byte count + both CRC32s
+    /// pin byte-identical content; the SHA-256 is an extra check only when both sides carry it. Unlike
+    /// `matches_exact_content`, this treats an eager reader (SHA present) and a lazy reader (SHA absent)
+    /// over the same table as equal — matching the pre-BS4.4a row-compare behavior.
+    fn matches_content(self, other: Self) -> bool {
+        self.byte_count == other.byte_count
+            && self.table_crc32 == other.table_crc32
+            && self.metadata_crc32 == other.metadata_crc32
+            && match (self.content_sha256, other.content_sha256) {
+                (Some(left), Some(right)) => left == right,
+                _ => true,
+            }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -277,14 +291,13 @@ pub(crate) struct ImmutableTableReader<'a> {
 
 impl PartialEq for ImmutableTableReader<'_> {
     fn eq(&self, other: &Self) -> bool {
-        if self.config != other.config || self.facts != other.facts {
-            return false;
-        }
-        match (self.try_rows(), other.try_rows()) {
-            (Ok(left), Ok(right)) => left == right,
-            (Err(left), Err(right)) => left == right,
-            _ => false,
-        }
+        // BS4.4a-i: compare by content fingerprint instead of materializing both readers' rows. Sealed
+        // tables are content-immutable, so equal config + facts + fingerprint (byte count + CRC32s)
+        // implies byte-identical content. `matches_content` is lazy-safe and preserves the old
+        // row-compare behavior: an eager and a lazy reader of the same table still compare equal.
+        self.config == other.config
+            && self.facts == other.facts
+            && self.fingerprint.matches_content(other.fingerprint)
     }
 }
 

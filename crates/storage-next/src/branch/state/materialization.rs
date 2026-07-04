@@ -681,9 +681,8 @@ impl BranchLocalState {
         let mut summary = ExistingMaterializationReplacementSummary::default();
         for table in self.owned_levels().iter().flatten() {
             if table.materialization_source() == Some(source) {
-                let Ok(row_count) = u64::try_from(table.rows().len()) else {
-                    return None;
-                };
+                // BS4.4a-i: the row count is on facts (u64) — no materialization needed.
+                let row_count = table.facts().row_count();
                 summary.tables = summary.tables.saturating_add(1);
                 summary.rows = summary.rows.saturating_add(row_count);
                 if let Some(output_index) = materialized_table_output_index(
