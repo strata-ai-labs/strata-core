@@ -8,6 +8,7 @@
     )
 )]
 
+mod admission_ramp;
 mod background;
 mod branch_lifecycle;
 mod budget;

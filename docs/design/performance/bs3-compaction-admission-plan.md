@@ -218,6 +218,22 @@ suite; fault sweep specifically for the H1(b) sync-batching change.
 > byte pools bound write-path memory before the count grade at 512 MB / 8 GB / 48 GB. The
 > debt-adaptive rate ramp (change 2) is **BS3.4b**.
 
+> **BS3.4b landed (dark):** change 2 (the debt-adaptive rate ramp — `RocksDB` `SetupDelay`) shipped,
+> wired but **behind `STRATA_ADMISSION` (default `legacy` = the quadratic), because the ≥50K ops/s
+> A/F-crawl gate is out-of-band**. The pure mechanism is a new unit-tested module
+> `lifecycle/admission_ramp.rs` (`compaction_debt`, `next_write_rate` state machine ×0.8/×1.25/×0.6/×1.4
+> clamped `[16 KiB/s, 16 MiB/s]`, `WriteRateBucket` token bucket). Runtime state (`admission_mode`,
+> `admission_clock`, `current_rate`/`last_debt`/bucket `Cell`s) lives on `LifecycleDurableLocalRuntime`.
+> Two refinements from the plan sketch: (1) the event-cadence recompute rides inside
+> **`republish_all_branch_snapshots`** — the single point *both* the inline and background install
+> paths (and rotation) converge on — not `finish_publish_phase` (which only the background path hits);
+> (2) the ramp only engages **inside the L0 delay band** (`l0 ≥ urgent 20`) — below it the rate recovers
+> toward the ceiling so the commit path applies no pacing (the byte-threshold trigger RocksDB also uses
+> is deferred, as its 64 GiB constant isn't yet tier-scaled). Debt = `Σ (level_bytes − target)` with
+> `targets[0]=0`, so all L0 bytes count. The commit path branches on `is_graded_admission()` (graded →
+> token bucket paced by the batch's active bytes; legacy → the untouched quadratic). Default-legacy
+> regression: full `--lib` suite unchanged (3182). **BS3.4c** bakes `graded` after the out-of-band A/B.
+
 **Changes.**
 
 1. **Regrade L0 admission** (`lifecycle/compaction.rs:33-35`):

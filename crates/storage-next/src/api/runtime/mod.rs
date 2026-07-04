@@ -12,10 +12,10 @@ use crate::commit::{
     COMMIT_TIMELINE_SPACE,
 };
 use crate::lifecycle::{
-    collect_storage_pressure_with_budget, BackgroundBackpressureError, BackgroundTaskPriority,
-    CacheBackgroundMaintenanceStep, CloseOutcome, CloseOutcomeStatus,
-    DurableBackgroundMaintenanceStep, FlushFrozenRequest, FlushTableIdentitySeed,
-    FlushTableObjectId, InlineMaintenanceExecutor, LifecycleBranchCatalog,
+    collect_storage_pressure_with_budget, estimate_commit_batch_active_bytes,
+    BackgroundBackpressureError, BackgroundTaskPriority, CacheBackgroundMaintenanceStep,
+    CloseOutcome, CloseOutcomeStatus, DurableBackgroundMaintenanceStep, FlushFrozenRequest,
+    FlushTableIdentitySeed, FlushTableObjectId, InlineMaintenanceExecutor, LifecycleBranchCatalog,
     LifecycleBranchDescriptor, LifecycleBranchStatus, LifecycleCacheOpenRequest,
     LifecycleCacheRuntime, LifecycleCheckpointOutcome, LifecycleCodecId,
     LifecycleCompactionDrainRequest, LifecycleConfig, LifecycleDurableLocalOpenRequest,
@@ -2634,15 +2634,8 @@ impl<'a> StorageRuntime<'a> {
                         let mut runtime = slot.lock();
                         let result =
                             runtime.execute_durable_commit(runtime_batch.clone(), generation_guard);
-                        let throttle_delay_millis = write_throttle_delay_millis(
-                            runtime.last_write_admission().map_or(0, |admission| {
-                                admission.pressure().throttle_ratio_permille()
-                            }),
-                            runtime
-                                .open_plan()
-                                .lifecycle_config()
-                                .write_throttle_policy(),
-                        );
+                        let throttle_delay_millis =
+                            durable_commit_throttle_delay_millis(&runtime, &runtime_batch);
                         (
                             result,
                             runtime.last_write_admission(),
@@ -2658,15 +2651,8 @@ impl<'a> StorageRuntime<'a> {
                         perf_trace::record_commit_api_batch_clone_elapsed(clone_timer);
                         let result = runtime.execute_durable_commit(exec_batch, generation_guard);
                         let post_timer = perf_trace::start_timer();
-                        let throttle_delay_millis = write_throttle_delay_millis(
-                            runtime.last_write_admission().map_or(0, |admission| {
-                                admission.pressure().throttle_ratio_permille()
-                            }),
-                            runtime
-                                .open_plan()
-                                .lifecycle_config()
-                                .write_throttle_policy(),
-                        );
+                        let throttle_delay_millis =
+                            durable_commit_throttle_delay_millis(&runtime, &runtime_batch);
                         let snapshot = (
                             result,
                             runtime.last_write_admission(),
@@ -3613,6 +3599,31 @@ impl<'a> StorageRuntime<'a> {
             }),
         }
     }
+}
+
+/// BS3.4b: the per-commit write-throttle delay for a durable runtime, dispatched on the admission
+/// mode. Graded → the debt-adaptive token bucket (paced by the batch's active bytes); legacy → the
+/// quadratic P-controller below. Default is legacy until BS3.4c bakes graded after the out-of-band
+/// A/B.
+fn durable_commit_throttle_delay_millis<S>(
+    runtime: &LifecycleDurableLocalRuntime<'_, S>,
+    batch: &crate::commit::CommitBatch,
+) -> u64 {
+    if runtime.is_graded_admission() {
+        // Pacing is best-effort and the commit has already succeeded; a byte-estimate error
+        // (row-size overflow) falls back to 0 bytes → no pacing for this commit, never a failure.
+        let batch_bytes = estimate_commit_batch_active_bytes(batch).unwrap_or(0);
+        return runtime.graded_write_throttle_delay_millis(batch_bytes);
+    }
+    write_throttle_delay_millis(
+        runtime.last_write_admission().map_or(0, |admission| {
+            admission.pressure().throttle_ratio_permille()
+        }),
+        runtime
+            .open_plan()
+            .lifecycle_config()
+            .write_throttle_policy(),
+    )
 }
 
 /// Per-commit proportional write-throttle delay in milliseconds. Returns 0 below the policy's

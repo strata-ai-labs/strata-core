@@ -2154,7 +2154,9 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             self.reclaim_wal_after_flush();
         }
         // BS2.3: the background publish phase installed flushed/compacted/materialized tables;
-        // republish snapshots (a flush drain can touch several branches).
+        // republish snapshots (a flush drain can touch several branches). BS3.4b's graded-admission
+        // rate recompute rides inside `republish_all_branch_snapshots`, the one point both the
+        // background and inline install paths converge on.
         self.republish_all_branch_snapshots();
         result
     }

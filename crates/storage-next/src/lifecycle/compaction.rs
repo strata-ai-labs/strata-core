@@ -41,6 +41,16 @@ use strata_core_next::BranchId;
 const LEVEL_ZERO_COMPACTION_THRESHOLD: usize = 4;
 const LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD: usize = 20;
 const LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD: usize = 36;
+
+/// L0 slowdown (delay-band onset) grade, for the BS3.4b graded-admission rate ramp.
+pub(super) const fn level_zero_urgent_threshold() -> usize {
+    LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD
+}
+
+/// L0 hard-stop grade, for the BS3.4b near-stop braking + delay-band ceiling.
+pub(super) const fn level_zero_blocking_threshold() -> usize {
+    LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD
+}
 const NONZERO_LEVEL_COMPACTION_THRESHOLD: usize = 4;
 const NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD: usize = 8;
 const NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD: usize = 16;

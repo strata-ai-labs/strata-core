@@ -20,6 +20,7 @@ use crate::format::{
     encode_manifest, encode_wal_segment_header, DatabaseManifest, WalSegmentHeader,
 };
 use crate::layout::ObjectLayout;
+use crate::lifecycle::admission_ramp::LifecycleAdmissionMode;
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::service::{TableManifestService, WalServiceConfig};
@@ -3087,6 +3088,87 @@ fn build_cache_l0_tables_with_scheduled_flushes(
     runtime.catch_up_commit_frontier_for_test(
         CommitVersion::new(u64::try_from(table_count).expect("table count fits")),
         Timestamp::from_micros(10_000 + u64::try_from(table_count - 1).expect("table count fits")),
+    );
+}
+
+// BS3.4b — graded write-admission (debt-adaptive rate ramp). The rate recomputes inside
+// `republish_all_branch_snapshots` (the point the inline flush path also hits), so
+// `build_durable_l0_tables_with_scheduled_flushes` drives real event cadence. All use a manual clock
+// so the token bucket is deterministic.
+
+#[test]
+fn graded_admission_rate_stays_at_max_below_the_l0_delay_band() {
+    let branch = branch_id(0x91);
+    let backend = DurableTestBackend::new();
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime.with_admission_mode_for_test(LifecycleAdmissionMode::Graded);
+    runtime.with_admission_clock_for_test(Arc::new(ManualMaintenanceClock::default()));
+
+    let max_rate = runtime.admission_current_rate_for_test();
+    // 10 L0 tables is below the slowdown grade (20): the ramp must not engage.
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 10);
+    assert_eq!(
+        runtime.admission_current_rate_for_test(),
+        max_rate,
+        "graded rate must stay at the ceiling below the L0 slowdown grade"
+    );
+}
+
+#[test]
+fn graded_admission_rate_drops_inside_the_l0_delay_band() {
+    let branch = branch_id(0x92);
+    let backend = DurableTestBackend::new();
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime.with_admission_mode_for_test(LifecycleAdmissionMode::Graded);
+    runtime.with_admission_clock_for_test(Arc::new(ManualMaintenanceClock::default()));
+
+    let max_rate = runtime.admission_current_rate_for_test();
+    // 25 L0 tables sits inside the delay band (slowdown 20 .. stop 36): each flush install recomputes
+    // the rate via the ramp, so it drops below the ceiling.
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 25);
+    let throttled = runtime.admission_current_rate_for_test();
+    assert!(
+        throttled < max_rate,
+        "graded rate must ramp down inside the L0 delay band (ceiling {max_rate}, got {throttled})"
+    );
+}
+
+#[test]
+fn legacy_admission_leaves_the_graded_rate_untouched() {
+    // The default (legacy) path never touches the graded rate — the ramp is inert.
+    let branch = branch_id(0x93);
+    let backend = DurableTestBackend::new();
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    let max_rate = runtime.admission_current_rate_for_test();
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 25);
+    assert_eq!(
+        runtime.admission_current_rate_for_test(),
+        max_rate,
+        "legacy admission must not ramp the graded rate"
+    );
+}
+
+#[test]
+fn graded_admission_paces_a_commit_only_when_the_rate_is_throttled() {
+    let branch = branch_id(0x94);
+    let backend = DurableTestBackend::new();
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, &backend);
+    runtime.with_admission_mode_for_test(LifecycleAdmissionMode::Graded);
+    runtime.with_admission_clock_for_test(Arc::new(ManualMaintenanceClock::default()));
+
+    // At the un-throttled ceiling, even a large commit is not paced.
+    assert_eq!(
+        runtime.graded_write_throttle_delay_millis(10 * 1024 * 1024),
+        0,
+        "no pacing at the full write rate"
+    );
+    // Drop the rate into the delay band; then a large commit (frozen manual clock -> no accrued
+    // credit) is paced with a nonzero delay.
+    build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 25);
+    assert!(runtime.admission_current_rate_for_test() < 16 * 1024 * 1024);
+    assert!(
+        runtime.graded_write_throttle_delay_millis(10 * 1024 * 1024) > 0,
+        "a throttled rate must pace a large commit"
     );
 }
 

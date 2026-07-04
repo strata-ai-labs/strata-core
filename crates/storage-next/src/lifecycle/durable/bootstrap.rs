@@ -17,6 +17,10 @@ use crate::commit::{
     VisibleVersionTracker,
 };
 use crate::format::WalRecord;
+use crate::lifecycle::admission_ramp::{
+    admission_mode_from_env, LifecycleAdmissionMode, WriteRateBucket,
+};
+use crate::lifecycle::background::{MaintenanceClock, RealMaintenanceClock};
 use crate::lifecycle::{
     branch_resident_bytes, compaction_lane_cap, estimate_commit_batch_active_bytes,
     maintenance_ready_for_recovery_health, projected_commit_rotation_would_exceed_frozen_budget,
@@ -79,6 +83,16 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) last_wal_growth_outcome: Option<LifecycleWalGrowthOutcome>,
     pub(super) pressure_rejected_commit_branches: HashSet<BranchId>,
     pub(super) last_write_admission: Option<LifecycleWriteAdmissionOutcome>,
+    // BS3.4b graded write-admission (dark behind STRATA_ADMISSION). The debt-adaptive write rate is
+    // recomputed at structural-change events (`republish_all_branch_snapshots`, which both the inline
+    // and background install paths converge on) and enforced per-commit by the token bucket;
+    // `admission_clock` times both. `Cell` interior mutability keeps the commit/read paths `&self`,
+    // exactly like `retention_watermark` — the runtime is `!Sync` behind the runtime mutex.
+    pub(super) admission_mode: LifecycleAdmissionMode,
+    pub(super) admission_clock: Arc<dyn MaintenanceClock>,
+    pub(super) admission_current_rate: Cell<u64>,
+    pub(super) admission_last_debt: Cell<u64>,
+    pub(super) admission_bucket: Cell<WriteRateBucket>,
     // Cached manifest retention watermark for the per-commit growth/backpressure
     // checks. `Cell` keeps the read paths `&self` (no `&mut` cascade); invalidated
     // at checkpoint/flush completion and refreshed lazily. Interior mutability
@@ -226,6 +240,16 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
                 .map(CommitVersion::new),
             self.assembly_facts().manifest_flush_watermark(),
         );
+        // BS3.4b: seed the graded-admission rate at the un-throttled ceiling and the token bucket at
+        // the current clock. Production uses the real clock; tests swap in a manual clock via
+        // `with_admission_clock_for_test`. `admission_mode` defaults to `Legacy` unless STRATA_ADMISSION.
+        let admission_clock: Arc<dyn MaintenanceClock> = Arc::new(RealMaintenanceClock::new());
+        let admission_initial_rate = self
+            .open_plan
+            .lifecycle_config()
+            .write_throttle_policy()
+            .max_rate_bytes_per_sec();
+        let admission_now = admission_clock.now();
         let mut runtime = LifecycleDurableLocalRuntime {
             state: self.state,
             open_plan: self.open_plan,
@@ -249,6 +273,11 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             last_wal_growth_outcome: None,
             pressure_rejected_commit_branches: HashSet::new(),
             last_write_admission: None,
+            admission_mode: admission_mode_from_env(),
+            admission_clock,
+            admission_current_rate: Cell::new(admission_initial_rate),
+            admission_last_debt: Cell::new(0),
+            admission_bucket: Cell::new(WriteRateBucket::new(admission_now)),
             retention_watermark: Cell::new(CachedRetentionWatermark::Known(
                 retention_watermark_seed,
             )),
@@ -646,6 +675,102 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.last_write_admission
     }
 
+    /// BS3.4b: whether the durable runtime is on the graded (debt-adaptive rate) admission path.
+    /// The commit path branches on this to pick the token-bucket delay vs. the legacy quadratic.
+    pub(crate) fn is_graded_admission(&self) -> bool {
+        self.admission_mode == LifecycleAdmissionMode::Graded
+    }
+
+    /// BS3.4b (graded): recompute the debt-adaptive write rate at an install event. The rate is
+    /// updated *only* here (event cadence — the `RocksDB` `InstallSuperVersion` analog); the commit
+    /// path just reads it. The single global rate paces the writer to the most-behind branch (max
+    /// compaction debt). No-op on the legacy path.
+    pub(crate) fn recompute_admission_rate(&self) {
+        if self.admission_mode != LifecycleAdmissionMode::Graded {
+            return;
+        }
+        let mut worst_debt = 0u64;
+        let mut worst_l0 = 0usize;
+        for descriptor in self.branch_catalog.list_branches(false) {
+            let Ok(branch) = self.branch_catalog.branch_state(descriptor.branch_id()) else {
+                continue;
+            };
+            let per_level = branch.per_level_bytes();
+            let targets =
+                crate::lifecycle::compaction::nonzero_level_targets_from_level_bytes(per_level);
+            let debt = crate::lifecycle::admission_ramp::compaction_debt(per_level, &targets);
+            let l0 = branch.owned_levels().first().map_or(0, Vec::len);
+            if debt > worst_debt || (debt == worst_debt && l0 > worst_l0) {
+                worst_debt = debt;
+                worst_l0 = l0;
+            }
+        }
+        // The rate ramps *only* inside the L0 delay band (>= the slowdown/urgent grade). Below it,
+        // feed the ramp zero debt so it recovers (×1.4) back toward the un-throttled ceiling; the
+        // commit path then applies no pacing (rate == max). Within the band the debt direction
+        // (growing/shrinking as L0 fills/drains) drives ×0.8 vs ×1.25.
+        let grade_active = worst_l0 >= crate::lifecycle::compaction::level_zero_urgent_threshold();
+        let effective_debt = if grade_active { worst_debt } else { 0 };
+        let policy = self.open_plan.lifecycle_config().write_throttle_policy();
+        let new_rate = crate::lifecycle::admission_ramp::next_write_rate(
+            self.admission_current_rate.get(),
+            effective_debt,
+            self.admission_last_debt.get(),
+            worst_l0,
+            crate::lifecycle::compaction::level_zero_blocking_threshold(),
+            policy.max_rate_bytes_per_sec(),
+            policy.min_rate_bytes_per_sec(),
+        );
+        self.admission_current_rate.set(new_rate);
+        self.admission_last_debt.set(effective_debt);
+    }
+
+    /// BS3.4b (graded): the per-commit token-bucket delay in millis. `0` on the legacy path, and `0`
+    /// while the rate sits at the un-throttled ceiling (outside the delay band); otherwise the token
+    /// bucket paces this commit to the current rate.
+    pub(crate) fn graded_write_throttle_delay_millis(&self, batch_bytes: u64) -> u64 {
+        if self.admission_mode != LifecycleAdmissionMode::Graded {
+            return 0;
+        }
+        let rate = self.admission_current_rate.get();
+        let max = self
+            .open_plan
+            .lifecycle_config()
+            .write_throttle_policy()
+            .max_rate_bytes_per_sec();
+        if rate >= max {
+            return 0;
+        }
+        let mut bucket = self.admission_bucket.get();
+        let delay = bucket.charge(batch_bytes, rate, self.admission_clock.now());
+        self.admission_bucket.set(bucket);
+        u64::try_from(delay.as_millis()).unwrap_or(u64::MAX)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_admission_mode_for_test(&mut self, mode: LifecycleAdmissionMode) {
+        self.admission_mode = mode;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn admission_current_rate_for_test(&self) -> u64 {
+        self.admission_current_rate.get()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_admission_clock_for_test(&mut self, clock: Arc<dyn MaintenanceClock>) {
+        let now = clock.now();
+        self.admission_clock = clock;
+        self.admission_bucket.set(WriteRateBucket::new(now));
+        self.admission_current_rate.set(
+            self.open_plan
+                .lifecycle_config()
+                .write_throttle_policy()
+                .max_rate_bytes_per_sec(),
+        );
+        self.admission_last_debt.set(0);
+    }
+
     fn require_generation_guard(
         branch_id: BranchId,
         generation: CommitBranchGeneration,
@@ -893,6 +1018,12 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         for descriptor in self.branch_catalog.list_branches(false) {
             self.publish_branch_snapshot(descriptor.branch_id());
         }
+        // BS3.4b: every structural change (rotation / flush install / compaction install) republishes
+        // here — the RocksDB `InstallSuperVersion` analog and the event-cadence point where the
+        // graded-admission write rate is recomputed from the settled branch shapes. A flush that grew
+        // L0 raises debt (rate down); a compaction that drained it lowers debt (rate recovers). No-op
+        // on the legacy path.
+        self.recompute_admission_rate();
     }
 
     /// BS2.3: drop a branch's slot on delete. A racing reader completes on the snapshot it holds.
