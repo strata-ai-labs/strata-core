@@ -39,6 +39,10 @@ pub(crate) struct ImmutableTableMetadata {
     index: TableIndexBlock,
     properties: TableProperties,
     byte_count: u64,
+    // BS4.2b: the footer's filter slot (0 = absent), so the lazy reader can range-fetch the filter
+    // frame without reading the whole table. Validated as part of the footer layout at decode time.
+    filter_block_offset: u64,
+    filter_block_frame_len: u32,
 }
 
 impl ImmutableTableMetadata {
@@ -56,6 +60,21 @@ impl ImmutableTableMetadata {
 
     pub(crate) const fn byte_count(&self) -> u64 {
         self.byte_count
+    }
+
+    /// BS4.2b: byte offset of the persisted filter frame, or `0` when absent.
+    pub(crate) const fn filter_block_offset(&self) -> u64 {
+        self.filter_block_offset
+    }
+
+    /// BS4.2b: length of the persisted filter frame, or `0` when absent.
+    pub(crate) const fn filter_block_frame_len(&self) -> u32 {
+        self.filter_block_frame_len
+    }
+
+    /// BS4.2b: whether a persisted filter frame is present (nonzero slot).
+    pub(crate) const fn has_filter(&self) -> bool {
+        self.filter_block_frame_len != 0
     }
 }
 
@@ -732,6 +751,9 @@ pub(crate) fn decode_immutable_table_metadata(
         index,
         properties,
         byte_count,
+        // BS4.2b: carry the footer's filter slot so the lazy reader can locate the frame.
+        filter_block_offset: footer.filter_block_offset(),
+        filter_block_frame_len: footer.filter_block_frame_len(),
     })
 }
 

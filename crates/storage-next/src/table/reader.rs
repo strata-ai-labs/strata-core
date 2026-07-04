@@ -13,9 +13,10 @@ use super::{
 };
 use crate::format::seek_immutable_table_data_block_point;
 use crate::format::{
-    decode_immutable_table, decode_immutable_table_data_block, decode_immutable_table_metadata,
-    decode_table_footer_metadata, decode_table_header, ImmutableTableMetadata,
-    TableDataBlockPointSeek, TableIndexEntry, MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE,
+    decode_filter_frame, decode_immutable_table, decode_immutable_table_data_block,
+    decode_immutable_table_metadata, decode_table_footer_metadata, decode_table_header,
+    ImmutableTableMetadata, TableDataBlockPointSeek, TableFilterFrame, TableIndexEntry,
+    MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE,
 };
 use crate::observability::perf_trace;
 use crate::row::{InternalKey, PhysicalKey};
@@ -168,6 +169,40 @@ impl TableReaderFilter {
         })
     }
 
+    /// BS4.2b: build a reader filter from a table's persisted filter frame, without scanning rows.
+    /// The frame's own CRC (verified during `decode_filter_frame`) plus the `from_frame_parts` bounds
+    /// are the integrity gate. The state carries the reader's own `facts`/`fingerprint`; the reader
+    /// attaches this directly, bypassing the `matches_table` gate (which guards *externally supplied*
+    /// filters and, for a lazy reader whose fingerprint carries no content hash, would reject it).
+    fn from_persisted_frame(
+        facts: TableRuntimeFacts,
+        fingerprint: TableContentFingerprint,
+        frame: TableFilterFrame,
+    ) -> TableRuntimeResult<Self> {
+        // A persisted frame only exists for a non-empty table, so an empty filter (`key_count == 0`)
+        // is malformed — and, since `might_contain` short-circuits an empty filter to
+        // `DefinitelyAbsent`, would false-absent every live row (silent data loss). Reject it rather
+        // than trust it; a well-formed filter over a non-empty table always has `key_count >= 1`.
+        if frame.key_count == 0 {
+            return Err(TableRuntimeError::InvalidRange {
+                field: "table_filter_key_count",
+            });
+        }
+        let filter = TableBloomFilter::from_frame_parts(
+            frame.probes,
+            frame.key_count,
+            frame.bit_count,
+            frame.bits,
+        )?;
+        Ok(Self {
+            state: TableReaderFilterState::Bloom(Arc::new(TableReaderBloomFilterState {
+                facts,
+                fingerprint,
+                filter,
+            })),
+        })
+    }
+
     /// Allocation address of the shared bloom state, or `None` when unavailable. Test-only: lets a
     /// clone-sharing test assert the filter is shared by `Arc` refcount rather than deep-copied.
     #[cfg(test)]
@@ -175,6 +210,20 @@ impl TableReaderFilter {
         match &self.state {
             TableReaderFilterState::Unavailable => None,
             TableReaderFilterState::Bloom(state) => Some(Arc::as_ptr(state) as usize),
+        }
+    }
+
+    /// The loaded bloom's shape `(probes, bit_count, key_count)`, or `None` when unavailable. Test-only:
+    /// lets a test prove the *persisted* filter was loaded (its shape differs from a rescan's).
+    #[cfg(test)]
+    pub(crate) fn bloom_shape(&self) -> Option<(u8, usize, usize)> {
+        match &self.state {
+            TableReaderFilterState::Unavailable => None,
+            TableReaderFilterState::Bloom(state) => Some((
+                state.filter.probes(),
+                state.filter.bit_count(),
+                state.filter.key_count(),
+            )),
         }
     }
 
@@ -389,6 +438,14 @@ impl<'a> TableReaderRows<'a> {
         match self {
             Self::Eager(rows) => rows.with_filter(filter),
             Self::Lazy(rows) => rows.with_filter(filter),
+        }
+    }
+
+    #[cfg(test)]
+    fn filter(&self) -> Option<&TableReaderFilter> {
+        match self {
+            Self::Eager(rows) => Some(&rows.filter),
+            Self::Lazy(rows) => rows.state.filter.as_ref(),
         }
     }
 }
@@ -896,8 +953,17 @@ impl<'a> ImmutableTableReader<'a> {
     ) -> TableRuntimeResult<Self> {
         require_validate_on_open(config);
         perf_trace::record_table_reader_open();
-        let (facts, fingerprint, rows) = decode_reader_rows(identity, &bytes)?;
-        let rows = EagerTableRows::from_vec(facts.clone(), fingerprint, rows, config)?;
+        let (facts, fingerprint, rows, persisted_filter) = decode_reader_rows(identity, &bytes)?;
+        // BS4.2b: a persisted filter always wins — load it (no scan) when present; otherwise fall back
+        // to the row scan, which still honors `eager_filter_mode`.
+        let rows = match persisted_filter {
+            Some(frame) => {
+                let filter =
+                    TableReaderFilter::from_persisted_frame(facts.clone(), fingerprint, frame)?;
+                EagerTableRows::from_vec_with_filter(rows, filter)
+            }
+            None => EagerTableRows::from_vec(facts.clone(), fingerprint, rows, config)?,
+        };
         let runtime_facts = TableReaderRuntimeFacts::eager(
             TableReaderOpenMode::EagerBytes,
             facts.data_block_count(),
@@ -923,13 +989,53 @@ impl<'a> ImmutableTableReader<'a> {
         let source = SharedTableSource::new(source);
         let (metadata, fingerprint) = read_table_metadata(&source)?;
         let facts = table_facts_from_metadata(identity, &metadata)?;
-        let runtime_facts = TableReaderRuntimeFacts::lazy(TableReaderOpenMode::LazySource);
+        // BS4.2b: load the persisted filter frame (a small targeted range read) before `source` moves
+        // into the lazy state, so the lazy reader can short-circuit misses without reading data blocks.
+        let filter = if metadata.has_filter() {
+            let filter_len = usize::try_from(metadata.filter_block_frame_len()).map_err(|_| {
+                TableRuntimeError::InvalidRange {
+                    field: "filter_block_frame_len",
+                }
+            })?;
+            let frame_bytes = read_exact_source(
+                &source,
+                metadata.filter_block_offset(),
+                filter_len,
+                "short table filter read",
+            )?;
+            let (frame, consumed) = decode_filter_frame(&frame_bytes)
+                .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
+            if consumed != frame_bytes.len() {
+                return Err(TableRuntimeError::InvalidRange {
+                    field: "filter_block_frame_len",
+                });
+            }
+            Some(TableReaderFilter::from_persisted_frame(
+                facts.clone(),
+                fingerprint,
+                frame,
+            )?)
+        } else {
+            None
+        };
+        // Attach the frame-loaded filter directly (not via `with_table_filter`): its
+        // `facts`/`fingerprint` are already the reader's own, and the lazy fingerprint carries no
+        // `content_sha256` (no full-content read), so the `matches_table` exact-content gate — meant
+        // for externally supplied filters — would spuriously reject it. The frame's CRC (verified in
+        // `decode_filter_frame`) is the real integrity guarantee.
+        let mut lazy = LazyTableRows::new(source, metadata);
+        let filter_available = match filter {
+            Some(filter) => lazy.with_filter(filter),
+            None => false,
+        };
+        let runtime_facts = TableReaderRuntimeFacts::lazy(TableReaderOpenMode::LazySource)
+            .with_filter_available(filter_available);
         Ok(Self {
             config,
             facts,
             fingerprint,
             runtime_facts,
-            rows: TableReaderRows::Lazy(Box::new(LazyTableRows::new(source, metadata))),
+            rows: TableReaderRows::Lazy(Box::new(lazy)),
         })
     }
 
@@ -968,6 +1074,13 @@ impl<'a> ImmutableTableReader<'a> {
 
     pub(crate) const fn runtime_facts(&self) -> TableReaderRuntimeFacts {
         self.runtime_facts
+    }
+
+    /// The reader's loaded filter, or `None` when unavailable/absent. Test-only: lets a test inspect
+    /// the filter's shape to prove the persisted frame was loaded rather than rescanned.
+    #[cfg(test)]
+    pub(crate) fn loaded_filter(&self) -> Option<&TableReaderFilter> {
+        self.rows.filter()
     }
 
     pub(crate) const fn byte_count(&self) -> u64 {
@@ -1433,7 +1546,12 @@ fn require_validate_on_open(config: TableReaderConfig) {
 fn decode_reader_rows(
     identity: TableIdentity,
     bytes: &[u8],
-) -> TableRuntimeResult<(TableRuntimeFacts, TableContentFingerprint, Vec<TableRow>)> {
+) -> TableRuntimeResult<(
+    TableRuntimeFacts,
+    TableContentFingerprint,
+    Vec<TableRow>,
+    Option<TableFilterFrame>,
+)> {
     let decoded = decode_immutable_table(bytes)
         .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
     perf_trace::record_table_data_blocks_decoded(decoded.data_blocks().len(), decoded.rows().len());
@@ -1446,7 +1564,10 @@ fn decode_reader_rows(
     super::validate_strictly_sorted_unique_rows(&rows)?;
     let facts = table_facts_from_decoded(identity, bytes, &decoded)?;
     let fingerprint = table_content_fingerprint_from_bytes(bytes)?;
-    Ok((facts, fingerprint, rows))
+    // BS4.2b: carry the persisted filter frame (BS4.2a already decoded + validated it) so the eager
+    // path can load it instead of rescanning every key.
+    let persisted_filter = decoded.filter().cloned();
+    Ok((facts, fingerprint, rows, persisted_filter))
 }
 
 fn validate_filter_rows_match_facts(
