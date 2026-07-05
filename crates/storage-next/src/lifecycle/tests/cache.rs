@@ -501,7 +501,11 @@ fn cache_compaction_is_preempted_when_flush_pressure_exists() {
             )],
         );
     }
-    {
+    // Flush must be at the blocking backlog (>= FROZEN_BLOCKING_FLUSH_THRESHOLD) for it to preempt
+    // compaction; below that, a frozen memtable is drained concurrently rather than preempting.
+    let flush_block = crate::lifecycle::compaction::FROZEN_BLOCKING_FLUSH_THRESHOLD;
+    for frozen_index in 0..flush_block {
+        let version = 99 + frozen_index as u64;
         let state = runtime
             .branch_catalog_mut_for_test()
             .branch_state_mut(
@@ -514,15 +518,15 @@ fn cache_compaction_is_preempted_when_flush_pressure_exists() {
         state
             .append_committed_rows_atomically(vec![active_pressure_put_row(
                 branch,
-                b"flush-preempt-frozen",
-                99,
-                99_000,
+                format!("flush-preempt-frozen-{frozen_index}").as_bytes(),
+                version,
+                version * 1_000,
                 512,
                 0x65,
             )])
             .expect("append frozen pressure row");
         state.rotate_active();
-        assert_eq!(state.frozen_table_count(), 1);
+        assert_eq!(state.frozen_table_count(), frozen_index + 1);
     }
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))

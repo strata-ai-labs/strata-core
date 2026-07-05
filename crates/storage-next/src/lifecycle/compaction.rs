@@ -39,8 +39,8 @@ use strata_core_next::BranchId;
 /// independently of this count grade (see the profile-tier matrix test). BS3.4b replaces the quadratic
 /// delay band between 20 and 36 with a debt-adaptive rate ramp.
 const LEVEL_ZERO_COMPACTION_THRESHOLD: usize = 4;
-const LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD: usize = 20;
-const LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD: usize = 36;
+pub(crate) const LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD: usize = 20;
+pub(crate) const LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD: usize = 36;
 
 /// L0 slowdown (delay-band onset) grade, for the BS3.4b graded-admission rate ramp.
 pub(super) const fn level_zero_urgent_threshold() -> usize {

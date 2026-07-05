@@ -125,6 +125,7 @@ pub(crate) use compaction::{
     LifecycleCompactionStatus, LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
     LifecycleMaterializationStatus, LifecycleStoragePressure, LifecycleStoragePressureReason,
     LifecycleStoragePressureSeverity, LifecycleTableRewriteDurability,
+    LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD,
 };
 #[allow(
     unused_imports,

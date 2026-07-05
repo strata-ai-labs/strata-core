@@ -3736,7 +3736,10 @@ fn storage_pressure_counts_active_byte_signal_when_table_rewrite_wins() {
             &value,
         ))
         .expect("append active pressure row");
-    for index in 0..8 {
+    // The L0 backlog must reach Urgent severity (>= LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD) to win the
+    // pressure reason over the (also Urgent) active-byte signal.
+    for index in 0..(crate::lifecycle::compaction::LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD + 4) {
+        let version = index as u64 + 2;
         install_l0_table(
             &mut state,
             branch,
@@ -3744,8 +3747,8 @@ fn storage_pressure_counts_active_byte_signal_when_table_rewrite_wins() {
             vec![put_row(
                 branch,
                 format!("active-byte-counter-{index}").as_bytes(),
-                index + 2,
-                (index + 2) * 1_000,
+                version,
+                version * 1_000,
                 b"value",
             )],
         );
@@ -4204,7 +4207,10 @@ fn generated_flush_and_compaction_pressure_overlap_preempts_rewrites() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     crate::observability::perf_trace::reset();
 
-    for frozen_tables in 1_usize..=3 {
+    // Preemption fires only at the blocking frozen backlog (>= FROZEN_BLOCKING_FLUSH_THRESHOLD);
+    // below it, compaction runs concurrently with flush rather than churning on preempt/requeue.
+    let flush_block = crate::lifecycle::compaction::FROZEN_BLOCKING_FLUSH_THRESHOLD;
+    for frozen_tables in flush_block..=(flush_block + 2) {
         let branch = branch_id(0x88 + u8::try_from(frozen_tables).expect("case fits"));
         let mut state = BranchLocalState::new(
             branch,
