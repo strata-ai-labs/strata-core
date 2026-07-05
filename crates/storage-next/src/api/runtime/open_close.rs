@@ -81,26 +81,31 @@ pub(super) fn durable_backend_handle_for_open(
     options: StorageOpenOptions,
     backend: &StorageBackend,
 ) -> StorageApiResult<DurableBackendHandleForOpen<'_>> {
-    match options.maintenance_scheduling_policy() {
-        StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue
-        | StorageMaintenanceSchedulingPolicy::Disabled => {
-            return Ok(DurableBackendHandleForOpen::Borrowed(
-                backend.as_backend_handle(),
-            ));
-        }
-        StorageMaintenanceSchedulingPolicy::Background
-        | StorageMaintenanceSchedulingPolicy::DeterministicInline => {}
-    }
-
+    // BS4.4h: prefer an owned handle so durable runtimes are `'static` in practice — the foundation
+    // BS4.4i needs to hold durable tables as lazy disk-resident readers. Every real durable backend can
+    // now produce an owned handle (localfs directly; the fault/reordering test backends via their
+    // `Arc`-shared state), so `EvaluateAndEnqueue` durable opens now take the owned path too (making the
+    // soak tests uniformly `'static`). Background/DeterministicInline still REQUIRE an owned handle (a
+    // background worker cannot hold a borrowed backend); only `EvaluateAndEnqueue`/`Disabled` fall back
+    // to borrowing, and only for a backend with no owned handle (an in-memory backend).
     #[cfg(feature = "localfs")]
     if let Some(handle) = backend.to_owned_backend_handle() {
         return Ok(DurableBackendHandleForOpen::Owned(handle));
     }
 
-    Err(StorageApiError::InvalidArgument {
-        field: "maintenance_scheduling_policy",
-        reason: "background durable opens with borrowed backend handles require evaluate-and-enqueue; background and deterministic-inline durable opens require an owned backend handle",
-    })
+    match options.maintenance_scheduling_policy() {
+        StorageMaintenanceSchedulingPolicy::Background
+        | StorageMaintenanceSchedulingPolicy::DeterministicInline => {
+            Err(StorageApiError::InvalidArgument {
+                field: "maintenance_scheduling_policy",
+                reason: "background and deterministic-inline durable opens require an owned backend handle",
+            })
+        }
+        StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue
+        | StorageMaintenanceSchedulingPolicy::Disabled => Ok(
+            DurableBackendHandleForOpen::Borrowed(backend.as_backend_handle()),
+        ),
+    }
 }
 
 pub(super) fn map_budget_policy(policy: StorageBudgetPolicy) -> StorageRuntimeBudget {

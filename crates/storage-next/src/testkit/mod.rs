@@ -215,7 +215,7 @@ mod fault {
     use std::collections::HashMap;
     use std::fmt;
     use std::num::NonZeroU64;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     /// Backend operation that can be targeted by deterministic test faults.
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -448,10 +448,14 @@ mod fault {
     }
 
     /// Test-only backend wrapper that injects deterministic operation failures.
-    #[derive(Debug)]
+    ///
+    /// BS4.4h: `state` is `Arc`-shared so the backend is `Clone` and can produce an owned
+    /// handle (`to_owned_backend_handle`). A clone shares the same fault state, so the
+    /// runtime's owned clone and the test's retained handle observe identical faults.
+    #[derive(Clone, Debug)]
     pub struct FaultingBackend<B> {
         inner: B,
-        state: Mutex<FaultState>,
+        state: Arc<Mutex<FaultState>>,
     }
 
     impl<B> FaultingBackend<B> {
@@ -459,7 +463,7 @@ mod fault {
         pub fn new(inner: B, script: FaultScript) -> Self {
             Self {
                 inner,
-                state: Mutex::new(FaultState::new(script)),
+                state: Arc::new(Mutex::new(FaultState::new(script))),
             }
         }
 
