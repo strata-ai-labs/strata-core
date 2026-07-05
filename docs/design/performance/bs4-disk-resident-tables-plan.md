@@ -1,8 +1,14 @@
 # BS4 — Disk-resident tables: implementation and test plan
 
 Status: **in progress** — 4.1, 4.2, 4.3, 4.4a–i landed (all prep + the behavior-neutral
-scaffolding); **remaining: 4.4j (flush/recovery lazy) → 4.4k (compaction outputs lazy) → 4.5
-(budget remodel) → 4.6 (exit)**. Milestone BS4 of `billion-scale-plan.md` (gaps
+scaffolding); **remaining: 4.4k (durable backend ownership) → 4.4j (flush/recovery lazy) → 4.4l
+(compaction outputs lazy) → 4.5 (budget remodel) → 4.6 (exit)**. Note the execution order: **4.4k
+runs before 4.4j** — an attempt at the flip (4.4j) revealed that holding a lazy reader borrows the
+backend indefinitely, so every durable runtime must be built from an owned/`'static` backend; the
+`into_materialized` bridge had been laundering that for the entire durable test suite (~392 sites
+assemble durable runtimes from short-lived borrowed backends). 4.4k makes ownership pervasive
+(behavior-neutral, bridge still present); only then can 4.4j delete the bridge. Milestone BS4 of
+`billion-scale-plan.md` (gaps
 G11–G16; unblocks G9/G20/G21). **This is the regime change**: today every durable table is
 fully resident *and decoded* in RAM and the dataset cannot exceed the memory budget; after
 BS4 the dataset lives on disk, reads fetch blocks on demand, and memory is bounded by caches
@@ -65,10 +71,12 @@ reads the entire object back to materialize it.
 
 Ordering rationale: consumer conversions are behavior-neutral on Eager readers (cursors and
 facts work identically), so they land **before** the constructor flip. The original single
-"flip" slice (4.4f) decomposed into **f→g→h→i** (all ✓ — constructor-extras, lazy-prep,
-backend-ownership, variant-collapse) plus the remaining **4.4j** (flush/recovery lazy) and
-**4.4k** (compaction outputs lazy); keeping those two separate is what keeps each bounded.
-BS4.1, BS4.2/4.3, and BS4.4a are mutually independent.
+"flip" slice (4.4f) has decomposed as each hidden prerequisite surfaced: **f→g→h→i** landed
+(constructor-extras, lazy-prep, API-backend-ownership, variant-collapse); the remaining chain is
+**4.4k → 4.4j → 4.4l** — **4.4k** (durable backend ownership, the prerequisite a failed 4.4j attempt
+uncovered) must precede **4.4j** (flush/recovery lazy — the flip), which precedes **4.4l** (compaction
+outputs lazy). Keeping each separate is what keeps each bounded. BS4.1, BS4.2/4.3, and BS4.4a are
+mutually independent.
 
 | Slice | Content | Depends on |
 |---|---|---|
@@ -85,9 +93,10 @@ BS4.1, BS4.2/4.3, and BS4.4a are mutually independent.
 | BS4.4g | Lazy-readiness prep — **behavior-neutral (✓ landed)**: oracle hatch (`materialize_rows_for_oracle`, bypasses the guard) + convert prod row-scans (fork/checkpoint) to cursors + source-guard; put/tombstone additive manifest extension (positional, `TableSummaryExtras::from_parts`); Arc-wrap `LazyTableState` metadata; resident/object size seam (`resident_size_bytes`); `fill_cache=false` for merge inputs. Nothing goes lazy yet; guard does not yet bite. | 4.4f |
 | BS4.4h | Backend ownership — **behavior-neutral (✓ landed)**: the lazy flip needs durable runtimes to be owned/`'static` (a `BranchOwnedTable` holds `ImmutableTableReader<'static>`). `Arc`-share the Mutex-backed fault/reordering test backends so they're `Clone` → ownable; `durable_backend_handle_for_open` prefers owned for every policy (so the soak tests take the owned path → `DurableOwned('static)`), keeping Background/DeterministicInline's owned requirement. Durable now owns in practice; the `Durable<'a>` variant collapse (183-site `'a` removal) is folded into 4.4i. | 4.4g |
 | BS4.4i | Collapse the dead borrowed `Durable` runtime variant — **behavior-neutral (✓ landed)**: deleting `into_materialized` (BS4.4j) needs a type-level `'static` durable runtime, but the generic `Durable(<'a>)` variant blocks it. Remove the variant + merge the 70 paired `Durable\|DurableOwned` arms into `DurableOwned`; remove the borrowed handle machinery (`DurableBackendHandleForOpen`, `open_durable_with_backend_handle`, `as_backend_handle`, `RuntimeSlot::new`); in-memory durable opens keep their errors (`durable_backend_handle_for_open` → `InvalidArgument`/`UnsupportedCapability`). Public `StorageRuntime<'a>`/`StorageOpenOutcome<'a>` retained via `PhantomData` (no 138-site API break). | 4.4h |
-| BS4.4j | The lazy flip — durable **flush + recovery** hold **lazy** `'static` readers (behavior-changing; passes the existing suite): delete the `into_materialized` bridge (`branch/read.rs:594`), constructor param → `'static`; recovery builds extras via `from_parts` from the manifest record + the BS4.4g row-split (un-gate the decoder `format/mod.rs:85`, re-add `TableRowSplit::put_rows()`/`tombstone_rows()` getters, thread a running **global** table index through the recovery walk) instead of `from_rows(reader.rows())` (`table_manifest.rs:708`); wire `deny_runtime_materialization()` into the **two** durable configs (`flush.rs:754`, `table_manifest.rs:680` — zero production callers today); lazy `resident_size_bytes` (`reader.rs:1159`); greenfield cold-read/eviction/fault suite. Recon-verified: **exactly 2 still-live materializers** trip the guard (both are this slice's work — the bridge + recovery extras); everything else is already cursor/facts-converted or the oracle hatch. Recovery becomes O(metadata) so **fast open is largely achieved here**. Guard bites here. Compaction outputs stay eager-resident (→ 4.4k); reader-budget charge stays full-object (→ 4.5). | 4.4i, 4.1, 4.2 |
-| BS4.4k | Compaction / materialization / rewrite **outputs install lazy** — the second half of the memory-model change: convert the two durable-output sites (`rewrite_publication.rs:747` `open_reader_from_validated_rows`, `materialization.rs:865` `open_bytes`) to metadata-only lazy opens over the just-written object (`extras` already in hand — no rescan), reversing the deliberate "reopen-avoided / rows-reused" optimization; thread `fill_cache=false`. **Split out of 4.4j** because eager readers never reach the `DenyRuntime` guard (`config.rs:176`), so post-flip these outputs stay correct + guard-safe — just fully resident; converting them is what would balloon the flip. Needed for the memory benefit (L1+ tables are compaction outputs ≈ most of a 100M dataset). | 4.4j |
-| BS4.5 | Budget remodel (unlocks dataset > budget) + fast-open regression: `require_table_reader_budget` charges **metadata-resident bytes** not full object bytes (`manifest_reader_materialized_budget_bytes` = `byte_count()` today, `table_manifest.rs:692`; flush charges too); raise `max_open_readers` (default 1024 < ~1,600 readers at 100M); demote `would_exceed_total` on the durable commit path to an observability gauge (the flip's lazy `resident_size_bytes` already defused it — no admission failure remains); pool rebalance (block cache ~50%, proportional `from_total_bytes` scaling preserved); update `budget_runtime.rs:310` (durable ≠ cache charge now). Fast-open (mostly delivered by 4.4j's O(metadata) recovery) rides here as a re-audit + open-time I/O-count regression test. | 4.4j, 4.4k |
+| **BS4.4k** (runs before 4.4j) | **Durable backend ownership** — the prerequisite a failed 4.4j attempt uncovered: a held lazy reader borrows the backend indefinitely, so every durable runtime must be built from an owned/`'static` backend. Make the durable service family's `table_object` reader-service concretely `'static` (own the backend `Arc` — `LifecycleDurableLocalServices.table_object` + `table_reader()`/`table_object()` accessors + the maintenance runner/enum fields), backed by an owned-handle path (`BackendHandle::to_static_if_owned` / assemble takes an owned backend). Then give every durable-runtime assembly an owned/`'static` backend: `Arc`-ify (4.4h pattern) or `Box::leak` the ~4 durable **test** backends (`CheckpointTestBackend`, `FlushBackend`, `FlushContractBackend`, memory) and thread ownership through the **~392** assembly sites (shared helpers `checkpoint/shared.rs`, `budget_runtime.rs`, `tests/flush.rs`, `testkit/lifecycle/flush.rs`). **Behavior-neutral** — `into_materialized` is still present, so nothing goes lazy yet; verifiable as zero-behavior-change against the full suite. This is the large, mechanical piece every recon missed (they inspected `.rows()` guard-tripping, not the reader-lifetime consequence of holding a lazy reader). Strong subagent candidate. | 4.4i |
+| BS4.4j | The lazy flip — durable **flush + recovery** hold **lazy** `'static` readers (behavior-changing). With 4.4k supplying owned backends the flip is now small: delete the `into_materialized` bridge (`branch/read.rs:594`), constructor param → `'static`; recovery builds extras via `from_parts` from the manifest record + BS4.4g row-split (un-gate decoder `format/mod.rs:85`, re-add `TableRowSplit::put_rows()`/`tombstone_rows()` getters, thread a running **global** table index; consume in the empty-level-skip walk order with a `cursor == len` post-check — **validated in the failed attempt**) instead of `from_rows(reader.rows())` (`table_manifest.rs:708`); wire `deny_runtime_materialization()` into the **two** durable configs (`flush.rs:754`, `table_manifest.rs:680`); lazy metadata-only `resident_size_bytes` (`reader.rs:1159` + `ImmutableTableMetadata::resident_metadata_bytes` — **validated**, cached blocks excluded to avoid double-counting the DB-wide cache total); switch the recovery validation cursor to `cursor_without_cache_fill` so recovery doesn't warm the block cache; greenfield cold-read/eviction/fault suite as an **internal** module (`api/tests/disk_resident_reads.rs` — `begin_test_capture` is `pub(crate)`). Guard bites here. Compaction outputs stay eager-resident (→ 4.4l); reader-budget charge stays full-object (→ 4.5). | 4.4k, 4.1, 4.2 |
+| BS4.4l | Compaction / materialization / rewrite **outputs install lazy** — the second half of the memory-model change: convert the two durable-output sites (`rewrite_publication.rs:747` `open_reader_from_validated_rows`, `materialization.rs:865` `open_bytes`) to metadata-only lazy opens over the just-written object (`extras` already in hand — no rescan), reversing the deliberate "reopen-avoided / rows-reused" optimization; thread `fill_cache=false`. **Split out of 4.4j** because eager readers never reach the `DenyRuntime` guard (`config.rs:176`), so post-flip these outputs stay correct + guard-safe — just fully resident; converting them is what would balloon the flip. Needed for the memory benefit (L1+ tables are compaction outputs ≈ most of a 100M dataset). | 4.4j |
+| BS4.5 | Budget remodel (unlocks dataset > budget) + fast-open regression: `require_table_reader_budget` charges **metadata-resident bytes** not full object bytes (`manifest_reader_materialized_budget_bytes` = `byte_count()` today, `table_manifest.rs:692`; flush charges too); raise `max_open_readers` (default 1024 < ~1,600 readers at 100M); demote `would_exceed_total` on the durable commit path to an observability gauge (the flip's lazy `resident_size_bytes` already defused it — no admission failure remains); pool rebalance (block cache ~50%, proportional `from_total_bytes` scaling preserved); update `budget_runtime.rs:310` (durable ≠ cache charge now). Fast-open re-audit + open-time I/O-count regression test (recovery still cursor-validates per table — `validate_manifest_reader_facts` is O(rows); demote it to a debug oracle here for true O(metadata) open). | 4.4j, 4.4l |
 | BS4.6 | Re-baseline + exit runs — build the 100M-tier harness (`#[ignore]` integration test + benchmark cell; **neither exists yet**); run the exit gates (100M@8GB load+serve, open ≤1 s, 10M scoreboard within 1.5×, `lazy_full_materialization == 0`); subcompaction honest re-A/B (G9); ledger + umbrella gap-table updates. | all |
 
 ### BS4.1 — O(1) sharded block cache
@@ -265,18 +274,48 @@ turned out to be a hard prerequisite; all but the last two have landed:
   is type-level `'static` (the flip's constructor demands a `'static` reader). `'a` retained on
   the public `StorageRuntime<'a>` via `PhantomData`.
 
-What remains is the actual regime change, split into **flush/recovery-lazy (4.4j)** and
-**compaction-outputs-lazy (4.4k)** — see below.
+What remains is the actual regime change: **durable backend ownership (4.4k, the prerequisite)** →
+**flush/recovery-lazy (4.4j, the flip)** → **compaction-outputs-lazy (4.4l)** — see below.
 
-### BS4.4j — The flip: flush + recovery hold lazy readers
+### BS4.4k — Durable backend ownership (prerequisite for the flip; behavior-neutral)
 
-Recon (post-4.4i) established this is **bounded**: durable flush (`flush.rs:751`) and recovery
-(`table_manifest.rs:676`) readers **already open lazy** (`open_reader` → `open_source` →
-`TableReaderRows::Lazy`), held `'static` after 4.4h/i but collapsed to eager at install by the
-bridge under an `Allow` policy. Exactly **two still-live materializers** trip the `DenyRuntime`
-guard once it is wired — both are this slice's work, both already carry in-code `BS4.4g` "delete/
-replace when durable readers go lazy" comments. Everything else on the durable path is already
-cursor/facts-converted (4.4a–e) or routes through the guard-bypassing oracle hatch.
+**Why this is a separate slice, discovered the hard way.** A held lazy reader (`BranchOwnedTable`
+holds `ImmutableTableReader<'static>`) borrows its backend for the life of the table, so a durable
+runtime can only be assembled from an owned/`'static` backend. The `into_materialized` bridge hid
+this by materializing rows into an owned copy at install — so a durable runtime could be built from a
+**short-lived borrowed** backend and still work. A first attempt at 4.4j deleted the bridge and hit
+**392 durable-test failures** (`InvalidConfig: durable-local storage requires an owned backend
+handle`): the entire durable test suite assembles runtimes from short-lived local backends. Every
+prior recon missed this — they inspected `.rows()` guard-tripping, not the reader-lifetime consequence
+of holding a lazy reader.
+
+- **Production service family (small, localized — validated in the attempt):** make
+  `LifecycleDurableLocalServices.table_object` concretely `TableObjectService<'static>` (own the
+  backend `Arc`) so `table_reader()`/`table_object()` yield `'static`; add
+  `BackendHandle::to_static_if_owned` (or have `assemble` take an owned handle). The cascade is
+  bounded — the `table_object` field + the two accessors + three maintenance-runner struct fields +
+  three `DurableBackgroundMaintenanceBuild` enum fields go `'static`; **no** method-lifetime sprawl.
+- **Test infra (the large, mechanical part):** every durable-runtime assembly must supply an owned/
+  `'static` backend. `Box::leak` (cleanest — a `&'static` borrowed handle is still `'static`, no
+  ownership transfer, and the test can still inspect the backend) the ~4 durable test backends
+  (`CheckpointTestBackend`, `FlushBackend`, `FlushContractBackend`, memory) and drop the `&` at the
+  **~392** assembly + service-construction sites (shared helpers `checkpoint/shared.rs`,
+  `budget_runtime.rs`, `tests/flush.rs`, `testkit/lifecycle/flush.rs`). `Arc`-share (4.4h-style) only
+  where a test needs the same live backend both owned-by-the-runtime and inspected after.
+
+**Behavior-neutral** — `into_materialized` still launders any residual borrow to `'static`, so no
+reader goes lazy yet. Verify with the full suite green (the 392 that broke in the attempt now pass) +
+the zero-new HEAD sweep. Strong subagent candidate for the ~392-site sweep.
+
+### BS4.4j — The flip: delete the bridge, hold lazy readers
+
+With 4.4k supplying owned backends the flip is now small — the **two still-live materializers** plus
+the guard wiring. Durable flush (`flush.rs:751`) and recovery (`table_manifest.rs:676`) readers
+already open lazy (`open_reader` → `open_source` → `TableReaderRows::Lazy`); the bridge is the only
+thing collapsing them to eager. The recovery `from_parts` threading, the lazy `resident_size_bytes`,
+and the no-cache-fill validation cursor below were all **implemented and validated** in the failed
+attempt — they compiled and the recovery/read logic was sound; only the backend-ownership
+prerequisite (now 4.4k) blocked the suite.
 
 - **Delete the bridge:** remove `reader.into_materialized()` (`branch/read.rs:594`); change the
   constructor param `reader: ImmutableTableReader<'_>` → `ImmutableTableReader<'static>` (the
@@ -297,26 +336,29 @@ cursor/facts-converted (4.4a–e) or routes through the guard-bypassing oracle h
   production callers today**) to the durable flush config (`flush.rs:754`) and recovery config
   (`table_manifest.rs:680`). Keep it off the compaction/build eager configs (harmless if it
   leaked — eager ignores policy — but keep the intent explicit).
-- **Lazy `resident_size_bytes`:** override `resident_size_bytes()` (`table/reader.rs:1159`,
-  returns `byte_count()` today) to return resident metadata (index Vec + properties + loaded
-  filter) + cached-block bytes for the lazy case. Only one caller needs it —
-  `BranchOwnedTable::approximate_size_bytes` (`branch/read.rs:691`, memory accounting); compaction
-  scoring reads `facts().byte_count()` directly. **NB:** there is no `object_size_bytes` method —
-  the seam is `resident_size_bytes()` vs `facts().byte_count()`. This change also **defuses
-  `would_exceed_total`** for durable data (the residency total drains through this seam), so no
-  existing durable budget test breaks.
-- **Fast open, for free:** removing the two materializers makes recovery/open **O(metadata)**
-  (lazy `open_source` reads footer + index + properties + a targeted filter range — no row scan).
-  So exit gate #2's latency is largely delivered here; BS4.5 only adds the regression test + an
-  audit for creep.
+- **Lazy `resident_size_bytes` — metadata-only (validated):** override `resident_size_bytes()`
+  (`table/reader.rs:1159`, returns `byte_count()` today) so the lazy case returns
+  `ImmutableTableMetadata::resident_metadata_bytes` = index-entry bytes + properties + filter-frame
+  length. **Exclude cached data blocks** — they have no per-table accounting and are already counted
+  DB-wide via the block cache's own resident bytes, so counting them here double-counts (the in-code
+  comment's "plus cached blocks" was wrong). Only `BranchOwnedTable::approximate_size_bytes`
+  (`branch/read.rs:691`) consumes it; compaction scoring reads `facts().byte_count()` directly (there
+  is no `object_size_bytes` method — the seam is `resident_size_bytes()` vs `facts().byte_count()`).
+  This **defuses `would_exceed_total`** for durable data (the residency total drains through this seam).
+- **Don't warm the cache during recovery (validated):** the recovery manifest-facts validation
+  (`validate_manifest_reader_facts`) does a full **cursor** pass per table (guard-safe, but now over a
+  lazy reader = disk I/O). Switch it to `reader.cursor_without_cache_fill()` so recovery does not warm
+  the block cache the cold-read suite expects to start empty. (Recovery stays O(rows) via this
+  validation; demoting it to a debug oracle for true O(metadata) fast open is deferred to BS4.5.)
 
-**Tests.** Greenfield `tests/disk_resident_reads.rs` cold-read / eviction / recovery suite (below):
-`lazy_full_materialization == 0`, `cache miss → hit`, branching cases. **Cost to watch:** tests that
-call `.rows()` on a durable-flush/recovery-backed table trip the guard once `DenyRuntime` is wired —
-bounded test-conversion work (→ cursors or the oracle hatch); likely small (most tests use
-`Allow`-policy testkit readers), verify early.
+**Tests.** Greenfield **internal** module `api/tests/disk_resident_reads.rs` (not an external
+`tests/` file — `perf_trace::begin_test_capture` is `pub(crate)`): cold read after reopen == pre-close
+capture; `lazy_full_materialization == 0`; cache miss → hit; cache-disabled correctness; branching
+reopen; read-fault typed error. The core three (reopen-correctness, no-materialization, cache
+miss→hit) were written and are the essential proof. With backend ownership done in 4.4k, the residual
+`.rows()`-guard test cost is the ~0–3 the recon predicted (`lifecycle/tests/compaction/mod.rs`).
 
-### BS4.4k — Compaction / materialization / rewrite outputs install lazy
+### BS4.4l — Compaction / materialization / rewrite outputs install lazy
 
 Durable compaction/materialization/rewrite **outputs** install **eager `'static`**
 (`rewrite_publication.rs:747` `open_reader_from_validated_rows` reusing in-hand rows;
@@ -421,7 +463,7 @@ zstd/readahead assessment recorded for BS6; ledger rows + umbrella gap-table upd
 - **C2 (cache mode):** cache-mode tables **stay Eager** (its dataset is genuinely
   RAM-resident by product policy — `open_bytes`, no backend objects) and it **keeps** its
   `would_exceed_total` rejection; only the durable path changes regime. Cache suites run
-  unmodified as a gate on 4.4j/4.4k and 4.5.
+  unmodified as a gate on 4.4j/4.4l and 4.5.
 - **C3 (profiles):** the pool rebalance preserves proportional `from_total_bytes` scaling —
   one code path for the 512 MB edge tier through the 64 GB server tier; validated at the
   explicit tier matrix (512 MB / 8 GB / 64 GB) including block-cache minimums (a tier must
@@ -450,11 +492,13 @@ zstd/readahead assessment recorded for BS6; ledger rows + umbrella gap-table upd
 ## Sequencing & PR discipline
 
 BS4.1 ∥ BS4.2→4.3 ∥ BS4.4, then 4.4a→4.4b→4.4c→4.4d→4.4e→4.4f→4.4g→4.4h→4.4i (all ✓) →
-**4.4j → 4.4k → 4.5 → 4.6** (remaining). One PR per slice, `BS4.{n}` titles, ≤1,500 LOC net each,
-standing gates every slice; format-touching slices (4.2/4.3, the manifest extension in 4.4f/g)
-additionally gate on goldens + fuzz + crash sweeps. The order is forced from 4.4j onward: the flip
-(4.4j) must precede compaction-outputs-lazy (4.4k), and 4.5's budget relaxation is only safe once
-**both** are lazy (else resident compaction outputs still blow the ceiling). The umbrella plan's
+**4.4k → 4.4j → 4.4l → 4.5 → 4.6** (remaining — note 4.4k executes before 4.4j; the letters are
+naming/discovery order, the arrows are execution order). One PR per slice, `BS4.{n}` titles, ≤1,500
+LOC net each, standing gates every slice; format-touching slices (4.2/4.3, the manifest extension in
+4.4f/g) additionally gate on goldens + fuzz + crash sweeps. The order is forced: backend ownership
+(4.4k) must precede the flip (4.4j); the flip must precede compaction-outputs-lazy (4.4l); and 4.5's
+budget relaxation is only safe once **both** 4.4j and 4.4l are lazy (else resident compaction outputs
+still blow the ceiling). The umbrella plan's
 "table-reader cache" step is amended: **deferred to the 1B tier** (G15), with the sizing arithmetic
 recorded.
 
