@@ -731,10 +731,88 @@ impl BranchLayout {
     }
 }
 
+/// Historical-fork COW (Option A): the `<= fork_version` version/timestamp extremes of an inherited
+/// layer that references at least one "straddle" table (one holding rows both at/below and above the
+/// fork). Computed once at construction so the per-mutation observed-row and read-view facts folds
+/// contribute the layer's in-fork extremes in O(1) instead of re-scanning the straddle tables on every
+/// recompute. A non-straddle layer (e.g. `fork_current`, every table `<= V`) is `None` and folds from
+/// cached facts, exactly as before.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct InheritedLayerReadViewSummary {
+    max_commit_version: Option<CommitVersion>,
+    timestamp_min: Option<Timestamp>,
+    timestamp_max: Option<Timestamp>,
+}
+
+impl InheritedLayerReadViewSummary {
+    pub(crate) const fn max_commit_version(self) -> Option<CommitVersion> {
+        self.max_commit_version
+    }
+
+    pub(crate) const fn timestamp_min(self) -> Option<Timestamp> {
+        self.timestamp_min
+    }
+
+    pub(crate) const fn timestamp_max(self) -> Option<Timestamp> {
+        self.timestamp_max
+    }
+}
+
+/// Fold the `<= fork_version` version/timestamp extremes of `owned_levels`, returning `Some` only when
+/// at least one table straddles the fork (otherwise the cheap facts-based folds already suffice and
+/// there is no scan to amortize). Straddle tables are scanned once here; non-straddle tables fold from
+/// their sealed facts — so the result equals `ObservedBranchRows::record_inherited_layer`'s full scan,
+/// which the observed-facts debug oracle re-checks on every mutation.
+fn compute_straddle_read_view_summary(
+    owned_levels: &[Vec<BranchOwnedTable>],
+    fork_version: CommitVersion,
+) -> BranchRuntimeResult<Option<InheritedLayerReadViewSummary>> {
+    let has_straddle = owned_levels
+        .iter()
+        .flatten()
+        .any(|table| table.facts().commit_range().max().as_u64() > fork_version.as_u64());
+    if !has_straddle {
+        return Ok(None);
+    }
+    let mut max_commit_version: Option<CommitVersion> = None;
+    let mut timestamp_min: Option<Timestamp> = None;
+    let mut timestamp_max: Option<Timestamp> = None;
+    for table in owned_levels.iter().flatten() {
+        if table.facts().commit_range().max().as_u64() <= fork_version.as_u64() {
+            record_commit_version(&mut max_commit_version, table.facts().commit_range().max());
+            let extras = table.extras();
+            if let Some(timestamp) = extras.timestamp_min() {
+                record_timestamp(&mut timestamp_min, &mut timestamp_max, timestamp);
+            }
+            if let Some(timestamp) = extras.timestamp_max() {
+                record_timestamp(&mut timestamp_min, &mut timestamp_max, timestamp);
+            }
+        } else {
+            try_for_each_reader_row(table.reader(), |row| {
+                if row.commit_version().as_u64() <= fork_version.as_u64() {
+                    record_commit_version(&mut max_commit_version, row.commit_version());
+                    record_timestamp(
+                        &mut timestamp_min,
+                        &mut timestamp_max,
+                        row.commit_timestamp(),
+                    );
+                }
+                Ok(())
+            })?;
+        }
+    }
+    Ok(Some(InheritedLayerReadViewSummary {
+        max_commit_version,
+        timestamp_min,
+        timestamp_max,
+    }))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchInheritedLayer {
     descriptor: InheritedLayerDescriptor,
     owned_levels: Vec<Vec<BranchOwnedTable>>,
+    straddle_read_view_summary: Option<InheritedLayerReadViewSummary>,
 }
 
 impl BranchInheritedLayer {
@@ -767,16 +845,24 @@ impl BranchInheritedLayer {
                     reason: "inherited table rows must match source branch",
                 });
             }
-            // BS4.4a-i: the sealed table's max commit version is on facts — no need to scan rows.
-            if table.facts().commit_range().max().as_u64() > descriptor.fork_version().as_u64() {
+            // Historical-fork COW (Option A): admit "straddle" tables — the parent's current boundary
+            // tables that hold rows both at/below and above the fork version, which a fork at V < the
+            // parent's current version must reference. Every inherited read/observe/materialize path
+            // caps per-row to `<= fork_version` (`for_inherited_layer`, the summary folds, the
+            // materialization cursor), so the `> V` rows are never visible. Reject only a table with no
+            // in-fork rows at all (`min > V`) — referencing it would be meaningless.
+            if table.facts().commit_range().min().as_u64() > descriptor.fork_version().as_u64() {
                 return Err(BranchRuntimeError::InvalidInheritedLayer {
-                    reason: "inherited table rows must not be newer than the fork version",
+                    reason: "inherited table has no rows at or before the fork version",
                 });
             }
         }
+        let straddle_read_view_summary =
+            compute_straddle_read_view_summary(&owned_levels, descriptor.fork_version())?;
         Ok(Self {
             descriptor,
             owned_levels,
+            straddle_read_view_summary,
         })
     }
 
@@ -785,9 +871,13 @@ impl BranchInheritedLayer {
         descriptor: InheritedLayerDescriptor,
         owned_levels: Vec<Vec<BranchOwnedTable>>,
     ) -> Self {
+        let straddle_read_view_summary =
+            compute_straddle_read_view_summary(&owned_levels, descriptor.fork_version())
+                .expect("straddle read-view summary for unchecked test inherited layer");
         Self {
             descriptor,
             owned_levels,
+            straddle_read_view_summary,
         }
     }
 
@@ -809,6 +899,12 @@ impl BranchInheritedLayer {
 
     pub(crate) fn owned_levels(&self) -> &[Vec<BranchOwnedTable>] {
         &self.owned_levels
+    }
+
+    /// The cached `<= fork_version` extremes for a straddle layer, or `None` when every table is
+    /// entirely at/below the fork (the folds then use the per-table facts fast path).
+    pub(crate) const fn straddle_read_view_summary(&self) -> Option<InheritedLayerReadViewSummary> {
+        self.straddle_read_view_summary
     }
 
     pub(crate) fn with_status(&self, status: InheritedLayerStatus) -> BranchRuntimeResult<Self> {
@@ -4082,7 +4178,7 @@ fn validate_read_view_inputs(
             &mut max_commit_version,
             &mut timestamp_min,
             &mut timestamp_max,
-        )?;
+        );
     }
     if max_commit_version != facts.max_commit_version()
         || timestamp_min != facts.timestamp_min()
@@ -4456,47 +4552,46 @@ fn record_inherited_layer_read_view_facts(
     max_commit_version: &mut Option<CommitVersion>,
     timestamp_min: &mut Option<Timestamp>,
     timestamp_max: &mut Option<Timestamp>,
-) -> BranchRuntimeResult<()> {
+) {
     if layer.status() == InheritedLayerStatus::Materialized {
-        return Ok(());
+        return;
     }
-    let fork_version = layer.fork_version();
-    for table in layer.owned_levels().iter().flatten() {
-        // BS4.4c: inherited rows are branch- and fork-validated at layer construction. When the whole
-        // table sits at or below the fork (always, for a validly-constructed layer), fold its facts +
-        // extras; the straddle branch (reachable only via unchecked test construction) streams the
-        // in-fork rows through the cursor.
-        if table.facts().commit_range().max().as_u64() <= fork_version.as_u64() {
-            let commit_max = table.facts().commit_range().max();
-            let extras = table.extras();
-            record_commit_version(max_commit_version, commit_max);
-            if let Some(timestamp) = extras.timestamp_min() {
-                record_timestamp(timestamp_min, timestamp_max, timestamp);
-            }
-            if let Some(timestamp) = extras.timestamp_max() {
-                record_timestamp(timestamp_min, timestamp_max, timestamp);
-            }
-            #[cfg(debug_assertions)]
-            debug_assert_eq!(
-                (
-                    Some(commit_max),
-                    extras.timestamp_min(),
-                    extras.timestamp_max()
-                ),
-                owned_read_view_facts_by_scan(table),
-                "read-view inherited facts diverged from a full row scan",
-            );
-        } else {
-            try_for_each_reader_row(table.reader(), |row| {
-                if row.commit_version().as_u64() <= fork_version.as_u64() {
-                    record_commit_version(max_commit_version, row.commit_version());
-                    record_timestamp(timestamp_min, timestamp_max, row.commit_timestamp());
-                }
-                Ok(())
-            })?;
+    // Historical-fork COW: a straddle layer folds its cached `<= fork_version` extremes in O(1) rather
+    // than re-scanning the straddle tables on every recompute.
+    if let Some(summary) = layer.straddle_read_view_summary() {
+        if let Some(version) = summary.max_commit_version() {
+            record_commit_version(max_commit_version, version);
         }
+        if let Some(timestamp) = summary.timestamp_min() {
+            record_timestamp(timestamp_min, timestamp_max, timestamp);
+        }
+        if let Some(timestamp) = summary.timestamp_max() {
+            record_timestamp(timestamp_min, timestamp_max, timestamp);
+        }
+        return;
     }
-    Ok(())
+    // Non-straddle layer: every table sits entirely at/below the fork, so fold its sealed facts + extras.
+    for table in layer.owned_levels().iter().flatten() {
+        let commit_max = table.facts().commit_range().max();
+        let extras = table.extras();
+        record_commit_version(max_commit_version, commit_max);
+        if let Some(timestamp) = extras.timestamp_min() {
+            record_timestamp(timestamp_min, timestamp_max, timestamp);
+        }
+        if let Some(timestamp) = extras.timestamp_max() {
+            record_timestamp(timestamp_min, timestamp_max, timestamp);
+        }
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            (
+                Some(commit_max),
+                extras.timestamp_min(),
+                extras.timestamp_max()
+            ),
+            owned_read_view_facts_by_scan(table),
+            "read-view inherited facts diverged from a full row scan",
+        );
+    }
 }
 
 /// BS4.4c oracle: fold a durable table's read-view facts (max commit version + timestamp bounds) by

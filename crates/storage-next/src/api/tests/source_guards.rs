@@ -334,6 +334,26 @@ fn source_guard_lazy_reachable_scans_stream_via_cursor() {
         );
     }
 
+    // Historical-fork COW: `record_inherited_layer_summary` (and the read-view fold) no longer scan a
+    // straddle table on every recompute — they fold a cached `<= fork_version` summary computed once by
+    // `compute_straddle_read_view_summary`, which is where the cursor scan now lives. So the summary
+    // fold need only avoid full materialization; the streaming guarantee moves to the helper below.
+    fn assert_no_full_materialization(source: &str, start: &str, end: &str, label: &str) {
+        let body = source
+            .split(start)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{label}: {start} is present"))
+            .split(end)
+            .next()
+            .unwrap_or_else(|| panic!("{label}: {start} precedes {end}"));
+        for forbidden in [".rows()", "materialize_rows_for_oracle"] {
+            assert!(
+                !body.contains(forbidden),
+                "{label} must not fully materialize a lazy table ({forbidden})"
+            );
+        }
+    }
+
     let state = include_str!("../../branch/state.rs");
     assert_streams_rows(
         state,
@@ -347,11 +367,19 @@ fn source_guard_lazy_reachable_scans_stream_via_cursor() {
         "fn record_commit_version",
         "record_inherited_layer",
     );
-    assert_streams_rows(
+    assert_no_full_materialization(
         state,
         "fn record_inherited_layer_summary",
         "fn branch_reachable_table_identity_exists",
         "record_inherited_layer_summary",
+    );
+
+    let read = include_str!("../../branch/read.rs");
+    assert_streams_rows(
+        read,
+        "fn compute_straddle_read_view_summary",
+        "struct BranchInheritedLayer",
+        "compute_straddle_read_view_summary",
     );
 
     let checkpoint = include_str!("../../lifecycle/checkpoint.rs");

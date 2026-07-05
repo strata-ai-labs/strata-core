@@ -1482,6 +1482,76 @@ fn branch_read_view_timestamp_scans_preserve_key_spaces() {
 }
 
 #[test]
+fn checked_inherited_layer_admits_straddle_table_and_caps_reads_at_fork() {
+    // Historical-fork COW (Option A, slice 1): a table straddling the fork (rows both `<= V` and `> V`)
+    // is the parent's current boundary table a fork at `V < current` must reference. Before this slice
+    // the CHECKED constructor rejected any table with `commit_version > fork_version`; now it admits
+    // straddle, caches the `<= V` extremes O(1), and reads cap at the fork.
+    let source = branch_id(0x71);
+    let child = branch_id(0x72);
+    let in_fork = storage_row_with(
+        source,
+        b"straddle-a".to_vec(),
+        3,
+        30,
+        Timestamp::EPOCH,
+        b"in-fork".to_vec(),
+    );
+    let post_fork = storage_row_with(
+        source,
+        b"straddle-b".to_vec(),
+        7,
+        20,
+        Timestamp::EPOCH,
+        b"post-fork".to_vec(),
+    );
+    let table = branch_owned_table(
+        source,
+        BranchLevel::ZERO,
+        "straddle-checked",
+        vec![in_fork.clone(), post_fork],
+    );
+
+    // The CHECKED constructor now ADMITS the straddle table (`branch_inherited_layer` unwraps `new`; it
+    // panics if `new` rejects), and caches a summary reflecting only the `<= V` rows (max version 3).
+    let layer = branch_inherited_layer(
+        source,
+        CommitVersion::new(5),
+        InheritedLayerStatus::Active,
+        vec![vec![table]],
+    );
+    let summary = layer
+        .straddle_read_view_summary()
+        .expect("straddle layer caches a read-view summary");
+    assert_eq!(summary.max_commit_version(), Some(CommitVersion::new(3)));
+
+    let mut child_state = BranchLocalState::empty(child);
+    child_state
+        .attach_inherited_layers(vec![layer])
+        .expect("attach straddle inherited layer");
+    let view = child_state.capture_read_view().expect("view");
+
+    // Latest read caps at the fork: the in-fork row is visible; the post-fork row is invisible.
+    let expected = rewrite_row_branch(&in_fork, source, child).expect("rewrite expected row");
+    assert_visible_row(
+        view.latest(&physical_key(child, b"straddle-a".to_vec()))
+            .expect("in-fork latest")
+            .as_ref(),
+        &expected,
+        BranchRowSource::Inherited {
+            source_branch_id: source,
+            layer_index: 0,
+        },
+    );
+    assert_eq!(
+        view.latest(&physical_key(child, b"straddle-b".to_vec()))
+            .expect("post-fork latest"),
+        None,
+        "a row committed after the fork version must not be visible through the inherited layer",
+    );
+}
+
+#[test]
 fn branch_inherited_timestamp_scans_rewrite_source_keys_before_grouping() {
     let source = branch_id(63);
     let child = branch_id(64);

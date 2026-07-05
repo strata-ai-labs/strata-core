@@ -694,24 +694,31 @@ impl ObservedBranchRows {
         if layer.status() == InheritedLayerStatus::Materialized {
             return;
         }
-        let fork_version = layer.fork_version();
+        // Historical-fork COW: a straddle layer folds its cached `<= fork_version` extremes in O(1)
+        // instead of re-scanning the straddle tables on every recompute. The cached values equal
+        // `record_inherited_layer`'s full scan, which the observed-facts debug oracle re-checks on
+        // every structural mutation.
+        if let Some(summary) = layer.straddle_read_view_summary() {
+            if let Some(version) = summary.max_commit_version() {
+                self.record_commit_version(version);
+            }
+            if let Some(timestamp) = summary.timestamp_min() {
+                self.record_timestamp(timestamp);
+            }
+            if let Some(timestamp) = summary.timestamp_max() {
+                self.record_timestamp(timestamp);
+            }
+            return;
+        }
+        // Non-straddle layer: every table sits entirely at/below the fork, fold from cached facts.
         for table in layer.owned_levels().iter().flatten() {
-            if table.facts().commit_range().max().as_u64() <= fork_version.as_u64() {
-                self.record_commit_version(table.facts().commit_range().max());
-                let extras = table.extras();
-                if let Some(timestamp) = extras.timestamp_min() {
-                    self.record_timestamp(timestamp);
-                }
-                if let Some(timestamp) = extras.timestamp_max() {
-                    self.record_timestamp(timestamp);
-                }
-            } else {
-                for_each_reader_row(table.reader(), |row| {
-                    if row.commit_version().as_u64() <= fork_version.as_u64() {
-                        self.record_commit_version(row.commit_version());
-                        self.record_timestamp(row.commit_timestamp());
-                    }
-                });
+            self.record_commit_version(table.facts().commit_range().max());
+            let extras = table.extras();
+            if let Some(timestamp) = extras.timestamp_min() {
+                self.record_timestamp(timestamp);
+            }
+            if let Some(timestamp) = extras.timestamp_max() {
+                self.record_timestamp(timestamp);
             }
         }
     }
