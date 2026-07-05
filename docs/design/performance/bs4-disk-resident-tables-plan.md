@@ -513,3 +513,16 @@ recorded.
 - Parallel manifest-replay opens for the 1 s gate — build only if the 4.5/4.6 measurement demands.
 - `resident_size_bytes` lazy estimate precision (metadata Vec + properties + loaded filter + cached
   blocks) vs a simpler footer-derived constant — decide in 4.4j against the budget-accounting tests.
+- **Historical-fork eager residency (durable-eager hole surfaced in the 4.4l review).** After 4.4j +
+  4.4l, every durable table in the flush/recovery/compaction/materialization/rewrite lifecycle installs
+  lazy. The one remaining durable-eager install is `build_snapshot_l0_tables`
+  (`branch/state/snapshot.rs:635`, `open_bytes`): harmless for the recovery/bootstrap checkpoint caller
+  (bounded memtable delta, owned-level rows excluded), but `fork_at_retained_version` /
+  `fork_at_retained_timestamp` reach it via `fork_snapshot_rows`, which walks the **entire** source
+  branch (active + frozen + all durable levels) into a `Vec<StorageRow>` and eager-installs it —
+  holding the full forked dataset resident at 100M. The ordinary `fork_current` is unaffected
+  (copy-on-write inherited layers, no row copy). **Not a simple `open_bytes → open_reader` swap:**
+  `fork_snapshot_rows` is already O(dataset)-resident by construction, so a real fix is a
+  streaming/publish-then-lazy-reopen redesign of the historical-fork path. Dedicated follow-up (not
+  4.5/4.6 scope); the 100M exit should either avoid time-travel forks or gate this behind a doc'd
+  limitation until it lands.
