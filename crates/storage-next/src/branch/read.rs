@@ -554,20 +554,23 @@ impl BranchOwnedTable {
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
         reader: ImmutableTableReader<'_>,
+        extras: TableSummaryExtras,
     ) -> BranchRuntimeResult<Self> {
-        Self::new_with_materialization_layer(branch_id, descriptor, reader, None)
+        Self::new_with_materialization_layer(branch_id, descriptor, reader, extras, None)
     }
 
     pub(crate) fn new_materialization_replacement(
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
         reader: ImmutableTableReader<'_>,
+        extras: TableSummaryExtras,
         materialization_source: BranchMaterializationSource,
     ) -> BranchRuntimeResult<Self> {
         Self::new_with_materialization_layer(
             branch_id,
             descriptor,
             reader,
+            extras,
             Some(materialization_source),
         )
     }
@@ -576,6 +579,7 @@ impl BranchOwnedTable {
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
         reader: ImmutableTableReader<'_>,
+        extras: TableSummaryExtras,
         materialization_source: Option<BranchMaterializationSource>,
     ) -> BranchRuntimeResult<Self> {
         if descriptor.facts() != reader.facts() {
@@ -583,6 +587,9 @@ impl BranchOwnedTable {
                 reason: "branch-owned table descriptor facts must match reader facts",
             });
         }
+        // BS4.4f keeps this eager-materialization bridge: a no-op for eager build-time readers, and the
+        // borrow→`'static` conversion for a recovery/durable reader. BS4.4g deletes it when durable readers
+        // become lazy and are held disk-backed.
         let reader = reader
             .into_materialized()
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
@@ -603,13 +610,20 @@ impl BranchOwnedTable {
                 reason: "branch-owned table rows must match the target branch",
             });
         }
-        // A sealed table is immutable, so compute its summary (timestamp +
-        // physical-key bounds, put/tombstone split) once here — in the off-lock
-        // build phase that already materializes the rows — and read it O(1)
-        // thereafter. This is the single construction choke point, so every
-        // branch-owned table carries an up-to-date summary by construction.
-        let extras = TableSummaryExtras::from_rows(reader.rows())
-            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        // BS4.4f: `extras` is supplied by the caller — the build artifact's precomputed summary
+        // (`BuiltTableArtifact::extras()`), a promoted table's cloned summary, or a recovery scan — instead
+        // of the constructor re-materializing every row. Readers are still eager here, so debug-validate the
+        // supplied summary against a full scan (BS4.4g relocates this behind the `rows()` oracle hatch when
+        // durable readers go lazy).
+        #[cfg(debug_assertions)]
+        {
+            let scanned = TableSummaryExtras::from_rows(reader.rows())
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+            debug_assert_eq!(
+                extras, scanned,
+                "branch-owned table extras must match a full row scan"
+            );
+        }
         Ok(Self {
             branch_id,
             descriptor,

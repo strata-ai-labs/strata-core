@@ -15,8 +15,10 @@ fn branch_owned_table_constructor_rejects_descriptor_and_branch_mismatches() {
     );
     let reader = immutable_reader("owned-constructor", vec![row]);
     let descriptor = branch_table_descriptor(BranchLevel::ZERO, &reader);
-    let owned =
-        BranchOwnedTable::new(branch, descriptor.clone(), reader.clone()).expect("owned table");
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras");
+    let owned = BranchOwnedTable::new(branch, descriptor.clone(), reader.clone(), extras)
+        .expect("owned table");
     assert_eq!(owned.branch_id(), branch);
     assert_eq!(owned.descriptor(), &descriptor);
     assert_eq!(owned.facts(), reader.facts());
@@ -34,8 +36,10 @@ fn branch_owned_table_constructor_rejects_descriptor_and_branch_mismatches() {
             b"other".to_vec(),
         )],
     );
+    let extras = crate::table::TableSummaryExtras::from_rows(other_reader.rows())
+        .expect("table summary extras");
     assert!(matches!(
-        BranchOwnedTable::new(branch, descriptor, other_reader),
+        BranchOwnedTable::new(branch, descriptor, other_reader, extras),
         Err(BranchRuntimeError::InvalidBranchState { .. })
     ));
 
@@ -51,7 +55,9 @@ fn branch_owned_table_constructor_rejects_descriptor_and_branch_mismatches() {
         )],
     );
     let wrong_branch_descriptor = branch_table_descriptor(BranchLevel::ZERO, &wrong_branch_reader);
-    let error = BranchOwnedTable::new(branch, wrong_branch_descriptor, wrong_branch_reader)
+    let extras = crate::table::TableSummaryExtras::from_rows(wrong_branch_reader.rows())
+        .expect("table summary extras");
+    let error = BranchOwnedTable::new(branch, wrong_branch_descriptor, wrong_branch_reader, extras)
         .expect_err("wrong branch table rejected");
     assert!(matches!(error, BranchRuntimeError::InvalidBranchRow { .. }));
     assert!(!error.to_string().contains("secret-payload"));
@@ -3525,6 +3531,8 @@ fn branch_compaction_nonzero_promotion_preserves_materialization_source() {
     );
     let reader = immutable_reader("promote-replacement", vec![row.clone()]);
     let descriptor = branch_table_descriptor(BranchLevel::new(1), &reader);
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras");
     state
         .install_owned_table_at_level(
             BranchLevel::new(1),
@@ -3532,6 +3540,7 @@ fn branch_compaction_nonzero_promotion_preserves_materialization_source() {
                 child,
                 descriptor,
                 reader,
+                extras,
                 materialization_source,
             )
             .expect("replacement table"),
@@ -4694,12 +4703,15 @@ fn branch_compaction_preserves_replacement_refs_for_single_materialization_sourc
             )],
         );
         let descriptor = branch_table_descriptor(BranchLevel::ZERO, &reader);
+        let extras = crate::table::TableSummaryExtras::from_rows(reader.rows())
+            .expect("table summary extras");
         state
             .install_l0_table(
                 BranchOwnedTable::new_materialization_replacement(
                     child,
                     descriptor,
                     reader,
+                    extras,
                     materialization_source,
                 )
                 .expect("replacement table"),

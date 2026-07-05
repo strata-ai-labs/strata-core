@@ -3,7 +3,7 @@
 use super::{
     FrozenTable, MutableTable, TableBloomFilter, TableBuilderConfig, TableCommitRange,
     TableIdentity, TableInternalKeyBytes, TableKeyRange, TableRow, TableRuntimeConfig,
-    TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
+    TableRuntimeError, TableRuntimeFacts, TableRuntimeResult, TableSummaryExtras,
 };
 use crate::format::{
     ImmutableTableStreamingEncoder, ImmutableTableStreamingOutput, StreamingTableRow,
@@ -17,12 +17,26 @@ use crate::row::StorageRow;
 pub(crate) struct BuiltTableArtifact {
     bytes: Vec<u8>,
     facts: TableRuntimeFacts,
+    // BS4.4f: the sealed table's summary (timestamp + physical-key bounds, put/tombstone split), computed
+    // once here from the rows so build-time installs thread it into `BranchOwnedTable::new` instead of the
+    // constructor re-scanning. `finish()` rejects empty tables, so `from_rows` never sees an empty slice.
+    extras: TableSummaryExtras,
     rows: Vec<TableRow>,
 }
 
 impl BuiltTableArtifact {
-    fn new(bytes: Vec<u8>, facts: TableRuntimeFacts, rows: Vec<TableRow>) -> Self {
-        Self { bytes, facts, rows }
+    fn new(
+        bytes: Vec<u8>,
+        facts: TableRuntimeFacts,
+        extras: TableSummaryExtras,
+        rows: Vec<TableRow>,
+    ) -> Self {
+        Self {
+            bytes,
+            facts,
+            extras,
+            rows,
+        }
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
@@ -31,6 +45,10 @@ impl BuiltTableArtifact {
 
     pub(crate) const fn facts(&self) -> &TableRuntimeFacts {
         &self.facts
+    }
+
+    pub(crate) const fn extras(&self) -> &TableSummaryExtras {
+        &self.extras
     }
 
     pub(crate) fn byte_count(&self) -> u64 {
@@ -271,7 +289,13 @@ fn build_table_artifact_from_streaming_output(
         byte_count,
     )?;
     perf_trace::record_table_build_facts_from_streaming_metadata();
-    Ok(BuiltTableArtifact::new(output.into_bytes(), facts, rows))
+    let extras = TableSummaryExtras::from_rows(&rows)?;
+    Ok(BuiltTableArtifact::new(
+        output.into_bytes(),
+        facts,
+        extras,
+        rows,
+    ))
 }
 
 fn validate_builder_row_shape(row: &TableRow) -> TableRuntimeResult<()> {

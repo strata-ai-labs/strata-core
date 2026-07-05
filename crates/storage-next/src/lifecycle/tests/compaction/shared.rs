@@ -146,7 +146,9 @@ fn owned_table(
     .expect("reader");
     let descriptor =
         BranchTableDescriptor::new(identity, reader.facts().clone(), level).expect("descriptor");
-    BranchOwnedTable::new(branch, descriptor, reader).expect("owned table")
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras");
+    BranchOwnedTable::new(branch, descriptor, reader, extras).expect("owned table")
 }
 
 pub(super) fn put_row(

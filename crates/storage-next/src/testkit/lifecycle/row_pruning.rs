@@ -505,7 +505,9 @@ fn install_l0_table(
     let descriptor =
         BranchTableDescriptor::new(identity, reader.facts().clone(), BranchLevel::ZERO)
             .map_err(pruning_error)?;
-    let table = BranchOwnedTable::new(branch, descriptor, reader).map_err(pruning_error)?;
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).map_err(pruning_error)?;
+    let table = BranchOwnedTable::new(branch, descriptor, reader, extras).map_err(pruning_error)?;
     state.install_l0_table(table).map_err(pruning_error)?;
     Ok(())
 }

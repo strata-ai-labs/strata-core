@@ -646,7 +646,9 @@ fn branch_owned_table(
 ) -> Result<BranchOwnedTable, TestkitError> {
     let reader = immutable_reader(identity, rows)?;
     let descriptor = branch_table_descriptor(level, &reader)?;
-    BranchOwnedTable::new(branch_id, descriptor, reader)
+    let extras = crate::table::TableSummaryExtras::from_rows(reader.rows())
+        .map_err(|err| TestkitError::new(format!("table summary extras failed: {err}")))?;
+    BranchOwnedTable::new(branch_id, descriptor, reader, extras)
         .map_err(|err| TestkitError::new(format!("branch-owned table failed: {err}")))
 }
 

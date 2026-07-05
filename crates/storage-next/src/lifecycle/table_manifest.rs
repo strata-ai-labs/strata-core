@@ -6,6 +6,7 @@ use super::{
     MaintenanceOutcomeStatus, StorageBudgetLedger,
 };
 use crate::backend::{BackendErrorKind, PublishError, PublishFailureKind};
+use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{
     BranchLevel, BranchTableDescriptor, InheritedLayerDescriptor, InheritedLayerStatus,
 };
@@ -27,7 +28,7 @@ use crate::service::{
 };
 use crate::table::{
     ImmutableTableReader, TableCursor, TableIdentity, TablePhysicalKeyBytes, TableReaderConfig,
-    TableRow, TableRuntimeFacts,
+    TableRow, TableRuntimeFacts, TableSummaryExtras,
 };
 use std::collections::BTreeMap;
 use strata_core_next::{BranchId, Timestamp};
@@ -691,6 +692,11 @@ fn branch_table_from_reader(
     let identity = reader.facts().identity().clone();
     let descriptor = BranchTableDescriptor::new(identity, reader.facts().clone(), level)
         .map_err(branch_error)?;
+    // BS4.4f: recovery has no build artifact, so recompute extras from the (eager) reader's rows — exactly
+    // what the constructor did before. BS4.4g sources this from the manifest record instead once durable
+    // recovery readers go lazy.
+    let extras = TableSummaryExtras::from_rows(reader.rows())
+        .map_err(|source| branch_error(BranchRuntimeError::TableRuntime { source }))?;
     match provenance {
         TableManifestTableProvenance::MaterializationReplacement {
             source_branch_id,
@@ -699,6 +705,7 @@ fn branch_table_from_reader(
             branch_id,
             descriptor,
             reader,
+            extras,
             BranchMaterializationSource::new(*source_branch_id, *fork_version),
         )
         .map_err(branch_error),
@@ -706,7 +713,7 @@ fn branch_table_from_reader(
         | TableManifestTableProvenance::SnapshotInstall
         | TableManifestTableProvenance::Compaction
         | TableManifestTableProvenance::Recovered => {
-            BranchOwnedTable::new(branch_id, descriptor, reader).map_err(branch_error)
+            BranchOwnedTable::new(branch_id, descriptor, reader, extras).map_err(branch_error)
         }
     }
 }

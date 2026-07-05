@@ -637,7 +637,9 @@ fn owned_table(
     .map_err(rewrite_error)?;
     let descriptor = BranchTableDescriptor::new(identity, reader.facts().clone(), level)
         .map_err(rewrite_error)?;
-    BranchOwnedTable::new(branch, descriptor, reader).map_err(rewrite_error)
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).map_err(rewrite_error)?;
+    BranchOwnedTable::new(branch, descriptor, reader, extras).map_err(rewrite_error)
 }
 
 fn latest_value(

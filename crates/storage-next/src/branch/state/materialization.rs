@@ -861,6 +861,7 @@ impl BranchLocalState {
         let mut tables = Vec::new();
         for artifact in artifacts {
             let identity = artifact.facts().identity().clone();
+            let extras = artifact.extras().clone();
             let reader = ImmutableTableReader::open_bytes(
                 identity.clone(),
                 artifact.into_bytes(),
@@ -873,6 +874,7 @@ impl BranchLocalState {
                 self.branch_id,
                 descriptor,
                 reader,
+                extras,
                 materialization_source,
             )?);
         }

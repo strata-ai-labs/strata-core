@@ -1480,6 +1480,7 @@ impl BranchLocalState {
     ) -> BranchRuntimeResult<Vec<BranchOwnedTable>> {
         let mut tables = Vec::with_capacity(artifacts.len());
         for artifact in artifacts {
+            let extras = artifact.extras().clone();
             let (bytes, facts, rows) = artifact.into_parts_with_rows();
             let identity = facts.identity().clone();
             let reader = ImmutableTableReader::from_validated_rows(
@@ -1496,10 +1497,11 @@ impl BranchLocalState {
                     self.branch_id,
                     descriptor,
                     reader,
+                    extras,
                     source,
                 )?
             } else {
-                BranchOwnedTable::new(self.branch_id, descriptor, reader)?
+                BranchOwnedTable::new(self.branch_id, descriptor, reader, extras)?
             };
             tables.push(table);
         }
@@ -1537,10 +1539,16 @@ impl BranchLocalState {
                 self.branch_id,
                 descriptor,
                 table.reader().clone(),
+                table.extras().clone(),
                 source,
             )
         } else {
-            BranchOwnedTable::new(self.branch_id, descriptor, table.reader().clone())
+            BranchOwnedTable::new(
+                self.branch_id,
+                descriptor,
+                table.reader().clone(),
+                table.extras().clone(),
+            )
         }
     }
 

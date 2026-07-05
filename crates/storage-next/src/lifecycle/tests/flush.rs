@@ -1745,7 +1745,9 @@ fn owned_table_for_row(
         crate::branch::facts::BranchLevel::ZERO,
     )
     .expect("descriptor");
-    BranchOwnedTable::new(branch, descriptor, reader).expect("owned table")
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras");
+    BranchOwnedTable::new(branch, descriptor, reader, extras).expect("owned table")
 }
 
 fn assert_operation_order(

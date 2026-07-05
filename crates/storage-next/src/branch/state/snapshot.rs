@@ -631,6 +631,7 @@ fn build_snapshot_l0_tables(
         let artifact = builder
             .build_from_storage_rows(identity.clone(), chunk)
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        let extras = artifact.extras().clone();
         let reader = ImmutableTableReader::open_bytes(
             identity.clone(),
             artifact.into_bytes(),
@@ -639,7 +640,9 @@ fn build_snapshot_l0_tables(
         .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
         let descriptor =
             BranchTableDescriptor::new(identity, reader.facts().clone(), BranchLevel::ZERO)?;
-        tables.push(BranchOwnedTable::new(branch_id, descriptor, reader)?);
+        tables.push(BranchOwnedTable::new(
+            branch_id, descriptor, reader, extras,
+        )?);
     }
     Ok(tables)
 }

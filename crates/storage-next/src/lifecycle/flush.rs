@@ -17,7 +17,7 @@ use crate::service::{
 };
 use crate::table::{
     FrozenTable, ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig, TableIdentity,
-    TableReaderConfig, TableRuntimeFacts,
+    TableReaderConfig, TableRuntimeFacts, TableSummaryExtras,
 };
 use strata_core_next::BranchId;
 
@@ -602,13 +602,14 @@ pub(crate) fn flush_cache_branch_with_budget(
     )?;
     let identity = artifact.facts().identity().clone();
     let table_facts = artifact.facts().clone();
+    let extras = artifact.extras().clone();
     let reader = ImmutableTableReader::open_bytes(
         identity.clone(),
         artifact.into_bytes(),
         TableReaderConfig::default().with_eager_filter_unavailable(),
     )
     .map_err(table_error)?;
-    let table = branch_owned_table(branch.branch_id(), identity, reader)?;
+    let table = branch_owned_table(branch.branch_id(), identity, reader, extras)?;
     let install_outcome = match branch.replace_frozen_with_level_zero_table(frozen_index, table) {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -649,13 +650,14 @@ pub(crate) fn prepare_cache_flush_with_budget(
     )?;
     let identity = artifact.facts().identity().clone();
     let table_facts = artifact.facts().clone();
+    let extras = artifact.extras().clone();
     let reader = ImmutableTableReader::open_bytes(
         identity.clone(),
         artifact.into_bytes(),
         TableReaderConfig::default().with_eager_filter_unavailable(),
     )
     .map_err(table_error)?;
-    let table = branch_owned_table(branch.branch_id(), identity, reader)?;
+    let table = branch_owned_table(branch.branch_id(), identity, reader, extras)?;
     Ok(Some(PreparedCacheFlush {
         request: request.clone(),
         frozen_index,
@@ -769,7 +771,8 @@ pub(crate) fn prepare_durable_flush_with_budget(
             }));
         }
     };
-    let table = match branch_owned_table(branch.branch_id(), identity, reader) {
+    let extras = artifact.extras().clone();
+    let table = match branch_owned_table(branch.branch_id(), identity, reader, extras) {
         Ok(table) => Ok(table),
         Err(error) => Err(FlushFrozenOutcome::published_not_installed_outcome(
             request,
@@ -1259,11 +1262,12 @@ fn branch_owned_table(
     branch_id: BranchId,
     identity: TableIdentity,
     reader: ImmutableTableReader<'_>,
+    extras: TableSummaryExtras,
 ) -> LifecycleResult<BranchOwnedTable> {
     let descriptor =
         BranchTableDescriptor::new(identity, reader.facts().clone(), BranchLevel::ZERO)
             .map_err(branch_error)?;
-    BranchOwnedTable::new(branch_id, descriptor, reader).map_err(branch_error)
+    BranchOwnedTable::new(branch_id, descriptor, reader, extras).map_err(branch_error)
 }
 
 fn validate_single_component(field: &'static str, value: &str) -> LifecycleResult<()> {

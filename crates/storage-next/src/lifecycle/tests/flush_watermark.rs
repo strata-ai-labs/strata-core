@@ -970,7 +970,9 @@ fn install_l0_table_for_test(
     let descriptor =
         BranchTableDescriptor::new(identity, reader.facts().clone(), BranchLevel::ZERO)
             .expect("table descriptor");
-    let table = BranchOwnedTable::new(branch, descriptor, reader).expect("branch table");
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras");
+    let table = BranchOwnedTable::new(branch, descriptor, reader, extras).expect("branch table");
     state.install_l0_table(table).expect("install table");
 }
 

@@ -716,6 +716,7 @@ fn publish_rewrite_artifact(
     materialization_source: Option<BranchMaterializationSource>,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<PublishedRewriteTable> {
+    let extras = artifact.extras().clone();
     let (bytes, table_facts, rows) = artifact.into_parts_with_rows();
     require_optional_rewrite_generated_budget(budget, table_facts.byte_count())?;
     require_optional_rewrite_reader_budget(budget, table_facts.byte_count())?;
@@ -770,7 +771,7 @@ fn publish_rewrite_artifact(
     let (table, provenance) = if let Some(source) = materialization_source {
         (
             BranchOwnedTable::new_materialization_replacement(
-                branch_id, descriptor, reader, source,
+                branch_id, descriptor, reader, extras, source,
             )
             .map_err(|error| {
                 orphaned_published_object_error(
@@ -793,7 +794,7 @@ fn publish_rewrite_artifact(
         )
     } else {
         (
-            BranchOwnedTable::new(branch_id, descriptor, reader).map_err(|error| {
+            BranchOwnedTable::new(branch_id, descriptor, reader, extras).map_err(|error| {
                 orphaned_published_object_error(
                     &object_facts,
                     "table rewrite published output before branch table validation failed",
