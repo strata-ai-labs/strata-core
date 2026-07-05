@@ -66,17 +66,9 @@ pub(super) fn require_valid_branch_identifier(
     }
 }
 
-#[allow(
-    clippy::match_same_arms,
-    reason = "borrowed and owned durable runtime variants share behavior but carry different backend lifetimes"
-)]
 pub(super) fn current_visible(runtime: &StorageRuntime<'_>) -> Option<CommitVersion> {
     let version = match &runtime.inner {
         StorageRuntimeInner::Cache(slot) => {
-            let runtime = slot.lock();
-            runtime.visible_version()
-        }
-        StorageRuntimeInner::Durable(slot) => {
             let runtime = slot.lock();
             runtime.visible_version()
         }

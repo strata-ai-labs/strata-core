@@ -133,10 +133,6 @@ impl StorageBackend {
         }
     }
 
-    pub(crate) fn as_backend_handle(&self) -> BackendHandle<'_> {
-        BackendHandle::borrowed(self.as_backend())
-    }
-
     #[cfg(feature = "localfs")]
     pub(crate) fn to_owned_backend_handle(&self) -> Option<BackendHandle<'static>> {
         match &self.inner {

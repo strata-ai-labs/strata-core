@@ -1,15 +1,16 @@
 use super::background::{BackgroundExecutorMode, BackgroundShutdownStats};
 use super::error::{map_lifecycle_error, map_recovery_health};
 use super::{
-    perf_trace, CloseOutcome, CloseOutcomeStatus, DurableBackendHandleForOpen, LifecycleCodecId,
-    LifecycleConfig, LifecycleError, LifecycleMaintenanceSchedulingPolicy,
-    LifecycleMaintenanceStats, LifecycleStorageMode, LifecycleStorageOpenOutcome,
-    LifecycleWalGrowthPolicy, MaintenanceExecutorStats, RecoveryStrictness, StorageApiError,
-    StorageApiResult, StorageBackend, StorageBudgetPolicy, StorageCloseEffects,
-    StorageCloseSummary, StorageDurabilityPolicy, StorageMaintenanceSchedulingPolicy, StorageMode,
+    perf_trace, CloseOutcome, CloseOutcomeStatus, LifecycleCodecId, LifecycleConfig,
+    LifecycleError, LifecycleMaintenanceSchedulingPolicy, LifecycleMaintenanceStats,
+    LifecycleStorageMode, LifecycleStorageOpenOutcome, LifecycleWalGrowthPolicy,
+    MaintenanceExecutorStats, RecoveryStrictness, StorageApiError, StorageApiResult,
+    StorageBackend, StorageBudgetPolicy, StorageCloseEffects, StorageCloseSummary,
+    StorageDurabilityPolicy, StorageMaintenanceSchedulingPolicy, StorageMode,
     StorageOpenDisposition, StorageOpenOptions, StorageOpenPlan, StorageOpenSummary,
     StorageRuntimeBudget, StorageRuntimeState, StorageWalGrowthPolicy,
 };
+use crate::backend::BackendHandle;
 
 /// The storage budget a fresh open uses when no test override is supplied.
 ///
@@ -80,18 +81,20 @@ pub(super) fn lifecycle_plan(options: StorageOpenOptions) -> StorageApiResult<St
 pub(super) fn durable_backend_handle_for_open(
     options: StorageOpenOptions,
     backend: &StorageBackend,
-) -> StorageApiResult<DurableBackendHandleForOpen<'_>> {
-    // BS4.4h: prefer an owned handle so durable runtimes are `'static` in practice — the foundation
-    // BS4.4i needs to hold durable tables as lazy disk-resident readers. Every real durable backend can
-    // now produce an owned handle (localfs directly; the fault/reordering test backends via their
-    // `Arc`-shared state), so `EvaluateAndEnqueue` durable opens now take the owned path too (making the
-    // soak tests uniformly `'static`). Background/DeterministicInline still REQUIRE an owned handle (a
-    // background worker cannot hold a borrowed backend); only `EvaluateAndEnqueue`/`Disabled` fall back
-    // to borrowing, and only for a backend with no owned handle (an in-memory backend).
+) -> StorageApiResult<BackendHandle<'static>> {
+    // BS4.4i: durable runtimes are uniformly owned/`'static` — the borrowed `Durable` variant is gone.
+    // Every real durable backend produces an owned handle (localfs directly; the fault/reordering test
+    // backends via their `Arc`-shared state). A backend with no owned handle is in-memory, which cannot
+    // back durable-local storage; surface the same policy-appropriate errors the borrowed path used to
+    // (Background/DeterministicInline reject the policy — a background worker cannot hold a borrowed
+    // backend; EvaluateAndEnqueue/Disabled reject the capability — matching the durable assembler's
+    // in-memory rejection), without ever constructing a borrowed runtime.
     #[cfg(feature = "localfs")]
     if let Some(handle) = backend.to_owned_backend_handle() {
-        return Ok(DurableBackendHandleForOpen::Owned(handle));
+        return Ok(handle);
     }
+    #[cfg(not(feature = "localfs"))]
+    let _ = backend;
 
     match options.maintenance_scheduling_policy() {
         StorageMaintenanceSchedulingPolicy::Background
@@ -102,9 +105,12 @@ pub(super) fn durable_backend_handle_for_open(
             })
         }
         StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue
-        | StorageMaintenanceSchedulingPolicy::Disabled => Ok(
-            DurableBackendHandleForOpen::Borrowed(backend.as_backend_handle()),
-        ),
+        | StorageMaintenanceSchedulingPolicy::Disabled => {
+            Err(StorageApiError::UnsupportedCapability {
+                capability: "durable_local",
+                reason: "an in-memory backend cannot satisfy durable-local mode",
+            })
+        }
     }
 }
 

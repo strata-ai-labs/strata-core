@@ -217,23 +217,6 @@ pub(super) const fn lifecycle_storage_pressure_severity_rank(
 }
 
 impl<R> RuntimeSlot<R> {
-    pub(super) fn new(runtime: R, _config: LifecycleConfig) -> Self
-    where
-        R: RuntimeReadHandles,
-    {
-        let visible = runtime.visible_handle();
-        let snapshot_registry = runtime.snapshot_registry();
-        Self {
-            runtime: Arc::new(ParkingMutex::new(runtime)),
-            visible,
-            snapshot_registry,
-            background: None,
-            background_drain: None,
-            #[cfg(test)]
-            background_block_wait: BackgroundBlockWaitConfig::default(),
-        }
-    }
-
     /// The current visible-commit-version bound `V`, loaded off-lock (Acquire).
     pub(super) fn visible(&self) -> u64 {
         self.visible.load(Ordering::Acquire)
