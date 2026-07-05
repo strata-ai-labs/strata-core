@@ -501,6 +501,135 @@ fn row_pruning_proof_is_deterministic_for_shuffled_facts() {
     );
 }
 
+// BS4.4e: the pruning-proof fingerprint now hashes owned/inherited tables by facts+extras instead of
+// streaming rows. This sensitivity suite is the contract: an unchanged rebuild is stable, and every
+// single structural/content mutation flips the fingerprint (so a stale proof is always rejected).
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear mutation-per-assertion sensitivity suite"
+)]
+fn branch_pruning_fingerprint_flips_on_each_mutation_and_is_stable() {
+    let branch = branch_id(0xe5);
+    let build_base = |state: &mut BranchLocalState| {
+        install_l0_table(
+            state,
+            branch,
+            "sens-a",
+            vec![storage_row_with(
+                branch,
+                b"a".to_vec(),
+                1,
+                10,
+                Timestamp::EPOCH,
+                b"a1".to_vec(),
+            )],
+        )
+        .expect("install a");
+        install_l0_table(
+            state,
+            branch,
+            "sens-b",
+            vec![storage_row_with(
+                branch,
+                b"b".to_vec(),
+                2,
+                20,
+                Timestamp::EPOCH,
+                b"b2".to_vec(),
+            )],
+        )
+        .expect("install b");
+    };
+
+    let mut baseline_state = BranchLocalState::empty(branch);
+    build_base(&mut baseline_state);
+    let baseline = branch_pruning_fingerprint(&baseline_state);
+
+    // Stable: an identical rebuild hashes the same.
+    let mut rebuilt = BranchLocalState::empty(branch);
+    build_base(&mut rebuilt);
+    assert_eq!(baseline, branch_pruning_fingerprint(&rebuilt));
+
+    // Adding a table flips the fingerprint.
+    let mut added = BranchLocalState::empty(branch);
+    build_base(&mut added);
+    install_l0_table(
+        &mut added,
+        branch,
+        "sens-c",
+        vec![storage_row_with(
+            branch,
+            b"c".to_vec(),
+            3,
+            30,
+            Timestamp::EPOCH,
+            b"c3".to_vec(),
+        )],
+    )
+    .expect("install c");
+    assert_ne!(
+        baseline,
+        branch_pruning_fingerprint(&added),
+        "adding a table must flip the fingerprint"
+    );
+
+    // A content change under the same identity flips it via the facts (byte_count) hash.
+    let mut content = BranchLocalState::empty(branch);
+    install_l0_table(
+        &mut content,
+        branch,
+        "sens-a",
+        vec![storage_row_with(
+            branch,
+            b"a".to_vec(),
+            1,
+            10,
+            Timestamp::EPOCH,
+            b"a1-with-a-longer-value".to_vec(),
+        )],
+    )
+    .expect("install a'");
+    install_l0_table(
+        &mut content,
+        branch,
+        "sens-b",
+        vec![storage_row_with(
+            branch,
+            b"b".to_vec(),
+            2,
+            20,
+            Timestamp::EPOCH,
+            b"b2".to_vec(),
+        )],
+    )
+    .expect("install b");
+    assert_ne!(
+        baseline,
+        branch_pruning_fingerprint(&content),
+        "a different byte count must flip the fingerprint"
+    );
+
+    // An active memtable row flips it (active rows keep per-row hashing).
+    let mut with_active = BranchLocalState::empty(branch);
+    build_base(&mut with_active);
+    with_active
+        .append_committed_row(storage_row_with(
+            branch,
+            b"z".to_vec(),
+            9,
+            90,
+            Timestamp::EPOCH,
+            b"z9".to_vec(),
+        ))
+        .expect("append active");
+    assert_ne!(
+        baseline,
+        branch_pruning_fingerprint(&with_active),
+        "an active memtable row must flip the fingerprint"
+    );
+}
+
 #[test]
 fn row_pruning_proof_stale_epoch_rejects_without_mutation() {
     let branch = branch_id(0xa3);

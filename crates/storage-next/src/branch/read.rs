@@ -591,15 +591,18 @@ impl BranchOwnedTable {
                 reason: "branch-owned table must not be empty",
             });
         }
-        try_for_each_reader_row(&reader, |row| {
-            if row.physical_key().branch_id() == branch_id {
-                Ok(())
-            } else {
-                Err(BranchRuntimeError::InvalidBranchRow {
-                    reason: "branch-owned table rows must match the target branch",
-                })
-            }
-        })?;
+        // BS4.4e: branch id is the fixed leading 16 bytes of every internal key and rows are
+        // internal-key-sorted, so both endpoints of the key range sharing the branch prefix proves every
+        // row does — an O(1) facts check instead of an O(rows) scan (which would trip the guard when lazy).
+        if !key_range_matches_branch(
+            reader.facts().key_range().first_key(),
+            reader.facts().key_range().last_key(),
+            branch_id,
+        ) {
+            return Err(BranchRuntimeError::InvalidBranchRow {
+                reason: "branch-owned table rows must match the target branch",
+            });
+        }
         // A sealed table is immutable, so compute its summary (timestamp +
         // physical-key bounds, put/tombstone split) once here — in the off-lock
         // build phase that already materializes the rows — and read it O(1)
@@ -727,15 +730,17 @@ impl BranchInheritedLayer {
                     reason: "inherited table branch id must match source branch",
                 });
             }
-            try_for_each_reader_row(table.reader(), |row| {
-                if row.physical_key().branch_id() == descriptor.source_branch_id() {
-                    Ok(())
-                } else {
-                    Err(BranchRuntimeError::InvalidInheritedLayer {
-                        reason: "inherited table rows must match source branch",
-                    })
-                }
-            })?;
+            // BS4.4e: same fixed-16-byte-prefix bounds argument as the owned path — verify the source
+            // branch by the sealed table's key range instead of scanning every row.
+            if !key_range_matches_branch(
+                table.facts().key_range().first_key(),
+                table.facts().key_range().last_key(),
+                descriptor.source_branch_id(),
+            ) {
+                return Err(BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "inherited table rows must match source branch",
+                });
+            }
             // BS4.4a-i: the sealed table's max commit version is on facts — no need to scan rows.
             if table.facts().commit_range().max().as_u64() > descriptor.fork_version().as_u64() {
                 return Err(BranchRuntimeError::InvalidInheritedLayer {
@@ -4244,7 +4249,21 @@ fn validate_owned_levels(owned_levels: &[Vec<BranchOwnedTable>]) -> BranchRuntim
     Ok(())
 }
 
+/// BS4.4e: cross-table internal-key uniqueness is a defensive invariant on sealed inherited tables,
+/// which compaction already dedups. A full scan per fork/reopen would defeat O(1) fork at billion scale,
+/// so release trusts the invariant; debug still verifies it by streaming (guard-safe cursors).
 fn validate_inherited_layer_unique_keys(
+    owned_levels: &[Vec<BranchOwnedTable>],
+) -> BranchRuntimeResult<()> {
+    #[cfg(debug_assertions)]
+    debug_validate_inherited_layer_unique_keys(owned_levels)?;
+    #[cfg(not(debug_assertions))]
+    let _ = owned_levels;
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+fn debug_validate_inherited_layer_unique_keys(
     owned_levels: &[Vec<BranchOwnedTable>],
 ) -> BranchRuntimeResult<()> {
     let mut keys = BTreeSet::<TableInternalKeyBytes>::new();
@@ -4260,6 +4279,14 @@ fn validate_inherited_layer_unique_keys(
         })?;
     }
     Ok(())
+}
+
+/// BS4.4e: does the sealed table's internal-key range prove every row carries `branch_id`? Branch id is
+/// the fixed leading 16 bytes and rows are internal-key-sorted, so both endpoints matching ⟹ all rows do.
+fn key_range_matches_branch(first_key: &[u8], last_key: &[u8], branch_id: BranchId) -> bool {
+    let prefix: &[u8] = branch_id.as_bytes();
+    first_key.get(..BranchId::BYTE_LEN) == Some(prefix)
+        && last_key.get(..BranchId::BYTE_LEN) == Some(prefix)
 }
 
 fn validate_inherited_layer_unique_table_identities(

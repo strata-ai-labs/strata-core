@@ -8,7 +8,7 @@ use crate::branch::facts::{
     BranchLevel, BranchReachabilitySnapshot, BranchTableDescriptor, InheritedLayerStatus,
 };
 use crate::branch::identity::rewrite_row_branch;
-use crate::branch::read::{try_for_each_reader_row, BranchMaterializationSource, BranchOwnedTable};
+use crate::branch::read::{BranchMaterializationSource, BranchOwnedTable};
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
 use crate::table::{
@@ -19,7 +19,7 @@ use crate::table::{
 };
 use std::cell::Cell;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use strata_core_next::{BranchId, CommitVersion};
 
 const MATERIALIZATION_ROWS_PER_OUTPUT_TABLE: usize = 4_096;
@@ -713,7 +713,6 @@ impl BranchLocalState {
                 reason: "materialization layer index must exist",
             },
         )?;
-        let higher_precedence_rows = self.higher_precedence_materialization_rows(layer_index)?;
         let stats = MaterializationStreamStats::default();
         let sources = materialization_table_sources(
             layer.owned_levels().iter().flatten(),
@@ -742,8 +741,15 @@ impl BranchLocalState {
                             "materialized inherited rows must not contain duplicate internal keys",
                     });
                 }
-                if let Some(rows) = higher_precedence_rows.get(&key) {
-                    if rows.iter().any(|existing| existing == row.row()) {
+                // BS4.4e: probe the higher-precedence sources for this exact internal key instead of a
+                // precomputed whole-branch map (O(dataset) RAM). The gathered set equals the old map's
+                // `Vec` for `key`, so the shadow-skip/collision rules are unchanged.
+                let higher_precedence = self.higher_precedence_rows_for_row(layer_index, &row)?;
+                if !higher_precedence.is_empty() {
+                    if higher_precedence
+                        .iter()
+                        .any(|existing| existing == row.row())
+                    {
                         summary.record_shadow_skip();
                         stats.record_shadow_skip();
                         merged
@@ -773,33 +779,33 @@ impl BranchLocalState {
         finish_materialization_stream(summary, artifact_builder, artifact_verifier, &stats)
     }
 
-    fn higher_precedence_materialization_rows(
+    /// BS4.4e: gather every higher-precedence row sharing `target`'s exact internal key, in the same
+    /// source order the old whole-branch map used (active → frozen → owned levels → closer inherited),
+    /// via per-key probes (index+filter accelerated). Replaces `higher_precedence_materialization_rows`
+    /// on the hot path; that fn survives under `cfg(test)` as the differential oracle.
+    fn higher_precedence_rows_for_row(
         &self,
         target_layer_index: usize,
-    ) -> BranchRuntimeResult<BTreeMap<TableInternalKeyBytes, Vec<StorageRow>>> {
-        let mut rows_by_key = BTreeMap::<TableInternalKeyBytes, Vec<StorageRow>>::new();
-        for row in self.active.iter() {
-            rows_by_key
-                .entry(row.key().clone())
-                .or_default()
-                .push(row.row().clone());
+        target: &TableRow,
+    ) -> BranchRuntimeResult<Vec<StorageRow>> {
+        let key = target.key();
+        let mut rows = Vec::new();
+        if let Some(row) = self.active.get(key) {
+            rows.push(row.row().clone());
         }
         for table in &self.frozen {
-            for row in table.iter() {
-                rows_by_key
-                    .entry(row.key().clone())
-                    .or_default()
-                    .push(row.row().clone());
+            if let Some(row) = table.get(key) {
+                rows.push(row.row().clone());
             }
         }
         for table in self.owned_levels().iter().flatten() {
-            try_for_each_reader_row(table.reader(), |row| {
-                rows_by_key
-                    .entry(row.key().clone())
-                    .or_default()
-                    .push(row.row().clone());
-                Ok(())
-            })?;
+            if let Some(hit) = table
+                .reader()
+                .try_get_exact(key)
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?
+            {
+                rows.push(hit.row().clone());
+            }
         }
         for layer in self.inherited_layers.iter().take(target_layer_index) {
             match layer.status() {
@@ -812,25 +818,33 @@ impl BranchLocalState {
                     });
                 }
             }
+            // Rewrite the target row to the source branch to get the internal key to probe there, then
+            // rewrite each hit (commit ≤ fork) back to the child branch so its key matches `key`.
+            let source_probe =
+                rewrite_row_branch(target.row(), self.branch_id, layer.source_branch_id())
+                    .map_err(|_| BranchRuntimeError::InvalidInheritedLayer {
+                        reason: "closer inherited row branch rewrite failed",
+                    })?;
+            let source_key = TableInternalKeyBytes::from_row(&source_probe);
             for table in layer.owned_levels().iter().flatten() {
-                try_for_each_reader_row(table.reader(), |row| {
-                    if row.commit_version().as_u64() > layer.fork_version().as_u64() {
-                        return Ok(());
+                if let Some(hit) = table
+                    .reader()
+                    .try_get_exact(&source_key)
+                    .map_err(|source| BranchRuntimeError::TableRuntime { source })?
+                {
+                    if hit.row().commit_version().as_u64() > layer.fork_version().as_u64() {
+                        continue;
                     }
                     let rewritten =
-                        rewrite_row_branch(row.row(), layer.source_branch_id(), self.branch_id)
+                        rewrite_row_branch(hit.row(), layer.source_branch_id(), self.branch_id)
                             .map_err(|_| BranchRuntimeError::InvalidInheritedLayer {
                                 reason: "closer inherited row branch rewrite failed",
                             })?;
-                    rows_by_key
-                        .entry(TableInternalKeyBytes::from_row(&rewritten))
-                        .or_default()
-                        .push(rewritten);
-                    Ok(())
-                })?;
+                    rows.push(rewritten);
+                }
             }
         }
-        Ok(rows_by_key)
+        Ok(rows)
     }
 
     pub(crate) fn materialization_tables_from_artifacts(

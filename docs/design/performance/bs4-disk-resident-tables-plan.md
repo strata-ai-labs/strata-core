@@ -70,7 +70,7 @@ becomes small and revertable. BS4.1, BS4.2/4.3, and BS4.4a are mutually independ
 | BS4.4b | Full-scan → cursor conversions (STREAM/PAIRED sites + `try_for_each_reader_row` helper) **(✓ landed; committed as 4.4a-ii-a)** | 4.4a |
 | BS4.4c | Facts/extras + fork-filtered aggregate folds (fast-path + cursor fallback + debug oracles) + the 2 lifecycle conversions (`checkpoint_delta_rows`, `preflight`) **(✓ landed)** | 4.4b |
 | BS4.4d | Materialization guard (`TableMaterializationPolicy` + `DenyRuntime` gate + `LazyMaterializationDenied` + counter) + fallibility audit (point/history reads → `try_`, `resolve_timestamp` fallible + straddle-cursor) **(✓ landed)** | 4.4c |
-| BS4.4e | The six design-forcing sites (§ below; formerly 4.4b) | 4.4d |
+| BS4.4e | Design-forcing sites: facts-based pruning fingerprint (§1) + streaming tombstone merge (§1b) + per-key materialization probes (§2) + facts-bounds construction validation (§6) **(✓ landed)**. Sites §3/§4/§5 were already cursor-based (BS4.4a-ii-a/4.4d); their perf tweaks ride 4.4f. | 4.4d |
 | BS4.4f | The lazy constructor flip + write-side installs (§ below; formerly 4.4c) | 4.4e, 4.1, 4.2 |
 | BS4.5 | Fast open + budget remodel | 4.4f |
 | BS4.6 | Re-baseline + exit runs | all |
