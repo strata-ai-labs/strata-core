@@ -517,12 +517,12 @@ recorded.
   4.4l, every durable table in the flush/recovery/compaction/materialization/rewrite lifecycle installs
   lazy. The one remaining durable-eager install is `build_snapshot_l0_tables`
   (`branch/state/snapshot.rs:635`, `open_bytes`): harmless for the recovery/bootstrap checkpoint caller
-  (bounded memtable delta, owned-level rows excluded), but `fork_at_retained_version` /
-  `fork_at_retained_timestamp` reach it via `fork_snapshot_rows`, which walks the **entire** source
-  branch (active + frozen + all durable levels) into a `Vec<StorageRow>` and eager-installs it —
-  holding the full forked dataset resident at 100M. The ordinary `fork_current` is unaffected
-  (copy-on-write inherited layers, no row copy). **Not a simple `open_bytes → open_reader` swap:**
-  `fork_snapshot_rows` is already O(dataset)-resident by construction, so a real fix is a
-  streaming/publish-then-lazy-reopen redesign of the historical-fork path. Dedicated follow-up (not
-  4.5/4.6 scope); the 100M exit should either avoid time-travel forks or gate this behind a doc'd
-  limitation until it lands.
+  (bounded delta), but `fork_at_retained_version` / `fork_at_retained_timestamp` reach it via
+  `fork_snapshot_rows`, which materializes the **entire** source branch (~24,400 eager L0 tables at
+  100M, persistent). This is a **V1-required product feature (Pathway 29) that violates its own spec**
+  ("avoid materialized full copies unless COW cannot support the point"). Root-caused: COW *is* feasible
+  — the blocker is the straddle-table construction invariant (`read.rs:771`), not a real limitation.
+  **Fully scoped in [`historical-fork-residency-scoping.md`](historical-fork-residency-scoping.md)**
+  (recommended fix: COW historical fork, medium; on-demand fallback is lazy post-4.4l). Dedicated
+  follow-up (not 4.5/4.6 scope); the 100M exit gates time-travel forks behind a doc'd limitation until
+  it lands.
