@@ -1203,8 +1203,9 @@ impl TableCompactionInput for MaterializationTableSource<'_> {
 
     fn open_cursor(&self) -> crate::table::TableRuntimeResult<Box<dyn TableCursor + '_>> {
         self.stats.record_source_table_open();
+        // BS4.4g: materialization reads each source table once — do not fill the block cache.
         Ok(Box::new(MaterializationRewriteCursor::new(
-            Box::new(self.table.reader().cursor()),
+            Box::new(self.table.reader().cursor_without_cache_fill()),
             self.source_branch_id,
             self.target_branch_id,
             self.fork_version,

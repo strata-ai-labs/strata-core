@@ -72,8 +72,9 @@ becomes small and revertable. BS4.1, BS4.2/4.3, and BS4.4a are mutually independ
 | BS4.4d | Materialization guard (`TableMaterializationPolicy` + `DenyRuntime` gate + `LazyMaterializationDenied` + counter) + fallibility audit (point/history reads → `try_`, `resolve_timestamp` fallible + straddle-cursor) **(✓ landed)** | 4.4c |
 | BS4.4e | Design-forcing sites: facts-based pruning fingerprint (§1) + streaming tombstone merge (§1b) + per-key materialization probes (§2) + facts-bounds construction validation (§6) **(✓ landed)**. Sites §3/§4/§5 were already cursor-based (BS4.4a-ii-a/4.4d); their perf tweaks ride 4.4f. | 4.4d |
 | BS4.4f | Constructor flip + extras provenance (`BranchOwnedTable::new` takes `extras`; `BuiltTableArtifact` carries it; callers thread it; recovery recomputes it) — **behavior-neutral, readers stay eager (✓ landed)**. `into_materialized` kept as a lifetime bridge; manifest put/tombstone extension deferred to 4.4g. | 4.4e |
-| BS4.4g | The lazy activation (the payoff): flush/compaction/recovery install **lazy** readers; delete `into_materialized`/`from_rows`; put/tombstone manifest extension; Arc-wrap reader metadata; `approximate_size_bytes` → object/resident split; `fill_cache=false`; `rows()` → `materialize_rows_for_oracle()` + source-guard; cold-read/eviction/fault suite. Guard bites here. | 4.4f, 4.1, 4.2 |
-| BS4.5 | Fast open + budget remodel | 4.4g |
+| BS4.4g | Lazy-readiness prep — **behavior-neutral (✓ landed)**: oracle hatch (`materialize_rows_for_oracle`, bypasses the guard) + convert prod row-scans (fork/checkpoint) to cursors + source-guard; put/tombstone additive manifest extension (positional, `TableSummaryExtras::from_parts`); Arc-wrap `LazyTableState` metadata; resident/object size seam (`resident_size_bytes`); `fill_cache=false` for merge inputs. Nothing goes lazy yet; guard does not yet bite. | 4.4f |
+| BS4.4h | The lazy flip (the payoff): delete `into_materialized`; service `open_reader` → `'static`; durable-flush + recovery hold **lazy** readers; recovery builds extras via `from_parts` from the manifest; `deny_runtime_materialization` on durable readers; lazy `resident_size_bytes`; greenfield cold-read/eviction/fault suite. Guard bites here. | 4.4g, 4.1, 4.2 |
+| BS4.5 | Fast open + budget remodel | 4.4h |
 | BS4.6 | Re-baseline + exit runs | all |
 
 ### BS4.1 — O(1) sharded block cache

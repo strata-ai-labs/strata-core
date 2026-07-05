@@ -308,6 +308,68 @@ fn source_guard_publish_reads_cached_table_summary_not_row_scan() {
 }
 
 #[test]
+fn source_guard_lazy_reachable_scans_stream_via_cursor() {
+    // BS4.4g: these prod folds can observe a lazy/disk-resident durable table (via fork or the
+    // checkpoint boundary), so each must stream rows through a cursor (`for_each_reader_row`) — never
+    // a full materialization via `rows()` or the debug-only `materialize_rows_for_oracle` hatch. A
+    // plain `rows()` would trip the BS4.4d guard; the hatch would silently materialize every row off a
+    // hot path. This locks the BS4.4g cursor conversion against regression.
+    fn assert_streams_rows(source: &str, start: &str, end: &str, label: &str) {
+        let body = source
+            .split(start)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{label}: {start} is present"))
+            .split(end)
+            .next()
+            .unwrap_or_else(|| panic!("{label}: {start} precedes {end}"));
+        for forbidden in [".rows()", "materialize_rows_for_oracle"] {
+            assert!(
+                !body.contains(forbidden),
+                "{label} must stream rows via a cursor, not a full materialization ({forbidden})"
+            );
+        }
+        assert!(
+            body.contains("for_each_reader_row"),
+            "{label} must fold rows through the `for_each_reader_row` cursor helper"
+        );
+    }
+
+    let state = include_str!("../../branch/state.rs");
+    assert_streams_rows(
+        state,
+        "fn observe_own_rows",
+        "fn observe_rows",
+        "observe_own_rows",
+    );
+    assert_streams_rows(
+        state,
+        "fn record_inherited_layer(",
+        "fn record_commit_version",
+        "record_inherited_layer",
+    );
+    assert_streams_rows(
+        state,
+        "fn record_inherited_layer_summary",
+        "fn branch_reachable_table_identity_exists",
+        "record_inherited_layer_summary",
+    );
+
+    let checkpoint = include_str!("../../lifecycle/checkpoint.rs");
+    assert_streams_rows(
+        checkpoint,
+        "fn branch_durable_commit_versions_in_interval",
+        "fn branch_checkpoint_flush_boundary",
+        "branch_durable_commit_versions_in_interval",
+    );
+    assert_streams_rows(
+        checkpoint,
+        "fn branch_checkpoint_flush_boundary",
+        "fn branch_durable_rows_cover_interval",
+        "branch_checkpoint_flush_boundary",
+    );
+}
+
+#[test]
 fn source_guard_background_controller_uses_executor_trait_and_clock() {
     let runtime_source = super::RUNTIME_SOURCE;
     let controller_block = runtime_source

@@ -447,9 +447,14 @@ impl TableCompactionInput for BranchTableCompactionSource<'_> {
 
     fn open_cursor(&self) -> TableRuntimeResult<Box<dyn TableCursor + '_>> {
         perf_trace::record_branch_compaction_source_opens(1);
+        // BS4.4g: compaction reads each source table once, so its cursor must not fill the block cache.
         match &self.bounds {
-            Some(bounds) => Ok(Box::new(self.table.reader().bounded_cursor(bounds.clone()))),
-            None => Ok(Box::new(self.table.reader().cursor())),
+            Some(bounds) => Ok(Box::new(
+                self.table
+                    .reader()
+                    .bounded_cursor_without_cache_fill(bounds.clone()),
+            )),
+            None => Ok(Box::new(self.table.reader().cursor_without_cache_fill())),
         }
     }
 
@@ -2044,7 +2049,7 @@ pub(super) fn validate_compaction_levels(
             }
             #[cfg(any(test, debug_assertions))]
             {
-                for row in table.rows() {
+                for row in &table.materialize_rows_for_oracle() {
                     if !seen_keys.insert(row.key().clone()) {
                         return Err(BranchRuntimeError::InvalidCompaction {
                             reason: BranchCompactionInvalidity::Generic(

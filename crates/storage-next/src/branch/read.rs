@@ -612,12 +612,15 @@ impl BranchOwnedTable {
         }
         // BS4.4f: `extras` is supplied by the caller — the build artifact's precomputed summary
         // (`BuiltTableArtifact::extras()`), a promoted table's cloned summary, or a recovery scan — instead
-        // of the constructor re-materializing every row. Readers are still eager here, so debug-validate the
-        // supplied summary against a full scan (BS4.4g relocates this behind the `rows()` oracle hatch when
-        // durable readers go lazy).
+        // of the constructor re-materializing every row. BS4.4g: this debug cross-check reads via the
+        // oracle hatch, which bypasses the BS4.4d guard, so it keeps validating the supplied summary once
+        // durable readers go lazy (where a plain `rows()` would trip the guard).
         #[cfg(debug_assertions)]
         {
-            let scanned = TableSummaryExtras::from_rows(reader.rows())
+            let scanned_rows = reader
+                .materialize_rows_for_oracle()
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+            let scanned = TableSummaryExtras::from_rows(&scanned_rows)
                 .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             debug_assert_eq!(
                 extras, scanned,
@@ -663,6 +666,15 @@ impl BranchOwnedTable {
         self.reader.rows()
     }
 
+    /// Materialize all rows for a **debug oracle** via the reader's oracle hatch, bypassing the
+    /// BS4.4d guard. Panics on a materialization error (a corrupt-table bug), matching the old
+    /// `rows()` — the callers are debug-only oracles cross-checking a facts-based fast path.
+    pub(crate) fn materialize_rows_for_oracle(&self) -> Vec<TableRow> {
+        self.reader
+            .materialize_rows_for_oracle()
+            .expect("branch-owned table oracle materialization failed")
+    }
+
     pub(crate) const fn extras(&self) -> &TableSummaryExtras {
         &self.extras
     }
@@ -671,10 +683,13 @@ impl BranchOwnedTable {
         &self.reader
     }
 
-    /// Approximate resident bytes for this owned table. The materialized reader holds the whole
-    /// table object in memory, so its encoded byte count is the in-RAM footprint.
-    pub(crate) const fn approximate_size_bytes(&self) -> u64 {
-        self.reader.byte_count()
+    /// Approximate **resident** (in-RAM) bytes for this owned table — the value the branch's shape
+    /// aggregates and memory accounting want. BS4.4g routes this through the reader's resident/object
+    /// seam (`resident_size_bytes`); object/level size is sourced separately from `facts().byte_count()`.
+    /// Today an eager reader holds the whole object, so resident == object; BS4.4h makes it drop for a
+    /// lazy reader.
+    pub(crate) fn approximate_size_bytes(&self) -> u64 {
+        self.reader.resident_size_bytes()
     }
 }
 
@@ -3505,6 +3520,18 @@ pub(crate) fn try_for_each_reader_row(
     Ok(())
 }
 
+/// BS4.4g: infallible fold over a reader's rows via its cursor — for the internal shape/summary
+/// scans that were `for row in table.rows()` folds. Streams block-by-block, so it never trips the
+/// BS4.4d full-materialization guard on a lazy durable reader; panics on a cursor failure, matching
+/// the `rows()` it replaces (which `.expect()`d materialization).
+pub(crate) fn for_each_reader_row(reader: &ImmutableTableReader<'_>, mut f: impl FnMut(&TableRow)) {
+    try_for_each_reader_row(reader, |row| {
+        f(row);
+        Ok(())
+    })
+    .expect("reader cursor walk failed");
+}
+
 fn immutable_source_history_row(
     row: &StorageRow,
     source: ImmutableTableSourceKind,
@@ -4484,7 +4511,7 @@ fn owned_read_view_facts_by_scan(
     let mut max_commit_version = None;
     let mut timestamp_min = None;
     let mut timestamp_max = None;
-    for row in table.rows() {
+    for row in &table.materialize_rows_for_oracle() {
         record_commit_version(&mut max_commit_version, row.commit_version());
         record_timestamp(
             &mut timestamp_min,

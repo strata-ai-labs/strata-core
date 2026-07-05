@@ -213,6 +213,28 @@ fn table_manifest_preserves_known_extension_section() {
 }
 
 #[test]
+fn table_manifest_round_trips_table_row_split_extension() {
+    // BS4.4g: the per-table put/tombstone split survives a full manifest encode/decode and
+    // decodes back to the same positional list — the data recovery reads in BS4.4h.
+    let splits = vec![
+        crate::format::TableRowSplit::new(3, 0),
+        crate::format::TableRowSplit::new(0, 5),
+        crate::format::TableRowSplit::new(4_096, 7),
+    ];
+    let section =
+        crate::format::table_row_split_extension_section(&splits).expect("row-split section");
+    let manifest = TableManifest::new(branch(0x11), None, 1, vec![], vec![], vec![section.clone()])
+        .expect("manifest");
+
+    let decoded = round_trip(&manifest);
+    assert_eq!(decoded.extension_sections()[0], section);
+    assert_eq!(
+        crate::format::decode_table_row_split_extension_section(decoded.extension_sections()),
+        Ok(Some(splits)),
+    );
+}
+
+#[test]
 fn table_manifest_rejects_duplicate_required_section() {
     let first =
         TableManifestExtensionSection::optional("storage.audit", false, b"a").expect("section");

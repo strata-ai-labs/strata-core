@@ -6,8 +6,9 @@ use super::config::BranchRuntimeConfig;
 use super::error::{BranchRuntimeError, BranchRuntimeResult};
 use super::facts::{BranchLevel, BranchReachabilitySnapshot, BranchTableRef, InheritedLayerStatus};
 use super::read::{
-    require_table_physical_first_key, table_physical_ranges_overlap, try_for_each_reader_row,
-    BranchInheritedLayer, BranchLayout, BranchOwnedTable, BranchTimestampCoverage,
+    for_each_reader_row, require_table_physical_first_key, table_physical_ranges_overlap,
+    try_for_each_reader_row, BranchInheritedLayer, BranchLayout, BranchOwnedTable,
+    BranchTimestampCoverage,
 };
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
@@ -488,9 +489,7 @@ impl BranchLocalState {
             }
         }
         for table in self.owned_levels().iter().flatten() {
-            for row in table.rows() {
-                observed.record(row.row());
-            }
+            for_each_reader_row(table.reader(), |row| observed.record(row.row()));
         }
         observed
     }
@@ -637,13 +636,14 @@ impl ObservedBranchRows {
         if layer.status() == InheritedLayerStatus::Materialized {
             return;
         }
+        let fork_version = layer.fork_version();
         for table in layer.owned_levels().iter().flatten() {
-            for row in table.rows() {
-                if row.commit_version().as_u64() <= layer.fork_version().as_u64() {
+            for_each_reader_row(table.reader(), |row| {
+                if row.commit_version().as_u64() <= fork_version.as_u64() {
                     self.record_commit_version(row.commit_version());
                     self.record_timestamp(row.commit_timestamp());
                 }
-            }
+            });
         }
     }
 
@@ -706,12 +706,12 @@ impl ObservedBranchRows {
                     self.record_timestamp(timestamp);
                 }
             } else {
-                for row in table.rows() {
+                for_each_reader_row(table.reader(), |row| {
                     if row.commit_version().as_u64() <= fork_version.as_u64() {
                         self.record_commit_version(row.commit_version());
                         self.record_timestamp(row.commit_timestamp());
                     }
-                }
+                });
             }
         }
     }

@@ -6,7 +6,7 @@ use super::{
     MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskKind, MaintenanceTaskScope,
     RecoveryDegradationClass, RecoveryHealth, StorageBudgetLedger,
 };
-use crate::branch::read::{BranchInheritedLayer, BranchOwnedTable};
+use crate::branch::read::{for_each_reader_row, BranchInheritedLayer, BranchOwnedTable};
 use crate::branch::state::BranchLocalState;
 use crate::commit::CommitBranchGuardSet;
 use crate::format::{
@@ -1124,26 +1124,25 @@ pub(crate) fn branch_durable_commit_versions_in_interval(
     floor: CommitVersion,
     candidate: CommitVersion,
 ) -> Vec<CommitVersion> {
-    let mut versions: Vec<CommitVersion> = owned_levels
-        .iter()
-        .flatten()
-        .chain(
-            inherited_layers
-                .iter()
-                .flat_map(|layer| layer.owned_levels().iter().flatten()),
-        )
-        .filter(|table| {
-            let range = table.facts().commit_range();
-            range.max() >= floor && range.min() <= candidate
-        })
-        .flat_map(|table| {
-            table
-                .rows()
-                .iter()
-                .map(crate::table::TableRow::commit_version)
-                .filter(|version| *version >= floor && *version <= candidate)
-        })
-        .collect();
+    // BS4.4g: stream each in-window table's rows through its cursor (never a full materialization),
+    // so this holds once durable owned tables are lazy.
+    let mut versions: Vec<CommitVersion> = Vec::new();
+    for table in owned_levels.iter().flatten().chain(
+        inherited_layers
+            .iter()
+            .flat_map(|layer| layer.owned_levels().iter().flatten()),
+    ) {
+        let range = table.facts().commit_range();
+        if range.max() < floor || range.min() > candidate {
+            continue;
+        }
+        for_each_reader_row(table.reader(), |row| {
+            let version = row.commit_version();
+            if version >= floor && version <= candidate {
+                versions.push(version);
+            }
+        });
+    }
     versions.sort();
     versions.dedup();
     versions
@@ -1182,13 +1181,15 @@ pub(crate) fn branch_checkpoint_flush_boundary(
         let table_boundary = if range.max() <= visible_version {
             range.max()
         } else {
-            let Some(max_covered) = table
-                .rows()
-                .iter()
-                .map(crate::table::TableRow::commit_version)
-                .filter(|version| *version <= visible_version)
-                .max()
-            else {
+            // BS4.4g: straddle fallback via a cursor fold rather than a full row scan.
+            let mut max_covered: Option<CommitVersion> = None;
+            for_each_reader_row(table.reader(), |row| {
+                let version = row.commit_version();
+                if version <= visible_version {
+                    max_covered = Some(max_covered.map_or(version, |current| current.max(version)));
+                }
+            });
+            let Some(max_covered) = max_covered else {
                 continue;
             };
             max_covered

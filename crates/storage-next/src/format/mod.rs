@@ -22,6 +22,7 @@ mod snapshot_rows;
 mod storage_row;
 mod table;
 mod table_manifest;
+mod table_row_split_extension;
 mod wal;
 mod watermark;
 
@@ -78,6 +79,12 @@ pub(crate) use table_manifest::{
     TableManifestTableBounds, TableManifestTableFacts, TableManifestTableProvenance,
     TableManifestTableRef,
 };
+// BS4.4g: the writer emits the row-split section now; recovery consumes it in BS4.4h, so the
+// section decoder stays test-only until then (mirrors `encode_filter_frame` across BS4.2/4.3). The
+// payload codec + kind are exercised directly inside the extension module's own tests.
+#[cfg(test)]
+pub(crate) use table_row_split_extension::decode_table_row_split_extension_section;
+pub(crate) use table_row_split_extension::{table_row_split_extension_section, TableRowSplit};
 #[expect(
     unused_imports,
     reason = "direct payload codec exports are used by payload fuzz/testkit routing after record integration"

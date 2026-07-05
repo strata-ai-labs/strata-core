@@ -374,6 +374,13 @@ impl<'a> TableReaderRows<'a> {
         }
     }
 
+    fn materialize_for_oracle(&self) -> TableRuntimeResult<Vec<TableRow>> {
+        match self {
+            Self::Eager(rows) => Ok(rows.rows().to_vec()),
+            Self::Lazy(rows) => rows.materialize_for_oracle(),
+        }
+    }
+
     fn into_materialized(
         self,
         facts: TableRuntimeFacts,
@@ -429,10 +436,11 @@ impl<'a> TableReaderRows<'a> {
     fn cursor<'reader>(
         &'reader self,
         bounds_hint: Option<TableKeyBounds>,
+        fill_cache: bool,
     ) -> ImmutableTableCursor<'reader, 'a> {
         match self {
             Self::Eager(rows) => ImmutableTableCursor::eager(&rows.rows),
-            Self::Lazy(rows) => rows.cursor(bounds_hint),
+            Self::Lazy(rows) => rows.cursor(bounds_hint, fill_cache),
         }
     }
 
@@ -478,10 +486,11 @@ impl<'a> LazyTableRows<'a> {
         Self {
             state: LazyTableState {
                 source,
-                metadata,
+                metadata: Arc::new(metadata),
                 cache: None,
                 filter: None,
                 materialization_policy,
+                fill_cache: true,
             },
             rows: OnceLock::new(),
         }
@@ -495,6 +504,24 @@ impl<'a> LazyTableRows<'a> {
             Ok(rows) => Ok(rows.as_slice()),
             Err(error) => Err(error.clone()),
         }
+    }
+
+    fn materialize_for_oracle(&self) -> TableRuntimeResult<Vec<TableRow>> {
+        // Oracle hatch: reuse the row cache if a legitimate read already populated it; otherwise do a
+        // throwaway full read that bypasses the `DenyRuntime` guard and the lazy-materialization
+        // counter (this read is not a durable consumer forcing materialization — it is a debug oracle
+        // cross-checking a facts-based fast path). It populates neither the row cache (`OnceLock`) nor
+        // the block cache (the read is forced no-fill), so it cannot warm a table a cold-read path
+        // expects to stay unmaterialized. It still validates, so the oracle sees exactly the rows a
+        // permitted full read would yield.
+        if let Some(cached) = self.rows.get() {
+            return cached.clone();
+        }
+        let mut state = self.state.clone();
+        state.fill_cache = false;
+        let rows = read_rows_from_metadata(&state)?;
+        super::validate_strictly_sorted_unique_rows(&rows)?;
+        Ok(rows)
     }
 
     fn try_get_exact(&self, key: &TableInternalKeyBytes) -> TableRuntimeResult<Option<TableRow>> {
@@ -566,11 +593,16 @@ impl<'a> LazyTableRows<'a> {
     fn cursor<'reader>(
         &'reader self,
         bounds_hint: Option<TableKeyBounds>,
+        fill_cache: bool,
     ) -> ImmutableTableCursor<'reader, 'a> {
         match self.rows.get() {
             Some(Ok(rows)) => ImmutableTableCursor::eager(rows),
             Some(Err(error)) => ImmutableTableCursor::failed(error.clone()),
-            None => ImmutableTableCursor::lazy(self.state.clone(), bounds_hint),
+            None => {
+                let mut state = self.state.clone();
+                state.fill_cache = fill_cache;
+                ImmutableTableCursor::lazy(state, bounds_hint)
+            }
         }
     }
 
@@ -588,10 +620,19 @@ impl<'a> LazyTableRows<'a> {
 #[derive(Clone, Debug)]
 struct LazyTableState<'a> {
     source: SharedTableSource<'a>,
-    metadata: ImmutableTableMetadata,
+    // BS4.4g: `Arc`-shared so cloning a lazy reader — per cursor open (`reader.rs` cursor path) and
+    // per install copy-on-write (`Arc::make_mut` on `BranchLayout`) — is a pointer bump rather than a
+    // deep clone of the index-block `Vec`, the dominant per-table metadata cost. Accessors deref
+    // through the `Arc` unchanged. (The filter's bloom is already `Arc`-shared internally.)
+    metadata: Arc<ImmutableTableMetadata>,
     cache: Option<LazyTableBlockCache>,
     filter: Option<TableReaderFilter>,
     materialization_policy: TableMaterializationPolicy,
+    // BS4.4g: when false, a data-block miss reads from the source but does NOT insert into the block
+    // cache — set on read-once compaction/materialization merge-input cursors so streaming a large
+    // table through a merge cannot evict the working set of the point-read cache. Default true (a
+    // normal reader/cursor fills the cache); a cache hit is still served regardless.
+    fill_cache: bool,
 }
 
 impl LazyTableState<'_> {
@@ -812,13 +853,18 @@ impl LazyTableState<'_> {
         )?;
         perf_trace::record_table_data_block_read(frame_bytes.len());
         let bytes = Arc::<[u8]>::from(frame_bytes);
-        Ok(DataBlockFrame {
-            bytes,
-            cache_insert: self
-                .cache
+        // BS4.4g: a no-fill cursor reads the missed block but does not populate the cache.
+        let cache_insert = if self.fill_cache {
+            self.cache
                 .as_ref()
                 .zip(cache_key)
-                .map(|(cache, key)| (Arc::clone(&cache.cache), key)),
+                .map(|(cache, key)| (Arc::clone(&cache.cache), key))
+        } else {
+            None
+        };
+        Ok(DataBlockFrame {
+            bytes,
+            cache_insert,
         })
     }
 }
@@ -1106,6 +1152,14 @@ impl<'a> ImmutableTableReader<'a> {
         self.facts.byte_count()
     }
 
+    /// BS4.4g resident/object seam: the approximate in-RAM footprint of this reader, as opposed to
+    /// `byte_count()` (the encoded object size used for compaction/level accounting). Today an eager
+    /// reader holds the whole object, so resident == object; BS4.4h overrides this for the lazy case to
+    /// return only the resident metadata (plus any cached blocks). Behavior-neutral until then.
+    pub(crate) fn resident_size_bytes(&self) -> u64 {
+        self.byte_count()
+    }
+
     pub(crate) fn rows(&self) -> &[TableRow] {
         self.try_rows()
             .expect("lazy table row materialization failed")
@@ -1113,6 +1167,18 @@ impl<'a> ImmutableTableReader<'a> {
 
     pub(crate) fn try_rows(&self) -> TableRuntimeResult<&[TableRow]> {
         self.rows.try_rows()
+    }
+
+    /// Materialize every row for a **debug oracle**, bypassing the BS4.4d `DenyRuntime` guard and
+    /// the lazy-materialization counter that `rows()`/`try_rows()` enforce.
+    ///
+    /// The guard exists to catch a durable *consumer* forcing a full read of a lazy table. Debug
+    /// oracles (extras provenance, read-view facts, duplicate-key, durable one-pass facts) legitimately
+    /// need the full row set to cross-check a facts-based fast path; this is their only sanctioned path
+    /// to it. Returns an owned copy and never populates the row cache. Source-guarded to the oracle call
+    /// sites (`api/tests/source_guards.rs`).
+    pub(crate) fn materialize_rows_for_oracle(&self) -> TableRuntimeResult<Vec<TableRow>> {
+        self.rows.materialize_for_oracle()
     }
 
     pub(crate) fn get_exact(&self, key: &TableInternalKeyBytes) -> Option<TableRow> {
@@ -1177,11 +1243,32 @@ impl<'a> ImmutableTableReader<'a> {
     }
 
     pub(crate) fn cursor(&self) -> ImmutableTableCursor<'_, 'a> {
-        self.rows.cursor(None)
+        self.rows.cursor(None, true)
+    }
+
+    /// BS4.4g: a cursor that reads missed blocks but never inserts them into the block cache — for
+    /// read-once compaction/materialization merge inputs, so streaming a large table cannot evict the
+    /// point-read working set.
+    pub(crate) fn cursor_without_cache_fill(&self) -> ImmutableTableCursor<'_, 'a> {
+        self.rows.cursor(None, false)
     }
 
     pub(crate) fn bounded_cursor(&self, bounds: TableKeyBounds) -> BoundedTableCursor<'_> {
-        BoundedTableCursor::new(Box::new(self.rows.cursor(Some(bounds.clone()))), bounds)
+        BoundedTableCursor::new(
+            Box::new(self.rows.cursor(Some(bounds.clone()), true)),
+            bounds,
+        )
+    }
+
+    /// BS4.4g: the no-cache-fill counterpart of [`bounded_cursor`](Self::bounded_cursor).
+    pub(crate) fn bounded_cursor_without_cache_fill(
+        &self,
+        bounds: TableKeyBounds,
+    ) -> BoundedTableCursor<'_> {
+        BoundedTableCursor::new(
+            Box::new(self.rows.cursor(Some(bounds.clone()), false)),
+            bounds,
+        )
     }
 
     pub(crate) fn into_materialized(self) -> TableRuntimeResult<ImmutableTableReader<'static>> {

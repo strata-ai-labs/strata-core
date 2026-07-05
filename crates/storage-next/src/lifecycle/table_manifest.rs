@@ -16,9 +16,10 @@ use crate::branch::state::manifest_recovery::{
 };
 use crate::branch::state::BranchLocalState;
 use crate::format::{
-    encode_table_manifest, FormatError, TableManifest, TableManifestInheritedLayer,
-    TableManifestInheritedLayerStatus, TableManifestLevel, TableManifestTableBounds,
-    TableManifestTableFacts, TableManifestTableProvenance, TableManifestTableRef,
+    encode_table_manifest, table_row_split_extension_section, FormatError, TableManifest,
+    TableManifestInheritedLayer, TableManifestInheritedLayerStatus, TableManifestLevel,
+    TableManifestTableBounds, TableManifestTableFacts, TableManifestTableProvenance,
+    TableManifestTableRef, TableRowSplit,
 };
 use crate::object::ObjectName;
 use crate::row::StorageRow;
@@ -212,8 +213,13 @@ impl LifecycleDurableTableCatalog {
         branch: &BranchLocalState,
         manifest_sequence: u64,
     ) -> LifecycleResult<TableManifest> {
-        let levels = manifest_levels_from_owned(branch.owned_levels(), self)?;
-        let inherited_layers = manifest_inherited_layers(branch.inherited_layers(), self)?;
+        // BS4.4g: collect the per-table put/tombstone split in the same walk that builds the
+        // manifest's table records, so `row_splits` is positionally aligned with the tables
+        // recovery decodes (top-level levels, then each inherited layer's levels).
+        let mut row_splits = Vec::<TableRowSplit>::new();
+        let levels = manifest_levels_from_owned(branch.owned_levels(), self, &mut row_splits)?;
+        let inherited_layers =
+            manifest_inherited_layers(branch.inherited_layers(), self, &mut row_splits)?;
         let mut extensions = Vec::new();
         if let Some(facts) =
             super::retained_history_extension::RetainedHistoryFacts::from_timestamp_coverage(
@@ -224,6 +230,10 @@ impl LifecycleDurableTableCatalog {
             )
         {
             extensions.push(facts.to_extension_section().map_err(format_error)?);
+        }
+        // Sorted-by-kind order: "storage.retained_history" precedes "storage.table_row_split".
+        if !row_splits.is_empty() {
+            extensions.push(table_row_split_extension_section(&row_splits).map_err(format_error)?);
         }
         TableManifest::new(
             branch.branch_id(),
@@ -721,6 +731,7 @@ fn branch_table_from_reader(
 fn manifest_levels_from_owned(
     owned_levels: &[Vec<BranchOwnedTable>],
     catalog: &LifecycleDurableTableCatalog,
+    row_splits: &mut Vec<TableRowSplit>,
 ) -> LifecycleResult<Vec<TableManifestLevel>> {
     let mut levels = Vec::new();
     for (level_index, tables) in owned_levels.iter().enumerate() {
@@ -733,11 +744,22 @@ fn manifest_levels_from_owned(
                 source: None,
             }
         })?);
-        let manifest_tables = tables
-            .iter()
-            .enumerate()
-            .map(|(order, table)| table_ref_from_branch_table(table, order, catalog))
-            .collect::<LifecycleResult<Vec<_>>>()?;
+        // Push each table's split and its manifest record in lockstep, so `row_splits` stays
+        // positionally aligned with the manifest tables (the BS4.4g extension is keyed by order).
+        // Coupling: these `row_splits` are collected in this pre-canonicalization loop order, while
+        // `TableManifestLevel::new` re-sorts `manifest_tables` (`canonicalize_level_tables`). Alignment
+        // therefore relies on that sort being a no-op — which is enforced: `validate_level_tables`
+        // requires `table.order() == index` afterward, and `order` is this loop index, so any reorder
+        // fails the build rather than silently desyncing the split array from the table array.
+        let mut manifest_tables = Vec::with_capacity(tables.len());
+        for (order, table) in tables.iter().enumerate() {
+            let extras = table.extras();
+            row_splits.push(TableRowSplit::new(
+                extras.put_rows(),
+                extras.tombstone_rows(),
+            ));
+            manifest_tables.push(table_ref_from_branch_table(table, order, catalog)?);
+        }
         levels.push(TableManifestLevel::new(level, manifest_tables).map_err(format_error)?);
     }
     Ok(levels)
@@ -746,12 +768,12 @@ fn manifest_levels_from_owned(
 fn manifest_inherited_layers(
     inherited_layers: &[BranchInheritedLayer],
     catalog: &LifecycleDurableTableCatalog,
+    row_splits: &mut Vec<TableRowSplit>,
 ) -> LifecycleResult<Vec<TableManifestInheritedLayer>> {
-    inherited_layers
-        .iter()
-        .enumerate()
-        .map(|(order, layer)| {
-            let levels = manifest_levels_from_owned(layer.owned_levels(), catalog)?;
+    let mut result = Vec::with_capacity(inherited_layers.len());
+    for (order, layer) in inherited_layers.iter().enumerate() {
+        let levels = manifest_levels_from_owned(layer.owned_levels(), catalog, row_splits)?;
+        result.push(
             TableManifestInheritedLayer::new(
                 u32::try_from(order).map_err(|_| {
                     LifecycleError::TableManifestPublicationFailed {
@@ -765,9 +787,10 @@ fn manifest_inherited_layers(
                 manifest_status_from_inherited(layer.status()),
                 levels,
             )
-            .map_err(format_error)
-        })
-        .collect()
+            .map_err(format_error)?,
+        );
+    }
+    Ok(result)
 }
 
 fn table_ref_from_branch_table(
@@ -975,14 +998,19 @@ fn validate_manifest_reader_facts(
     }
     #[cfg(debug_assertions)]
     {
+        // BS4.4g: read via the oracle hatch (bypasses the BS4.4d guard) so this one-pass-vs-scan
+        // cross-check keeps working once the recovery reader is lazy. Materialize once for both.
+        let scanned_rows = reader
+            .materialize_rows_for_oracle()
+            .map_err(|_| manifest_reader_scan_failed())?;
         debug_assert_eq!(
             facts,
-            manifest_table_facts(reader.facts(), reader.rows())?,
+            manifest_table_facts(reader.facts(), &scanned_rows)?,
             "manifest facts one-pass diverged from a full scan",
         );
         debug_assert_eq!(
             bounds,
-            manifest_table_bounds(reader.rows())?,
+            manifest_table_bounds(&scanned_rows)?,
             "manifest bounds one-pass diverged from a full scan",
         );
     }
