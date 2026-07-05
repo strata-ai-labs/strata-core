@@ -1723,7 +1723,7 @@ fn durable_rewrite_completion_does_not_persist_flush_watermark_or_truncate_wal()
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn durable_rewrite_uses_build_facts_and_in_memory_reader_handoff() {
+fn durable_rewrite_uses_build_facts_and_lazy_reader_reopen() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xaf);
@@ -1757,8 +1757,10 @@ fn durable_rewrite_uses_build_facts_and_in_memory_reader_handoff() {
     assert_eq!(perf.table_compaction_output_tables_built(), 1);
     assert_eq!(perf.table_build_facts_from_streaming_metadata(), 1);
     assert_eq!(perf.table_rewrite_redundant_fact_decodes_avoided(), 1);
-    assert_eq!(perf.table_rewrite_reader_reopens_avoided(), 1);
-    assert_eq!(perf.table_rewrite_reader_row_vectors_reused(), 1);
+    // BS4.4l: the durable output now reopens lazily (metadata-only, disk-resident) instead of the eager
+    // row-reuse handoff, and must not fully materialize.
+    assert_eq!(perf.table_rewrite_reader_reopens_performed(), 1);
+    assert_eq!(perf.table_lazy_full_materializations(), 0);
     assert_eq!(runtime.branch_state().owned_levels()[0].len(), 1);
 }
 

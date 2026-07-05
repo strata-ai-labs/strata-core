@@ -330,8 +330,7 @@ pub struct StoragePerfSnapshot {
     table_compaction_output_tables_built: u64,
     table_build_facts_from_streaming_metadata: u64,
     table_rewrite_redundant_fact_decodes_avoided: u64,
-    table_rewrite_reader_reopens_avoided: u64,
-    table_rewrite_reader_row_vectors_reused: u64,
+    table_rewrite_reader_reopens_performed: u64,
     table_compaction_boundary_key_buffer_allocations: u64,
     table_compaction_boundary_key_buffer_reuses: u64,
     table_compaction_previous_key_buffer_allocations: u64,
@@ -1794,14 +1793,10 @@ impl StoragePerfSnapshot {
         self.table_rewrite_redundant_fact_decodes_avoided
     }
 
-    /// Durable rewrite-output reader reopens avoided by in-memory reader handoff.
-    pub const fn table_rewrite_reader_reopens_avoided(self) -> u64 {
-        self.table_rewrite_reader_reopens_avoided
-    }
-
-    /// Build-time row vectors handed to installed rewrite readers without table reparse.
-    pub const fn table_rewrite_reader_row_vectors_reused(self) -> u64 {
-        self.table_rewrite_reader_row_vectors_reused
+    /// Durable rewrite/compaction/materialization output reader lazy reopens performed —
+    /// metadata-only, disk-resident install over the just-published object (BS4.4l).
+    pub const fn table_rewrite_reader_reopens_performed(self) -> u64 {
+        self.table_rewrite_reader_reopens_performed
     }
 
     /// Boundary-key buffers that needed allocation or capacity growth.
@@ -2912,9 +2907,7 @@ static TABLE_BUILD_FACTS_FROM_STREAMING_METADATA: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_REWRITE_REDUNDANT_FACT_DECODES_AVOIDED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
-static TABLE_REWRITE_READER_REOPENS_AVOIDED: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "perf-trace")]
-static TABLE_REWRITE_READER_ROW_VECTORS_REUSED: AtomicU64 = AtomicU64::new(0);
+static TABLE_REWRITE_READER_REOPENS_PERFORMED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -3485,8 +3478,7 @@ pub fn reset() {
     TABLE_COMPACTION_OUTPUT_TABLES_BUILT.store(0, Ordering::Relaxed);
     TABLE_BUILD_FACTS_FROM_STREAMING_METADATA.store(0, Ordering::Relaxed);
     TABLE_REWRITE_REDUNDANT_FACT_DECODES_AVOIDED.store(0, Ordering::Relaxed);
-    TABLE_REWRITE_READER_REOPENS_AVOIDED.store(0, Ordering::Relaxed);
-    TABLE_REWRITE_READER_ROW_VECTORS_REUSED.store(0, Ordering::Relaxed);
+    TABLE_REWRITE_READER_REOPENS_PERFORMED.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_ALLOCATIONS.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_REUSES.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_PREVIOUS_KEY_BUFFER_ALLOCATIONS.store(0, Ordering::Relaxed);
@@ -4068,9 +4060,7 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         table_rewrite_redundant_fact_decodes_avoided: TABLE_REWRITE_REDUNDANT_FACT_DECODES_AVOIDED
             .load(Ordering::Relaxed),
-        table_rewrite_reader_reopens_avoided: TABLE_REWRITE_READER_REOPENS_AVOIDED
-            .load(Ordering::Relaxed),
-        table_rewrite_reader_row_vectors_reused: TABLE_REWRITE_READER_ROW_VECTORS_REUSED
+        table_rewrite_reader_reopens_performed: TABLE_REWRITE_READER_REOPENS_PERFORMED
             .load(Ordering::Relaxed),
         table_compaction_boundary_key_buffer_allocations:
             TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_ALLOCATIONS.load(Ordering::Relaxed),
@@ -6349,25 +6339,14 @@ pub(crate) fn record_table_rewrite_redundant_fact_decode_avoided() {
 }
 
 #[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_table_rewrite_reader_reopen_avoided() {}
+pub(crate) fn record_table_rewrite_reader_reopen_performed() {}
 
 #[cfg(feature = "perf-trace")]
-pub(crate) fn record_table_rewrite_reader_reopen_avoided() {
+pub(crate) fn record_table_rewrite_reader_reopen_performed() {
     if !recording_enabled() {
         return;
     }
-    TABLE_REWRITE_READER_REOPENS_AVOIDED.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_table_rewrite_reader_rows_reused() {}
-
-#[cfg(feature = "perf-trace")]
-pub(crate) fn record_table_rewrite_reader_rows_reused() {
-    if !recording_enabled() {
-        return;
-    }
-    TABLE_REWRITE_READER_ROW_VECTORS_REUSED.fetch_add(1, Ordering::Relaxed);
+    TABLE_REWRITE_READER_REOPENS_PERFORMED.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

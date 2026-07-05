@@ -573,7 +573,7 @@ fn lifecycle_simulation_boundary_source_guards_are_registered() {
 }
 
 #[test]
-fn source_guard_merge_cost_rewrite_publication_uses_prevalidated_row_handoff() {
+fn source_guard_rewrite_publication_installs_lazy_disk_resident_output() {
     let rewrite_source = include_str!("../../lifecycle/rewrite_publication.rs");
     let publish_artifact_source = rewrite_source
         .split("fn publish_rewrite_artifact")
@@ -591,17 +591,18 @@ fn source_guard_merge_cost_rewrite_publication_uses_prevalidated_row_handoff() {
         .expect("publish-or-load helper precedes object-name helper");
 
     assert!(
-        publish_artifact_source.contains("into_parts_with_rows"),
-        "durable rewrite publication must carry build-time rows forward"
+        publish_artifact_source.contains("into_parts()")
+            && !publish_artifact_source.contains("into_parts_with_rows"),
+        "BS4.4l: durable rewrite publication must drop build-time rows, not carry them forward"
     );
     assert!(
-        publish_artifact_source.contains("open_reader_from_validated_rows"),
-        "durable rewrite publication must install readers from validated rows"
+        publish_artifact_source.contains(".open_reader(")
+            && !publish_artifact_source.contains("open_reader_from_validated_rows"),
+        "BS4.4l: durable rewrite publication must install a lazy, disk-resident reader over the published object"
     );
     assert!(
-        !publish_artifact_source.contains(".open_reader(")
-            && !publish_artifact_source.contains("open_bytes("),
-        "durable rewrite publication must not reopen/reparse table bytes"
+        publish_artifact_source.contains("deny_runtime_materialization"),
+        "BS4.4l: durable rewrite output reader must guard against accidental full materialization"
     );
     assert!(
         publish_or_load_source.contains("publish_create_prevalidated"),

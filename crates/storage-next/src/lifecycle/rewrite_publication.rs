@@ -73,7 +73,7 @@ pub(crate) struct PreparedDurableMaterialization {
 pub(crate) fn compact_durable_branch_manifest_backed(
     branch: &mut BranchLocalState,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     manifest_service: &TableManifestService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
     request: &LifecycleCompactionRequest,
@@ -92,7 +92,7 @@ pub(crate) fn compact_durable_branch_manifest_backed(
 pub(crate) fn prepare_durable_compaction_publication(
     branch: &BranchLocalState,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     request: &LifecycleCompactionRequest,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<PreparedDurableCompaction> {
@@ -169,7 +169,7 @@ fn build_and_publish_compaction(
     branch_request: &BranchCompactionRequest,
     plan: &BranchCompactionPlan,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     budget: Option<&StorageBudgetLedger>,
     ranges: &[Option<TableKeyBounds>],
 ) -> SubcompactionBuildResult {
@@ -424,7 +424,7 @@ fn compaction_request_with_durable_budget_target(
 pub(crate) fn materialize_durable_branch_manifest_backed(
     branch: &mut BranchLocalState,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     manifest_service: &TableManifestService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
     request: &LifecycleMaterializationRequest,
@@ -472,7 +472,7 @@ impl DurableMaterializationBuild {
     pub(crate) fn build(
         self,
         table_service: &TableObjectService<'_>,
-        reader_service: &TableObjectReaderService<'_>,
+        reader_service: &TableObjectReaderService<'static>,
         budget: Option<&StorageBudgetLedger>,
     ) -> LifecycleResult<PreparedDurableMaterialization> {
         let prepared = self
@@ -660,7 +660,7 @@ fn publish_compaction_outputs(
     output_level: BranchLevel,
     materialization_source: Option<BranchMaterializationSource>,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     artifacts: Vec<BuiltTableArtifact>,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<Vec<PublishedRewriteTable>> {
@@ -685,7 +685,7 @@ fn publish_compaction_outputs(
 fn publish_materialization_outputs(
     branch_id: BranchId,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     prepared: &BranchMaterializationPreparedOutput,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<Vec<PublishedRewriteTable>> {
@@ -711,13 +711,15 @@ fn publish_rewrite_artifact(
     branch_id: BranchId,
     level: BranchLevel,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     artifact: BuiltTableArtifact,
     materialization_source: Option<BranchMaterializationSource>,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<PublishedRewriteTable> {
     let extras = artifact.extras().clone();
-    let (bytes, table_facts, rows) = artifact.into_parts_with_rows();
+    // BS4.4l: drop the decoded rows — the output installs a lazy, disk-resident reader over the
+    // just-published object rather than reusing the in-memory rows.
+    let (bytes, table_facts) = artifact.into_parts();
     require_optional_rewrite_generated_budget(budget, table_facts.byte_count())?;
     require_optional_rewrite_reader_budget(budget, table_facts.byte_count())?;
     let identity = table_facts.identity().clone();
@@ -743,23 +745,23 @@ fn publish_rewrite_artifact(
                 )
             })?;
     }
+    // BS4.4l: lazy, metadata-only reopen over the just-published (byte-exact-validated) object —
+    // disk-resident, block-cache-cold, guarded against accidental full materialization. Reverses the
+    // former eager row-reuse handoff (the L1+ outputs it produces are the bulk of a large dataset).
     let reader = reader_service
-        .open_reader_from_validated_rows(
+        .open_reader(
+            identity.clone(),
             &object_facts,
-            table_facts,
-            &bytes,
-            rows,
-            TableReaderConfig::default().with_eager_filter_unavailable(),
+            TableReaderConfig::default().deny_runtime_materialization(),
         )
         .map_err(|source| {
             orphaned_published_object_error(
                 &object_facts,
-                "table rewrite published output before in-memory reader handoff failed",
+                "table rewrite published output before lazy reader reopen failed",
                 source,
             )
         })?;
-    perf_trace::record_table_rewrite_reader_reopen_avoided();
-    perf_trace::record_table_rewrite_reader_rows_reused();
+    perf_trace::record_table_rewrite_reader_reopen_performed();
     let descriptor =
         BranchTableDescriptor::new(identity, reader.facts().clone(), level).map_err(|source| {
             orphaned_published_object_error(
@@ -833,7 +835,7 @@ fn require_optional_rewrite_reader_budget(
 
 fn publish_or_load_rewrite_output(
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     branch_component: &str,
     level: u32,
     object_id: &str,

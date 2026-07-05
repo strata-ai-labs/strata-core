@@ -184,3 +184,72 @@ fn durable_cold_reads_populate_then_hit_the_block_cache() {
         "a repeat read of the same key must hit the now-warm block cache"
     );
 }
+
+/// BS4.4l: a durable COMPACTION output installs a lazy, disk-resident reader (not eager row-reuse). The
+/// compaction reads its lazy L0 inputs by cursor and installs the merged output lazily, so it must not
+/// fully materialize any table — the memory win that keeps L1+ tables (the bulk of a large dataset) off
+/// the heap.
+#[test]
+fn durable_compacted_output_installs_lazy_and_never_materializes() {
+    let _capture = perf_trace::begin_test_capture();
+    let root = temp_dir_for_api_test("disk-resident-compact");
+
+    let mut runtime = open_durable_runtime(root);
+    // Two separate durable L0 tables so an explicit compaction has something to merge.
+    commit_put(&mut runtime, b"cmp-a", b"alpha", 10);
+    commit_put(&mut runtime, b"cmp-b", b"bravo", 20);
+    runtime
+        .flush_default_branch_for_test()
+        .expect("flush first L0 table");
+    commit_put(&mut runtime, b"cmp-c", b"carol", 30);
+    commit_put(&mut runtime, b"cmp-d", b"delta", 40);
+    runtime
+        .flush_default_branch_for_test()
+        .expect("flush second L0 table");
+    assert_eq!(
+        runtime
+            .branch_source_layout_for_test(branch())
+            .expect("layout")
+            .owned_l0_tables(),
+        2,
+    );
+
+    // Compact the two L0 tables into one terminal-level output. The output installs lazy (BS4.4l).
+    perf_trace::reset();
+    let compact =
+        MaintenanceRequest::new(MaintenanceTask::Compact, MaintenanceScope::Branch(branch()));
+    let outcome = runtime.maintenance(&compact).expect("durable compaction");
+    assert_eq!(outcome.status(), MaintenanceSummaryStatus::Completed);
+
+    let compacted = runtime
+        .branch_source_layout_for_test(branch())
+        .expect("compacted layout");
+    assert_eq!(compacted.owned_l0_tables(), 0);
+    assert_eq!(
+        compacted.owned_total_tables(),
+        1,
+        "the two L0 tables must merge into a single durable output"
+    );
+
+    let perf = perf_trace::snapshot();
+    assert!(
+        perf.table_rewrite_reader_reopens_performed() >= 1,
+        "the compaction output must reopen lazily over the published object"
+    );
+    assert_eq!(
+        perf.table_lazy_full_materializations(),
+        0,
+        "compaction (lazy inputs by cursor + lazy output install) must not fully materialize a table"
+    );
+
+    // Every row still reads correctly through the lazy compacted output.
+    assert_eq!(
+        read_latest(&runtime, b"cmp-a").as_deref(),
+        Some(b"alpha".as_ref())
+    );
+    assert_eq!(
+        read_latest(&runtime, b"cmp-d").as_deref(),
+        Some(b"delta".as_ref())
+    );
+    assert_eq!(read_latest(&runtime, b"cmp-missing"), None);
+}
