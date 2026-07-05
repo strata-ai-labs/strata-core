@@ -694,7 +694,7 @@ pub(crate) fn install_prepared_cache_flush(
 pub(crate) fn flush_durable_branch(
     branch: &mut BranchLocalState,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     request: &FlushFrozenRequest,
 ) -> LifecycleResult<FlushFrozenOutcome> {
     flush_durable_branch_with_budget(branch, table_service, reader_service, request, None)
@@ -703,7 +703,7 @@ pub(crate) fn flush_durable_branch(
 pub(crate) fn flush_durable_branch_with_budget(
     branch: &mut BranchLocalState,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     request: &FlushFrozenRequest,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<FlushFrozenOutcome> {
@@ -718,7 +718,7 @@ pub(crate) fn flush_durable_branch_with_budget(
 pub(crate) fn prepare_durable_flush_with_budget(
     branch: &BranchLocalState,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     request: &FlushFrozenRequest,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<Option<PreparedDurableFlush>> {
@@ -751,7 +751,9 @@ pub(crate) fn prepare_durable_flush_with_budget(
     let reader = match reader_service.open_reader(
         identity.clone(),
         &object_facts,
-        TableReaderConfig::default().with_eager_filter_unavailable(),
+        TableReaderConfig::default()
+            .with_eager_filter_unavailable()
+            .deny_runtime_materialization(),
     ) {
         Ok(reader) => reader,
         Err(error) => {
@@ -830,7 +832,7 @@ pub(crate) fn install_prepared_durable_flush(
 pub(crate) fn prepare_durable_flush_drain_with_budget(
     branch: &BranchLocalState,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     request: &FlushDrainRequest,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<PreparedDurableFlushDrain> {
@@ -1294,7 +1296,7 @@ fn publish_or_load_existing(
 fn branch_owned_table(
     branch_id: BranchId,
     identity: TableIdentity,
-    reader: ImmutableTableReader<'_>,
+    reader: ImmutableTableReader<'static>,
     extras: TableSummaryExtras,
 ) -> LifecycleResult<BranchOwnedTable> {
     let descriptor =

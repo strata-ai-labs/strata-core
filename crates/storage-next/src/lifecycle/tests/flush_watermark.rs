@@ -9,8 +9,9 @@ use crate::commit::{
     CommitTimelineRows,
 };
 use crate::format::{
-    encode_manifest, DatabaseManifest, TableManifest, TableManifestLevel, TableManifestTableBounds,
-    TableManifestTableFacts, TableManifestTableProvenance, TableManifestTableRef, WalCommitPayload,
+    encode_manifest, table_row_split_extension_section, DatabaseManifest, TableManifest,
+    TableManifestLevel, TableManifestTableBounds, TableManifestTableFacts,
+    TableManifestTableProvenance, TableManifestTableRef, TableRowSplit, WalCommitPayload,
     WalRecord,
 };
 use crate::layout::ObjectLayout;
@@ -802,13 +803,16 @@ fn durable_manifest(
         TableManifestTableProvenance::Flush,
     )
     .expect("table reference");
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("recovery test extras");
+    let row_split = TableRowSplit::new(extras.put_rows(), extras.tombstone_rows());
     let manifest = TableManifest::new(
         branch,
         None,
         1,
         vec![TableManifestLevel::new(BranchLevel::ZERO, vec![reference]).expect("level")],
         Vec::new(),
-        Vec::new(),
+        vec![table_row_split_extension_section(&[row_split]).expect("row-split section")],
     )
     .expect("manifest");
     TableManifestService::new(backend)

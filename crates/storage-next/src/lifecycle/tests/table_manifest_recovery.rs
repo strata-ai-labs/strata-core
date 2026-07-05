@@ -11,10 +11,10 @@ use crate::commit::{
     CommitTimelineEntry, CommitTimelineRows,
 };
 use crate::format::{
-    encode_manifest, DatabaseManifest, TableManifest, TableManifestInheritedLayer,
-    TableManifestInheritedLayerStatus, TableManifestLevel, TableManifestTableBounds,
-    TableManifestTableFacts, TableManifestTableProvenance, TableManifestTableRef, WalCommitPayload,
-    WalRecord,
+    encode_manifest, table_row_split_extension_section, DatabaseManifest, TableManifest,
+    TableManifestInheritedLayer, TableManifestInheritedLayerStatus, TableManifestLevel,
+    TableManifestTableBounds, TableManifestTableFacts, TableManifestTableProvenance,
+    TableManifestTableRef, TableRowSplit, WalCommitPayload, WalRecord,
 };
 use crate::layout::ObjectLayout;
 use crate::lifecycle::encode_checkpoint_row_section;
@@ -26,7 +26,7 @@ use crate::service::{
 };
 use crate::table::{
     sort_table_rows_by_key, ImmutableTableBuilder, ImmutableTableReader, TableIdentity,
-    TablePhysicalKeyBytes, TableReaderConfig, TableRow,
+    TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableSummaryExtras,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -54,7 +54,7 @@ fn recovery_loads_table_manifest_for_branch_and_reports_facts() {
                     .expect("level"),
             ],
             Vec::new(),
-            Vec::new(),
+            vec![table_row_split_extension_section(&[table.row_split]).expect("row-split section")],
         )
         .expect("manifest"),
     );
@@ -121,7 +121,7 @@ fn recovery_opens_manifest_table_with_bounded_range_reads() {
                     .expect("level"),
             ],
             Vec::new(),
-            Vec::new(),
+            vec![table_row_split_extension_section(&[table.row_split]).expect("row-split section")],
         )
         .expect("manifest"),
     );
@@ -173,7 +173,7 @@ fn recovery_with_large_manifest_table_does_not_read_full_object() {
                     .expect("level"),
             ],
             Vec::new(),
-            Vec::new(),
+            vec![table_row_split_extension_section(&[table.row_split]).expect("row-split section")],
         )
         .expect("manifest"),
     );
@@ -213,7 +213,7 @@ fn recovery_range_backed_reader_preserves_branch_read_parity() {
                     .expect("level"),
             ],
             Vec::new(),
-            Vec::new(),
+            vec![table_row_split_extension_section(&[table.row_split]).expect("row-split section")],
         )
         .expect("manifest"),
     );
@@ -278,7 +278,10 @@ fn recovery_installs_manifest_owned_front_and_sorted_tables() {
                     .expect("sorted level"),
             ],
             Vec::new(),
-            Vec::new(),
+            vec![
+                table_row_split_extension_section(&[front.row_split, sorted.row_split])
+                    .expect("row-split section"),
+            ],
         )
         .expect("manifest"),
     );
@@ -346,7 +349,8 @@ fn recovery_installs_inherited_layers_from_manifest() {
                 ],
             )
             .expect("inherited layer")],
-            Vec::new(),
+            vec![table_row_split_extension_section(&[inherited.row_split])
+                .expect("row-split section")],
         )
         .expect("manifest"),
     );
@@ -410,7 +414,8 @@ fn recovery_preserves_materializing_layer_status() {
                 ],
             )
             .expect("inherited layer")],
-            Vec::new(),
+            vec![table_row_split_extension_section(&[inherited.row_split])
+                .expect("row-split section")],
         )
         .expect("manifest"),
     );
@@ -454,7 +459,7 @@ fn recovery_ignores_orphan_table_objects_not_in_manifest() {
                     .expect("level"),
             ],
             Vec::new(),
-            Vec::new(),
+            vec![table_row_split_extension_section(&[live.row_split]).expect("row-split section")],
         )
         .expect("manifest"),
     );
@@ -476,6 +481,52 @@ fn recovery_ignores_orphan_table_objects_not_in_manifest() {
             .value(),
         b"live"
     );
+}
+
+#[test]
+fn recovery_rejects_row_split_counts_that_disagree_with_the_object() {
+    let backend: &'static ManifestRecoveryBackend =
+        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+    let branch = branch_id(0x2b);
+    let table = publish_manifest_table(
+        backend,
+        branch,
+        BranchLevel::ZERO,
+        "row-split-mismatch",
+        &[put_row(branch, 6, b"split-key", b"value")],
+    );
+    // The table holds one put row, so its true row-split is (1 put, 0 tombstone). Persist a manifest
+    // whose row-split section reports the wrong counts while its facts/bounds stay correct. BS4.4j
+    // release-checks the split against the actual rows during the recovery validation scan, so this
+    // must be rejected rather than installing a table with a wrong put/tombstone summary.
+    publish_table_manifest(
+        backend,
+        &TableManifest::new(
+            branch,
+            None,
+            9,
+            vec![
+                TableManifestLevel::new(BranchLevel::ZERO, vec![table.reference.clone()])
+                    .expect("level"),
+            ],
+            Vec::new(),
+            vec![
+                table_row_split_extension_section(&[TableRowSplit::new(2, 1)])
+                    .expect("row-split section"),
+            ],
+        )
+        .expect("manifest"),
+    );
+
+    let mut shell = assemble_shell(backend, branch, RecoveryStrictness::Strict);
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let error = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect_err("row-split count mismatch rejects");
+
+    assert_eq!(error.code(), "corruption.lifecycle.table_manifest");
+    assert!(shell.branch_state().is_empty());
 }
 
 #[test]
@@ -925,7 +976,7 @@ fn table_manifest_recovery_does_not_change_wal_replay_start() {
             13,
             vec![TableManifestLevel::new(BranchLevel::ZERO, vec![table.reference]).expect("level")],
             Vec::new(),
-            Vec::new(),
+            vec![table_row_split_extension_section(&[table.row_split]).expect("row-split section")],
         )
         .expect("manifest"),
     );
@@ -972,7 +1023,7 @@ fn table_manifest_recovery_then_wal_tail_preserves_latest_reads() {
             14,
             vec![TableManifestLevel::new(BranchLevel::ZERO, vec![table.reference]).expect("level")],
             Vec::new(),
-            Vec::new(),
+            vec![table_row_split_extension_section(&[table.row_split]).expect("row-split section")],
         )
         .expect("manifest"),
     );
@@ -1231,7 +1282,10 @@ fn recovery_preflights_checkpoint_and_table_manifest_disjoint_succeeds() {
                     .expect("level"),
             ],
             Vec::new(),
-            Vec::new(),
+            vec![
+                table_row_split_extension_section(&[manifest_table.row_split])
+                    .expect("row-split section"),
+            ],
         )
         .expect("manifest"),
     );
@@ -1293,7 +1347,10 @@ fn recovery_rejects_checkpoint_table_manifest_duplicate_internal_key_conflict() 
                     .expect("level"),
             ],
             Vec::new(),
-            Vec::new(),
+            vec![
+                table_row_split_extension_section(&[manifest_table.row_split])
+                    .expect("row-split section"),
+            ],
         )
         .expect("manifest"),
     );
@@ -1338,7 +1395,10 @@ fn recovery_accepts_exact_duplicate_checkpoint_table_manifest_rows() {
                     .expect("level"),
             ],
             Vec::new(),
-            Vec::new(),
+            vec![
+                table_row_split_extension_section(&[manifest_table.row_split])
+                    .expect("row-split section"),
+            ],
         )
         .expect("manifest"),
     );
@@ -1389,7 +1449,9 @@ fn build_manifest_reports_volatile_rewrite_output_with_clear_error() {
                 TableManifestLevel::new(BranchLevel::ZERO, vec![durable.reference]).expect("level"),
             ],
             Vec::new(),
-            Vec::new(),
+            vec![
+                table_row_split_extension_section(&[durable.row_split]).expect("row-split section")
+            ],
         )
         .expect("manifest"),
     );
@@ -1453,6 +1515,7 @@ fn recovery_rejects_table_object_from_wrong_branch_namespace() {
 #[derive(Clone)]
 struct PublishedManifestTable {
     reference: TableManifestTableRef,
+    row_split: TableRowSplit,
 }
 
 #[derive(Clone, Copy)]
@@ -1731,7 +1794,11 @@ fn publish_manifest_table(
         TableManifestTableProvenance::Flush,
     )
     .expect("table manifest ref");
-    PublishedManifestTable { reference }
+    let extras = TableSummaryExtras::from_rows(reader.rows()).expect("recovery test extras");
+    PublishedManifestTable {
+        reference,
+        row_split: TableRowSplit::new(extras.put_rows(), extras.tombstone_rows()),
+    }
 }
 
 fn publish_table_manifest(backend: &'static ManifestRecoveryBackend, manifest: &TableManifest) {

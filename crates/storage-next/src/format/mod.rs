@@ -79,10 +79,8 @@ pub(crate) use table_manifest::{
     TableManifestTableBounds, TableManifestTableFacts, TableManifestTableProvenance,
     TableManifestTableRef,
 };
-// BS4.4g: the writer emits the row-split section now; recovery consumes it in BS4.4h, so the
-// section decoder stays test-only until then (mirrors `encode_filter_frame` across BS4.2/4.3). The
-// payload codec + kind are exercised directly inside the extension module's own tests.
-#[cfg(test)]
+// BS4.4g: the writer emits the row-split section; BS4.4j recovery consumes it (via `from_parts`) to
+// rebuild each table's summary without a full row scan, so the decoder is now a live production import.
 pub(crate) use table_row_split_extension::decode_table_row_split_extension_section;
 pub(crate) use table_row_split_extension::{table_row_split_extension_section, TableRowSplit};
 #[expect(

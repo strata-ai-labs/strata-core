@@ -39,6 +39,14 @@ impl TableRowSplit {
             tombstone_rows,
         }
     }
+
+    pub(crate) const fn put_rows(&self) -> u64 {
+        self.put_rows
+    }
+
+    pub(crate) const fn tombstone_rows(&self) -> u64 {
+        self.tombstone_rows
+    }
 }
 
 /// Build the optional, preserve-on-rewrite section carrying `splits` in table order.

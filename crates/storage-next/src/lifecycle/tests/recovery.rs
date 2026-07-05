@@ -2107,14 +2107,16 @@ fn recovery_rebuilds_fork_at_history_version() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn recovery_table_manifest_multi_branch_rows_round_trip() {
     // Inject a BranchCatalogManifest with two active branches plus a
     // TableManifest per branch carrying owned rows. Open the database
     // afresh and verify both branches' row state is rebuilt from their
     // per-branch TableManifests.
     use crate::format::{
-        encode_table_manifest, BranchCatalogEntry, BranchCatalogManifest, BranchCatalogStatus,
-        TableManifest, TableManifestLevel,
+        encode_table_manifest, table_row_split_extension_section, BranchCatalogEntry,
+        BranchCatalogManifest, BranchCatalogStatus, TableManifest, TableManifestLevel,
+        TableRowSplit,
     };
     use crate::layout::ObjectLayout;
 
@@ -2149,7 +2151,10 @@ fn recovery_table_manifest_multi_branch_rows_round_trip() {
         )
         .expect("initial level")],
         Vec::new(),
-        Vec::new(),
+        vec![
+            table_row_split_extension_section(&[TableRowSplit::new(1, 0)])
+                .expect("row-split section"),
+        ],
     )
     .expect("initial table manifest");
     let extra_manifest = TableManifest::new(
@@ -2162,7 +2167,10 @@ fn recovery_table_manifest_multi_branch_rows_round_trip() {
         )
         .expect("extra level")],
         Vec::new(),
-        Vec::new(),
+        vec![
+            table_row_split_extension_section(&[TableRowSplit::new(1, 0)])
+                .expect("row-split section"),
+        ],
     )
     .expect("extra table manifest");
     backend.write_raw(

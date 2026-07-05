@@ -1152,12 +1152,16 @@ impl<'a> ImmutableTableReader<'a> {
         self.facts.byte_count()
     }
 
-    /// BS4.4g resident/object seam: the approximate in-RAM footprint of this reader, as opposed to
-    /// `byte_count()` (the encoded object size used for compaction/level accounting). Today an eager
-    /// reader holds the whole object, so resident == object; BS4.4h overrides this for the lazy case to
-    /// return only the resident metadata (plus any cached blocks). Behavior-neutral until then.
+    /// BS4.4j resident/object seam: the approximate in-RAM footprint of this reader, as opposed to
+    /// `byte_count()` (the encoded object size used for compaction/level accounting). An eager reader
+    /// holds the whole decoded object; a lazy (disk-resident) reader pins only its metadata (index +
+    /// properties + loaded filter) — data blocks stay on disk and are accounted DB-wide by the block
+    /// cache, so they are excluded here (counting them would double-count the cache's own resident total).
     pub(crate) fn resident_size_bytes(&self) -> u64 {
-        self.byte_count()
+        match &self.rows {
+            TableReaderRows::Eager(_) => self.byte_count(),
+            TableReaderRows::Lazy(lazy) => lazy.state.metadata.resident_metadata_bytes(),
+        }
     }
 
     pub(crate) fn rows(&self) -> &[TableRow] {

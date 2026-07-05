@@ -76,6 +76,26 @@ impl ImmutableTableMetadata {
     pub(crate) const fn has_filter(&self) -> bool {
         self.filter_block_frame_len != 0
     }
+
+    /// BS4.4j: the resident (in-RAM) metadata footprint of a lazy table — the index block (one entry per
+    /// data block, each carrying its first/last key), the properties summary, and the loaded filter
+    /// frame. Data blocks stay on disk and are fetched on demand (accounted DB-wide by the block cache),
+    /// so they are deliberately excluded: this is what a held lazy reader actually pins in memory, as
+    /// opposed to `byte_count()` (the whole encoded object). `filter_block_frame_len` is `0` when absent.
+    pub(crate) fn resident_metadata_bytes(&self) -> u64 {
+        let index_bytes: u64 = self
+            .index
+            .entries()
+            .iter()
+            .map(|entry| {
+                (std::mem::size_of::<TableIndexEntry>()
+                    + entry.first_key_bytes().len()
+                    + entry.last_key_bytes().len()) as u64
+            })
+            .sum();
+        let properties_bytes = std::mem::size_of::<TableProperties>() as u64;
+        index_bytes + properties_bytes + u64::from(self.filter_block_frame_len)
+    }
 }
 
 impl ImmutableTable {

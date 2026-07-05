@@ -553,7 +553,7 @@ impl BranchOwnedTable {
     pub(crate) fn new(
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
-        reader: ImmutableTableReader<'_>,
+        reader: ImmutableTableReader<'static>,
         extras: TableSummaryExtras,
     ) -> BranchRuntimeResult<Self> {
         Self::new_with_materialization_layer(branch_id, descriptor, reader, extras, None)
@@ -562,7 +562,7 @@ impl BranchOwnedTable {
     pub(crate) fn new_materialization_replacement(
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
-        reader: ImmutableTableReader<'_>,
+        reader: ImmutableTableReader<'static>,
         extras: TableSummaryExtras,
         materialization_source: BranchMaterializationSource,
     ) -> BranchRuntimeResult<Self> {
@@ -578,7 +578,7 @@ impl BranchOwnedTable {
     fn new_with_materialization_layer(
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
-        reader: ImmutableTableReader<'_>,
+        reader: ImmutableTableReader<'static>,
         extras: TableSummaryExtras,
         materialization_source: Option<BranchMaterializationSource>,
     ) -> BranchRuntimeResult<Self> {
@@ -587,12 +587,9 @@ impl BranchOwnedTable {
                 reason: "branch-owned table descriptor facts must match reader facts",
             });
         }
-        // BS4.4f keeps this eager-materialization bridge: a no-op for eager build-time readers, and the
-        // borrow→`'static` conversion for a recovery/durable reader. BS4.4g deletes it when durable readers
-        // become lazy and are held disk-backed.
-        let reader = reader
-            .into_materialized()
-            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        // BS4.4j: the reader is installed as-is. Durable flush/recovery readers are now lazy (disk-backed)
+        // and held without decoding rows — the `into_materialized()` eager bridge is gone. The O(1) facts
+        // checks below (and the debug oracle) validate the table without a full scan.
         if reader.facts().row_count() == 0 {
             return Err(BranchRuntimeError::InvalidBranchState {
                 reason: "branch-owned table must not be empty",
