@@ -1216,7 +1216,7 @@ fn derived_table_identity(
 ) -> LifecycleResult<TableIdentity> {
     let facts = frozen.facts();
     TableIdentity::new(format!(
-        "{}-{}-frozen-{}-{}-{}",
+        "{}-{}-frozen-{}-{}-{}-{:016x}",
         request.table_identity_seed().as_str(),
         request.branch_id(),
         facts.row_count(),
@@ -1226,8 +1226,41 @@ fn derived_table_identity(
         facts
             .max_commit()
             .map_or(0, strata_core_next::CommitVersion::as_u64),
+        frozen_key_span_digest(frozen),
     ))
     .map_err(table_error)
+}
+
+/// FNV-1a-64 over the frozen table's physical key span (first key, a separator, then last key).
+///
+/// The flush object id derives from the table identity (`derived_object_id`), and
+/// `publish_or_load_existing` treats an id that already exists as the same content (idempotent
+/// retry). So two frozen tables that share a row count and commit range but cover different keys
+/// MUST NOT share an identity — otherwise the second flush would load the first's stale object,
+/// whose rows would not match this table's summary (extras). Production keeps flush identities
+/// distinct through monotonic commit versions; this span digest keeps them distinct even when the
+/// row count and commit range collide (e.g. raw same-version rows). It is idempotent — the same
+/// frozen span yields the same digest — so retry-load stays sound.
+fn frozen_key_span_digest(frozen: &FrozenTable) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    fn mix(mut hash: u64, bytes: &[u8]) -> u64 {
+        for &byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        hash
+    }
+    let mut hash = FNV_OFFSET;
+    if let Some(first) = frozen.first_key() {
+        hash = mix(hash, first.as_slice());
+    }
+    // Unit separator so an empty last key cannot alias a first key that ends where last begins.
+    hash = mix(hash, b"\x1f");
+    if let Some(last) = frozen.last_key() {
+        hash = mix(hash, last.as_slice());
+    }
+    hash
 }
 
 fn derived_object_id(request: &FlushFrozenRequest, table_facts: &TableRuntimeFacts) -> String {

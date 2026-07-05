@@ -1481,16 +1481,47 @@ fn flush_identity_is_deterministic_and_tracks_commit_facts() {
     .expect("branch identity")
     .clone();
 
+    let changed_key = flush_cache_branch(
+        &mut frozen_branch(
+            branch,
+            put_row(branch, b"other-identity", 16, 16_000, b"value"),
+        ),
+        &request,
+    )
+    .expect("changed key")
+    .table_identity()
+    .expect("key identity")
+    .clone();
+
     assert_eq!(first, second);
     assert_eq!(first, changed_value);
     assert_ne!(first, changed_commit);
     assert_ne!(first, changed_branch);
+    // BS4 provenance fix: two frozen tables that share a row count and commit range but cover
+    // different keys must get distinct identities. Otherwise the derived flush object id collides and
+    // `publish_or_load_existing` loads the first table's stale object, whose rows would not match the
+    // second table's summary (the extras/rows provenance mismatch the branch-owned oracle catches).
+    assert_ne!(
+        first, changed_key,
+        "different key spans must yield different flush identities"
+    );
+    // The identity is the structured facts (`{seed}-{branch}-frozen-{rows}-{min}-{max}`) plus a
+    // 16-hex key-span digest suffix.
+    let expected_prefix = format!("flush-seed-{branch}-frozen-1-16-16-");
+    assert!(
+        first.as_str().starts_with(&expected_prefix),
+        "identity {} must start with {expected_prefix}",
+        first.as_str()
+    );
+    let digest = &first.as_str()[expected_prefix.len()..];
     assert_eq!(
-        first.as_str(),
-        format!(
-            "{request_seed}-{branch}-frozen-1-16-16",
-            request_seed = "flush-seed"
-        )
+        digest.len(),
+        16,
+        "key-span digest must be 16 hex chars: {digest}"
+    );
+    assert!(
+        digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "key-span digest must be hex: {digest}"
     );
     assert!(!first.as_str().contains('/'));
 }
