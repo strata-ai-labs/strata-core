@@ -1,6 +1,8 @@
 # BS4 — Disk-resident tables: implementation and test plan
 
-Status: **ready to implement after BS3**. Milestone BS4 of `billion-scale-plan.md` (gaps
+Status: **in progress** — 4.1, 4.2, 4.3, 4.4a–i landed (all prep + the behavior-neutral
+scaffolding); **remaining: 4.4j (flush/recovery lazy) → 4.4k (compaction outputs lazy) → 4.5
+(budget remodel) → 4.6 (exit)**. Milestone BS4 of `billion-scale-plan.md` (gaps
 G11–G16; unblocks G9/G20/G21). **This is the regime change**: today every durable table is
 fully resident *and decoded* in RAM and the dataset cannot exceed the memory budget; after
 BS4 the dataset lives on disk, reads fetch blocks on demand, and memory is bounded by caches
@@ -18,6 +20,11 @@ durable flush opens a **lazy** reader over the just-written object (`flush.rs:74
 reads the entire object back to materialize it.
 
 ## What reconnaissance established (all anchors verified)
+
+> **Status (original recon snapshot).** This section records the pre-implementation survey; its
+> line numbers reflect the code *before* 4.4a–i landed and have drifted. The substance still
+> holds. For current, re-verified anchors of the remaining work, see the **BS4.4j / BS4.4k / BS4.5**
+> sections below (post-4.4i recon).
 
 **The lazy machinery is built and dead — BS4 is mostly wiring plus consumer conversion:**
 
@@ -57,12 +64,15 @@ reads the entire object back to materialize it.
 ## Slices
 
 Ordering rationale: consumer conversions are behavior-neutral on Eager readers (cursors and
-facts work identically), so they land **before** the constructor flip; the flip itself
-becomes small and revertable. BS4.1, BS4.2/4.3, and BS4.4a are mutually independent.
+facts work identically), so they land **before** the constructor flip. The original single
+"flip" slice (4.4f) decomposed into **f→g→h→i** (all ✓ — constructor-extras, lazy-prep,
+backend-ownership, variant-collapse) plus the remaining **4.4j** (flush/recovery lazy) and
+**4.4k** (compaction outputs lazy); keeping those two separate is what keeps each bounded.
+BS4.1, BS4.2/4.3, and BS4.4a are mutually independent.
 
 | Slice | Content | Depends on |
 |---|---|---|
-| BS4.1 | O(1) sharded block cache **(✓ landed, dark)** | — (cache unreachable until 4c — safe window) |
+| BS4.1 | O(1) sharded block cache **(✓ landed, dark)** | — (cache unreachable until the flip (4.4j) — safe window) |
 | BS4.2a | Filter-frame **format codec** + goldens + spec + negatives **(✓ landed, dark)** | — |
 | BS4.2b | Reader wiring: `open_bytes`/`open_source` load + attach the filter **(✓ landed, dark)** | 4.2a, 4.1 |
 | BS4.3 | Filter frame **writer** (config-gated) **(✓ landed, dark — off by default)** | 4.2 shipped |
@@ -75,9 +85,10 @@ becomes small and revertable. BS4.1, BS4.2/4.3, and BS4.4a are mutually independ
 | BS4.4g | Lazy-readiness prep — **behavior-neutral (✓ landed)**: oracle hatch (`materialize_rows_for_oracle`, bypasses the guard) + convert prod row-scans (fork/checkpoint) to cursors + source-guard; put/tombstone additive manifest extension (positional, `TableSummaryExtras::from_parts`); Arc-wrap `LazyTableState` metadata; resident/object size seam (`resident_size_bytes`); `fill_cache=false` for merge inputs. Nothing goes lazy yet; guard does not yet bite. | 4.4f |
 | BS4.4h | Backend ownership — **behavior-neutral (✓ landed)**: the lazy flip needs durable runtimes to be owned/`'static` (a `BranchOwnedTable` holds `ImmutableTableReader<'static>`). `Arc`-share the Mutex-backed fault/reordering test backends so they're `Clone` → ownable; `durable_backend_handle_for_open` prefers owned for every policy (so the soak tests take the owned path → `DurableOwned('static)`), keeping Background/DeterministicInline's owned requirement. Durable now owns in practice; the `Durable<'a>` variant collapse (183-site `'a` removal) is folded into 4.4i. | 4.4g |
 | BS4.4i | Collapse the dead borrowed `Durable` runtime variant — **behavior-neutral (✓ landed)**: deleting `into_materialized` (BS4.4j) needs a type-level `'static` durable runtime, but the generic `Durable(<'a>)` variant blocks it. Remove the variant + merge the 70 paired `Durable\|DurableOwned` arms into `DurableOwned`; remove the borrowed handle machinery (`DurableBackendHandleForOpen`, `open_durable_with_backend_handle`, `as_backend_handle`, `RuntimeSlot::new`); in-memory durable opens keep their errors (`durable_backend_handle_for_open` → `InvalidArgument`/`UnsupportedCapability`). Public `StorageRuntime<'a>`/`StorageOpenOutcome<'a>` retained via `PhantomData` (no 138-site API break). | 4.4h |
-| BS4.4j | The lazy flip (the payoff): delete `into_materialized`; durable-flush + recovery hold **lazy** `'static` readers; recovery builds extras via `from_parts` from the manifest (positional global index); `deny_runtime_materialization` on durable readers; lazy `resident_size_bytes`; greenfield cold-read/eviction/fault suite. Guard bites here. | 4.4i, 4.1, 4.2 |
-| BS4.5 | Fast open + budget remodel | 4.4j |
-| BS4.6 | Re-baseline + exit runs | all |
+| BS4.4j | The lazy flip — durable **flush + recovery** hold **lazy** `'static` readers (behavior-changing; passes the existing suite): delete the `into_materialized` bridge (`branch/read.rs:594`), constructor param → `'static`; recovery builds extras via `from_parts` from the manifest record + the BS4.4g row-split (un-gate the decoder `format/mod.rs:85`, re-add `TableRowSplit::put_rows()`/`tombstone_rows()` getters, thread a running **global** table index through the recovery walk) instead of `from_rows(reader.rows())` (`table_manifest.rs:708`); wire `deny_runtime_materialization()` into the **two** durable configs (`flush.rs:754`, `table_manifest.rs:680` — zero production callers today); lazy `resident_size_bytes` (`reader.rs:1159`); greenfield cold-read/eviction/fault suite. Recon-verified: **exactly 2 still-live materializers** trip the guard (both are this slice's work — the bridge + recovery extras); everything else is already cursor/facts-converted or the oracle hatch. Recovery becomes O(metadata) so **fast open is largely achieved here**. Guard bites here. Compaction outputs stay eager-resident (→ 4.4k); reader-budget charge stays full-object (→ 4.5). | 4.4i, 4.1, 4.2 |
+| BS4.4k | Compaction / materialization / rewrite **outputs install lazy** — the second half of the memory-model change: convert the two durable-output sites (`rewrite_publication.rs:747` `open_reader_from_validated_rows`, `materialization.rs:865` `open_bytes`) to metadata-only lazy opens over the just-written object (`extras` already in hand — no rescan), reversing the deliberate "reopen-avoided / rows-reused" optimization; thread `fill_cache=false`. **Split out of 4.4j** because eager readers never reach the `DenyRuntime` guard (`config.rs:176`), so post-flip these outputs stay correct + guard-safe — just fully resident; converting them is what would balloon the flip. Needed for the memory benefit (L1+ tables are compaction outputs ≈ most of a 100M dataset). | 4.4j |
+| BS4.5 | Budget remodel (unlocks dataset > budget) + fast-open regression: `require_table_reader_budget` charges **metadata-resident bytes** not full object bytes (`manifest_reader_materialized_budget_bytes` = `byte_count()` today, `table_manifest.rs:692`; flush charges too); raise `max_open_readers` (default 1024 < ~1,600 readers at 100M); demote `would_exceed_total` on the durable commit path to an observability gauge (the flip's lazy `resident_size_bytes` already defused it — no admission failure remains); pool rebalance (block cache ~50%, proportional `from_total_bytes` scaling preserved); update `budget_runtime.rs:310` (durable ≠ cache charge now). Fast-open (mostly delivered by 4.4j's O(metadata) recovery) rides here as a re-audit + open-time I/O-count regression test. | 4.4j, 4.4k |
+| BS4.6 | Re-baseline + exit runs — build the 100M-tier harness (`#[ignore]` integration test + benchmark cell; **neither exists yet**); run the exit gates (100M@8GB load+serve, open ≤1 s, 10M scoreboard within 1.5×, `lazy_full_materialization == 0`); subcompaction honest re-A/B (G9); ledger + umbrella gap-table updates. | all |
 
 ### BS4.1 — O(1) sharded block cache
 
@@ -103,7 +114,7 @@ surface, budget wiring (`budget.rs:199-207,420-433`), oversized-insert rejection
 **Tests.** Model-based property test vs a reference LRU (identical eviction victims under
 identical op sequences); `bytes == Σ entries ≤ capacity` invariant after every op;
 shard-count units; multi-thread hammer smoke. Safe-window argument: Eager readers ignore
-the cache (`reader.rs:365-374`), so this is unreachable from production until 4c.
+the cache (`reader.rs:365-374`), so this is unreachable from production until the flip (4.4j).
 
 ### BS4.2 — Durable filter frame: reader side
 
@@ -237,65 +248,129 @@ full suite green; source-guard; counter units.
    (sound: fixed-width prefix + lexicographic row order bounds every row); non-empty ⟺ free
    (`TableRuntimeFacts` rejects `row_count == 0`).
 
-### BS4.4f — The flip
+### BS4.4f–i — Landed prep for the flip (the original single "flip" slice, decomposed)
 
-- **Constructor:** delete `into_materialized()` (`read.rs:586-588`) and
-  `TableSummaryExtras::from_rows` (`:608`); new signature
-  `BranchOwnedTable::new(branch_id, descriptor, reader, extras)`. Extras provenance:
-  build-time sites get them from the streaming builder (accumulated during
-  `append_streaming_row` alongside the existing commit min/max — carried **out-of-band on
-  `BuiltTableArtifact`**, no table-format change); recovery gets them from the manifest
-  record, with `put_rows`/`tombstone_rows` added as **two u64s in an additive, versioned
-  manifest extension** (goldens + fuzz updated; fallback if judged not worth it:
-  Option-degrade the two fields — they feed only a debug oracle).
-- **Durable flush keeps its lazy reader** (`flush.rs:749`) — kills the write-then-re-read.
-  **Durable compaction outputs install lazy** post-publish (metadata-only open over the
-  just-written object) instead of `from_validated_rows` Eager. **Cache mode stays Eager**
-  (its dataset is genuinely RAM-resident by product policy).
-- **`fill_cache=false`:** a cursor/read option so compaction + materialization merge inputs
-  check the block cache but never insert (RocksDB semantics); plumbed through
-  `TableCompactionInput` cursor creation.
-- **Arc-wrap reader metadata + filter** inside `LazyTableState`: `BranchLayout` mutates via
-  `Arc::make_mut` (deep-cloning every table per install) — without this, each install would
-  copy ~80–200 KB of index per table. Clones become pointer bumps; the `OnceLock` clones
-  empty (the guard guarantees it is never populated at runtime).
-- **`approximate_size_bytes` splits**: `object_size_bytes()` (full object bytes — compaction
-  scoring/level sizing keep this) vs `resident_size_bytes()` (metadata estimate — memory
-  accounting). Every caller audited for which semantic it needs.
-- Reader-budget charging unchanged in this slice (BS4.5 fixes the cost model); verify
-  default budgets still admit the test workloads.
+The original plan had **one** "BS4.4f — The flip" slice. It decomposed into five as each part
+turned out to be a hard prerequisite; all but the last two have landed:
 
-**Tests.** The cold-read suite (below); all suites + fuzz targets green with lazy tables;
-materialization counter zero across stress + scoreboard smoke; crash sweeps green; 10 M
-scoreboard cells run **from this slice onward** (not only at 4.6).
+- **BS4.4f (✓)** — constructor takes `extras`; `BuiltTableArtifact` carries it out-of-band (no
+  table-format change); the `put_rows`/`tombstone_rows` manifest extension shipped in 4.4g.
+  `into_materialized` kept as the eager bridge. Behavior-neutral.
+- **BS4.4g (✓)** — oracle hatch (`materialize_rows_for_oracle`), prod row-scans → cursors,
+  the positional row-split manifest extension + `TableSummaryExtras::from_parts`, Arc-wrapped
+  `LazyTableState` metadata (the `Arc::make_mut` install-clone fix), the `resident_size_bytes`
+  seam, `fill_cache=false` for merge inputs. Behavior-neutral; guard does not yet bite.
+- **BS4.4h (✓)** — backend ownership: durable runtimes own their backend (`'static`) in practice.
+- **BS4.4i (✓)** — removed the dead borrowed `Durable<'a>` runtime variant so the durable runtime
+  is type-level `'static` (the flip's constructor demands a `'static` reader). `'a` retained on
+  the public `StorageRuntime<'a>` via `PhantomData`.
 
-### BS4.5 — Fast open + budget remodel
+What remains is the actual regime change, split into **flush/recovery-lazy (4.4j)** and
+**compaction-outputs-lazy (4.4k)** — see below.
 
-- **Fast open.** With 4a's facts-based manifest validation and 4c's lazy constructor,
-  recovery's O(dataset) decodes are gone by construction. Re-audit the open path for
-  O(rows) creep: anything converted to *cursor streaming* rather than facts (checkpoint
-  reconcile, preflight, read-view validation) must be facts-based on the open path or
-  demoted to the offline recovery oracle. Reader open at recovery = footer + index +
-  properties + filter reads (3–4 I/Os × ~1,600 tables at 100 M); parallelize manifest-replay
-  opens if the ≤1 s gate demands.
-- **Budget remodel** (`budget.rs`, `bootstrap.rs`, `cache.rs`):
-  - `memory_budget` = memtables + block cache + reader metadata + side pools. Pool
-    fractions rebalanced — block cache becomes the primary (~50 %); proportional
-    `from_total_bytes` scaling preserved so the 512 MB edge tier and the 64 GB server tier
-    stay one code path (final fractions tuned in BS4.6).
+### BS4.4j — The flip: flush + recovery hold lazy readers
+
+Recon (post-4.4i) established this is **bounded**: durable flush (`flush.rs:751`) and recovery
+(`table_manifest.rs:676`) readers **already open lazy** (`open_reader` → `open_source` →
+`TableReaderRows::Lazy`), held `'static` after 4.4h/i but collapsed to eager at install by the
+bridge under an `Allow` policy. Exactly **two still-live materializers** trip the `DenyRuntime`
+guard once it is wired — both are this slice's work, both already carry in-code `BS4.4g` "delete/
+replace when durable readers go lazy" comments. Everything else on the durable path is already
+cursor/facts-converted (4.4a–e) or routes through the guard-bypassing oracle hatch.
+
+- **Delete the bridge:** remove `reader.into_materialized()` (`branch/read.rs:594`); change the
+  constructor param `reader: ImmutableTableReader<'_>` → `ImmutableTableReader<'static>` (the
+  field is already `'static`). The public `into_materialized` method + its one test caller
+  (`service/table.rs:2611`, `#[cfg(test)]`) can then go too.
+- **Recovery extras from the manifest, not the rows:** replace
+  `TableSummaryExtras::from_rows(reader.rows())` (`table_manifest.rs:708`) with `from_parts`
+  (`table/facts.rs:235`) from the manifest record bounds (timestamp/physical-key) + the row-split
+  put/tombstone counts. Requires: un-gate `decode_table_row_split_extension_section`
+  (`format/mod.rs:85`, currently `#[cfg(test)]`); re-add `TableRowSplit::put_rows()`/
+  `tombstone_rows()` getters (`format/table_row_split_extension.rs`, fields exist, accessors
+  don't); thread a running **global** `&mut usize` index through the recovery walk
+  (`recover_manifest_levels`'s two call sites — top-level `:573`, inherited `:608` —
+  → `recover_manifest_table` → `branch_table_from_reader`), because `order()` is per-level while
+  the row-split Vec is flat/global. This mirrors the write side, which already threads
+  `row_splits: &mut Vec<TableRowSplit>` in lockstep.
+- **Wire the guard:** add `.deny_runtime_materialization()` (`table/config.rs:205`, **zero
+  production callers today**) to the durable flush config (`flush.rs:754`) and recovery config
+  (`table_manifest.rs:680`). Keep it off the compaction/build eager configs (harmless if it
+  leaked — eager ignores policy — but keep the intent explicit).
+- **Lazy `resident_size_bytes`:** override `resident_size_bytes()` (`table/reader.rs:1159`,
+  returns `byte_count()` today) to return resident metadata (index Vec + properties + loaded
+  filter) + cached-block bytes for the lazy case. Only one caller needs it —
+  `BranchOwnedTable::approximate_size_bytes` (`branch/read.rs:691`, memory accounting); compaction
+  scoring reads `facts().byte_count()` directly. **NB:** there is no `object_size_bytes` method —
+  the seam is `resident_size_bytes()` vs `facts().byte_count()`. This change also **defuses
+  `would_exceed_total`** for durable data (the residency total drains through this seam), so no
+  existing durable budget test breaks.
+- **Fast open, for free:** removing the two materializers makes recovery/open **O(metadata)**
+  (lazy `open_source` reads footer + index + properties + a targeted filter range — no row scan).
+  So exit gate #2's latency is largely delivered here; BS4.5 only adds the regression test + an
+  audit for creep.
+
+**Tests.** Greenfield `tests/disk_resident_reads.rs` cold-read / eviction / recovery suite (below):
+`lazy_full_materialization == 0`, `cache miss → hit`, branching cases. **Cost to watch:** tests that
+call `.rows()` on a durable-flush/recovery-backed table trip the guard once `DenyRuntime` is wired —
+bounded test-conversion work (→ cursors or the oracle hatch); likely small (most tests use
+`Allow`-policy testkit readers), verify early.
+
+### BS4.4k — Compaction / materialization / rewrite outputs install lazy
+
+Durable compaction/materialization/rewrite **outputs** install **eager `'static`**
+(`rewrite_publication.rs:747` `open_reader_from_validated_rows` reusing in-hand rows;
+`materialization.rs:865` `open_bytes`). Eager readers **never reach** the `DenyRuntime` guard
+(`table/config.rs:176`), so after 4.4j they are correct and guard-safe — just fully resident. This
+slice makes them disk-resident:
+
+- Convert each output site to a **metadata-only lazy open** over the just-written object
+  (`open_source`/`open_reader` on `object_facts`) instead of reusing decoded rows; take `extras`
+  from `artifact.extras()` (already in hand). For `rewrite_publication` this **reverses** the
+  deliberate "reopen-avoided / rows-reused" optimization (`perf_trace::record_table_rewrite_
+  reader_reopen_avoided`) — churn those perf-traces.
+- Thread `fill_cache=false` so the reopen populates metadata without warming the block cache.
+- **Cache-mode compaction stays eager** (`compaction.rs:1491`, C2 — its dataset is RAM-resident).
+
+**Why separate from 4.4j:** bundling it is exactly what made "the flip" balloon before. It is
+correctness-neutral relative to 4.4j (guard-safe either way) but MED–LARGE (three reopen sites +
+a reversed optimization). **Why not deferrable:** at 100M, L1+ tables (compaction outputs) are the
+bulk of the dataset, so leaving them resident blows the 8 GB budget — required for the exit.
+
+**Tests.** Cold-read suite extended to compacted/materialized tables; materialization counter zero
+across compaction stress; the "reopen avoided" perf-trace assertions updated to the new lazy path.
+
+### BS4.5 — Budget remodel + fast-open regression
+
+Two independent axes (they share no code); both are needed to make the exit gates reachable.
+
+- **Budget remodel** (`budget.rs`, `lifecycle/durable/bootstrap.rs`, `table_manifest.rs`,
+  `flush.rs`, `cache.rs`) — the hard prerequisite for exit gate #1 (dataset > budget):
   - `require_table_reader_budget` charges **metadata-resident bytes** (footer + index +
-    properties + filter frame lengths, all known pre-decode) instead of full object bytes;
-    `max_open_readers` stays as a count backstop, default raised.
-  - **Retire `would_exceed_total` on the durable path** (`bootstrap.rs:677-689`): no
-    replacement failure mode — caches bound residency; the runtime total remains as an
-    observability gauge with a health WARN if measured residency exceeds the budget
-    (accounting-bug detector, not admission control). **Cache mode keeps its check** —
-    its dataset genuinely is resident.
-  - Memtable pressure paths (rotation, frozen backlog, throttle) untouched.
+    properties + filter-frame lengths — all known pre-decode) instead of full object bytes.
+    Today `manifest_reader_materialized_budget_bytes` (`table_manifest.rs:692`) returns
+    `object_facts.byte_count()` and flush charges `artifact.byte_count()` — so ~1,600 lazy readers
+    at 100M still charge the full ~100 GB and **cannot open** until this changes.
+  - **Raise `max_open_readers`** (default 1024, `budget.rs:66`) — the count cap also bites at
+    ~1,600 tables; keep it as a raised backstop.
+  - **Demote `would_exceed_total` on the durable commit path** (now at
+    `lifecycle/durable/bootstrap.rs:840`, in `require_projected_mutating_commit_budget`) to an
+    observability gauge (health WARN if measured residency exceeds budget) — 4.4j's lazy
+    `resident_size_bytes` already stops it tripping, so there is no admission failure to preserve.
+    **Cache mode keeps its check** (`cache.rs:1003`, C2).
+  - Pool rebalance: block cache becomes the primary (~50 %); proportional `from_total_bytes`
+    scaling preserved (512 MB edge ↔ 64 GB server, one code path; final fractions tuned in 4.6).
+  - Update `budget_runtime.rs:310` (durable and cache reader charges now diverge). Memtable
+    pressure paths (rotation, frozen backlog, throttle) untouched.
+- **Fast open** — exit gate #2 (open ≤ 1 s), mostly delivered by 4.4j's O(metadata) recovery:
+  re-audit the open path for residual O(rows) creep (checkpoint reconcile, preflight, read-view
+  validation must be facts-based on the open path or demoted to the offline oracle); add an
+  open-time I/O-count regression test (O(tables), not O(rows)); parallelize manifest-replay opens
+  only if the ≤ 1 s gate demands it (`cfg(not(wasm32))`).
 
-**Tests.** Open-time regression test (O(tables) I/O counts via perf-trace, not O(rows));
-the previously-hard-failing dataset>budget bootstrap test now asserts success; cache-mode
-rejection still passes; budget-fraction units; pressure paths unchanged-green.
+**Tests.** Open-time I/O-count regression; the previously-hard-failing dataset>budget bootstrap
+test now asserts **success**; cache-mode rejection still passes; budget-fraction units; pressure
+paths unchanged-green.
 
 ### BS4.6 — Re-baseline + exit
 
@@ -346,7 +421,7 @@ zstd/readahead assessment recorded for BS6; ledger rows + umbrella gap-table upd
 - **C2 (cache mode):** cache-mode tables **stay Eager** (its dataset is genuinely
   RAM-resident by product policy — `open_bytes`, no backend objects) and it **keeps** its
   `would_exceed_total` rejection; only the durable path changes regime. Cache suites run
-  unmodified as a gate on 4.4f and 4.5.
+  unmodified as a gate on 4.4j/4.4k and 4.5.
 - **C3 (profiles):** the pool rebalance preserves proportional `from_total_bytes` scaling —
   one code path for the 512 MB edge tier through the 64 GB server tier; validated at the
   explicit tier matrix (512 MB / 8 GB / 64 GB) including block-cache minimums (a tier must
@@ -363,28 +438,34 @@ zstd/readahead assessment recorded for BS6; ledger rows + umbrella gap-table upd
 
 | Risk | Mitigation |
 |---|---|
-| Hot-workload regression beyond 1.5× (block decode per hit vs decoded slices) | BS4.1 lands a RocksDB-grade cache first; per-slice scoreboard from 4c; reserves: cache decoded row-blocks (`Arc<[TableRow]>` entries with approximate charging), pin L0/index-adjacent blocks |
+| Hot-workload regression beyond 1.5× (block decode per hit vs decoded slices) | BS4.1 lands a RocksDB-grade cache first; per-slice scoreboard from 4.4j; reserves: cache decoded row-blocks (`Arc<[TableRow]>` entries with approximate charging), pin L0/index-adjacent blocks |
 | Filter false-`DefinitelyAbsent` drops live rows | frame CRC + `matches_table` fingerprint gate + bit-exact goldens + round-trip property (every inserted key MaybePresent) + negative mutations |
 | Compat ordering (old binaries hard-reject filtered tables) | reader (4.2) fully released before writer (4.3) emits; writer config-gated; mixed-store tests; spec documents the line |
 | Pruning-proof semantic drift | in-memory-only proof + single shared fingerprint fn + sensitivity property suite; pinned tests updated deliberately in one slice |
-| Snapshot-clone blowup under `Arc::make_mut` | Arc-wrapped metadata/filter in 4c; install-path allocation assertion in stress tests |
+| Snapshot-clone blowup under `Arc::make_mut` | Arc-wrapped metadata/filter in 4.4g; install-path allocation assertion in stress tests |
 | Lazy I/O errors panic via `expect` wrappers | 4a fallibility audit + fault-injection read tests |
 | OnceLock trap regression | DenyRuntime policy + cfg-gated API + counter + source-guard test |
 | Recovery scans creep back to O(rows) | BS4.5 re-audit + open-time I/O-count regression test |
 
 ## Sequencing & PR discipline
 
-BS4.1 ∥ BS4.2→4.3 ∥ BS4.4, then 4.4a→4.4b→4.4c→4.4d→4.4e→4.4f → 4.5 → 4.6. One PR per slice, `BS4.{n}`
-titles, ≤1,500 LOC net each, standing gates every slice; format-touching slices (4.2/4.3,
-the manifest extension in 4.4f) additionally gate on goldens + fuzz + crash sweeps. The
-umbrella plan's "table-reader cache" step is amended: **deferred to the 1B tier** (G15),
-with the sizing arithmetic recorded.
+BS4.1 ∥ BS4.2→4.3 ∥ BS4.4, then 4.4a→4.4b→4.4c→4.4d→4.4e→4.4f→4.4g→4.4h→4.4i (all ✓) →
+**4.4j → 4.4k → 4.5 → 4.6** (remaining). One PR per slice, `BS4.{n}` titles, ≤1,500 LOC net each,
+standing gates every slice; format-touching slices (4.2/4.3, the manifest extension in 4.4f/g)
+additionally gate on goldens + fuzz + crash sweeps. The order is forced from 4.4j onward: the flip
+(4.4j) must precede compaction-outputs-lazy (4.4k), and 4.5's budget relaxation is only safe once
+**both** are lazy (else resident compaction outputs still blow the ceiling). The umbrella plan's
+"table-reader cache" step is amended: **deferred to the 1B tier** (G15), with the sizing arithmetic
+recorded.
 
 ## Open items
 
-- Whether `open_source` can carry the exact content digest for replacement verify
-  (3) or the cursor-zip fallback is permanent — decide in 4.4e.
-- Manifest put/tombstone fields vs Option-degrade — decide in 4.4f (default: add fields).
+- ~~`open_source` exact content digest for replacement verify vs cursor-zip fallback — decide in
+  4.4e.~~ **Resolved in 4.4e.**
+- ~~Manifest put/tombstone fields vs Option-degrade — decide in 4.4f.~~ **Resolved: added as the
+  positional row-split extension (4.4g); recovery consumes it in 4.4j.**
 - Block-size tuning (64 KB blocks vs RocksDB's 4–64 KB) and decoded-row-block caching —
   measure in 4.6, feed BS6.
-- Parallel manifest-replay opens for the 1 s gate — build only if the measurement demands.
+- Parallel manifest-replay opens for the 1 s gate — build only if the 4.5/4.6 measurement demands.
+- `resident_size_bytes` lazy estimate precision (metadata Vec + properties + loaded filter + cached
+  blocks) vs a simpler footer-derived constant — decide in 4.4j against the budget-accounting tests.
