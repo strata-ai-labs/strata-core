@@ -200,9 +200,9 @@ fn check_empty_recovery(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 0));
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let recovered = LifecycleRecoveryRuntime::new(&mut shell)
@@ -233,25 +233,25 @@ fn check_checkpoint_and_tail(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 1));
     let checkpoint_version = CommitVersion::new(3);
     let tail_version = CommitVersion::new(4);
     let checkpoint_row = put_row(branch, checkpoint_version, b"checkpoint", b"value");
     publish_snapshot(
-        &backend,
+        backend,
         2,
         checkpoint_version,
         std::slice::from_ref(&checkpoint_row),
     )?;
     write_database_root(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .map_err(testkit_error)?
             .with_recovery_facts(1, Some(checkpoint_version.as_u64()), Some(2), None)
             .map_err(testkit_error)?,
     )?;
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let tail = wal_record(branch, tail_version, b"tail", b"value")?;
     shell
         .services_mut()
@@ -285,16 +285,16 @@ fn check_strict_missing_snapshot(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 2));
     write_database_root(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .map_err(testkit_error)?
             .with_recovery_facts(1, Some(9), Some(3), None)
             .map_err(testkit_error)?,
     )?;
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let error = LifecycleRecoveryRuntime::new(&mut shell)
@@ -312,16 +312,16 @@ fn check_lossy_missing_snapshot(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 3));
     write_database_root(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .map_err(testkit_error)?
             .with_recovery_facts(1, Some(9), Some(4), None)
             .map_err(testkit_error)?,
     )?;
-    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend)?;
+    let mut shell = assemble_shell(lossy_open_plan(), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let recovered = LifecycleRecoveryRuntime::new(&mut shell)
@@ -351,9 +351,9 @@ fn check_input_derived_empty_recovery(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 4));
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let recovered = LifecycleRecoveryRuntime::new(&mut shell)
@@ -376,7 +376,7 @@ fn check_input_derived_checkpoint_and_tail(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 5));
     let checkpoint_version = CommitVersion::new(1 + u64::from(script_byte(script, 6) % 4));
     let tail_count = usize::from(script_byte(script, 7) % 3) + 1;
@@ -388,7 +388,7 @@ fn check_input_derived_checkpoint_and_tail(
         b"value",
     );
     publish_snapshot(
-        &backend,
+        backend,
         snapshot_id,
         checkpoint_version,
         std::slice::from_ref(&checkpoint_row),
@@ -399,7 +399,7 @@ fn check_input_derived_checkpoint_and_tail(
         None
     };
     write_database_root(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .map_err(testkit_error)?
             .with_recovery_facts(
@@ -410,7 +410,7 @@ fn check_input_derived_checkpoint_and_tail(
             )
             .map_err(testkit_error)?,
     )?;
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let equal = wal_record(branch, checkpoint_version, b"generated-equal", b"ignored")?;
     shell
         .services_mut()
@@ -451,7 +451,7 @@ fn check_input_derived_strict_failure(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 10));
     let manifest = if script_byte(script, 11).is_multiple_of(2) {
         DatabaseManifest::new(DATABASE_ID, "identity")
@@ -464,8 +464,8 @@ fn check_input_derived_strict_failure(
             .with_recovery_facts(1, None, None, Some(CommitVersion::new(7)))
             .map_err(testkit_error)?
     };
-    write_database_root(&backend, &manifest)?;
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    write_database_root(backend, &manifest)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
 
@@ -480,16 +480,16 @@ fn check_input_derived_lossy_degradation(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 12));
     write_database_root(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .map_err(testkit_error)?
             .with_recovery_facts(1, Some(8), Some(18), None)
             .map_err(testkit_error)?,
     )?;
-    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend)?;
+    let mut shell = assemble_shell(lossy_open_plan(), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let recovered = LifecycleRecoveryRuntime::new(&mut shell)
@@ -532,10 +532,10 @@ fn check_table_manifest_missing(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 18));
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let recovered = LifecycleRecoveryRuntime::new(&mut shell)
@@ -558,7 +558,7 @@ fn check_table_manifest_corrupt_object(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 19));
     let row = put_row(
         branch,
@@ -567,7 +567,7 @@ fn check_table_manifest_corrupt_object(
         b"value",
     );
     let table = publish_table_object_for_manifest(
-        &backend,
+        backend,
         branch,
         BranchLevel::ZERO,
         "generated-manifest-corrupt-object",
@@ -575,9 +575,9 @@ fn check_table_manifest_corrupt_object(
         0,
     )?;
     backend.write_raw(table.object().clone(), b"corrupt table object".to_vec());
-    publish_table_manifest_for_test(&backend, branch, 8, vec![table])?;
+    publish_table_manifest_for_test(backend, branch, 8, vec![table])?;
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let error = LifecycleRecoveryRuntime::new(&mut shell)
@@ -596,29 +596,29 @@ fn check_checkpoint_manifest_conflict(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 20));
     let key = b"checkpoint-manifest-conflict";
     let manifest_row = put_row(branch, CommitVersion::new(9), key, b"manifest-bytes");
     let table = publish_table_object_for_manifest(
-        &backend,
+        backend,
         branch,
         BranchLevel::ZERO,
         "generated-conflict-manifest",
         std::slice::from_ref(&manifest_row),
         0,
     )?;
-    publish_table_manifest_for_test(&backend, branch, 9, vec![table])?;
+    publish_table_manifest_for_test(backend, branch, 9, vec![table])?;
     let checkpoint_row = put_row(branch, CommitVersion::new(9), key, b"checkpoint-bytes");
     publish_snapshot_for_test(
-        &backend,
+        backend,
         21,
         CommitVersion::new(9),
         std::slice::from_ref(&checkpoint_row),
     )?;
-    seed_database_manifest_with_snapshot(&backend, 21, CommitVersion::new(9))?;
+    seed_database_manifest_with_snapshot(backend, 21, CommitVersion::new(9))?;
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let error = LifecycleRecoveryRuntime::new(&mut shell)
@@ -646,21 +646,21 @@ fn check_table_manifest_success(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 13));
     let user_key = b"manifest-success";
     let row = put_row(branch, CommitVersion::new(3), user_key, b"value");
     let table = publish_table_object_for_manifest(
-        &backend,
+        backend,
         branch,
         BranchLevel::ZERO,
         "generated-manifest-success",
         std::slice::from_ref(&row),
         0,
     )?;
-    publish_table_manifest_for_test(&backend, branch, 3, vec![table])?;
+    publish_table_manifest_for_test(backend, branch, 3, vec![table])?;
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let recovered = LifecycleRecoveryRuntime::new(&mut shell)
@@ -690,12 +690,12 @@ fn check_table_manifest_corruption(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 14));
     let object = ObjectLayout::branch_table_manifest(&branch.to_string()).map_err(testkit_error)?;
     backend.write_raw(object, b"corrupt manifest".to_vec());
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let error = LifecycleRecoveryRuntime::new(&mut shell)
@@ -714,7 +714,7 @@ fn check_table_manifest_missing_object(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 15));
     let row = put_row(
         branch,
@@ -723,7 +723,7 @@ fn check_table_manifest_missing_object(
         b"value",
     );
     let table = publish_table_object_for_manifest(
-        &backend,
+        backend,
         branch,
         BranchLevel::ZERO,
         "generated-manifest-missing-object",
@@ -733,9 +733,9 @@ fn check_table_manifest_missing_object(
     backend
         .delete_object(table.object())
         .map_err(testkit_error)?;
-    publish_table_manifest_for_test(&backend, branch, 4, vec![table])?;
+    publish_table_manifest_for_test(backend, branch, 4, vec![table])?;
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let error = LifecycleRecoveryRuntime::new(&mut shell)
@@ -754,7 +754,7 @@ fn check_table_manifest_object_mismatch(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 16));
     let row = put_row(
         branch,
@@ -763,7 +763,7 @@ fn check_table_manifest_object_mismatch(
         b"value",
     );
     let table = publish_table_object_for_manifest(
-        &backend,
+        backend,
         branch,
         BranchLevel::ZERO,
         "generated-manifest-mismatch",
@@ -789,9 +789,9 @@ fn check_table_manifest_object_mismatch(
         table.provenance().clone(),
     )
     .map_err(testkit_error)?;
-    publish_table_manifest_for_test(&backend, branch, 5, vec![bad_table])?;
+    publish_table_manifest_for_test(backend, branch, 5, vec![bad_table])?;
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let error = LifecycleRecoveryRuntime::new(&mut shell)
@@ -810,12 +810,12 @@ fn check_table_manifest_orphan_ignored(
     script: &[u8],
     outcome: &mut LifecycleRecoveryContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 17));
     let listed_key = b"manifest-listed";
     let orphan_key = b"manifest-orphan";
     let listed = publish_table_object_for_manifest(
-        &backend,
+        backend,
         branch,
         BranchLevel::ZERO,
         "generated-listed-table",
@@ -828,7 +828,7 @@ fn check_table_manifest_orphan_ignored(
         0,
     )?;
     let _orphan = publish_table_object_for_manifest(
-        &backend,
+        backend,
         branch,
         BranchLevel::ZERO,
         "generated-orphan-table",
@@ -840,9 +840,9 @@ fn check_table_manifest_orphan_ignored(
         )],
         0,
     )?;
-    publish_table_manifest_for_test(&backend, branch, 6, vec![listed])?;
+    publish_table_manifest_for_test(backend, branch, 6, vec![listed])?;
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     LifecycleRecoveryRuntime::new(&mut shell)
@@ -870,7 +870,7 @@ fn check_table_manifest_orphan_ignored(
 }
 
 fn publish_table_manifest_for_test(
-    backend: &RecoveryScriptBackend,
+    backend: &'static RecoveryScriptBackend,
     branch: BranchId,
     sequence: u64,
     tables: Vec<TableManifestTableRef>,
@@ -891,7 +891,7 @@ fn publish_table_manifest_for_test(
 }
 
 fn publish_snapshot_for_test(
-    backend: &RecoveryScriptBackend,
+    backend: &'static RecoveryScriptBackend,
     snapshot_id: u64,
     watermark: CommitVersion,
     rows: &[StorageRow],
@@ -910,7 +910,7 @@ fn publish_snapshot_for_test(
 }
 
 fn seed_database_manifest_with_snapshot(
-    backend: &RecoveryScriptBackend,
+    backend: &'static RecoveryScriptBackend,
     snapshot_id: u64,
     watermark: CommitVersion,
 ) -> Result<(), TestkitError> {
@@ -927,7 +927,7 @@ fn seed_database_manifest_with_snapshot(
 }
 
 fn publish_table_object_for_manifest(
-    backend: &RecoveryScriptBackend,
+    backend: &'static RecoveryScriptBackend,
     branch: BranchId,
     level: BranchLevel,
     identity: &str,
@@ -1030,8 +1030,8 @@ fn table_timestamp_bounds(rows: &[TableRow]) -> (Option<Timestamp>, Option<Times
 pub(super) fn assemble_shell(
     plan: StorageOpenPlan,
     branch: BranchId,
-    backend: &RecoveryScriptBackend,
-) -> Result<LifecycleDurableLocalShell<'_>, TestkitError> {
+    backend: &'static RecoveryScriptBackend,
+) -> Result<LifecycleDurableLocalShell<'static>, TestkitError> {
     LifecycleDurableLocalShell::assemble(
         LifecycleDurableLocalOpenRequest::new(
             plan,
@@ -1077,7 +1077,7 @@ pub(super) fn lossy_open_plan() -> StorageOpenPlan {
 }
 
 pub(super) fn publish_snapshot(
-    backend: &RecoveryScriptBackend,
+    backend: &'static RecoveryScriptBackend,
     snapshot_id: u64,
     watermark: CommitVersion,
     rows: &[StorageRow],
@@ -1096,7 +1096,7 @@ pub(super) fn publish_snapshot(
 }
 
 pub(super) fn write_database_root(
-    backend: &RecoveryScriptBackend,
+    backend: &'static RecoveryScriptBackend,
     root: &DatabaseManifest,
 ) -> Result<(), TestkitError> {
     backend.write_raw(

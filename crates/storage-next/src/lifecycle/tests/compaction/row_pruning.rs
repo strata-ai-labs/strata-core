@@ -16,9 +16,9 @@ use strata_core_next::{CommitVersion, Timestamp};
 
 #[test]
 fn durable_pruned_compaction_publishes_pruned_manifest_facts() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xe1);
-    let mut runtime = pruning_runtime(branch, &backend);
+    let mut runtime = pruning_runtime(branch, backend);
 
     let request =
         pruning_request(runtime.branch_state(), branch, "durable-pruned").expect("pruning request");
@@ -49,9 +49,9 @@ fn manifest_records_retained_version_floor() {
     // retained-history extension recording the retained version
     // floor used by the proof. Reopening the database recreates that
     // floor from the manifest bytes.
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xee);
-    let mut runtime = pruning_runtime(branch, &backend);
+    let mut runtime = pruning_runtime(branch, backend);
 
     let request = pruning_request(runtime.branch_state(), branch, "record-version-floor")
         .expect("pruning request");
@@ -84,9 +84,9 @@ fn manifest_records_retained_version_floor() {
 
 #[test]
 fn manifest_records_retained_timestamp_floor() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xe2);
-    let mut runtime = pruning_runtime(branch, &backend);
+    let mut runtime = pruning_runtime(branch, backend);
 
     let request = pruning_request(runtime.branch_state(), branch, "timestamp-floor")
         .expect("pruning request");
@@ -102,10 +102,10 @@ fn manifest_records_retained_timestamp_floor() {
 
 #[test]
 fn durable_pruned_compaction_recovery_restores_retained_reads() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xe3);
     {
-        let mut runtime = pruning_runtime(branch, &backend);
+        let mut runtime = pruning_runtime(branch, backend);
         let request =
             pruning_request(runtime.branch_state(), branch, "recover-retained").expect("request");
         runtime
@@ -114,7 +114,7 @@ fn durable_pruned_compaction_recovery_restores_retained_reads() {
         checkpoint_pruned_runtime(&mut runtime, branch, 1);
     }
 
-    let reopened = open_runtime(branch, &backend);
+    let reopened = open_runtime(branch, backend);
     let history = reopened
         .branch_state()
         .capture_read_view()
@@ -127,10 +127,10 @@ fn durable_pruned_compaction_recovery_restores_retained_reads() {
 
 #[test]
 fn durable_pruned_compaction_recovery_rejects_pruned_history() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xe4);
     {
-        let mut runtime = pruning_runtime(branch, &backend);
+        let mut runtime = pruning_runtime(branch, backend);
         let request =
             pruning_request(runtime.branch_state(), branch, "recover-pruned").expect("request");
         runtime
@@ -139,7 +139,7 @@ fn durable_pruned_compaction_recovery_rejects_pruned_history() {
         checkpoint_pruned_runtime(&mut runtime, branch, 1);
     }
 
-    let reopened = open_runtime(branch, &backend);
+    let reopened = open_runtime(branch, backend);
     assert!(reopened
         .branch_state()
         .capture_read_view()
@@ -151,7 +151,7 @@ fn durable_pruned_compaction_recovery_rejects_pruned_history() {
 
 #[test]
 fn durable_pruned_materialization_recovery_preserves_retained_reads() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let parent = branch_id(0xe5);
     let child = branch_id(0xe6);
     {
@@ -165,7 +165,7 @@ fn durable_pruned_materialization_recovery_preserves_retained_reads() {
         let (child_state, _) = parent_state
             .fork_into_empty_child(child)
             .expect("fork child");
-        let mut runtime = open_runtime(child, &backend);
+        let mut runtime = open_runtime(child, backend);
         *runtime.branch_state_mut() = child_state;
         runtime
             .materialize_inherited_layer(
@@ -175,7 +175,7 @@ fn durable_pruned_materialization_recovery_preserves_retained_reads() {
             .expect("materialize");
     }
 
-    let reopened = open_runtime(child, &backend);
+    let reopened = open_runtime(child, backend);
     assert_eq!(
         reopened
             .branch_state()
@@ -196,10 +196,10 @@ fn manifest_missing_pruning_facts_rejects_recovery() {
     // default `BranchTimestampCoverage::Unknown`, so `as_of` reads below
     // any prior pruning floor surface insufficient-history errors rather
     // than silently widening history.
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xef);
     {
-        let mut runtime = pruning_runtime(branch, &backend);
+        let mut runtime = pruning_runtime(branch, backend);
         let request =
             pruning_request(runtime.branch_state(), branch, "missing-facts").expect("request");
         runtime
@@ -208,7 +208,7 @@ fn manifest_missing_pruning_facts_rejects_recovery() {
         checkpoint_pruned_runtime(&mut runtime, branch, 1);
     }
 
-    let reopened = open_runtime(branch, &backend);
+    let reopened = open_runtime(branch, backend);
     let recovered_manifest = reopened
         .services()
         .table_manifest()
@@ -228,10 +228,10 @@ fn manifest_missing_pruning_facts_rejects_recovery() {
 
 #[test]
 fn wal_tail_replay_after_pruned_manifest_preserves_newer_rows() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xe7);
     {
-        let mut runtime = pruning_runtime(branch, &backend);
+        let mut runtime = pruning_runtime(branch, backend);
         let request =
             pruning_request(runtime.branch_state(), branch, "wal-tail-pruned").expect("request");
         runtime
@@ -240,13 +240,13 @@ fn wal_tail_replay_after_pruned_manifest_preserves_newer_rows() {
         checkpoint_pruned_runtime(&mut runtime, branch, 1);
     }
     {
-        let mut runtime = open_runtime(branch, &backend);
+        let mut runtime = open_runtime(branch, backend);
         runtime
             .execute_durable_commit(pruning_batch(branch, b"key", b"tail"), generation_guard())
             .expect("tail commit");
     }
 
-    let reopened = open_runtime(branch, &backend);
+    let reopened = open_runtime(branch, backend);
     assert_eq!(
         reopened
             .branch_state()
@@ -268,8 +268,8 @@ fn checkpoint_after_pruning_preserves_coverage_boundary() {
 
 fn pruning_runtime(
     branch: strata_core_next::BranchId,
-    backend: &CheckpointTestBackend,
-) -> LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource> {
+    backend: &'static CheckpointTestBackend,
+) -> LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource> {
     let mut runtime = open_runtime(branch, backend);
     for value in [b"v1".as_slice(), b"v2".as_slice()] {
         runtime
@@ -352,7 +352,7 @@ fn pruning_flush_request(branch: strata_core_next::BranchId, suffix: &str) -> Fl
 }
 
 fn checkpoint_pruned_runtime(
-    runtime: &mut LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
+    runtime: &mut LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource>,
     branch: strata_core_next::BranchId,
     snapshot_id: u64,
 ) {

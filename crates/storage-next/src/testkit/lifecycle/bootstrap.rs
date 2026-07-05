@@ -104,9 +104,9 @@ fn check_empty_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 13));
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let recovered = LifecycleRecoveryRuntime::new(&mut shell)
@@ -141,7 +141,7 @@ fn check_checkpoint_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 14));
     let checkpoint_version = CommitVersion::new(2);
     let checkpoint_row = put_row(
@@ -151,19 +151,19 @@ fn check_checkpoint_bootstrap(
         b"value",
     );
     publish_snapshot(
-        &backend,
+        backend,
         30,
         checkpoint_version,
         std::slice::from_ref(&checkpoint_row),
     )?;
     write_database_root(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .map_err(testkit_error)?
             .with_recovery_facts(1, Some(checkpoint_version.as_u64()), Some(30), None)
             .map_err(testkit_error)?,
     )?;
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let recovered = LifecycleRecoveryRuntime::new(&mut shell)
@@ -206,9 +206,9 @@ fn check_wal_replay_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 15));
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let record = replayable_wal_record(branch, CommitVersion::new(3), b"bootstrap-tail", b"value")?;
     shell
         .services_mut()
@@ -256,16 +256,16 @@ fn check_degraded_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 16));
     write_database_root(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .map_err(testkit_error)?
             .with_recovery_facts(1, Some(7), Some(77), None)
             .map_err(testkit_error)?,
     )?;
-    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend)?;
+    let mut shell = assemble_shell(lossy_open_plan(), branch, backend)?;
     let record = replayable_wal_record(
         branch,
         CommitVersion::new(4),
@@ -316,9 +316,9 @@ fn check_replay_rejection_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 17));
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let record = timeline_only_replay_record(branch, CommitVersion::new(5))?;
     shell
         .services_mut()
@@ -367,20 +367,20 @@ fn check_input_derived_checkpoint_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 18));
     let version = CommitVersion::new(1 + u64::from(script_byte(script, 19) % 8));
     let snapshot_id = 100 + u64::from(script_byte(script, 20));
     let row = put_row(branch, version, b"generated-bootstrap-checkpoint", b"value");
-    publish_snapshot(&backend, snapshot_id, version, std::slice::from_ref(&row))?;
+    publish_snapshot(backend, snapshot_id, version, std::slice::from_ref(&row))?;
     write_database_root(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .map_err(testkit_error)?
             .with_recovery_facts(1, Some(version.as_u64()), Some(snapshot_id), None)
             .map_err(testkit_error)?,
     )?;
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|error| testkit_error(&error))?;
     let recovered = LifecycleRecoveryRuntime::new(&mut shell)
@@ -401,10 +401,10 @@ fn check_input_derived_wal_replay_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 21));
     let version = CommitVersion::new(1 + u64::from(script_byte(script, 22) % 8));
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let record = replayable_wal_record(branch, version, b"generated-bootstrap-tail", b"value")?;
     shell
         .services_mut()
@@ -431,16 +431,16 @@ fn check_input_derived_degraded_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 23));
     write_database_root(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .map_err(testkit_error)?
             .with_recovery_facts(1, Some(8), Some(108), None)
             .map_err(testkit_error)?,
     )?;
-    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend)?;
+    let mut shell = assemble_shell(lossy_open_plan(), branch, backend)?;
     let version = CommitVersion::new(1 + u64::from(script_byte(script, 24) % 8));
     let record = replayable_wal_record(branch, version, b"generated-degraded-tail", b"value")?;
     shell
@@ -468,10 +468,10 @@ fn check_input_derived_replay_rejection_bootstrap(
     script: &[u8],
     outcome: &mut LifecycleBootstrapContractOutcome,
 ) -> Result<(), TestkitError> {
-    let backend = RecoveryScriptBackend::new();
+    let backend: &'static RecoveryScriptBackend = Box::leak(Box::new(RecoveryScriptBackend::new()));
     let branch = branch_id(script_byte(script, 25));
     let version = CommitVersion::new(1 + u64::from(script_byte(script, 26) % 8));
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)?;
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)?;
     let record = timeline_only_replay_record(branch, version)?;
     shell
         .services_mut()

@@ -194,7 +194,7 @@ fn branch_catalog_create_does_not_publish_table_objects() {
 #[test]
 fn branch_catalog_cache_create_reports_no_durable_claim() {
     let branch = branch_id(53);
-    let backend = MemoryBackend::new();
+    let backend: &'static MemoryBackend = Box::leak(Box::new(MemoryBackend::new()));
     let runtime = LifecycleCacheRuntime::open(
         LifecycleCacheOpenRequest::new(
             StorageOpenPlan::new(
@@ -208,7 +208,7 @@ fn branch_catalog_cache_create_reports_no_durable_claim() {
             generation(1),
         )
         .expect("request"),
-        &backend,
+        backend,
         BranchRuntimeConfig::default(),
         CommitRuntimeConfig::default(),
         crate::commit::CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
@@ -229,7 +229,7 @@ fn branch_catalog_cache_create_reports_no_durable_claim() {
 #[test]
 fn branch_catalog_runtime_syncs_after_cache_commit() {
     let branch = branch_id(54);
-    let backend = MemoryBackend::new();
+    let backend: &'static MemoryBackend = Box::leak(Box::new(MemoryBackend::new()));
     let key = physical_key(branch, b"runtime-sync");
     let mut runtime = LifecycleCacheRuntime::open(
         LifecycleCacheOpenRequest::new(
@@ -244,7 +244,7 @@ fn branch_catalog_runtime_syncs_after_cache_commit() {
             generation(1),
         )
         .expect("request"),
-        &backend,
+        backend,
         BranchRuntimeConfig::default(),
         CommitRuntimeConfig::default(),
         crate::commit::CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
@@ -277,9 +277,9 @@ fn branch_catalog_runtime_syncs_after_cache_commit() {
 #[test]
 fn branch_catalog_runtime_syncs_after_durable_commit() {
     let branch = branch_id(78);
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let key = durable_physical_key(branch, b"durable-runtime-sync");
-    let mut runtime = open_durable_runtime(branch, &backend);
+    let mut runtime = open_durable_runtime(branch, backend);
 
     runtime
         .execute_durable_commit(
@@ -307,7 +307,7 @@ fn branch_catalog_runtime_syncs_after_durable_commit() {
 #[test]
 fn cache_branch_lifecycle_after_close_rejects() {
     let branch = branch_id(79);
-    let backend = MemoryBackend::new();
+    let backend: &'static MemoryBackend = Box::leak(Box::new(MemoryBackend::new()));
     let key = physical_key(branch, b"closed-cache");
     let mut runtime = LifecycleCacheRuntime::open(
         LifecycleCacheOpenRequest::new(
@@ -322,7 +322,7 @@ fn cache_branch_lifecycle_after_close_rejects() {
             generation(1),
         )
         .expect("request"),
-        &backend,
+        backend,
         BranchRuntimeConfig::default(),
         CommitRuntimeConfig::default(),
         crate::commit::CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
@@ -343,7 +343,7 @@ fn cache_branch_lifecycle_after_close_rejects() {
 #[test]
 fn cache_branch_lifecycle_while_closing_rejects() {
     let branch = branch_id(80);
-    let backend = MemoryBackend::new();
+    let backend: &'static MemoryBackend = Box::leak(Box::new(MemoryBackend::new()));
     let key = physical_key(branch, b"closing-cache");
     let mut runtime = LifecycleCacheRuntime::open(
         LifecycleCacheOpenRequest::new(
@@ -358,7 +358,7 @@ fn cache_branch_lifecycle_while_closing_rejects() {
             generation(1),
         )
         .expect("request"),
-        &backend,
+        backend,
         BranchRuntimeConfig::default(),
         CommitRuntimeConfig::default(),
         crate::commit::CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
@@ -378,8 +378,8 @@ fn cache_branch_lifecycle_while_closing_rejects() {
     ));
 }
 
-fn open_cache_runtime(initial: BranchId) -> (MemoryBackend, LifecycleCacheRuntime) {
-    let backend = MemoryBackend::new();
+fn open_cache_runtime(initial: BranchId) -> (&'static MemoryBackend, LifecycleCacheRuntime) {
+    let backend: &'static MemoryBackend = Box::leak(Box::new(MemoryBackend::new()));
     let runtime = LifecycleCacheRuntime::open(
         LifecycleCacheOpenRequest::new(
             StorageOpenPlan::new(
@@ -393,7 +393,7 @@ fn open_cache_runtime(initial: BranchId) -> (MemoryBackend, LifecycleCacheRuntim
             generation(1),
         )
         .expect("request"),
-        &backend,
+        backend,
         BranchRuntimeConfig::default(),
         CommitRuntimeConfig::default(),
         crate::commit::CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
@@ -494,8 +494,8 @@ fn cache_runtime_create_branch_while_closing_rejects() {
 fn durable_runtime_create_branch_appears_in_list_branches() {
     let initial = branch_id(138);
     let new = branch_id(139);
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_durable_runtime(initial, &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_durable_runtime(initial, backend);
 
     runtime
         .create_branch(new, generation(1), Some(CommitVersion::new(3)))
@@ -514,8 +514,8 @@ fn durable_runtime_create_branch_appears_in_list_branches() {
 fn durable_runtime_fork_at_retained_timestamp_resolves_via_coverage() {
     let source = branch_id(140);
     let child = branch_id(141);
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_durable_runtime(source, &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_durable_runtime(source, backend);
     // The seeded source has BranchTimestampCoverage::Unknown by default;
     // a timestamp fork must reject with the typed error.
     let result = runtime.fork_at_retained_timestamp(
@@ -602,8 +602,8 @@ fn cache_runtime_delete_branch_admission_rejects_after_close() {
 #[test]
 fn durable_runtime_clear_branch_buffers_release_plan() {
     let branch = branch_id(164);
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_durable_runtime(branch, &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_durable_runtime(branch, backend);
     assert!(runtime.pending_releases().is_empty());
 
     runtime
@@ -617,8 +617,8 @@ fn durable_runtime_clear_branch_buffers_release_plan() {
 #[test]
 fn durable_runtime_delete_branch_buffers_release_plan() {
     let branch = branch_id(165);
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_durable_runtime(branch, &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_durable_runtime(branch, backend);
     assert!(runtime.pending_releases().is_empty());
 
     runtime

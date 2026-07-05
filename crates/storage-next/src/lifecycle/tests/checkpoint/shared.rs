@@ -2,8 +2,8 @@ use super::*;
 
 pub(in crate::lifecycle::tests) fn open_runtime(
     branch: BranchId,
-    backend: &CheckpointTestBackend,
-) -> LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource> {
+    backend: &'static CheckpointTestBackend,
+) -> LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource> {
     let mut shell = assemble_shell(branch, backend).expect("shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -16,9 +16,9 @@ pub(in crate::lifecycle::tests) fn open_runtime(
 #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
 pub(in crate::lifecycle::tests) fn open_runtime_with_lifecycle_config(
     branch: BranchId,
-    backend: &CheckpointTestBackend,
+    backend: &'static CheckpointTestBackend,
     config: LifecycleConfig,
-) -> LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource> {
+) -> LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource> {
     let mut shell = assemble_shell_with_lifecycle_config(branch, backend, config).expect("shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -30,9 +30,9 @@ pub(in crate::lifecycle::tests) fn open_runtime_with_lifecycle_config(
 
 pub(super) fn open_runtime_with_wal_segment_size(
     branch: BranchId,
-    backend: &CheckpointTestBackend,
+    backend: &'static CheckpointTestBackend,
     segment_size: u64,
-) -> LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource> {
+) -> LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource> {
     let mut shell =
         assemble_shell_with_wal_segment_size(branch, backend, segment_size).expect("shell");
     let request =
@@ -45,8 +45,8 @@ pub(super) fn open_runtime_with_wal_segment_size(
 
 pub(in crate::lifecycle::tests) fn assemble_shell(
     branch: BranchId,
-    backend: &CheckpointTestBackend,
-) -> LifecycleResult<LifecycleDurableLocalShell<'_>> {
+    backend: &'static CheckpointTestBackend,
+) -> LifecycleResult<LifecycleDurableLocalShell<'static>> {
     assemble_shell_with_wal_segment_size(
         branch,
         backend,
@@ -57,9 +57,9 @@ pub(in crate::lifecycle::tests) fn assemble_shell(
 #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
 fn assemble_shell_with_lifecycle_config(
     branch: BranchId,
-    backend: &CheckpointTestBackend,
+    backend: &'static CheckpointTestBackend,
     config: LifecycleConfig,
-) -> LifecycleResult<LifecycleDurableLocalShell<'_>> {
+) -> LifecycleResult<LifecycleDurableLocalShell<'static>> {
     assemble_shell_with_config_and_wal_segment_size(
         branch,
         backend,
@@ -70,9 +70,9 @@ fn assemble_shell_with_lifecycle_config(
 
 pub(super) fn assemble_shell_with_wal_segment_size(
     branch: BranchId,
-    backend: &CheckpointTestBackend,
+    backend: &'static CheckpointTestBackend,
     segment_size: u64,
-) -> LifecycleResult<LifecycleDurableLocalShell<'_>> {
+) -> LifecycleResult<LifecycleDurableLocalShell<'static>> {
     assemble_shell_with_config_and_wal_segment_size(
         branch,
         backend,
@@ -83,10 +83,10 @@ pub(super) fn assemble_shell_with_wal_segment_size(
 
 fn assemble_shell_with_config_and_wal_segment_size(
     branch: BranchId,
-    backend: &CheckpointTestBackend,
+    backend: &'static CheckpointTestBackend,
     config: LifecycleConfig,
     segment_size: u64,
-) -> LifecycleResult<LifecycleDurableLocalShell<'_>> {
+) -> LifecycleResult<LifecycleDurableLocalShell<'static>> {
     LifecycleDurableLocalShell::assemble(
         LifecycleDurableLocalOpenRequest::new(
             StorageOpenPlan::new(

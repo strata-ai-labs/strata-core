@@ -510,9 +510,9 @@ impl StorageRuntime<'static> {
 
 fn assemble_durable_runtime(
     options: StorageOpenOptions,
-    backend: BackendHandle<'_>,
+    backend: BackendHandle<'static>,
 ) -> StorageApiResult<(
-    LifecycleDurableLocalRuntime<'_, ApiTimestampSource>,
+    LifecycleDurableLocalRuntime<'static, ApiTimestampSource>,
     StorageOpenSummary,
     DiagnosticsRecoveryReport,
     LifecycleConfig,

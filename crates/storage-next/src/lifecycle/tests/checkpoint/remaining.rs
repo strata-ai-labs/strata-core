@@ -2,8 +2,8 @@ use super::*;
 
 #[test]
 fn flush_watermark_request_rejects_zero_candidate() {
-    let backend = CheckpointTestBackend::new();
-    let shell = assemble_shell(branch_id(0x01), &backend).expect("shell");
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let shell = assemble_shell(branch_id(0x01), backend).expect("shell");
     assert_eq!(
         persist_flush_watermark(
             shell.services().manifest(),
@@ -21,9 +21,9 @@ fn flush_watermark_request_rejects_zero_candidate() {
 
 #[test]
 fn checkpoint_snapshot_id_must_advance_past_recovered_manifest_snapshot_id() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x2a);
-    let shell = assemble_shell(branch, &backend).expect("shell");
+    let shell = assemble_shell(branch, backend).expect("shell");
     let mut state = BranchLocalState::empty(branch);
     state
         .append_committed_row(put_row(branch, 1, b"snapshot-advance", b"value"))
@@ -54,9 +54,9 @@ fn checkpoint_snapshot_id_must_advance_past_recovered_manifest_snapshot_id() {
 
 #[test]
 fn checkpoint_outcome_converts_completed_snapshot_to_maintenance_success() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x2b);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     runtime
         .execute_durable_commit(
             durable_batch(branch, b"maintenance-success", b"value"),
@@ -77,9 +77,9 @@ fn checkpoint_outcome_converts_completed_snapshot_to_maintenance_success() {
 
 #[test]
 fn checkpoint_debug_output_does_not_include_payload_bytes() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x2c);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     runtime
         .execute_durable_commit(
             durable_batch(branch, b"debug-redaction", b"super-secret-payload"),
@@ -98,10 +98,10 @@ fn checkpoint_debug_output_does_not_include_payload_bytes() {
 
 #[test]
 fn checkpoint_recovery_ignores_opaque_snapshot_sections() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x38);
     let key = physical_key(branch, b"unsupported-section");
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     runtime
         .execute_durable_commit(
             durable_batch(branch, b"unsupported-section", b"value"),
@@ -118,7 +118,7 @@ fn checkpoint_recovery_ignores_opaque_snapshot_sections() {
 
     runtime.checkpoint(&request).expect("checkpoint");
     drop(runtime);
-    let mut shell = assemble_shell(branch, &backend).expect("recovery shell");
+    let mut shell = assemble_shell(branch, backend).expect("recovery shell");
     let recovery_request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
 
@@ -202,9 +202,9 @@ fn checkpoint_rows_require_inherited_layers_to_be_materialized() {
 
 #[test]
 fn checkpoint_recovery_round_trip_after_frozen_flush() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x2f);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     let first = physical_key(branch, b"flushed-before-checkpoint");
     let second = physical_key(branch, b"active-before-checkpoint");
     runtime
@@ -235,7 +235,7 @@ fn checkpoint_recovery_round_trip_after_frozen_flush() {
     assert_eq!(outcome.row_count(), 3);
     drop(runtime);
 
-    let reopened = open_runtime(branch, &backend);
+    let reopened = open_runtime(branch, backend);
     let view = reopened.read_view().expect("read view");
 
     assert_eq!(
@@ -258,9 +258,9 @@ fn checkpoint_recovery_round_trip_after_frozen_flush() {
 
 #[test]
 fn delta_checkpoint_records_flush_boundary_not_visible_version() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x2e);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     // The first commit is flushed into a durable owned table (the base, commit 1)...
     runtime
         .execute_durable_commit(
@@ -288,7 +288,7 @@ fn delta_checkpoint_records_flush_boundary_not_visible_version() {
     let outcome = runtime.checkpoint(&request).expect("checkpoint");
 
     assert_eq!(outcome.checkpoint_watermark(), Some(CommitVersion::new(2)));
-    let manifest = DatabaseManifestService::new(&backend)
+    let manifest = DatabaseManifestService::new(backend)
         .load_required()
         .expect("manifest");
     assert_eq!(manifest.snapshot_watermark(), Some(2));
@@ -303,9 +303,9 @@ fn delta_checkpoint_records_flush_boundary_not_visible_version() {
 
 #[test]
 fn full_checkpoint_leaves_flush_boundary_unset() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x2d);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     // No flush: the checkpoint snapshot is full and self-contained, so it records no base.
     runtime
         .execute_durable_commit(durable_batch(branch, b"only", b"value"), generation_guard())
@@ -315,7 +315,7 @@ fn full_checkpoint_leaves_flush_boundary_unset() {
 
     runtime.checkpoint(&request).expect("checkpoint");
 
-    let manifest = DatabaseManifestService::new(&backend)
+    let manifest = DatabaseManifestService::new(backend)
         .load_required()
         .expect("manifest");
     assert_eq!(manifest.snapshot_watermark(), Some(1));
@@ -324,9 +324,9 @@ fn full_checkpoint_leaves_flush_boundary_unset() {
 
 #[test]
 fn checkpoint_with_truncation_does_not_truncate_after_partial_checkpoint() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x30);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     runtime
         .execute_durable_commit(
             durable_batch(branch, b"partial-no-delete", b"value"),
@@ -351,9 +351,9 @@ fn checkpoint_with_truncation_does_not_truncate_after_partial_checkpoint() {
 
 #[test]
 fn wal_truncation_no_segments_is_completed_noop() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x31);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     let request = WalRetentionProof::snapshot_watermark(CommitVersion::new(1));
 
     let outcome = runtime.truncate_wal(request).expect("truncation");
@@ -366,9 +366,9 @@ fn wal_truncation_no_segments_is_completed_noop() {
 
 #[test]
 fn wal_truncation_service_error_has_stable_code_and_source() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x32);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     backend.fail_wal_listing();
     let request = WalRetentionProof::snapshot_watermark(CommitVersion::new(1));
 
@@ -382,9 +382,9 @@ fn wal_truncation_service_error_has_stable_code_and_source() {
 
 #[test]
 fn wal_truncation_deletes_covered_segments_and_keeps_active_segment() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x33);
-    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, backend, 1024);
     commit_many_to_rotate(&mut runtime, branch, 24);
     let active = runtime.services().wal().active_segment_id();
     let request = WalRetentionProof::snapshot_watermark(CommitVersion::new(24));
@@ -400,9 +400,9 @@ fn wal_truncation_deletes_covered_segments_and_keeps_active_segment() {
 
 #[test]
 fn wal_truncation_from_table_manifest_flush_watermark_deletes_covered_segments() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x3d);
-    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, backend, 1024);
     commit_many_to_rotate(&mut runtime, branch, 24);
     let active = runtime.services().wal().active_segment_id();
     let request = WalRetentionProof::flush_watermark(CommitVersion::new(24));
@@ -418,9 +418,9 @@ fn wal_truncation_from_table_manifest_flush_watermark_deletes_covered_segments()
 
 #[test]
 fn wal_truncation_delete_failure_records_health_debt() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x34);
-    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, backend, 1024);
     commit_many_to_rotate(&mut runtime, branch, 24);
     backend.fail_delete();
     let request = WalRetentionProof::flush_watermark(CommitVersion::new(24));
@@ -439,9 +439,9 @@ fn wal_truncation_delete_failure_records_health_debt() {
 
 #[test]
 fn checkpoint_with_truncation_recovery_round_trip_after_delete() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x35);
-    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, backend, 1024);
     commit_many_to_rotate(&mut runtime, branch, 24);
     let key = dynamic_physical_key(branch, b"rotated-commit-23".to_vec());
     let request = LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(15))
@@ -450,7 +450,7 @@ fn checkpoint_with_truncation_recovery_round_trip_after_delete() {
 
     let outcome = runtime.checkpoint(&request).expect("checkpoint");
     drop(runtime);
-    let reopened = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let reopened = open_runtime_with_wal_segment_size(branch, backend, 1024);
     let visible = reopened
         .read_view()
         .expect("read view")
@@ -472,9 +472,9 @@ fn checkpoint_with_truncation_recovery_round_trip_after_delete() {
 
 #[test]
 fn checkpoint_recovery_replays_tail_after_checkpoint_watermark() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x39);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     let before = physical_key(branch, b"before-checkpoint");
     let after = physical_key(branch, b"after-checkpoint");
     runtime
@@ -497,7 +497,7 @@ fn checkpoint_recovery_replays_tail_after_checkpoint_watermark() {
         .expect("tail commit");
     drop(runtime);
 
-    let reopened = open_runtime(branch, &backend);
+    let reopened = open_runtime(branch, backend);
     let view = reopened.read_view().expect("read view");
 
     assert_eq!(
@@ -521,9 +521,9 @@ fn checkpoint_recovery_replays_tail_after_checkpoint_watermark() {
 
 #[test]
 fn checkpoint_recovery_ignores_duplicate_record_at_checkpoint_watermark() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x3a);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     let key = physical_key(branch, b"duplicate-boundary");
     runtime
         .execute_durable_commit(
@@ -539,7 +539,7 @@ fn checkpoint_recovery_ignores_duplicate_record_at_checkpoint_watermark() {
         .expect("checkpoint");
     drop(runtime);
 
-    let reopened = open_runtime(branch, &backend);
+    let reopened = open_runtime(branch, backend);
     let history = reopened
         .read_view()
         .expect("read view")
@@ -553,9 +553,9 @@ fn checkpoint_recovery_ignores_duplicate_record_at_checkpoint_watermark() {
 
 #[test]
 fn queued_wal_truncation_task_failure_adds_health_debt() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x36);
-    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, backend, 1024);
     commit_many_to_rotate(&mut runtime, branch, 24);
     runtime
         .services()
@@ -580,9 +580,9 @@ fn queued_wal_truncation_task_failure_adds_health_debt() {
 
 #[test]
 fn maintenance_task_reports_health_debt_on_wal_truncation_failure() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x37);
-    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, backend, 1024);
     commit_many_to_rotate(&mut runtime, branch, 24);
     // Snapshot and flush both at v24 so the WAL maintenance task selects the
     // typed flush-watermark proof (flush >= snapshot path in
@@ -615,9 +615,9 @@ fn maintenance_task_reports_health_debt_on_wal_truncation_failure() {
 
 #[test]
 fn wal_truncation_keeps_segment_with_record_above_watermark() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x3b);
-    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, backend, 1024);
     commit_many_with_value_len(&mut runtime, branch, 12, 1);
     let request = WalRetentionProof::snapshot_watermark(CommitVersion::new(1));
 
@@ -630,9 +630,9 @@ fn wal_truncation_keeps_segment_with_record_above_watermark() {
 
 #[test]
 fn wal_truncation_keeps_segment_with_record_above_table_manifest_watermark() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x3e);
-    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, backend, 1024);
     commit_many_with_value_len(&mut runtime, branch, 12, 1);
     let request = WalRetentionProof::flush_watermark(CommitVersion::new(1));
 
@@ -645,9 +645,9 @@ fn wal_truncation_keeps_segment_with_record_above_table_manifest_watermark() {
 
 #[test]
 fn wal_truncation_keeps_active_segment_under_table_manifest_watermark() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x3f);
-    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, backend, 1024);
     commit_many_to_rotate(&mut runtime, branch, 24);
     let active = runtime.services().wal().active_segment_id();
     let request = WalRetentionProof::flush_watermark(CommitVersion::new(24));
@@ -661,10 +661,10 @@ fn wal_truncation_keeps_active_segment_under_table_manifest_watermark() {
 
 #[test]
 fn wal_truncation_keeps_segment_newer_than_active_segment() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let config = crate::service::WalServiceConfig::new(1024);
     let _future_service = crate::service::WalService::open(
-        &backend,
+        backend,
         DATABASE_ID,
         2,
         crate::config::mode::DurabilityPolicy::Standard,
@@ -672,7 +672,7 @@ fn wal_truncation_keeps_segment_newer_than_active_segment() {
     )
     .expect("future segment");
     let active_service = crate::service::WalService::open(
-        &backend,
+        backend,
         DATABASE_ID,
         1,
         crate::config::mode::DurabilityPolicy::Standard,
@@ -690,10 +690,10 @@ fn wal_truncation_keeps_segment_newer_than_active_segment() {
 
 #[test]
 fn wal_truncation_keeps_newer_than_active_segment() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let config = crate::service::WalServiceConfig::new(1024);
     let _future_service = crate::service::WalService::open(
-        &backend,
+        backend,
         DATABASE_ID,
         2,
         crate::config::mode::DurabilityPolicy::Standard,
@@ -701,7 +701,7 @@ fn wal_truncation_keeps_newer_than_active_segment() {
     )
     .expect("future segment");
     let active_service = crate::service::WalService::open(
-        &backend,
+        backend,
         DATABASE_ID,
         1,
         crate::config::mode::DurabilityPolicy::Standard,
@@ -719,10 +719,10 @@ fn wal_truncation_keeps_newer_than_active_segment() {
 
 #[test]
 fn wal_truncation_handles_empty_segment_through_service_report() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let config = crate::service::WalServiceConfig::new(1024);
     let _covered_service = crate::service::WalService::open(
-        &backend,
+        backend,
         DATABASE_ID,
         1,
         crate::config::mode::DurabilityPolicy::Standard,
@@ -730,7 +730,7 @@ fn wal_truncation_handles_empty_segment_through_service_report() {
     )
     .expect("covered segment");
     let active_service = crate::service::WalService::open(
-        &backend,
+        backend,
         DATABASE_ID,
         2,
         crate::config::mode::DurabilityPolicy::Standard,
@@ -748,10 +748,10 @@ fn wal_truncation_handles_empty_segment_through_service_report() {
 
 #[test]
 fn wal_truncation_partial_delete_report_is_not_clean_reclaim() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let config = crate::service::WalServiceConfig::new(1024);
     let _first = crate::service::WalService::open(
-        &backend,
+        backend,
         DATABASE_ID,
         1,
         crate::config::mode::DurabilityPolicy::Standard,
@@ -759,7 +759,7 @@ fn wal_truncation_partial_delete_report_is_not_clean_reclaim() {
     )
     .expect("first segment");
     let _second = crate::service::WalService::open(
-        &backend,
+        backend,
         DATABASE_ID,
         2,
         crate::config::mode::DurabilityPolicy::Standard,
@@ -767,7 +767,7 @@ fn wal_truncation_partial_delete_report_is_not_clean_reclaim() {
     )
     .expect("second segment");
     let active = crate::service::WalService::open(
-        &backend,
+        backend,
         DATABASE_ID,
         3,
         crate::config::mode::DurabilityPolicy::Standard,
@@ -788,10 +788,10 @@ fn wal_truncation_partial_delete_report_is_not_clean_reclaim() {
 
 #[test]
 fn wal_truncation_partial_delete_report_preserves_source_chain() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let config = crate::service::WalServiceConfig::new(1024);
     let _first = crate::service::WalService::open(
-        &backend,
+        backend,
         DATABASE_ID,
         1,
         crate::config::mode::DurabilityPolicy::Standard,
@@ -799,7 +799,7 @@ fn wal_truncation_partial_delete_report_preserves_source_chain() {
     )
     .expect("first segment");
     let _second = crate::service::WalService::open(
-        &backend,
+        backend,
         DATABASE_ID,
         2,
         crate::config::mode::DurabilityPolicy::Standard,
@@ -807,7 +807,7 @@ fn wal_truncation_partial_delete_report_preserves_source_chain() {
     )
     .expect("second segment");
     let active = crate::service::WalService::open(
-        &backend,
+        backend,
         DATABASE_ID,
         3,
         crate::config::mode::DurabilityPolicy::Standard,
@@ -828,9 +828,9 @@ fn wal_truncation_partial_delete_report_preserves_source_chain() {
 
 #[test]
 fn checkpoint_with_truncation_keeps_tail_records_after_watermark() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x3c);
-    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, backend, 1024);
     commit_many_to_rotate(&mut runtime, branch, 12);
     runtime
         .checkpoint(
@@ -843,7 +843,7 @@ fn checkpoint_with_truncation_keeps_tail_records_after_watermark() {
     let key = dynamic_physical_key(branch, b"rotated-commit-15".to_vec());
     drop(runtime);
 
-    let reopened = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let reopened = open_runtime_with_wal_segment_size(branch, backend, 1024);
     let visible = reopened
         .read_view()
         .expect("read view")
@@ -857,9 +857,9 @@ fn checkpoint_with_truncation_keeps_tail_records_after_watermark() {
 
 #[test]
 fn checkpoint_with_truncation_records_checkpoint_and_delete_facts() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x3d);
-    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, backend, 1024);
     commit_many_to_rotate(&mut runtime, branch, 24);
     let request = LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(20))
         .expect("request")
@@ -888,9 +888,9 @@ fn checkpoint_with_truncation_records_checkpoint_and_delete_facts() {
 
 #[test]
 fn cache_checkpoint_task_is_rejected_before_durable_objects() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x3e);
-    let mut runtime = cache_runtime(branch, &backend);
+    let mut runtime = cache_runtime(branch, backend);
     let error = runtime
         .enqueue_maintenance(MaintenanceTaskRequest::checkpoint())
         .expect_err("checkpoint task rejected");
@@ -905,9 +905,9 @@ fn cache_checkpoint_task_is_rejected_before_durable_objects() {
 
 #[test]
 fn cache_wal_truncation_task_is_rejected_before_durable_objects() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x3f);
-    let mut runtime = cache_runtime(branch, &backend);
+    let mut runtime = cache_runtime(branch, backend);
     let error = runtime
         .enqueue_maintenance(MaintenanceTaskRequest::wal_truncation())
         .expect_err("truncation task rejected");
@@ -922,9 +922,9 @@ fn cache_wal_truncation_task_is_rejected_before_durable_objects() {
 
 #[test]
 fn queued_checkpoint_options_control_snapshot_and_log_truncation() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x40);
-    let mut runtime = open_runtime_with_wal_segment_size(branch, &backend, 1024);
+    let mut runtime = open_runtime_with_wal_segment_size(branch, backend, 1024);
     commit_many_to_rotate(&mut runtime, branch, 24);
     let enqueue = runtime
         .enqueue_maintenance(MaintenanceTaskRequest::checkpoint_with_options(
@@ -940,7 +940,7 @@ fn queued_checkpoint_options_control_snapshot_and_log_truncation() {
     assert_eq!(maintenance.task_id(), Some(enqueue.task_id()));
     assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Completed);
     assert_eq!(
-        DatabaseManifestService::new(&backend)
+        DatabaseManifestService::new(backend)
             .load_required()
             .expect("database record")
             .snapshot_id(),
@@ -956,7 +956,7 @@ fn queued_checkpoint_options_control_snapshot_and_log_truncation() {
         .expect("run second")
         .expect("second maintenance");
     assert_eq!(
-        DatabaseManifestService::new(&backend)
+        DatabaseManifestService::new(backend)
             .load_required()
             .expect("manifest after second")
             .snapshot_id(),
@@ -966,9 +966,9 @@ fn queued_checkpoint_options_control_snapshot_and_log_truncation() {
 
 #[test]
 fn checkpoint_maintenance_task_deferred_when_no_visible_rows() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x37);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::checkpoint())
         .expect("enqueue");
@@ -1009,7 +1009,7 @@ fn cache_runtime(
 }
 
 fn commit_many_to_rotate(
-    runtime: &mut LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
+    runtime: &mut LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource>,
     branch: BranchId,
     count: u8,
 ) {
@@ -1021,7 +1021,7 @@ fn commit_many_to_rotate(
 }
 
 fn commit_many_with_value_len(
-    runtime: &mut LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
+    runtime: &mut LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource>,
     branch: BranchId,
     count: u8,
     value_len: usize,
@@ -1041,7 +1041,7 @@ fn commit_many_with_value_len(
 }
 
 fn commit_many_range(
-    runtime: &mut LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
+    runtime: &mut LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource>,
     branch: BranchId,
     start: u8,
     end: u8,

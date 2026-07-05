@@ -645,15 +645,15 @@ fn flush_task_failure_adds_health_debt() {
 #[test]
 fn durable_flush_publishes_reopens_and_installs_table() {
     let branch = branch_id(0x65);
-    let backend = FlushBackend::new();
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
     let mut state = frozen_branch(branch, put_row(branch, b"durable", 5, 5_000, b"stored"));
     let before = state.clone();
     let request = flush_request(branch, None);
 
     let outcome = flush_durable_branch(
         &mut state,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &request,
     )
     .expect("durable flush");
@@ -702,10 +702,10 @@ fn durable_flush_publishes_reopens_and_installs_table() {
 #[test]
 fn queued_durable_flush_task_publishes_object_through_executor() {
     let branch = branch_id(0x76);
-    let backend = FlushBackend::new();
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
     let mut shell = LifecycleDurableLocalShell::assemble(
         durable_open_request(branch),
-        &backend,
+        backend,
         CommitManualTimestampSource::new(Timestamp::from_micros(9_000)),
     )
     .expect("durable shell");
@@ -765,10 +765,10 @@ fn queued_durable_flush_task_publishes_object_through_executor() {
 #[test]
 fn durable_flush_does_not_persist_watermark_or_truncate_log() {
     let branch = branch_id(0x78);
-    let backend = FlushBackend::new();
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
     let mut shell = LifecycleDurableLocalShell::assemble(
         durable_open_request(branch),
-        &backend,
+        backend,
         CommitManualTimestampSource::new(Timestamp::from_micros(9_000)),
     )
     .expect("durable shell");
@@ -801,7 +801,7 @@ fn durable_flush_does_not_persist_watermark_or_truncate_log() {
         outcome.table_facts().expect("facts").commit_range().max(),
         CommitVersion::new(1)
     );
-    let manifest = DatabaseManifestService::new(&backend)
+    let manifest = DatabaseManifestService::new(backend)
         .load_required()
         .expect("manifest");
     assert_eq!(manifest.flushed_through_commit_id(), None);
@@ -811,8 +811,8 @@ fn durable_flush_does_not_persist_watermark_or_truncate_log() {
 #[test]
 fn durable_flush_publishes_table_manifest_after_table_install() {
     let branch = branch_id(0x85);
-    let backend = FlushBackend::new();
-    let mut runtime = open_durable_runtime(&backend, branch);
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
+    let mut runtime = open_durable_runtime(backend, branch);
     runtime
         .execute_durable_commit(
             durable_put_batch(branch, physical_key(branch, b"manifest"), b"value".to_vec()),
@@ -829,7 +829,7 @@ fn durable_flush_publishes_table_manifest_after_table_install() {
 
     assert!(outcome.completed());
     assert_eq!(runtime.branch_state().owned_table_count(), 1);
-    let manifest = TableManifestService::new(&backend)
+    let manifest = TableManifestService::new(backend)
         .load_required(branch)
         .expect("table manifest");
     assert_eq!(manifest.levels().len(), 1);
@@ -852,8 +852,8 @@ fn durable_flush_publishes_table_manifest_after_table_install() {
 #[test]
 fn durable_flush_manifest_preserves_existing_reachable_tables() {
     let branch = branch_id(0x86);
-    let backend = FlushBackend::new();
-    let mut runtime = open_durable_runtime(&backend, branch);
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
+    let mut runtime = open_durable_runtime(backend, branch);
     for (key, value) in [
         (b"manifest-first".as_slice(), b"first".as_slice()),
         (b"manifest-second".as_slice(), b"second".as_slice()),
@@ -874,7 +874,7 @@ fn durable_flush_manifest_preserves_existing_reachable_tables() {
             .expect("flush");
     }
 
-    let manifest = TableManifestService::new(&backend)
+    let manifest = TableManifestService::new(backend)
         .load_required(branch)
         .expect("table manifest");
 
@@ -886,10 +886,11 @@ fn durable_flush_manifest_preserves_existing_reachable_tables() {
 #[test]
 fn durable_flush_manifest_publish_failure_keeps_rows_visible_and_records_debt() {
     let branch = branch_id(0x87);
-    let backend = FlushBackend::with_table_manifest_publish_failure(
-        PublishFailureKind::FailedBeforeVisibility,
-    );
-    let mut runtime = open_durable_runtime(&backend, branch);
+    let backend: &'static FlushBackend =
+        Box::leak(Box::new(FlushBackend::with_table_manifest_publish_failure(
+            PublishFailureKind::FailedBeforeVisibility,
+        )));
+    let mut runtime = open_durable_runtime(backend, branch);
     let key = physical_key(branch, b"manifest-fail");
     runtime
         .execute_durable_commit(
@@ -918,7 +919,7 @@ fn durable_flush_manifest_publish_failure_keeps_rows_visible_and_records_debt() 
         b"value"
     );
     assert_eq!(runtime.current_recovery_health().fault_count(), 1);
-    assert!(TableManifestService::new(&backend)
+    assert!(TableManifestService::new(backend)
         .load_current(branch)
         .expect("load table manifest")
         .is_none());
@@ -927,10 +928,11 @@ fn durable_flush_manifest_publish_failure_keeps_rows_visible_and_records_debt() 
 #[test]
 fn durable_flush_drain_manifest_publish_failure_records_partial_progress_health_debt() {
     let branch = branch_id(0x89);
-    let backend = FlushBackend::with_table_manifest_publish_failure(
-        PublishFailureKind::FailedBeforeVisibility,
-    );
-    let mut runtime = open_durable_runtime(&backend, branch);
+    let backend: &'static FlushBackend =
+        Box::leak(Box::new(FlushBackend::with_table_manifest_publish_failure(
+            PublishFailureKind::FailedBeforeVisibility,
+        )));
+    let mut runtime = open_durable_runtime(backend, branch);
     let first_key = physical_key(branch, b"drain-manifest-fail-first");
     let second_key = physical_key(branch, b"drain-manifest-fail-second");
 
@@ -970,7 +972,7 @@ fn durable_flush_drain_manifest_publish_failure_records_partial_progress_health_
     assert_eq!(runtime.current_recovery_health().fault_count(), 1);
     assert_eq!(runtime.branch_state().owned_levels()[0].len(), 1);
     assert_eq!(runtime.branch_state().frozen_table_count(), 1);
-    assert!(TableManifestService::new(&backend)
+    assert!(TableManifestService::new(backend)
         .load_current(branch)
         .expect("load table manifest")
         .is_none());
@@ -997,9 +999,10 @@ fn durable_flush_drain_manifest_publish_failure_records_partial_progress_health_
 #[test]
 fn durable_flush_manifest_publish_uncertain_reports_uncertainty() {
     let branch = branch_id(0x88);
-    let backend =
-        FlushBackend::with_table_manifest_publish_failure(PublishFailureKind::VisibilityUnknown);
-    let mut runtime = open_durable_runtime(&backend, branch);
+    let backend: &'static FlushBackend = Box::leak(Box::new(
+        FlushBackend::with_table_manifest_publish_failure(PublishFailureKind::VisibilityUnknown),
+    ));
+    let mut runtime = open_durable_runtime(backend, branch);
     runtime
         .execute_durable_commit(
             durable_put_batch(
@@ -1034,7 +1037,7 @@ fn durable_flush_manifest_publish_uncertain_reports_uncertainty() {
 #[test]
 fn cache_flush_does_not_publish_table_manifest() {
     let branch = branch_id(0x89);
-    let backend = FlushBackend::new();
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
     let mut state = frozen_branch(
         branch,
         put_row(branch, b"cache-manifest", 30, 30_000, b"value"),
@@ -1043,7 +1046,7 @@ fn cache_flush_does_not_publish_table_manifest() {
     let outcome = flush_cache_branch(&mut state, &flush_request(branch, None)).expect("flush");
 
     assert!(outcome.completed());
-    assert!(TableManifestService::new(&backend)
+    assert!(TableManifestService::new(backend)
         .load_current(branch)
         .expect("load table manifest")
         .is_none());
@@ -1053,10 +1056,10 @@ fn cache_flush_does_not_publish_table_manifest() {
 #[test]
 fn wal_retention_proof_is_not_constructed_by_flush() {
     let branch = branch_id(0x81);
-    let backend = FlushBackend::new();
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
     let mut shell = LifecycleDurableLocalShell::assemble(
         durable_open_request(branch),
-        &backend,
+        backend,
         CommitManualTimestampSource::new(Timestamp::from_micros(9_000)),
     )
     .expect("durable shell");
@@ -1082,7 +1085,7 @@ fn wal_retention_proof_is_not_constructed_by_flush() {
 
     assert!(outcome.completed());
     assert!(!outcome.maintenance_outcome().checkpoint_required());
-    let manifest = DatabaseManifestService::new(&backend)
+    let manifest = DatabaseManifestService::new(backend)
         .load_required()
         .expect("manifest");
     assert_eq!(manifest.flushed_through_commit_id(), None);
@@ -1114,10 +1117,10 @@ fn successful_flush_reports_candidate_commit_max() {
 fn failed_flush_for_wrong_branch_does_not_persist_watermark() {
     let branch = branch_id(0x79);
     let other = branch_id(0x7a);
-    let backend = FlushBackend::new();
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
     let mut shell = LifecycleDurableLocalShell::assemble(
         durable_open_request(branch),
-        &backend,
+        backend,
         CommitManualTimestampSource::new(Timestamp::from_micros(9_000)),
     )
     .expect("durable shell");
@@ -1137,7 +1140,7 @@ fn failed_flush_for_wrong_branch_does_not_persist_watermark() {
     // the maintenance task validator that used to gate the prior single-
     // branch implementation.
     assert_eq!(error.code(), "failed_precondition.lifecycle.commit_runtime");
-    let manifest = DatabaseManifestService::new(&backend)
+    let manifest = DatabaseManifestService::new(backend)
         .load_required()
         .expect("manifest");
     assert_eq!(manifest.flushed_through_commit_id(), None);
@@ -1148,10 +1151,10 @@ fn failed_flush_for_wrong_branch_does_not_persist_watermark() {
 fn branch_absence_does_not_advance_flush_watermark() {
     let branch = branch_id(0x83);
     let absent = branch_id(0x84);
-    let backend = FlushBackend::new();
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
     let mut shell = LifecycleDurableLocalShell::assemble(
         durable_open_request(branch),
-        &backend,
+        backend,
         CommitManualTimestampSource::new(Timestamp::from_micros(9_000)),
     )
     .expect("durable shell");
@@ -1172,7 +1175,7 @@ fn branch_absence_does_not_advance_flush_watermark() {
     // validator rejection on the seeded branch.
     assert_eq!(error.code(), "failed_precondition.lifecycle.commit_runtime");
     assert_eq!(backend.operations(), operations_before);
-    let manifest = DatabaseManifestService::new(&backend)
+    let manifest = DatabaseManifestService::new(backend)
         .load_required()
         .expect("manifest");
     assert_eq!(manifest.flushed_through_commit_id(), None);
@@ -1182,14 +1185,16 @@ fn branch_absence_does_not_advance_flush_watermark() {
 #[test]
 fn durable_publish_failure_leaves_frozen_state_unchanged() {
     let branch = branch_id(0x66);
-    let backend = FlushBackend::with_publish_failure(PublishFailureKind::FailedBeforeVisibility);
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::with_publish_failure(
+        PublishFailureKind::FailedBeforeVisibility,
+    )));
     let mut state = frozen_branch(branch, put_row(branch, b"failure", 6, 6_000, b"value"));
     let before = state.clone();
 
     let error = flush_durable_branch(
         &mut state,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &flush_request(branch, None),
     )
     .expect_err("publish failure");
@@ -1202,14 +1207,14 @@ fn durable_publish_failure_leaves_frozen_state_unchanged() {
 #[test]
 fn durable_reopen_failure_reports_published_not_installed() {
     let branch = branch_id(0x68);
-    let backend = FlushBackend::with_range_failure();
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::with_range_failure()));
     let mut state = frozen_branch(branch, put_row(branch, b"partial", 8, 8_000, b"value"));
     let before = state.clone();
 
     let outcome = flush_durable_branch(
         &mut state,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &flush_request(branch, None),
     )
     .expect("partial outcome");
@@ -1249,13 +1254,15 @@ fn durable_reopen_failure_reports_published_not_installed() {
 #[test]
 fn durable_publish_visibility_uncertainty_is_typed() {
     let branch = branch_id(0x77);
-    let backend = FlushBackend::with_publish_failure(PublishFailureKind::VisibilityUnknown);
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::with_publish_failure(
+        PublishFailureKind::VisibilityUnknown,
+    )));
     let mut state = frozen_branch(branch, put_row(branch, b"uncertain", 21, 21_000, b"value"));
 
     let error = flush_durable_branch(
         &mut state,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &flush_request(branch, None),
     )
     .expect_err("publish uncertainty");
@@ -1269,14 +1276,15 @@ fn durable_publish_visibility_uncertainty_is_typed() {
 #[test]
 fn durable_invalid_publish_metadata_preserves_service_source() {
     let branch = branch_id(0x6d);
-    let backend = FlushBackend::with_invalid_publish_metadata();
+    let backend: &'static FlushBackend =
+        Box::leak(Box::new(FlushBackend::with_invalid_publish_metadata()));
     let mut state = frozen_branch(branch, put_row(branch, b"metadata", 11, 11_000, b"value"));
     let before = state.clone();
 
     let error = flush_durable_branch(
         &mut state,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &flush_request(branch, None),
     )
     .expect_err("invalid metadata");
@@ -1293,14 +1301,16 @@ fn durable_reopen_wrong_branch_table_reports_partial_publication() {
     let original = put_row(branch, b"wrong-branch", 12, 12_000, b"value");
     let replacement = put_row(other, b"wrong-branch", 12, 12_000, b"value");
     let replacement_bytes = built_bytes_for_row("replacement-table", replacement);
-    let backend = FlushBackend::with_replacement_bytes(replacement_bytes);
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::with_replacement_bytes(
+        replacement_bytes,
+    )));
     let mut state = frozen_branch(branch, original);
     let before = state.clone();
 
     let outcome = flush_durable_branch(
         &mut state,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &flush_request(branch, None),
     )
     .expect("partial outcome");
@@ -1334,12 +1344,12 @@ fn durable_install_failure_reports_orphaned_object_fact() {
         .install_owned_table_at_level(crate::branch::facts::BranchLevel::ZERO, collision)
         .expect("collision table");
     let before = state.clone();
-    let backend = FlushBackend::new();
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
 
     let outcome = flush_durable_branch(
         &mut state,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &request,
     )
     .expect("partial outcome");
@@ -1359,12 +1369,12 @@ fn existing_conflicting_object_fails_closed_without_removing_frozen_rows() {
     let other = branch_id(0x72);
     let row = put_row(branch, b"conflict", 15, 15_000, b"value");
     let request = flush_request(branch, None);
-    let backend = FlushBackend::new();
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
     let mut first = frozen_branch(branch, row.clone());
     let first_outcome = flush_durable_branch(
         &mut first,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &request,
     )
     .expect("first flush");
@@ -1383,8 +1393,8 @@ fn existing_conflicting_object_fails_closed_without_removing_frozen_rows() {
 
     let outcome = flush_durable_branch(
         &mut retry,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &request,
     )
     .expect("conflict outcome");
@@ -1398,7 +1408,7 @@ fn existing_conflicting_object_fails_closed_without_removing_frozen_rows() {
 #[test]
 fn durable_flush_retries_existing_matching_object() {
     let branch = branch_id(0x67);
-    let backend = FlushBackend::new();
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
     let row = put_row(branch, b"retry", 7, 7_000, b"value");
     let request = flush_request(branch, None);
     let mut first = frozen_branch(branch, row.clone());
@@ -1406,8 +1416,8 @@ fn durable_flush_retries_existing_matching_object() {
 
     let first_outcome = flush_durable_branch(
         &mut first,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &request,
     )
     .expect("first flush");
@@ -1415,8 +1425,8 @@ fn durable_flush_retries_existing_matching_object() {
 
     let retry_outcome = flush_durable_branch(
         &mut second,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &request,
     )
     .expect("retry flush");
@@ -1491,7 +1501,7 @@ fn flush_object_identity_is_stable_when_frozen_position_changes() {
     let target = put_row(branch, b"stable-position", 18, 18_000, b"value");
     let newer = put_row(branch, b"newer-frozen", 19, 19_000, b"newer");
     let request = flush_request(branch, None);
-    let backend = FlushBackend::new();
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
     let mut shifted = BranchLocalState::empty(branch);
     shifted
         .append_committed_row(target.clone())
@@ -1506,15 +1516,15 @@ fn flush_object_identity_is_stable_when_frozen_position_changes() {
 
     let first = flush_durable_branch(
         &mut shifted,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &request,
     )
     .expect("first flush");
     let second = flush_durable_branch(
         &mut unshifted,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &request,
     )
     .expect("second flush");
@@ -1578,9 +1588,9 @@ fn durable_open_request(branch: BranchId) -> LifecycleDurableLocalOpenRequest {
 }
 
 fn open_durable_runtime(
-    backend: &FlushBackend,
+    backend: &'static FlushBackend,
     branch: BranchId,
-) -> LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource> {
+) -> LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource> {
     let mut shell = LifecycleDurableLocalShell::assemble(
         durable_open_request(branch),
         backend,

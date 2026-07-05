@@ -5,10 +5,10 @@ use crate::service::{WalRetentionProof, WalRetentionProofSource};
 
 #[test]
 fn table_manifest_flush_proof_accepts_coverage_above_checkpoint() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xb0);
     let rows = rows_for_versions(branch, 4..=6, b"above-checkpoint");
-    let manifest = durable_manifest(&backend, branch, "above-checkpoint", &rows);
+    let manifest = durable_manifest(backend, branch, "above-checkpoint", &rows);
     let state = state_with_installed_table(branch, "above-checkpoint", &rows);
 
     let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest(
@@ -26,16 +26,16 @@ fn table_manifest_flush_proof_accepts_coverage_above_checkpoint() {
 
 #[test]
 fn table_manifest_flush_proof_rejects_table_object_without_manifest() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xb1);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     runtime
         .services()
         .manifest()
         .persist_snapshot_facts(1, CommitVersion::new(1))
         .expect("snapshot facts");
     let _manifest = unpublished_manifest(
-        &backend,
+        backend,
         branch,
         "object-without-manifest",
         &[put_row(branch, 1, b"object-only", b"value")],
@@ -51,16 +51,16 @@ fn table_manifest_flush_proof_rejects_table_object_without_manifest() {
 
 #[test]
 fn table_manifest_flush_proof_rejects_manifest_publish_uncertain() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xb2);
-    let shell = assemble_shell(branch, &backend).expect("shell");
+    let shell = assemble_shell(branch, backend).expect("shell");
     shell
         .services()
         .manifest()
         .persist_snapshot_facts(1, CommitVersion::new(1))
         .expect("snapshot facts");
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "uncertain-manifest",
         &[put_row(branch, 1, b"uncertain", b"value")],
@@ -87,16 +87,16 @@ fn table_manifest_flush_proof_rejects_manifest_publish_uncertain() {
 
 #[test]
 fn table_manifest_flush_proof_rejects_candidate_above_visible_version() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xb3);
-    let shell = assemble_shell(branch, &backend).expect("shell");
+    let shell = assemble_shell(branch, backend).expect("shell");
     shell
         .services()
         .manifest()
         .persist_snapshot_facts(4, CommitVersion::new(4))
         .expect("snapshot facts");
     let rows = rows_for_versions(branch, 5..=6, b"above-visible");
-    let manifest = durable_manifest(&backend, branch, "above-visible", &rows);
+    let manifest = durable_manifest(backend, branch, "above-visible", &rows);
     let proof = LifecycleTableManifestFlushCoverageProof::from_table_manifests(
         CommitVersion::new(6),
         &[manifest],
@@ -118,10 +118,10 @@ fn table_manifest_flush_proof_rejects_candidate_above_visible_version() {
 
 #[test]
 fn table_manifest_flush_proof_rejects_zero_candidate() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xb4);
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "zero-candidate",
         &[put_row(branch, 1, b"zero", b"value")],
@@ -139,10 +139,10 @@ fn table_manifest_flush_proof_rejects_zero_candidate() {
 
 #[test]
 fn table_manifest_coverage_includes_user_rows() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xb5);
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "user-family",
         &[put_row(branch, 1, b"user", b"value")],
@@ -160,10 +160,10 @@ fn table_manifest_coverage_includes_user_rows() {
 
 #[test]
 fn table_manifest_coverage_includes_tombstones() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xb6);
     let row = tombstone_row(branch, 1, b"deleted");
-    let manifest = durable_manifest(&backend, branch, "tombstone-family", &[row]);
+    let manifest = durable_manifest(backend, branch, "tombstone-family", &[row]);
 
     let proof = LifecycleTableManifestFlushCoverageProof::from_table_manifests(
         CommitVersion::new(1),
@@ -177,7 +177,7 @@ fn table_manifest_coverage_includes_tombstones() {
 
 #[test]
 fn table_manifest_coverage_includes_timeline_rows() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xb7);
     let timestamp = Timestamp::from_micros(700);
     let timeline = CommitTimelineRows::from_entry(
@@ -186,7 +186,7 @@ fn table_manifest_coverage_includes_timeline_rows() {
     .expect("timeline rows")
     .into_rows()
     .to_vec();
-    let manifest = durable_manifest(&backend, branch, "timeline-family", &timeline);
+    let manifest = durable_manifest(backend, branch, "timeline-family", &timeline);
 
     let proof = LifecycleTableManifestFlushCoverageProof::from_table_manifests(
         CommitVersion::new(1),
@@ -248,9 +248,9 @@ fn table_manifest_coverage_rejects_inherited_layer_gap() {
 
 #[test]
 fn flush_watermark_rejects_table_manifest_candidate_below_current_as_stale() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xbb);
-    let shell = assemble_shell(branch, &backend).expect("shell");
+    let shell = assemble_shell(branch, backend).expect("shell");
     shell
         .services()
         .manifest()
@@ -262,7 +262,7 @@ fn flush_watermark_rejects_table_manifest_candidate_below_current_as_stale() {
         .persist_flush_watermark(CommitVersion::new(5))
         .expect("existing watermark");
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "below-current",
         &[put_row(branch, 4, b"below", b"value")],
@@ -288,9 +288,9 @@ fn flush_watermark_rejects_table_manifest_candidate_below_current_as_stale() {
 
 #[test]
 fn flush_watermark_equal_to_current_is_noop() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xbc);
-    let shell = assemble_shell(branch, &backend).expect("shell");
+    let shell = assemble_shell(branch, backend).expect("shell");
     shell
         .services()
         .manifest()
@@ -315,16 +315,16 @@ fn flush_watermark_equal_to_current_is_noop() {
 
 #[test]
 fn table_manifest_flush_watermark_extends_existing_flush_watermark() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xd4);
-    let shell = assemble_shell(branch, &backend).expect("shell");
+    let shell = assemble_shell(branch, backend).expect("shell");
     shell
         .services()
         .manifest()
         .persist_flush_watermark(CommitVersion::new(1))
         .expect("existing watermark");
     let row = put_row(branch, 2, b"extension", b"value");
-    let manifest = durable_manifest(&backend, branch, "extension", std::slice::from_ref(&row));
+    let manifest = durable_manifest(backend, branch, "extension", std::slice::from_ref(&row));
     let state = state_with_installed_table(branch, "extension", std::slice::from_ref(&row));
     let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest(
         CommitVersion::new(2),
@@ -357,9 +357,9 @@ fn table_manifest_flush_watermark_extends_existing_flush_watermark() {
 
 #[test]
 fn flush_watermark_persist_failure_prevents_wal_truncation() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xbd);
-    let shell = assemble_shell(branch, &backend).expect("shell");
+    let shell = assemble_shell(branch, backend).expect("shell");
     shell
         .services()
         .manifest()
@@ -367,7 +367,7 @@ fn flush_watermark_persist_failure_prevents_wal_truncation() {
         .expect("snapshot facts");
     let row = put_row(branch, 5, b"persist-failure", b"value");
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "persist-failure",
         std::slice::from_ref(&row),
@@ -397,16 +397,16 @@ fn flush_watermark_persist_failure_prevents_wal_truncation() {
 
 #[test]
 fn flush_watermark_success_records_manifest_fact() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xbe);
-    let shell = assemble_shell(branch, &backend).expect("shell");
+    let shell = assemble_shell(branch, backend).expect("shell");
     shell
         .services()
         .manifest()
         .persist_snapshot_facts(4, CommitVersion::new(4))
         .expect("snapshot facts");
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "manifest-fact",
         &[put_row(branch, 5, b"manifest-fact", b"value")],
@@ -430,7 +430,7 @@ fn flush_watermark_success_records_manifest_fact() {
     )
     .expect("persist");
 
-    let database = DatabaseManifestService::new(&backend)
+    let database = DatabaseManifestService::new(backend)
         .load_required()
         .expect("database manifest");
     assert_eq!(
@@ -441,16 +441,16 @@ fn flush_watermark_success_records_manifest_fact() {
 
 #[test]
 fn flush_watermark_success_does_not_mutate_branch_state() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xbf);
-    let shell = assemble_shell(branch, &backend).expect("shell");
+    let shell = assemble_shell(branch, backend).expect("shell");
     shell
         .services()
         .manifest()
         .persist_snapshot_facts(4, CommitVersion::new(4))
         .expect("snapshot facts");
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "branch-unchanged",
         &[put_row(branch, 5, b"branch-unchanged", b"value")],
@@ -480,7 +480,7 @@ fn flush_watermark_success_does_not_mutate_branch_state() {
 
 #[test]
 fn cache_mode_rejects_table_manifest_flush_watermark() {
-    let backend = MemoryBackend::new();
+    let backend: &'static MemoryBackend = Box::leak(Box::new(MemoryBackend::new()));
     let branch = branch_id(0xc0);
     let mut runtime = LifecycleCacheRuntime::open(
         LifecycleCacheOpenRequest::new(
@@ -495,7 +495,7 @@ fn cache_mode_rejects_table_manifest_flush_watermark() {
             CommitBranchGeneration::new(1).expect("generation"),
         )
         .expect("cache request"),
-        &backend,
+        backend,
         BranchRuntimeConfig::default(),
         CommitRuntimeConfig::default(),
         CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
@@ -516,21 +516,21 @@ fn cache_mode_rejects_table_manifest_flush_watermark() {
 
 #[test]
 fn recovery_rejects_missing_table_manifest_for_flush_watermark() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xc1);
     seed_checkpoint_snapshot(
-        &backend,
+        backend,
         1,
         CommitVersion::new(4),
         &rows_for_versions(branch, 1..=4, b"missing-manifest"),
     );
     seed_database_manifest(
-        &backend,
+        backend,
         Some(CommitVersion::new(4)),
         Some(1),
         Some(CommitVersion::new(5)),
     );
-    let mut shell = assemble_shell(branch, &backend).expect("shell");
+    let mut shell = assemble_shell(branch, backend).expect("shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
 
@@ -543,13 +543,13 @@ fn recovery_rejects_missing_table_manifest_for_flush_watermark() {
 
 #[test]
 fn recovery_rejects_corrupt_table_manifest_for_flush_watermark() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xc2);
     let checkpoint_rows = rows_for_versions(branch, 1..=4, b"corrupt-manifest");
-    seed_checkpoint_snapshot(&backend, 1, CommitVersion::new(4), &checkpoint_rows);
+    seed_checkpoint_snapshot(backend, 1, CommitVersion::new(4), &checkpoint_rows);
     let mut manifest_rows = checkpoint_rows;
     manifest_rows.push(put_row(branch, 5, b"corrupt", b"value"));
-    durable_manifest(&backend, branch, "corrupt-manifest", &manifest_rows);
+    durable_manifest(backend, branch, "corrupt-manifest", &manifest_rows);
     backend
         .write_object(
             &ObjectLayout::branch_table_manifest(&branch.to_string()).expect("manifest object"),
@@ -557,12 +557,12 @@ fn recovery_rejects_corrupt_table_manifest_for_flush_watermark() {
         )
         .expect("corrupt manifest");
     seed_database_manifest(
-        &backend,
+        backend,
         Some(CommitVersion::new(4)),
         Some(1),
         Some(CommitVersion::new(5)),
     );
-    let mut shell = assemble_shell(branch, &backend).expect("shell");
+    let mut shell = assemble_shell(branch, backend).expect("shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
 
@@ -575,24 +575,24 @@ fn recovery_rejects_corrupt_table_manifest_for_flush_watermark() {
 
 #[test]
 fn recovery_rejects_table_object_mismatch_for_flush_watermark() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xc3);
     let checkpoint_rows = rows_for_versions(branch, 1..=4, b"object-mismatch");
-    seed_checkpoint_snapshot(&backend, 1, CommitVersion::new(4), &checkpoint_rows);
+    seed_checkpoint_snapshot(backend, 1, CommitVersion::new(4), &checkpoint_rows);
     let mut manifest_rows = checkpoint_rows;
     manifest_rows.push(put_row(branch, 5, b"object-mismatch", b"value"));
-    let manifest = durable_manifest(&backend, branch, "object-mismatch", &manifest_rows);
+    let manifest = durable_manifest(backend, branch, "object-mismatch", &manifest_rows);
     let object = manifest.levels()[0].tables()[0].object().clone();
     backend
         .write_object(&object, b"not the published table")
         .expect("corrupt table object");
     seed_database_manifest(
-        &backend,
+        backend,
         Some(CommitVersion::new(4)),
         Some(1),
         Some(CommitVersion::new(5)),
     );
-    let mut shell = assemble_shell(branch, &backend).expect("shell");
+    let mut shell = assemble_shell(branch, backend).expect("shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
 
@@ -605,20 +605,20 @@ fn recovery_rejects_table_object_mismatch_for_flush_watermark() {
 
 #[test]
 fn recovery_uses_table_manifest_flush_watermark_as_replay_start_after_validation() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xc4);
     let checkpoint_rows = rows_for_versions(branch, 1..=4, b"replay-start");
-    seed_checkpoint_snapshot(&backend, 1, CommitVersion::new(4), &checkpoint_rows);
+    seed_checkpoint_snapshot(backend, 1, CommitVersion::new(4), &checkpoint_rows);
     let mut manifest_rows = checkpoint_rows;
     manifest_rows.push(put_row(branch, 5, b"manifest-row", b"value"));
-    durable_manifest(&backend, branch, "replay-start", &manifest_rows);
+    durable_manifest(backend, branch, "replay-start", &manifest_rows);
     seed_database_manifest(
-        &backend,
+        backend,
         Some(CommitVersion::new(4)),
         Some(1),
         Some(CommitVersion::new(5)),
     );
-    let mut shell = assemble_shell(branch, &backend).expect("shell");
+    let mut shell = assemble_shell(branch, backend).expect("shell");
     shell
         .services_mut()
         .wal_mut()
@@ -646,20 +646,20 @@ fn recovery_uses_table_manifest_flush_watermark_as_replay_start_after_validation
 
 #[test]
 fn recovery_replays_wal_tail_above_table_manifest_flush_watermark() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xc5);
     let checkpoint_rows = rows_for_versions(branch, 1..=4, b"tail-replay");
-    seed_checkpoint_snapshot(&backend, 1, CommitVersion::new(4), &checkpoint_rows);
+    seed_checkpoint_snapshot(backend, 1, CommitVersion::new(4), &checkpoint_rows);
     let mut manifest_rows = checkpoint_rows;
     manifest_rows.push(put_row(branch, 5, b"manifest-row", b"value"));
-    durable_manifest(&backend, branch, "tail-replay", &manifest_rows);
+    durable_manifest(backend, branch, "tail-replay", &manifest_rows);
     seed_database_manifest(
-        &backend,
+        backend,
         Some(CommitVersion::new(4)),
         Some(1),
         Some(CommitVersion::new(5)),
     );
-    let mut shell = assemble_shell(branch, &backend).expect("shell");
+    let mut shell = assemble_shell(branch, backend).expect("shell");
     shell
         .services_mut()
         .wal_mut()
@@ -680,21 +680,21 @@ fn recovery_replays_wal_tail_above_table_manifest_flush_watermark() {
 
 #[test]
 fn recovery_ignores_duplicate_record_at_table_manifest_flush_watermark() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xc6);
     let checkpoint_rows = rows_for_versions(branch, 1..=4, b"duplicate-watermark");
-    seed_checkpoint_snapshot(&backend, 1, CommitVersion::new(4), &checkpoint_rows);
+    seed_checkpoint_snapshot(backend, 1, CommitVersion::new(4), &checkpoint_rows);
     let manifest_row = put_row(branch, 5, b"duplicate", b"manifest");
     let mut manifest_rows = checkpoint_rows;
     manifest_rows.push(manifest_row.clone());
-    durable_manifest(&backend, branch, "duplicate-watermark", &manifest_rows);
+    durable_manifest(backend, branch, "duplicate-watermark", &manifest_rows);
     seed_database_manifest(
-        &backend,
+        backend,
         Some(CommitVersion::new(4)),
         Some(1),
         Some(CommitVersion::new(5)),
     );
-    let mut shell = assemble_shell(branch, &backend).expect("shell");
+    let mut shell = assemble_shell(branch, backend).expect("shell");
     shell
         .services_mut()
         .wal_mut()
@@ -722,12 +722,12 @@ fn recovery_ignores_duplicate_record_at_table_manifest_flush_watermark() {
 
 #[test]
 fn recovery_after_truncation_restores_history_reads_within_retained_bounds() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xc7);
     let key = physical_key(branch, b"history");
     let checkpoint_row = put_row(branch, 1, b"history", b"old");
     seed_checkpoint_snapshot(
-        &backend,
+        backend,
         1,
         CommitVersion::new(1),
         std::slice::from_ref(&checkpoint_row),
@@ -735,14 +735,14 @@ fn recovery_after_truncation_restores_history_reads_within_retained_bounds() {
     let mut manifest_rows = vec![checkpoint_row.clone()];
     manifest_rows.extend(rows_for_versions(branch, 2..=4, b"history-fill"));
     manifest_rows.push(put_row(branch, 5, b"history", b"new"));
-    durable_manifest(&backend, branch, "history-restore", &manifest_rows);
+    durable_manifest(backend, branch, "history-restore", &manifest_rows);
     seed_database_manifest(
-        &backend,
+        backend,
         Some(CommitVersion::new(1)),
         Some(1),
         Some(CommitVersion::new(5)),
     );
-    let mut shell = assemble_shell(branch, &backend).expect("shell");
+    let mut shell = assemble_shell(branch, backend).expect("shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
 
@@ -763,10 +763,10 @@ fn recovery_after_truncation_restores_history_reads_within_retained_bounds() {
 
 #[test]
 fn policy_downgrade_blocks_table_manifest_flush_proof() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xc8);
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "policy-downgrade",
         &[put_row(branch, 1, b"policy", b"value")],
@@ -789,10 +789,10 @@ fn policy_downgrade_blocks_table_manifest_flush_proof() {
 
 #[test]
 fn data_loss_blocks_table_manifest_flush_proof() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xc9);
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "data-loss",
         &[put_row(branch, 1, b"data-loss", b"value")],
@@ -818,10 +818,10 @@ fn data_loss_blocks_table_manifest_flush_proof() {
 
 #[test]
 fn telemetry_health_allows_unrelated_table_manifest_flush_proof() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xca);
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "telemetry-health",
         &[put_row(branch, 1, b"telemetry", b"value")],
@@ -844,10 +844,10 @@ fn telemetry_health_allows_unrelated_table_manifest_flush_proof() {
 
 #[test]
 fn table_manifest_reachability_debt_blocks_flush_proof() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xcb);
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "reachability-debt",
         &[put_row(branch, 1, b"reachability", b"value")],
@@ -873,10 +873,10 @@ fn table_manifest_reachability_debt_blocks_flush_proof() {
 
 #[test]
 fn quarantine_inventory_mismatch_blocks_flush_proof_when_relevant() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xcc);
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "quarantine-mismatch",
         &[put_row(branch, 1, b"quarantine", b"value")],
@@ -902,11 +902,11 @@ fn quarantine_inventory_mismatch_blocks_flush_proof_when_relevant() {
 
 #[test]
 fn missing_branch_lifecycle_fact_blocks_absence_coverage() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xcd);
     let missing = branch_id(0xce);
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "missing-lifecycle-fact",
         &[put_row(branch, 1, b"branch", b"value")],
@@ -918,7 +918,7 @@ fn missing_branch_lifecycle_fact_blocks_absence_coverage() {
     )
     .expect("proof");
 
-    let shell = assemble_shell(branch, &backend).expect("shell");
+    let shell = assemble_shell(branch, backend).expect("shell");
     shell
         .services()
         .manifest()
@@ -944,17 +944,17 @@ fn missing_branch_lifecycle_fact_blocks_absence_coverage() {
 
 #[test]
 fn branch_absence_does_not_advance_flush_watermark() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xcf);
     let missing = branch_id(0xd0);
-    let shell = assemble_shell(branch, &backend).expect("shell");
+    let shell = assemble_shell(branch, backend).expect("shell");
     shell
         .services()
         .manifest()
         .persist_snapshot_facts(1, CommitVersion::new(1))
         .expect("snapshot facts");
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "branch-absence",
         &[put_row(branch, 1, b"branch", b"value")],
@@ -982,7 +982,7 @@ fn branch_absence_does_not_advance_flush_watermark() {
 
     assert_eq!(error.code(), "failed_precondition.lifecycle.wal_retention");
     assert_eq!(
-        DatabaseManifestService::new(&backend)
+        DatabaseManifestService::new(backend)
             .load_required()
             .expect("manifest")
             .flushed_through_commit_id(),
@@ -992,9 +992,9 @@ fn branch_absence_does_not_advance_flush_watermark() {
 
 #[test]
 fn maintenance_task_can_request_table_manifest_flush_watermark() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xd1);
-    let mut runtime = runtime_with_flushed_table(branch, &backend, b"maintenance-request");
+    let mut runtime = runtime_with_flushed_table(branch, backend, b"maintenance-request");
     runtime
         .services()
         .manifest()
@@ -1015,7 +1015,7 @@ fn maintenance_task_can_request_table_manifest_flush_watermark() {
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
     assert_eq!(outcome.state_changes(), 1);
     assert_eq!(
-        DatabaseManifestService::new(&backend)
+        DatabaseManifestService::new(backend)
             .load_required()
             .expect("manifest")
             .flushed_through_commit_id(),
@@ -1025,9 +1025,9 @@ fn maintenance_task_can_request_table_manifest_flush_watermark() {
 
 #[test]
 fn maintenance_task_coalesces_table_manifest_flush_watermark_to_newest_candidate() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xd2);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
 
     let first = runtime
         .enqueue_maintenance(MaintenanceTaskRequest::table_manifest_flush_watermark(
@@ -1057,9 +1057,9 @@ fn maintenance_task_coalesces_table_manifest_flush_watermark_to_newest_candidate
 
 #[test]
 fn background_flush_watermark_uses_highest_provable_candidate() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xd3);
-    let mut runtime = runtime_with_flushed_table(branch, &backend, b"provable-candidate");
+    let mut runtime = runtime_with_flushed_table(branch, backend, b"provable-candidate");
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::table_manifest_flush_watermark(
             CommitVersion::new(2),
@@ -1074,7 +1074,7 @@ fn background_flush_watermark_uses_highest_provable_candidate() {
     assert_eq!(outcome.task_kind(), MaintenanceTaskKind::FlushWatermark);
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
     assert_eq!(
-        DatabaseManifestService::new(&backend)
+        DatabaseManifestService::new(backend)
             .load_required()
             .expect("manifest")
             .flushed_through_commit_id(),
@@ -1085,9 +1085,9 @@ fn background_flush_watermark_uses_highest_provable_candidate() {
 
 #[test]
 fn background_flush_watermark_uses_checkpoint_covered_candidate() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xda);
-    let mut runtime = runtime_with_flushed_table(branch, &backend, b"checkpoint-covered");
+    let mut runtime = runtime_with_flushed_table(branch, backend, b"checkpoint-covered");
     runtime
         .services()
         .manifest()
@@ -1107,7 +1107,7 @@ fn background_flush_watermark_uses_checkpoint_covered_candidate() {
     assert_eq!(outcome.task_kind(), MaintenanceTaskKind::FlushWatermark);
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
     assert_eq!(
-        DatabaseManifestService::new(&backend)
+        DatabaseManifestService::new(backend)
             .load_required()
             .expect("manifest")
             .flushed_through_commit_id(),
@@ -1118,9 +1118,9 @@ fn background_flush_watermark_uses_checkpoint_covered_candidate() {
 
 #[test]
 fn flush_watermark_no_longer_waits_for_queued_flush_work() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xd7);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
         .expect("enqueue flush");
@@ -1146,9 +1146,9 @@ fn flush_watermark_no_longer_waits_for_queued_flush_work() {
 
 #[test]
 fn background_flush_watermark_waits_for_table_manifest_coverage() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xd8);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::table_manifest_flush_watermark(
             CommitVersion::new(2),
@@ -1166,9 +1166,9 @@ fn background_flush_watermark_waits_for_table_manifest_coverage() {
 
 #[test]
 fn maintenance_task_reports_deferred_when_table_coverage_missing() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xd3);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::table_manifest_flush_watermark(
             CommitVersion::new(1),
@@ -1183,7 +1183,7 @@ fn maintenance_task_reports_deferred_when_table_coverage_missing() {
     assert_eq!(outcome.task_kind(), MaintenanceTaskKind::FlushWatermark);
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
     assert_eq!(
-        DatabaseManifestService::new(&backend)
+        DatabaseManifestService::new(backend)
             .load_required()
             .expect("manifest")
             .flushed_through_commit_id(),
@@ -1193,9 +1193,9 @@ fn maintenance_task_reports_deferred_when_table_coverage_missing() {
 
 #[test]
 fn maintenance_task_does_not_run_table_manifest_watermark_after_close_begins() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xd4);
-    let mut runtime = runtime_with_flushed_table(branch, &backend, b"close-cancel");
+    let mut runtime = runtime_with_flushed_table(branch, backend, b"close-cancel");
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::table_manifest_flush_watermark(
             CommitVersion::new(1),
@@ -1208,7 +1208,7 @@ fn maintenance_task_does_not_run_table_manifest_watermark_after_close_begins() {
     assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
     assert_eq!(runtime.maintenance_status().stats().canceled(), 1);
     assert_eq!(
-        DatabaseManifestService::new(&backend)
+        DatabaseManifestService::new(backend)
             .load_required()
             .expect("manifest")
             .flushed_through_commit_id(),
@@ -1218,9 +1218,9 @@ fn maintenance_task_does_not_run_table_manifest_watermark_after_close_begins() {
 
 #[test]
 fn maintenance_task_preserves_stats_for_watermark_and_truncation() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xd5);
-    let mut runtime = runtime_with_flushed_table(branch, &backend, b"stats");
+    let mut runtime = runtime_with_flushed_table(branch, backend, b"stats");
     runtime
         .services()
         .manifest()
@@ -1242,9 +1242,9 @@ fn maintenance_task_preserves_stats_for_watermark_and_truncation() {
 
 #[test]
 fn maintenance_task_does_not_claim_checkpoint_execution() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xd6);
-    let mut runtime = runtime_with_flushed_table(branch, &backend, b"not-checkpoint");
+    let mut runtime = runtime_with_flushed_table(branch, backend, b"not-checkpoint");
     runtime
         .services()
         .manifest()
@@ -1275,10 +1275,10 @@ fn wal_truncation_from_table_manifest_flush_watermark_uses_typed_proof() {
 
 #[test]
 fn table_manifest_watermark_publish_uses_canonical_manifest_bytes() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xd1);
     let manifest = durable_manifest(
-        &backend,
+        backend,
         branch,
         "canonical-published",
         &[put_row(branch, 1, b"canonical", b"value")],
@@ -1293,7 +1293,7 @@ fn table_manifest_watermark_publish_uses_canonical_manifest_bytes() {
 }
 
 fn unpublished_manifest(
-    backend: &CheckpointTestBackend,
+    backend: &'static CheckpointTestBackend,
     branch: BranchId,
     identity: &str,
     rows: &[StorageRow],
@@ -1345,11 +1345,11 @@ fn state_with_installed_table(
     state
 }
 
-fn runtime_with_flushed_table<'a>(
+fn runtime_with_flushed_table(
     branch: BranchId,
-    backend: &'a CheckpointTestBackend,
+    backend: &'static CheckpointTestBackend,
     key: &'static [u8],
-) -> LifecycleDurableLocalRuntime<'a, CommitManualTimestampSource> {
+) -> LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource> {
     let mut runtime = open_runtime(branch, backend);
     runtime
         .execute_durable_commit(durable_batch(branch, key, b"value"), generation_guard())
@@ -1380,12 +1380,12 @@ fn shared_physical_key(branch: BranchId, user_key: &'static [u8]) -> PhysicalKey
 
 #[test]
 fn end_to_end_publish_persist_truncate_recover() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xd7);
 
     // Phase 1: commit v1, run a real checkpoint at v1 (publishes a snapshot
     // object), then commit v2 above the checkpoint.
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     runtime
         .execute_durable_commit(
             durable_batch(branch, b"end-to-end-1", b"value-1"),
@@ -1440,7 +1440,7 @@ fn end_to_end_publish_persist_truncate_recover() {
     // watermark above the checkpoint, apply the table manifest as the
     // recovery base, and serve both writes.
     drop(runtime);
-    let reopened = open_runtime(branch, &backend);
+    let reopened = open_runtime(branch, backend);
     let view = reopened.read_view().expect("read view");
     assert_eq!(
         view.latest(&shared_physical_key(branch, b"end-to-end-1"))
@@ -1459,7 +1459,7 @@ fn end_to_end_publish_persist_truncate_recover() {
         b"value-2"
     );
     assert_eq!(
-        DatabaseManifestService::new(&backend)
+        DatabaseManifestService::new(backend)
             .load_required()
             .expect("manifest")
             .flushed_through_commit_id(),
@@ -1469,9 +1469,9 @@ fn end_to_end_publish_persist_truncate_recover() {
 
 #[test]
 fn flush_completion_advances_watermark_and_reclaims_wal_without_checkpoint() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xf1);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
 
     // Commit, rotate, and flush to L0 through the maintenance path — no checkpoint anywhere.
     runtime
@@ -1494,7 +1494,7 @@ fn flush_completion_advances_watermark_and_reclaims_wal_without_checkpoint() {
 
     // Flush-driven reclaim advanced the flush watermark with no checkpoint: the snapshot
     // watermark stays unset, yet flushed_through_commit_id now covers the flushed commit.
-    let manifest = DatabaseManifestService::new(&backend)
+    let manifest = DatabaseManifestService::new(backend)
         .load_required()
         .expect("manifest");
     assert_eq!(manifest.snapshot_watermark(), None);

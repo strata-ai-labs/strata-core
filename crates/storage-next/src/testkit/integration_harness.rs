@@ -322,7 +322,7 @@ pub fn run_localfs_lifecycle_retention_runner_harness(
 
     std::fs::create_dir_all(root)
         .map_err(|err| TestkitError::new(format!("create retention harness root: {err}")))?;
-    let backend = LocalFsBackend::new(root);
+    let backend: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
     let plan = StorageOpenPlan::new(
         StorageMode::DurableLocalStandard,
         LifecycleCodecId::identity(),
@@ -342,7 +342,7 @@ pub fn run_localfs_lifecycle_retention_runner_harness(
     )
     .map_err(|err| TestkitError::new(format!("open request: {err}")))?;
     let timestamp_source = CommitManualTimestampSource::new(Timestamp::from_micros(8_000));
-    let mut shell = LifecycleDurableLocalShell::assemble(request, &backend, timestamp_source)
+    let mut shell = LifecycleDurableLocalShell::assemble(request, backend, timestamp_source)
         .map_err(|err| TestkitError::new(format!("assemble shell: {err}")))?;
     let recovery_request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .map_err(|err| TestkitError::new(format!("recovery request: {err}")))?;
@@ -827,14 +827,14 @@ fn localfs_orphan_snapshot_is_not_manifest_referenced(
     // checkpoint never ran. Recovery must keep the snapshot bytes available
     // but treat the missing manifest as authoritative — no advance of
     // visible state from this orphan.
-    let backend = LocalFsBackend::new(root);
-    SnapshotService::new(&backend)
+    let backend: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    SnapshotService::new(backend)
         .publish_create(snapshot_request(11, b"orphan-snapshot")?)
         .map_err(|err| TestkitError::new(format!("publish snapshot before reopen: {err}")))?;
     // Intentionally skip manifest publication.
 
-    let reopened = LocalFsBackend::new(root);
-    let loaded = SnapshotService::new(&reopened)
+    let reopened: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    let loaded = SnapshotService::new(reopened)
         .load_required_for_codec(11, DATABASE_ID, CODEC_ID)
         .map_err(|err| TestkitError::new(format!("load snapshot after reopen: {err}")))?;
     require(
@@ -842,7 +842,7 @@ fn localfs_orphan_snapshot_is_not_manifest_referenced(
         "snapshot payload changed after reopen",
     )?;
     require(
-        DatabaseManifestService::new(&reopened)
+        DatabaseManifestService::new(reopened)
             .load_current()
             .map_err(|err| {
                 TestkitError::new(format!("load manifest after snapshot orphan: {err}"))
@@ -863,14 +863,14 @@ fn localfs_log_append_survives_reopen(root: &std::path::Path) -> Result<(), Test
     // visible state never happened. Recovery must surface the orphan record.
     let mut metadata = SegmentMetadata::empty(7);
     metadata.track_record(CommitVersion::new(7), Timestamp::from_micros(700));
-    let backend = LocalFsBackend::new(root);
-    WalSegmentMetadataSidecarService::new(&backend)
+    let backend: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    WalSegmentMetadataSidecarService::new(backend)
         .publish_replace(&metadata)
         .map_err(|err| TestkitError::new(format!("publish sidecar before reopen: {err}")))?;
     // Intentionally skip manifest publication to leave the WAL record orphaned.
 
-    let reopened = LocalFsBackend::new(root);
-    let loaded = WalSegmentMetadataSidecarService::new(&reopened)
+    let reopened: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    let loaded = WalSegmentMetadataSidecarService::new(reopened)
         .load(7)
         .map_err(|err| TestkitError::new(format!("load sidecar after reopen: {err}")))?;
     let WalSegmentMetadataSidecarLoad::Present(sidecar) = loaded else {
@@ -883,7 +883,7 @@ fn localfs_log_append_survives_reopen(root: &std::path::Path) -> Result<(), Test
         "wal sidecar metadata changed across crash window",
     )?;
     require(
-        DatabaseManifestService::new(&reopened)
+        DatabaseManifestService::new(reopened)
             .load_current()
             .map_err(|err| {
                 TestkitError::new(format!(
@@ -912,8 +912,8 @@ fn localfs_unresolved_gate_marker_survives_reopen(
     let mut metadata = SegmentMetadata::empty(8);
     metadata.track_record(CommitVersion::new(8), Timestamp::from_micros(800));
     metadata.track_record(CommitVersion::new(u64::MAX), Timestamp::from_micros(900));
-    let backend = LocalFsBackend::new(root);
-    WalSegmentMetadataSidecarService::new(&backend)
+    let backend: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    WalSegmentMetadataSidecarService::new(backend)
         .publish_replace(&metadata)
         .map_err(|err| {
             TestkitError::new(format!("publish unresolved marker before reopen: {err}"))
@@ -921,8 +921,8 @@ fn localfs_unresolved_gate_marker_survives_reopen(
     // Intentionally skip the gate-resolution write so reconciliation
     // evidence remains visible after reopen.
 
-    let reopened = LocalFsBackend::new(root);
-    let loaded = WalSegmentMetadataSidecarService::new(&reopened)
+    let reopened: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    let loaded = WalSegmentMetadataSidecarService::new(reopened)
         .load(8)
         .map_err(|err| TestkitError::new(format!("load unresolved marker after reopen: {err}")))?;
     let WalSegmentMetadataSidecarLoad::Present(sidecar) = loaded else {
@@ -939,7 +939,7 @@ fn localfs_unresolved_gate_marker_survives_reopen(
         "unresolved gate sentinel commit version lost across crash window",
     )?;
     require(
-        DatabaseManifestService::new(&reopened)
+        DatabaseManifestService::new(reopened)
             .load_current()
             .map_err(|err| {
                 TestkitError::new(format!("load manifest after unresolved-gate crash: {err}"))
@@ -961,27 +961,27 @@ fn localfs_checkpoint_and_tail_survive_reopen(root: &std::path::Path) -> Result<
     // references it, AND the WAL tail records past the snapshot watermark.
     // Recovery must surface both checkpoint and tail; if tail were silently
     // truncated by reopen the commit beyond the snapshot would be lost.
-    let backend = LocalFsBackend::new(root);
-    DatabaseManifestService::new(&backend)
+    let backend: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    DatabaseManifestService::new(backend)
         .create_initial(DATABASE_ID, CODEC_ID)
         .map_err(|err| TestkitError::new(format!("create initial manifest: {err}")))?;
-    SnapshotService::new(&backend)
+    SnapshotService::new(backend)
         .publish_create(snapshot_request(12, b"checkpoint-snapshot")?)
         .map_err(|err| TestkitError::new(format!("publish checkpoint snapshot: {err}")))?;
     let snapshot_watermark = CommitVersion::new(12);
-    DatabaseManifestService::new(&backend)
+    DatabaseManifestService::new(backend)
         .persist_snapshot_facts(12, snapshot_watermark)
         .map_err(|err| TestkitError::new(format!("persist snapshot watermark: {err}")))?;
     let mut metadata = SegmentMetadata::empty(12);
     metadata.track_record(CommitVersion::new(13), Timestamp::from_micros(1_300));
-    WalSegmentMetadataSidecarService::new(&backend)
+    WalSegmentMetadataSidecarService::new(backend)
         .publish_replace(&metadata)
         .map_err(|err| TestkitError::new(format!("publish checkpoint tail: {err}")))?;
     // Intentionally skip the WAL truncation step that would have removed the
     // covered tail.
 
-    let reopened = LocalFsBackend::new(root);
-    let manifest = DatabaseManifestService::new(&reopened)
+    let reopened: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    let manifest = DatabaseManifestService::new(reopened)
         .load_required()
         .map_err(|err| TestkitError::new(format!("load manifest after crash: {err}")))?;
     require(
@@ -989,14 +989,14 @@ fn localfs_checkpoint_and_tail_survive_reopen(root: &std::path::Path) -> Result<
             && manifest.snapshot_watermark() == Some(snapshot_watermark.as_u64()),
         "manifest lost checkpoint facts across crash window",
     )?;
-    let snapshot = SnapshotService::new(&reopened)
+    let snapshot = SnapshotService::new(reopened)
         .load_required_for_codec(12, DATABASE_ID, CODEC_ID)
         .map_err(|err| TestkitError::new(format!("load checkpoint snapshot: {err}")))?;
     require(
         snapshot.sections()[0].payload() == b"checkpoint-snapshot",
         "checkpoint snapshot payload changed after reopen",
     )?;
-    let sidecar = WalSegmentMetadataSidecarService::new(&reopened)
+    let sidecar = WalSegmentMetadataSidecarService::new(reopened)
         .load(12)
         .map_err(|err| TestkitError::new(format!("load checkpoint tail: {err}")))?;
     let WalSegmentMetadataSidecarLoad::Present(sidecar) = sidecar else {
@@ -1029,14 +1029,14 @@ fn localfs_orphan_table_is_visible_to_recovery_inventory(
         .map_err(|err| TestkitError::new(format!("table object layout: {err}")))?;
     let branch_manifest_object = ObjectLayout::branch_table_manifest(&branch)
         .map_err(|err| TestkitError::new(format!("branch manifest layout: {err}")))?;
-    let backend = LocalFsBackend::new(root);
-    TableObjectService::new(&backend)
+    let backend: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    TableObjectService::new(backend)
         .publish_create(&branch, 1, "table0001", &bytes)
         .map_err(|err| TestkitError::new(format!("publish table before reopen: {err}")))?;
     // Intentionally skip branch-table-manifest publication to leave the
     // table observably orphan.
 
-    let reopened = LocalFsBackend::new(root);
+    let reopened: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
     let table_bytes = reopened
         .read_object(&object)
         .map_err(|err| TestkitError::new(format!("read table after reopen: {err}")))?;
@@ -1067,7 +1067,7 @@ fn localfs_quarantine_inventory_survives_reopen(
     // a real crash that destroyed the copy after the inventory write.
     let source = ObjectLayout::table_object("main", 0, "table0002")
         .map_err(|err| TestkitError::new(format!("quarantine source layout: {err}")))?;
-    let backend = LocalFsBackend::new(root);
+    let backend: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
     backend
         .write_object(&source, b"quarantine-source")
         .map_err(|err| TestkitError::new(format!("seed quarantine source: {err}")))?;
@@ -1080,11 +1080,11 @@ fn localfs_quarantine_inventory_survives_reopen(
         Timestamp::from_micros(2_000),
         QuarantineGate::Safe,
     );
-    QuarantineService::new(&backend)
+    QuarantineService::new(backend)
         .quarantine_object(&request)
         .map_err(|err| TestkitError::new(format!("quarantine object before crash: {err}")))?;
 
-    let staged_inventory = QuarantineService::new(&backend)
+    let staged_inventory = QuarantineService::new(backend)
         .load_required_inventory(branch_id(), DATABASE_ID, CODEC_ID)
         .map_err(|err| TestkitError::new(format!("load staged inventory: {err}")))?;
     let object_id = staged_inventory
@@ -1102,8 +1102,8 @@ fn localfs_quarantine_inventory_survives_reopen(
     // quarantine bytes.
     crash_sim::drop_object_file(root, &quarantine_object_name)?;
 
-    let reopened = LocalFsBackend::new(root);
-    let inventory = QuarantineService::new(&reopened)
+    let reopened: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    let inventory = QuarantineService::new(reopened)
         .load_required_inventory(branch_id(), DATABASE_ID, CODEC_ID)
         .map_err(|err| TestkitError::new(format!("load inventory after crash: {err}")))?;
     require(
@@ -1128,7 +1128,7 @@ fn localfs_quarantine_object_survives_reopen(root: &std::path::Path) -> Result<(
     // make purge proofs unsound on the next cycle.
     let source = ObjectLayout::table_object("main", 0, "table0003")
         .map_err(|err| TestkitError::new(format!("quarantine source layout: {err}")))?;
-    let backend = LocalFsBackend::new(root);
+    let backend: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
     backend
         .write_object(&source, b"quarantine-object")
         .map_err(|err| TestkitError::new(format!("seed quarantine source: {err}")))?;
@@ -1141,7 +1141,7 @@ fn localfs_quarantine_object_survives_reopen(root: &std::path::Path) -> Result<(
         Timestamp::from_micros(3_000),
         QuarantineGate::Safe,
     );
-    let report = QuarantineService::new(&backend)
+    let report = QuarantineService::new(backend)
         .quarantine_object(&request)
         .map_err(|err| TestkitError::new(format!("quarantine object before reopen: {err}")))?;
     require(
@@ -1149,8 +1149,8 @@ fn localfs_quarantine_object_survives_reopen(root: &std::path::Path) -> Result<(
         "quarantine object was not staged before reopen",
     )?;
 
-    let reopened = LocalFsBackend::new(root);
-    let inventory = QuarantineService::new(&reopened)
+    let reopened: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    let inventory = QuarantineService::new(reopened)
         .load_required_inventory(branch_id(), DATABASE_ID, CODEC_ID)
         .map_err(|err| TestkitError::new(format!("load quarantine inventory: {err}")))?;
     let object_id = inventory
@@ -1183,8 +1183,8 @@ fn localfs_close_manifest_survives_reopen(root: &std::path::Path) -> Result<(), 
     // observe the orphan writer lock alongside the clean manifest — and the
     // manifest facts must remain consistent so the next open does not need
     // recovery beyond lock reconciliation.
-    let backend = LocalFsBackend::new(root);
-    DatabaseManifestService::new(&backend)
+    let backend: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    DatabaseManifestService::new(backend)
         .create_initial(DATABASE_ID, CODEC_ID)
         .map_err(|err| TestkitError::new(format!("create close manifest: {err}")))?;
     let writer_lock = ObjectLayout::writer_lock()
@@ -1199,8 +1199,8 @@ fn localfs_close_manifest_survives_reopen(root: &std::path::Path) -> Result<(), 
     // Intentionally skip the writer-lock deletion a clean close would
     // perform — the lock object file is now orphan on disk.
 
-    let reopened = LocalFsBackend::new(root);
-    let manifest = DatabaseManifestService::new(&reopened)
+    let reopened: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    let manifest = DatabaseManifestService::new(reopened)
         .load_required()
         .map_err(|err| TestkitError::new(format!("load close manifest: {err}")))?;
     require(
@@ -1225,10 +1225,12 @@ fn snapshot_publish_fault_preserves_absence() -> Result<(), TestkitError> {
     use crate::backend::{Backend, PublishFailureKind};
     use crate::testkit::FaultingBackend;
 
-    let backend = FaultingBackend::new(HarnessBackend::default(), publish_fault_script());
+    let backend: &'static FaultingBackend<HarnessBackend> = Box::leak(Box::new(
+        FaultingBackend::new(HarnessBackend::default(), publish_fault_script()),
+    ));
     let object = ObjectLayout::snapshot(21)
         .map_err(|err| TestkitError::new(format!("snapshot layout: {err}")))?;
-    let error = SnapshotService::new(&backend)
+    let error = SnapshotService::new(backend)
         .publish_create(snapshot_request(21, b"fault-snapshot")?)
         .expect_err("fault script must fail snapshot publish");
     require(
@@ -1247,11 +1249,13 @@ fn table_publish_fault_preserves_absence() -> Result<(), TestkitError> {
     use crate::backend::{Backend, PublishFailureKind};
     use crate::testkit::FaultingBackend;
 
-    let backend = FaultingBackend::new(HarnessBackend::default(), publish_fault_script());
+    let backend: &'static FaultingBackend<HarnessBackend> = Box::leak(Box::new(
+        FaultingBackend::new(HarnessBackend::default(), publish_fault_script()),
+    ));
     let branch = branch_id().to_string();
     let object = ObjectLayout::table_object(&branch, 0, "table0001")
         .map_err(|err| TestkitError::new(format!("table layout: {err}")))?;
-    let error = TableObjectService::new(&backend)
+    let error = TableObjectService::new(backend)
         .publish_create(&branch, 0, "table0001", &valid_table_bytes()?)
         .expect_err("fault script must fail table publish");
     require(
@@ -1270,7 +1274,9 @@ fn quarantine_inventory_publish_fault_preserves_source() -> Result<(), TestkitEr
     use crate::backend::Backend;
     use crate::testkit::FaultingBackend;
 
-    let backend = FaultingBackend::new(HarnessBackend::default(), publish_fault_script());
+    let backend: &'static FaultingBackend<HarnessBackend> = Box::leak(Box::new(
+        FaultingBackend::new(HarnessBackend::default(), publish_fault_script()),
+    ));
     let source = ObjectLayout::table_object("main", 0, "table0001")
         .map_err(|err| TestkitError::new(format!("source layout: {err}")))?;
     backend
@@ -1286,7 +1292,7 @@ fn quarantine_inventory_publish_fault_preserves_source() -> Result<(), TestkitEr
         QuarantineGate::Safe,
     );
 
-    let report = QuarantineService::new(&backend)
+    let report = QuarantineService::new(backend)
         .quarantine_object(&request)
         .map_err(|err| TestkitError::new(format!("quarantine with publish fault: {err}")))?;
     require(
@@ -1303,14 +1309,15 @@ fn quarantine_inventory_publish_fault_preserves_source() -> Result<(), TestkitEr
 fn capability_preflight_rejects_unsupported_publish() -> Result<(), TestkitError> {
     use crate::testkit::FaultingBackend;
 
-    let backend = FaultingBackend::new(
-        HarnessBackend::default(),
-        single_fault_script(
-            crate::testkit::BackendOperation::PublishObject,
-            crate::testkit::FaultKind::CapabilityMismatch,
-        ),
-    );
-    let error = SnapshotService::new(&backend)
+    let backend: &'static FaultingBackend<HarnessBackend> =
+        Box::leak(Box::new(FaultingBackend::new(
+            HarnessBackend::default(),
+            single_fault_script(
+                crate::testkit::BackendOperation::PublishObject,
+                crate::testkit::FaultKind::CapabilityMismatch,
+            ),
+        )));
+    let error = SnapshotService::new(backend)
         .publish_create(snapshot_request(60, b"capability-preflight")?)
         .expect_err("capability mismatch must reject publish");
     ensure_publish_failed_before_visibility::<SnapshotServiceError>(error, |inner| {
@@ -1318,15 +1325,17 @@ fn capability_preflight_rejects_unsupported_publish() -> Result<(), TestkitError
     })?;
     let layout = ObjectLayout::snapshot(60)
         .map_err(|err| TestkitError::new(format!("snapshot layout: {err}")))?;
-    require_object_absent(&backend, &layout, "snapshot")
+    require_object_absent(backend, &layout, "snapshot")
 }
 
 #[cfg(any(test, feature = "fault-injection"))]
 fn writer_guard_manifest_create_publish_fault_returns_typed_error() -> Result<(), TestkitError> {
     use crate::testkit::FaultingBackend;
 
-    let backend = FaultingBackend::new(HarnessBackend::default(), publish_fault_script());
-    let error = DatabaseManifestService::new(&backend)
+    let backend: &'static FaultingBackend<HarnessBackend> = Box::leak(Box::new(
+        FaultingBackend::new(HarnessBackend::default(), publish_fault_script()),
+    ));
+    let error = DatabaseManifestService::new(backend)
         .create_initial(DATABASE_ID, CODEC_ID)
         .expect_err("manifest create must fail on publish fault");
     require(
@@ -1335,7 +1344,7 @@ fn writer_guard_manifest_create_publish_fault_returns_typed_error() -> Result<()
     )?;
     let layout = ObjectLayout::database_manifest()
         .map_err(|err| TestkitError::new(format!("manifest layout: {err}")))?;
-    require_object_absent(&backend, &layout, "manifest")
+    require_object_absent(backend, &layout, "manifest")
 }
 
 #[cfg(any(test, feature = "fault-injection"))]
@@ -1352,21 +1361,23 @@ fn manifest_publish_uncertain_preserves_durable_state() -> Result<(), TestkitErr
         NonZeroU64::new(2).expect("non-zero publish call"),
         FaultKind::Unavailable,
     )]);
-    let backend = FaultingBackend::new(HarnessBackend::default(), script);
-    DatabaseManifestService::new(&backend)
+    let backend: &'static FaultingBackend<HarnessBackend> = Box::leak(Box::new(
+        FaultingBackend::new(HarnessBackend::default(), script),
+    ));
+    DatabaseManifestService::new(backend)
         .create_initial(DATABASE_ID, CODEC_ID)
         .map_err(|err| {
             TestkitError::new(format!("seed manifest before uncertain publish: {err}"))
         })?;
     let snapshot_watermark = CommitVersion::new(7);
-    let error = DatabaseManifestService::new(&backend)
+    let error = DatabaseManifestService::new(backend)
         .persist_snapshot_facts(7, snapshot_watermark)
         .expect_err("uncertain publish must fail the snapshot-facts replace");
     require(
         format!("{error}").to_ascii_lowercase().contains("publish"),
         "manifest replace fault not classified as publish failure",
     )?;
-    let manifest = DatabaseManifestService::new(&backend)
+    let manifest = DatabaseManifestService::new(backend)
         .load_required()
         .map_err(|err| TestkitError::new(format!("reload manifest after fault: {err}")))?;
     require(
@@ -1386,8 +1397,10 @@ fn checkpoint_snapshot_delete_fault_preserves_object() -> Result<(), TestkitErro
         NonZeroU64::new(1).expect("non-zero delete call"),
         FaultKind::Unavailable,
     )]);
-    let backend = FaultingBackend::new(HarnessBackend::default(), script);
-    SnapshotService::new(&backend)
+    let backend: &'static FaultingBackend<HarnessBackend> = Box::leak(Box::new(
+        FaultingBackend::new(HarnessBackend::default(), script),
+    ));
+    SnapshotService::new(backend)
         .publish_create(snapshot_request(61, b"checkpoint-delete-debt")?)
         .map_err(|err| TestkitError::new(format!("seed snapshot for delete fault: {err}")))?;
     let layout = ObjectLayout::snapshot(61)
@@ -1519,13 +1532,15 @@ fn rewrite_publish_fault_preserves_prior_read() -> Result<(), TestkitError> {
         NonZeroU64::new(2).expect("non-zero publish call"),
         FaultKind::Interrupted,
     )]);
-    let backend = FaultingBackend::new(HarnessBackend::default(), script);
+    let backend: &'static FaultingBackend<HarnessBackend> = Box::leak(Box::new(
+        FaultingBackend::new(HarnessBackend::default(), script),
+    ));
     let branch = branch_id().to_string();
     let bytes = valid_table_bytes()?;
-    TableObjectService::new(&backend)
+    TableObjectService::new(backend)
         .publish_create(&branch, 5, "tablev0001", &bytes)
         .map_err(|err| TestkitError::new(format!("seed rewrite source: {err}")))?;
-    let rewrite_error = TableObjectService::new(&backend)
+    let rewrite_error = TableObjectService::new(backend)
         .publish_create(&branch, 5, "tablev0002", &bytes)
         .expect_err("rewrite publish must fail under fault");
     require(
@@ -1542,7 +1557,7 @@ fn rewrite_publish_fault_preserves_prior_read() -> Result<(), TestkitError> {
     )?;
     let rewritten = ObjectLayout::table_object(&branch, 5, "tablev0002")
         .map_err(|err| TestkitError::new(format!("rewritten table layout: {err}")))?;
-    require_object_absent(&backend, &rewritten, "rewrite output")
+    require_object_absent(backend, &rewritten, "rewrite output")
 }
 
 #[cfg(any(test, feature = "fault-injection"))]
@@ -1556,8 +1571,10 @@ fn retention_blocked_delete_fault_preserves_object() -> Result<(), TestkitError>
         NonZeroU64::new(1).expect("non-zero delete call"),
         FaultKind::PermissionDenied,
     )]);
-    let backend = FaultingBackend::new(HarnessBackend::default(), script);
-    SnapshotService::new(&backend)
+    let backend: &'static FaultingBackend<HarnessBackend> = Box::leak(Box::new(
+        FaultingBackend::new(HarnessBackend::default(), script),
+    ));
+    SnapshotService::new(backend)
         .publish_create(snapshot_request(73, b"retention-blocked")?)
         .map_err(|err| TestkitError::new(format!("seed snapshot for retention: {err}")))?;
     let layout = ObjectLayout::snapshot(73)
@@ -1587,7 +1604,9 @@ fn purge_delete_fault_preserves_quarantine_object() -> Result<(), TestkitError> 
         NonZeroU64::new(2).expect("non-zero delete call"),
         FaultKind::Unavailable,
     )]);
-    let backend = FaultingBackend::new(HarnessBackend::default(), script);
+    let backend: &'static FaultingBackend<HarnessBackend> = Box::leak(Box::new(
+        FaultingBackend::new(HarnessBackend::default(), script),
+    ));
     let source = ObjectLayout::table_object("main", 0, "table9991")
         .map_err(|err| TestkitError::new(format!("purge source layout: {err}")))?;
     backend
@@ -1602,10 +1621,10 @@ fn purge_delete_fault_preserves_quarantine_object() -> Result<(), TestkitError> 
         Timestamp::from_micros(91_000),
         QuarantineGate::Safe,
     );
-    let _report = QuarantineService::new(&backend)
+    let _report = QuarantineService::new(backend)
         .quarantine_object(&request)
         .map_err(|err| TestkitError::new(format!("quarantine before simulated purge: {err}")))?;
-    let inventory = QuarantineService::new(&backend)
+    let inventory = QuarantineService::new(backend)
         .load_required_inventory(branch_id(), DATABASE_ID, CODEC_ID)
         .map_err(|err| TestkitError::new(format!("load inventory: {err}")))?;
     let entry = inventory
@@ -1654,11 +1673,11 @@ fn close_quiesce_blocked_by_held_writer_lock() -> Result<(), TestkitError> {
     let lock_name = ObjectLayout::writer_lock()
         .map_err(|err| TestkitError::new(format!("writer lock layout: {err}")))?;
 
-    let first = LocalFsBackend::new(&root);
+    let first: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(&root)));
     let first_guard = first
         .acquire_writer_lock(&lock_name)
         .map_err(|err| TestkitError::new(format!("acquire first guard: {err}")))?;
-    let contended = LocalFsBackend::new(&root);
+    let contended: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(&root)));
     let contention = contended
         .acquire_writer_lock(&lock_name)
         .err()
@@ -1705,7 +1724,9 @@ fn close_log_sync_fault_returns_typed_error() -> Result<(), TestkitError> {
         NonZeroU64::new(1).expect("non-zero sync call"),
         FaultKind::Interrupted,
     )]);
-    let backend = FaultingBackend::new(HarnessBackend::default(), script);
+    let backend: &'static FaultingBackend<HarnessBackend> = Box::leak(Box::new(
+        FaultingBackend::new(HarnessBackend::default(), script),
+    ));
     let fault_kind = backend
         .before_operation(BackendOperation::SyncObject)
         .err()
@@ -1726,19 +1747,21 @@ fn close_manifest_sync_fault_preserves_prior_manifest() -> Result<(), TestkitErr
         NonZeroU64::new(2).expect("non-zero publish call"),
         FaultKind::Interrupted,
     )]);
-    let backend = FaultingBackend::new(HarnessBackend::default(), script);
-    DatabaseManifestService::new(&backend)
+    let backend: &'static FaultingBackend<HarnessBackend> = Box::leak(Box::new(
+        FaultingBackend::new(HarnessBackend::default(), script),
+    ));
+    DatabaseManifestService::new(backend)
         .create_initial(DATABASE_ID, CODEC_ID)
         .map_err(|err| TestkitError::new(format!("seed manifest before close sync: {err}")))?;
     let watermark = CommitVersion::new(9);
-    let error = DatabaseManifestService::new(&backend)
+    let error = DatabaseManifestService::new(backend)
         .persist_snapshot_facts(9, watermark)
         .expect_err("manifest sync at close must fail under publish fault");
     require(
         format!("{error}").to_ascii_lowercase().contains("publish"),
         "close manifest fault was not classified as publish failure",
     )?;
-    let manifest = DatabaseManifestService::new(&backend)
+    let manifest = DatabaseManifestService::new(backend)
         .load_required()
         .map_err(|err| TestkitError::new(format!("reload manifest after close fault: {err}")))?;
     require(
@@ -1769,7 +1792,7 @@ fn writer_guard_re_acquire_after_release_succeeds() -> Result<(), TestkitError> 
         .map_err(|err| TestkitError::new(format!("create guard-reacquire root: {err}")))?;
     let lock_name = ObjectLayout::writer_lock()
         .map_err(|err| TestkitError::new(format!("writer lock layout: {err}")))?;
-    let backend = LocalFsBackend::new(&root);
+    let backend: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(&root)));
     let first = backend
         .acquire_writer_lock(&lock_name)
         .map_err(|err| TestkitError::new(format!("acquire first guard: {err}")))?;

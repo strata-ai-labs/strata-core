@@ -132,8 +132,8 @@ pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
         branch_id: BranchId,
         request: crate::lifecycle::flush::FlushDrainRequest,
         branch_snapshot: BranchLocalState,
-        table_object: TableObjectService<'a>,
-        table_reader: TableObjectReaderService<'a>,
+        table_object: TableObjectService<'static>,
+        table_reader: TableObjectReaderService<'static>,
         budget: crate::lifecycle::StorageBudgetLedger,
         started_at: std::time::Instant,
     },
@@ -154,16 +154,16 @@ pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
         level: u8,
         request: LifecycleCompactionRequest,
         branch_snapshot: BranchLocalState,
-        table_object: TableObjectService<'a>,
-        table_reader: TableObjectReaderService<'a>,
+        table_object: TableObjectService<'static>,
+        table_reader: TableObjectReaderService<'static>,
         budget: crate::lifecycle::StorageBudgetLedger,
     },
     Materialization {
         task: MaintenanceTask,
         branch_id: BranchId,
         build: DurableMaterializationBuild,
-        table_object: TableObjectService<'a>,
-        table_reader: TableObjectReaderService<'a>,
+        table_object: TableObjectService<'static>,
+        table_reader: TableObjectReaderService<'static>,
         budget: crate::lifecycle::StorageBudgetLedger,
     },
 }
@@ -3236,8 +3236,8 @@ const fn health_rank(health: &RecoveryHealth) -> u8 {
 
 struct DurableFlushMaintenanceRunner<'a, 'b> {
     branch_catalog: &'a mut crate::lifecycle::LifecycleBranchCatalog,
-    table_object: &'a TableObjectService<'b>,
-    table_reader: &'a TableObjectReaderService<'b>,
+    table_object: &'a TableObjectService<'static>,
+    table_reader: &'a TableObjectReaderService<'static>,
     table_manifest: &'a TableManifestService<'b>,
     table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
     budget: &'a crate::lifecycle::StorageBudgetLedger,
@@ -3495,8 +3495,8 @@ impl MaintenanceTaskRunner for DurableFlushWatermarkMaintenanceRunner<'_, '_> {
 
 struct DurableCompactionMaintenanceRunner<'a, 'b> {
     branch: &'a mut BranchLocalState,
-    table_object: &'a TableObjectService<'b>,
-    table_reader: &'a TableObjectReaderService<'b>,
+    table_object: &'a TableObjectService<'static>,
+    table_reader: &'a TableObjectReaderService<'static>,
     table_manifest: &'a TableManifestService<'b>,
     table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
     budget: &'a crate::lifecycle::StorageBudgetLedger,
@@ -3534,8 +3534,8 @@ impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
 
 struct DurableMaterializationMaintenanceRunner<'a, 'b> {
     branch: &'a mut BranchLocalState,
-    table_object: &'a TableObjectService<'b>,
-    table_reader: &'a TableObjectReaderService<'b>,
+    table_object: &'a TableObjectService<'static>,
+    table_reader: &'a TableObjectReaderService<'static>,
     table_manifest: &'a TableManifestService<'b>,
     table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
     budget: &'a crate::lifecycle::StorageBudgetLedger,
