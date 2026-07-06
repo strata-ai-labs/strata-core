@@ -101,6 +101,17 @@ impl<'a> KvService<'a> {
 
     /// Reads a KV value at a commit timestamp.
     pub fn get_at(&mut self, key: &KvKey, timestamp: Timestamp) -> EngineResult<Option<KvValue>> {
+        Ok(self
+            .get_versioned_at(key, timestamp)?
+            .map(|value| value.value().clone()))
+    }
+
+    /// Reads a KV value at a commit timestamp with commit metadata.
+    pub fn get_versioned_at(
+        &mut self,
+        key: &KvKey,
+        timestamp: Timestamp,
+    ) -> EngineResult<Option<KvVersionedValue>> {
         let record = self.branch_record()?;
         let address = self.row_address(&record, key);
         let Some(row) = self
@@ -109,7 +120,7 @@ impl<'a> KvService<'a> {
         else {
             return Ok(None);
         };
-        value_from_row(&row)
+        versioned_value_from_row(&row)
     }
 
     /// Reads full version history for a KV key.

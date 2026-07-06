@@ -5,16 +5,12 @@ use super::{
     EngineJsonSample, EngineJsonValue, EngineJsonVersionedValue, HistoryItem,
     JsonBatchGetItemResult, JsonBatchItemResult, JsonHistory, JsonHistoryItem, JsonHistoryRow,
     JsonIndexDefinition, JsonListPage, JsonSampleItem, JsonSampleRow, KvHistory, KvHistoryRow,
-    KvKey, KvSample, KvScanRow, KvValue, KvVersionedValue, MutationEffect, MutationEffectKind,
-    Output, OutputJsonVersionedValue, PageInfo, SampleItem, ScanItem, Timestamp, VersionedValue,
+    KvKey, KvSample, KvScanRow, KvVersionedValue, MutationEffect, MutationEffectKind, Output,
+    OutputJsonVersionedValue, PageInfo, SampleItem, ScanItem, Timestamp, VersionedValue,
 };
 
 pub(super) fn bytes_from_key(key: &KvKey) -> Bytes {
     Bytes::from(key.as_bytes())
-}
-
-pub(super) fn bytes_from_value(value: KvValue) -> Bytes {
-    Bytes::from(value.into_bytes())
 }
 
 pub(super) fn branch_item(summary: &BranchSummary) -> BranchItem {

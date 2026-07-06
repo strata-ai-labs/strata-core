@@ -1,9 +1,9 @@
 use super::{
-    batch_get_result, batch_item_result, bytes_from_key, bytes_from_value, delete_effect,
-    delete_output, empty_batch_get_results, empty_batch_results, finish_batch_get_results,
-    finish_batch_results, history_items, kv_batch_get_result, kv_batch_result, kv_key, kv_value,
-    optional_key, optional_limit, page_or_keys, reject_duplicate_valid_keys, sample_output,
-    scan_item, upsert_effect, versioned_value, write_output, BatchGetItemResult, BatchItemResult,
+    batch_get_result, batch_item_result, bytes_from_key, delete_effect, delete_output,
+    empty_batch_get_results, empty_batch_results, finish_batch_get_results, finish_batch_results,
+    history_items, kv_batch_get_result, kv_batch_result, kv_key, kv_value, optional_key,
+    optional_limit, page_or_keys, reject_duplicate_valid_keys, sample_output, scan_item,
+    upsert_effect, versioned_value, write_output, BatchGetItemResult, BatchItemResult,
     BatchKvEntry, Bytes, Executor, ExecutorResult, Output, PageInfo, Timestamp,
 };
 
@@ -33,8 +33,12 @@ impl Executor {
         let key = kv_key(key)?;
         let mut service = self.kv_service(branch, space)?;
         if let Some(as_of) = as_of {
-            let value = service.get_at(&key, Timestamp::from_micros(as_of))?;
-            return Ok(Output::KvValue(value.map(bytes_from_value)));
+            return Ok(Output::KvVersionedValue(
+                service
+                    .get_versioned_at(&key, Timestamp::from_micros(as_of))?
+                    .as_ref()
+                    .map(versioned_value),
+            ));
         }
         Ok(Output::KvVersionedValue(
             service.get_versioned(&key)?.as_ref().map(versioned_value),

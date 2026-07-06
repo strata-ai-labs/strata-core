@@ -99,6 +99,10 @@ fn public_response_family_goldens_match_public_json() {
             include_str!("../fixtures/responses/v1/kv/list_keys.json"),
         ),
         (
+            Output::KvVersionedValue(Some(VersionedValue::new(bytes("one"), 1, 10))),
+            include_str!("../fixtures/responses/v1/kv/get_found.json"),
+        ),
+        (
             Output::DeleteResult {
                 key: bytes("missing"),
                 effect: MutationEffect::not_found(),

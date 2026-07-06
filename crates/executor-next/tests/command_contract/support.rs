@@ -43,6 +43,7 @@ pub(super) fn response_fixture_texts() -> Vec<&'static str> {
         include_str!("../fixtures/responses/v1/graph/node_write_applied.json"),
         include_str!("../fixtures/responses/v1/json/get_found.json"),
         include_str!("../fixtures/responses/v1/kv/delete_missing.json"),
+        include_str!("../fixtures/responses/v1/kv/get_found.json"),
         include_str!("../fixtures/responses/v1/kv/list_keys.json"),
         include_str!("../fixtures/responses/v1/kv/write_applied.json"),
         include_str!("../fixtures/responses/v1/optional_reads/event_get_missing.json"),

@@ -418,6 +418,13 @@ fn kv_versioned_and_point_in_time_reads_preserve_commit_metadata() {
             .as_bytes(),
         b"third"
     );
+    let historical = kv
+        .get_versioned_at(&sequence.alpha, sequence.third.timestamp())
+        .expect("versioned timestamp read succeeds")
+        .expect("timestamp value exists");
+    assert_eq!(historical.value().as_bytes(), b"third");
+    assert_eq!(historical.version(), sequence.third.version());
+    assert_eq!(historical.timestamp(), sequence.third.timestamp());
     assert_eq!(
         kv.get_at(&sequence.alpha, Timestamp::MAX)
             .expect("future timestamp read succeeds")

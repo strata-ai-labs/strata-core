@@ -91,3 +91,36 @@ Source documents:
 `strata command run --file <path>` remain available for executor commands that
 do not have ergonomic CLI syntax yet. This is an escape hatch, not the target
 UX for stable public commands.
+
+## CLI Scenario Corpus
+
+The command matrix lives at [scripts/cli_next_command_matrix.sh](../../scripts/cli_next_command_matrix.sh).
+It is a broad smoke test that verifies command families, aliases, output modes,
+file-backed inputs, raw command execution, and deferred old commands.
+
+The workflow corpus lives at [scripts/cli_next_corpus.sh](../../scripts/cli_next_corpus.sh)
+with scenario files under [scripts/cli-corpus/](../../scripts/cli-corpus/).
+Each scenario owns a fresh durable database and verifies multi-command behavior
+across process boundaries. The current corpus covers:
+
+1. branch, space, time-travel, and durable branch-delete recovery;
+2. KV and JSON pagination, optional reads, indexes, history, and raw batches;
+3. vector filters, diagnostics, metadata patches, delete-by-filter, branches,
+   and spaces;
+4. event sequence/time reads plus graph pagination, neighbor filters, and branch
+   divergence;
+5. raw command execution, Arrow import/export, pipe mode, and structured error
+   rendering;
+6. init, pipe `use` scope, cache-mode process locality, and raw/human rendering.
+
+Run the full corpus with:
+
+```bash
+scripts/cli_next_corpus.sh
+```
+
+Run a focused scenario by name:
+
+```bash
+scripts/cli_next_corpus.sh 03_vector_index_filters_branches
+```

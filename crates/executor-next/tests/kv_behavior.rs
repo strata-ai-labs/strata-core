@@ -3,7 +3,7 @@
 use strata_engine_next::{CacheOpenOptions, Database};
 use strata_executor_next::{
     BatchKvEntry, Bytes, Command, Executor, ExecutorErrorClass, MutationEffectKind, Output,
-    DEFAULT_BRANCH,
+    VersionedValue, DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -560,10 +560,11 @@ fn run_kv_command_suite(executor: &mut Executor) {
     write(executor, None, None, "delete-me", "gone");
 
     assert_eq!(execute_get(executor, "alpha"), Some(bytes("one-updated")));
-    assert_eq!(
-        execute_get_as_of(executor, "alpha", first.timestamp),
-        Some(bytes("one"))
-    );
+    let first_as_of =
+        execute_get_as_of(executor, "alpha", first.timestamp).expect("historical value exists");
+    assert_eq!(first_as_of.value(), &bytes("one"));
+    assert_eq!(first_as_of.version(), first.version);
+    assert_eq!(first_as_of.timestamp(), first.timestamp);
     assert!(execute_exists(executor, "alpha"));
     assert!(!execute_exists(executor, "missing"));
 
@@ -712,7 +713,7 @@ fn execute_get_in(
     }
 }
 
-fn execute_get_as_of(executor: &mut Executor, key: &str, as_of: u64) -> Option<Bytes> {
+fn execute_get_as_of(executor: &mut Executor, key: &str, as_of: u64) -> Option<VersionedValue> {
     match executor
         .execute(Command::KvGet {
             branch: None,
@@ -722,7 +723,7 @@ fn execute_get_as_of(executor: &mut Executor, key: &str, as_of: u64) -> Option<B
         })
         .expect("historical get succeeds")
     {
-        Output::KvValue(value) => value,
+        Output::KvVersionedValue(value) => value,
         output => panic!("unexpected historical get output: {output:?}"),
     }
 }
