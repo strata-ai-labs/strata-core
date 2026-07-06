@@ -545,9 +545,9 @@ fn json_mapping_commands() -> Vec<Command> {
 }
 
 fn assert_json_mapping_outputs(outputs: &[Output]) {
-    assert!(matches!(outputs[0], Output::WriteResult { .. }));
+    assert!(matches!(outputs[0], Output::JsonWriteResult { .. }));
     assert!(matches!(outputs[1], Output::JsonVersionedValue(_)));
-    assert!(matches!(outputs[2], Output::DeleteResult { .. }));
+    assert!(matches!(outputs[2], Output::JsonDeleteResult { .. }));
     assert!(matches!(outputs[3], Output::JsonVersionHistory(_)));
     assert!(matches!(outputs[4], Output::Bool(_)));
     assert!(matches!(outputs[5], Output::JsonBatchResults(_)));
@@ -1439,7 +1439,7 @@ fn write_json(
         })
         .expect("JSON set succeeds")
     {
-        Output::WriteResult { effect, commit, .. } => {
+        Output::JsonWriteResult { effect, commit, .. } => {
             assert!(effect.applied());
             WriteFacts {
                 version: commit.version(),
@@ -1572,7 +1572,7 @@ fn execute_json_delete(executor: &mut Executor, key: &str, path: &str) -> bool {
         })
         .expect("JSON delete succeeds")
     {
-        Output::DeleteResult { effect, .. } => effect.applied(),
+        Output::JsonDeleteResult { effect, .. } => effect.applied(),
         output => panic!("unexpected JSON delete output: {output:?}"),
     }
 }
