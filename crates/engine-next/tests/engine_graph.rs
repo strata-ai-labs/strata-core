@@ -50,6 +50,11 @@ fn graph_rejects_cross_branch_relationship_bindings_in_cache_and_durable_modes()
 }
 
 #[test]
+fn graph_commit_counts_exclude_derived_rows_in_cache_and_durable_modes() {
+    run_database_modes(exercise_graph_commit_counts_exclude_derived_rows);
+}
+
+#[test]
 fn graph_batch_ordering_and_failure_regressions_run_in_cache_and_durable_modes() {
     run_database_modes(exercise_graph_batch_ordering_and_failure_regressions);
 }
@@ -1798,6 +1803,59 @@ fn exercise_graph_cross_branch_binding_rejection(mut database: Database) {
             ),
         )
         .expect("current-branch (None) binding accepted");
+}
+
+/// U28: user-facing commit counts must reflect authored rows only. One edge
+/// upsert emits a forward + reverse row, and a node re-bind emits a binding
+/// index row; those derived rows must not inflate put/delete counts.
+fn exercise_graph_commit_counts_exclude_derived_rows(mut database: Database) {
+    let mut graph = graph_service(&mut database, "default", "default");
+    graph
+        .create_graph(graph_name("deps"))
+        .expect("graph create succeeds");
+    for id in ["a", "b"] {
+        graph
+            .upsert_node(&graph_name("deps"), node(id), node_data(json!({}), None))
+            .expect("node upsert succeeds");
+    }
+
+    // One edge writes a forward row + a derived reverse row; count is 1.
+    let edge = graph
+        .upsert_edge(
+            &graph_name("deps"),
+            node("a"),
+            edge_type("depends_on"),
+            node("b"),
+            edge_data(1.0, json!({})),
+        )
+        .expect("edge upsert succeeds");
+    assert_eq!(edge.commit().put_count(), 1);
+
+    // A node with a binding writes a node row + a derived binding-index row;
+    // count is 1.
+    let bound = graph
+        .upsert_node(
+            &graph_name("deps"),
+            node("c"),
+            node_data(
+                json!({}),
+                Some(binding(GraphBindingPrimitive::Json, "docs", "doc-1")),
+            ),
+        )
+        .expect("bound node upsert succeeds");
+    assert_eq!(bound.commit().put_count(), 1);
+
+    // Removing the edge deletes forward + derived reverse rows; count is 1.
+    let removed = graph
+        .delete_edge(
+            &graph_name("deps"),
+            &node("a"),
+            &edge_type("depends_on"),
+            &node("b"),
+        )
+        .expect("edge delete succeeds");
+    let commit = removed.commit().expect("delete commits");
+    assert_eq!(commit.delete_count(), 1);
 }
 
 fn run_database_modes(exercise: fn(Database)) {

@@ -1481,13 +1481,21 @@ impl<'a> GraphService<'a> {
                 "graph batch must contain at least one mutation",
             ));
         }
+        // Count only authored rows (graph metadata, nodes, forward edges) for
+        // the user-facing commit counts. Derived reverse-edge and binding-index
+        // rows are engine-maintained and must not inflate the caller's view of
+        // rows written/deleted (one edge upsert would otherwise report 2).
         let user_put_count = mutations
             .iter()
-            .filter(|mutation| mutation.is_put())
+            .filter(|mutation| {
+                mutation.is_put() && is_authored_graph_row(mutation.address().row_class())
+            })
             .count();
         let user_delete_count = mutations
             .iter()
-            .filter(|mutation| mutation.is_delete())
+            .filter(|mutation| {
+                mutation.is_delete() && is_authored_graph_row(mutation.address().row_class())
+            })
             .count();
         let mut space_mutations =
             ControlPlane::space_registration_mutations(self.persistence, record, &self.space)?;
@@ -1505,6 +1513,16 @@ impl<'a> GraphService<'a> {
             .commit(&plan)?
             .with_counts(user_put_count, user_delete_count))
     }
+}
+
+/// Returns true for graph row classes that represent authored data (metadata,
+/// nodes, forward edges) as opposed to engine-derived rows (reverse edges,
+/// binding index) that must not be counted in user-facing commit outcomes.
+const fn is_authored_graph_row(row_class: RowClass) -> bool {
+    matches!(
+        row_class,
+        RowClass::GraphMetadata | RowClass::GraphNode | RowClass::GraphEdge
+    )
 }
 
 #[derive(Default)]
