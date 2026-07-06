@@ -749,30 +749,49 @@ impl LifecycleBranchCatalog {
             });
         }
 
-        let rows = source
-            .fork_snapshot_rows(fork_version, destination_branch_id)
-            .map_err(branch_error)?;
-        let mut states = vec![
-            BranchLocalState::new(destination_branch_id, self.branch_config)
-                .map_err(branch_error)?,
-        ];
-        if !rows.is_empty() {
-            let request = BranchSnapshotInstallRequest::from_rows(
-                format!(
-                    "branch-lifecycle-fork-at-{}-{}-{}",
-                    destination_branch_id,
-                    destination_generation.get(),
-                    fork_version.as_u64()
-                ),
-                rows,
+        // Historical-fork COW (Option A): when every `<= V` row is already sealed in an owned table
+        // (nothing at/below V left in active/frozen) and the source owns no inherited layers, build a
+        // copy-on-write child that references the source's owned tables at `fork_version = V` — instead
+        // of materializing the whole `<= V` state into fresh eager L0 tables. Otherwise fall back to the
+        // eager snapshot install (unflushed `<= V` rows, or a source that is itself a fork).
+        let cow_eligible =
+            source.inherited_layers().is_empty() && !source.has_in_fork_unsealed_rows(fork_version);
+        let (child, inherited_layer_count, inherited_table_count) = if cow_eligible {
+            let (child, outcome) = source
+                .fork_into_empty_child_at_version(destination_branch_id, fork_version)
+                .map_err(branch_error)?;
+            (
+                child,
+                outcome.inherited_layer_count(),
+                outcome.inherited_table_count(),
             )
-            .map_err(branch_error)?;
-            install_snapshot_rows_into_branches(&mut states, &request).map_err(branch_error)?;
-        }
-        let child = states
-            .into_iter()
-            .next()
-            .expect("destination state is always present");
+        } else {
+            let rows = source
+                .fork_snapshot_rows(fork_version, destination_branch_id)
+                .map_err(branch_error)?;
+            let mut states = vec![
+                BranchLocalState::new(destination_branch_id, self.branch_config)
+                    .map_err(branch_error)?,
+            ];
+            if !rows.is_empty() {
+                let request = BranchSnapshotInstallRequest::from_rows(
+                    format!(
+                        "branch-lifecycle-fork-at-{}-{}-{}",
+                        destination_branch_id,
+                        destination_generation.get(),
+                        fork_version.as_u64()
+                    ),
+                    rows,
+                )
+                .map_err(branch_error)?;
+                install_snapshot_rows_into_branches(&mut states, &request).map_err(branch_error)?;
+            }
+            let child = states
+                .into_iter()
+                .next()
+                .expect("destination state is always present");
+            (child, 0, 0)
+        };
         let parent = LifecycleBranchParent::new(source_branch_id, fork_version);
         let descriptor = LifecycleBranchDescriptor::active(
             destination_branch_id,
@@ -785,8 +804,8 @@ impl LifecycleBranchCatalog {
             descriptor,
             source_branch_id,
             fork_version,
-            inherited_layer_count: 0,
-            inherited_table_count: 0,
+            inherited_layer_count,
+            inherited_table_count,
         })
     }
 

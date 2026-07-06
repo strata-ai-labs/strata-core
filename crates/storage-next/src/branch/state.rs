@@ -502,6 +502,23 @@ impl BranchLocalState {
         observed
     }
 
+    /// Historical-fork COW gate: does any not-yet-sealed row (in the active memtable or a frozen table)
+    /// carry a commit version at or below `fork_version`? When `false`, every `<= fork_version` row is
+    /// already in a sealed owned table, so a copy-on-write inherited layer over the owned tables alone
+    /// represents the as-of-`fork_version` view; when `true`, the fork must fall back to materialization
+    /// (an inherited layer cannot reference unsealed rows). The scan is bounded — active + frozen are
+    /// capped by the rotation threshold, not O(dataset).
+    pub(crate) fn has_in_fork_unsealed_rows(&self, fork_version: CommitVersion) -> bool {
+        let in_fork = |version: CommitVersion| version.as_u64() <= fork_version.as_u64();
+        self.active
+            .iter()
+            .any(|row| in_fork(row.row().commit_version()))
+            || self
+                .frozen
+                .iter()
+                .any(|table| table.iter().any(|row| in_fork(row.row().commit_version())))
+    }
+
     /// Recompute the cached table-shape aggregates from the branch's tables. Called
     /// at the `refresh_observed_row_facts` hook (every structural mutation) and by the
     /// debug oracle. Reads raw fields directly — never the cached accessors — so it is

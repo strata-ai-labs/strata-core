@@ -2593,6 +2593,130 @@ fn recovery_rebuilds_inherited_layers() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn recovery_rebuilds_cow_historical_fork() {
+    // fork-cow.2: commit two versions to the seeded branch, rotate + flush so both are sealed in an
+    // owned table, then fork a child at the OLD version (V = 1 < current = 2). With every `<= V` row
+    // durable and the source carrying no inherited layers, the fork is copy-on-write — the child
+    // references the parent's straddle owned table via one inherited layer and materializes nothing.
+    // Drop, reopen, and verify the straddle inherited layer survives recovery with no child-owned tables.
+    use crate::lifecycle::{FlushTableIdentitySeed, FlushTableObjectId};
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let parent = branch_id(0x3b);
+    let child = branch_id(0x4b);
+
+    {
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), parent, backend)
+            .expect("durable shell");
+        let request =
+            LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+        let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect("recovery outcome");
+        let mut runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+        for value in [b"v1".as_slice(), b"v2".as_slice()] {
+            runtime
+                .execute_durable_commit(
+                    durable_standard_batch(parent, b"history-key", value),
+                    CommitBranchGenerationGuard::exact(
+                        CommitBranchGeneration::new(1).expect("generation"),
+                    ),
+                )
+                .expect("commit to parent");
+        }
+        runtime
+            .rotate_active_for_maintenance()
+            .expect("rotate parent active");
+        let parent_flush = FlushFrozenRequest::new(
+            parent,
+            None,
+            FlushTableIdentitySeed::new("cow-parent-flush-seed").expect("seed"),
+            FlushTableObjectId::new("cow-parent-flush-object").expect("object id"),
+        )
+        .expect("parent flush request");
+        assert!(
+            runtime
+                .flush_frozen(&parent_flush)
+                .expect("parent flush succeeds")
+                .completed(),
+            "parent flush must publish the manifest",
+        );
+
+        // Fork at the OLD version (V = 1 < visible 2): the `<= 1` row is durable and the parent has no
+        // inherited layers, so this is a copy-on-write historical fork over a straddle owned table.
+        let fork_outcome = runtime
+            .fork_at_retained_version(
+                parent,
+                child,
+                CommitBranchGeneration::new(1).expect("generation"),
+                CommitVersion::new(1),
+                CommitVersion::ZERO,
+            )
+            .expect("fork child at history version");
+        assert!(
+            fork_outcome.inherited_layer_count() > 0,
+            "COW historical fork must create a straddle inherited layer",
+        );
+        assert!(
+            runtime
+                .branch_catalog()
+                .branch_state(child)
+                .expect("child branch state")
+                .owned_table_count()
+                == 0,
+            "the COW fork child owns no materialized tables at fork time",
+        );
+
+        // Commit + rotate + flush the child so its table manifest publishes with the straddle inherited
+        // layer (a child persists its inherited layers only when its own manifest is written).
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(child, b"child-row", b"child-value"),
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("commit to child");
+        runtime
+            .rotate_active_for_branch_for_maintenance(child)
+            .expect("rotate child active");
+        let child_flush = FlushFrozenRequest::new(
+            child,
+            None,
+            FlushTableIdentitySeed::new("cow-child-flush-seed").expect("seed"),
+            FlushTableObjectId::new("cow-child-flush-object").expect("object id"),
+        )
+        .expect("child flush request");
+        assert!(
+            runtime
+                .flush_frozen(&child_flush)
+                .expect("child flush succeeds")
+                .completed(),
+            "child flush must publish the manifest",
+        );
+    }
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), parent, backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+    let child_state = runtime
+        .branch_catalog()
+        .branch_state(child)
+        .expect("child branch state");
+    assert!(
+        child_state.inherited_layer_count() > 0,
+        "COW child must recover its straddle inherited layer",
+    );
+}
+
+#[test]
 fn recovery_preserves_branch_release_facts() {
     // Open, create a branch, delete it (pushes a release plan into the
     // in-memory buffer and publishes the pending-releases manifest),
