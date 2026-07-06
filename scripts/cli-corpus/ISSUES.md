@@ -47,6 +47,9 @@ This file tracks issues found while building and running
 12. Graph neighbor page items exposed neighbor ids only as
     `item.node.node_id`. Fixed by adding top-level neighbor identity fields to
     each hit while keeping nested node and edge details.
+13. The corpus runner originally relied on `mapfile`, which is unavailable in
+    the macOS system Bash. Fixed by collecting discovered scenario paths with
+    a portable read loop.
 
 ## Product Or Contract Findings
 
@@ -54,5 +57,4 @@ No open product or contract findings.
 
 ## Corpus Harness Fixes
 
-1. `mapfile` is unavailable in the macOS system bash, so the runner uses a
-   portable read loop.
+No open corpus harness findings.
