@@ -62,8 +62,11 @@ fn render_human(value: &Value) -> Result<(), CliError> {
                 data.get("version").and_then(Value::as_str).unwrap_or("")
             ),
             "bool" | "uint" => println!("{}", scalar_summary(data)),
+            "event_length" => print_count(data),
             "kv_versioned_value" => print_optional_data(data),
-            "json_value" | "json_versioned_value" => print_maybe_json(data)?,
+            "json_value" | "json_versioned_value" => print_maybe_json(kind, data)?,
+            "json_version_history" => print_bare_items(data),
+            "vector_matches" => print_matches_data(data),
             _ => render_human_data(data)?,
         }
         return Ok(());
@@ -115,10 +118,35 @@ fn render_human_data(data: &Value) -> Result<(), CliError> {
 }
 
 fn render_raw(value: &Value) {
-    let data = tagged_output(value).map_or(value, |(_, data)| data);
+    let (kind, data) = tagged_output(value).unwrap_or(("", value));
 
     if data.is_null() {
         return;
+    }
+
+    match kind {
+        "json_value" | "json_versioned_value" => {
+            let found = data.get("found").and_then(Value::as_bool).unwrap_or(false);
+            if let Some(leaf) = json_leaf(kind, data, found) {
+                println!("{}", raw_scalar(leaf));
+            }
+            return;
+        }
+        "json_version_history" => {
+            if let Some(items) = data.as_array() {
+                print_items(items);
+            }
+            return;
+        }
+        "vector_matches" => {
+            print_matches_data(data);
+            return;
+        }
+        "event_length" => {
+            print_count(data);
+            return;
+        }
+        _ => {}
     }
 
     if let Some(items) = data.get("items").and_then(Value::as_array) {
@@ -172,21 +200,63 @@ fn print_optional_data(data: &Value) {
     println!("{}", scalar_summary(data));
 }
 
-fn print_maybe_json(data: &Value) -> Result<(), CliError> {
+fn print_maybe_json(kind: &str, data: &Value) -> Result<(), CliError> {
     let Some(found) = data.get("found").and_then(Value::as_bool) else {
         println!("{}", serde_json::to_string_pretty(data)?);
         return Ok(());
     };
-    if !found {
-        println!("(nil)");
-        return Ok(());
+    match json_leaf(kind, data, found) {
+        // Human output shows the JSON encoding of the leaf value so `"null"`
+        // vs `null` and strings vs numbers stay unambiguous; raw output
+        // unwraps strings for scripting.
+        Some(leaf) => println!("{}", serde_json::to_string(leaf)?),
+        None => println!("(nil)"),
     }
-    if let Some(value) = data.get("value") {
-        println!("{}", scalar_summary(value));
+    Ok(())
+}
+
+/// Extracts the leaf JSON value from a maybe-json envelope. The
+/// `json_versioned_value` shape nests the document value inside commit facts
+/// (`{found, value: {value, version, timestamp, document_version}}`), so the
+/// leaf sits one level deeper than in `json_value`.
+fn json_leaf<'a>(kind: &str, data: &'a Value, found: bool) -> Option<&'a Value> {
+    if !found {
+        return None;
+    }
+    let value = data.get("value")?;
+    if kind == "json_versioned_value" {
+        value.get("value")
+    } else {
+        Some(value)
+    }
+}
+
+/// `json_version_history` serializes as a bare item array (or null when the
+/// document never existed), unlike the `{count, items}` KV history envelope.
+fn print_bare_items(data: &Value) {
+    if let Value::Array(items) = data {
+        print_items(items);
     } else {
         println!("(nil)");
     }
-    Ok(())
+}
+
+/// `vector_matches` serializes its match list as the bare `data` array, so the
+/// tabular key/score renderer must be dispatched by tag.
+fn print_matches_data(data: &Value) {
+    match data.as_array() {
+        Some(items) => print_vector_matches(items),
+        None => println!("(empty)"),
+    }
+}
+
+/// `event_length` wraps its count in `{count}`; humans and scripts get the
+/// bare number, matching how `kv count` (a plain `uint`) renders.
+fn print_count(data: &Value) {
+    println!(
+        "{}",
+        data.get("count").map_or_else(String::new, scalar_summary)
+    );
 }
 
 fn print_items(items: &[Value]) {
@@ -427,5 +497,27 @@ mod tests {
         let mut value = serde_json::to_value(&output).expect("output serializes");
         humanize_kv_bytes(&output, &mut value);
         assert_eq!(value["data"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn json_leaf_unwraps_the_versioned_envelope() {
+        let data = json!({
+            "found": true,
+            "value": {"value": {"name": "Ada"}, "version": 3, "timestamp": 30, "document_version": 1}
+        });
+        assert_eq!(
+            super::json_leaf("json_versioned_value", &data, true),
+            Some(&json!({"name": "Ada"}))
+        );
+    }
+
+    #[test]
+    fn json_leaf_reads_plain_values_directly_and_respects_found() {
+        let data = json!({"found": true, "value": null});
+        assert_eq!(
+            super::json_leaf("json_value", &data, true),
+            Some(&serde_json::Value::Null)
+        );
+        assert_eq!(super::json_leaf("json_value", &data, false), None);
     }
 }
