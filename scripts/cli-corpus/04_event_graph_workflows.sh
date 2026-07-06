@@ -13,7 +13,9 @@ cli_json event append user.updated '{"user":"ada","plan":"pro"}' >/dev/null
 cli_json event append system.audit '{"action":"upgrade"}' >/dev/null
 
 out="$(cli_json event list --limit 2)"
-assert_json "$out" 'data["type"] == "event_records" and [item["event"]["sequence"] for item in data["data"]["items"]] == [0, 1]' "event list first page"
+assert_json "$out" 'data["type"] == "event_records" and data["data"]["has_more"] is True and data["data"]["cursor"] == 1 and [item["event"]["sequence"] for item in data["data"]["items"]] == [0, 1]' "event list first page"
+out="$(cli_json event list --limit 2 --cursor 1)"
+assert_json "$out" 'data["type"] == "event_records" and data["data"]["has_more"] is False and data["data"]["cursor"] is None and [item["event"]["sequence"] for item in data["data"]["items"]] == [2]' "event list terminal page"
 
 out="$(cli_json event by-type user.updated --limit 5)"
 assert_json "$out" 'data["type"] == "event_records" and len(data["data"]["items"]) == 1 and data["data"]["items"][0]["event"]["event_type"] == "user.updated"' "event by type"

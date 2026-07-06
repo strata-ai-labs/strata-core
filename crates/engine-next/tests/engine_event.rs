@@ -472,6 +472,49 @@ fn assert_event_timestamp_and_list_edges(events: &mut EventService<'_>) {
         .list(None, Some(0), None)
         .expect("zero limit list succeeds")
         .is_empty());
+    let first_page = events
+        .list_page(None, None, Some(2), None)
+        .expect("first event list page succeeds");
+    assert_eq!(
+        first_page
+            .events()
+            .iter()
+            .map(|event| event.sequence().as_u64())
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+    assert!(first_page.has_more());
+    assert_eq!(first_page.cursor().map(EventSequence::as_u64), Some(1));
+
+    let second_page = events
+        .list_page(None, first_page.cursor(), Some(2), None)
+        .expect("second event list page succeeds");
+    assert_eq!(
+        second_page
+            .events()
+            .iter()
+            .map(|event| event.sequence().as_u64())
+            .collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+    assert!(!second_page.has_more());
+    assert_eq!(second_page.cursor(), None);
+
+    assert_eq!(
+        events
+            .list_page(
+                Some(&event_type("user.created")),
+                Some(EventSequence::new(0)),
+                Some(10),
+                None
+            )
+            .expect("typed event list page succeeds")
+            .events()
+            .iter()
+            .map(|event| event.sequence().as_u64())
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
 }
 
 fn exercise_event_contract(database: &mut Database) {

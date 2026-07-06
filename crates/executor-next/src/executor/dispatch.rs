@@ -480,12 +480,14 @@ impl Executor {
                 space,
                 event_type,
                 limit,
+                after_sequence,
                 as_of,
             } => self.execute_event_list(
                 branch.as_deref(),
                 space.as_deref(),
                 event_type,
                 limit,
+                after_sequence,
                 as_of,
             ),
             Command::EventVerifyChain { branch, space } => {

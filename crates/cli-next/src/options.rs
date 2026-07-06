@@ -707,6 +707,9 @@ pub(crate) enum EventCommand {
         /// Optional item limit.
         #[arg(long)]
         limit: Option<u64>,
+        /// Optional exclusive sequence cursor.
+        #[arg(long, alias = "cursor")]
+        after_sequence: Option<u64>,
         /// Optional read timestamp in microseconds.
         #[arg(long)]
         as_of: Option<u64>,

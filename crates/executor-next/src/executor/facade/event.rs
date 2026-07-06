@@ -131,6 +131,7 @@ impl Executor {
             space: None,
             event_type,
             limit,
+            after_sequence: None,
             as_of: None,
         })
     }

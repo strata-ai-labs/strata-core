@@ -734,11 +734,24 @@ fn assert_event_lists(executor: &mut Executor) {
         event_sequences(&event_list(executor, None, None, None)),
         vec![0, 1, 2, 3]
     );
+    let (events, has_more, cursor) = event_list_page(executor, None, Some(2), None, None);
+    assert_eq!(event_sequences(&events), vec![0, 1]);
+    assert!(has_more);
+    assert_eq!(cursor, Some(1));
+    let (events, has_more, cursor) = event_list_page(executor, None, Some(2), cursor, None);
+    assert_eq!(event_sequences(&events), vec![2, 3]);
+    assert!(!has_more);
+    assert_eq!(cursor, None);
     assert!(event_list(executor, None, Some(0), None).is_empty());
     assert_eq!(
         event_sequences(&event_list(executor, Some("user.created"), Some(1), None)),
         vec![0]
     );
+    let (events, has_more, cursor) =
+        event_list_page(executor, Some("user.created"), Some(10), Some(0), None);
+    assert_eq!(event_sequences(&events), vec![2]);
+    assert!(!has_more);
+    assert_eq!(cursor, None);
 }
 
 fn assert_event_history_and_chain(executor: &mut Executor) {
@@ -851,6 +864,7 @@ fn event_mapping_commands() -> Vec<Command> {
             space: None,
             event_type: Some("map.created".to_owned()),
             limit: Some(1),
+            after_sequence: None,
             as_of: None,
         },
         Command::EventVerifyChain {
@@ -1197,17 +1211,31 @@ fn event_list(
     limit: Option<u64>,
     as_of: Option<u64>,
 ) -> Vec<EventVersionedData> {
+    event_list_page(executor, event_type, limit, None, as_of).0
+}
+
+fn event_list_page(
+    executor: &mut Executor,
+    event_type: Option<&str>,
+    limit: Option<u64>,
+    after_sequence: Option<u64>,
+    as_of: Option<u64>,
+) -> (Vec<EventVersionedData>, bool, Option<u64>) {
     match executor
         .execute(Command::EventList {
             branch: None,
             space: None,
             event_type: event_type.map(str::to_owned),
             limit,
+            after_sequence,
             as_of,
         })
         .expect("list succeeds")
     {
-        Output::EventRecords { items: records, .. } => records,
+        Output::EventRecords {
+            items: records,
+            page,
+        } => (records, page.has_more(), page.cursor().copied()),
         output => panic!("unexpected list output: {output:?}"),
     }
 }

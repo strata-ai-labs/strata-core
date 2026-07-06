@@ -608,12 +608,14 @@ fn event_command(command: EventCommand, scope: &Scope) -> Result<Command, CliErr
         EventCommand::List {
             event_type,
             limit,
+            after_sequence,
             as_of,
         } => Command::EventList {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             event_type,
             limit,
+            after_sequence,
             as_of,
         },
         EventCommand::Types { as_of } => Command::EventListTypes {

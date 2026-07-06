@@ -17,6 +17,10 @@ This file tracks issues found while building and running
    Fixed as an explicit contract: stored JSON `null` is a live document value,
    so list/count/timestamp reads include it while missing documents remain
    distinct.
+4. `event list --limit 2` used to return a truncated result with
+   `has_more == false` and `cursor == null`. Fixed by routing event list
+   through sequence-cursor pagination and accepting `--cursor`/`--after-sequence`
+   for continuation.
 
 ## Product Or Contract Findings
 
@@ -24,19 +28,16 @@ This file tracks issues found while building and running
 2. KV batch-get misses are successful items with `status == "ok"` and
    `result.found == false`, not item status `miss`.
 3. Vector history responses are arrays of version entries, not `{ count, items }`.
-4. `event list --limit 2` can return a truncated result with
-   `has_more == false` and `cursor == null`; event list does not currently
-   expose a usable continuation cursor.
-5. Event reverse ranges reverse a bounded forward interval, for example
+4. Event reverse ranges reverse a bounded forward interval, for example
    `event range 0 --end-seq 3 --direction reverse`; `event range 2 --direction
    reverse` does not mean "walk backward from sequence 2".
-6. Event chain verification reports `is_valid`, not `valid`.
-7. Graph neighbor page items wrap neighbor data under `node` and edge data
+5. Event chain verification reports `is_valid`, not `valid`.
+6. Graph neighbor page items wrap neighbor data under `node` and edge data
     under `edge`; neighbor ids are `item.node.node_id`.
-8. Arrow graph export treats the requested output path as a stem and writes
+7. Arrow graph export treats the requested output path as a stem and writes
     separate node and edge files, returning their paths in the response. The
     exact requested path may not exist.
-9. CLI JSON error envelopes expose registry-style `retry_policy` rather than a
+8. CLI JSON error envelopes expose registry-style `retry_policy` rather than a
     boolean `retryable`.
 
 ## Corpus Harness Fixes

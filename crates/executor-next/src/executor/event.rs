@@ -196,16 +196,18 @@ impl Executor {
         space: Option<&str>,
         event_type: Option<String>,
         limit: Option<u64>,
+        after_sequence: Option<u64>,
         as_of: Option<u64>,
     ) -> ExecutorResult<Output> {
         let event_type = optional_engine_event_type(event_type)?;
         let limit = optional_limit(limit)?;
+        let after_sequence = after_sequence.map(event_sequence);
         let as_of = as_of.map(Timestamp::from_micros);
         let mut service = self.event_service(branch, space)?;
-        let records = service.list(event_type.as_ref(), limit, as_of)?;
+        let page = service.list_page(event_type.as_ref(), after_sequence, limit, as_of)?;
         Ok(Output::EventRecords {
-            items: event_records(&records),
-            page: PageInfo::terminal(),
+            items: event_records(page.events()),
+            page: PageInfo::new(page.has_more(), page.cursor().map(|cursor| cursor.as_u64())),
         })
     }
 

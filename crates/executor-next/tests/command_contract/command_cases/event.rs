@@ -65,6 +65,7 @@ pub(super) fn event_commands() -> Vec<Command> {
             space: None,
             event_type: Some("user.created".to_owned()),
             limit: Some(5),
+            after_sequence: Some(1),
             as_of: Some(99),
         },
         Command::EventVerifyChain {
@@ -129,6 +130,7 @@ pub(super) fn event_round_trip_edge_commands() -> Vec<Command> {
             space: Some("space-a".to_owned()),
             event_type: None,
             limit: Some(0),
+            after_sequence: None,
             as_of: None,
         },
     ]

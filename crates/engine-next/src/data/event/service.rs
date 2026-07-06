@@ -311,19 +311,31 @@ impl<'a> EventService<'a> {
         limit: Option<usize>,
         as_of: Option<Timestamp>,
     ) -> EngineResult<Vec<EventVersionedRecord>> {
+        Ok(self
+            .list_page(event_type, None, limit, as_of)?
+            .events()
+            .to_vec())
+    }
+
+    /// Lists events with sequence-cursor pagination.
+    pub fn list_page(
+        &mut self,
+        event_type: Option<&EventType>,
+        after_sequence: Option<EventSequence>,
+        limit: Option<usize>,
+        as_of: Option<Timestamp>,
+    ) -> EngineResult<EventRangePage> {
         if limit == Some(0) {
-            return Ok(Vec::new());
+            return Ok(EventRangePage::new(Vec::new(), false, None));
         }
         let record = self.branch_record()?;
         let mut events = self.event_rows(&record, ReadSelector::Latest, None)?;
         events.retain(|event| {
             event_type.is_none_or(|expected| event.event_type() == expected)
+                && after_sequence.is_none_or(|after| event.sequence() > after)
                 && as_of.is_none_or(|timestamp| event.timestamp() <= timestamp)
         });
-        if let Some(limit) = limit {
-            events.truncate(limit);
-        }
-        Ok(events)
+        Ok(page_from_events(events, limit))
     }
 
     /// Verifies visible event density and hash linkage.

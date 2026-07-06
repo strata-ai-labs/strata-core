@@ -897,6 +897,9 @@ pub enum Command {
         /// Optional item limit.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
+        /// Optional exclusive sequence cursor.
+        #[serde(default, alias = "cursor", skip_serializing_if = "Option::is_none")]
+        after_sequence: Option<u64>,
         /// Optional timestamp in microseconds.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
