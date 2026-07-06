@@ -30,9 +30,7 @@
           "delete_count": 1
         },
         "result": {
-          "key": [
-            97
-          ],
+          "key": "YQ==",
           "effect": {
             "applied": true,
             "kind": "deleted",
@@ -62,15 +60,7 @@
         },
         "commit": null,
         "result": {
-          "key": [
-            109,
-            105,
-            115,
-            115,
-            105,
-            110,
-            103
-          ],
+          "key": "bWlzc2luZw==",
           "effect": {
             "applied": false,
             "kind": "not_found",

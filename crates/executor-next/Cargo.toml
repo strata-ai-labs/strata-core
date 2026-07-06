@@ -11,7 +11,7 @@ description = "Serializable command boundary for the rebuilt engine"
 
 [features]
 default = ["localfs", "arrow"]
-arrow = ["dep:arrow", "dep:base64", "dep:parquet"]
+arrow = ["dep:arrow", "dep:parquet"]
 idl-tooling = ["dep:serde_yaml", "dep:sha2"]
 inference = ["dep:strata-inference-next"]
 inference-anthropic = ["inference"]
@@ -23,10 +23,9 @@ testkit = ["strata-engine-next/testkit"]
 
 [dependencies]
 arrow = { workspace = true, optional = true }
-base64 = { workspace = true, optional = true }
+base64 = { workspace = true }
 parquet = { workspace = true, optional = true }
 serde = { workspace = true }
-serde_bytes = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }

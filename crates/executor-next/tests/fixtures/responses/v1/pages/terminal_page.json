@@ -1,8 +1,8 @@
 {
+  "type": "event_range_result",
   "data": {
-    "cursor": null,
+    "items": [],
     "has_more": false,
-    "items": []
-  },
-  "type": "event_range_result"
+    "cursor": null
+  }
 }

@@ -239,17 +239,20 @@ fn mutation_summary(data: &Value, effect: &Value) -> String {
     }
 }
 
+// `Bytes` fields (KV keys/values, cursors) arrive as canonical base64 strings
+// (DSGN-5/DTO-2), so they render verbatim like any other string. We deliberately
+// do not try to decode base64 back to raw text here: the human/raw renderers see
+// untyped JSON, so a schema-blind decode cannot tell a base64 `Bytes` field from
+// a genuine string and would corrupt legitimate data — the exact defect that
+// retired the previous integer-array heuristic. Arrays are therefore always
+// genuine JSON arrays and render as JSON.
 fn scalar_summary(value: &Value) -> String {
     match value {
         Value::Null => "(nil)".to_owned(),
         Value::Bool(value) => value.to_string(),
         Value::Number(value) => value.to_string(),
         Value::String(value) => value.clone(),
-        Value::Array(values) => bytes_from_json_array(values)
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .unwrap_or_else(|| {
-                serde_json::to_string(value).unwrap_or_else(|_| "<array>".to_owned())
-            }),
+        Value::Array(_) => serde_json::to_string(value).unwrap_or_else(|_| "<array>".to_owned()),
         Value::Object(_) => serde_json::to_string(value).unwrap_or_else(|_| "<object>".to_owned()),
     }
 }
@@ -257,20 +260,10 @@ fn scalar_summary(value: &Value) -> String {
 fn raw_scalar(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
-        Value::Array(values) => bytes_from_json_array(values)
-            .and_then(|bytes| String::from_utf8(bytes).ok())
-            .unwrap_or_else(|| serde_json::to_string(value).unwrap_or_default()),
+        Value::Array(_) | Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
         Value::Null => String::new(),
         Value::Bool(_) | Value::Number(_) => value.to_string(),
-        Value::Object(_) => serde_json::to_string(value).unwrap_or_default(),
     }
-}
-
-fn bytes_from_json_array(values: &[Value]) -> Option<Vec<u8>> {
-    values
-        .iter()
-        .map(|value| value.as_u64().and_then(|byte| u8::try_from(byte).ok()))
-        .collect()
 }
 
 fn human_error_line(value: &Value) -> String {

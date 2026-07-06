@@ -1,76 +1,76 @@
 {
+  "type": "json_batch_results",
   "data": {
+    "mode": "itemwise",
+    "status": "partial",
     "applied": true,
     "commit": {
-      "delete_count": 0,
+      "version": 7,
+      "timestamp": 70,
       "durable": true,
       "put_count": 1,
-      "timestamp": 70,
-      "version": 7
+      "delete_count": 0
     },
     "items": [
       {
+        "index": 0,
+        "status": "ok",
         "applied": true,
-        "commit": {
-          "delete_count": 0,
-          "durable": true,
-          "put_count": 1,
-          "timestamp": 70,
-          "version": 7
-        },
         "effect": {
-          "affected_count": 1,
           "applied": true,
           "kind": "created",
-          "matched": false
+          "matched": false,
+          "affected_count": 1
         },
-        "error": null,
-        "index": 0,
+        "commit": {
+          "version": 7,
+          "timestamp": 70,
+          "durable": true,
+          "put_count": 1,
+          "delete_count": 0
+        },
         "result": {
-          "commit": {
-            "delete_count": 0,
-            "durable": true,
-            "put_count": 1,
-            "timestamp": 70,
-            "version": 7
-          },
-          "document_version": 1,
           "effect": {
-            "affected_count": 1,
             "applied": true,
             "kind": "created",
-            "matched": false
+            "matched": false,
+            "affected_count": 1
           },
+          "commit": {
+            "version": 7,
+            "timestamp": 70,
+            "durable": true,
+            "put_count": 1,
+            "delete_count": 0
+          },
+          "document_version": 1,
           "error": null
         },
-        "status": "ok"
+        "error": null
       },
       {
+        "index": 1,
+        "status": "ok",
         "applied": false,
-        "commit": null,
         "effect": {
-          "affected_count": 0,
           "applied": false,
           "kind": "not_found",
-          "matched": false
+          "matched": false,
+          "affected_count": 0
         },
-        "error": null,
-        "index": 1,
+        "commit": null,
         "result": {
-          "document_version": null,
           "effect": {
-            "affected_count": 0,
             "applied": false,
             "kind": "not_found",
-            "matched": false
+            "matched": false,
+            "affected_count": 0
           },
+          "document_version": null,
           "error": null
         },
-        "status": "ok"
+        "error": null
       }
-    ],
-    "mode": "itemwise",
-    "status": "partial"
-  },
-  "type": "json_batch_results"
+    ]
+  }
 }

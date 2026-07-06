@@ -2,13 +2,9 @@
   "type": "keys_page",
   "data": {
     "items": [
-      [
-        97
-      ]
+      "YQ=="
     ],
     "has_more": true,
-    "cursor": [
-      97
-    ]
+    "cursor": "YQ=="
   }
 }

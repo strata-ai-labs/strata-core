@@ -17,7 +17,7 @@ fn kv_history_output_json_uses_counted_items_shape() {
             .len(),
         2
     );
-    assert_eq!(encoded["data"]["items"][0]["value"], json!([110, 101, 119]));
+    assert_eq!(encoded["data"]["items"][0]["value"], json!("bmV3"));
     assert_eq!(
         serde_json::from_value::<Output>(encoded).expect("output deserializes"),
         output

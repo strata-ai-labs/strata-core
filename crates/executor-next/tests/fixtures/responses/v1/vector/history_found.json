@@ -1,18 +1,27 @@
 {
   "type": "vector_version_history",
-  "data": [
-    {
-      "key": "doc-a",
-      "data": {
-        "embedding": [
-          1.0,
-          0.0
-        ]
+  "data": {
+    "count": 2,
+    "items": [
+      {
+        "key": "doc-a",
+        "data": {
+          "embedding": [
+            1.0,
+            0.0
+          ]
+        },
+        "version": 1,
+        "timestamp": 10,
+        "vector_revision": 1,
+        "tombstone": false
       },
-      "version": 1,
-      "timestamp": 10,
-      "vector_revision": 1,
-      "tombstone": false
-    }
-  ]
+      {
+        "key": "doc-a",
+        "version": 2,
+        "timestamp": 20,
+        "tombstone": true
+      }
+    ]
+  }
 }

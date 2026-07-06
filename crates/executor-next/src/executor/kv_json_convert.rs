@@ -191,7 +191,11 @@ pub(super) fn json_write_output(
     effect: MutationEffect,
     outcome: CommitOutcome,
 ) -> Output {
-    write_output(Bytes::from(key), effect, outcome)
+    Output::JsonWriteResult {
+        key: key.to_owned(),
+        effect,
+        commit: commit_receipt(outcome),
+    }
 }
 
 pub(super) fn json_delete_output(
@@ -199,7 +203,11 @@ pub(super) fn json_delete_output(
     deleted: bool,
     outcome: Option<CommitOutcome>,
 ) -> Output {
-    delete_output(Bytes::from(key), deleted, outcome)
+    Output::JsonDeleteResult {
+        key: key.to_owned(),
+        effect: delete_effect(deleted),
+        commit: outcome.map(commit_receipt),
+    }
 }
 
 pub(super) fn json_value_output(value: EngineJsonValue) -> serde_json::Value {

@@ -2,8 +2,6 @@
   "type": "kv_get",
   "branch": "feature",
   "space": "space-a",
-  "key": [
-    97
-  ],
+  "key": "YQ==",
   "as_of": 42
 }

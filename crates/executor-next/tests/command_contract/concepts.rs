@@ -457,7 +457,7 @@ fn write_outputs_use_commit_receipt_and_mutation_effect() {
         json!({
             "type": "write_result",
             "data": {
-                "key": b"user",
+                "key": "dXNlcg==",
                 "effect": {
                     "applied": true,
                     "kind": "created",
@@ -487,7 +487,7 @@ fn write_outputs_use_commit_receipt_and_mutation_effect() {
         json!({
             "type": "delete_result",
             "data": {
-                "key": b"missing",
+                "key": "bWlzc2luZw==",
                 "effect": {
                     "applied": false,
                     "kind": "not_found",

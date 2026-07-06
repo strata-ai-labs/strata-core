@@ -1,7 +1,5 @@
 {
   "type": "kv_scan",
-  "start": [
-    97
-  ],
+  "start": "YQ==",
   "limit": 10
 }

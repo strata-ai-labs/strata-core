@@ -85,6 +85,16 @@ pub(super) fn json_outputs() -> Vec<Output> {
         )])),
         Output::JsonVersionHistory(Some(vec![JsonHistoryItem::new(None, 2, 20, None, true)])),
         Output::JsonVersionHistory(None),
+        Output::JsonWriteResult {
+            key: "doc-a".to_owned(),
+            effect: MutationEffect::created(),
+            commit: commit_receipt(1, 10, 1, 0),
+        },
+        Output::JsonDeleteResult {
+            key: "doc-a".to_owned(),
+            effect: MutationEffect::deleted(),
+            commit: Some(commit_receipt(2, 20, 0, 1)),
+        },
         Output::JsonListResult {
             items: vec!["doc-a".to_owned()],
             page: PageInfo::new(true, Some("doc-a".to_owned())),

@@ -1,9 +1,7 @@
 {
   "type": "write_result",
   "data": {
-    "key": [
-      97
-    ],
+    "key": "YQ==",
     "effect": {
       "applied": true,
       "kind": "created",

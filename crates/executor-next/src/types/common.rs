@@ -1,3 +1,9 @@
+use std::fmt;
+
+use base64::Engine as _;
+use serde::de::{Error, SeqAccess, Visitor};
+use serde::Serializer;
+
 use super::{Deserialize, Deserializer, ErrorStatus, Serialize};
 
 /// Default product branch used when a command omits its branch.
@@ -6,9 +12,57 @@ pub const DEFAULT_BRANCH: &str = "default";
 /// Default product space used when a command omits its space.
 pub const DEFAULT_SPACE: &str = "default";
 
+const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+
 /// Byte-preserving command payload.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
-pub struct Bytes(#[serde(with = "serde_bytes")] Vec<u8>);
+///
+/// On the JSON wire it is a standard base64 string, so every consumer sees a
+/// single unambiguous, compact, human-legible encoding rather than an integer
+/// array (DSGN-5/DTO-2). Deserialization also accepts a raw byte array for
+/// forward-compatibility with legacy payloads.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub struct Bytes(Vec<u8>);
+
+impl Serialize for Bytes {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&BASE64.encode(&self.0))
+    }
+}
+
+impl<'de> Deserialize<'de> for Bytes {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct BytesVisitor;
+
+        impl<'de> Visitor<'de> for BytesVisitor {
+            type Value = Bytes;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a base64 string or an array of byte values")
+            }
+
+            fn visit_str<E: Error>(self, value: &str) -> Result<Bytes, E> {
+                BASE64
+                    .decode(value)
+                    .map(Bytes)
+                    .map_err(|error| E::custom(format!("invalid base64 bytes: {error}")))
+            }
+
+            fn visit_bytes<E: Error>(self, value: &[u8]) -> Result<Bytes, E> {
+                Ok(Bytes(value.to_vec()))
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Bytes, A::Error> {
+                let mut bytes = Vec::with_capacity(seq.size_hint().unwrap_or_default());
+                while let Some(byte) = seq.next_element::<u8>()? {
+                    bytes.push(byte);
+                }
+                Ok(Bytes(bytes))
+            }
+        }
+
+        deserializer.deserialize_any(BytesVisitor)
+    }
+}
 
 impl Bytes {
     /// Creates a byte payload.

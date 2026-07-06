@@ -1,11 +1,7 @@
 {
   "type": "kv_list",
-  "prefix": [
-    97
-  ],
-  "cursor": [
-    97
-  ],
+  "prefix": "YQ==",
+  "cursor": "YQ==",
   "limit": 2,
   "as_of": 99
 }

@@ -27,9 +27,15 @@ fn json_write_outputs_report_commit_receipts_and_effects() {
             value: json!({"name": "Ada"}),
         })
         .expect("create succeeds");
-    let Output::WriteResult { effect, commit, .. } = created else {
+    let Output::JsonWriteResult {
+        key,
+        effect,
+        commit,
+    } = created
+    else {
         panic!("unexpected create output: {created:?}");
     };
+    assert_eq!(key, "effect-doc");
     assert_eq!(effect.kind(), MutationEffectKind::Created);
     assert!(effect.applied());
     assert!(!effect.matched());
@@ -45,9 +51,15 @@ fn json_write_outputs_report_commit_receipts_and_effects() {
             value: json!("Grace"),
         })
         .expect("update succeeds");
-    let Output::WriteResult { effect, commit, .. } = updated else {
+    let Output::JsonWriteResult {
+        key,
+        effect,
+        commit,
+    } = updated
+    else {
         panic!("unexpected update output: {updated:?}");
     };
+    assert_eq!(key, "effect-doc");
     assert_eq!(effect.kind(), MutationEffectKind::Updated);
     assert!(effect.applied());
     assert!(effect.matched());
@@ -62,9 +74,15 @@ fn json_write_outputs_report_commit_receipts_and_effects() {
             path: "$".to_owned(),
         })
         .expect("delete succeeds");
-    let Output::DeleteResult { effect, commit, .. } = deleted else {
+    let Output::JsonDeleteResult {
+        key,
+        effect,
+        commit,
+    } = deleted
+    else {
         panic!("unexpected delete output: {deleted:?}");
     };
+    assert_eq!(key, "effect-doc");
     assert_eq!(effect.kind(), MutationEffectKind::Deleted);
     assert!(effect.applied());
     assert!(effect.matched());
@@ -78,9 +96,15 @@ fn json_write_outputs_report_commit_receipts_and_effects() {
             path: "$".to_owned(),
         })
         .expect("missing delete succeeds");
-    let Output::DeleteResult { effect, commit, .. } = missing else {
+    let Output::JsonDeleteResult {
+        key,
+        effect,
+        commit,
+    } = missing
+    else {
         panic!("unexpected missing delete output: {missing:?}");
     };
+    assert_eq!(key, "effect-doc");
     assert_eq!(effect.kind(), MutationEffectKind::NotFound);
     assert!(!effect.applied());
     assert!(!effect.matched());

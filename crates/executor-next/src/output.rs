@@ -154,6 +154,32 @@ pub enum Output {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<CommitReceipt>,
     },
+    /// JSON document write acknowledgement.
+    ///
+    /// JSON document ids are textual, so the echoed key is a `String` rather
+    /// than the `Bytes` used by the KV [`WriteResult`](Self::WriteResult)
+    /// envelope (DSGN-5/DTO-2).
+    JsonWriteResult {
+        /// Written document id.
+        key: String,
+        /// Mutation effect facts.
+        effect: MutationEffect,
+        /// Commit receipt.
+        commit: CommitReceipt,
+    },
+    /// JSON document delete acknowledgement.
+    ///
+    /// The echoed document id is a `String`, mirroring
+    /// [`JsonWriteResult`](Self::JsonWriteResult).
+    JsonDeleteResult {
+        /// Target document id.
+        key: String,
+        /// Mutation effect facts.
+        effect: MutationEffect,
+        /// Commit receipt when a delete was applied.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<CommitReceipt>,
+    },
     /// KV scan result.
     KvScanResult {
         /// Rows in this page.

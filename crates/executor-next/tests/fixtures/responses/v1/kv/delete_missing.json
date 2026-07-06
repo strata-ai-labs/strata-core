@@ -1,15 +1,7 @@
 {
   "type": "delete_result",
   "data": {
-    "key": [
-      109,
-      105,
-      115,
-      115,
-      105,
-      110,
-      103
-    ],
+    "key": "bWlzc2luZw==",
     "effect": {
       "applied": false,
       "kind": "not_found",
