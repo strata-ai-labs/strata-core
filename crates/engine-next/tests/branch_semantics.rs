@@ -9,7 +9,7 @@ use strata_engine_next::{
 
 use common::{
     assert_branch_value, assert_no_storage_type_in_engine_error, branch, key, open_cache_database,
-    space, value,
+    open_durable_database, space, value,
 };
 
 #[test]
@@ -125,6 +125,36 @@ fn root_branch_create_starts_empty_and_isolated() {
         .get(&key(b"scratch-only"))
         .expect("default read succeeds")
         .is_none());
+}
+
+#[test]
+fn durable_reopen_after_branch_delete_remains_usable() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    {
+        let mut database = open_durable_database(dir.path()).expect("durable open succeeds");
+        database
+            .branches()
+            .expect("branch service opens")
+            .create(branch("scratch"))
+            .expect("branch created");
+        database
+            .branches()
+            .expect("branch service opens")
+            .delete(&branch("scratch"))
+            .expect("branch deleted");
+    }
+
+    let mut reopened = open_durable_database(dir.path()).expect("durable reopen succeeds");
+    reopened
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .create(space("docs"))
+        .expect("space create succeeds after branch delete");
+    assert!(reopened
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .exists(&space("docs"))
+        .expect("space exists succeeds"));
 }
 
 #[test]

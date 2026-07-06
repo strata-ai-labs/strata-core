@@ -31,7 +31,7 @@ pub(crate) struct Cli {
     #[arg(long, global = true, conflicts_with_all = ["json", "format"])]
     pub(crate) raw: bool,
     /// Transitional output format flag.
-    #[arg(long, value_enum, global = true, hide = true)]
+    #[arg(long = "output-format", value_enum, global = true, hide = true)]
     pub(crate) format: Option<Format>,
     /// Command to run.
     #[command(subcommand)]
@@ -970,7 +970,7 @@ pub(crate) enum ArrowCommand {
         /// Input file path.
         file_path: String,
         /// Optional input format.
-        #[arg(long, value_enum)]
+        #[arg(long, value_enum, id = "arrow_import_format")]
         format: Option<CliArrowFormat>,
         /// Import target.
         #[arg(long, value_enum)]
@@ -991,7 +991,7 @@ pub(crate) enum ArrowCommand {
         #[arg(long, value_enum)]
         primitive: CliArrowExportPrimitive,
         /// Output format.
-        #[arg(long, value_enum)]
+        #[arg(long, value_enum, id = "arrow_export_format")]
         format: CliArrowFormat,
         /// Output file path.
         path: String,
@@ -1096,19 +1096,27 @@ pub(crate) enum CommandCommand {
     /// Execute a serialized executor command.
     Run {
         /// Serialized command JSON.
-        #[arg(long, conflicts_with = "file")]
+        #[arg(
+            long = "command-json",
+            id = "run_command_json",
+            conflicts_with = "run_command_file"
+        )]
         json: Option<String>,
         /// File containing serialized command JSON.
-        #[arg(long, conflicts_with = "json")]
+        #[arg(long, id = "run_command_file", conflicts_with = "run_command_json")]
         file: Option<PathBuf>,
     },
     /// Validate and print a serialized executor command without opening a database.
     Print {
         /// Serialized command JSON.
-        #[arg(long, conflicts_with = "file")]
+        #[arg(
+            long = "command-json",
+            id = "print_command_json",
+            conflicts_with = "print_command_file"
+        )]
         json: Option<String>,
         /// File containing serialized command JSON.
-        #[arg(long, conflicts_with = "json")]
+        #[arg(long, id = "print_command_file", conflicts_with = "print_command_json")]
         file: Option<PathBuf>,
     },
 }

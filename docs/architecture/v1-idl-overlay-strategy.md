@@ -85,7 +85,7 @@ For Strata, the canonical API is the executor command DTO surface. Every public
 command should be reachable through a generic command runner:
 
 ```sh
-strata command run --json '{ "type": "KvPut", ... }'
+strata command run --command-json '{ "type": "KvPut", ... }'
 ```
 
 SDKs should expose the same complete fallback:
@@ -488,7 +488,7 @@ The CLI should provide a command-runner path that accepts serialized executor
 commands and dispatches them without any command-specific parser:
 
 ```sh
-strata command run --json '{ "type": "KvPut", ... }'
+strata command run --command-json '{ "type": "KvPut", ... }'
 strata command run --file ./command.json
 ```
 
@@ -934,7 +934,7 @@ explainability.
 After CLI discovery works, add the generic command runner:
 
 ```sh
-strata command run --json '{ "type": "KvPut", ... }'
+strata command run --command-json '{ "type": "KvPut", ... }'
 strata command run --file ./command.json
 ```
 

@@ -606,6 +606,43 @@ fn durable_branch_catalog_round_trips_after_reopen() {
     );
 }
 
+#[cfg(feature = "localfs")]
+#[test]
+fn durable_branch_delete_allows_reopen_after_process_drop() {
+    let root = temp_dir_for_api_test("branch-durable-delete-reopen");
+    let backend = StorageBackend::local_fs(root.clone());
+    let child = branch_with(0x5a);
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable open")
+    .into_runtime();
+    runtime
+        .branch(&create_request(child))
+        .expect("create branch");
+    put_at(&mut runtime, child, b"deleted-branch-row", b"value", 10);
+    runtime
+        .branch(&branch_request(child, BranchAction::Delete))
+        .expect("delete branch");
+    drop(runtime);
+
+    let backend = StorageBackend::local_fs(root);
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable reopen after branch delete")
+    .into_runtime();
+    let described = runtime
+        .branch(&describe_request(child))
+        .expect("describe deleted branch")
+        .branch()
+        .expect("branch summary");
+
+    assert_eq!(described.status(), BranchStatus::Deleted);
+}
+
 #[test]
 fn branch_delete_unknown_rejects() {
     let mut runtime = open_runtime();

@@ -87,7 +87,7 @@ Source documents:
 
 ## Raw Command Escape Hatch
 
-`strata command run --json <command-json>` and
+`strata command run --command-json <command-json>` and
 `strata command run --file <path>` remain available for executor commands that
 do not have ergonomic CLI syntax yet. This is an escape hatch, not the target
 UX for stable public commands.

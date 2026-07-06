@@ -868,14 +868,14 @@ fn raw_command_from_sources(
     let text = match (json, file) {
         (Some(_), Some(_)) => {
             return Err(CliError::usage(
-                "provide either `--json <json>` or `--file <path>`, not both",
+                "provide either `--command-json <json>` or `--file <path>`, not both",
             ));
         }
         (Some(json), None) => json.to_owned(),
         (None, Some(path)) => input::read_text_file(path)?,
         (None, None) => {
             return Err(CliError::usage(
-                "raw command execution requires `--json <json>` or `--file <path>`",
+                "raw command execution requires `--command-json <json>` or `--file <path>`",
             ));
         }
     };
@@ -935,7 +935,10 @@ impl From<ExecutorError> for CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use options::{KvCommand, TopCommand};
+    use options::{
+        ArrowCommand, CliArrowExportPrimitive, CliArrowFormat, CommandCommand, KvCommand,
+        TopCommand,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -974,6 +977,57 @@ mod tests {
 
         let cli = Cli::parse_from(["strata", "--raw", "--cache", "ping"]);
         assert_eq!(cli.output_format(), options::Format::Raw);
+    }
+
+    #[test]
+    fn parses_arrow_file_format_without_colliding_with_output_format() {
+        let cli = Cli::parse_from([
+            "strata",
+            "--json",
+            "--cache",
+            "arrow",
+            "export",
+            "--primitive",
+            "kv",
+            "--format",
+            "jsonl",
+            "out.jsonl",
+        ]);
+        assert_eq!(cli.output_format(), options::Format::Json);
+        assert!(matches!(
+            cli.command,
+            Some(TopCommand::Arrow(options::ArrowArgs {
+                command: ArrowCommand::Export {
+                    primitive: CliArrowExportPrimitive::Kv,
+                    format: CliArrowFormat::Jsonl,
+                    path,
+                    ..
+                },
+            })) if path == "out.jsonl"
+        ));
+    }
+
+    #[test]
+    fn parses_raw_command_json_without_colliding_with_output_json() {
+        let cli = Cli::parse_from([
+            "strata",
+            "--json",
+            "--cache",
+            "command",
+            "run",
+            "--command-json",
+            r#"{"type":"ping"}"#,
+        ]);
+        assert_eq!(cli.output_format(), options::Format::Json);
+        assert!(matches!(
+            cli.command,
+            Some(TopCommand::Command(options::CommandArgs {
+                command: CommandCommand::Run {
+                    json: Some(json),
+                    file: None,
+                },
+            })) if json == r#"{"type":"ping"}"#
+        ));
     }
 
     #[test]
