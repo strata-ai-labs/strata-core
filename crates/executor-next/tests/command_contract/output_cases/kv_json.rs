@@ -2,8 +2,6 @@ use crate::support::*;
 
 pub(super) fn kv_outputs() -> Vec<Output> {
     vec![
-        Output::KvValue(Some(bytes("one"))),
-        Output::KvValue(None),
         Output::KvVersionedValue(Some(VersionedValue::new(bytes("one"), 1, 10))),
         Output::KvVersionedValue(None),
         Output::VersionHistory(Some(HistoryResult::new(vec![HistoryItem::new(

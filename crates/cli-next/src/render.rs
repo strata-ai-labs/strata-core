@@ -54,7 +54,7 @@ fn render_human(value: &Value) -> Result<(), CliError> {
                 data.get("version").and_then(Value::as_str).unwrap_or("")
             ),
             "bool" | "uint" => println!("{}", scalar_summary(data)),
-            "kv_value" | "kv_versioned_value" => print_optional_data(data),
+            "kv_versioned_value" => print_optional_data(data),
             "json_value" | "json_versioned_value" => print_maybe_json(data)?,
             _ => render_human_data(data)?,
         }

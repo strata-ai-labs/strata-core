@@ -583,9 +583,7 @@ fn source_contract_uses_kv_specific_value_outputs() {
     for file in source_files(&crate_root().join("tests/command_contract")) {
         tests_source.push_str(&fs::read_to_string(file).expect("command contract module reads"));
     }
-    assert!(output_source.contains("KvValue"));
     assert!(output_source.contains("KvVersionedValue"));
-    assert!(!output_source.contains("KvValue(Maybe"));
     assert!(!output_source.contains("KvVersionedValue(Maybe"));
     assert!(output_source.contains("JsonValue(MaybeJsonValue)"));
     assert!(output_source.contains("JsonVersionedValue(MaybeJsonVersionedValue)"));

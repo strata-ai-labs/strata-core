@@ -107,8 +107,6 @@ pub enum Output {
         /// Cleanup facts.
         cleanup: Option<BranchCleanupItem>,
     },
-    /// Optional raw KV value.
-    KvValue(Option<Bytes>),
     /// Optional KV value with commit metadata.
     KvVersionedValue(Option<VersionedValue>),
     /// Optional JSON value.
