@@ -47,13 +47,15 @@ run --json "$DB" event append tick '{"n":1}'
 check_ok "first event append succeeds"
 e1="$(commit_timestamp)"
 seed "$DB" event append tick '{"n":2}'
-# Engine defect: event time travel filters on the wall-clock payload timestamp
-# (EventService::len_at reads Latest and compares event.timestamp()), while
-# every other primitive's --as-of reads in the commit-timestamp domain. The
-# same as-of value that works for KV returns an empty log here.
-expect_known_bug "event as-of uses the commit-timestamp domain like every other primitive" \
+expect_out "event as-of uses the commit-timestamp domain like every other primitive" \
   "1" -- "$DB" event len --as-of "$e1"
 expect_out "a current len sees everything" "2" -- "$DB" event len
+expect_json "as-of point reads see committed events" '["data"]["event"]["payload"]["n"]' 1 \
+  -- "$DB" event get 0 --as-of "$e1"
+expect_out "later sequences are invisible as-of e1" "(nil)" -- "$DB" event get 1 --as-of "$e1"
+expect_out "as-of type listing excludes later types" "tick" -- "$DB" event types --as-of "$e1"
+expect_error_code "an after-latest as-of is a diagnostic, not a clamp" \
+  "history_unavailable.engine.persistence_history" -- "$DB" event len --as-of 9999999999999999
 
 echo "[$SUITE_NAME] vector as-of"
 seed "$DB" vector collection create emb 2

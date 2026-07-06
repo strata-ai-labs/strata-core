@@ -185,14 +185,16 @@ expect_json() {
   check_eq "$desc" "$expected" "$actual"
 }
 
-# json_error_field <accessor> — like json_field but parses $ERR (error envelope).
+# json_error_field <accessor> — like json_field but parses the error envelope
+# on $ERR. Structured logging (the error-boundary tracing line) may precede the
+# envelope, so parse the last stderr line.
 json_error_field() {
-  python3 -c '
+  printf '%s\n' "$ERR" | tail -n 1 | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 value = eval("d" + sys.argv[1])
 print(value)
-' "$1" <<<"$ERR"
+' "$1"
 }
 
 # expect_error_code <desc> <error-code> -- <cli args…>

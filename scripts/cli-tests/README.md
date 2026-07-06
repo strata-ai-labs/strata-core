@@ -37,13 +37,10 @@ Requirements: bash, python3 (JSON assertions). No network, no real home dir —
 suite stays green and prints a `KNOWN-BUG:` line on every run, and **fails the
 day the defect is fixed** so the pin gets promoted to a real assertion.
 
-Current pins:
-
-- **Event time travel domain** (`08_time_travel`): `event len --as-of` filters
-  on the wall-clock payload timestamp (`EventService::len_at` reads `Latest`
-  and compares `event.timestamp()`), while every other primitive's `--as-of`
-  reads in the commit-timestamp domain. The same as-of value that works for KV
-  returns an empty log for events.
+Current pins: none. (The event time-travel domain defect this mechanism was
+built for — `event len --as-of` filtering on wall-clock payload timestamps
+instead of the commit-timestamp domain — was fixed in engine-next and its pin
+promoted to real assertions in `08_time_travel`.)
 
 ## Conventions
 
