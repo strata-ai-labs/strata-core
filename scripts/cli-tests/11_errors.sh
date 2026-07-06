@@ -26,6 +26,12 @@ assert e["docs_url"].startswith("https://"), "missing docs url"
 assert e["suggested_fix"], "missing suggested fix"
 '; then _ok; else _fail "envelope carries class/code/reference/retry/docs/fix" "stderr: $ERR"; fi
 
+echo "[$SUITE_NAME] errors teach (hint + stable ref)"
+run "$DB" kv get seeded --branch ghost
+check_contains "human errors carry an actionable hint" "hint: " "$ERR"
+check_contains "human errors carry the stable per-code ref" \
+  "ref: https://stratadb.org/e/not_found.engine.branch" "$ERR"
+
 echo "[$SUITE_NAME] input guards"
 expect_fail "empty kv key is rejected" "" -- "$DB" kv put '' v
 # The CLI documents relaxed JSON: non-JSON text is stored as a string.

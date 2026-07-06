@@ -129,7 +129,7 @@ fn resolved_commands_are_explain_ready() {
         assert!(
             command.errors.iter().all(|error| error
                 .docs
-                .starts_with("https://strata.dev/docs/errors/registry#")),
+                .starts_with("https://stratadb.org/e/")),
             "all command errors should include docs URLs"
         );
     }

@@ -6,8 +6,9 @@ use strata_engine_next::{
     ErrorCodeRegistryEntry, RetryPolicy,
 };
 
-/// Registry page used for stable public error docs.
-pub const ERROR_REGISTRY_DOC_PAGE: &str = "registry";
+/// Path segment for stable per-code public error docs
+/// (`https://stratadb.org/e/<code>`).
+pub const ERROR_REGISTRY_DOC_PAGE: &str = "e";
 
 const COMMON_SCHEMA: &str = "strata.error.details.common.v1";
 const EXECUTOR_SCHEMA: &str = "strata.error.details.executor.v1";

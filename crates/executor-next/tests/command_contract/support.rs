@@ -94,7 +94,7 @@ pub(super) fn error_status_fixture() -> ErrorStatus {
         CommitOutcomeStatus::NotStarted,
         "invalid key",
         "Check the batch item input and retry with a valid key.",
-        "https://strata.dev/docs/errors/registry#invalid_argument.executor.batch_item",
+        "https://stratadb.org/e/invalid_argument.executor.batch_item",
         "err-test-000001",
         None,
         vec![ErrorDetail::new("field", "key")],

@@ -14,7 +14,7 @@ use crate::error_registry::{
     public_error_code_entry, unregistered_code_entry, ERROR_REGISTRY_DOC_PAGE,
 };
 
-const DEFAULT_DOCS_BASE_URL: &str = "https://strata.dev/docs/errors";
+const DEFAULT_DOCS_BASE_URL: &str = "https://stratadb.org";
 
 /// Source of user-visible error reference ids.
 pub trait ErrorReferenceIdSource: Send + Sync {
@@ -77,8 +77,10 @@ impl ErrorRenderConfig {
     }
 
     fn docs_url_for(&self, docs_slug: &str) -> String {
+        // Stable short per-code slug: https://stratadb.org/e/<code> — the code
+        // is a path segment, not a fragment, so every code is its own page.
         format!(
-            "{}/{ERROR_REGISTRY_DOC_PAGE}#{docs_slug}",
+            "{}/{ERROR_REGISTRY_DOC_PAGE}/{docs_slug}",
             self.docs_base_url.trim_end_matches('/')
         )
     }
@@ -630,16 +632,21 @@ fn normalize_status(status: ErrorStatus) -> ErrorStatus {
 
 fn normalize_docs_url(docs_url: Option<String>, docs_slug: &str) -> String {
     if let Some(url) = docs_url {
+        // Ignore any legacy fragment; the canonical form is a path slug.
         let base = url
             .split_once('#')
             .map_or(url.as_str(), |(base, _anchor)| base);
         let base = base.trim_end_matches('/');
-        if base
-            .rsplit('/')
-            .next()
-            .is_some_and(|segment| segment == ERROR_REGISTRY_DOC_PAGE)
-        {
-            return format!("{base}#{docs_slug}");
+        let mut segments = base.rsplit('/');
+        let last = segments.next();
+        let second_last = segments.next();
+        // Already the canonical per-code page: …/e/<code>.
+        if last == Some(docs_slug) && second_last == Some(ERROR_REGISTRY_DOC_PAGE) {
+            return base.to_owned();
+        }
+        // A docs base ending at the error segment: …/e — append the code.
+        if last == Some(ERROR_REGISTRY_DOC_PAGE) {
+            return format!("{base}/{docs_slug}");
         }
     }
     current_error_render_config().docs_url_for(docs_slug)

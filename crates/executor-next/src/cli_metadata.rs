@@ -426,10 +426,7 @@ fn validate_command(command: &CliCommandEntry) -> CliMetadataResult<()> {
     }
     for error in &command.errors {
         validate_non_empty("error code", &error.code)?;
-        if !error
-            .docs
-            .starts_with("https://strata.dev/docs/errors/registry#")
-        {
+        if !error.docs.starts_with("https://stratadb.org/e/") {
             return Err(invalid(format!(
                 "command `{}` has invalid error docs URL `{}`",
                 command.id, error.docs

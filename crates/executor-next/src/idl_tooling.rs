@@ -1192,10 +1192,7 @@ fn registered_error_map() -> BTreeMap<String, String> {
         .map(|entry| {
             (
                 entry.code.to_owned(),
-                format!(
-                    "https://strata.dev/docs/errors/registry#{}",
-                    entry.docs_slug
-                ),
+                format!("https://stratadb.org/e/{}", entry.docs_slug),
             )
         })
         .collect()

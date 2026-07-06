@@ -92,7 +92,7 @@ fn executor_error_rendering_uses_injected_boundary_config() {
     assert_eq!(error.reference_id(), "ref_test_000001");
     assert_eq!(
         error.docs_url(),
-        "https://docs.example.test/errors/registry#invalid_argument.executor.batch_item"
+        "https://docs.example.test/errors/e/invalid_argument.executor.batch_item"
     );
 }
 
@@ -126,7 +126,7 @@ fn serialized_errors_have_v1_status_shape() {
     );
     assert_eq!(
         status["docs_url"],
-        "https://strata.dev/docs/errors/registry#invalid_argument.executor.batch_item"
+        "https://stratadb.org/e/invalid_argument.executor.batch_item"
     );
     assert!(status["reference_id"]
         .as_str()
@@ -151,7 +151,7 @@ fn deserialized_error_status_derives_retryable_from_retry_policy() {
         "commit_outcome": "not_started",
         "message": "lock unavailable",
         "suggested_fix": "Retry the same request after the lock becomes available.",
-        "docs_url": "https://strata.dev/docs/errors/registry#unavailable.executor.lock_unavailable",
+        "docs_url": "https://stratadb.org/e/unavailable.executor.lock_unavailable",
         "reference_id": "err-test-000001"
     }))
     .expect("error status deserializes");
@@ -214,7 +214,7 @@ fn explicit_error_status_constructors_normalize_unregistered_codes() {
     assert_eq!(with_url.code(), "internal.executor.unregistered_code");
     assert_eq!(
         with_url.docs_url(),
-        "https://strata.dev/docs/errors/registry#internal.executor.unregistered_code"
+        "https://stratadb.org/e/internal.executor.unregistered_code"
     );
 
     let with_registry_url = ErrorStatus::new_with_docs_url(
@@ -224,7 +224,7 @@ fn explicit_error_status_constructors_normalize_unregistered_codes() {
         CommitOutcomeStatus::NotStarted,
         "public message",
         "custom fix",
-        "https://docs.example.test/errors/registry#wrong-anchor",
+        "https://docs.example.test/errors/e#wrong-anchor",
         "err-test-url",
         None,
         Vec::new(),
@@ -232,7 +232,7 @@ fn explicit_error_status_constructors_normalize_unregistered_codes() {
     );
     assert_eq!(
         with_registry_url.docs_url(),
-        "https://docs.example.test/errors/registry#internal.executor.unregistered_code"
+        "https://docs.example.test/errors/e/internal.executor.unregistered_code"
     );
 }
 
@@ -258,7 +258,7 @@ fn executor_error_from_status_normalizes_unregistered_codes() {
     assert_eq!(error.public_class(), ErrorClass::Internal);
     assert_eq!(
         error.docs_url(),
-        "https://strata.dev/docs/errors/registry#internal.executor.unregistered_code"
+        "https://stratadb.org/e/internal.executor.unregistered_code"
     );
 }
 
@@ -349,10 +349,9 @@ fn every_registry_docs_url_has_target() {
         docs_target.display()
     );
     for entry in public_error_code_entries() {
-        let url = format!(
-            "https://strata.dev/docs/errors/registry#{}",
-            entry.docs_slug
-        );
+        // Stable short per-code slug (first-run D4): the code is the final
+        // path segment, so every code resolves to its own docs page.
+        let url = format!("https://stratadb.org/e/{}", entry.docs_slug);
         assert!(
             url.ends_with(entry.code),
             "{} docs URL does not include code",

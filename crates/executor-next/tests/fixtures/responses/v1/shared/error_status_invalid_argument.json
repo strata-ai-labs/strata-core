@@ -6,7 +6,7 @@
   "commit_outcome": "not_started",
   "message": "invalid key",
   "suggested_fix": "Check the batch item input and retry with a valid key.",
-  "docs_url": "https://strata.dev/docs/errors/registry#invalid_argument.executor.batch_item",
+  "docs_url": "https://stratadb.org/e/invalid_argument.executor.batch_item",
   "reference_id": "err-test-000001",
   "details": [
     {

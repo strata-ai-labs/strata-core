@@ -404,6 +404,9 @@ fn raw_scalar(value: &Value) -> String {
     }
 }
 
+// Errors teach (first-run D4): the human line carries the code, the message,
+// the actionable hint, and the stable per-code docs ref, so a human or agent
+// can self-correct without a docs round-trip.
 fn human_error_line(value: &Value) -> String {
     let code = value.get("code").and_then(Value::as_str).unwrap_or("error");
     let message = value
@@ -414,11 +417,28 @@ fn human_error_line(value: &Value) -> String {
         .get("reference_id")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if reference.is_empty() {
+    let mut rendered = if reference.is_empty() {
         format!("{code}: {message}")
     } else {
         format!("{code}: {message} ({reference})")
+    };
+    if let Some(hint) = value
+        .get("suggested_fix")
+        .and_then(Value::as_str)
+        .filter(|hint| !hint.trim().is_empty())
+    {
+        rendered.push_str("\n  hint: ");
+        rendered.push_str(hint);
     }
+    if let Some(docs) = value
+        .get("docs_url")
+        .and_then(Value::as_str)
+        .filter(|docs| !docs.trim().is_empty())
+    {
+        rendered.push_str("\n  ref: ");
+        rendered.push_str(docs);
+    }
+    rendered
 }
 
 #[cfg(test)]

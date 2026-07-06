@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor-next/idl/v1/generated/command-index.json",
-    "checksum_sha256": "d68f85ea37cc6b7cf53266745ed4232ca8ac123954152d7483cabc0e13adc9aa",
+    "checksum_sha256": "c8fb6629a63d80d2440dffe66c630beb184edaa600a6db4e22cfea85ad2611a3",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -83,31 +83,31 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.kv_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
         },
         {
           "code": "invalid_argument.engine.kv_batch",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_batch"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_batch"
         },
         {
           "code": "invalid_argument.engine.kv_batch_duplicate_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_batch_duplicate_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_batch_duplicate_key"
         },
         {
           "code": "invalid_argument.executor.kv_batch_duplicate_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.executor.kv_batch_duplicate_key"
+          "docs": "https://stratadb.org/e/invalid_argument.executor.kv_batch_duplicate_key"
         }
       ],
       "fixtures": {
@@ -143,23 +143,23 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.kv_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
         },
         {
           "code": "invalid_argument.engine.kv_batch",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_batch"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_batch"
         }
       ],
       "fixtures": {
@@ -195,23 +195,23 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.kv_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
         },
         {
           "code": "invalid_argument.engine.kv_batch",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_batch"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_batch"
         }
       ],
       "fixtures": {
@@ -247,31 +247,31 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.kv_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
         },
         {
           "code": "invalid_argument.engine.kv_batch",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_batch"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_batch"
         },
         {
           "code": "invalid_argument.engine.kv_batch_duplicate_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_batch_duplicate_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_batch_duplicate_key"
         },
         {
           "code": "invalid_argument.executor.kv_batch_duplicate_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.executor.kv_batch_duplicate_key"
+          "docs": "https://stratadb.org/e/invalid_argument.executor.kv_batch_duplicate_key"
         }
       ],
       "fixtures": {
@@ -307,19 +307,19 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.kv_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
         }
       ],
       "fixtures": {
@@ -355,19 +355,19 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.kv_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
         }
       ],
       "fixtures": {
@@ -403,19 +403,19 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.kv_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
         }
       ],
       "fixtures": {
@@ -451,19 +451,19 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.kv_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
         }
       ],
       "fixtures": {
@@ -499,19 +499,19 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.kv_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
         }
       ],
       "fixtures": {
@@ -548,19 +548,19 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.kv_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
         }
       ],
       "fixtures": {
@@ -599,19 +599,19 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.kv_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
         }
       ],
       "fixtures": {
@@ -647,19 +647,19 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.kv_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
         }
       ],
       "fixtures": {
@@ -695,19 +695,19 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.kv_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.kv_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
         }
       ],
       "fixtures": {
@@ -743,31 +743,31 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_batch",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_batch"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_batch"
         }
       ],
       "fixtures": {
@@ -803,31 +803,31 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_batch",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_batch"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_batch"
         }
       ],
       "fixtures": {
@@ -863,43 +863,43 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_batch",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_batch"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_batch"
         },
         {
           "code": "invalid_argument.engine.vector_dimension",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_dimension"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_dimension"
         },
         {
           "code": "invalid_argument.engine.vector_embedding",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_embedding"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_embedding"
         },
         {
           "code": "invalid_argument.executor.vector_dimension",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.executor.vector_dimension"
+          "docs": "https://stratadb.org/e/invalid_argument.executor.vector_dimension"
         }
       ],
       "fixtures": {
@@ -936,35 +936,35 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_dimension",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_dimension"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_dimension"
         },
         {
           "code": "invalid_argument.executor.vector_dimension",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.executor.vector_dimension"
+          "docs": "https://stratadb.org/e/invalid_argument.executor.vector_dimension"
         }
       ],
       "fixtures": {
@@ -1001,27 +1001,27 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         }
       ],
       "fixtures": {
@@ -1058,27 +1058,27 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         }
       ],
       "fixtures": {
@@ -1115,27 +1115,27 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         }
       ],
       "fixtures": {
@@ -1171,27 +1171,27 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         }
       ],
       "fixtures": {
@@ -1227,27 +1227,27 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         }
       ],
       "fixtures": {
@@ -1283,27 +1283,27 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         }
       ],
       "fixtures": {
@@ -1339,31 +1339,31 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_filter",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_filter"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_filter"
         }
       ],
       "fixtures": {
@@ -1399,27 +1399,27 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         }
       ],
       "fixtures": {
@@ -1455,27 +1455,27 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         }
       ],
       "fixtures": {
@@ -1511,27 +1511,27 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         }
       ],
       "fixtures": {
@@ -1568,35 +1568,35 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_filter",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_filter"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_filter"
         },
         {
           "code": "invalid_argument.executor.vector_limit",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.executor.vector_limit"
+          "docs": "https://stratadb.org/e/invalid_argument.executor.vector_limit"
         }
       ],
       "fixtures": {
@@ -1632,27 +1632,27 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         }
       ],
       "fixtures": {
@@ -1689,31 +1689,31 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_metadata_patch",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_metadata_patch"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_metadata_patch"
         }
       ],
       "fixtures": {
@@ -1749,35 +1749,35 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_filter",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_filter"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_filter"
         },
         {
           "code": "invalid_argument.executor.vector_limit",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.executor.vector_limit"
+          "docs": "https://stratadb.org/e/invalid_argument.executor.vector_limit"
         }
       ],
       "fixtures": {
@@ -1813,43 +1813,43 @@
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://strata.dev/docs/errors/registry#failed_precondition.engine.runtime_closed"
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
         },
         {
           "code": "not_found.engine.branch",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.engine.branch"
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
           "code": "invalid_argument.engine.product_space",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.product_space"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
         },
         {
           "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_collection"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_key",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_key"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
         },
         {
           "code": "not_found.executor.vector_collection",
-          "docs": "https://strata.dev/docs/errors/registry#not_found.executor.vector_collection"
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
         },
         {
           "code": "invalid_argument.engine.vector_dimension",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_dimension"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_dimension"
         },
         {
           "code": "invalid_argument.engine.vector_embedding",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_embedding"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_embedding"
         },
         {
           "code": "invalid_argument.engine.vector_metadata",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.engine.vector_metadata"
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_metadata"
         },
         {
           "code": "invalid_argument.executor.vector_dimension",
-          "docs": "https://strata.dev/docs/errors/registry#invalid_argument.executor.vector_dimension"
+          "docs": "https://stratadb.org/e/invalid_argument.executor.vector_dimension"
         }
       ],
       "fixtures": {
