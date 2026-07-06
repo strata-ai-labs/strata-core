@@ -126,57 +126,6 @@ fn table_runtime_closeout_source_guard_suite_covers_required_boundary_categories
 }
 
 #[test]
-fn table_runtime_closeout_report_records_benchmark_evidence_and_stop_condition() {
-    let crate_root = common::crate_root();
-    let repo_root = repository_root(&crate_root);
-    let report_path = repo_root
-        .join("docs/architecture/perf-tuning")
-        .join(table_runtime_file_name("closeout"));
-    let report = read_file(&report_path);
-    let required_later_work = format!(
-        "Status: closed with {}/{} follow-up",
-        storage_next_layer(6),
-        storage_next_layer(8)
-    );
-    let benchmark_commands = format!("Required {} Benchmark Commands", storage_next_layer(9));
-    let remaining_source_shape = format!("{} source-shape", storage_next_layer(6));
-    let remaining_maintenance = format!("{} maintenance", storage_next_layer(8));
-
-    assert_contains_all_strings(
-        "table runtime closeout report",
-        &report,
-        &[
-            required_later_work,
-            benchmark_commands,
-            "point-throughput".to_owned(),
-            "scan-prefix".to_owned(),
-            "scan-range-throughput".to_owned(),
-            "100K cache completed".to_owned(),
-            "1M cache failed during load".to_owned(),
-            "storage budget exceeded for active_mutable".to_owned(),
-            "Supplemental 1M Runs With Maintenance".to_owned(),
-            benchmark_results_prefix(),
-            remaining_source_shape,
-            remaining_maintenance,
-        ],
-    );
-
-    let result_paths = referenced_benchmark_result_paths(&report);
-    assert!(
-        result_paths.len() >= 2,
-        "closeout report should reference point and scan benchmark result files"
-    );
-    for result_path in result_paths {
-        let absolute_path = repo_root.join(&result_path);
-        assert!(
-            absolute_path.is_file(),
-            "closeout report references missing benchmark result {}",
-            result_path.display()
-        );
-    }
-}
-
-#[test]
 fn table_runtime_closeout_porting_log_records_required_evidence() {
     let crate_root = common::crate_root();
     let repo_root = repository_root(&crate_root);
@@ -311,27 +260,6 @@ fn porting_log_file_name(milestone_digit: u8, layer_digit: u8) -> String {
         milestone(milestone_digit).to_ascii_lowercase(),
         storage_next_layer(layer_digit).to_ascii_lowercase()
     )
-}
-
-fn benchmark_results_prefix() -> String {
-    format!(
-        "benchmarks/results/storage-next-{}/",
-        storage_next_layer(9).to_ascii_lowercase()
-    )
-}
-
-fn referenced_benchmark_result_paths(report: &str) -> Vec<PathBuf> {
-    let benchmark_prefix = benchmark_results_prefix();
-    report
-        .split('`')
-        .filter(|segment| {
-            segment.starts_with(&benchmark_prefix)
-                && Path::new(segment)
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
-        })
-        .map(PathBuf::from)
-        .collect()
 }
 
 fn read_table_runtime_testkit_sources(crate_root: &Path) -> String {

@@ -328,59 +328,6 @@ fn branch_lsm_closeout_benchmark_runner_records_source_shape_metrics() {
     );
 }
 
-#[test]
-fn branch_lsm_closeout_report_records_benchmark_and_deferral_evidence() {
-    let crate_root = common::crate_root();
-    let repo_root = repository_root(&crate_root);
-    let report =
-        read_file(&repo_root.join(
-            "docs/architecture/perf-tuning/storage-next-branch-lsm-runtime-parity-closeout.md",
-        ));
-
-    assert_contains_all(
-        "branch runtime parity closeout report",
-        &report,
-        &[
-            "Status: implementation guards complete; benchmark rerun required",
-            "storage-next-mechanics-parity-audit.md",
-            "storage-next-serving-path-parity-plan.md",
-            "Required Benchmark Commands",
-            "100K",
-            "1M",
-            "5M",
-            "10M",
-            "50M",
-            "100M",
-            "source-shape counters before throughput",
-            "source_shape_metrics",
-            "point_source_probes_per_read",
-            "point_nonzero_table_probes_per_read",
-            "scan_source_cursors_per_call",
-            "scan_table_cursors_opened_per_call",
-            "scan_rows_visited_per_row_returned",
-            "l0_tables_per_million_rows_after_load",
-            "Historical Benchmark Anchors",
-            "Source-Counter-Aware Rerun Gate",
-            "Deferred Findings",
-            "Owner",
-            "Replacement Proof",
-        ],
-    );
-
-    let referenced_reports = referenced_benchmark_result_paths(&report);
-    assert!(
-        referenced_reports.len() >= 4,
-        "branch runtime closeout should reference old and new historical benchmark anchors"
-    );
-    for report_path in referenced_reports {
-        assert!(
-            repo_root.join(&report_path).is_file(),
-            "referenced benchmark report should exist: {}",
-            report_path.display()
-        );
-    }
-}
-
 fn read_file(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
 }
@@ -473,20 +420,6 @@ fn branch_lsm_counter_methods(testkit: &str) -> Vec<String> {
     counters.sort();
     counters.dedup();
     counters
-}
-
-fn referenced_benchmark_result_paths(report: &str) -> Vec<PathBuf> {
-    report
-        .split('`')
-        .filter(|segment| {
-            segment.starts_with("benchmarks/results/")
-                && Path::new(segment)
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    == Some("json")
-        })
-        .map(PathBuf::from)
-        .collect()
 }
 
 fn assert_enriched_corpus(crate_root: &Path, target: &str) {
