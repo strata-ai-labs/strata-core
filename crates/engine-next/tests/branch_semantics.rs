@@ -69,6 +69,48 @@ fn branch_name_validation_rejects_reserved_aliases_and_control_names() {
 }
 
 #[test]
+fn branch_names_that_alias_another_branchs_storage_identity_are_rejected() {
+    // "main" derives the v5 id 1f64c067-…-38ec; the UUID-form name equal to
+    // those bytes derives the same id, so the two would share a storage branch
+    // (finding U8). Whichever is created second must be rejected with a
+    // structured already_exists error, not a raw storage generation conflict.
+    let aliasing_uuid = "1f64c067-acf2-5034-a5d0-92d5764138ec";
+
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .create(branch("main"))
+        .expect("main branch created");
+    let error = database
+        .branches()
+        .expect("branch service opens")
+        .create(branch(aliasing_uuid))
+        .expect_err("aliasing UUID-form branch rejected");
+    assert_eq!(error.code(), "already_exists.engine.branch");
+
+    // The collision is also detected against a deleted branch: recreate the
+    // scenario in reverse and delete the first branch before the second create.
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .create(branch(aliasing_uuid))
+        .expect("UUID branch created");
+    database
+        .branches()
+        .expect("branch service opens")
+        .delete(&branch(aliasing_uuid))
+        .expect("UUID branch deleted");
+    let error = database
+        .branches()
+        .expect("branch service opens")
+        .create(branch("main"))
+        .expect_err("aliasing name rejected even against a deleted branch");
+    assert_eq!(error.code(), "already_exists.engine.branch");
+}
+
+#[test]
 fn reserved_branch_identity_aliases_cannot_be_selected_as_defaults() {
     for rejected in [
         "01010101-0101-0101-0101-010101010101",

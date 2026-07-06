@@ -71,6 +71,23 @@ impl ControlPlane {
         self.lookup_branch(name).is_some()
     }
 
+    /// Finds an existing branch (any status) that shares `storage_branch_id` but
+    /// has a different name. Distinct product branch names normally derive
+    /// distinct storage ids, but a UUID-form name derives its literal bytes
+    /// while ordinary names hash to a `UUIDv5`, so two different names can alias
+    /// the same storage branch. Detecting the collision lets branch creation
+    /// reject it with a structured error instead of failing later with a raw
+    /// storage generation conflict (finding U8).
+    pub(crate) fn find_aliasing_storage_branch(
+        &self,
+        name: &BranchName,
+        storage_branch_id: strata_core_next::BranchId,
+    ) -> Option<&BranchCatalogRecord> {
+        self.branches.values().find(|record| {
+            record.name() != name && record.storage_branch_id() == storage_branch_id
+        })
+    }
+
     pub(crate) fn active_branch_count(&self) -> usize {
         self.branches
             .values()

@@ -61,6 +61,7 @@ impl<'a> BranchService<'a> {
         self.reject_duplicate_active(&name)?;
         let generation = self.control.next_generation_for_name(&name);
         let record = BranchCatalogRecord::root(name, generation);
+        self.reject_aliasing_storage_branch(&record)?;
 
         ControlPlane::begin_branch_operation(self.persistence, &record)?;
         let outcome = match self
@@ -118,6 +119,7 @@ impl<'a> BranchService<'a> {
         );
         let record = BranchCatalogRecord::forked(name, generation, placeholder_parent);
         let storage_branch_id = record.storage_branch_id();
+        self.reject_aliasing_storage_branch(&record)?;
 
         ControlPlane::begin_branch_operation(self.persistence, &record)?;
         let fork_outcome = match self.persistence.fork_branch_current(
@@ -299,6 +301,7 @@ impl<'a> BranchService<'a> {
         let generation = self.control.next_generation_for_name(&name);
         let pending = BranchCatalogRecord::root(name.clone(), generation);
         let storage_branch_id = pending.storage_branch_id();
+        self.reject_aliasing_storage_branch(&pending)?;
         ControlPlane::begin_branch_operation(self.persistence, &pending)?;
         let outcome = match fork(
             self.persistence,
@@ -346,6 +349,26 @@ impl<'a> BranchService<'a> {
         Ok(BranchCreateOutcome::new(BranchSummary::from_catalog(
             &record,
         )))
+    }
+
+    /// Rejects a new branch whose derived storage identity collides with an
+    /// existing branch of a different name (finding U8), before any durable
+    /// state is written.
+    fn reject_aliasing_storage_branch(&self, record: &BranchCatalogRecord) -> EngineResult<()> {
+        if let Some(existing) = self
+            .control
+            .find_aliasing_storage_branch(record.name(), record.storage_branch_id())
+        {
+            return Err(EngineError::conflict(
+                "already_exists.engine.branch",
+                format!(
+                    "branch `{}` derives the same storage identity as existing branch `{}`",
+                    record.name(),
+                    existing.name()
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn reject_duplicate_active(&self, name: &BranchName) -> EngineResult<()> {
