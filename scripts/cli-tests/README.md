@@ -30,6 +30,8 @@ Requirements: bash, python3 (JSON assertions). No network, no real home dir —
 | `12_admin` | init (first-run placeholder), ping/info/health/metrics/describe, config reads |
 | `13_cross` | identical names across primitives, the branch × space × primitive matrix, mixed workloads on forks |
 | `14_inference` | feature-gated surface: absence on default builds, smoke on inference builds |
+| `15_first_run` | database-target resolution: explicit path/`--db` → `STRATA_DB` → teaching refusal; never an implicit cwd database |
+| `16_agents` | the self-describing surface: `agents guide/commands/errors` and repo onboarding via `agents init` |
 
 ## Known-bug pins
 

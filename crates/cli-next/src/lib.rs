@@ -10,6 +10,7 @@ use clap::Parser;
 use serde_json::Value;
 use strata_executor_next::{Command, Executor, ExecutorError};
 
+mod agents;
 mod context;
 mod doctor;
 mod guidance;
@@ -62,8 +63,14 @@ where
             }
         }
         Err(error) => {
-            eprint!("{error}");
-            2
+            // clap routes --help/--version to stdout with exit 0 and genuine
+            // parse errors to stderr with exit 2; error.print() honors that
+            // split. Install scripts verify with `strata --version`, so the
+            // success path must be a success.
+            let exit = if error.use_stderr() { 2 } else { 0 };
+            // A failure to print has nowhere left to report.
+            let _ = error.print();
+            exit
         }
     }
 }
@@ -84,6 +91,10 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             render_value(&report, format)?;
             return Ok(i32::from(!healthy));
         }
+        let command = match command {
+            options::TopCommand::Agents(args) => return agents::run(&args.command, format),
+            other => other,
+        };
         if let TopLevelAction::NoDatabase(value) = top_level_without_database(&command)? {
             render_value(&value, format)?;
             return Ok(0);
@@ -116,7 +127,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             "strata {} — in-memory session (nothing persisted; run with a path to keep data)",
             env!("CARGO_PKG_VERSION")
         );
-        eprintln!("type `help` for commands");
+        eprintln!("type `help` for commands  |  agents: run `strata agents guide`");
     }
     let mut executor = opened.executor;
     if let Some(branch) = context.scope_with_overrides(None, None).branch.as_deref() {
@@ -167,6 +178,12 @@ pub(crate) fn execute_parsed_command(
             // code is unaffected — the session stays alive either way.
             let (report, _healthy) = doctor::run_doctor(false, None, None)?;
             render_value(&report, format)?;
+            return Ok(());
+        }
+        options::TopCommand::Agents(args) => {
+            // Exit code is only meaningful for the one-shot path; agents
+            // commands never fail healthily inside a session.
+            let _exit = agents::run(&args.command, format)?;
             return Ok(());
         }
         options::TopCommand::Info => executor.execute(Command::Info {

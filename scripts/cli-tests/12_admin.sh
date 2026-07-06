@@ -16,6 +16,9 @@ run --json init
 check_contains "init teaches the canonical next steps" "kv put greeting hello" "$OUT"
 expect_json "a fresh database is durable" '["data"]["durable"]' "true" -- "$DB" info
 expect_contains "ping answers pong" "pong" -- "$DB" ping
+expect_contains "--version prints to stdout and exits 0" "strata" -- --version
+run --help
+check_ok "--help exits 0"
 
 echo "[$SUITE_NAME] doctor"
 run --json doctor

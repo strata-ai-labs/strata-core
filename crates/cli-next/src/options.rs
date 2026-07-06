@@ -70,6 +70,8 @@ pub(crate) enum TopCommand {
     Init,
     /// Check the installation and, when a database is targeted, its health.
     Doctor,
+    /// Self-describing surface for agents: guide, catalogs, repo onboarding.
+    Agents(AgentsArgs),
     /// Lightweight liveness check.
     Ping,
     /// Print database information.
@@ -149,6 +151,32 @@ pub(crate) struct ConfigArgs {
     /// Config command.
     #[command(subcommand)]
     pub(crate) command: ConfigCommand,
+}
+
+/// Agent-surface command arguments.
+#[derive(Debug, Args)]
+pub(crate) struct AgentsArgs {
+    /// Agents command.
+    #[command(subcommand)]
+    pub(crate) command: AgentsCommand,
+}
+
+/// Agent-facing self-description commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum AgentsCommand {
+    /// Print the complete offline usage guide (markdown, version-matched).
+    Guide,
+    /// Print the machine-readable command catalog.
+    Commands,
+    /// Print the public error-code registry.
+    Errors,
+    /// Write repo onboarding files (.strata/AGENTS.md; --apply appends the
+    /// pointer block to the repo's AGENTS.md or CLAUDE.md).
+    Init {
+        /// Append the pointer block to an existing AGENTS.md/CLAUDE.md.
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 /// Config commands.

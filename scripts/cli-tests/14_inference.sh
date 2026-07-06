@@ -7,7 +7,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/harness.sh"
 run "$DB" init
 check_ok "database opens"
 
-if "$STRATA_BIN" inference --help >/dev/null 2>&1; then
+# Detect the feature from the advertised command list — `<unknown> --help`
+# renders top-level help with exit 0, so probing the subcommand is ambiguous.
+if "$STRATA_BIN" --help 2>/dev/null | grep -qE '^\s+inference\b'; then
   echo "[$SUITE_NAME] inference-enabled binary detected"
   run "$DB" inference --help
   check_ok "inference help renders"
