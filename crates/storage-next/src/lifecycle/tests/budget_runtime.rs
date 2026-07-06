@@ -307,7 +307,11 @@ fn reader_budget_error_names_table_identity() {
 }
 
 #[test]
-fn reader_budget_cache_mode_and_durable_mode_match() {
+fn reader_budget_below_metadata_rejects_in_both_cache_and_durable_mode() {
+    // BS4.5a: cache flush charges the whole object; durable flush charges only the metadata-resident
+    // footprint. This 1-byte reader budget sits below *even the metadata*, so both modes still reject —
+    // the floor case where the two charges agree. (Where they diverge — a budget between the metadata and
+    // the object — is covered by `durable_flush_admits_table_larger_than_reader_budget_while_cache_rejects`.)
     let cache_branch = branch_id(0x50);
     let durable_branch = branch_id(0x51);
     let mut parts = budget_parts(16 * 1024);
@@ -356,6 +360,69 @@ fn reader_budget_cache_mode_and_durable_mode_match() {
     assert_budget_error(&durable_error, StorageBudgetPool::TableReader);
     assert_eq!(cache.branch_state().frozen_table_count(), 1);
     assert_eq!(durable.branch_state().frozen_table_count(), 1);
+}
+
+#[test]
+fn durable_flush_admits_table_larger_than_reader_budget_while_cache_rejects() {
+    // BS4.5a: a durable flush installs a lazy, disk-resident reader, so it charges only the
+    // metadata-resident footprint against the reader pool — a table whose full object far exceeds the
+    // reader budget still installs. A cache flush installs an eager, fully-resident reader and keeps
+    // charging the whole object (constraint C2), so the same table is rejected. The reader budget sits
+    // between the two: above the metadata (few hundred bytes) but well below the 32 KiB object.
+    let cache_branch = branch_id(0x54);
+    let durable_branch = branch_id(0x55);
+    let mut parts = budget_parts(128 * 1024);
+    parts.table_reader_bytes = 8 * 1024;
+    parts.frozen_mutable_bytes = 64 * 1024;
+    parts.generated_artifact_bytes = 64 * 1024;
+    parts.total_bytes = pool_sum(parts);
+    let budget = StorageRuntimeBudget::from_parts(parts).expect("budget");
+    let value = vec![0x63; 32 * 1024];
+
+    let mut cache = open_cache_runtime(cache_branch, budget);
+    cache
+        .execute_cache_commit(
+            put_batch(
+                cache_branch,
+                physical_key(cache_branch, b"cache-large-table"),
+                value.clone(),
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("cache commit");
+    cache.rotate_active_for_maintenance().expect("cache rotate");
+
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
+    let mut durable = open_durable_runtime(durable_branch, backend, budget);
+    durable
+        .execute_durable_commit(
+            durable_put_batch(
+                durable_branch,
+                physical_key(durable_branch, b"durable-large-table"),
+                value,
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("durable commit");
+    durable
+        .rotate_active_for_maintenance()
+        .expect("durable rotate");
+
+    // Cache: the whole-object reader charge exceeds the reader budget — rejected, table stays frozen.
+    let cache_error = cache
+        .flush_frozen(&flush_request(cache_branch, "cache-large"))
+        .expect_err("cache reader budget rejects the whole-object charge");
+    assert_budget_error(&cache_error, StorageBudgetPool::TableReader);
+    assert_eq!(cache.branch_state().frozen_table_count(), 1);
+
+    // Durable: the metadata-resident charge fits — the table installs disk-resident.
+    durable
+        .flush_frozen(&flush_request(durable_branch, "durable-large"))
+        .expect("durable flush admits a table larger than the reader budget");
+    assert_eq!(durable.branch_state().frozen_table_count(), 0);
+    assert_eq!(durable.branch_state().owned_table_count(), 1);
 }
 
 #[test]
@@ -1612,10 +1679,14 @@ fn cache_runtime_total_sums_resident_bytes_across_all_branches() {
 }
 
 #[test]
-fn multi_branch_combined_resident_over_budget_refuses_commit() {
-    // total_bytes is just above active_mutable_bytes, so a single branch can never exceed the
-    // global total through its own active pool — only two branches' combined resident can. This is
-    // the case the single-branch admission path cannot reach.
+fn multi_branch_combined_resident_over_budget_is_admitted_as_gauge() {
+    // BS4.5a: total_bytes is just above active_mutable_bytes, so a single branch can never exceed the
+    // global total through its own active pool — only two branches' combined resident can. Before the
+    // disk-resident flip this hard-rejected the second commit; now the database-wide durable memory
+    // budget is an observability gauge, not an admission failure — a durable dataset is no longer
+    // RAM-bounded, and per-branch memtable pressure is still enforced by rotation + frozen-backlog
+    // admission. Cache mode keeps its hard reject (see
+    // `api::tests::cache::cache_multi_branch_over_global_budget_is_refused`).
     let mut parts = budget_parts(64 * 1024);
     parts.table_reader_bytes = 1024;
     parts.frozen_mutable_bytes = 1024;
@@ -1647,17 +1718,16 @@ fn multi_branch_combined_resident_over_budget_refuses_commit() {
         )
         .expect("branch a commit fits the per-branch and global budget");
 
-    // Branch B's commit fits its own active pool but pushes the database-wide total over budget,
-    // so the global admission refuses it before any visible mutation.
-    let error = runtime
+    // BS4.5a: branch B's commit pushes the database-wide total over budget but is admitted — the
+    // over-budget condition is surfaced as a gauge (perf-trace counter), not a refusal.
+    runtime
         .execute_durable_commit(
             durable_put_batch(branch_b, physical_key(branch_b, b"b"), value),
             CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
         )
-        .expect_err("branch b commit exceeds the database memory budget");
-    assert_eq!(error.code(), "resource_exhausted.lifecycle.storage_budget");
+        .expect("branch b commit is admitted despite exceeding the database memory budget");
 
-    // Refusal is before mutation: branch A's value survives, branch B's never became visible.
+    // Both branches' values are visible: neither commit was refused.
     let view_a = runtime
         .branch_catalog()
         .branch_state(branch_a)
@@ -1669,7 +1739,7 @@ fn multi_branch_combined_resident_over_budget_refuses_commit() {
             .latest(&physical_key(branch_a, b"a"))
             .expect("read a")
             .is_some(),
-        "branch A's committed value survives the refused branch-B commit"
+        "branch A's committed value is visible"
     );
     let view_b = runtime
         .branch_catalog()
@@ -1681,8 +1751,8 @@ fn multi_branch_combined_resident_over_budget_refuses_commit() {
         view_b
             .latest(&physical_key(branch_b, b"b"))
             .expect("read b")
-            .is_none(),
-        "the refused branch-B commit left no visible state"
+            .is_some(),
+        "branch B's committed value is visible — the over-budget commit was admitted"
     );
 }
 

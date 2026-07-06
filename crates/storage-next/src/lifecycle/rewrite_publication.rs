@@ -717,11 +717,15 @@ fn publish_rewrite_artifact(
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<PublishedRewriteTable> {
     let extras = artifact.extras().clone();
+    // BS4.5a: the rewrite output installs a lazy, disk-resident reader — charge only its
+    // metadata-resident footprint (captured before `into_parts` consumes the artifact), not the full
+    // encoded object. The generated-artifact pool below still accounts the transient artifact in full.
+    let reader_resident_bytes = artifact.resident_metadata_bytes();
     // BS4.4l: drop the decoded rows — the output installs a lazy, disk-resident reader over the
     // just-published object rather than reusing the in-memory rows.
     let (bytes, table_facts) = artifact.into_parts();
     require_optional_rewrite_generated_budget(budget, table_facts.byte_count())?;
-    require_optional_rewrite_reader_budget(budget, table_facts.byte_count())?;
+    require_optional_rewrite_reader_budget(budget, reader_resident_bytes)?;
     let identity = table_facts.identity().clone();
     let branch_component = branch_id.to_string();
     let object = publish_or_load_rewrite_output(

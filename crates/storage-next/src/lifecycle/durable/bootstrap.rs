@@ -30,8 +30,8 @@ use crate::lifecycle::{
     LifecycleStoragePressureReason, LifecycleStoragePressureSeverity, LifecycleTransitionTrigger,
     LifecycleWalGrowthOutcome, LifecycleWalGrowthTrigger, LifecycleWriteAdmissionOutcome,
     RecoveryExclusivityToken, RecoveryHealth, RuntimeReadHandles, StorageBudgetLedger,
-    StorageBudgetPool, StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageMode,
-    StorageOpenOutcome, StorageOpenPlan,
+    StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageMode, StorageOpenOutcome,
+    StorageOpenPlan,
 };
 use crate::observability::perf_trace;
 use crate::row::PhysicalKey;
@@ -832,22 +832,17 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         batch: &CommitBatch,
     ) -> LifecycleResult<()> {
         let incoming_active_bytes = estimate_commit_batch_active_bytes(batch)?;
-        // Database-wide memory budget. Whole-object readers materialize resident tables in memory,
-        // so refresh the global total and refuse the commit before any visible mutation when it
-        // would push the database over its memory budget. The dataset cannot exceed the memory
-        // envelope until lazy block reads make reads incremental.
+        // BS4.5a: database-wide memory budget as an *observability gauge*, not an admission failure.
+        // After the disk-resident flip (BS4.4j/4.4l), durable tables hold lazy readers whose residency
+        // is metadata-only, so a durable dataset is no longer bounded by RAM — the old hard reject
+        // predated lazy block reads and only made sense while whole-object readers materialized every
+        // table. `refresh_runtime_memory_total` records the measured residency (readable via
+        // diagnostics); when it exceeds the budget we count the over-budget admission so health
+        // monitoring can WARN, then admit. Cache mode keeps its hard reject (constraint C2), and
+        // memtable/frozen pressure is still enforced by the rotation check below.
         self.refresh_runtime_memory_total();
         if self.budget.would_exceed_total(incoming_active_bytes) {
-            return Err(LifecycleError::StorageBudgetExceeded {
-                pool: StorageBudgetPool::ActiveMutable,
-                requested_bytes: incoming_active_bytes,
-                used_bytes: self.budget.total_used_bytes(),
-                limit_bytes: self.budget.budget().total_bytes(),
-                requested_count: 0,
-                used_count: 0,
-                limit_count: None,
-                reason: "commit would exceed the database memory budget",
-            });
+            perf_trace::record_durable_commit_admitted_over_budget();
         }
         let branch = self
             .branch_catalog

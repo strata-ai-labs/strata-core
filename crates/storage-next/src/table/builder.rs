@@ -21,6 +21,11 @@ pub(crate) struct BuiltTableArtifact {
     // once here from the rows so build-time installs thread it into `BranchOwnedTable::new` instead of the
     // constructor re-scanning. `finish()` rejects empty tables, so `from_rows` never sees an empty slice.
     extras: TableSummaryExtras,
+    // BS4.5a: the lazy reader's metadata-resident footprint (index + properties + filter frame), computed
+    // once at build from the encoder's index entries (same free fn the reader uses) and charged against
+    // the table-reader budget in place of the full encoded object — a durable dataset is no longer bounded
+    // by RAM. Matches a reopened reader's `resident_size_bytes()` exactly.
+    resident_metadata_bytes: u64,
     rows: Vec<TableRow>,
 }
 
@@ -29,12 +34,14 @@ impl BuiltTableArtifact {
         bytes: Vec<u8>,
         facts: TableRuntimeFacts,
         extras: TableSummaryExtras,
+        resident_metadata_bytes: u64,
         rows: Vec<TableRow>,
     ) -> Self {
         Self {
             bytes,
             facts,
             extras,
+            resident_metadata_bytes,
             rows,
         }
     }
@@ -53,6 +60,16 @@ impl BuiltTableArtifact {
 
     pub(crate) fn byte_count(&self) -> u64 {
         self.facts.byte_count()
+    }
+
+    /// BS4.5a: the lazy reader's metadata-resident footprint (index + properties + filter frame) —
+    /// what actually stays in RAM once this table installs a disk-resident reader, as opposed to
+    /// `byte_count()` (the whole encoded object). Charged against the table-reader budget in place of
+    /// the full object so a durable dataset is no longer bounded by RAM. Computed once at build from
+    /// the encoder's index entries via the same free fn a reopened reader uses, so admission and
+    /// steady-state accounting can never drift.
+    pub(crate) const fn resident_metadata_bytes(&self) -> u64 {
+        self.resident_metadata_bytes
     }
 
     pub(crate) fn into_bytes(self) -> Vec<u8> {
@@ -290,10 +307,12 @@ fn build_table_artifact_from_streaming_output(
     )?;
     perf_trace::record_table_build_facts_from_streaming_metadata();
     let extras = TableSummaryExtras::from_rows(&rows)?;
+    let resident_metadata_bytes = output.resident_metadata_bytes();
     Ok(BuiltTableArtifact::new(
         output.into_bytes(),
         facts,
         extras,
+        resident_metadata_bytes,
         rows,
     ))
 }

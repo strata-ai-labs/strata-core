@@ -55,15 +55,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use strata_core_next::{CommitVersion, Timestamp};
 
+// BS4.5a: pool split remodelled for the disk-resident regime. Before the flip, table readers held
+// every table fully decoded in RAM, so the reader pool was the dominant one (1/4 of total) and the
+// block cache was a minor accelerator (1/8). After BS4.4j/4.4l durable tables are disk-resident:
+// on-demand data blocks flow through the block cache (now the RAM bound and read hot path, ~half the
+// total) and readers charge only metadata (so the reader pool shrinks to 1/16). The sum stays within
+// the total and `from_total_bytes` scales these proportions across every memory tier. These are a
+// sensible starting split; final fractions are tuned in BS4.6.
 const DEFAULT_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
-const DEFAULT_BLOCK_CACHE_BYTES: u64 = 64 * 1024 * 1024;
-const DEFAULT_TABLE_READER_BYTES: u64 = 128 * 1024 * 1024;
+const DEFAULT_BLOCK_CACHE_BYTES: u64 = 240 * 1024 * 1024;
+const DEFAULT_TABLE_READER_BYTES: u64 = 32 * 1024 * 1024;
 const DEFAULT_ACTIVE_MUTABLE_BYTES: u64 = 64 * 1024 * 1024;
-const DEFAULT_FROZEN_MUTABLE_BYTES: u64 = 128 * 1024 * 1024;
+const DEFAULT_FROZEN_MUTABLE_BYTES: u64 = 80 * 1024 * 1024;
 const DEFAULT_MAINTENANCE_QUEUE_BYTES: u64 = 1024 * 1024;
-const DEFAULT_GENERATED_ARTIFACT_BYTES: u64 = 96 * 1024 * 1024;
+const DEFAULT_GENERATED_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_MANIFEST_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
-const DEFAULT_MAX_OPEN_READERS: u32 = 1024;
+// BS4.5a: readers are metadata-only and byte-charged, so the count cap is only a backstop now. Raised
+// well above the ~1,600 always-open readers at the 100M tier (a bounded reader cache is the deferred
+// G15 1B-tier follow-up); the byte budget, not this count, is the effective bound.
+const DEFAULT_MAX_OPEN_READERS: u32 = 65_536;
 const DEFAULT_MAX_FROZEN_TABLES: u32 = 1024;
 const DEFAULT_MAX_PENDING_MAINTENANCE_TASKS: u32 = 1024;
 const MAINTENANCE_TASK_METADATA_BYTES: u64 = 256;

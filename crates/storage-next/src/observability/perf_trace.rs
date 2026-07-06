@@ -415,6 +415,7 @@ pub struct StoragePerfSnapshot {
     scan_candidate_row_clone_bytes: u64,
     table_reader_opens: u64,
     table_lazy_full_materializations: u64,
+    durable_commit_admitted_over_budget: u64,
     table_metadata_read_bytes: u64,
     table_index_read_bytes: u64,
     table_properties_read_bytes: u64,
@@ -2225,6 +2226,13 @@ impl StoragePerfSnapshot {
         self.table_lazy_full_materializations
     }
 
+    /// BS4.5a: durable mutating commits admitted while measured residency exceeded the memory budget.
+    /// After the disk-resident flip a durable dataset is no longer RAM-bounded, so this is an
+    /// observability gauge (health WARN signal), not an admission failure — cache mode still hard-rejects.
+    pub const fn durable_commit_admitted_over_budget(self) -> u64 {
+        self.durable_commit_admitted_over_budget
+    }
+
     /// Bytes read for table header/footer metadata.
     pub const fn table_metadata_read_bytes(self) -> u64 {
         self.table_metadata_read_bytes
@@ -3075,6 +3083,8 @@ static TABLE_READER_OPENS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_LAZY_FULL_MATERIALIZATIONS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static DURABLE_COMMIT_ADMITTED_OVER_BUDGET: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static TABLE_METADATA_READ_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_INDEX_READ_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -3562,6 +3572,7 @@ pub fn reset() {
     SCAN_CANDIDATE_ROW_CLONE_BYTES.store(0, Ordering::Relaxed);
     TABLE_READER_OPENS.store(0, Ordering::Relaxed);
     TABLE_LAZY_FULL_MATERIALIZATIONS.store(0, Ordering::Relaxed);
+    DURABLE_COMMIT_ADMITTED_OVER_BUDGET.store(0, Ordering::Relaxed);
     TABLE_METADATA_READ_BYTES.store(0, Ordering::Relaxed);
     TABLE_INDEX_READ_BYTES.store(0, Ordering::Relaxed);
     TABLE_PROPERTIES_READ_BYTES.store(0, Ordering::Relaxed);
@@ -4168,6 +4179,8 @@ pub fn snapshot() -> StoragePerfSnapshot {
         scan_candidate_row_clone_bytes: SCAN_CANDIDATE_ROW_CLONE_BYTES.load(Ordering::Relaxed),
         table_reader_opens: TABLE_READER_OPENS.load(Ordering::Relaxed),
         table_lazy_full_materializations: TABLE_LAZY_FULL_MATERIALIZATIONS.load(Ordering::Relaxed),
+        durable_commit_admitted_over_budget: DURABLE_COMMIT_ADMITTED_OVER_BUDGET
+            .load(Ordering::Relaxed),
         table_metadata_read_bytes: TABLE_METADATA_READ_BYTES.load(Ordering::Relaxed),
         table_index_read_bytes: TABLE_INDEX_READ_BYTES.load(Ordering::Relaxed),
         table_properties_read_bytes: TABLE_PROPERTIES_READ_BYTES.load(Ordering::Relaxed),
@@ -6806,6 +6819,17 @@ pub(crate) fn record_lazy_full_materialization() {
         return;
     }
     TABLE_LAZY_FULL_MATERIALIZATIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_durable_commit_admitted_over_budget() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_durable_commit_admitted_over_budget() {
+    if !recording_enabled() {
+        return;
+    }
+    DURABLE_COMMIT_ADMITTED_OVER_BUDGET.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

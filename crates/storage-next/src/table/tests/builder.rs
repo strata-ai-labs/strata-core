@@ -438,6 +438,54 @@ fn immutable_builder_is_deterministic_across_rows_mutable_and_frozen_sources() {
 }
 
 #[test]
+fn resident_metadata_bytes_agree_between_build_and_reopen() {
+    // BS4.5a: the table-reader budget is charged at build time (durable flush / compaction, from
+    // `BuiltTableArtifact::resident_metadata_bytes`) and again at reopen time (recovery, from a decoded
+    // `ImmutableTableMetadata::resident_metadata_bytes`). Both route through the same free fn
+    // `table_resident_metadata_bytes`, so for one object they must be byte-identical — otherwise the
+    // admission decision at flush and the residency counted after reopen would disagree. Covers a table
+    // with and without a persisted filter frame (the filter frame length is part of the footprint).
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        tombstone_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+        put_row(b"echo".to_vec(), 5),
+    ];
+    let table_rows = sorted_table_rows(&rows);
+    for filter_bits in [None, Some(10_usize)] {
+        let config = TableBuilderConfig::new(1024, 2, TableCompression::Uncompressed)
+            .expect("builder config")
+            .with_filter_bits_per_key(filter_bits);
+        let artifact = ImmutableTableBuilder::new(config)
+            .expect("builder")
+            .build_from_rows(identity("resident-metadata-agree"), &table_rows)
+            .expect("build artifact");
+
+        let build_time = artifact.resident_metadata_bytes();
+        // Reopen-time value through the real lazy seam: a lazy reader's `resident_size_bytes` is exactly
+        // its `resident_metadata_bytes` (recovery charges this).
+        let reopen_time = ImmutableTableReader::open_source(
+            identity("resident-metadata-agree"),
+            BytesTableSource::new(artifact.bytes().to_vec()),
+            TableReaderConfig::default(),
+        )
+        .expect("open lazy reader")
+        .resident_size_bytes();
+        assert_eq!(
+            build_time, reopen_time,
+            "build-time and reopen-time metadata-resident bytes must agree (filter_bits={filter_bits:?})",
+        );
+        assert!(
+            build_time < artifact.byte_count(),
+            "metadata-resident bytes must exclude the data blocks (filter_bits={filter_bits:?}): \
+             build_time={build_time}, object={}",
+            artifact.byte_count(),
+        );
+    }
+}
+
+#[test]
 fn immutable_builder_streaming_matches_batch_builder_with_block_bounded_buffer() {
     let rows = vec![
         put_row(b"alpha".to_vec(), 1),

@@ -731,9 +731,14 @@ pub(crate) fn prepare_durable_flush_with_budget(
         artifact.byte_count(),
         "flush artifact exceeds generated artifact budget",
     )?;
+    // BS4.5a: the installed durable table holds a lazy, disk-resident reader — charge only its
+    // metadata-resident footprint (index + properties + filter frame), not the full encoded object.
+    // The generated-artifact pool above still accounts the transient in-memory artifact at full size.
+    // (Cache-mode flush keeps charging full bytes: those tables install eager, genuinely-resident
+    // readers — constraint C2.)
     require_optional_table_reader_budget(
         budget,
-        artifact.byte_count(),
+        artifact.resident_metadata_bytes(),
         "flush table reader exceeds storage budget",
     )?;
     let identity = artifact.facts().identity().clone();

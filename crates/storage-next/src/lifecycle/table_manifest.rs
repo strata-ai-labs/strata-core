@@ -696,13 +696,6 @@ fn recover_manifest_table(
     split_cursor: &mut usize,
 ) -> LifecycleResult<BranchOwnedTable> {
     let object_facts = TableObjectFacts::from_table_manifest_ref(table);
-    if let Some(budget) = budget {
-        require_table_reader_budget(
-            budget,
-            manifest_reader_materialized_budget_bytes(&object_facts),
-            "table manifest recovery reader exceeds storage budget",
-        )?;
-    }
     let reader = reader_service
         .open_reader(
             table.table_identity().clone(),
@@ -710,6 +703,17 @@ fn recover_manifest_table(
             TableReaderConfig::default().deny_runtime_materialization(),
         )
         .map_err(table_read_error)?;
+    // BS4.5a: charge the lazy reader's *metadata-resident* footprint (index + properties + filter
+    // frame), not the full encoded object. A durable dataset is no longer bounded by RAM — only
+    // reader metadata + caches + memtables are. Charged after the O(metadata) open so admission
+    // uses the same `resident_size_bytes()` seam as the DB-wide runtime total.
+    if let Some(budget) = budget {
+        require_table_reader_budget(
+            budget,
+            reader.resident_size_bytes(),
+            "table manifest recovery reader exceeds storage budget",
+        )?;
+    }
     // BS4.4j: consume this table's row-split (in walk order — the writer's push order) BEFORE
     // validation, so the single verification scan can release-check the put/tombstone counts alongside
     // the timestamp/physical bounds. Without this the counts would be trusted from the persisted split
@@ -737,10 +741,6 @@ fn recover_manifest_table(
         split.tombstone_rows(),
     );
     branch_table_from_reader(branch_id, level, table.provenance(), reader, extras)
-}
-
-fn manifest_reader_materialized_budget_bytes(object_facts: &TableObjectFacts) -> u64 {
-    object_facts.byte_count()
 }
 
 fn branch_table_from_reader(

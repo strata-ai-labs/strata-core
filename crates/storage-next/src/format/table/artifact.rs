@@ -83,19 +83,31 @@ impl ImmutableTableMetadata {
     /// so they are deliberately excluded: this is what a held lazy reader actually pins in memory, as
     /// opposed to `byte_count()` (the whole encoded object). `filter_block_frame_len` is `0` when absent.
     pub(crate) fn resident_metadata_bytes(&self) -> u64 {
-        let index_bytes: u64 = self
-            .index
-            .entries()
-            .iter()
-            .map(|entry| {
-                (std::mem::size_of::<TableIndexEntry>()
-                    + entry.first_key_bytes().len()
-                    + entry.last_key_bytes().len()) as u64
-            })
-            .sum();
-        let properties_bytes = std::mem::size_of::<TableProperties>() as u64;
-        index_bytes + properties_bytes + u64::from(self.filter_block_frame_len)
+        table_resident_metadata_bytes(&self.index, self.filter_block_frame_len)
     }
+}
+
+/// BS4.5a: single source of truth for a lazy table's resident metadata footprint — the index block
+/// (one entry per data block, each with its first/last key), the properties summary, and the filter
+/// frame. Shared by the reader's `ImmutableTableMetadata` (reopen-time) and the streaming builder's
+/// output (build-time) so the budget charged at flush/compaction and the residency counted for a
+/// reopened reader are computed identically and can never drift. `filter_block_frame_len` is `0`
+/// when absent.
+pub(crate) fn table_resident_metadata_bytes(
+    index: &TableIndexBlock,
+    filter_block_frame_len: u32,
+) -> u64 {
+    let index_bytes: u64 = index
+        .entries()
+        .iter()
+        .map(|entry| {
+            (std::mem::size_of::<TableIndexEntry>()
+                + entry.first_key_bytes().len()
+                + entry.last_key_bytes().len()) as u64
+        })
+        .sum();
+    let properties_bytes = std::mem::size_of::<TableProperties>() as u64;
+    index_bytes + properties_bytes + u64::from(filter_block_frame_len)
 }
 
 impl ImmutableTable {
@@ -178,11 +190,21 @@ pub(crate) struct ImmutableTableStreamingOutput {
     max_key_bytes: Vec<u8>,
     commit_min: CommitVersion,
     commit_max: CommitVersion,
+    // BS4.5a: the lazy reader's metadata-resident footprint, computed here at build from the index +
+    // filter frame via `table_resident_metadata_bytes` — the same fn a reopened reader uses — so the
+    // table-reader budget charged at install matches a reopened reader's residency exactly.
+    resident_metadata_bytes: u64,
 }
 
 impl ImmutableTableStreamingOutput {
     pub(crate) fn into_bytes(self) -> Vec<u8> {
         self.bytes
+    }
+
+    /// BS4.5a: the metadata-resident footprint (index + properties + filter frame) of the lazy reader
+    /// this object installs — charged against the table-reader budget in place of the full object.
+    pub(crate) const fn resident_metadata_bytes(&self) -> u64 {
+        self.resident_metadata_bytes
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
@@ -403,6 +425,9 @@ impl ImmutableTableStreamingEncoder {
         )?;
         self.table_bytes
             .extend_from_slice(&encode_table_footer(&footer, &self.table_bytes)?);
+        // BS4.5a: capture the lazy reader's metadata-resident footprint now (index built above,
+        // filter frame len known) via the shared fn, so install-time budget == reopen-time residency.
+        let resident_metadata_bytes = table_resident_metadata_bytes(&index, filter_block_frame_len);
         Ok(ImmutableTableStreamingOutput {
             bytes: self.table_bytes,
             row_count: properties.row_count(),
@@ -411,6 +436,7 @@ impl ImmutableTableStreamingEncoder {
             max_key_bytes: properties.max_key_bytes().to_vec(),
             commit_min: properties.commit_min(),
             commit_max: properties.commit_max(),
+            resident_metadata_bytes,
         })
     }
 

@@ -848,7 +848,12 @@ fn reader_budget_recovery_decode_rejects_materialized_table_over_budget() {
 }
 
 #[test]
-fn reader_budget_rejects_below_whole_object_while_rows_are_materialized() {
+fn reader_budget_below_whole_object_admits_metadata_resident_reader() {
+    // BS4.5a: recovery charges the lazy reader's *metadata-resident* footprint (index + properties +
+    // filter frame), not the whole encoded object. A reader budget set just below the object size (but
+    // far above metadata) now admits the table and serves its rows on demand — the dataset is no longer
+    // bounded by the memory budget. Before the disk-resident flip this rejected, because the reader
+    // materialized the whole object in RAM. (The recovery-side shape of exit gate #1.)
     let backend: &'static ManifestRecoveryBackend =
         Box::leak(Box::new(ManifestRecoveryBackend::new()));
     let branch = branch_id(0x6b);
@@ -871,12 +876,14 @@ fn reader_budget_rejects_below_whole_object_while_rows_are_materialized() {
                     .expect("level"),
             ],
             Vec::new(),
-            Vec::new(),
+            vec![table_row_split_extension_section(&[table.row_split]).expect("row-split section")],
         )
         .expect("manifest"),
     );
     let table_bytes = table.reference.facts().byte_count();
     let mut parts = budget_parts_for_recovery();
+    // Just below the whole encoded object — the old charge would reject here; the metadata-resident
+    // charge is far smaller, so recovery admits.
     parts.table_reader_bytes = table_bytes.saturating_sub(1).max(1);
     parts.total_bytes = pool_sum(parts);
     let budget = StorageRuntimeBudget::from_parts(parts).expect("budget");
@@ -884,22 +891,27 @@ fn reader_budget_rejects_below_whole_object_while_rows_are_materialized() {
     let mut shell = assemble_shell_with_budget(backend, branch, budget);
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
-    let error = LifecycleRecoveryRuntime::new(&mut shell)
+    LifecycleRecoveryRuntime::new(&mut shell)
         .recover(&request)
-        .expect_err("materialized reader budget rejects below object size");
+        .expect("recovery admits a metadata-resident reader below the whole-object size");
 
-    assert!(matches!(
-        error,
-        LifecycleError::StorageBudgetExceeded {
-            pool: StorageBudgetPool::TableReader,
-            ..
-        }
-    ));
-    assert!(shell.branch_state().is_empty());
+    // The table recovered and its row is readable, even though the budget is below the object size.
+    assert_eq!(shell.branch_state().owned_table_count(), 1);
+    let view = shell.branch_state().capture_read_view().expect("read view");
+    assert!(
+        view.latest(&physical_key(branch, b"whole-object-defer"))
+            .expect("read")
+            .is_some(),
+        "the recovered lazy table serves its row under a below-object reader budget",
+    );
 }
 
 #[test]
-fn low_memory_profile_rejects_large_materialized_table_reader() {
+fn low_memory_profile_admits_table_larger_than_reader_budget() {
+    // BS4.5a: even the edge-tier low-memory profile admits a table whose whole object dwarfs the
+    // reader budget — recovery charges the metadata-resident footprint, so the dataset is bounded by
+    // disk, not by the reader pool. This is the unified-scale edge case (C3): a large dataset served
+    // on a tiny RAM budget. Before the disk-resident flip this rejected.
     let backend: &'static ManifestRecoveryBackend =
         Box::leak(Box::new(ManifestRecoveryBackend::new()));
     let branch = branch_id(0x6c);
@@ -929,31 +941,32 @@ fn low_memory_profile_rejects_large_materialized_table_reader() {
                     .expect("level"),
             ],
             Vec::new(),
-            Vec::new(),
+            vec![table_row_split_extension_section(&[table.row_split]).expect("row-split section")],
         )
         .expect("manifest"),
     );
     let budget = StorageRuntimeBudget::low_memory_test_profile();
     assert!(
         table.reference.facts().byte_count()
-            > budget.pool_limit_bytes(StorageBudgetPool::TableReader)
+            > budget.pool_limit_bytes(StorageBudgetPool::TableReader),
+        "the whole object must exceed the reader budget for this test to be meaningful",
     );
 
     let mut shell = assemble_shell_with_budget(backend, branch, budget);
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
-    let error = LifecycleRecoveryRuntime::new(&mut shell)
+    LifecycleRecoveryRuntime::new(&mut shell)
         .recover(&request)
-        .expect_err("low-memory profile rejects materialized table reader");
+        .expect("low-memory recovery admits a metadata-resident reader for a large object");
 
-    assert!(matches!(
-        error,
-        LifecycleError::StorageBudgetExceeded {
-            pool: StorageBudgetPool::TableReader,
-            ..
-        }
-    ));
-    assert!(shell.branch_state().is_empty());
+    assert_eq!(shell.branch_state().owned_table_count(), 1);
+    let view = shell.branch_state().capture_read_view().expect("read view");
+    assert!(
+        view.latest(&physical_key(branch, b"low-memory-reader"))
+            .expect("read")
+            .is_some(),
+        "the recovered lazy table serves its row under the low-memory reader budget",
+    );
 }
 
 #[test]
