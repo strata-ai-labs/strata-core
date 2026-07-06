@@ -127,6 +127,7 @@ thread_local! {
 /// Stable executor compatibility error class.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ExecutorErrorClass {
     /// Caller supplied invalid input.
     InvalidInput,

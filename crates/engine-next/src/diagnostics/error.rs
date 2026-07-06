@@ -46,6 +46,7 @@ pub enum ErrorClass {
 /// V1 retry policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RetryPolicy {
     /// Retrying the same request without changing input or state should not help.
     Never,
@@ -71,6 +72,7 @@ impl RetryPolicy {
 /// V1 commit outcome status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum CommitOutcomeStatus {
     /// The operation did not attempt a commit.
     NotApplicable,
