@@ -98,7 +98,6 @@ fn command_names_cover_every_variant() {
             "event_append",
             "event_get",
             "event_exists",
-            "event_get_by_type",
             "event_len",
             "event_range",
             "event_range_by_time",

@@ -45,17 +45,18 @@ impl Executor {
         })
     }
 
-    /// Executes a default-branch event type-filter command.
+    /// Executes a default-branch event type-filter command (a type-filtered
+    /// event list — the canonical path for reading events by type).
     pub fn event_get_by_type(
         &mut self,
         event_type: impl Into<String>,
         limit: Option<u64>,
         after_sequence: Option<u64>,
     ) -> ExecutorResult<Output> {
-        self.execute(Command::EventGetByType {
+        self.execute(Command::EventList {
             branch: None,
             space: None,
-            event_type: event_type.into(),
+            event_type: Some(event_type.into()),
             limit,
             after_sequence,
             as_of: None,

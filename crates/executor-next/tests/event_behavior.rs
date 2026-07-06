@@ -833,10 +833,10 @@ fn event_mapping_commands() -> Vec<Command> {
             space: None,
             sequence: 0,
         },
-        Command::EventGetByType {
+        Command::EventList {
             branch: None,
             space: None,
-            event_type: "map.created".to_owned(),
+            event_type: Some("map.created".to_owned()),
             limit: None,
             after_sequence: None,
             as_of: None,
@@ -923,18 +923,18 @@ fn invalid_input_event_commands() -> Vec<Command> {
             event_type: "bad.payload".to_owned(),
             payload: json!(null),
         },
-        Command::EventGetByType {
+        Command::EventList {
             branch: None,
             space: None,
-            event_type: String::new(),
+            event_type: Some(String::new()),
             limit: None,
             after_sequence: None,
             as_of: None,
         },
-        Command::EventGetByType {
+        Command::EventList {
             branch: None,
             space: None,
-            event_type: long_event_type,
+            event_type: Some(long_event_type),
             limit: None,
             after_sequence: None,
             as_of: None,
@@ -1076,10 +1076,10 @@ fn event_records_by_type(
     as_of: Option<u64>,
 ) -> Vec<EventVersionedData> {
     match executor
-        .execute(Command::EventGetByType {
+        .execute(Command::EventList {
             branch: None,
             space: None,
-            event_type: event_type.to_owned(),
+            event_type: Some(event_type.to_owned()),
             limit,
             after_sequence,
             as_of,

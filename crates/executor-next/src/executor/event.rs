@@ -71,36 +71,6 @@ impl Executor {
         Ok(Output::Bool(service.exists(sequence)?))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn execute_event_get_by_type(
-        &mut self,
-        branch: Option<&str>,
-        space: Option<&str>,
-        event_type: String,
-        limit: Option<u64>,
-        after_sequence: Option<u64>,
-        as_of: Option<u64>,
-    ) -> ExecutorResult<Output> {
-        let event_type = engine_event_type(event_type)?;
-        let limit = optional_limit(limit)?;
-        let after_sequence = after_sequence.map(event_sequence);
-        let mut service = self.event_service(branch, space)?;
-        let records = if let Some(as_of) = as_of {
-            service.get_by_type_at(
-                &event_type,
-                Timestamp::from_micros(as_of),
-                after_sequence,
-                limit,
-            )?
-        } else {
-            service.get_by_type(&event_type, after_sequence, limit)?
-        };
-        Ok(Output::EventRecords {
-            items: event_records(&records),
-            page: PageInfo::terminal(),
-        })
-    }
-
     pub(super) fn execute_event_len(
         &mut self,
         branch: Option<&str>,

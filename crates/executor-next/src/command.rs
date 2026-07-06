@@ -795,26 +795,6 @@ pub enum Command {
         /// Event sequence.
         sequence: u64,
     },
-    /// Reads events by type.
-    EventGetByType {
-        /// Target branch. Defaults to the executor handle branch.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        branch: Option<String>,
-        /// Target product space. Defaults to `"default"`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        space: Option<String>,
-        /// Event type.
-        event_type: String,
-        /// Optional item limit.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        limit: Option<u64>,
-        /// Optional exclusive sequence cursor.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        after_sequence: Option<u64>,
-        /// Optional timestamp in microseconds.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        as_of: Option<u64>,
-    },
     /// Counts visible events.
     EventLen {
         /// Target branch. Defaults to the executor handle branch.
@@ -1366,7 +1346,6 @@ impl Command {
             Self::EventAppend { .. } => "event_append",
             Self::EventGet { .. } => "event_get",
             Self::EventExists { .. } => "event_exists",
-            Self::EventGetByType { .. } => "event_get_by_type",
             Self::EventLen { .. } => "event_len",
             Self::EventRange { .. } => "event_range",
             Self::EventRangeByTime { .. } => "event_range_by_time",

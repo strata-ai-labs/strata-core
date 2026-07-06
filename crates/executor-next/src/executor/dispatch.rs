@@ -416,21 +416,6 @@ impl Executor {
                 space,
                 sequence,
             } => self.execute_event_exists(branch.as_deref(), space.as_deref(), sequence),
-            Command::EventGetByType {
-                branch,
-                space,
-                event_type,
-                limit,
-                after_sequence,
-                as_of,
-            } => self.execute_event_get_by_type(
-                branch.as_deref(),
-                space.as_deref(),
-                event_type,
-                limit,
-                after_sequence,
-                as_of,
-            ),
             Command::EventLen {
                 branch,
                 space,

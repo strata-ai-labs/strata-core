@@ -628,10 +628,10 @@ fn event_command(command: EventCommand, scope: &Scope) -> Result<Command, CliErr
             limit,
             after_sequence,
             as_of,
-        } => Command::EventGetByType {
+        } => Command::EventList {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
-            event_type,
+            event_type: Some(event_type),
             limit,
             after_sequence,
             as_of,

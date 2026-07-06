@@ -24,14 +24,6 @@ pub(super) fn event_commands() -> Vec<Command> {
             space: None,
             sequence: 0,
         },
-        Command::EventGetByType {
-            branch: None,
-            space: None,
-            event_type: "user.created".to_owned(),
-            limit: Some(2),
-            after_sequence: Some(0),
-            as_of: Some(99),
-        },
         Command::EventLen {
             branch: None,
             space: None,
