@@ -407,10 +407,15 @@ fn kv_versioned_and_point_in_time_reads_preserve_commit_metadata() {
         .get_at_version(&sequence.alpha, sequence.removed.version())
         .expect("delete version read succeeds")
         .is_none());
-    assert!(kv
-        .get_at(&sequence.alpha, Timestamp::EPOCH)
-        .expect("early timestamp read succeeds")
-        .is_none());
+    // A timestamp before the retained history is an out-of-range diagnostic,
+    // not ordinary absence (F8): the caller can distinguish trimmed/before-history
+    // from "the key never existed at that time".
+    assert_eq!(
+        kv.get_at(&sequence.alpha, Timestamp::EPOCH)
+            .expect_err("before-history read is a diagnostic")
+            .code(),
+        "history_unavailable.engine.persistence_history"
+    );
     assert_eq!(
         kv.get_at(&sequence.alpha, sequence.third.timestamp())
             .expect("timestamp read succeeds")
@@ -425,12 +430,15 @@ fn kv_versioned_and_point_in_time_reads_preserve_commit_metadata() {
     assert_eq!(historical.value().as_bytes(), b"third");
     assert_eq!(historical.version(), sequence.third.version());
     assert_eq!(historical.timestamp(), sequence.third.timestamp());
+    // A timestamp after the latest retained commit does not silently clamp to
+    // current state (F7); it surfaces an after-latest diagnostic so the caller
+    // chooses current intentionally rather than reading it through a future
+    // timestamp.
     assert_eq!(
         kv.get_at(&sequence.alpha, Timestamp::MAX)
-            .expect("future timestamp read succeeds")
-            .expect("future timestamp sees latest")
-            .as_bytes(),
-        b"third"
+            .expect_err("after-latest read is a diagnostic")
+            .code(),
+        "history_unavailable.engine.persistence_history"
     );
 }
 
@@ -552,19 +560,26 @@ fn kv_list_page_and_timestamp_list_suppress_tombstones() {
         kv.count(Some(&app_prefix)).expect("prefix count succeeds"),
         4
     );
-    assert!(kv
-        .list_at(Some(&app_prefix), Timestamp::EPOCH)
-        .expect("early list succeeds")
-        .is_empty());
+    // A before-history timestamp scan is an out-of-range diagnostic, not an
+    // empty result (F8).
+    assert_eq!(
+        kv.list_at(Some(&app_prefix), Timestamp::EPOCH)
+            .expect_err("before-history list is a diagnostic")
+            .code(),
+        "history_unavailable.engine.persistence_history"
+    );
     assert_key_bytes(
         &kv.list_at(Some(&app_prefix), visible_timestamp)
             .expect("timestamp list succeeds"),
         &[b"app:001", b"app:003", b"app:004", b"app:005"],
     );
-    assert_key_bytes(
-        &kv.list_at(Some(&app_prefix), Timestamp::MAX)
-            .expect("future timestamp list succeeds"),
-        &[b"app:001", b"app:003", b"app:004", b"app:005"],
+    // An after-latest timestamp scan surfaces the diagnostic rather than
+    // clamping to the latest listing (F7).
+    assert_eq!(
+        kv.list_at(Some(&app_prefix), Timestamp::MAX)
+            .expect_err("after-latest list is a diagnostic")
+            .code(),
+        "history_unavailable.engine.persistence_history"
     );
 
     let first_page = kv

@@ -499,18 +499,10 @@ impl StoragePersistence {
         selector: ReadSelector,
     ) -> EngineResult<Option<PersistenceReadRow>> {
         self.guard_fault(FaultOp::Read)?;
-        let outcome = match self
+        let outcome = self
             .runtime
             .read_point(&point_read_request(address, selector)?)
-        {
-            Ok(outcome) => outcome,
-            Err(error) if is_outside_retained_history(&error) => return Ok(None),
-            Err(error) if should_fall_back_to_latest(selector, &error) => self
-                .runtime
-                .read_point(&point_read_request(address, ReadSelector::Latest)?)
-                .map_err(map_storage_error)?,
-            Err(error) => return Err(map_storage_error(error)),
-        };
+            .map_err(map_storage_error)?;
         Ok(outcome.row().map(PersistenceReadRow::from_storage))
     }
 
@@ -584,29 +576,17 @@ impl StoragePersistence {
             return Ok(Vec::new());
         }
         let limit = read_limit(limit)?;
-        let outcome = match self.runtime.scan_prefix(&prefix_scan_request(
-            branch_id,
-            row_class,
-            prefix.clone(),
-            selector,
-            limit,
-            after_version,
-        )?) {
-            Ok(outcome) => outcome,
-            Err(error) if is_outside_retained_history(&error) => return Ok(Vec::new()),
-            Err(error) if should_fall_back_to_latest(selector, &error) => self
-                .runtime
-                .scan_prefix(&prefix_scan_request(
-                    branch_id,
-                    row_class,
-                    prefix,
-                    ReadSelector::Latest,
-                    limit,
-                    after_version,
-                )?)
-                .map_err(map_storage_error)?,
-            Err(error) => return Err(map_storage_error(error)),
-        };
+        let outcome = self
+            .runtime
+            .scan_prefix(&prefix_scan_request(
+                branch_id,
+                row_class,
+                prefix,
+                selector,
+                limit,
+                after_version,
+            )?)
+            .map_err(map_storage_error)?;
         Ok(outcome
             .rows()
             .iter()
@@ -628,29 +608,12 @@ impl StoragePersistence {
             return Ok(Vec::new());
         }
         let limit = read_limit(limit)?;
-        let outcome = match self.runtime.scan_range(&scan_range_request(
-            branch_id,
-            row_class,
-            start.clone(),
-            end.clone(),
-            selector,
-            limit,
-        )?) {
-            Ok(outcome) => outcome,
-            Err(error) if is_outside_retained_history(&error) => return Ok(Vec::new()),
-            Err(error) if should_fall_back_to_latest(selector, &error) => self
-                .runtime
-                .scan_range(&scan_range_request(
-                    branch_id,
-                    row_class,
-                    start,
-                    end,
-                    ReadSelector::Latest,
-                    limit,
-                )?)
-                .map_err(map_storage_error)?,
-            Err(error) => return Err(map_storage_error(error)),
-        };
+        let outcome = self
+            .runtime
+            .scan_range(&scan_range_request(
+                branch_id, row_class, start, end, selector, limit,
+            )?)
+            .map_err(map_storage_error)?;
         Ok(outcome
             .rows()
             .iter()
@@ -667,29 +630,12 @@ impl StoragePersistence {
         selector: ReadSelector,
     ) -> EngineResult<Vec<PersistenceImmutableSource>> {
         self.guard_fault(FaultOp::Scan)?;
-        let outcome = match self
+        let outcome = self
             .runtime
             .scan_immutable_sources(&immutable_source_scan_request(
-                branch_id,
-                row_class,
-                start.clone(),
-                end.clone(),
-                selector,
-            )?) {
-            Ok(outcome) => outcome,
-            Err(error) if is_outside_retained_history(&error) => return Ok(Vec::new()),
-            Err(error) if should_fall_back_to_latest(selector, &error) => self
-                .runtime
-                .scan_immutable_sources(&immutable_source_scan_request(
-                    branch_id,
-                    row_class,
-                    start,
-                    end,
-                    ReadSelector::Latest,
-                )?)
-                .map_err(map_storage_error)?,
-            Err(error) => return Err(map_storage_error(error)),
-        };
+                branch_id, row_class, start, end, selector,
+            )?)
+            .map_err(map_storage_error)?;
         Ok(outcome
             .sources()
             .iter()
@@ -897,27 +843,6 @@ fn read_limit(limit: Option<usize>) -> EngineResult<Option<ReadLimit>> {
         Some(limit) => ReadLimit::new(limit).map(Some).map_err(map_storage_error),
         None => Ok(None),
     }
-}
-
-fn is_outside_retained_history(error: &StorageApiError) -> bool {
-    match error {
-        StorageApiError::RetainedHistoryUnavailable { reason, .. } => {
-            reason.contains("outside retained") || reason.contains("before retained")
-        }
-        StorageApiError::TimestampHistoryUnavailable { reason, .. } => {
-            reason.contains("before retained") || reason.contains("outside retained")
-        }
-        _ => false,
-    }
-}
-
-fn should_fall_back_to_latest(selector: ReadSelector, error: &StorageApiError) -> bool {
-    matches!(selector, ReadSelector::AtTimestamp(_))
-        && matches!(
-            error,
-            StorageApiError::TimestampHistoryUnavailable { reason, .. }
-                if *reason == "timestamp is after latest retained timeline history"
-        )
 }
 
 const fn durable_commit_summary(summary: CommitDurabilitySummary) -> bool {

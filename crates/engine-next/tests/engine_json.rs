@@ -507,14 +507,21 @@ fn json_history_version_timestamp_and_list_at_are_stable() {
         .json(branch("default"), space("default"))
         .expect("JSON service opens");
 
-    assert!(json
-        .get_at_version(&doc, &root(), CommitVersion::ZERO)
-        .expect("pre-create version read succeeds")
-        .is_none());
-    assert!(json
-        .get_at(&doc, &root(), Timestamp::EPOCH)
-        .expect("pre-create timestamp read succeeds")
-        .is_none());
+    // Reads before the retained window are out-of-range diagnostics, not
+    // ordinary absence (F8): a version below the retained floor and a timestamp
+    // before retained history are distinguishable from "never existed".
+    assert_eq!(
+        json.get_at_version(&doc, &root(), CommitVersion::ZERO)
+            .expect_err("pre-history version read is a diagnostic")
+            .code(),
+        "history_unavailable.engine.persistence_history"
+    );
+    assert_eq!(
+        json.get_at(&doc, &root(), Timestamp::EPOCH)
+            .expect_err("pre-history timestamp read is a diagnostic")
+            .code(),
+        "history_unavailable.engine.persistence_history"
+    );
 
     let created = json
         .create(

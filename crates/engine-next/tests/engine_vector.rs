@@ -605,6 +605,9 @@ fn exercise_vector_timestamp_reads(database: &mut Database) {
     let mut vectors = vector_service(database, "default", "default");
     let collection = collection("history");
     let key = vector_key("doc");
+    // Querying at a timestamp before any retained commit is an out-of-range
+    // diagnostic (F8), surfaced at the collection-config read before the
+    // collection-existence check.
     assert_eq!(
         vectors
             .query_at(
@@ -614,9 +617,9 @@ fn exercise_vector_timestamp_reads(database: &mut Database) {
                 None,
                 strata_core_next::Timestamp::EPOCH
             )
-            .expect_err("pre-create query rejected")
+            .expect_err("pre-history query is a diagnostic")
             .code(),
-        "not_found.engine.vector_collection"
+        "history_unavailable.engine.persistence_history"
     );
     vectors
         .create_collection(collection.clone(), config(2, VectorDistanceMetric::Cosine))
