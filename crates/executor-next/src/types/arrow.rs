@@ -37,7 +37,7 @@ pub enum ArrowExportPrimitive {
     Event,
     /// Export one vector collection.
     Vector,
-    /// Export one graph as node and edge files.
+    /// Export one graph as node and edge files derived from the output stem.
     Graph,
 }
 
@@ -133,7 +133,10 @@ impl ArrowExportResult {
         self.format
     }
 
-    /// Returns output paths.
+    /// Returns the concrete output paths written by the export.
+    ///
+    /// Graph exports return separate node and edge table paths; callers should
+    /// use this list rather than assuming the requested path is itself a file.
     pub fn paths(&self) -> &[String] {
         &self.paths
     }

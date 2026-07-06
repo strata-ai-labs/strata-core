@@ -43,12 +43,23 @@ assert_file_nonempty "$vector_export"
 graph_export="$CLI_CORPUS_FILES/export-graph.jsonl"
 out="$(cli_json arrow export --primitive graph --format jsonl "$graph_export" --graph export-graph --limit 10)"
 assert_json "$out" 'data["type"] == "arrow_export_result" and data["data"]["row_count"] >= 2 and len(data["data"]["paths"]) == 2' "arrow export graph"
-JSON_PAYLOAD="$out" python3 - <<'PY'
+JSON_PAYLOAD="$out" REQUESTED_PATH="$graph_export" python3 - <<'PY'
 import json
 import os
 import sys
 
 data = json.loads(os.environ["JSON_PAYLOAD"])
+requested = os.environ["REQUESTED_PATH"]
+paths = data["data"]["paths"]
+if requested in paths:
+    print("graph export should report concrete node/edge paths, not the requested stem", file=sys.stderr)
+    sys.exit(1)
+if os.path.exists(requested):
+    print(f"graph export stem should not be consumed as a data file: {requested}", file=sys.stderr)
+    sys.exit(1)
+if not paths[0].endswith("_nodes.jsonl") or not paths[1].endswith("_edges.jsonl"):
+    print(f"unexpected graph export paths: {paths}", file=sys.stderr)
+    sys.exit(1)
 for path in data["data"]["paths"]:
     if not os.path.isfile(path):
         print(f"missing graph export path: {path}", file=sys.stderr)

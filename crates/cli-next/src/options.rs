@@ -996,7 +996,7 @@ pub(crate) enum ArrowCommand {
         /// Output format.
         #[arg(long, value_enum, id = "arrow_export_format")]
         format: CliArrowFormat,
-        /// Output file path.
+        /// Output file path. Graph exports use this as a stem for node and edge files.
         path: String,
         /// Optional key/document/vector/node prefix.
         #[arg(long)]

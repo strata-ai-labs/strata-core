@@ -455,9 +455,19 @@ fn graph_export_writes_node_and_edge_tables() {
     };
     assert_eq!(result.primitive(), ArrowExportPrimitive::Graph);
     assert_eq!(result.row_count(), 3);
-    assert_eq!(result.paths().len(), 2);
     let node_path = dir.path().join("graph_nodes.jsonl");
     let edge_path = dir.path().join("graph_edges.jsonl");
+    assert_eq!(
+        result.paths(),
+        &[
+            node_path.to_string_lossy().into_owned(),
+            edge_path.to_string_lossy().into_owned(),
+        ]
+    );
+    assert!(
+        !output_path.exists(),
+        "graph export path is a stem; use returned paths for written files"
+    );
     assert!(node_path.exists());
     assert!(edge_path.exists());
     let nodes = fs::read_to_string(&node_path).expect("nodes");

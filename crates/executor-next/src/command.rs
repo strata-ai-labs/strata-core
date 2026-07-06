@@ -1174,7 +1174,7 @@ pub enum Command {
         primitive: ArrowExportPrimitive,
         /// Output file format.
         format: ArrowFileFormat,
-        /// Output file path. Graph exports derive node and edge file names from this path.
+        /// Output file path. Graph exports treat this as a stem and return concrete node and edge paths.
         path: String,
         /// Optional key, document, vector-key, or node-id prefix.
         #[serde(default, skip_serializing_if = "Option::is_none")]
