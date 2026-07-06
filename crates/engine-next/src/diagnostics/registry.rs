@@ -128,7 +128,10 @@ const CONFLICT_CODES: &[&str] = &[
 
 const HISTORY_UNAVAILABLE_CODES: &[&str] = &["history_unavailable.engine.persistence_history"];
 
-const UNSUPPORTED_CODES: &[&str] = &["unsupported.engine.persistence_capability"];
+const UNSUPPORTED_CODES: &[&str] = &[
+    "unsupported.engine.persistence_capability",
+    "unsupported.engine.graph_binding_cross_branch",
+];
 
 const RESOURCE_EXHAUSTED_CODES: &[&str] = &["resource_exhausted.engine.persistence_budget"];
 
@@ -394,6 +397,8 @@ fn message_template_for_code(code: &str, class: EngineErrorClass) -> &'static st
         "The vector request is invalid."
     } else if code.contains(".event_") {
         "The event request is invalid."
+    } else if code.contains("graph_binding_cross_branch") {
+        "Cross-branch graph relationship bindings are not supported."
     } else if code.contains(".graph_") {
         "The graph request is invalid."
     } else if code.contains("persistence_budget") {
@@ -449,6 +454,8 @@ fn suggested_fix_for_code(code: &str, class: EngineErrorClass) -> &'static str {
         "Use the collection dimension, valid vector keys, and metadata/filter values supported by the collection."
     } else if code.contains(".event_") {
         "Use a valid event type, payload, and metadata within the documented event limits."
+    } else if code.contains("graph_binding_cross_branch") {
+        "Bind graph relationships to targets on the node's own branch; cross-branch bindings are not supported in V1."
     } else if code.contains(".graph_") {
         "Use valid graph, node, edge, and binding identifiers and keep graph properties within limits."
     } else if code.contains("persistence_budget") {

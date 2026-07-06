@@ -342,6 +342,16 @@ impl EngineError {
     }
 
     #[must_use]
+    /// Creates an unsupported-operation error.
+    ///
+    /// The legacy class is `Unavailable` (the coarse pre-V1 vocabulary has no
+    /// dedicated unsupported variant); the public V1 class is derived from the
+    /// `unsupported.` code prefix and resolves to `ErrorClass::Unsupported`.
+    pub(crate) fn unsupported(code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(EngineErrorClass::Unavailable, code, false, message)
+    }
+
+    #[must_use]
     /// Creates a control-plane-unavailable error.
     pub(crate) fn control_plane_unavailable(message: impl Into<String>) -> Self {
         Self::new(
