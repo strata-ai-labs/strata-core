@@ -9,7 +9,9 @@ mod common;
 
 use common::{assert_status, branch, open_cache_database, open_durable_database, space};
 use strata_engine_next::testkit::StorageFaultKind;
-use strata_engine_next::{AdminHealthStatus, ControlHealthStatus, EngineErrorClass};
+use strata_engine_next::{
+    AdminHealthStatus, ControlHealthStatus, EngineErrorClass, KvKey, KvValue,
+};
 
 /// When a branch operation fails and its pending-marker cleanup also fails, the
 /// control plane fails closed: inspection still works and reports the plane as
@@ -109,5 +111,54 @@ fn interrupted_branch_creation_recovers_on_durable_reopen() {
         .expect("branch service opens")
         .create(branch("feature"))
         .expect("the interrupted name can be created cleanly after recovery");
+    db.close().expect("close succeeds");
+}
+
+/// A fork that fails AFTER its storage branch is durably created (here, the
+/// describe that follows a successful current-fork) must roll the storage
+/// branch back rather than orphan it. Otherwise the branch name is permanently
+/// poisoned — a clean retry would hit `already_exists` in storage (finding U12).
+#[cfg(feature = "localfs")]
+#[test]
+fn fork_failure_after_storage_creation_rolls_back_and_leaves_name_reusable() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut db = open_durable_database(dir.path()).expect("durable opens");
+
+    // Give the default branch a commit so a current-fork actually forks storage
+    // (reaching the post-fork describe) rather than taking the empty-history
+    // path that never describes.
+    db.kv(branch("default"), space("default"))
+        .expect("kv service opens")
+        .put(
+            KvKey::new(b"seed".to_vec()).expect("valid key"),
+            KvValue::new(b"v".to_vec()),
+        )
+        .expect("seed commit");
+
+    // The fork succeeds at the storage layer; the following describe fails.
+    db.inject_branch_fault_after_for_test(1, StorageFaultKind::Unavailable);
+    assert!(
+        db.branches()
+            .expect("branch service opens")
+            .fork_current(&branch("default"), branch("feature"))
+            .is_err(),
+        "the fork should fail on the post-fork describe"
+    );
+
+    // The name is not poisoned: the storage branch was rolled back, so a clean
+    // retry succeeds (before the fix this failed with already_exists).
+    db.branches()
+        .expect("branch service opens")
+        .fork_current(&branch("default"), branch("feature"))
+        .expect("the fork name is reusable after rollback");
+    assert!(
+        db.branches()
+            .expect("branch service opens")
+            .list()
+            .expect("branch list succeeds")
+            .iter()
+            .any(|summary| summary.name().as_str() == "feature"),
+        "the clean retry published the branch"
+    );
     db.close().expect("close succeeds");
 }

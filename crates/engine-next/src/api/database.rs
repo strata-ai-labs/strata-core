@@ -364,6 +364,15 @@ impl Database {
         self.persistence.arm_storage_fault(FaultOp::Branch, kind, 0);
     }
 
+    /// Arms a storage fault that fires after `skip` further branch actions pass —
+    /// used to fail a later branch action (such as the describe that follows a
+    /// successful fork) while letting the fork itself succeed.
+    #[cfg(any(test, feature = "testkit"))]
+    pub fn inject_branch_fault_after_for_test(&mut self, skip: usize, kind: StorageFaultKind) {
+        self.persistence
+            .arm_storage_fault(FaultOp::Branch, kind, skip);
+    }
+
     /// Closes the database handle.
     pub fn close(&mut self) -> EngineResult<CloseOutcome> {
         if let Some(close) = self.last_close {
