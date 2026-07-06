@@ -13,8 +13,8 @@ commands:
     kind: read.get
     title: Get KV value
     input: Command::KvGet
-    output: Output::KvValue
-    result: Bytes
+    output: Output::KvVersionedValue
+    result: VersionedValue
     prose: commands/kv.get.md
     fixtures:
       request: requests/v1/kv/get.json

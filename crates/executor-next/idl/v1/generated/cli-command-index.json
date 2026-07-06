@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor-next/idl/v1/generated/command-index.json",
-    "checksum_sha256": "1f26f75f5cca3a9160805b8265712c2d207bcecbce6165e6ac44dd9524aa5af8",
+    "checksum_sha256": "d68f85ea37cc6b7cf53266745ed4232ca8ac123954152d7483cabc0e13adc9aa",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -445,9 +445,9 @@
       "batch": "none",
       "input": "Command::KvGet",
       "outputs": [
-        "Output::KvValue"
+        "Output::KvVersionedValue"
       ],
-      "response_model": "Maybe<Bytes>",
+      "response_model": "Maybe<VersionedValue>",
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",

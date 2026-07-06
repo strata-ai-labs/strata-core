@@ -1,6 +1,6 @@
 response_models:
   - MutationAck<KvWrite>
-  - Maybe<Bytes>
+  - Maybe<VersionedValue>
   - MutationAck<KvDelete>
   - Page<Bytes, Bytes>
   - Page<ScanItem, Bytes>

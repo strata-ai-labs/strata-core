@@ -151,7 +151,7 @@ fn kv_vector_concepts_resolve_to_expected_shared_models() {
             .expect("command exists")
     };
 
-    assert_eq!(model("kv.get"), "Maybe<Bytes>");
+    assert_eq!(model("kv.get"), "Maybe<VersionedValue>");
     assert_eq!(model("kv.list"), "Page<Bytes, Bytes>");
     assert_eq!(model("kv.scan"), "Page<ScanItem, Bytes>");
     assert_eq!(model("kv.batch_get"), "BatchResult<Maybe<Bytes>>");

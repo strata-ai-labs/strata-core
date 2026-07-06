@@ -463,12 +463,12 @@
       "feature": "core",
       "access": "read",
       "input": "Command::KvGet",
-      "output": "Output::KvValue",
+      "output": "Output::KvVersionedValue",
       "outputs": [
-        "Output::KvValue"
+        "Output::KvVersionedValue"
       ],
       "wire_status": "stable",
-      "response_model": "Maybe<Bytes>",
+      "response_model": "Maybe<VersionedValue>",
       "commit": "none",
       "pagination": "none",
       "batch": "none",
