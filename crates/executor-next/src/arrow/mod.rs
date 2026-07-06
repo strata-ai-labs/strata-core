@@ -13,6 +13,10 @@ fn invalid_input(code: &'static str, message: impl Into<String>) -> ExecutorErro
     ExecutorError::invalid_input(code, message)
 }
 
+fn not_found(code: &'static str, message: impl Into<String>) -> ExecutorError {
+    ExecutorError::not_found(code, message)
+}
+
 fn io_error(message: impl Into<String>) -> ExecutorError {
     ExecutorError::new(
         crate::ExecutorErrorClass::Unavailable,

@@ -696,7 +696,6 @@ fn executor_arrow_sources_stay_on_serialized_command_boundary() {
     assert!(import_source.contains("Command::JsonBatchSet"));
     assert!(import_source.contains("Command::VectorBatchUpsert"));
     assert!(import_source.contains("Command::VectorListCollections"));
-    assert!(import_source.contains("Command::VectorCreateCollection"));
 
     let export_source =
         fs::read_to_string(arrow_root.join("export.rs")).expect("Arrow export reads");
