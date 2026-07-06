@@ -6,6 +6,7 @@ default-members = [
     "crates/engine-next",
     "crates/executor-next",
     "crates/inference-next",
+    "crates/cli-next",
 ]
 exclude = ["benchmarks"]
 members = [
@@ -14,6 +15,7 @@ members = [
     "crates/engine-next",
     "crates/executor-next",
     "crates/inference-next",
+    "crates/cli-next",
 ]
 
 [workspace.package]

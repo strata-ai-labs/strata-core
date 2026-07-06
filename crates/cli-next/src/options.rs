@@ -1,0 +1,993 @@
+//! Command-line option model.
+
+use std::path::PathBuf;
+
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use strata_executor_next::JsonIndexType;
+
+/// Strata V1 command-line interface.
+#[derive(Debug, Parser)]
+#[command(name = "strata", version, about = "Strata database CLI")]
+pub(crate) struct Cli {
+    /// Durable database path. Defaults to the current directory.
+    #[arg(value_name = "DB")]
+    pub(crate) db_path: Option<PathBuf>,
+    /// Durable database path. Cannot be combined with the positional DB path.
+    #[arg(long, value_name = "PATH")]
+    pub(crate) db: Option<PathBuf>,
+    /// Use an in-memory cache database for this process.
+    #[arg(long)]
+    pub(crate) cache: bool,
+    /// Default branch for commands that accept a branch.
+    #[arg(long, global = true)]
+    pub(crate) branch: Option<String>,
+    /// Product space for commands that accept a space.
+    #[arg(long, global = true)]
+    pub(crate) space: Option<String>,
+    /// Output format.
+    #[arg(long, value_enum, default_value_t = Format::Pretty, global = true)]
+    pub(crate) format: Format,
+    /// Command to run.
+    #[command(subcommand)]
+    pub(crate) command: TopCommand,
+}
+
+/// Output format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum Format {
+    /// Compact JSON.
+    Json,
+    /// Pretty-printed JSON.
+    Pretty,
+}
+
+/// Top-level command families.
+#[derive(Debug, Subcommand)]
+pub(crate) enum TopCommand {
+    /// Open or create a database and print database info.
+    Init,
+    /// Lightweight liveness check.
+    Ping,
+    /// Print database information.
+    Info,
+    /// Print health facts.
+    Health,
+    /// Print metrics facts.
+    Metrics,
+    /// Print a compact database description.
+    Describe,
+    /// Configuration reads.
+    Config(ConfigArgs),
+    /// Branch lifecycle commands.
+    Branch(BranchArgs),
+    /// Product space commands.
+    Space(SpaceArgs),
+    /// KV commands.
+    Kv(KvArgs),
+    /// JSON document commands.
+    Json(JsonArgs),
+    /// Vector commands.
+    Vector(VectorArgs),
+    /// Event log commands.
+    Event(EventArgs),
+    /// Graph core commands.
+    Graph(GraphArgs),
+    /// Arrow import/export commands.
+    Arrow(ArrowArgs),
+    /// Raw serialized executor command.
+    Command(CommandArgs),
+}
+
+/// Config command wrapper.
+#[derive(Debug, Args)]
+pub(crate) struct ConfigArgs {
+    /// Config command.
+    #[command(subcommand)]
+    pub(crate) command: ConfigCommand,
+}
+
+/// Config commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum ConfigCommand {
+    /// Print sanitized config.
+    Get,
+    /// Print one sanitized config value.
+    GetKey {
+        /// Config key.
+        key: String,
+    },
+}
+
+/// Branch command wrapper.
+#[derive(Debug, Args)]
+pub(crate) struct BranchArgs {
+    /// Branch command.
+    #[command(subcommand)]
+    pub(crate) command: BranchCommand,
+}
+
+/// Branch commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum BranchCommand {
+    /// List branches.
+    List,
+    /// Read one branch.
+    Get {
+        /// Branch name.
+        branch: String,
+    },
+    /// Create an empty root branch.
+    Create {
+        /// Branch name.
+        branch: String,
+    },
+    /// Fork a branch.
+    Fork {
+        /// Source branch.
+        source: String,
+        /// New branch name.
+        branch: String,
+        /// Fork from a retained source version.
+        #[arg(long, conflicts_with = "timestamp")]
+        version: Option<u64>,
+        /// Fork from a retained source timestamp.
+        #[arg(long, conflicts_with = "version")]
+        timestamp: Option<u64>,
+    },
+    /// Delete a branch.
+    Delete {
+        /// Branch name.
+        branch: String,
+    },
+}
+
+/// Product space command wrapper.
+#[derive(Debug, Args)]
+pub(crate) struct SpaceArgs {
+    /// Space command.
+    #[command(subcommand)]
+    pub(crate) command: SpaceCommand,
+}
+
+/// Product space commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum SpaceCommand {
+    /// List spaces.
+    List,
+    /// Create a space.
+    Create {
+        /// Space name.
+        space: String,
+    },
+    /// Check whether a space exists.
+    Exists {
+        /// Space name.
+        space: String,
+    },
+    /// Delete a space.
+    Delete {
+        /// Space name.
+        space: String,
+        /// Delete visible data in the space before dropping the catalog entry.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+/// KV command wrapper.
+#[derive(Debug, Args)]
+pub(crate) struct KvArgs {
+    /// KV command.
+    #[command(subcommand)]
+    pub(crate) command: KvCommand,
+}
+
+/// KV commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum KvCommand {
+    /// Write one key.
+    Put {
+        /// Key.
+        key: String,
+        /// Value.
+        value: String,
+    },
+    /// Read one key.
+    Get {
+        /// Key.
+        key: String,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// Delete one key.
+    Delete {
+        /// Key.
+        key: String,
+    },
+    /// List keys.
+    List {
+        /// Optional key prefix.
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Optional continuation cursor.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Optional item limit.
+        #[arg(long)]
+        limit: Option<u64>,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// Scan rows.
+    Scan {
+        /// Optional inclusive start key.
+        #[arg(long)]
+        start: Option<String>,
+        /// Optional item limit.
+        #[arg(long)]
+        limit: Option<u64>,
+    },
+    /// Check key existence.
+    Exists {
+        /// Key.
+        key: String,
+    },
+    /// Read version history.
+    History {
+        /// Key.
+        key: String,
+    },
+    /// Count keys.
+    Count {
+        /// Optional key prefix.
+        #[arg(long)]
+        prefix: Option<String>,
+    },
+    /// Sample rows.
+    Sample {
+        /// Optional key prefix.
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Optional sample count.
+        #[arg(long)]
+        count: Option<u64>,
+    },
+}
+
+/// JSON command wrapper.
+#[derive(Debug, Args)]
+pub(crate) struct JsonArgs {
+    /// JSON command.
+    #[command(subcommand)]
+    pub(crate) command: JsonCommand,
+}
+
+/// JSON commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum JsonCommand {
+    /// Set a JSON path.
+    Set {
+        /// Document key.
+        key: String,
+        /// JSON path.
+        path: String,
+        /// JSON value. Non-JSON text is stored as a string.
+        value: String,
+    },
+    /// Read a JSON path.
+    Get {
+        /// Document key.
+        key: String,
+        /// JSON path.
+        path: String,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// Delete a JSON path.
+    Delete {
+        /// Document key.
+        key: String,
+        /// JSON path.
+        path: String,
+    },
+    /// List JSON document keys.
+    List {
+        /// Optional document prefix.
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Optional continuation cursor.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Optional item limit.
+        #[arg(long)]
+        limit: Option<u64>,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// Check whether a document exists.
+    Exists {
+        /// Document key.
+        key: String,
+    },
+    /// Read document history.
+    History {
+        /// Document key.
+        key: String,
+    },
+    /// Count documents.
+    Count {
+        /// Optional document prefix.
+        #[arg(long)]
+        prefix: Option<String>,
+    },
+    /// Sample documents.
+    Sample {
+        /// Optional document prefix.
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Optional sample count.
+        #[arg(long)]
+        count: Option<u64>,
+    },
+    /// JSON secondary index commands.
+    Index {
+        /// Index command.
+        #[command(subcommand)]
+        command: JsonIndexCommand,
+    },
+}
+
+/// JSON index commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum JsonIndexCommand {
+    /// Create an index.
+    Create {
+        /// Index name.
+        name: String,
+        /// Indexed field path.
+        field_path: String,
+        /// Index type.
+        #[arg(long, value_enum, default_value_t = CliJsonIndexType::Tag)]
+        index_type: CliJsonIndexType,
+    },
+    /// Drop an index.
+    Drop {
+        /// Index name.
+        name: String,
+    },
+    /// List indexes.
+    List,
+}
+
+/// JSON index kind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum CliJsonIndexType {
+    /// Numeric index.
+    Numeric,
+    /// Tag/string index.
+    Tag,
+    /// Lowercase text index.
+    Text,
+}
+
+impl From<CliJsonIndexType> for JsonIndexType {
+    fn from(value: CliJsonIndexType) -> Self {
+        match value {
+            CliJsonIndexType::Numeric => Self::Numeric,
+            CliJsonIndexType::Tag => Self::Tag,
+            CliJsonIndexType::Text => Self::Text,
+        }
+    }
+}
+
+/// Vector command wrapper.
+#[derive(Debug, Args)]
+pub(crate) struct VectorArgs {
+    /// Vector command.
+    #[command(subcommand)]
+    pub(crate) command: VectorCommand,
+}
+
+/// Vector commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum VectorCommand {
+    /// Vector collection commands.
+    Collection {
+        /// Collection command.
+        #[command(subcommand)]
+        command: VectorCollectionCommand,
+    },
+    /// Upsert one vector.
+    Upsert {
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+        /// Vector as JSON array or comma-separated floats.
+        vector: String,
+        /// Optional metadata JSON object.
+        #[arg(long)]
+        metadata: Option<String>,
+    },
+    /// Read one vector.
+    Get {
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// Read vector history.
+    History {
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+    },
+    /// Check vector existence.
+    Exists {
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+    },
+    /// List vector keys.
+    Keys {
+        /// Collection name.
+        collection: String,
+        /// Optional key prefix.
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Optional continuation cursor.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Optional item limit.
+        #[arg(long)]
+        limit: Option<u64>,
+    },
+    /// Patch vector metadata.
+    UpdateMetadata {
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+        /// Top-level metadata patch JSON.
+        patch: String,
+    },
+    /// Delete one vector.
+    Delete {
+        /// Collection name.
+        collection: String,
+        /// Vector key.
+        key: String,
+    },
+    /// Delete all vectors in a collection.
+    DeleteAll {
+        /// Collection name.
+        collection: String,
+    },
+    /// Delete vectors matching a metadata filter JSON object.
+    DeleteByFilter {
+        /// Collection name.
+        collection: String,
+        /// Serialized `VectorMetadataFilter` JSON.
+        #[arg(long)]
+        filter: String,
+    },
+    /// Search vectors.
+    Query {
+        /// Collection name.
+        collection: String,
+        /// Query vector as JSON array or comma-separated floats.
+        query: String,
+        /// Maximum number of matches.
+        #[arg(short = 'k', long, default_value_t = 10)]
+        k: u64,
+        /// Serialized `VectorMetadataFilter` JSON.
+        #[arg(long)]
+        filter: Option<String>,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+        /// Include vector index diagnostics.
+        #[arg(long)]
+        diagnostics: bool,
+    },
+    /// Count vectors.
+    Count {
+        /// Collection name.
+        collection: String,
+    },
+}
+
+/// Vector collection commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum VectorCollectionCommand {
+    /// Create a collection.
+    Create {
+        /// Collection name.
+        collection: String,
+        /// Embedding dimension.
+        dimension: u64,
+        /// Distance metric.
+        #[arg(long, value_enum, default_value_t = CliVectorMetric::Cosine)]
+        metric: CliVectorMetric,
+    },
+    /// Delete a collection.
+    Delete {
+        /// Collection name.
+        collection: String,
+    },
+    /// List collections.
+    List,
+    /// Read collection stats.
+    Stats {
+        /// Collection name.
+        collection: String,
+    },
+}
+
+/// Vector metric.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum CliVectorMetric {
+    /// Cosine similarity.
+    Cosine,
+    /// Euclidean similarity.
+    Euclidean,
+    /// Dot product.
+    DotProduct,
+}
+
+impl From<CliVectorMetric> for strata_executor_next::VectorDistanceMetric {
+    fn from(value: CliVectorMetric) -> Self {
+        match value {
+            CliVectorMetric::Cosine => Self::Cosine,
+            CliVectorMetric::Euclidean => Self::Euclidean,
+            CliVectorMetric::DotProduct => Self::DotProduct,
+        }
+    }
+}
+
+/// Event command wrapper.
+#[derive(Debug, Args)]
+pub(crate) struct EventArgs {
+    /// Event command.
+    #[command(subcommand)]
+    pub(crate) command: EventCommand,
+}
+
+/// Event commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum EventCommand {
+    /// Append one event.
+    Append {
+        /// Event type.
+        event_type: String,
+        /// Event payload JSON.
+        payload: String,
+    },
+    /// Read one event.
+    Get {
+        /// Event sequence.
+        sequence: u64,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// Check event existence.
+    Exists {
+        /// Event sequence.
+        sequence: u64,
+    },
+    /// Count visible events.
+    Len {
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// List events.
+    List {
+        /// Optional event type filter.
+        #[arg(long)]
+        event_type: Option<String>,
+        /// Optional item limit.
+        #[arg(long)]
+        limit: Option<u64>,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// List event types.
+    Types {
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// List events by type.
+    ByType {
+        /// Event type.
+        event_type: String,
+        /// Optional item limit.
+        #[arg(long)]
+        limit: Option<u64>,
+        /// Optional exclusive sequence cursor.
+        #[arg(long)]
+        after_sequence: Option<u64>,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// Read an event sequence range.
+    Range {
+        /// Inclusive start sequence.
+        start_seq: u64,
+        /// Optional exclusive end sequence.
+        #[arg(long)]
+        end_seq: Option<u64>,
+        /// Optional item limit.
+        #[arg(long)]
+        limit: Option<u64>,
+        /// Range direction.
+        #[arg(long, value_enum, default_value_t = CliEventDirection::Forward)]
+        direction: CliEventDirection,
+        /// Optional event type filter.
+        #[arg(long)]
+        event_type: Option<String>,
+    },
+    /// Read events by timestamp range.
+    RangeTime {
+        /// Inclusive start timestamp.
+        start_ts: u64,
+        /// Optional inclusive end timestamp.
+        #[arg(long)]
+        end_ts: Option<u64>,
+        /// Optional item limit.
+        #[arg(long)]
+        limit: Option<u64>,
+        /// Range direction.
+        #[arg(long, value_enum, default_value_t = CliEventDirection::Forward)]
+        direction: CliEventDirection,
+        /// Optional event type filter.
+        #[arg(long)]
+        event_type: Option<String>,
+    },
+    /// Verify sequence density and hash linkage.
+    VerifyChain,
+}
+
+/// Event range direction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum CliEventDirection {
+    /// Forward order.
+    Forward,
+    /// Reverse order.
+    Reverse,
+}
+
+impl From<CliEventDirection> for strata_executor_next::EventRangeDirection {
+    fn from(value: CliEventDirection) -> Self {
+        match value {
+            CliEventDirection::Forward => Self::Forward,
+            CliEventDirection::Reverse => Self::Reverse,
+        }
+    }
+}
+
+/// Graph command wrapper.
+#[derive(Debug, Args)]
+pub(crate) struct GraphArgs {
+    /// Graph command.
+    #[command(subcommand)]
+    pub(crate) command: GraphCommand,
+}
+
+/// Graph commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum GraphCommand {
+    /// Create a graph.
+    Create {
+        /// Graph name.
+        graph: String,
+    },
+    /// Delete a graph.
+    Delete {
+        /// Graph name.
+        graph: String,
+    },
+    /// List graphs.
+    List {
+        /// Optional graph cursor.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Optional item limit.
+        #[arg(long)]
+        limit: Option<u64>,
+    },
+    /// Read graph metadata.
+    Meta {
+        /// Graph name.
+        graph: String,
+    },
+    /// Add or replace a node.
+    AddNode {
+        /// Graph name.
+        graph: String,
+        /// Node id.
+        node_id: String,
+        /// Optional properties JSON.
+        #[arg(long)]
+        properties: Option<String>,
+    },
+    /// Read a node.
+    GetNode {
+        /// Graph name.
+        graph: String,
+        /// Node id.
+        node_id: String,
+    },
+    /// Remove a node.
+    RemoveNode {
+        /// Graph name.
+        graph: String,
+        /// Node id.
+        node_id: String,
+    },
+    /// List nodes.
+    ListNodes {
+        /// Graph name.
+        graph: String,
+        /// Optional node prefix.
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Optional node cursor.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Optional item limit.
+        #[arg(long)]
+        limit: Option<u64>,
+    },
+    /// Add or replace an edge.
+    AddEdge {
+        /// Graph name.
+        graph: String,
+        /// Source node id.
+        src: String,
+        /// Edge type.
+        edge_type: String,
+        /// Destination node id.
+        dst: String,
+        /// Optional edge weight.
+        #[arg(long)]
+        weight: Option<f64>,
+        /// Optional properties JSON.
+        #[arg(long)]
+        properties: Option<String>,
+    },
+    /// Read an edge.
+    GetEdge {
+        /// Graph name.
+        graph: String,
+        /// Source node id.
+        src: String,
+        /// Edge type.
+        edge_type: String,
+        /// Destination node id.
+        dst: String,
+    },
+    /// Remove an edge.
+    RemoveEdge {
+        /// Graph name.
+        graph: String,
+        /// Source node id.
+        src: String,
+        /// Edge type.
+        edge_type: String,
+        /// Destination node id.
+        dst: String,
+    },
+    /// List neighbors.
+    Neighbors {
+        /// Graph name.
+        graph: String,
+        /// Node id.
+        node_id: String,
+        /// Traversal direction.
+        #[arg(long, value_enum, default_value_t = CliGraphDirection::Outgoing)]
+        direction: CliGraphDirection,
+        /// Optional edge type filter.
+        #[arg(long)]
+        edge_type: Option<String>,
+        /// Optional continuation cursor.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Optional item limit.
+        #[arg(long)]
+        limit: Option<u64>,
+    },
+}
+
+/// Graph direction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum CliGraphDirection {
+    /// Outgoing edges.
+    Outgoing,
+    /// Incoming edges.
+    Incoming,
+    /// Incoming and outgoing edges.
+    Both,
+}
+
+impl From<CliGraphDirection> for strata_executor_next::GraphDirection {
+    fn from(value: CliGraphDirection) -> Self {
+        match value {
+            CliGraphDirection::Outgoing => Self::Outgoing,
+            CliGraphDirection::Incoming => Self::Incoming,
+            CliGraphDirection::Both => Self::Both,
+        }
+    }
+}
+
+/// Arrow command wrapper.
+#[derive(Debug, Args)]
+pub(crate) struct ArrowArgs {
+    /// Arrow command.
+    #[command(subcommand)]
+    pub(crate) command: ArrowCommand,
+}
+
+/// Arrow commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum ArrowCommand {
+    /// Import an Arrow-compatible file.
+    Import {
+        /// Input file path.
+        file_path: String,
+        /// Optional input format.
+        #[arg(long, value_enum)]
+        format: Option<CliArrowFormat>,
+        /// Import target.
+        #[arg(long, value_enum)]
+        target: CliArrowImportTarget,
+        /// Optional key column override.
+        #[arg(long)]
+        key_column: Option<String>,
+        /// Optional value/document/embedding column override.
+        #[arg(long)]
+        value_column: Option<String>,
+        /// Target vector collection for vector imports.
+        #[arg(long)]
+        collection: Option<String>,
+    },
+    /// Export a primitive to an Arrow-compatible file.
+    Export {
+        /// Export primitive.
+        #[arg(long, value_enum)]
+        primitive: CliArrowExportPrimitive,
+        /// Output format.
+        #[arg(long, value_enum)]
+        format: CliArrowFormat,
+        /// Output file path.
+        path: String,
+        /// Optional key/document/vector/node prefix.
+        #[arg(long)]
+        prefix: Option<String>,
+        /// Optional row limit.
+        #[arg(long)]
+        limit: Option<u64>,
+        /// Target vector collection for vector exports.
+        #[arg(long)]
+        collection: Option<String>,
+        /// Target graph for graph exports.
+        #[arg(long)]
+        graph: Option<String>,
+        /// Optional event type filter for event exports.
+        #[arg(long)]
+        event_type: Option<String>,
+    },
+}
+
+/// Arrow file format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum CliArrowFormat {
+    /// Parquet.
+    Parquet,
+    /// CSV.
+    Csv,
+    /// JSON lines.
+    Jsonl,
+}
+
+impl From<CliArrowFormat> for strata_executor_next::ArrowFileFormat {
+    fn from(value: CliArrowFormat) -> Self {
+        match value {
+            CliArrowFormat::Parquet => Self::Parquet,
+            CliArrowFormat::Csv => Self::Csv,
+            CliArrowFormat::Jsonl => Self::Jsonl,
+        }
+    }
+}
+
+/// Arrow import target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum CliArrowImportTarget {
+    /// KV primitive.
+    Kv,
+    /// JSON primitive.
+    Json,
+    /// Vector primitive.
+    Vector,
+}
+
+impl From<CliArrowImportTarget> for strata_executor_next::ArrowImportTarget {
+    fn from(value: CliArrowImportTarget) -> Self {
+        match value {
+            CliArrowImportTarget::Kv => Self::Kv,
+            CliArrowImportTarget::Json => Self::Json,
+            CliArrowImportTarget::Vector => Self::Vector,
+        }
+    }
+}
+
+/// Arrow export primitive.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub(crate) enum CliArrowExportPrimitive {
+    /// KV primitive.
+    Kv,
+    /// JSON primitive.
+    Json,
+    /// Event primitive.
+    Event,
+    /// Vector primitive.
+    Vector,
+    /// Graph primitive.
+    Graph,
+}
+
+impl From<CliArrowExportPrimitive> for strata_executor_next::ArrowExportPrimitive {
+    fn from(value: CliArrowExportPrimitive) -> Self {
+        match value {
+            CliArrowExportPrimitive::Kv => Self::Kv,
+            CliArrowExportPrimitive::Json => Self::Json,
+            CliArrowExportPrimitive::Event => Self::Event,
+            CliArrowExportPrimitive::Vector => Self::Vector,
+            CliArrowExportPrimitive::Graph => Self::Graph,
+        }
+    }
+}
+
+/// Raw serialized command wrapper.
+#[derive(Debug, Args)]
+pub(crate) struct CommandArgs {
+    /// Raw command operation.
+    #[command(subcommand)]
+    pub(crate) command: CommandCommand,
+}
+
+/// Raw serialized command operations.
+#[derive(Debug, Subcommand)]
+pub(crate) enum CommandCommand {
+    /// Execute a serialized executor command.
+    Run {
+        /// Serialized command JSON.
+        #[arg(long, conflicts_with = "file")]
+        json: Option<String>,
+        /// File containing serialized command JSON.
+        #[arg(long, conflicts_with = "json")]
+        file: Option<PathBuf>,
+    },
+    /// Validate and print a serialized executor command without opening a database.
+    Print {
+        /// Serialized command JSON.
+        #[arg(long, conflicts_with = "file")]
+        json: Option<String>,
+        /// File containing serialized command JSON.
+        #[arg(long, conflicts_with = "json")]
+        file: Option<PathBuf>,
+    },
+}

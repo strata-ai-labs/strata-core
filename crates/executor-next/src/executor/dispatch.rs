@@ -1,4 +1,5 @@
 use super::{Command, Executor, ExecutorResult, Output};
+#[cfg(feature = "inference")]
 use crate::{ExecutorError, PageInfo};
 
 impl Executor {

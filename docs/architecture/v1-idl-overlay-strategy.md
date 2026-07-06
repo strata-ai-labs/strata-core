@@ -65,6 +65,68 @@ The IDL overlay owns:
 
 The IDL must not redefine executor DTO fields.
 
+## Tiered Surface Model
+
+Strata should not try to make every access surface equally handcrafted. The V1
+surface should follow a tiered model:
+
+```text
+canonical executor command surface
+  -> generated broad coverage and discovery
+  -> curated ergonomic shortcuts for common workflows
+  -> generic escape hatch for the long tail
+```
+
+This is the practical pattern used by large developer products with many
+access paths. They keep one canonical API, generate broad coverage from it, and
+only hand-polish the workflows that deserve a first-class experience.
+
+For Strata, the canonical API is the executor command DTO surface. Every public
+command should be reachable through a generic command runner:
+
+```sh
+strata command run --json '{ "type": "KvPut", ... }'
+```
+
+SDKs should expose the same complete fallback:
+
+```text
+client.execute(command)
+```
+
+Curated CLI and SDK methods can then be added where they materially improve the
+experience:
+
+```sh
+strata kv put user Claude
+```
+
+```text
+client.kv.put("user", "Claude")
+```
+
+The IDL's job is to make the complete command surface discoverable,
+documented, validated, and generatable. It is not required to derive a perfect
+human CLI syntax for every command.
+
+## Surface Ownership
+
+The V1 surface has three levels:
+
+1. **Complete generic coverage.** Every public executor command can be
+   serialized, documented, explained, validated against fixtures, and executed
+   through a generic command path.
+2. **Generated presentation metadata.** Command lists, `strata explain`, MCP
+   descriptions, docs tables, error references, fixture coverage, and SDK
+   method maps are generated from the resolved command index.
+3. **Curated ergonomic shortcuts.** A smaller set of high-value CLI commands
+   and SDK convenience methods may be handwritten or generated from simple
+   shared profiles. These shortcuts are product UX, not the canonical contract.
+
+The third level must never be the only way to access a command. If a command is
+not worth a curated shortcut, it still remains accessible through the generic
+executor command surface.
+
 ## Packaging And Ownership
 
 IDL tooling is executor-owned development tooling, not a runtime dependency of
@@ -140,6 +202,12 @@ to mentally execute. The failure mode to avoid is not YAML, XML, or any
 specific syntax. The failure mode is configuration becoming an untyped,
 implicit, hard-to-debug programming language.
 
+The IDL must also avoid becoming a handcrafted CLI mapping language. Moving
+per-command argument parsing from Rust into YAML would recreate the same
+maintenance problem in a different syntax. Authored command metadata should
+describe command identity, behavior, docs, and presentation facts. It should
+not normally spell out every argv-to-field binding.
+
 The following constraints are part of the strategy:
 
 1. Keep the root manifest small.
@@ -155,6 +223,9 @@ The following constraints are part of the strategy:
    missing fixtures.
 9. Enforce file-size and command-count guardrails so command registries are
    split before they become hard to review.
+10. Forbid per-command CLI field mappings as the default authoring pattern.
+11. Require curated ergonomic shortcuts to be explicitly marked as curated, so
+    generic coverage and product shortcuts do not blur together.
 
 The authoring experience should feel like maintaining an indexed registry, not
 like configuring a framework.
@@ -405,6 +476,100 @@ inference.generate
 
 The ID should be stable even if CLI phrasing changes.
 
+## CLI And SDK Coverage Strategy
+
+The IDL should support two access styles.
+
+### Generic Command Execution
+
+Generic execution is the required complete surface.
+
+The CLI should provide a command-runner path that accepts serialized executor
+commands and dispatches them without any command-specific parser:
+
+```sh
+strata command run --json '{ "type": "KvPut", ... }'
+strata command run --file ./command.json
+```
+
+SDKs should expose the same complete path:
+
+```text
+client.execute(command)
+```
+
+This path is allowed to be more verbose. Its job is coverage, stability, and
+agent-friendliness. It prevents the project from blocking every new executor
+command on a bespoke CLI or SDK convenience method.
+
+The generic path should still be well-supported:
+
+1. `strata explain <command>` shows the command's DTO name, response model,
+   examples, docs link, and public errors.
+2. Generated JSON schema validates command payloads.
+3. Golden fixtures provide copyable request and response examples.
+4. Error output uses the same public error contract as curated commands.
+
+### Curated Ergonomic Shortcuts
+
+Curated shortcuts are optional product UX.
+
+Examples:
+
+```sh
+strata kv put user Claude
+strata vector query docs --embedding-json '[...]' --top-k 10
+```
+
+```text
+client.kv.put("user", "Claude")
+client.vector.query("docs", embedding, topK: 10)
+```
+
+Curated shortcuts may be handwritten or generated from small shared profiles,
+but they must be explicitly marked as curated in the resolved metadata. They
+must not become the completeness mechanism.
+
+Rules:
+
+1. A command can ship in V1 with generic coverage and no curated shortcut.
+2. Curated shortcuts should exist for common human workflows and beta-discovery
+   pain points.
+3. The generic command path remains the fallback for every public command.
+4. A curated shortcut must round-trip to the same executor command fixture used
+   by the generic path.
+5. If more than a small minority of commands need explicit field mappings, the
+   shortcut model is too complicated and should be simplified.
+
+### CLI Metadata Boundary
+
+The IDL may provide CLI path and shortcut classification:
+
+```yaml
+id: kv.put
+kind: mutation.put
+input: Command::KvPut
+cli:
+  path: ["kv", "put"]
+  shortcut: curated
+```
+
+It should not normally provide a field-by-field argument map:
+
+```yaml
+# Avoid as the default pattern.
+cli:
+  args:
+    - field: key
+      position: 0
+    - field: value
+      position: 1
+```
+
+If a shortcut needs mapping rules, prefer shared profiles or reusable codecs
+over per-command definitions. Examples: key/value write, key read, cursor page,
+JSON batch file, bytes from file, bytes from stdin, vector embedding JSON.
+
 ## Generated Artifacts
 
 The IDL pipeline should generate:
@@ -417,6 +582,8 @@ The IDL pipeline should generate:
 6. Public docs tables.
 7. Golden fixture coverage reports.
 8. Error-code coverage reports.
+9. Generic command-runner metadata.
+10. Curated shortcut inventory and coverage reports.
 
 Generated artifacts should live under the executor-owned generated directory:
 
@@ -563,6 +730,12 @@ SDKs can expose shared concepts such as `MutationAck`, `Maybe`, `Page`, and
 CLI and MCP need human text, examples, docs links, command grouping, and safety
 metadata. Executor code should not own that presentation layer.
 
+### Complete Coverage Without Perfect Ergonomics
+
+The generic command path gives every public executor command a usable CLI and
+SDK route without waiting for bespoke syntax. Curated shortcuts can then focus
+on the commands users actually type often.
+
 ### Lower Maintenance Cost
 
 Defaults and command kinds avoid repeating boilerplate across hundreds of
@@ -654,6 +827,17 @@ Mitigation:
 2. keep wire DTO names in generated schema;
 3. test SDK model mapping against response fixtures.
 
+### Risk: IDL Becomes Handwritten CLI In YAML
+
+Mitigation:
+
+1. require complete generic command-runner coverage;
+2. treat curated shortcuts as optional UX, not the canonical surface;
+3. forbid field-by-field CLI mappings as the default authoring style;
+4. prefer shared shortcut profiles and reusable codecs;
+5. test every curated shortcut against the same executor command fixtures as
+   generic execution.
+
 ## Recommended Initial Scope
 
 Start with IDL generation only, not CLI or SDK generation.
@@ -724,7 +908,7 @@ Scope:
 This slice is intentionally packaging-only. It should not change command IDs,
 response models, fixtures, prose semantics, or generated CLI behavior.
 
-### Slice 2: CLI From IDL
+### Slice 2: CLI Discovery From IDL
 
 After Slice 1b makes the resolved index executor-owned, generate or wire CLI
 metadata from that resolved index.
@@ -737,13 +921,56 @@ Scope:
    - command listing and grouping;
    - docs links;
    - access, commit, pagination, and batch facts.
+2. Explicit shortcut inventory for commands that will eventually have curated
+   human syntax.
 
 The CLI should read generated artifacts, not authored YAML and prose.
 
+This slice should not add command execution. Its job is discovery, help, and
+explainability.
+
+### Slice 3: Generic Command Execution
+
+After CLI discovery works, add the generic command runner:
+
+```sh
+strata command run --json '{ "type": "KvPut", ... }'
+strata command run --file ./command.json
+```
+
+Scope:
+
+1. generated JSON schema or equivalent validation for serialized executor
+   commands;
+2. generic CLI command loading and deserialization into executor DTOs;
+3. generic SDK `client.execute(command)` shape once SDK work begins;
+4. fixture-backed examples for request and response payloads;
+5. conformance tests proving every IDL command is reachable through generic
+   execution unless explicitly marked non-executable.
+
+This slice should not require bespoke argument parsing for every command.
+Complete coverage comes from serialized executor commands.
+
+### Slice 4: Curated Shortcuts
+
+After generic execution exists, add curated CLI shortcuts and later SDK
+resource methods for the highest-value workflows.
+
+Scope:
+
+1. pick shortcuts from real usage, beta feedback, and commands that humans type
+   frequently;
+2. prefer shared profiles and codecs over per-command field maps;
+3. keep the shortcut inventory explicit in generated metadata;
+4. test each shortcut against the same executor command fixture as generic
+   execution;
+5. keep commands without shortcuts fully reachable through generic execution.
+
 ### Later Slices
 
-After KV/vector IDL and CLI generation work, add remaining command families to
-the same IDL pipeline:
+After KV/vector IDL, CLI discovery, and generic command execution work, add
+curated shortcuts only for high-value workflows. Then add remaining command
+families to the same IDL pipeline:
 
 1. JSON;
 2. event;
@@ -755,13 +982,18 @@ the same IDL pipeline:
 8. inference once its product surface is frozen.
 
 Only after the CLI pipeline is stable should Strata generate external SDKs.
-TypeScript should be the first SDK target, followed by Python.
+TypeScript should be the first SDK target, followed by Python. SDKs should start
+with `client.execute(command)` plus generated models and docs, then add curated
+resource methods for the highest-value workflows.
 
 ## Acceptance Criteria For The Strategy
 
 1. Executor DTOs remain the field source of truth.
 2. The IDL overlay contains command metadata, not duplicate fields.
 3. Authored command entries stay compact.
-4. Resolved generated artifacts are explicit enough for SDK/CLI/MCP/docs.
+4. Resolved generated artifacts are explicit enough for generic
+   SDK/CLI/MCP/docs coverage.
 5. Golden fixtures validate the generated schema.
 6. Public command changes require executor, IDL, and fixture updates.
+7. No public command requires a bespoke curated shortcut before it is reachable
+   through CLI or SDK.
