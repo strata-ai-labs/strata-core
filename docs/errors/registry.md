@@ -427,6 +427,9 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="unavailable.engine.vector_artifacts"></a>
 - `unavailable.engine.vector_artifacts`
 
+<a id="unsupported.engine.graph_binding_cross_branch"></a>
+- `unsupported.engine.graph_binding_cross_branch`
+
 <a id="unsupported.engine.persistence_capability"></a>
 - `unsupported.engine.persistence_capability`
 
