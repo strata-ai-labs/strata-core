@@ -19,8 +19,10 @@ inference-openai = ["strata-executor-next/inference-openai"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
+rustyline = "14"
 serde = { workspace = true }
 serde_json = { workspace = true }
+shlex = "1.3"
 strata-executor-next = { path = "../executor-next" }
 
 [dev-dependencies]

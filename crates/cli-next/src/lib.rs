@@ -4,20 +4,30 @@
 #![allow(clippy::missing_const_for_fn)]
 
 use std::ffi::OsString;
-use std::fs;
-use std::path::PathBuf;
+use std::io::IsTerminal;
 
 use clap::Parser;
-use serde::Serialize;
 use serde_json::Value;
-use strata_executor_next::{Bytes, Command, Executor, ExecutorError, Output, VectorMetadataFilter};
+use strata_executor_next::{Command, Executor, ExecutorError};
 
+mod context;
+mod init;
+mod input;
+mod open;
 mod options;
+mod render;
+mod repl;
 
-use options::{
-    ArrowCommand, BranchCommand, Cli, CommandCommand, ConfigCommand, EventCommand, Format,
-    GraphCommand, JsonCommand, KvCommand, SpaceCommand, VectorCollectionCommand, VectorCommand,
+use context::{CommandContext, Scope};
+use input::{
+    bytes_argument, parse_filter_argument, parse_json_argument, parse_optional_filter_argument,
+    parse_optional_json_argument, parse_relaxed_json_argument, parse_vector_argument,
 };
+use options::{
+    ArrowCommand, BranchCommand, Cli, CommandCommand, ConfigCommand, EventCommand, GraphCommand,
+    JsonCommand, KvCommand, SpaceCommand, VectorCollectionCommand, VectorCommand,
+};
+use render::{render_error, render_output, render_value};
 
 /// Runs the CLI and returns a process exit code.
 pub fn run<I, T>(args: I) -> i32
@@ -27,9 +37,9 @@ where
 {
     match Cli::try_parse_from(args) {
         Ok(cli) => {
-            let format = cli.format;
+            let format = cli.output_format();
             match execute(cli) {
-                Ok(()) => 0,
+                Ok(exit_code) => exit_code,
                 Err(CliError::Executor(error)) => {
                     render_error(error.status(), format);
                     1
@@ -47,117 +57,148 @@ where
     }
 }
 
-fn execute(cli: Cli) -> Result<(), CliError> {
-    let format = cli.format;
+fn execute(cli: Cli) -> Result<i32, CliError> {
+    let format = cli.output_format();
     let command = cli.command;
-    let scope = Scope {
-        branch: cli.branch,
-        space: cli.space,
-    };
+    let mut context = CommandContext::new(cli.branch, cli.space);
 
-    if let TopLevelAction::NoDatabase(output) = top_level_without_database(&command)? {
-        render_output(&output, format)?;
-        return Ok(());
+    if let Some(command) = command {
+        if let Some(name) = deferred_top_command(&command) {
+            return Err(deferred_command(name));
+        }
+        if let TopLevelAction::NoDatabase(value) = top_level_without_database(&command)? {
+            render_value(&value, format)?;
+            return Ok(0);
+        }
+
+        let mut executor = open::open_executor(cli.cache, cli.db, cli.db_path)?;
+        if let Some(branch) = context.scope_with_overrides(None, None).branch.as_deref() {
+            executor = executor.with_default_branch(branch)?;
+        }
+
+        let scope = context.scope_with_overrides(None, None);
+        execute_parsed_command(&mut executor, command, &scope, format)?;
+        executor.close()?;
+        return Ok(0);
     }
 
-    let mut executor = open_executor(cli.cache, cli.db, cli.db_path)?;
-    if let Some(branch) = scope.branch.as_deref() {
+    let mut executor = open::open_executor(cli.cache, cli.db, cli.db_path)?;
+    if let Some(branch) = context.scope_with_overrides(None, None).branch.as_deref() {
         executor = executor.with_default_branch(branch)?;
     }
 
+    let saw_pipe_error = if std::io::stdin().is_terminal() {
+        repl::run_repl(&mut executor, &mut context, format)?;
+        false
+    } else {
+        repl::run_pipe(&mut executor, &mut context, format)?
+    };
+    executor.close()?;
+    Ok(i32::from(saw_pipe_error))
+}
+
+pub(crate) fn execute_parsed_command(
+    executor: &mut Executor,
+    command: options::TopCommand,
+    scope: &Scope,
+    format: options::Format,
+) -> Result<(), CliError> {
+    if let Some(name) = deferred_top_command(&command) {
+        return Err(deferred_command(name));
+    }
     let output = match command {
         options::TopCommand::Ping => executor.execute(Command::Ping)?,
-        options::TopCommand::Init | options::TopCommand::Info => {
-            executor.execute(Command::Info {
-                branch: scope.branch,
-            })?
+        options::TopCommand::Init => {
+            let value = init::run_init()?;
+            render_value(&value, format)?;
+            return Ok(());
         }
+        options::TopCommand::Info => executor.execute(Command::Info {
+            branch: scope.branch.clone(),
+        })?,
         options::TopCommand::Health => executor.execute(Command::Health {
-            branch: scope.branch,
+            branch: scope.branch.clone(),
         })?,
         options::TopCommand::Metrics => executor.execute(Command::Metrics {
-            branch: scope.branch,
+            branch: scope.branch.clone(),
         })?,
         options::TopCommand::Describe => executor.execute(Command::Describe {
-            branch: scope.branch,
+            branch: scope.branch.clone(),
         })?,
         options::TopCommand::Config(args) => executor.execute(config_command(args.command))?,
-        options::TopCommand::Branch(args) => executor.execute(branch_command(args.command))?,
-        options::TopCommand::Space(args) => {
-            executor.execute(space_command(args.command, &scope))?
-        }
-        options::TopCommand::Kv(args) => executor.execute(kv_command(args.command, &scope))?,
-        options::TopCommand::Json(args) => executor.execute(json_command(args.command, &scope))?,
+        options::TopCommand::Branch(args) => executor.execute(branch_command(args.command)?)?,
+        options::TopCommand::Space(args) => executor.execute(space_command(args.command, scope))?,
+        options::TopCommand::Kv(args) => executor.execute(kv_command(args.command, scope)?)?,
+        options::TopCommand::Json(args) => executor.execute(json_command(args.command, scope)?)?,
         options::TopCommand::Vector(command) => {
-            executor.execute(vector_command(command.command, &scope)?)?
+            executor.execute(vector_command(command.command, scope)?)?
         }
         options::TopCommand::Event(args) => {
-            executor.execute(event_command(args.command, &scope)?)?
+            executor.execute(event_command(args.command, scope)?)?
         }
         options::TopCommand::Graph(args) => {
-            executor.execute(graph_command(args.command, &scope)?)?
+            executor.execute(graph_command(args.command, scope)?)?
         }
-        options::TopCommand::Arrow(args) => {
-            executor.execute(arrow_command(args.command, &scope))?
-        }
+        options::TopCommand::Arrow(args) => executor.execute(arrow_command(args.command, scope))?,
         options::TopCommand::Command(args) => executor.execute(raw_command(args.command)?)?,
+        options::TopCommand::Search(_)
+        | options::TopCommand::Recipe(_)
+        | options::TopCommand::Txn(_)
+        | options::TopCommand::Begin
+        | options::TopCommand::Commit
+        | options::TopCommand::Rollback
+        | options::TopCommand::Flush
+        | options::TopCommand::Compact
+        | options::TopCommand::Up(_)
+        | options::TopCommand::Down(_)
+        | options::TopCommand::Uninstall(_) => unreachable!("deferred top commands handled above"),
     };
 
     render_output(&output, format)?;
-    executor.close()?;
     Ok(())
+}
+
+fn deferred_top_command(command: &options::TopCommand) -> Option<&'static str> {
+    match command {
+        options::TopCommand::Search(_) => Some("search"),
+        options::TopCommand::Recipe(_) => Some("recipe"),
+        options::TopCommand::Txn(_) => Some("txn"),
+        options::TopCommand::Begin => Some("begin"),
+        options::TopCommand::Commit => Some("commit"),
+        options::TopCommand::Rollback => Some("rollback"),
+        options::TopCommand::Flush => Some("flush"),
+        options::TopCommand::Compact => Some("compact"),
+        options::TopCommand::Up(_) => Some("up"),
+        options::TopCommand::Down(_) => Some("down"),
+        options::TopCommand::Uninstall(_) => Some("uninstall"),
+        _ => None,
+    }
+}
+
+fn deferred_command(name: &str) -> CliError {
+    CliError::usage(format!(
+        "`{name}` is recognized from the old CLI, but is not available in the V1 CLI surface yet"
+    ))
 }
 
 enum TopLevelAction {
     NeedsDatabase,
-    NoDatabase(Box<Output>),
+    NoDatabase(Value),
 }
 
 fn top_level_without_database(command: &options::TopCommand) -> Result<TopLevelAction, CliError> {
     match command {
+        options::TopCommand::Init => Ok(TopLevelAction::NoDatabase(init::run_init()?)),
         options::TopCommand::Command(args) => match &args.command {
             CommandCommand::Print { json, file } => {
                 let command = raw_command_from_sources(json.as_deref(), file.as_ref())?;
                 let value = serde_json::to_value(command)?;
-                Ok(TopLevelAction::NoDatabase(Box::new(Output::JsonValue(
-                    strata_executor_next::MaybeJsonValue::found(value),
-                ))))
+                Ok(TopLevelAction::NoDatabase(value))
             }
             CommandCommand::Run { .. } => Ok(TopLevelAction::NeedsDatabase),
         },
         _ => Ok(TopLevelAction::NeedsDatabase),
     }
-}
-
-fn open_executor(
-    cache: bool,
-    db_flag: Option<PathBuf>,
-    db_path: Option<PathBuf>,
-) -> Result<Executor, CliError> {
-    if cache {
-        if db_flag.is_some() || db_path.is_some() {
-            return Err(CliError::usage(
-                "`--cache` cannot be combined with `--db` or a database path",
-            ));
-        }
-        return Ok(Executor::open_cache()?);
-    }
-    let path = match (db_flag, db_path) {
-        (Some(_), Some(_)) => {
-            return Err(CliError::usage(
-                "provide either `--db <path>` or positional database path, not both",
-            ));
-        }
-        (Some(path), None) | (None, Some(path)) => path,
-        (None, None) => std::env::current_dir()?,
-    };
-    Ok(Executor::open_durable_local(path)?)
-}
-
-#[derive(Clone, Debug)]
-struct Scope {
-    branch: Option<String>,
-    space: Option<String>,
 }
 
 fn config_command(command: ConfigCommand) -> Command {
@@ -167,8 +208,8 @@ fn config_command(command: ConfigCommand) -> Command {
     }
 }
 
-fn branch_command(command: BranchCommand) -> Command {
-    match command {
+fn branch_command(command: BranchCommand) -> Result<Command, CliError> {
+    Ok(match command {
         BranchCommand::List => Command::BranchList,
         BranchCommand::Get { branch } => Command::BranchGet { branch },
         BranchCommand::Create { branch } => Command::BranchCreate { branch },
@@ -191,7 +232,11 @@ fn branch_command(command: BranchCommand) -> Command {
             (None, None) | (Some(_), Some(_)) => Command::BranchForkCurrent { source, branch },
         },
         BranchCommand::Delete { branch } => Command::BranchDelete { branch },
-    }
+        BranchCommand::Diff(_) => return Err(deferred_command("branch diff")),
+        BranchCommand::Merge(_) => return Err(deferred_command("branch merge")),
+        BranchCommand::Tag(_) => return Err(deferred_command("branch tag")),
+        BranchCommand::Note(_) => return Err(deferred_command("branch note")),
+    })
 }
 
 fn space_command(command: SpaceCommand, scope: &Scope) -> Command {
@@ -215,13 +260,13 @@ fn space_command(command: SpaceCommand, scope: &Scope) -> Command {
     }
 }
 
-fn kv_command(command: KvCommand, scope: &Scope) -> Command {
-    match command {
-        KvCommand::Put { key, value } => Command::KvPut {
+fn kv_command(command: KvCommand, scope: &Scope) -> Result<Command, CliError> {
+    Ok(match command {
+        KvCommand::Put { key, value, file } => Command::KvPut {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             key: bytes(key),
-            value: bytes(value),
+            value: bytes_argument(value.as_deref(), file.as_ref())?,
         },
         KvCommand::Get { key, as_of } => Command::KvGet {
             branch: scope.branch.clone(),
@@ -274,17 +319,22 @@ fn kv_command(command: KvCommand, scope: &Scope) -> Command {
             prefix: prefix.map(bytes),
             count,
         },
-    }
+    })
 }
 
-fn json_command(command: JsonCommand, scope: &Scope) -> Command {
-    match command {
-        JsonCommand::Set { key, path, value } => Command::JsonSet {
+fn json_command(command: JsonCommand, scope: &Scope) -> Result<Command, CliError> {
+    Ok(match command {
+        JsonCommand::Set {
+            key,
+            path,
+            value,
+            file,
+        } => Command::JsonSet {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             key,
             path,
-            value: parse_relaxed_json(&value),
+            value: parse_relaxed_json_argument(value.as_deref(), file.as_ref(), "json value")?,
         },
         JsonCommand::Get { key, path, as_of } => Command::JsonGet {
             branch: scope.branch.clone(),
@@ -360,7 +410,7 @@ fn json_command(command: JsonCommand, scope: &Scope) -> Command {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
         },
-    }
+    })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -372,13 +422,19 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
             key,
             vector,
             metadata,
+            file,
+            metadata_file,
         } => Command::VectorUpsert {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             collection,
             key,
-            vector: parse_vector(&vector)?,
-            metadata: parse_optional_json(metadata.as_deref())?,
+            vector: parse_vector_argument(vector.as_deref(), file.as_ref(), "vector")?,
+            metadata: parse_optional_json_argument(
+                metadata.as_deref(),
+                metadata_file.as_ref(),
+                "vector metadata",
+            )?,
         },
         VectorCommand::Get {
             collection,
@@ -420,12 +476,13 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
             collection,
             key,
             patch,
+            file,
         } => Command::VectorUpdateMetadata {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             collection,
             key,
-            patch: parse_json(&patch)?,
+            patch: parse_json_argument(patch.as_deref(), file.as_ref(), "metadata patch")?,
         },
         VectorCommand::Delete { collection, key } => Command::VectorDelete {
             branch: scope.branch.clone(),
@@ -438,27 +495,34 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
             space: scope.space.clone(),
             collection,
         },
-        VectorCommand::DeleteByFilter { collection, filter } => Command::VectorDeleteByFilter {
+        VectorCommand::DeleteByFilter {
+            collection,
+            filter,
+            filter_file,
+        } => Command::VectorDeleteByFilter {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             collection,
-            filter: parse_filter(&filter)?,
+            filter: parse_filter_argument(filter.as_deref(), filter_file.as_ref())?,
         },
         VectorCommand::Query {
             collection,
             query,
+            file,
             k,
             filter,
+            filter_file,
             as_of,
             diagnostics,
         } => {
-            let command_filter = parse_optional_filter(filter.as_deref())?;
+            let command_filter =
+                parse_optional_filter_argument(filter.as_deref(), filter_file.as_ref())?;
             if diagnostics {
                 Command::VectorIndexQuery {
                     branch: scope.branch.clone(),
                     space: scope.space.clone(),
                     collection,
-                    query: parse_vector(&query)?,
+                    query: parse_vector_argument(query.as_deref(), file.as_ref(), "query vector")?,
                     k,
                     filter: command_filter,
                     as_of,
@@ -468,7 +532,7 @@ fn vector_command(command: VectorCommand, scope: &Scope) -> Result<Command, CliE
                     branch: scope.branch.clone(),
                     space: scope.space.clone(),
                     collection,
-                    query: parse_vector(&query)?,
+                    query: parse_vector_argument(query.as_deref(), file.as_ref(), "query vector")?,
                     k,
                     filter: command_filter,
                     as_of,
@@ -518,11 +582,12 @@ fn event_command(command: EventCommand, scope: &Scope) -> Result<Command, CliErr
         EventCommand::Append {
             event_type,
             payload,
+            file,
         } => Command::EventAppend {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             event_type,
-            payload: parse_json(&payload)?,
+            payload: parse_json_argument(payload.as_deref(), file.as_ref(), "event payload")?,
         },
         EventCommand::Get { sequence, as_of } => Command::EventGet {
             branch: scope.branch.clone(),
@@ -634,12 +699,17 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             graph,
             node_id,
             properties,
+            properties_file,
         } => Command::GraphAddNode {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             graph,
             node_id,
-            properties: parse_optional_json(properties.as_deref())?,
+            properties: parse_optional_json_argument(
+                properties.as_deref(),
+                properties_file.as_ref(),
+                "node properties",
+            )?,
             binding: None,
         },
         GraphCommand::GetNode { graph, node_id } => Command::GraphGetNode {
@@ -674,6 +744,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             dst,
             weight,
             properties,
+            properties_file,
         } => Command::GraphAddEdge {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
@@ -682,7 +753,11 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             edge_type,
             dst,
             weight,
-            properties: parse_optional_json(properties.as_deref())?,
+            properties: parse_optional_json_argument(
+                properties.as_deref(),
+                properties_file.as_ref(),
+                "edge properties",
+            )?,
         },
         GraphCommand::GetEdge {
             graph,
@@ -727,6 +802,8 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             cursor,
             limit,
         },
+        GraphCommand::Ontology(_) => return Err(deferred_command("graph ontology")),
+        GraphCommand::Analytics(_) => return Err(deferred_command("graph analytics")),
     })
 }
 
@@ -786,7 +863,7 @@ fn raw_command(command: CommandCommand) -> Result<Command, CliError> {
 
 fn raw_command_from_sources(
     json: Option<&str>,
-    file: Option<&PathBuf>,
+    file: Option<&std::path::PathBuf>,
 ) -> Result<Command, CliError> {
     let text = match (json, file) {
         (Some(_), Some(_)) => {
@@ -795,7 +872,7 @@ fn raw_command_from_sources(
             ));
         }
         (Some(json), None) => json.to_owned(),
-        (None, Some(path)) => fs::read_to_string(path)?,
+        (None, Some(path)) => input::read_text_file(path)?,
         (None, None) => {
             return Err(CliError::usage(
                 "raw command execution requires `--json <json>` or `--file <path>`",
@@ -805,73 +882,8 @@ fn raw_command_from_sources(
     Ok(serde_json::from_str(&text)?)
 }
 
-fn bytes(value: String) -> Bytes {
-    Bytes::new(value.into_bytes())
-}
-
-fn parse_relaxed_json(value: &str) -> Value {
-    serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_owned()))
-}
-
-fn parse_json(value: &str) -> Result<Value, CliError> {
-    serde_json::from_str(value).map_err(CliError::from)
-}
-
-fn parse_optional_json(value: Option<&str>) -> Result<Option<Value>, CliError> {
-    value.map(parse_json).transpose()
-}
-
-fn parse_vector(value: &str) -> Result<Vec<f32>, CliError> {
-    if value.trim_start().starts_with('[') {
-        return serde_json::from_str(value).map_err(CliError::from);
-    }
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-        .map(|part| {
-            part.parse::<f32>().map_err(|error| {
-                CliError::usage(format!("invalid vector element `{part}`: {error}"))
-            })
-        })
-        .collect()
-}
-
-fn parse_filter(value: &str) -> Result<VectorMetadataFilter, CliError> {
-    serde_json::from_str(value).map_err(CliError::from)
-}
-
-fn parse_optional_filter(value: Option<&str>) -> Result<Option<VectorMetadataFilter>, CliError> {
-    value.map(parse_filter).transpose()
-}
-
-fn render_output(output: &Output, format: Format) -> Result<(), CliError> {
-    match format {
-        Format::Json => {
-            println!("{}", serde_json::to_string(output)?);
-        }
-        Format::Pretty => {
-            println!("{}", serde_json::to_string_pretty(output)?);
-        }
-    }
-    Ok(())
-}
-
-fn render_error(status: &impl Serialize, format: Format) {
-    #[derive(Serialize)]
-    struct ErrorEnvelope<'a, T: Serialize + ?Sized> {
-        error: &'a T,
-    }
-
-    let envelope = ErrorEnvelope { error: status };
-    let rendered = match format {
-        Format::Json => serde_json::to_string(&envelope),
-        Format::Pretty => serde_json::to_string_pretty(&envelope),
-    };
-    match rendered {
-        Ok(text) => eprintln!("{text}"),
-        Err(error) => eprintln!("error: failed to render executor error: {error}"),
-    }
+fn bytes(value: String) -> strata_executor_next::Bytes {
+    strata_executor_next::Bytes::new(value.into_bytes())
 }
 
 /// CLI error.
@@ -924,6 +936,7 @@ impl From<ExecutorError> for CliError {
 mod tests {
     use super::*;
     use options::{KvCommand, TopCommand};
+    use std::path::PathBuf;
 
     #[test]
     fn parses_direct_database_path_before_subcommand() {
@@ -931,9 +944,9 @@ mod tests {
         assert_eq!(cli.db_path, Some(PathBuf::from("./db")));
         assert!(matches!(
             cli.command,
-            TopCommand::Kv(options::KvArgs {
-                command: KvCommand::Put { key, value },
-            }) if key == "hello" && value == "world"
+            Some(TopCommand::Kv(options::KvArgs {
+                command: KvCommand::Put { key, value: Some(value), file: None },
+            })) if key == "hello" && value == "world"
         ));
     }
 
@@ -948,19 +961,56 @@ mod tests {
     }
 
     #[test]
-    fn parses_comma_vector() {
-        assert_eq!(
-            parse_vector("1, 2.5,3").expect("parse vector"),
-            vec![1.0, 2.5, 3.0]
-        );
+    fn parses_no_command_for_shell_mode() {
+        let cli = Cli::parse_from(["strata", "--cache"]);
+        assert!(cli.cache);
+        assert!(cli.command.is_none());
     }
 
     #[test]
-    fn parses_json_vector() {
-        assert_eq!(
-            parse_vector("[1,2,3]").expect("parse vector"),
-            vec![1.0, 2.0, 3.0]
-        );
+    fn parses_output_flags() {
+        let cli = Cli::parse_from(["strata", "--json", "--cache", "ping"]);
+        assert_eq!(cli.output_format(), options::Format::Json);
+
+        let cli = Cli::parse_from(["strata", "--raw", "--cache", "ping"]);
+        assert_eq!(cli.output_format(), options::Format::Raw);
+    }
+
+    #[test]
+    fn parses_delete_alias() {
+        let cli = Cli::parse_from(["strata", "--cache", "kv", "del", "hello"]);
+        assert!(matches!(
+            cli.command,
+            Some(TopCommand::Kv(options::KvArgs {
+                command: KvCommand::Delete { key },
+            })) if key == "hello"
+        ));
+    }
+
+    #[test]
+    fn kv_put_reads_file_value() {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let path = temp.path().join("value.bin");
+        std::fs::write(&path, b"from-file").expect("write value");
+        let command = kv_command(
+            KvCommand::Put {
+                key: "hello".to_owned(),
+                value: None,
+                file: Some(path),
+            },
+            &Scope::default(),
+        )
+        .expect("kv command");
+
+        let Command::KvPut { value, .. } = command else {
+            panic!("expected kv put");
+        };
+        assert_eq!(value.as_slice(), b"from-file");
+    }
+
+    #[test]
+    fn deferred_top_level_command_returns_usage_error() {
+        assert_eq!(run(["strata", "--cache", "search"]), 2);
     }
 
     #[test]

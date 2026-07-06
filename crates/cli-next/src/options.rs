@@ -9,7 +9,7 @@ use strata_executor_next::JsonIndexType;
 #[derive(Debug, Parser)]
 #[command(name = "strata", version, about = "Strata database CLI")]
 pub(crate) struct Cli {
-    /// Durable database path. Defaults to the current directory.
+    /// Durable database path.
     #[arg(value_name = "DB")]
     pub(crate) db_path: Option<PathBuf>,
     /// Durable database path. Cannot be combined with the positional DB path.
@@ -24,21 +24,43 @@ pub(crate) struct Cli {
     /// Product space for commands that accept a space.
     #[arg(long, global = true)]
     pub(crate) space: Option<String>,
-    /// Output format.
-    #[arg(long, value_enum, default_value_t = Format::Pretty, global = true)]
-    pub(crate) format: Format,
+    /// Emit compact JSON.
+    #[arg(long, global = true, conflicts_with_all = ["raw", "format"])]
+    pub(crate) json: bool,
+    /// Emit script-friendly raw output where possible.
+    #[arg(long, global = true, conflicts_with_all = ["json", "format"])]
+    pub(crate) raw: bool,
+    /// Transitional output format flag.
+    #[arg(long, value_enum, global = true, hide = true)]
+    pub(crate) format: Option<Format>,
     /// Command to run.
     #[command(subcommand)]
-    pub(crate) command: TopCommand,
+    pub(crate) command: Option<TopCommand>,
 }
 
 /// Output format.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub(crate) enum Format {
+    /// Concise human output.
+    Human,
     /// Compact JSON.
     Json,
     /// Pretty-printed JSON.
     Pretty,
+    /// Script-friendly raw output.
+    Raw,
+}
+
+impl Cli {
+    pub(crate) fn output_format(&self) -> Format {
+        if self.raw {
+            Format::Raw
+        } else if self.json {
+            Format::Json
+        } else {
+            self.format.unwrap_or(Format::Human)
+        }
+    }
 }
 
 /// Top-level command families.
@@ -76,6 +98,47 @@ pub(crate) enum TopCommand {
     Arrow(ArrowArgs),
     /// Raw serialized executor command.
     Command(CommandArgs),
+    /// Deferred old search surface.
+    #[command(hide = true)]
+    Search(DeferredArgs),
+    /// Deferred old recipe surface.
+    #[command(hide = true)]
+    Recipe(DeferredArgs),
+    /// Deferred transaction helper.
+    #[command(hide = true)]
+    Txn(DeferredArgs),
+    /// Deferred transaction begin.
+    #[command(hide = true)]
+    Begin,
+    /// Deferred transaction commit.
+    #[command(hide = true)]
+    Commit,
+    /// Deferred transaction rollback.
+    #[command(hide = true)]
+    Rollback,
+    /// Intentionally unavailable maintenance command.
+    #[command(hide = true)]
+    Flush,
+    /// Intentionally unavailable maintenance command.
+    #[command(hide = true)]
+    Compact,
+    /// Deferred daemon lifecycle command.
+    #[command(hide = true)]
+    Up(DeferredArgs),
+    /// Deferred daemon lifecycle command.
+    #[command(hide = true)]
+    Down(DeferredArgs),
+    /// Deferred daemon lifecycle command.
+    #[command(hide = true)]
+    Uninstall(DeferredArgs),
+}
+
+/// Arguments accepted for known deferred commands.
+#[derive(Debug, Args)]
+pub(crate) struct DeferredArgs {
+    /// Deferred command arguments.
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    pub(crate) args: Vec<String>,
 }
 
 /// Config command wrapper.
@@ -135,10 +198,23 @@ pub(crate) enum BranchCommand {
         timestamp: Option<u64>,
     },
     /// Delete a branch.
+    #[command(alias = "del")]
     Delete {
         /// Branch name.
         branch: String,
     },
+    /// Deferred branch diff command.
+    #[command(hide = true)]
+    Diff(DeferredArgs),
+    /// Deferred branch merge command.
+    #[command(hide = true)]
+    Merge(DeferredArgs),
+    /// Deferred branch tag command.
+    #[command(hide = true)]
+    Tag(DeferredArgs),
+    /// Deferred branch note command.
+    #[command(hide = true)]
+    Note(DeferredArgs),
 }
 
 /// Product space command wrapper.
@@ -165,6 +241,7 @@ pub(crate) enum SpaceCommand {
         space: String,
     },
     /// Delete a space.
+    #[command(alias = "del")]
     Delete {
         /// Space name.
         space: String,
@@ -189,8 +266,11 @@ pub(crate) enum KvCommand {
     Put {
         /// Key.
         key: String,
-        /// Value.
-        value: String,
+        /// Value. Use @path to read bytes from a file.
+        value: Option<String>,
+        /// Read value bytes from a file.
+        #[arg(short = 'f', long, conflicts_with = "value")]
+        file: Option<PathBuf>,
     },
     /// Read one key.
     Get {
@@ -201,6 +281,7 @@ pub(crate) enum KvCommand {
         as_of: Option<u64>,
     },
     /// Delete one key.
+    #[command(alias = "del")]
     Delete {
         /// Key.
         key: String,
@@ -273,8 +354,11 @@ pub(crate) enum JsonCommand {
         key: String,
         /// JSON path.
         path: String,
-        /// JSON value. Non-JSON text is stored as a string.
-        value: String,
+        /// JSON value. Non-JSON text is stored as a string. Use @path to read from a file.
+        value: Option<String>,
+        /// Read JSON value from a file.
+        #[arg(short = 'f', long, conflicts_with = "value")]
+        file: Option<PathBuf>,
     },
     /// Read a JSON path.
     Get {
@@ -287,6 +371,7 @@ pub(crate) enum JsonCommand {
         as_of: Option<u64>,
     },
     /// Delete a JSON path.
+    #[command(alias = "del")]
     Delete {
         /// Document key.
         key: String,
@@ -407,11 +492,17 @@ pub(crate) enum VectorCommand {
         collection: String,
         /// Vector key.
         key: String,
-        /// Vector as JSON array or comma-separated floats.
-        vector: String,
+        /// Vector as JSON array, comma-separated floats, or @path.
+        vector: Option<String>,
+        /// Read vector from a file.
+        #[arg(short = 'f', long, conflicts_with = "vector")]
+        file: Option<PathBuf>,
         /// Optional metadata JSON object.
         #[arg(long)]
         metadata: Option<String>,
+        /// Read metadata JSON object from a file.
+        #[arg(long, conflicts_with = "metadata")]
+        metadata_file: Option<PathBuf>,
     },
     /// Read one vector.
     Get {
@@ -457,10 +548,14 @@ pub(crate) enum VectorCommand {
         collection: String,
         /// Vector key.
         key: String,
-        /// Top-level metadata patch JSON.
-        patch: String,
+        /// Top-level metadata patch JSON or @path.
+        patch: Option<String>,
+        /// Read metadata patch from a file.
+        #[arg(short = 'f', long, conflicts_with = "patch")]
+        file: Option<PathBuf>,
     },
     /// Delete one vector.
+    #[command(alias = "del")]
     Delete {
         /// Collection name.
         collection: String,
@@ -477,21 +572,30 @@ pub(crate) enum VectorCommand {
         /// Collection name.
         collection: String,
         /// Serialized `VectorMetadataFilter` JSON.
+        #[arg(long, conflicts_with = "filter_file")]
+        filter: Option<String>,
+        /// Read filter JSON from a file.
         #[arg(long)]
-        filter: String,
+        filter_file: Option<PathBuf>,
     },
     /// Search vectors.
     Query {
         /// Collection name.
         collection: String,
-        /// Query vector as JSON array or comma-separated floats.
-        query: String,
+        /// Query vector as JSON array, comma-separated floats, or @path.
+        query: Option<String>,
+        /// Read query vector from a file.
+        #[arg(short = 'f', long, conflicts_with = "query")]
+        file: Option<PathBuf>,
         /// Maximum number of matches.
         #[arg(short = 'k', long, default_value_t = 10)]
         k: u64,
         /// Serialized `VectorMetadataFilter` JSON.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "filter_file")]
         filter: Option<String>,
+        /// Read filter JSON from a file.
+        #[arg(long)]
+        filter_file: Option<PathBuf>,
         /// Optional read timestamp in microseconds.
         #[arg(long)]
         as_of: Option<u64>,
@@ -520,6 +624,7 @@ pub(crate) enum VectorCollectionCommand {
         metric: CliVectorMetric,
     },
     /// Delete a collection.
+    #[command(alias = "del")]
     Delete {
         /// Collection name.
         collection: String,
@@ -569,8 +674,11 @@ pub(crate) enum EventCommand {
     Append {
         /// Event type.
         event_type: String,
-        /// Event payload JSON.
-        payload: String,
+        /// Event payload JSON or @path.
+        payload: Option<String>,
+        /// Read event payload from a file.
+        #[arg(short = 'f', long, conflicts_with = "payload")]
+        file: Option<PathBuf>,
     },
     /// Read one event.
     Get {
@@ -696,6 +804,7 @@ pub(crate) enum GraphCommand {
         graph: String,
     },
     /// Delete a graph.
+    #[command(alias = "del")]
     Delete {
         /// Graph name.
         graph: String,
@@ -721,8 +830,11 @@ pub(crate) enum GraphCommand {
         /// Node id.
         node_id: String,
         /// Optional properties JSON.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "properties_file")]
         properties: Option<String>,
+        /// Read properties JSON from a file.
+        #[arg(long)]
+        properties_file: Option<PathBuf>,
     },
     /// Read a node.
     GetNode {
@@ -766,8 +878,11 @@ pub(crate) enum GraphCommand {
         #[arg(long)]
         weight: Option<f64>,
         /// Optional properties JSON.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "properties_file")]
         properties: Option<String>,
+        /// Read properties JSON from a file.
+        #[arg(long)]
+        properties_file: Option<PathBuf>,
     },
     /// Read an edge.
     GetEdge {
@@ -810,6 +925,12 @@ pub(crate) enum GraphCommand {
         #[arg(long)]
         limit: Option<u64>,
     },
+    /// Deferred graph ontology commands.
+    #[command(hide = true)]
+    Ontology(DeferredArgs),
+    /// Deferred graph analytics commands.
+    #[command(hide = true)]
+    Analytics(DeferredArgs),
 }
 
 /// Graph direction.
