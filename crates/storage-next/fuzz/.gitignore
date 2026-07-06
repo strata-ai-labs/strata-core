@@ -32,6 +32,13 @@
 !/corpus/format_table_manifest/
 /corpus/format_table_manifest/*
 !/corpus/format_table_manifest/valid-empty
+!/corpus/format_table_manifest/valid-owned-levels
+!/corpus/format_table_manifest/valid-inherited-layer
+!/corpus/format_table_manifest/valid-materialization-provenance
+!/corpus/format_table_manifest/valid-unknown-optional-extension
+!/corpus/format_table_manifest/bad-checksum
+!/corpus/format_table_manifest/future-version
+!/corpus/format_table_manifest/truncated-table-entry
 !/corpus/table_runtime_reader/
 /corpus/table_runtime_reader/*
 !/corpus/table_runtime_reader/invalid-table
