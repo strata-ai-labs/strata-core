@@ -1759,7 +1759,10 @@ fn exercise_graph_cross_branch_binding_rejection(mut database: Database) {
             node_data(json!({"kind": "doc"}), Some(cross_branch.clone())),
         )
         .expect_err("cross-branch binding rejected");
-    assert_eq!(error.code(), "unsupported.engine.graph_binding_cross_branch");
+    assert_eq!(
+        error.code(),
+        "unsupported.engine.graph_binding_cross_branch"
+    );
 
     // Batch path rejects the same way (whole batch fails atomically).
     let batch_error = graph

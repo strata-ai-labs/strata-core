@@ -83,9 +83,9 @@ impl ControlPlane {
         name: &BranchName,
         storage_branch_id: strata_core_next::BranchId,
     ) -> Option<&BranchCatalogRecord> {
-        self.branches.values().find(|record| {
-            record.name() != name && record.storage_branch_id() == storage_branch_id
-        })
+        self.branches
+            .values()
+            .find(|record| record.name() != name && record.storage_branch_id() == storage_branch_id)
     }
 
     pub(crate) fn active_branch_count(&self) -> usize {
@@ -475,8 +475,7 @@ fn recover_pending_branch_operations(
     pending_names: &[BranchName],
 ) -> EngineResult<()> {
     let branch_index = read_required(persistence, RowClass::BranchControl, branch_index_key())?;
-    let published: BTreeSet<BranchName> =
-        decode_branch_index(&branch_index)?.into_iter().collect();
+    let published: BTreeSet<BranchName> = decode_branch_index(&branch_index)?.into_iter().collect();
 
     // The protocol clears a pending marker before starting the next operation,
     // so at most one name is normally present; handle any number defensively.

@@ -304,8 +304,8 @@ impl EngineError {
     /// legacy class is recovered from the registered code so `class()` stays
     /// consistent with the status.
     pub(crate) fn from_status(status: EngineErrorStatus) -> Self {
-        let legacy_class =
-            super::registry::class_for_code(status.code()).unwrap_or(EngineErrorClass::InvalidInput);
+        let legacy_class = super::registry::class_for_code(status.code())
+            .unwrap_or(EngineErrorClass::InvalidInput);
         Self {
             class: legacy_class,
             status,
