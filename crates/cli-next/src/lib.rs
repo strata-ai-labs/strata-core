@@ -11,6 +11,8 @@ use serde_json::Value;
 use strata_executor_next::{Command, Executor, ExecutorError};
 
 mod context;
+mod doctor;
+mod guidance;
 mod init;
 mod input;
 mod open;
@@ -74,6 +76,13 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
     if let Some(command) = command {
         if let Some(name) = deferred_top_command(&command) {
             return Err(deferred_command(name));
+        }
+        if matches!(command, options::TopCommand::Doctor) {
+            // Doctor takes an *optional* database target, so it resolves the
+            // target itself instead of going through open_executor's refusal.
+            let (report, healthy) = doctor::run_doctor(cli.cache, cli.db, cli.db_path)?;
+            render_value(&report, format)?;
+            return Ok(i32::from(!healthy));
         }
         if let TopLevelAction::NoDatabase(value) = top_level_without_database(&command)? {
             render_value(&value, format)?;
@@ -150,6 +159,14 @@ pub(crate) fn execute_parsed_command(
         options::TopCommand::Init => {
             let value = init::run_init()?;
             render_value(&value, format)?;
+            return Ok(());
+        }
+        options::TopCommand::Doctor => {
+            // Inside a session the database is already open and evidently
+            // working, so report installation checks only; the process exit
+            // code is unaffected — the session stays alive either way.
+            let (report, _healthy) = doctor::run_doctor(false, None, None)?;
+            render_value(&report, format)?;
             return Ok(());
         }
         options::TopCommand::Info => executor.execute(Command::Info {

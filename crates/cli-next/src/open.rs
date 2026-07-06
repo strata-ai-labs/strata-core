@@ -78,7 +78,8 @@ pub(crate) fn open_executor(
     }
 }
 
-fn env_database_path() -> Option<PathBuf> {
+/// Reads the `STRATA_DB` fallback database target (empty means unset).
+pub(crate) fn env_database_path() -> Option<PathBuf> {
     std::env::var_os("STRATA_DB")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)

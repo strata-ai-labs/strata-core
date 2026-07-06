@@ -12,8 +12,27 @@ check_ok "init prepares the Strata home"
 check_contains "init reports its envelope" '"type":"init"' "$OUT"
 check_contains "init points at the sandboxed home" "$STRATA_HOME" "$OUT"
 if [[ -d "$STRATA_HOME" ]]; then _ok; else _fail "init creates the home directory" "missing: $STRATA_HOME"; fi
+run --json init
+check_contains "init teaches the canonical next steps" "kv put greeting hello" "$OUT"
 expect_json "a fresh database is durable" '["data"]["durable"]' "true" -- "$DB" info
 expect_contains "ping answers pong" "pong" -- "$DB" ping
+
+echo "[$SUITE_NAME] doctor"
+run --json doctor
+check_contains "doctor reports the binary version" '"binary"' "$OUT"
+check_contains "doctor reports the platform" '"platform"' "$OUT"
+check_contains "doctor reports the sandboxed home" "$STRATA_HOME" "$OUT"
+check_eq "doctor without a target reports no database" "None" "$(json_field '["data"]["database"]')"
+seed "$DB" kv put doctor-probe yes
+# Note: doctor's exit code reflects overall health (a dev binary off PATH is a
+# legitimate issue), so assert the report facts rather than the exit status.
+run --json "$DB" doctor
+check_eq "doctor probes the database" "true" "$(json_field '["data"]["database"]["open_ok"]')"
+check_eq "doctor reads database info" "true" "$(json_field '["data"]["database"]["info"]["durable"]')"
+run --json "$WORK_DIR/no-such-db" doctor
+if [[ $STATUS -ne 0 ]]; then _ok; else _fail "doctor exits non-zero for a missing database" "exit=0"; fi
+check_contains "missing database is a coded issue" "not_found.cli.database_path" "$OUT"
+if [[ ! -e "$WORK_DIR/no-such-db" ]]; then _ok; else _fail "doctor never creates databases" "path was created"; fi
 
 echo "[$SUITE_NAME] info facts"
 expect_json "info reports the default branch" '["data"]["default_branch"]' "default" -- "$DB" info

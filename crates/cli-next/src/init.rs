@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde_json::json;
 use serde_json::Value;
 
-use crate::CliError;
+use crate::{guidance, CliError};
 
 pub(crate) fn run_init() -> Result<Value, CliError> {
     let home = strata_home()?;
@@ -18,17 +18,12 @@ pub(crate) fn run_init() -> Result<Value, CliError> {
         "data": {
             "home": home,
             "created": !existed,
-            "database_created": false,
-            "next_steps": [
-                "strata ./my-db",
-                "strata --db ./my-db kv put key value",
-                "strata --cache"
-            ]
+            "next_steps": guidance::NEXT_STEPS,
         }
     }))
 }
 
-fn strata_home() -> Result<PathBuf, CliError> {
+pub(crate) fn strata_home() -> Result<PathBuf, CliError> {
     if let Some(path) = std::env::var_os("STRATA_HOME") {
         return Ok(PathBuf::from(path));
     }

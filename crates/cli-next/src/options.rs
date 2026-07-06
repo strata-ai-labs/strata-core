@@ -66,8 +66,10 @@ impl Cli {
 /// Top-level command families.
 #[derive(Debug, Subcommand)]
 pub(crate) enum TopCommand {
-    /// Open or create a database and print database info.
+    /// Prepare the Strata home directory and print next steps.
     Init,
+    /// Check the installation and, when a database is targeted, its health.
+    Doctor,
     /// Lightweight liveness check.
     Ping,
     /// Print database information.
