@@ -27,11 +27,11 @@ use crate::service::{
     TableObjectReadError, TableObjectReaderService,
 };
 use crate::table::{
-    ImmutableTableReader, TableCursor, TableIdentity, TablePhysicalKeyBytes, TableReaderConfig,
-    TableRow, TableRuntimeFacts, TableSummaryExtras,
+    ImmutableTableReader, TableCursor, TableIdentity, TableReaderConfig, TableRow,
+    TableRuntimeFacts, TableSummaryExtras,
 };
 use std::collections::BTreeMap;
-use strata_core_next::{BranchId, Timestamp};
+use strata_core_next::BranchId;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleDurableTableCatalog {
@@ -381,6 +381,18 @@ pub(crate) fn preflight_table_manifest_with_checkpoint(
     checkpoint_branch: &BranchLocalState,
     staged_branch: &BranchLocalState,
 ) -> LifecycleResult<bool> {
+    // BS4.5b: with no checkpoint delta rows there is no overlap to check, so skip the O(dataset) manifest
+    // scan — close writes a (usually empty) delta checkpoint on every reopen, so this guard is what keeps
+    // the common combine path O(metadata). A non-empty delta still runs the full byte-divergence check.
+    if checkpoint_branch
+        .owned_levels()
+        .iter()
+        .flatten()
+        .next()
+        .is_none()
+    {
+        return Ok(false);
+    }
     // BS4.4c: stream owned tables through the cursor; the checkpoint map is now keyed + valued by owned
     // bytes (cursor rows are transient) rather than borrowing into a materialized row slice.
     let mut checkpoint_rows = BTreeMap::<Vec<u8>, StorageRow>::new();
@@ -903,62 +915,6 @@ fn validate_catalog_entry_matches_table(
     Ok(())
 }
 
-/// BS4.4c oracle: the old full-scan manifest facts, kept as the `debug_assert` reference for the
-/// one-pass cursor computation in `validate_manifest_reader_facts`.
-#[cfg(debug_assertions)]
-fn manifest_table_facts(
-    facts: &TableRuntimeFacts,
-    rows: &[TableRow],
-) -> LifecycleResult<TableManifestTableFacts> {
-    let (timestamp_min, timestamp_max) = timestamp_bounds(rows);
-    TableManifestTableFacts::new(
-        facts.byte_count(),
-        facts.row_count(),
-        facts.data_block_count(),
-        facts.commit_range().min(),
-        facts.commit_range().max(),
-        timestamp_min,
-        timestamp_max,
-    )
-    .map_err(format_error)
-}
-
-#[cfg(debug_assertions)]
-fn manifest_table_bounds(rows: &[TableRow]) -> LifecycleResult<TableManifestTableBounds> {
-    let Some(first_row) = rows.first() else {
-        return Err(LifecycleError::TableManifestPublicationFailed {
-            reason: "reachable table must not be empty",
-            source: None,
-        });
-    };
-    let mut physical_first = TablePhysicalKeyBytes::from_row(first_row.row());
-    let mut physical_last = physical_first.clone();
-    let mut internal_first = first_row.key().clone();
-    let mut internal_last = internal_first.clone();
-    for row in rows.iter().skip(1) {
-        let physical = TablePhysicalKeyBytes::from_row(row.row());
-        if physical < physical_first {
-            physical_first = physical.clone();
-        }
-        if physical > physical_last {
-            physical_last = physical;
-        }
-        if row.key() < &internal_first {
-            internal_first = row.key().clone();
-        }
-        if row.key() > &internal_last {
-            internal_last = row.key().clone();
-        }
-    }
-    TableManifestTableBounds::new(
-        physical_first.as_slice().to_vec(),
-        physical_last.as_slice().to_vec(),
-        internal_first.as_slice().to_vec(),
-        internal_last.as_slice().to_vec(),
-    )
-    .map_err(format_error)
-}
-
 fn manifest_table_provenance(
     table: &BranchOwnedTable,
     entry: &LifecycleDurableTableCatalogEntry,
@@ -979,68 +935,26 @@ fn validate_manifest_reader_facts(
     split: &TableRowSplit,
     reader: &ImmutableTableReader,
 ) -> LifecycleResult<()> {
-    // BS4.4c: one cursor pass computes the only row-derived values — timestamp bounds and physical-key
-    // bounds. Byte/row/block counts and commit range come from facts(); internal-key bounds from
-    // facts().key_range(). The old two-scan path stays as a debug oracle.
-    // BS4.4j: the durable recovery reader is now lazy, so this validation reads with a no-cache-fill
-    // cursor — it must not warm the block cache the reopen path expects to start cold. (Recovery stays
-    // O(rows) here; demoting this to an O(metadata) debug oracle for true fast-open is deferred to BS4.5.)
-    let mut cursor = reader.cursor_without_cache_fill();
-    cursor
-        .seek_to_first()
-        .map_err(|_| manifest_reader_scan_failed())?;
-    let mut timestamp_min: Option<Timestamp> = None;
-    let mut timestamp_max: Option<Timestamp> = None;
-    let mut physical_first: Option<TablePhysicalKeyBytes> = None;
-    let mut physical_last: Option<TablePhysicalKeyBytes> = None;
-    // BS4.4j: count the put/tombstone split from the same scan so it is release-enforced (like the
-    // bounds), not merely trusted from the persisted extension. Matches `TableSummaryExtras::from_rows`.
-    let mut put_rows = 0u64;
-    let mut tombstone_rows = 0u64;
-    while let Some(row) = cursor.current() {
-        let timestamp = row.commit_timestamp();
-        timestamp_min = Some(timestamp_min.map_or(timestamp, |current| current.min(timestamp)));
-        timestamp_max = Some(timestamp_max.map_or(timestamp, |current| current.max(timestamp)));
-        let physical = TablePhysicalKeyBytes::from_row(row.row());
-        match &physical_first {
-            Some(first) if &physical >= first => {}
-            _ => physical_first = Some(physical.clone()),
-        }
-        match &physical_last {
-            Some(last) if &physical <= last => {}
-            _ => physical_last = Some(physical),
-        }
-        if row.is_tombstone() {
-            tombstone_rows = tombstone_rows.saturating_add(1);
-        } else {
-            put_rows = put_rows.saturating_add(1);
-        }
-        cursor
-            .advance()
-            .map_err(|_| manifest_reader_scan_failed())?;
-    }
-    let (Some(physical_first), Some(physical_last)) = (physical_first, physical_last) else {
-        return Err(LifecycleError::TableManifestPublicationFailed {
-            reason: "reachable table must not be empty",
-            source: None,
-        });
-    };
+    // BS4.5b: fast open is O(tables), not O(rows). Verify the manifest record against the table
+    // *footer* — byte/row/block counts, commit range, and internal-key bounds are all metadata, so this
+    // reads no data block. The row-derived fields the footer lacks (timestamp bounds, physical-key
+    // bounds, and the exact put/tombstone breakdown) are trusted from the CRC-protected manifest record
+    // here — they feed `TableSummaryExtras::from_parts` at recovery — and cross-checked against the
+    // actual rows only under the debug oracle below. The one release guard the footer still gives the
+    // split is that its counts sum to the object's row count. Before BS4.5b this did a full O(rows)
+    // cursor pass per table, making open O(dataset).
 
-    if put_rows != split.put_rows() || tombstone_rows != split.tombstone_rows() {
-        return Err(LifecycleError::TableManifestRecoveryMismatch {
-            reason: "table row-split counts do not match table object",
-            source: None,
-        });
-    }
-
+    // Footer counts + commit range vs the manifest record. The timestamp bounds are taken from the
+    // manifest itself (trusted; verified against rows only in debug), so the comparison exercises only
+    // the footer-backed fields.
     let facts = TableManifestTableFacts::new(
         reader.facts().byte_count(),
         reader.facts().row_count(),
         reader.facts().data_block_count(),
         reader.facts().commit_range().min(),
         reader.facts().commit_range().max(),
-        timestamp_min,
-        timestamp_max,
+        table.facts().timestamp_min(),
+        table.facts().timestamp_max(),
     )
     .map_err(format_error)?;
     if &facts != table.facts() {
@@ -1049,9 +963,21 @@ fn validate_manifest_reader_facts(
             source: None,
         });
     }
+
+    // The row-split counts must sum to the object's row count (footer). The exact put/tombstone
+    // breakdown is verified against rows only in debug.
+    if split.put_rows().saturating_add(split.tombstone_rows()) != reader.facts().row_count() {
+        return Err(LifecycleError::TableManifestRecoveryMismatch {
+            reason: "table row-split counts do not match table object",
+            source: None,
+        });
+    }
+
+    // Footer internal-key bounds vs the manifest record. The physical-key bounds are taken from the
+    // manifest itself (trusted; verified against rows only in debug).
     let bounds = TableManifestTableBounds::new(
-        physical_first.as_slice().to_vec(),
-        physical_last.as_slice().to_vec(),
+        table.bounds().physical_first().to_vec(),
+        table.bounds().physical_last().to_vec(),
         reader.facts().key_range().first_key().to_vec(),
         reader.facts().key_range().last_key().to_vec(),
     )
@@ -1064,20 +990,27 @@ fn validate_manifest_reader_facts(
     }
     #[cfg(debug_assertions)]
     {
-        // BS4.4g: read via the oracle hatch (bypasses the BS4.4d guard) so this one-pass-vs-scan
-        // cross-check keeps working once the recovery reader is lazy. Materialize once for both.
+        // BS4.5b oracle: verify the trusted manifest fields (timestamp bounds, physical-key bounds, and
+        // the exact put/tombstone split) against a full scan. The manifest-derived summary is exactly
+        // what recovery installs via `from_parts`; a `from_rows` scan of the same sealed table must
+        // yield a byte-identical summary. Reads via the oracle hatch (bypasses the BS4.4d guard);
+        // release open never does this.
         let scanned_rows = reader
             .materialize_rows_for_oracle()
             .map_err(|_| manifest_reader_scan_failed())?;
-        debug_assert_eq!(
-            facts,
-            manifest_table_facts(reader.facts(), &scanned_rows)?,
-            "manifest facts one-pass diverged from a full scan",
+        let manifest_extras = TableSummaryExtras::from_parts(
+            table.facts().timestamp_min(),
+            table.facts().timestamp_max(),
+            table.bounds().physical_first().to_vec(),
+            table.bounds().physical_last().to_vec(),
+            split.put_rows(),
+            split.tombstone_rows(),
         );
+        let scanned_extras = TableSummaryExtras::from_rows(&scanned_rows)
+            .map_err(|_| manifest_reader_scan_failed())?;
         debug_assert_eq!(
-            bounds,
-            manifest_table_bounds(&scanned_rows)?,
-            "manifest bounds one-pass diverged from a full scan",
+            manifest_extras, scanned_extras,
+            "manifest-trusted summary (timestamp/physical bounds, put/tombstone split) diverged from a full scan",
         );
     }
     Ok(())
@@ -1088,18 +1021,6 @@ fn manifest_reader_scan_failed() -> LifecycleError {
         reason: "table manifest verify cursor scan failed",
         source: None,
     }
-}
-
-#[cfg(debug_assertions)]
-fn timestamp_bounds(rows: &[TableRow]) -> (Option<Timestamp>, Option<Timestamp>) {
-    let mut timestamps = rows.iter().map(TableRow::commit_timestamp);
-    let Some(first) = timestamps.next() else {
-        return (None, None);
-    };
-    let (min, max) = timestamps.fold((first, first), |(min, max), timestamp| {
-        (min.min(timestamp), max.max(timestamp))
-    });
-    (Some(min), Some(max))
 }
 
 fn manifest_table_refs(manifest: &TableManifest) -> impl Iterator<Item = &TableManifestTableRef> {

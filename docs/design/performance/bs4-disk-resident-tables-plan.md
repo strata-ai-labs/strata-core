@@ -1,9 +1,14 @@
 # BS4 — Disk-resident tables: implementation and test plan
 
 Status: **in progress** — 4.1, 4.2, 4.3, 4.4a–i landed (all prep + the behavior-neutral
-scaffolding); **remaining: 4.4k (durable backend ownership) → 4.4j (flush/recovery lazy) → 4.4l
-(compaction outputs lazy) → 4.5 (budget remodel) → 4.6 (exit)**. Note the execution order: **4.4k
-runs before 4.4j** — an attempt at the flip (4.4j) revealed that holding a lazy reader borrows the
+scaffolding); 4.4k → 4.4j (the flip) → 4.4l landed (durable flush/recovery/compaction now
+disk-resident), plus the fork-cow follow-up; **4.5 landed as two slices — 4.5a (budget remodel:
+durable admission charges metadata-resident bytes, dataset-size reject demoted to a health gauge,
+block cache rebalanced to the primary pool) and 4.5b (fast open: the always-on per-table
+`validate_manifest_reader_facts` cursor scan + the flush-watermark contiguity scan demoted to debug
+oracles, and the empty-delta checkpoint combine short-circuited). Remaining: 4.6 (exit)**. Note the
+execution order was: **4.4k runs before 4.4j** — an attempt at the flip (4.4j) revealed that holding a
+lazy reader borrows the
 backend indefinitely, so every durable runtime must be built from an owned/`'static` backend; the
 `into_materialized` bridge had been laundering that for the entire durable test suite (~392 sites
 assemble durable runtimes from short-lived borrowed backends). 4.4k makes ownership pervasive
@@ -383,6 +388,50 @@ bulk of the dataset, so leaving them resident blows the 8 GB budget — required
 across compaction stress; the "reopen avoided" perf-trace assertions updated to the new lazy path.
 
 ### BS4.5 — Budget remodel + fast-open regression
+
+> **Landed as BS4.5a + BS4.5b.** Split into two PRs (the axes share no code): **4.5a — budget remodel**,
+> **4.5b — fast open**.
+>
+> **4.5a (budget):** the three durable install/open sites (recovery `recover_manifest_table`, durable
+> `flush`, compaction `rewrite_publication`) now charge the lazy reader's **metadata-resident** footprint
+> against the `TableReader` pool instead of the full object. The measure is a single free fn
+> `table_resident_metadata_bytes` shared by the reader's `ImmutableTableMetadata` (reopen-time) and the
+> streaming builder's output (build-time, carried on `BuiltTableArtifact`), so admission and steady-state
+> accounting can never drift. Cache-mode flush keeps charging full bytes (C2). The durable total-budget
+> commit reject (`bootstrap.rs`) is demoted to an **observability gauge** — a `perf_trace`
+> `durable_commit_admitted_over_budget` counter, WARN not reject — while the cache-mode reject is kept.
+> `DEFAULT_MAX_OPEN_READERS` raised 1024 → 65 536 (byte budget is now the bound; the count cap is a
+> backstop, true bounding is the deferred G15 reader cache). Pool defaults rebalanced so the block cache
+> is the primary pool (64 MiB/8 → 240 MiB) and the reader pool shrinks (128 → 32 MiB, metadata-only);
+> `from_total_bytes` scaling + the `validate()` sum-within-total invariant preserved (final fractions
+> tuned in 4.6).
+>
+> **4.5b (fast open):** `validate_manifest_reader_facts` release path is now O(1)/table — it compares the
+> manifest record against the table **footer** (byte/row/block counts, commit range, internal-key bounds)
+> and checks the row-split counts sum to the footer row count; the O(rows) cursor scan (timestamp bounds,
+> physical-key bounds, exact put/tombstone breakdown) is demoted to a `#[cfg(debug_assertions)]` oracle
+> that compares `TableSummaryExtras::from_parts` (the manifest-trusted summary recovery installs) against
+> `from_rows`. The flush-watermark per-version contiguity scan (`branch_durable_rows_cover_interval`,
+> O(dataset) when unbounded by a checkpoint) is demoted to a debug oracle; **release keeps an O(tables)
+> fail-safe** — `branch_durable_ranges_cover_interval` checks that the durable tables' commit-range
+> *intervals* union-cover `(checkpoint_wm, flush_wm]` (facts only, no row scan). This is stronger than a
+> bare `max_commit_version ≥ flush_watermark` check: it catches an inter-table version gap (orphaned /
+> partial durable state) that would otherwise be silently trusted, converting a would-be silent-data-loss
+> path back into a fail-closed one, while staying O(tables). Only an intra-table gap (one table claiming a
+> range it doesn't fill) remains debug-only. Unit-tested by `ranges_cover_interval_tests`.
+> The checkpoint+manifest combine path (which runs on every reopen, since close writes a delta checkpoint)
+> **short-circuits in O(1) when the delta is empty** — the common clean flush+close case — skipping the
+> full-manifest key-set scan in both `preflight_table_manifest_with_checkpoint` and `checkpoint_delta_rows`.
+> Regression guard: `api/tests/disk_resident_reads.rs::durable_reopen_opens_o_tables_and_scans_no_rows`
+> asserts `table_reader_opens == #tables` and (release) `table_cursor_rows_visited == 0` after reopening a
+> multi-block durable DB — the direct proof the per-table cursor scan is gone.
+>
+> **Residual fast-open costs (deferred, tracked for 4.6):** (1) a **non-empty** delta checkpoint (unflushed
+> rows at close) still scans the full manifest to build its dedup key set — needs a facts-based
+> point-lookup dedup; (2) `validate_checkpoint_rows` is O(checkpoint rows) when a checkpoint snapshot
+> exists (bounded for a delta, O(dataset) for a full snapshot); (3) WAL replay is O(unflushed tail) —
+> bounded by checkpoints in practice. None is a per-table cursor scan; all are point-read/decode paths
+> outside 4.5b's manifest-validation scope. The 100M open-time measurement is BS4.6.
 
 Two independent axes (they share no code); both are needed to make the exit gates reachable.
 

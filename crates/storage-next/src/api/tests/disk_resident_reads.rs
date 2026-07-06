@@ -49,6 +49,28 @@ fn commit_put(runtime: &mut StorageRuntime<'static>, key: &[u8], value: &[u8], t
         .expect("commit put");
 }
 
+/// Commit `count` distinct puts (`{prefix}-{i:05}` → `v`) in a single batch, so a later flush produces
+/// one durable table spanning several data blocks (256 rows/block) without a commit per row.
+fn commit_many_puts(runtime: &mut StorageRuntime<'static>, prefix: &str, count: u32, ts: u64) {
+    let mutations = (0..count)
+        .map(|i| CommitMutation::Put {
+            storage_space: engine_space(),
+            key: api_key(format!("{prefix}-{i:05}").as_bytes()),
+            value: StorageValue::new(b"v".to_vec()),
+            ttl: None,
+        })
+        .collect();
+    let batch = CommitBatch::new(
+        branch(),
+        mutations,
+        CommitOptions::default().require_conflict_check(false),
+    )
+    .expect("valid multi-put batch");
+    runtime
+        .commit_for_test(&batch, Timestamp::from_micros(ts))
+        .expect("commit many puts");
+}
+
 fn point_request(key: &[u8]) -> PointReadRequest {
     PointReadRequest::new(branch(), engine_space(), api_key(key), ReadBound::Latest)
 }
@@ -183,6 +205,100 @@ fn durable_cold_reads_populate_then_hit_the_block_cache() {
         after_second.table_cache_hits() > after_first.table_cache_hits(),
         "a repeat read of the same key must hit the now-warm block cache"
     );
+}
+
+/// Number of durable L0 tables the fast-open regression test seeds and expects to reopen.
+const FAST_OPEN_TABLE_COUNT: u64 = 3;
+
+/// BS4.5b: manifest replay is O(tables) and scans no rows. After reopen, recovery builds each durable
+/// table's reader from the manifest facts + row-split (metadata only): it opens exactly one lazy reader
+/// per manifest table and, in release, visits zero rows through a cursor — the manifest-facts validation,
+/// the flush-watermark contiguity check, and the (empty-delta) checkpoint combine are now O(metadata) or
+/// debug-only oracles. Before BS4.5b, `validate_manifest_reader_facts` cursor-scanned every row of every
+/// table at open (here ~300), so this `cursor_rows_visited == 0` guard catches a regression of the
+/// demotion. (Checkpoint-row validation and WAL replay still touch rows via point reads — separate paths
+/// outside BS4.5b's scope; the checkpoint below bounds WAL replay to a realistic, empty tail.)
+#[test]
+fn durable_reopen_opens_o_tables_and_scans_no_rows() {
+    let _capture = perf_trace::begin_test_capture();
+    let root = temp_dir_for_api_test("disk-resident-fast-open");
+
+    // Seed three durable L0 tables. The first spans multiple data blocks (>256 rows) so the pre-BS4.5b
+    // per-row cursor scan at open would have been plainly visible in `cursor_rows_visited`.
+    {
+        let mut runtime = open_durable_runtime(root.clone());
+        commit_many_puts(&mut runtime, "wide", 300, 1000);
+        runtime
+            .flush_default_branch_for_test()
+            .expect("flush the wide (multi-block) L0 table");
+        commit_put(&mut runtime, b"t2-a", b"a", 5000);
+        runtime
+            .flush_default_branch_for_test()
+            .expect("flush the second L0 table");
+        commit_put(&mut runtime, b"t3-a", b"a", 6000);
+        runtime
+            .flush_default_branch_for_test()
+            .expect("flush the third L0 table");
+        assert_eq!(
+            u64::try_from(
+                runtime
+                    .branch_source_layout_for_test(branch())
+                    .expect("layout")
+                    .owned_l0_tables()
+            )
+            .expect("table count fits u64"),
+            FAST_OPEN_TABLE_COUNT,
+        );
+        // Checkpoint so the flush watermark is durable and WAL replay on reopen is bounded (the tail is
+        // empty — a realistic large DB is checkpointed, not replaying its whole history). Without this,
+        // reopen re-applies every committed row through the WAL, which is O(rows) by construction and
+        // unrelated to the manifest-replay path BS4.5b makes O(metadata).
+        let checkpoint = MaintenanceRequest::new(
+            MaintenanceTask::Checkpoint,
+            MaintenanceScope::Branch(branch()),
+        );
+        runtime.maintenance(&checkpoint).expect("checkpoint");
+        runtime.close().expect("close durable runtime");
+    }
+
+    // Reset so the snapshot reflects only the reopen, not the seeding writes/flushes.
+    perf_trace::reset();
+    let runtime = open_durable_runtime(root);
+    let after_open = perf_trace::snapshot();
+
+    // Open is O(tables): one lazy reader open per durable table, and no full materialization.
+    assert_eq!(
+        after_open.table_reader_opens(),
+        FAST_OPEN_TABLE_COUNT,
+        "recovery must open exactly one lazy reader per durable table",
+    );
+    assert_eq!(after_open.table_lazy_full_materializations(), 0);
+
+    // Release: manifest replay trusts the CRC-protected facts + row-split, so it drives no cursor over
+    // any table's rows — independent of the 300+ rows on disk. Debug builds run the O(rows) oracles
+    // (materialization cross-check, flush-watermark contiguity), so this is release-only, matching how
+    // the repo validates release. This is the direct regression guard for the demoted per-table scan.
+    #[cfg(not(debug_assertions))]
+    assert_eq!(
+        after_open.table_cursor_rows_visited(),
+        0,
+        "manifest replay must not cursor-scan any table's rows at open",
+    );
+
+    // The lazy readers still serve every read correctly after the O(metadata) open.
+    assert_eq!(
+        read_latest(&runtime, b"wide-00000").as_deref(),
+        Some(b"v".as_ref())
+    );
+    assert_eq!(
+        read_latest(&runtime, b"wide-00299").as_deref(),
+        Some(b"v".as_ref())
+    );
+    assert_eq!(
+        read_latest(&runtime, b"t3-a").as_deref(),
+        Some(b"a".as_ref())
+    );
+    assert_eq!(read_latest(&runtime, b"wide-99999"), None);
 }
 
 /// BS4.4l: a durable COMPACTION output installs a lazy, disk-resident reader (not eager row-reuse). The

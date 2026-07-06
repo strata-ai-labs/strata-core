@@ -1199,6 +1199,10 @@ pub(crate) fn branch_checkpoint_flush_boundary(
     boundary
 }
 
+// BS4.5b: recovery's flush-watermark coverage check trusts the manifest's O(1) max-version fact in
+// release and verifies this exact per-version contiguity only under the debug oracle, so this scan
+// (O(dataset) when unbounded by a checkpoint) is compiled out of release open.
+#[cfg(debug_assertions)]
 pub(crate) fn branch_durable_rows_cover_interval(
     owned_levels: &[Vec<BranchOwnedTable>],
     inherited_layers: &[BranchInheritedLayer],
@@ -1223,6 +1227,46 @@ pub(crate) fn branch_durable_rows_cover_interval(
                 candidate.as_u64(),
             )
         })
+}
+
+/// BS4.5b: O(tables) release fail-safe for flush-watermark recovery. Checks that the durable tables'
+/// commit-range *intervals* union-cover `(checkpoint_watermark, candidate]` with no gap — using only
+/// each table's `commit_range()` facts (metadata), never a row scan. This is weaker than the per-version
+/// `branch_durable_rows_cover_interval` oracle (it cannot see a gap *inside* a single table's [min,max]
+/// range), but it catches an inter-table version gap — the orphaned/partial-durable-state shape where the
+/// flush watermark claims coverage the tables do not back — so fast open keeps a release guard against
+/// silently trusting such a watermark. Per-version contiguity implies interval coverage, so a correctly
+/// flushed branch always passes (no false positives).
+pub(crate) fn branch_durable_ranges_cover_interval(
+    owned_levels: &[Vec<BranchOwnedTable>],
+    inherited_layers: &[BranchInheritedLayer],
+    checkpoint_watermark: CommitVersion,
+    candidate: CommitVersion,
+) -> bool {
+    if candidate <= checkpoint_watermark {
+        return true;
+    }
+    let Some(first_needed) = checkpoint_watermark.as_u64().checked_add(1) else {
+        return false;
+    };
+    let candidate = candidate.as_u64();
+    let mut ranges: Vec<(u64, u64)> = owned_levels
+        .iter()
+        .flatten()
+        .chain(
+            inherited_layers
+                .iter()
+                .flat_map(|layer| layer.owned_levels().iter().flatten()),
+        )
+        .filter_map(|table| {
+            let range = table.facts().commit_range();
+            let (min, max) = (range.min().as_u64(), range.max().as_u64());
+            // Keep only ranges that overlap the target interval; others cannot contribute coverage.
+            (max >= first_needed && min <= candidate).then_some((min, max))
+        })
+        .collect();
+    ranges.sort_unstable();
+    ranges_cover_interval(&ranges, first_needed, candidate)
 }
 
 pub(crate) fn branch_has_unflushed_rows_at_or_below(
@@ -1259,6 +1303,29 @@ fn versions_cover_interval(versions: &[CommitVersion], first_needed: u64, candid
         expected = next;
     }
     false
+}
+
+/// Whether `sorted_ranges` (inclusive `(min, max)` commit-version intervals, ascending by `min`)
+/// union-cover `[first_needed, candidate]` contiguously. `expected` tracks the first version not yet
+/// covered; a range whose `min` overshoots it is a gap. Empty or short-of-`candidate` ⇒ false.
+fn ranges_cover_interval(sorted_ranges: &[(u64, u64)], first_needed: u64, candidate: u64) -> bool {
+    let mut expected = first_needed;
+    for &(min, max) in sorted_ranges {
+        if min > expected {
+            return false;
+        }
+        if max >= expected {
+            match max.checked_add(1) {
+                Some(next) => expected = next,
+                // Covered through u64::MAX, which is ≥ candidate.
+                None => return true,
+            }
+        }
+        if expected > candidate {
+            return true;
+        }
+    }
+    expected > candidate
 }
 
 fn manifest_table_refs(manifest: &TableManifest) -> impl Iterator<Item = &TableManifestTableRef> {
@@ -2124,4 +2191,57 @@ fn commit_error(error: impl std::error::Error + Send + Sync + 'static) -> Lifecy
 
 fn format_error(error: impl std::error::Error + Send + Sync + 'static) -> LifecycleError {
     LifecycleError::lower_layer_with(LifecycleLowerLayer::Format, "format failed", error)
+}
+
+#[cfg(test)]
+mod ranges_cover_interval_tests {
+    use super::ranges_cover_interval;
+
+    // Sweep over inclusive (min, max) commit-version ranges, ascending by min, covering [lo, hi].
+    #[test]
+    fn contiguous_single_range_covers() {
+        assert!(ranges_cover_interval(&[(1, 9)], 1, 9));
+        assert!(ranges_cover_interval(&[(1, 9)], 4, 6));
+    }
+
+    #[test]
+    fn adjacent_and_overlapping_ranges_cover() {
+        // Adjacent: [1,3] then [4,9] leaves no gap.
+        assert!(ranges_cover_interval(&[(1, 3), (4, 9)], 1, 9));
+        // Overlapping: [1,5] and [4,9].
+        assert!(ranges_cover_interval(&[(1, 5), (4, 9)], 1, 9));
+    }
+
+    #[test]
+    fn inter_table_gap_is_rejected() {
+        // The reviewer's scenario: {1,2,3} and {7,8,9}, want [1,9] — versions 4..6 uncovered.
+        assert!(!ranges_cover_interval(&[(1, 3), (7, 9)], 1, 9));
+    }
+
+    #[test]
+    fn short_of_candidate_is_rejected() {
+        // Covers up to 8 but not 9.
+        assert!(!ranges_cover_interval(&[(1, 8)], 1, 9));
+        // A range starting above the interval leaves the front uncovered.
+        assert!(!ranges_cover_interval(&[(3, 9)], 1, 9));
+    }
+
+    #[test]
+    fn empty_ranges_reject_a_nonempty_interval() {
+        assert!(!ranges_cover_interval(&[], 1, 9));
+    }
+
+    #[test]
+    fn ranges_entirely_before_the_interval_do_not_contribute() {
+        // [1,2] is below [5,9]; only [5,9] covers it.
+        assert!(ranges_cover_interval(&[(1, 2), (5, 9)], 5, 9));
+        // ...and without the covering range it is rejected.
+        assert!(!ranges_cover_interval(&[(1, 2)], 5, 9));
+    }
+
+    #[test]
+    fn saturating_top_range_covers() {
+        // A range reaching u64::MAX covers any candidate at or below it without overflow.
+        assert!(ranges_cover_interval(&[(1, u64::MAX)], 1, u64::MAX));
+    }
 }
