@@ -11,8 +11,9 @@ use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::facts::BranchLevel;
 use crate::commit::{CommitBranchGeneration, CommitManualTimestampSource, CommitRuntimeConfig};
 use crate::format::{
-    encode_manifest, DatabaseManifest, TableManifest, TableManifestLevel, TableManifestTableBounds,
-    TableManifestTableFacts, TableManifestTableProvenance, TableManifestTableRef, WalCommitPayload,
+    encode_manifest, table_row_split_extension_section, DatabaseManifest, TableManifest,
+    TableManifestLevel, TableManifestTableBounds, TableManifestTableFacts,
+    TableManifestTableProvenance, TableManifestTableRef, TableRowSplit, WalCommitPayload,
     WalRecord,
 };
 use crate::layout::ObjectLayout;
@@ -875,19 +876,65 @@ fn publish_table_manifest_for_test(
     sequence: u64,
     tables: Vec<TableManifestTableRef>,
 ) -> Result<(), TestkitError> {
+    // BS4.4j requires a positional row-split extension (one per manifest table, in walk order).
+    // These are single-level (L0) manifests with no inherited layers, so the split order is just the
+    // table order. Compute each split from the table's real object; a scenario that deliberately
+    // corrupts the object falls back to (row_count, 0) — recovery fails at open before the split's
+    // exact value matters there.
+    let splits: Vec<TableRowSplit> = tables
+        .iter()
+        .map(|table| row_split_for_manifest_ref(backend, table))
+        .collect();
+    let extensions = if splits.is_empty() {
+        Vec::new()
+    } else {
+        vec![table_row_split_extension_section(&splits).map_err(testkit_error)?]
+    };
     let manifest = TableManifest::new(
         branch,
         None,
         sequence,
         vec![TableManifestLevel::new(BranchLevel::ZERO, tables).map_err(testkit_error)?],
         Vec::new(),
-        Vec::new(),
+        extensions,
     )
     .map_err(testkit_error)?;
     TableManifestService::new(backend)
         .publish_replace_manifest(branch, &manifest)
         .map_err(testkit_error)?;
     Ok(())
+}
+
+/// The put/tombstone split of a manifest table, read from its real object. Falls back to
+/// `(row_count, 0)` when the object is unreadable (a scenario deliberately corrupted it) — recovery
+/// rejects such a table at reader-open before the split's exact breakdown is validated.
+fn row_split_for_manifest_ref(
+    backend: &'static RecoveryScriptBackend,
+    table: &TableManifestTableRef,
+) -> TableRowSplit {
+    backend
+        .read_object(table.object())
+        .ok()
+        .and_then(|bytes| {
+            ImmutableTableReader::open_bytes(
+                table.table_identity().clone(),
+                bytes,
+                TableReaderConfig::default(),
+            )
+            .ok()
+        })
+        .map_or_else(
+            || TableRowSplit::new(table.facts().row_count(), 0),
+            |reader| {
+                let tombstones = reader
+                    .rows()
+                    .iter()
+                    .filter(|row| row.is_tombstone())
+                    .count() as u64;
+                let put = reader.rows().len() as u64 - tombstones;
+                TableRowSplit::new(put, tombstones)
+            },
+        )
 }
 
 fn publish_snapshot_for_test(
