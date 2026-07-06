@@ -163,6 +163,8 @@ pub enum BatchStatus {
 pub enum BatchItemStatus {
     /// The item was accepted by the command.
     Ok,
+    /// The item was valid, but the requested record was not found.
+    Miss,
     /// The item failed validation or execution.
     Error,
 }
@@ -224,6 +226,19 @@ impl<T> BatchItem<T> {
     /// Creates a failed item wrapper with a primitive item payload.
     pub fn failed(index: u64, result: Option<T>, error: ErrorStatus) -> Self {
         Self::new(index, false, None, None, result, Some(error))
+    }
+
+    /// Creates a valid read item whose requested record was not found.
+    pub fn miss(index: u64, result: T) -> Self {
+        Self {
+            index,
+            status: BatchItemStatus::Miss,
+            applied: false,
+            effect: None,
+            commit: None,
+            result: Some(result),
+            error: None,
+        }
     }
 
     /// Returns the input item position.
@@ -393,6 +408,12 @@ fn batch_status<T>(items: &[BatchItem<T>]) -> BatchStatus {
         return BatchStatus::Error;
     }
     if error_count > 0 {
+        return BatchStatus::Partial;
+    }
+    if items
+        .iter()
+        .any(|item| item.status == BatchItemStatus::Miss)
+    {
         return BatchStatus::Partial;
     }
     let applied_count = items.iter().filter(|item| item.applied()).count();

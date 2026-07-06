@@ -118,9 +118,23 @@ pub(super) fn kv_batch(items: Vec<BatchItemResult>) -> BatchResult<BatchItemResu
 }
 
 pub(super) fn kv_batch_get(items: Vec<BatchGetItemResult>) -> BatchResult<BatchGetItemResult> {
-    fixture_batch(BatchMode::Itemwise, items, |item| {
-        (false, None, None, item.error_status().cloned())
-    })
+    BatchResult::from_items(
+        BatchMode::Itemwise,
+        items
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let index = u64::try_from(index).expect("fixture index fits in u64");
+                if let Some(error) = item.error_status().cloned() {
+                    BatchItem::failed(index, Some(item), error)
+                } else if item.found() {
+                    BatchItem::ok(index, false, None, None, item)
+                } else {
+                    BatchItem::miss(index, item)
+                }
+            })
+            .collect(),
+    )
 }
 
 pub(super) fn json_batch(items: Vec<JsonBatchItemResult>) -> BatchResult<JsonBatchItemResult> {

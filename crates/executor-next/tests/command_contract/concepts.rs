@@ -301,6 +301,40 @@ fn page_outputs_reject_non_terminal_pages_without_cursor() {
 }
 
 #[test]
+fn kv_batch_get_wrapper_marks_missing_items_as_miss() {
+    let batch = kv_batch_get(vec![
+        BatchGetItemResult::new(bytes("a"), Some(bytes("one")), Some(1), Some(10)),
+        BatchGetItemResult::new(bytes("missing"), None, None, None),
+        BatchGetItemResult::new(bytes("b"), Some(bytes("two")), Some(2), Some(20)),
+    ]);
+
+    assert_eq!(batch.status(), BatchStatus::Partial);
+    assert!(!batch.applied());
+    assert_eq!(batch[0].status(), BatchItemStatus::Ok);
+    assert_eq!(batch[1].status(), BatchItemStatus::Miss);
+    assert_eq!(batch[2].status(), BatchItemStatus::Ok);
+    assert_eq!(batch[1].error(), None);
+    assert!(!batch[1]
+        .result()
+        .expect("miss keeps primitive payload")
+        .found());
+
+    let encoded = serde_json::to_value(&batch).expect("batch serializes");
+    assert_eq!(encoded["status"], "partial");
+    assert_eq!(
+        encoded["items"]
+            .as_array()
+            .expect("items is an array")
+            .iter()
+            .map(|item| item["status"].as_str().expect("status is a string"))
+            .collect::<Vec<_>>(),
+        vec!["ok", "miss", "ok"]
+    );
+    assert_eq!(encoded["items"][1]["result"]["found"], false);
+    assert_eq!(encoded["items"][1]["error"], Value::Null);
+}
+
+#[test]
 fn json_read_outputs_distinguish_missing_from_stored_null() {
     let missing = Output::JsonValue(MaybeJsonValue::missing());
     let stored_null = Output::JsonValue(MaybeJsonValue::found(Value::Null));

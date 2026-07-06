@@ -67,9 +67,23 @@ pub(super) fn kv_batch_result(results: Vec<BatchItemResult>) -> BatchResult<Batc
 pub(super) fn kv_batch_get_result(
     results: Vec<BatchGetItemResult>,
 ) -> BatchResult<BatchGetItemResult> {
-    wrap_batch_items(BatchMode::Itemwise, results, |item| {
-        (false, None, None, item.error_status().cloned())
-    })
+    BatchResult::from_items(
+        BatchMode::Itemwise,
+        results
+            .into_iter()
+            .enumerate()
+            .map(|(index, result)| {
+                let index = usize_to_u64(index);
+                if let Some(error) = result.error_status().cloned() {
+                    BatchItem::failed(index, Some(result), error)
+                } else if result.found() {
+                    BatchItem::ok(index, false, None, None, result)
+                } else {
+                    BatchItem::miss(index, result)
+                }
+            })
+            .collect(),
+    )
 }
 
 pub(super) fn finish_batch_get_results(

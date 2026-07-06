@@ -39,7 +39,7 @@ assert_json "$out" 'data["type"] == "batch_results" and data["data"]["mode"] == 
 kv_batch_get="$CLI_CORPUS_FILES/kv-corpus-batch-get.json"
 write_json "$kv_batch_get" '{"type":"kv_batch_get","keys":[[98,97,116,99,104,45,97],[109,105,115,115,105,110,103],[98,97,116,99,104,45,98]]}'
 out="$(raw_command_file "$kv_batch_get")"
-assert_json "$out" 'data["type"] == "batch_get_results" and [item["status"] for item in data["data"]["items"]] == ["ok", "ok", "ok"] and [item["result"]["found"] for item in data["data"]["items"]] == [True, False, True]' "kv batch get miss"
+assert_json "$out" 'data["type"] == "batch_get_results" and data["data"]["status"] == "partial" and [item["status"] for item in data["data"]["items"]] == ["ok", "miss", "ok"] and [item["result"]["found"] for item in data["data"]["items"]] == [True, False, True]' "kv batch get miss"
 
 scenario_section "JSON null, missing, pagination, indexes, and batches"
 cli_json json set doc-01 '$' '{"name":"Ada","rank":1,"tags":["engine"]}' >/dev/null
