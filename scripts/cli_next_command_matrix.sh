@@ -468,7 +468,7 @@ out="$(cli_json event range-time "$event_ts" --limit 10)"
 assert_json "$out" 'data["type"] == "event_range_result" and len(data["data"]["items"]) >= 1' "event range time"
 
 out="$(cli_json event verify-chain)"
-assert_json "$out" 'data["type"] == "event_chain_verification"' "event verify chain"
+assert_json "$out" 'data["type"] == "event_chain_verification" and data["data"]["valid"] is True and "is_valid" not in data["data"]' "event verify chain"
 
 event_batch="$FILES/event-batch.json"
 write_json "$event_batch" '{"type":"event_batch_append","entries":[{"event_type":"batch.one","payload":{"x":1}},{"event_type":"batch.two","payload":{"x":2}}]}'

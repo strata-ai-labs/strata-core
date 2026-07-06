@@ -21,6 +21,9 @@ This file tracks issues found while building and running
    `has_more == false` and `cursor == null`. Fixed by routing event list
    through sequence-cursor pagination and accepting `--cursor`/`--after-sequence`
    for continuation.
+5. Event chain verification reported `is_valid`, not `valid`. Fixed by
+   serializing the public JSON field as `valid` while still accepting legacy
+   `is_valid` during deserialization.
 
 ## Product Or Contract Findings
 
@@ -31,13 +34,12 @@ This file tracks issues found while building and running
 4. Event reverse ranges reverse a bounded forward interval, for example
    `event range 0 --end-seq 3 --direction reverse`; `event range 2 --direction
    reverse` does not mean "walk backward from sequence 2".
-5. Event chain verification reports `is_valid`, not `valid`.
-6. Graph neighbor page items wrap neighbor data under `node` and edge data
+5. Graph neighbor page items wrap neighbor data under `node` and edge data
     under `edge`; neighbor ids are `item.node.node_id`.
-7. Arrow graph export treats the requested output path as a stem and writes
+6. Arrow graph export treats the requested output path as a stem and writes
     separate node and edge files, returning their paths in the response. The
     exact requested path may not exist.
-8. CLI JSON error envelopes expose registry-style `retry_policy` rather than a
+7. CLI JSON error envelopes expose registry-style `retry_policy` rather than a
     boolean `retryable`.
 
 ## Corpus Harness Fixes

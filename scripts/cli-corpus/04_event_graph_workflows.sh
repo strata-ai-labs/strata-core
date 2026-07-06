@@ -27,7 +27,7 @@ out="$(cli_json event range-time "$first_ts" --limit 10)"
 assert_json "$out" 'data["type"] == "event_range_result" and len(data["data"]["items"]) >= 1' "event range by time"
 
 out="$(cli_json event verify-chain)"
-assert_json "$out" 'data["type"] == "event_chain_verification" and data["data"]["is_valid"] is True' "event chain valid"
+assert_json "$out" 'data["type"] == "event_chain_verification" and data["data"]["valid"] is True and "is_valid" not in data["data"]' "event chain valid"
 
 cli_json branch fork default event-child >/dev/null
 cli_json_branch event-child event append child.only '{"branch":"child"}' >/dev/null

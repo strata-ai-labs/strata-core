@@ -110,6 +110,30 @@ fn event_output_json_uses_stable_tags_and_field_shape() {
         serde_json::from_value::<Output>(encoded).expect("output deserializes"),
         output
     );
+
+    let verification =
+        Output::EventChainVerification(EventChainVerification::new(true, 2, None, None));
+    let verification_json =
+        serde_json::to_value(&verification).expect("verification output serializes");
+    assert_eq!(verification_json["type"], "event_chain_verification");
+    assert_eq!(verification_json["data"]["valid"], true);
+    assert!(
+        verification_json["data"].get("is_valid").is_none(),
+        "event chain verification must serialize `valid`, not `is_valid`"
+    );
+    assert_eq!(
+        serde_json::from_value::<Output>(json!({
+            "type": "event_chain_verification",
+            "data": {
+                "is_valid": true,
+                "length": 2,
+                "first_invalid": null,
+                "error": null
+            }
+        }))
+        .expect("legacy verification output deserializes"),
+        verification
+    );
 }
 
 #[test]

@@ -224,6 +224,7 @@ impl EventBatchAppendItemResult {
 /// Event hash-chain verification result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct EventChainVerification {
+    #[serde(rename = "valid", alias = "is_valid")]
     is_valid: bool,
     length: u64,
     first_invalid: Option<u64>,
