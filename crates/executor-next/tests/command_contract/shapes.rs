@@ -2,6 +2,38 @@ use super::output_cases::vector_index_diagnostics_fixture;
 use super::support::*;
 
 #[test]
+fn kv_history_output_json_uses_counted_items_shape() {
+    let output = Output::VersionHistory(Some(HistoryResult::new(vec![
+        HistoryItem::new(Some(bytes("new")), false, 2, 20),
+        HistoryItem::new(Some(bytes("old")), false, 1, 10),
+    ])));
+    let encoded = serde_json::to_value(&output).expect("history output serializes");
+    assert_eq!(encoded["type"], "version_history");
+    assert_eq!(encoded["data"]["count"], 2);
+    assert_eq!(
+        encoded["data"]["items"]
+            .as_array()
+            .expect("items is an array")
+            .len(),
+        2
+    );
+    assert_eq!(encoded["data"]["items"][0]["value"], json!([110, 101, 119]));
+    assert_eq!(
+        serde_json::from_value::<Output>(encoded).expect("output deserializes"),
+        output
+    );
+
+    let missing = Output::VersionHistory(None);
+    let missing_json = serde_json::to_value(&missing).expect("missing history serializes");
+    assert_eq!(missing_json["type"], "version_history");
+    assert_eq!(missing_json["data"], Value::Null);
+    assert_eq!(
+        serde_json::from_value::<Output>(missing_json).expect("output deserializes"),
+        missing
+    );
+}
+
+#[test]
 fn admin_and_space_command_json_uses_stable_tags_and_field_shape() {
     let command = Command::SpaceDelete {
         branch: None,

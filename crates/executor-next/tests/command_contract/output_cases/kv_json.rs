@@ -6,12 +6,12 @@ pub(super) fn kv_outputs() -> Vec<Output> {
         Output::KvValue(None),
         Output::KvVersionedValue(Some(VersionedValue::new(bytes("one"), 1, 10))),
         Output::KvVersionedValue(None),
-        Output::VersionHistory(Some(vec![HistoryItem::new(
+        Output::VersionHistory(Some(HistoryResult::new(vec![HistoryItem::new(
             Some(bytes("one")),
             false,
             1,
             10,
-        )])),
+        )]))),
         Output::VersionHistory(None),
         Output::Keys {
             items: vec![bytes("a"), bytes("b")],

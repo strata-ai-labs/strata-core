@@ -937,6 +937,7 @@ fn assert_history_has_tombstone(executor: &mut Executor, key: &str) {
     {
         Output::VersionHistory(Some(history)) => assert!(
             history
+                .items()
                 .iter()
                 .any(strata_executor_next::HistoryItem::is_tombstone),
             "history should include a tombstone"

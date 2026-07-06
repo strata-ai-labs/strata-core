@@ -5,7 +5,7 @@ use crate::types::{
     ArrowImportResult, BatchGetItemResult, BatchItemResult, BatchResult, BranchCleanupItem,
     BranchItem, Bytes, CommitReceipt, EventBatchAppendItemResult, EventChainVerification,
     EventVersionedData, GraphBatchItemResult, GraphBindingHit, GraphEdgeDataOutput, GraphInfoData,
-    GraphNeighborHit, GraphNodeDataOutput, HistoryItem, JsonBatchGetItemResult,
+    GraphNeighborHit, GraphNodeDataOutput, HistoryResult, JsonBatchGetItemResult,
     JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition, JsonSampleItem, MaybeJsonValue,
     MaybeJsonVersionedValue, MutationEffect, PageInfo, SampleItem, ScanItem,
     VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorHistoryItem,
@@ -116,7 +116,7 @@ pub enum Output {
     /// Optional JSON value with commit metadata.
     JsonVersionedValue(MaybeJsonVersionedValue),
     /// Full version history for one key.
-    VersionHistory(Option<Vec<HistoryItem>>),
+    VersionHistory(Option<HistoryResult>),
     /// Full JSON document version history.
     JsonVersionHistory(Option<Vec<JsonHistoryItem>>),
     /// Key list.

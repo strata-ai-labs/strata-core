@@ -2,7 +2,7 @@ use super::{
     output_json_index_type, BatchGetItemResult, BatchItemResult, BranchCleanupItem,
     BranchCleanupSummary, BranchItem, BranchParentItem, BranchStatus, BranchSummary, Bytes,
     CommitOutcome, CommitReceipt, CommitVersion, EngineBranchStatus, EngineJsonIndexDefinition,
-    EngineJsonSample, EngineJsonValue, EngineJsonVersionedValue, HistoryItem,
+    EngineJsonSample, EngineJsonValue, EngineJsonVersionedValue, HistoryItem, HistoryResult,
     JsonBatchGetItemResult, JsonBatchItemResult, JsonHistory, JsonHistoryItem, JsonHistoryRow,
     JsonIndexDefinition, JsonListPage, JsonSampleItem, JsonSampleRow, KvHistory, KvHistoryRow,
     KvKey, KvSample, KvScanRow, KvVersionedValue, MutationEffect, MutationEffectKind, Output,
@@ -147,8 +147,8 @@ pub(super) fn versioned_value(value: &KvVersionedValue) -> VersionedValue {
     )
 }
 
-pub(super) fn history_items(history: &KvHistory) -> Vec<HistoryItem> {
-    history.rows().iter().map(history_item).collect()
+pub(super) fn history_result(history: &KvHistory) -> HistoryResult {
+    HistoryResult::new(history.rows().iter().map(history_item).collect())
 }
 
 pub(super) fn history_item(row: &KvHistoryRow) -> HistoryItem {

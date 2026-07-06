@@ -479,6 +479,38 @@ impl HistoryItem {
     }
 }
 
+/// Version-history result for one key.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HistoryResult {
+    count: usize,
+    items: Vec<HistoryItem>,
+}
+
+impl HistoryResult {
+    /// Creates a version-history result.
+    pub fn new(items: Vec<HistoryItem>) -> Self {
+        Self {
+            count: items.len(),
+            items,
+        }
+    }
+
+    /// Returns the number of history items.
+    pub const fn count(&self) -> usize {
+        self.count
+    }
+
+    /// Returns version-history items from newest to oldest.
+    pub const fn items(&self) -> &[HistoryItem] {
+        self.items.as_slice()
+    }
+
+    /// Consumes the result and returns its items.
+    pub fn into_items(self) -> Vec<HistoryItem> {
+        self.items
+    }
+}
+
 /// Sampled KV item.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SampleItem {

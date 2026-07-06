@@ -31,17 +31,19 @@ This file tracks issues found while building and running
 7. CLI JSON error envelopes exposed registry-style `retry_policy` without the
    simpler boolean `retryable`. Fixed by serializing `retryable` as a derived
    public field while preserving `retry_policy` for precise client behavior.
+8. KV history responses were bare arrays of version entries. Fixed by returning
+   present history as `{ count, items }`, while preserving `data: null` for
+   missing keys.
 
 ## Product Or Contract Findings
 
-1. KV history responses are arrays of version entries, not `{ count, items }`.
-2. KV batch-get misses are successful items with `status == "ok"` and
+1. KV batch-get misses are successful items with `status == "ok"` and
    `result.found == false`, not item status `miss`.
-3. Vector history responses are arrays of version entries, not `{ count, items }`.
-4. Event reverse ranges reverse a bounded forward interval, for example
+2. Vector history responses are arrays of version entries, not `{ count, items }`.
+3. Event reverse ranges reverse a bounded forward interval, for example
    `event range 0 --end-seq 3 --direction reverse`; `event range 2 --direction
    reverse` does not mean "walk backward from sequence 2".
-5. Graph neighbor page items wrap neighbor data under `node` and edge data
+4. Graph neighbor page items wrap neighbor data under `node` and edge data
    under `edge`; neighbor ids are `item.node.node_id`.
 
 ## Corpus Harness Fixes

@@ -24,7 +24,7 @@ assert_json "$out" 'data["type"] == "kv_scan_result" and [bytes_to_text(item["ke
 
 cli_json kv put page-03 value-03b >/dev/null
 out="$(cli_json kv history page-03)"
-assert_json "$out" 'data["type"] == "version_history" and len(data["data"]) >= 2 and bytes_to_text(data["data"][0]["value"]) == "value-03b" and bytes_to_text(data["data"][1]["value"]) == "value-03"' "kv version history"
+assert_json "$out" 'data["type"] == "version_history" and data["data"]["count"] >= 2 and len(data["data"]["items"]) == data["data"]["count"] and bytes_to_text(data["data"]["items"][0]["value"]) == "value-03b" and bytes_to_text(data["data"]["items"][1]["value"]) == "value-03"' "kv version history"
 
 cli_json kv del page-07 >/dev/null
 out="$(cli_json kv exists page-07)"
