@@ -481,8 +481,35 @@ impl ExecutorError {
 
 impl From<EngineError> for ExecutorError {
     fn from(value: EngineError) -> Self {
-        Self::from_status(engine_error_status(value.status()))
+        // The public status is intentionally pure (no source wording), so the
+        // engine source chain would be lost at the boundary. Emit one structured
+        // log line correlating the reference id shown to users with the code and
+        // the full underlying cause (ERR-2). Capturing is the consumer's choice.
+        let source_chain = source_chain_display(&value);
+        let error = Self::from_status(engine_error_status(value.status()));
+        if let Some(chain) = source_chain {
+            tracing::error!(
+                reference_id = error.reference_id(),
+                code = error.code(),
+                source = chain.as_str(),
+                "engine error crossed the executor boundary"
+            );
+        }
+        error
     }
+}
+
+/// Renders an error's full `Error::source()` chain into one line, or `None` when
+/// the error has no source.
+fn source_chain_display(error: &dyn Error) -> Option<String> {
+    let mut source = error.source()?;
+    let mut chain = source.to_string();
+    while let Some(next) = source.source() {
+        chain.push_str("; caused by: ");
+        chain.push_str(&next.to_string());
+        source = next;
+    }
+    Some(chain)
 }
 
 #[cfg(feature = "inference")]
@@ -516,8 +543,22 @@ impl Error for ExecutorError {}
 fn default_reference_id_source() -> Arc<dyn ErrorReferenceIdSource> {
     static SOURCE: OnceLock<Arc<SequentialErrorReferenceIdSource>> = OnceLock::new();
     SOURCE
-        .get_or_init(|| Arc::new(SequentialErrorReferenceIdSource::new("err_local_")))
+        .get_or_init(|| {
+            Arc::new(SequentialErrorReferenceIdSource::new(
+                process_reference_prefix(),
+            ))
+        })
         .clone()
+}
+
+/// A per-process reference-id prefix so ids do not collide across process runs
+/// (the sequential counter alone restarts at 1 each run, so `err_local_000001`
+/// would recur every process). Still begins with `err_local_`.
+fn process_reference_prefix() -> String {
+    let token = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos());
+    format!("err_local_{token:08x}_")
 }
 
 fn current_error_render_config() -> ErrorRenderConfig {
@@ -888,5 +929,66 @@ const fn inference_suggested_fix(code: &str) -> &'static str {
         }
         b"inference.io_failure" => "Inspect local filesystem access and retry.",
         _ => "Inspect inference configuration and retry with supported settings.",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{process_reference_prefix, source_chain_display};
+    use std::error::Error;
+    use std::fmt;
+
+    #[derive(Debug)]
+    struct Layer {
+        message: &'static str,
+        cause: Option<Box<Layer>>,
+    }
+
+    impl fmt::Display for Layer {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str(self.message)
+        }
+    }
+
+    impl Error for Layer {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            self.cause.as_deref().map(|cause| cause as &dyn Error)
+        }
+    }
+
+    #[test]
+    fn source_chain_display_walks_every_cause() {
+        let error = Layer {
+            message: "top",
+            cause: Some(Box::new(Layer {
+                message: "middle",
+                cause: Some(Box::new(Layer {
+                    message: "root",
+                    cause: None,
+                })),
+            })),
+        };
+        assert_eq!(
+            source_chain_display(&error).as_deref(),
+            Some("middle; caused by: root")
+        );
+    }
+
+    #[test]
+    fn source_chain_display_is_none_without_a_source() {
+        let leaf = Layer {
+            message: "only",
+            cause: None,
+        };
+        assert!(source_chain_display(&leaf).is_none());
+    }
+
+    #[test]
+    fn process_reference_prefix_is_namespaced_and_process_unique() {
+        let prefix = process_reference_prefix();
+        assert!(prefix.starts_with("err_local_"));
+        // Carries a per-process token beyond the bare namespace, so ids do not
+        // collide across runs.
+        assert!(prefix.len() > "err_local_".len() + 1);
     }
 }

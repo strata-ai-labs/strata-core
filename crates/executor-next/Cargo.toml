@@ -34,6 +34,7 @@ strata-core-next = { path = "../core-next" }
 strata-engine-next = { path = "../engine-next", default-features = false }
 strata-inference-next = { path = "../inference-next", optional = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [[bin]]
 name = "strata-idl"

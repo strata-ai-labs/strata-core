@@ -35,6 +35,14 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    // Capture the executor's boundary error logs (reference_id + code + source
+    // chain) to stderr so the reference id shown in an error message correlates
+    // to a real, inspectable line (ERR-2). stdout stays clean for command
+    // output. Ignored if a subscriber is already installed (e.g. in tests).
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_max_level(tracing::Level::ERROR)
+        .try_init();
     match Cli::try_parse_from(args) {
         Ok(cli) => {
             let format = cli.output_format();
