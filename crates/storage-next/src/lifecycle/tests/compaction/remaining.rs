@@ -488,7 +488,10 @@ fn materialization_preserves_range_scan_and_child_immutable_precedence() {
 }
 
 #[test]
-fn materializing_inherited_layers_report_pressure_without_mutating_reads() {
+fn materializing_lone_inherited_layer_stays_below_gate_without_mutating_reads() {
+    // fork-cow.3: a lone inherited layer is a healthy COW fork below the proactive materialization gate,
+    // so it reports no InheritedLayerBacklog pressure even mid-materialization — but marking it
+    // Materializing must never change what reads see.
     let parent = branch_id(0x7d);
     let child = branch_id(0x7e);
     let mut child_state = materialization_read_state(parent, child);
@@ -515,11 +518,8 @@ fn materializing_inherited_layers_report_pressure_without_mutating_reads() {
         .row()
         .clone();
 
-    assert_eq!(
-        pressure.reason(),
-        LifecycleStoragePressureReason::InheritedLayerBacklog
-    );
-    assert_eq!(pressure.inherited_layers(), 1);
+    assert_eq!(pressure.reason(), LifecycleStoragePressureReason::None);
+    assert_eq!(child_state.inherited_layer_count(), 1);
     assert_eq!(before, after);
 }
 

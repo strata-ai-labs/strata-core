@@ -1673,8 +1673,10 @@ fn queued_durable_materialization_publishes_manifest_through_maintenance_runner(
 }
 
 #[test]
-fn queued_durable_compaction_resubmits_materialization_and_publishes_followup_manifest() {
+fn queued_durable_compaction_of_lone_cow_layer_publishes_without_resubmitting_materialization() {
     let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    // fork-cow.3: a branch carrying a single COW inherited layer is healthy — its durable compaction
+    // publishes normally and does not resubmit materialization (the lone layer stays lazy).
     let parent = branch_id(0xfa);
     let child = branch_id(0xff);
     let mut runtime = open_runtime(parent, backend);
@@ -1740,38 +1742,22 @@ fn queued_durable_compaction_resubmits_materialization_and_publishes_followup_ma
             .inherited_layer_count(),
         1
     );
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
-
-    let materialization = runtime
-        .run_next_materialization_maintenance()
-        .expect("run materialization")
-        .expect("materialization outcome");
+    // A lone COW inherited layer is healthy: no materialization is resubmitted after the compaction.
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    assert!(
+        runtime
+            .run_next_materialization_maintenance()
+            .expect("poll materialization")
+            .is_none(),
+        "a lone COW inherited layer must not schedule materialization"
+    );
     let manifest = runtime
         .services()
         .table_manifest()
         .load_current(child)
         .expect("load manifest")
         .expect("manifest");
-
-    assert_eq!(
-        materialization.task_kind(),
-        MaintenanceTaskKind::Materialization
-    );
-    assert_eq!(
-        materialization.status(),
-        MaintenanceOutcomeStatus::Completed
-    );
-    assert_eq!(
-        runtime
-            .branch_catalog()
-            .branch_state(child)
-            .expect("child state")
-            .inherited_layer_count(),
-        0
-    );
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
-    assert!(manifest.inherited_layers().is_empty());
-    assert_eq!(backend.table_manifest_replace_calls(), 3);
+    assert_eq!(manifest.inherited_layers().len(), 1);
 }
 
 struct TestMaterializationRunner<'a> {

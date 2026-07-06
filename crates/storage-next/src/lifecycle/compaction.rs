@@ -59,7 +59,17 @@ const NONZERO_LEVEL_MAX_BASE_TARGET_BYTES: u64 = 256 * 1024 * 1024;
 const NONZERO_LEVEL_TARGET_GROWTH_FACTOR: u64 = 10;
 const NONZERO_LEVEL_URGENT_TARGET_MULTIPLIER: u64 = 2;
 const NONZERO_LEVEL_BLOCKING_TARGET_MULTIPLIER: u64 = 4;
+// Urgency-score normalizer for inherited-layer backlog (`count_pressure_score(layer_count, ..)`): a layer
+// counts as `layer_count * 1000` pressure, so materialization ranks linearly by backlog depth against
+// compaction. This is the *rank* input and is deliberately independent of the onset gate below.
 const INHERITED_LAYER_MATERIALIZATION_THRESHOLD: usize = 1;
+// Onset gate: proactive inherited-layer flattening starts at 2 layers, not 1. A lone Active inherited layer
+// is a healthy copy-on-write fork (every historical COW fork and every `fork_current`), and flattening it
+// would re-materialize the parent's `<= fork_version` snapshot into O(dataset) child-owned tables — the
+// exact copy COW eliminates. A lone layer therefore stays lazy indefinitely; its pinned snapshot is retained
+// correctly (the child needs it, and reachability-gated reclaim never deletes a still-referenced object).
+// Deeper fork-of-fork chains still flatten: Background (2-3), Urgent (>=4), Blocking write-admission (>=16).
+const INHERITED_LAYER_PROACTIVE_MATERIALIZATION_MIN: usize = 2;
 const INHERITED_LAYER_URGENT_MATERIALIZATION_THRESHOLD: usize = 4;
 const INHERITED_LAYER_BLOCKING_MATERIALIZATION_THRESHOLD: usize = 16;
 pub(crate) const FROZEN_BLOCKING_FLUSH_THRESHOLD: usize = 4;
@@ -2460,7 +2470,7 @@ fn materialization_score_for_layer(
     layer_index: usize,
 ) -> Option<LifecycleTableRewriteScore> {
     let layer_count = branch.inherited_layer_count();
-    if layer_count < INHERITED_LAYER_MATERIALIZATION_THRESHOLD {
+    if layer_count < INHERITED_LAYER_PROACTIVE_MATERIALIZATION_MIN {
         return None;
     }
     let layer = branch.inherited_layers().get(layer_index)?;

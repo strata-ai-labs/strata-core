@@ -1777,24 +1777,18 @@ fn storage_pressure_suggests_the_next_table_rewrite_or_flush() {
         Some(MaintenanceTaskKind::Compaction)
     ));
 
-    let parent = branch_id(0x4c);
+    // fork-cow.3: a lone inherited layer is a healthy COW fork and stays lazy, so materialization
+    // pressure requires a >=2-layer chain (a lone layer produces no materialization suggestion).
+    let far = branch_id(0x4c);
+    let near = branch_id(0x4e);
     let child = branch_id(0x4d);
-    let mut parent_state = BranchLocalState::empty(parent);
-    install_l0_table(
-        &mut parent_state,
-        parent,
-        "pressure-parent",
-        vec![put_row(parent, b"inherited", 4, 4_000, b"value")],
-    );
-    let (child_state, _) = parent_state
-        .fork_into_empty_child(child)
-        .expect("fork child");
+    let child_state = inherited_chain_state(far, near, child);
     let inherited_pressure = collect_storage_pressure(&child_state, empty_maintenance_status());
     assert_eq!(
         inherited_pressure.reason(),
         LifecycleStoragePressureReason::InheritedLayerBacklog
     );
-    assert_eq!(inherited_pressure.inherited_layers(), 1);
+    assert_eq!(inherited_pressure.inherited_layers(), 2);
     assert!(matches!(
         inherited_pressure
             .suggested_task()
@@ -3228,7 +3222,9 @@ fn completed_compaction_resubmits_chain_until_branch_is_healthy() {
 
 #[test]
 fn completed_compaction_resubmits_materialization_when_inheritance_remains() {
-    let parent = branch_id(0xa8);
+    // fork-cow.3: use a 2-layer chain so materialization is proactively scheduled (a lone layer stays lazy).
+    let far = branch_id(0xa8);
+    let near = branch_id(0xaa);
     let child = branch_id(0xa9);
     let mut runtime = cache_runtime(child);
     *runtime
@@ -3239,7 +3235,7 @@ fn completed_compaction_resubmits_materialization_when_inheritance_remains() {
                 crate::commit::CommitBranchGeneration::new(1).expect("generation"),
             ),
         )
-        .expect("branch state") = single_inherited_state(parent, child);
+        .expect("branch state") = inherited_chain_state(far, near, child);
     {
         let state = runtime
             .branch_catalog_mut_for_test()
@@ -3274,7 +3270,8 @@ fn completed_compaction_resubmits_materialization_when_inheritance_remains() {
         .expect("run compaction")
         .expect("compaction outcome");
     assert_eq!(compaction.status(), MaintenanceOutcomeStatus::Completed);
-    assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
+    // Compaction leaves the 2 inherited layers untouched; materialization is resubmitted (2 >= the gate).
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 2);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
     assert!(
         runtime
@@ -3296,7 +3293,9 @@ fn completed_compaction_resubmits_materialization_when_inheritance_remains() {
         materialization.task_kind(),
         MaintenanceTaskKind::Materialization
     );
-    assert_eq!(runtime.branch_state().inherited_layer_count(), 0);
+    // Materialization flattens one layer; the remaining lone layer is a healthy COW fork and stays lazy
+    // (no resubmit), so the branch settles at 1 inherited layer with no pending work.
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
 }
 
@@ -3518,9 +3517,12 @@ fn queued_table_rewrite_runs_compaction_when_it_has_higher_score() {
 
 #[test]
 fn completed_materialization_resubmits_chain_until_branch_is_healthy() {
+    // fork-cow.3: a 3-layer chain flattens by resubmitting materialization until only a healthy lone COW
+    // layer remains (the lazy floor). Two materializations run: 3->2 resubmits (2 >= gate), 2->1 does not.
     let far = branch_id(0xa3);
     let near = branch_id(0xa4);
-    let child = branch_id(0xa5);
+    let mid = branch_id(0xa5);
+    let child = branch_id(0xac);
     let mut runtime = cache_runtime(child);
     *runtime
         .branch_catalog_mut_for_test()
@@ -3530,7 +3532,7 @@ fn completed_materialization_resubmits_chain_until_branch_is_healthy() {
                 crate::commit::CommitBranchGeneration::new(1).expect("generation"),
             ),
         )
-        .expect("branch state") = inherited_chain_state(far, near, child);
+        .expect("branch state") = inherited_chain_state_depth_three(far, near, mid, child);
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::materialization_layer(child, 0))
         .expect("enqueue materialization");
@@ -3540,7 +3542,7 @@ fn completed_materialization_resubmits_chain_until_branch_is_healthy() {
         .expect("run first materialization")
         .expect("first materialization outcome");
     assert_eq!(first.status(), MaintenanceOutcomeStatus::Completed);
-    assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 2);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
 
     let second = runtime
@@ -3548,12 +3550,147 @@ fn completed_materialization_resubmits_chain_until_branch_is_healthy() {
         .expect("run second materialization")
         .expect("second materialization outcome");
     assert_eq!(second.status(), MaintenanceOutcomeStatus::Completed);
-    assert_eq!(runtime.branch_state().inherited_layer_count(), 0);
+    // The remaining lone layer is a healthy COW fork and stays lazy: no third resubmit.
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
+fn lone_inherited_layer_is_below_the_proactive_materialization_gate() {
+    // fork-cow.3: a single Active inherited layer is a healthy COW fork and must not be proactively
+    // materialized; a >=2-layer chain is. This pins the onset gate directly.
+    let one = single_inherited_state(branch_id(0xb8), branch_id(0xb9));
+    let pressure_one = collect_storage_pressure(&one, empty_maintenance_status());
+    assert_eq!(one.inherited_layer_count(), 1);
+    assert_eq!(pressure_one.reason(), LifecycleStoragePressureReason::None);
+    assert!(pressure_one.suggested_task().is_none());
+
+    let two = inherited_chain_state(branch_id(0xba), branch_id(0xbb), branch_id(0xbc));
+    let pressure_two = collect_storage_pressure(&two, empty_maintenance_status());
+    assert_eq!(two.inherited_layer_count(), 2);
+    assert_eq!(
+        pressure_two.reason(),
+        LifecycleStoragePressureReason::InheritedLayerBacklog
+    );
+    assert_eq!(
+        pressure_two
+            .suggested_task()
+            .map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Materialization)
+    );
+}
+
+#[test]
+fn lone_cow_layer_stays_lazy_across_maintenance_rounds() {
+    // fork-cow.3 soak: across many maintenance rounds, and even while the child churns and compacts its
+    // own L0 tables, a single COW inherited layer is never proactively materialized — it stays Active
+    // (count 1) and its inherited reads stay correct throughout.
+    let parent = branch_id(0xd0);
+    let child = branch_id(0xd1);
+    let mut runtime = cache_runtime(child);
+    *runtime
+        .branch_catalog_mut_for_test()
+        .branch_state_mut(
+            child,
+            crate::commit::CommitBranchGenerationGuard::exact(
+                crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+            ),
+        )
+        .expect("branch state") = single_inherited_state(parent, child);
+    let inherited_key = physical_key(child, b"parent");
+
+    for round in 0..8_u64 {
+        install_l0_table(
+            runtime
+                .branch_catalog_mut_for_test()
+                .branch_state_mut(
+                    child,
+                    crate::commit::CommitBranchGenerationGuard::exact(
+                        crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                    ),
+                )
+                .expect("child state"),
+            child,
+            &format!("soak-l0-{round}"),
+            vec![put_row(
+                child,
+                format!("soak-{round}").as_bytes(),
+                100 + round,
+                (100 + round) * 1_000,
+                b"soak",
+            )],
+        );
+        let _ = runtime.schedule_post_commit_maintenance_for_test(child);
+        let mut drained = 0;
+        while runtime
+            .run_next_compaction_maintenance()
+            .expect("run compaction")
+            .is_some()
+        {
+            drained += 1;
+            assert!(drained < 64, "compaction did not settle in round {round}");
+        }
+        assert!(
+            runtime
+                .run_next_materialization_maintenance()
+                .expect("poll materialization")
+                .is_none(),
+            "a lone COW inherited layer was scheduled for materialization in round {round}"
+        );
+        assert_eq!(
+            runtime.branch_state().inherited_layer_count(),
+            1,
+            "lone COW layer must stay lazy in round {round}"
+        );
+        assert_eq!(
+            runtime
+                .branch_state()
+                .capture_read_view()
+                .expect("view")
+                .latest(&inherited_key)
+                .expect("read")
+                .expect("inherited row visible")
+                .row()
+                .value(),
+            b"parent"
+        );
+    }
 }
 
 fn inherited_chain_state(far: BranchId, near: BranchId, child: BranchId) -> BranchLocalState {
     inherited_chain_state_with_far_backlog(far, near, child, 1)
+}
+
+fn inherited_chain_state_depth_three(
+    far: BranchId,
+    near: BranchId,
+    mid: BranchId,
+    child: BranchId,
+) -> BranchLocalState {
+    let mut far_state = BranchLocalState::empty(far);
+    install_l0_table(
+        &mut far_state,
+        far,
+        "scored-materialization-far",
+        vec![put_row(far, b"far", 1, 1_000, b"far")],
+    );
+    let (mut near_state, _) = far_state.fork_into_empty_child(near).expect("fork near");
+    install_l0_table(
+        &mut near_state,
+        near,
+        "scored-materialization-near",
+        vec![put_row(near, b"near", 100, 100_000, b"near")],
+    );
+    let (mut mid_state, _) = near_state.fork_into_empty_child(mid).expect("fork mid");
+    install_l0_table(
+        &mut mid_state,
+        mid,
+        "scored-materialization-mid",
+        vec![put_row(mid, b"mid", 200, 200_000, b"mid")],
+    );
+    let (child_state, outcome) = mid_state.fork_into_empty_child(child).expect("fork child");
+    assert_eq!(outcome.inherited_layer_count(), 3);
+    child_state
 }
 
 fn inherited_chain_state_with_far_backlog(
