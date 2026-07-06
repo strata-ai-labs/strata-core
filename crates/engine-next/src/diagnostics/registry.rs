@@ -371,11 +371,75 @@ fn commit_outcome_for_code(code: &str, class: EngineErrorClass) -> CommitOutcome
     }
 }
 
+/// Message text for `not_found.*` / `already_exists.*` codes.
+///
+/// These are matched before the capability-keyword arms so a not-found or
+/// already-exists failure reports its actual class semantics instead of the
+/// "…request is invalid" phrasing that only suits `invalid_argument` /
+/// `corruption` codes (see finding U19).
+fn class_prefixed_message(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "not_found.engine.branch" => "The requested branch was not found.",
+        "not_found.engine.graph" => "The requested graph was not found.",
+        "not_found.engine.json_document" => "The requested JSON document was not found.",
+        "not_found.engine.vector_collection" => "The requested vector collection was not found.",
+        "not_found.engine.persistence" => "The requested resource was not found.",
+        "already_exists.engine.branch" => "A branch with this name already exists.",
+        "already_exists.engine.graph" => "A graph with this name already exists.",
+        "already_exists.engine.json_document" => "A JSON document already exists at this id.",
+        "already_exists.engine.json_index" => "A JSON index with this name already exists.",
+        "already_exists.engine.vector_collection" => {
+            "A vector collection with this name already exists."
+        }
+        "already_exists.engine.persistence" => "The resource already exists.",
+        _ => return None,
+    })
+}
+
+/// Suggested-fix text for `not_found.*` / `already_exists.*` codes (see U19).
+fn class_prefixed_suggested_fix(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "not_found.engine.branch" => {
+            "List branches or use the default branch, then retry with an existing branch name."
+        }
+        "not_found.engine.graph" => "List graphs, then retry with an existing graph name.",
+        "not_found.engine.json_document" => {
+            "List documents or create the document before reading it."
+        }
+        "not_found.engine.vector_collection" => {
+            "List vector collections or create the collection before issuing vector operations."
+        }
+        "not_found.engine.persistence" => {
+            "List the requested resource type, then retry with an existing resource id."
+        }
+        "already_exists.engine.branch" => {
+            "Choose a different branch name or delete the existing branch first."
+        }
+        "already_exists.engine.graph" => {
+            "Choose a different graph name or delete the existing graph first."
+        }
+        "already_exists.engine.json_document" => {
+            "Update the existing document, or use a different document id."
+        }
+        "already_exists.engine.json_index" => {
+            "Drop the existing index or choose a different index name."
+        }
+        "already_exists.engine.vector_collection" => {
+            "Use the existing collection, or choose a different collection name."
+        }
+        "already_exists.engine.persistence" => {
+            "Reload current state and retry against the latest version."
+        }
+        _ => return None,
+    })
+}
+
 fn message_template_for_code(code: &str, class: EngineErrorClass) -> &'static str {
+    if let Some(message) = class_prefixed_message(code) {
+        return message;
+    }
     if code.contains("branch_name") {
         "The branch name is invalid."
-    } else if code.contains("branch") && code.starts_with("not_found.") {
-        "The requested branch was not found."
     } else if code.contains("product_space") || code.contains(".space_") {
         "The requested space operation cannot be completed."
     } else if code.contains("kv_batch_duplicate_key") {
@@ -429,10 +493,11 @@ fn message_template_for_code(code: &str, class: EngineErrorClass) -> &'static st
 }
 
 fn suggested_fix_for_code(code: &str, class: EngineErrorClass) -> &'static str {
+    if let Some(fix) = class_prefixed_suggested_fix(code) {
+        return fix;
+    }
     if code.contains("branch_name") {
         "Use a non-empty branch name that does not use reserved prefixes or invalid characters."
-    } else if code.contains("branch") && code.starts_with("not_found.") {
-        "List branches or use the default branch, then retry with an existing branch name."
     } else if code.contains("product_space") || code.contains(".space_") {
         "Use an existing non-reserved space, or delete/move contained data before deleting the space."
     } else if code.contains("kv_batch_duplicate_key") {
@@ -667,6 +732,43 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn not_found_and_already_exists_codes_get_class_appropriate_guidance() {
+        // U19: these must not render the invalid-argument "…request is invalid"
+        // phrasing or its "correct the invalid field" fix.
+        for code in [
+            "not_found.engine.json_document",
+            "already_exists.engine.json_document",
+            "already_exists.engine.json_index",
+            "already_exists.engine.vector_collection",
+        ] {
+            let entry = error_code_registry_entry(code).expect("code registered");
+            assert!(
+                !entry.message_template.contains("is invalid"),
+                "{code} still reports an invalid-argument message: {}",
+                entry.message_template
+            );
+            assert!(
+                !entry.suggested_fix.contains("invalid field")
+                    && !entry.suggested_fix.contains("within the configured size"),
+                "{code} still reports invalid-argument remediation: {}",
+                entry.suggested_fix
+            );
+        }
+        assert_eq!(
+            error_code_registry_entry("not_found.engine.json_document")
+                .unwrap()
+                .message_template,
+            "The requested JSON document was not found."
+        );
+        assert_eq!(
+            error_code_registry_entry("already_exists.engine.json_index")
+                .unwrap()
+                .message_template,
+            "A JSON index with this name already exists."
+        );
     }
 
     #[test]
