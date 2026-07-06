@@ -106,14 +106,22 @@ impl Executor {
         let start = optional_key(start)?;
         let limit = optional_limit(limit)?;
         let mut service = self.kv_service(branch, space)?;
-        let rows = service
-            .scan(start.as_ref(), limit)?
-            .iter()
-            .map(scan_item)
-            .collect();
+        // Fetch one extra row to detect truncation and report has_more/cursor
+        // honestly, like KvList (DSGN-2). The continuation cursor is the first
+        // unreturned key; KvScan's start is inclusive, so re-scanning from it
+        // resumes with neither a gap nor an overlap.
+        let mut rows = service.scan(start.as_ref(), limit.map(|limit| limit.saturating_add(1)))?;
+        let page = match limit {
+            Some(limit) if rows.len() > limit => {
+                let cursor = bytes_from_key(rows[limit].key());
+                rows.truncate(limit);
+                PageInfo::new(true, Some(cursor))
+            }
+            _ => PageInfo::terminal(),
+        };
         Ok(Output::KvScanResult {
-            items: rows,
-            page: PageInfo::terminal(),
+            items: rows.iter().map(scan_item).collect(),
+            page,
         })
     }
 

@@ -808,6 +808,70 @@ fn execute_list_as_of(executor: &mut Executor, prefix: Option<&str>, as_of: u64)
     }
 }
 
+#[test]
+fn kv_scan_paginates_honestly_with_a_cursor() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    for i in 0..6 {
+        executor
+            .execute(Command::KvPut {
+                branch: None,
+                space: None,
+                key: bytes(&format!("k{i}")),
+                value: bytes("v"),
+            })
+            .expect("put succeeds");
+    }
+
+    // DSGN-2: page through in chunks of 2. The union of pages must be all six
+    // keys with no overlap and no gap, and only the final page ends (cursor
+    // None). Previously every scan lied with a terminal page (cursor None),
+    // truncating callers to the first page.
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    let mut start: Option<Bytes> = None;
+    let mut pages = 0;
+    loop {
+        let (keys, cursor) = scan_page(&mut executor, start, 2);
+        assert!(keys.len() <= 2);
+        seen.extend(keys.iter().map(|key| key.as_slice().to_vec()));
+        pages += 1;
+        assert!(pages <= 6, "pagination did not terminate");
+        match cursor {
+            Some(next) => start = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(pages, 3);
+    seen.sort();
+    let mut deduped = seen.clone();
+    deduped.dedup();
+    assert_eq!(deduped.len(), seen.len(), "no duplicate keys across pages");
+    let mut expected: Vec<Vec<u8>> = (0..6).map(|i| format!("k{i}").into_bytes()).collect();
+    expected.sort();
+    assert_eq!(seen, expected);
+}
+
+fn scan_page(
+    executor: &mut Executor,
+    start: Option<Bytes>,
+    limit: u64,
+) -> (Vec<Bytes>, Option<Bytes>) {
+    match executor
+        .execute(Command::KvScan {
+            branch: None,
+            space: None,
+            start,
+            limit: Some(limit),
+        })
+        .expect("scan succeeds")
+    {
+        Output::KvScanResult { items, page } => (
+            items.iter().map(|item| item.key().clone()).collect(),
+            page.cursor().cloned(),
+        ),
+        output => panic!("unexpected scan output: {output:?}"),
+    }
+}
+
 fn execute_scan(
     executor: &mut Executor,
     start: Option<&str>,
