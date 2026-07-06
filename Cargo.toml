@@ -24,7 +24,7 @@ edition = "2021"
 rust-version = "1.88"
 authors = ["Strata contributors"]
 license = "Apache-2.0"
-repository = "https://github.com/anibjoshi/strata"
+repository = "https://github.com/stratalab/strata-core"
 
 [workspace.lints.rust]
 unused_must_use = "deny"

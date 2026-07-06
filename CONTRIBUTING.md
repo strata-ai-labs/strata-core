@@ -12,7 +12,7 @@ Thank you for your interest in contributing to StrataDB.
 ### Clone and Build
 
 ```bash
-git clone https://github.com/anibjoshi/strata.git
+git clone https://github.com/stratalab/strata-core.git
 cd strata
 cargo build --workspace
 ```
@@ -112,4 +112,4 @@ Write clear, concise commit messages:
 
 ## Questions?
 
-Open an issue on [GitHub](https://github.com/anibjoshi/strata/issues) if you have questions about contributing.
+Open an issue on [GitHub](https://github.com/stratalab/strata-core/issues) if you have questions about contributing.
