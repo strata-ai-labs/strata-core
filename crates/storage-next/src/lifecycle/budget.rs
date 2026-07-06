@@ -1170,19 +1170,7 @@ pub(crate) const MAX_ACTIVE_ROTATION_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) fn active_rotation_bytes_from_budget(budget: StorageRuntimeBudget) -> usize {
     let pool = usize::try_from(budget.pool_limit_bytes(StorageBudgetPool::ActiveMutable))
         .unwrap_or(usize::MAX);
-    pool.min(write_buffer_rotation_cap())
-}
-
-fn write_buffer_rotation_cap() -> usize {
-    // TEMPORARY A/B hook: STRATA_WRITE_BUFFER_MB overrides the cap for the perf sweep
-    // (control vs treatment on one binary). Reverted before commit; the shipped cap is the
-    // fixed RocksDB-aligned constant.
-    std::env::var("STRATA_WRITE_BUFFER_MB")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .map_or(MAX_ACTIVE_ROTATION_BYTES, |mb| {
-            mb.saturating_mul(1024 * 1024)
-        })
+    pool.min(MAX_ACTIVE_ROTATION_BYTES)
 }
 
 const fn empty_budget_counters() -> StorageBudgetCounters {
