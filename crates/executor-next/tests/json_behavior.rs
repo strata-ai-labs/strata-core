@@ -208,6 +208,36 @@ fn durable_executor_reopens_json_documents_history_and_indexes() {
 }
 
 #[test]
+fn json_null_documents_are_listed_as_present_documents() {
+    run_executor_modes(|executor| {
+        let null_write = write_json(executor, None, None, "doc-null", "$", Value::Null);
+        write_json(
+            executor,
+            None,
+            None,
+            "doc-object",
+            "$",
+            json!({"name": "Ada"}),
+        );
+
+        assert_eq!(
+            execute_json_get_value(executor, "doc-null", "$"),
+            Some(Value::Null)
+        );
+        assert_eq!(execute_json_get_value(executor, "doc-missing", "$"), None);
+        assert_eq!(
+            execute_json_list(executor, Some("doc-"), None, 10),
+            (vec!["doc-null".to_owned(), "doc-object".to_owned()], false)
+        );
+        assert_eq!(execute_json_count(executor, Some("doc-")), 2);
+        assert_eq!(
+            execute_json_list_as_of(executor, Some("doc-"), null_write.timestamp),
+            vec!["doc-null".to_owned()]
+        );
+    });
+}
+
+#[test]
 fn json_branch_and_space_defaults_are_isolated() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
     executor

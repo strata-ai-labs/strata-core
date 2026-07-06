@@ -55,7 +55,7 @@ assert_json "$out" 'data["type"] == "json_versioned_value" and data["data"]["fou
 out="$(cli_json json list --prefix doc- --limit 2)"
 assert_json "$out" 'data["type"] == "json_list_result" and data["data"]["has_more"] is True and data["data"]["items"] == ["doc-01", "doc-02"]' "json first page"
 out="$(cli_json json list --prefix doc- --limit 2 --cursor doc-02)"
-assert_json "$out" 'data["type"] == "json_list_result" and data["data"]["items"] == ["doc-03", "doc-null"] and data["data"]["has_more"] is False' "json terminal page"
+assert_json "$out" 'data["type"] == "json_list_result" and data["data"]["items"] == ["doc-03", "doc-null"] and data["data"]["has_more"] is False' "json terminal page includes stored null"
 
 out="$(cli_json json index create by-rank '$.rank' --index-type numeric)"
 assert_json "$out" 'data["type"] == "json_index_definition" and data["data"]["name"] == "by-rank"' "json numeric index create"

@@ -450,6 +450,55 @@ fn json_list_count_and_sample_cover_boundaries() {
 }
 
 #[test]
+fn json_null_documents_remain_live_for_list_count_and_timestamp_reads() {
+    run_database_modes(|database| {
+        let mut json = database
+            .json(branch("default"), space("default"))
+            .expect("JSON service opens");
+
+        let null_outcome = json
+            .create(doc_id("doc-null"), json_value(json!(null)))
+            .expect("create null document succeeds");
+        json.create(doc_id("doc-object"), json_value(json!({"name": "Ada"})))
+            .expect("create object document succeeds");
+
+        assert_eq!(
+            json.list(Some(&doc_id("doc-")), None, 10)
+                .expect("prefix list succeeds")
+                .document_ids(),
+            &[doc_id("doc-null"), doc_id("doc-object")]
+        );
+        assert_eq!(
+            json.count(Some(&doc_id("doc-")))
+                .expect("prefix count succeeds"),
+            2
+        );
+        assert_eq!(
+            json.get(&doc_id("doc-null"), &root())
+                .expect("null document get succeeds")
+                .expect("null document is present")
+                .as_inner(),
+            &json!(null)
+        );
+        assert_eq!(
+            json.list_at(
+                Some(&doc_id("doc-")),
+                None,
+                10,
+                null_outcome.commit().timestamp()
+            )
+            .expect("historical prefix list succeeds")
+            .document_ids(),
+            &[doc_id("doc-null")]
+        );
+        assert!(json
+            .get(&doc_id("doc-missing"), &root())
+            .expect("missing get succeeds")
+            .is_none());
+    });
+}
+
+#[test]
 fn json_history_version_timestamp_and_list_at_are_stable() {
     let mut database = open_cache_database().expect("cache open succeeds");
     let doc = doc_id("history:1");
