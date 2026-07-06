@@ -31,8 +31,11 @@ SUITE_NAME="$(basename "${0%.sh}")"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/strata-cli-test.XXXXXX")"
 DB="$WORK_DIR/db"
 # First-run helpers (init) write to the Strata home; point it at the sandbox
-# so suites never touch the real ~/.strata.
+# so suites never touch the real ~/.strata. STRATA_DB is a database-target
+# fallback (first-run D2) — clear it so an ambient value never leaks into
+# assertions that expect explicit targeting.
 export STRATA_HOME="$WORK_DIR/strata-home"
+unset STRATA_DB
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 PASS=0

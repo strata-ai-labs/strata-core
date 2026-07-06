@@ -80,7 +80,9 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             return Ok(0);
         }
 
-        let mut executor = open::open_executor(cli.cache, cli.db, cli.db_path)?;
+        let opened =
+            open::open_executor(cli.cache, cli.db, cli.db_path, open::OpenIntent::OneShot)?;
+        let mut executor = opened.executor;
         if let Some(branch) = context.scope_with_overrides(None, None).branch.as_deref() {
             executor = executor.with_default_branch(branch)?;
         }
@@ -91,12 +93,28 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
         return Ok(0);
     }
 
-    let mut executor = open::open_executor(cli.cache, cli.db, cli.db_path)?;
+    let interactive = std::io::stdin().is_terminal();
+    let intent = if interactive {
+        open::OpenIntent::Interactive
+    } else {
+        open::OpenIntent::Pipe
+    };
+    let opened = open::open_executor(cli.cache, cli.db, cli.db_path, intent)?;
+    if opened.implicit_cache {
+        // Bare interactive invocation: an ephemeral session, stated plainly
+        // so nobody discovers volatility after typing data in (first-run D2).
+        eprintln!(
+            "strata {} — in-memory session (nothing persisted; run with a path to keep data)",
+            env!("CARGO_PKG_VERSION")
+        );
+        eprintln!("type `help` for commands");
+    }
+    let mut executor = opened.executor;
     if let Some(branch) = context.scope_with_overrides(None, None).branch.as_deref() {
         executor = executor.with_default_branch(branch)?;
     }
 
-    let saw_pipe_error = if std::io::stdin().is_terminal() {
+    let saw_pipe_error = if interactive {
         repl::run_repl(&mut executor, &mut context, format)?;
         false
     } else {
