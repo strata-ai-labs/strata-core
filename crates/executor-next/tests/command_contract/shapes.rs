@@ -277,6 +277,11 @@ fn graph_output_json_uses_stable_tags_and_field_shape() {
     };
     let encoded = serde_json::to_value(&output).expect("output serializes");
     assert_eq!(encoded["type"], "graph_neighbor_page");
+    assert_eq!(encoded["data"]["items"][0]["graph"], "deps");
+    assert_eq!(encoded["data"]["items"][0]["node_id"], "node-b");
+    assert_eq!(encoded["data"]["items"][0]["src"], "node-a");
+    assert_eq!(encoded["data"]["items"][0]["edge_type"], "depends_on");
+    assert_eq!(encoded["data"]["items"][0]["dst"], "node-b");
     assert_eq!(encoded["data"]["items"][0]["direction"], "outgoing");
     assert_eq!(encoded["data"]["items"][0]["node"]["node_id"], "node-b");
     assert_eq!(

@@ -1870,7 +1870,7 @@ fn neighbor_node_ids_in(
             items: neighbors, ..
         } => neighbors
             .iter()
-            .map(|hit| hit.node().node_id().to_owned())
+            .map(|hit| hit.node_id().to_owned())
             .collect(),
         output => panic!("unexpected graph neighbors output: {output:?}"),
     }
@@ -1912,9 +1912,9 @@ fn neighbor_page(
 
 fn neighbor_summary(hit: &GraphNeighborHit) -> NeighborSummary {
     NeighborSummary {
-        node_id: hit.node().node_id().to_owned(),
+        node_id: hit.node_id().to_owned(),
         direction: hit.direction(),
-        edge_type: hit.edge().edge_type().to_owned(),
+        edge_type: hit.edge_type().to_owned(),
     }
 }
 
@@ -1997,7 +1997,7 @@ fn neighbor_nodes(
             items: neighbors, ..
         } => neighbors
             .iter()
-            .map(|hit| hit.node().node_id().to_owned())
+            .map(|hit| hit.node_id().to_owned())
             .collect(),
         output => panic!("unexpected graph neighbors output: {output:?}"),
     }

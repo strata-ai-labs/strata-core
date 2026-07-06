@@ -52,11 +52,11 @@ out="$(cli_json graph list-nodes social --limit 2 --cursor bob)"
 assert_json "$out" 'data["type"] == "graph_node_page" and [item["node_id"] for item in data["data"]["items"]] == ["carol", "dave"]' "graph second node page"
 
 out="$(cli_json graph neighbors social ada --direction outgoing --limit 10)"
-assert_json "$out" 'data["type"] == "graph_neighbor_page" and sorted(item["node"]["node_id"] for item in data["data"]["items"]) == ["bob", "dave"]' "graph outgoing neighbors"
+assert_json "$out" 'data["type"] == "graph_neighbor_page" and sorted(item["node_id"] for item in data["data"]["items"]) == ["bob", "dave"]' "graph outgoing neighbors"
 out="$(cli_json graph neighbors social ada --direction incoming --limit 10)"
-assert_json "$out" 'data["type"] == "graph_neighbor_page" and [item["node"]["node_id"] for item in data["data"]["items"]] == ["carol"]' "graph incoming neighbors"
+assert_json "$out" 'data["type"] == "graph_neighbor_page" and [item["node_id"] for item in data["data"]["items"]] == ["carol"]' "graph incoming neighbors"
 out="$(cli_json graph neighbors social ada --edge-type mentors --limit 10)"
-assert_json "$out" 'data["type"] == "graph_neighbor_page" and [item["node"]["node_id"] for item in data["data"]["items"]] == ["dave"]' "graph edge-type neighbors"
+assert_json "$out" 'data["type"] == "graph_neighbor_page" and [item["node_id"] for item in data["data"]["items"]] == ["dave"]' "graph edge-type neighbors"
 
 cli_json branch fork default graph-child >/dev/null
 cli_json_branch graph-child graph remove-edge social ada follows bob >/dev/null
@@ -64,9 +64,9 @@ cli_json_branch graph-child graph add-node social frank --properties '{"kind":"p
 cli_json_branch graph-child graph add-edge social ada follows frank --weight 0.8 >/dev/null
 
 out="$(cli_json graph neighbors social ada --direction outgoing --limit 10)"
-assert_json "$out" 'data["type"] == "graph_neighbor_page" and sorted(item["node"]["node_id"] for item in data["data"]["items"]) == ["bob", "dave"]' "parent graph unchanged"
+assert_json "$out" 'data["type"] == "graph_neighbor_page" and sorted(item["node_id"] for item in data["data"]["items"]) == ["bob", "dave"]' "parent graph unchanged"
 out="$(cli_json_branch graph-child graph neighbors social ada --direction outgoing --limit 10)"
-assert_json "$out" 'data["type"] == "graph_neighbor_page" and sorted(item["node"]["node_id"] for item in data["data"]["items"]) == ["dave", "frank"]' "child graph diverged"
+assert_json "$out" 'data["type"] == "graph_neighbor_page" and sorted(item["node_id"] for item in data["data"]["items"]) == ["dave", "frank"]' "child graph diverged"
 
 graph_batch="$CLI_CORPUS_FILES/graph-corpus-batch.json"
 write_json "$graph_batch" '{"type":"graph_batch_write","graph":"social","operations":[{"type":"upsert_node","node_id":"gina","data":{"properties":{"kind":"person"}}},{"type":"upsert_node","node_id":"hank","data":{"properties":{"kind":"person"}}},{"type":"upsert_edge","src":"gina","edge_type":"knows","dst":"hank","data":{"weight":0.5,"properties":{"via":"batch"}}}]}'

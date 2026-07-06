@@ -44,11 +44,13 @@ This file tracks issues found while building and running
 11. Event reverse ranges reversed a bounded forward interval. Fixed by making
     reverse sequence ranges walk backward from `start_seq`, with `end_seq` as
     an exclusive lower bound when provided.
+12. Graph neighbor page items exposed neighbor ids only as
+    `item.node.node_id`. Fixed by adding top-level neighbor identity fields to
+    each hit while keeping nested node and edge details.
 
 ## Product Or Contract Findings
 
-1. Graph neighbor page items wrap neighbor data under `node` and edge data
-   under `edge`; neighbor ids are `item.node.node_id`.
+No open product or contract findings.
 
 ## Corpus Harness Fixes
 

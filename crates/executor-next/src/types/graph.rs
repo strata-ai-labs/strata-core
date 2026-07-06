@@ -427,23 +427,59 @@ impl GraphEdgeDataOutput {
 /// Serializable graph neighbor hit.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GraphNeighborHit {
+    graph: String,
+    node_id: String,
+    src: String,
+    edge_type: String,
+    dst: String,
+    direction: GraphDirection,
     node: GraphNodeDataOutput,
     edge: GraphEdgeDataOutput,
-    direction: GraphDirection,
 }
 
 impl GraphNeighborHit {
     /// Creates a graph neighbor hit.
-    pub const fn new(
+    pub fn new(
         node: GraphNodeDataOutput,
         edge: GraphEdgeDataOutput,
         direction: GraphDirection,
     ) -> Self {
+        debug_assert_eq!(node.graph(), edge.graph());
         Self {
+            graph: node.graph().to_owned(),
+            node_id: node.node_id().to_owned(),
+            src: edge.src().to_owned(),
+            edge_type: edge.edge_type().to_owned(),
+            dst: edge.dst().to_owned(),
+            direction,
             node,
             edge,
-            direction,
         }
+    }
+
+    /// Returns the graph name.
+    pub fn graph(&self) -> &str {
+        &self.graph
+    }
+
+    /// Returns the neighboring node id.
+    pub fn node_id(&self) -> &str {
+        &self.node_id
+    }
+
+    /// Returns the connecting edge source node id.
+    pub fn src(&self) -> &str {
+        &self.src
+    }
+
+    /// Returns the connecting edge type.
+    pub fn edge_type(&self) -> &str {
+        &self.edge_type
+    }
+
+    /// Returns the connecting edge destination node id.
+    pub fn dst(&self) -> &str {
+        &self.dst
     }
 
     /// Returns the neighboring node.
