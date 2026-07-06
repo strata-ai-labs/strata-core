@@ -37,7 +37,7 @@ pub(crate) fn run(command: &AgentsCommand, format: Format) -> Result<i32, CliErr
 
 // ---- guide -----------------------------------------------------------------
 
-fn guide_markdown() -> Result<String, CliError> {
+pub(crate) fn guide_markdown() -> Result<String, CliError> {
     let catalog = catalog()?;
     let mut guide = String::new();
     let version = env!("CARGO_PKG_VERSION");
@@ -111,6 +111,13 @@ text. Full registry: `strata agents errors --json`.
 `strata doctor [--json] [path]` checks the installation and (optionally) a
 database, reporting coded issues with hints; it exits non-zero when
 anything needs attention.
+
+## MCP
+
+`strata <db> mcp serve` speaks Model Context Protocol over stdio — ~20
+curated tools plus `strata_guide` (this guide) and `strata_command` (any
+cataloged command as raw wire JSON). Same envelopes, same error codes.
+Client config: {{\"command\":\"strata\",\"args\":[\"<db-path>\",\"mcp\",\"serve\"]}}.
 
 ",
         version = version,
@@ -197,6 +204,7 @@ This repo uses Strata (embedded database — SQLite-shaped, zero-config).
 - Command catalog: `strata agents commands --json`; errors: `strata agents errors --json`
 - Database targeting: pass a path or set `STRATA_DB`; never rely on cwd
 - Structured output: add `--json` to any command; raw commands via `strata <db> command run --command-json`
+- MCP: `strata <db> mcp serve` (stdio; same envelopes and error codes)
 "
     )
 }

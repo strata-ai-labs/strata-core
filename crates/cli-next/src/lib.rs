@@ -16,6 +16,7 @@ mod doctor;
 mod guidance;
 mod init;
 mod input;
+mod mcp;
 mod open;
 mod options;
 mod render;
@@ -95,6 +96,30 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             options::TopCommand::Agents(args) => return agents::run(&args.command, format),
             other => other,
         };
+        if matches!(
+            command,
+            options::TopCommand::Mcp(options::McpArgs {
+                command: options::McpCommand::Serve,
+            })
+        ) {
+            // The MCP server owns the process: it opens the target (explicit
+            // path / STRATA_DB / --cache; refusal otherwise, like any
+            // one-shot command), applies the session scope, and serves stdio
+            // until the client closes stdin.
+            let opened =
+                open::open_executor(cli.cache, cli.db, cli.db_path, open::OpenIntent::OneShot)?;
+            let mut executor = opened.executor;
+            let scope = context.scope_with_overrides(None, None);
+            if let Some(branch) = scope.branch.as_deref() {
+                executor = executor.with_default_branch(branch)?;
+            }
+            if let Some(space) = scope.space.as_deref() {
+                executor.set_default_space(space.to_owned())?;
+            }
+            let exit = mcp::serve(&mut executor)?;
+            executor.close()?;
+            return Ok(exit);
+        }
         if let TopLevelAction::NoDatabase(value) = top_level_without_database(&command)? {
             render_value(&value, format)?;
             return Ok(0);
@@ -185,6 +210,11 @@ pub(crate) fn execute_parsed_command(
             // commands never fail healthily inside a session.
             let _exit = agents::run(&args.command, format)?;
             return Ok(());
+        }
+        options::TopCommand::Mcp(_) => {
+            return Err(CliError::usage(
+                "`mcp serve` runs as a one-shot command (it owns stdio), not inside a session",
+            ));
         }
         options::TopCommand::Info => executor.execute(Command::Info {
             branch: scope.branch.clone(),

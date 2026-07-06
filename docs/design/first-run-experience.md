@@ -480,7 +480,7 @@ agents *expect* the surface to be — sometimes the right fix is an alias, not a
 | D5 | `strata doctor` (§6.3) — **landed 2026-07-06** | strata-core | — | S |
 | D6 | install.sh: sha256 verify, `STRATA_VERSION`/`--version`, `--quiet`/`--json`, release.json manifest, doctor-verify, aligned epilogue (§5.1–5.2, F4) | stratadb.org | D2, release assets | S–M |
 | D7 | Release train automation (§9.2) | strata-core + all | D1 | M |
-| D8 | `@stratadb/mcp` npx shim + `strata mcp serve` V1 transport + curated tools + registry listings (§8) | strata-core + strata-mcp | D3, D7; M9 SDK cutover | M–L |
+| D8 | `@stratadb/mcp` npx shim + `strata mcp serve` V1 transport + curated tools + registry listings (§8) — **`strata mcp serve` + 20 curated tools landed 2026-07-06; shim + registries pending (strata-mcp)** | strata-core + strata-mcp | D3, D7; M9 SDK cutover | M–L |
 | D9 | SDK cutover carries agent surfaces: guide fn, stubs/types, embedded quickstart, unified version (§5.5–5.6) | strata-python, strata-nodesdk | M9, D3, D7 | M (each) |
 | D10 | Homebrew tap, Docker image, GitHub Action (§5.3, 5.8, 5.9) | new small repos | D7 | S (each) |
 | D11 | llms.txt upgrade + docs install matrix (§9.3) | stratadb.org | D3, D7 | S |

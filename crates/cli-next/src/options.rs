@@ -72,6 +72,8 @@ pub(crate) enum TopCommand {
     Doctor,
     /// Self-describing surface for agents: guide, catalogs, repo onboarding.
     Agents(AgentsArgs),
+    /// Model Context Protocol server commands.
+    Mcp(McpArgs),
     /// Lightweight liveness check.
     Ping,
     /// Print database information.
@@ -151,6 +153,21 @@ pub(crate) struct ConfigArgs {
     /// Config command.
     #[command(subcommand)]
     pub(crate) command: ConfigCommand,
+}
+
+/// MCP command arguments.
+#[derive(Debug, Args)]
+pub(crate) struct McpArgs {
+    /// MCP command.
+    #[command(subcommand)]
+    pub(crate) command: McpCommand,
+}
+
+/// MCP server commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum McpCommand {
+    /// Serve MCP over stdio (newline-delimited JSON-RPC; logs on stderr).
+    Serve,
 }
 
 /// Agent-surface command arguments.
