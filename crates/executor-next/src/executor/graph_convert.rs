@@ -11,7 +11,7 @@ use super::{
     GraphBatchOperation, GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget,
     GraphDirection, GraphEdgeData, GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData,
     GraphNeighborHit, GraphNodeData, GraphNodeDataOutput, MutationEffect, Output, PageInfo,
-    DEFAULT_BRANCH,
+    DEFAULT_BRANCH, DEFAULT_SPACE,
 };
 
 pub(super) fn graph_name(name: String) -> ExecutorResult<EngineGraphName> {
@@ -116,7 +116,7 @@ pub(super) fn engine_graph_binding_target(
         .as_deref()
         .map(|branch| branch_name(Some(branch), DEFAULT_BRANCH))
         .transpose()?;
-    let space = product_space(Some(&space))?;
+    let space = product_space(Some(&space), DEFAULT_SPACE)?;
     EngineGraphBindingTarget::new(
         engine_graph_binding_primitive(primitive),
         branch,

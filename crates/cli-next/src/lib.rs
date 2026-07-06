@@ -106,6 +106,18 @@ pub(crate) fn execute_parsed_command(
     if let Some(name) = deferred_top_command(&command) {
         return Err(deferred_command(name));
     }
+    // The executor owns branch and space session context (CLI-4). Resolve the
+    // current scope onto the executor so every path — including `command run`,
+    // which executes raw JSON without per-command scope injection — honors
+    // --branch/--space and the REPL `use` context uniformly.
+    let executor_branch = executor.default_branch().to_owned();
+    let branch = scope.branch.clone().unwrap_or(executor_branch);
+    executor.set_default_branch(branch)?;
+    let space = scope
+        .space
+        .clone()
+        .unwrap_or_else(|| strata_executor_next::DEFAULT_SPACE.to_owned());
+    executor.set_default_space(space)?;
     let output = match command {
         options::TopCommand::Ping => executor.execute(Command::Ping)?,
         options::TopCommand::Init => {

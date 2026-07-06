@@ -1,15 +1,15 @@
 use super::{
     BranchName, Bytes, EngineJsonIndexType, EngineJsonValue, ExecutorError, ExecutorResult,
     JsonDocumentId, JsonGetEntry, JsonIndexName, JsonIndexType, JsonPath, KvKey, KvValue,
-    ProductSpace, DEFAULT_SPACE,
+    ProductSpace,
 };
 
 pub(super) fn branch_name(branch: Option<&str>, default: &str) -> ExecutorResult<BranchName> {
     BranchName::new(branch.unwrap_or(default)).map_err(ExecutorError::from)
 }
 
-pub(super) fn product_space(space: Option<&str>) -> ExecutorResult<ProductSpace> {
-    ProductSpace::new(space.unwrap_or(DEFAULT_SPACE)).map_err(ExecutorError::from)
+pub(super) fn product_space(space: Option<&str>, default: &str) -> ExecutorResult<ProductSpace> {
+    ProductSpace::new(space.unwrap_or(default)).map_err(ExecutorError::from)
 }
 
 pub(super) fn kv_key(key: Bytes) -> ExecutorResult<KvKey> {

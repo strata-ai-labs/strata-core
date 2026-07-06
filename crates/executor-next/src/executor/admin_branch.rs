@@ -70,7 +70,7 @@ impl Executor {
         space: &str,
     ) -> ExecutorResult<Output> {
         let branch = branch_name(branch, &self.default_branch)?;
-        let space = product_space(Some(space))?;
+        let space = product_space(Some(space), &self.default_space)?;
         let mut spaces = self.database.spaces(branch)?;
         let outcome = spaces.create(space)?;
         Ok(output_space_create(&outcome))
@@ -82,7 +82,7 @@ impl Executor {
         space: &str,
     ) -> ExecutorResult<Output> {
         let branch = branch_name(branch, &self.default_branch)?;
-        let space = product_space(Some(space))?;
+        let space = product_space(Some(space), &self.default_space)?;
         let mut spaces = self.database.spaces(branch)?;
         Ok(Output::Bool(spaces.exists(&space)?))
     }
@@ -94,7 +94,7 @@ impl Executor {
         force: bool,
     ) -> ExecutorResult<Output> {
         let branch = branch_name(branch, &self.default_branch)?;
-        let space = product_space(Some(space))?;
+        let space = product_space(Some(space), &self.default_space)?;
         let mut spaces = self.database.spaces(branch)?;
         let outcome = spaces.delete(&space, force)?;
         Ok(output_space_delete(&outcome))

@@ -165,6 +165,7 @@ use vector_convert::{
 pub struct Executor {
     database: Database,
     default_branch: String,
+    default_space: String,
     #[cfg(feature = "inference")]
     inference: strata_inference_next::InferenceRuntime,
 }
@@ -188,6 +189,7 @@ impl Executor {
         Self {
             database,
             default_branch,
+            default_space: DEFAULT_SPACE.to_owned(),
             #[cfg(feature = "inference")]
             inference: strata_inference_next::InferenceRuntime::default(),
         }
@@ -206,16 +208,46 @@ impl Executor {
 
     /// Sets the default branch used when commands omit their branch.
     pub fn with_default_branch(mut self, branch: impl Into<String>) -> ExecutorResult<Self> {
+        self.set_default_branch(branch)?;
+        Ok(self)
+    }
+
+    /// Sets the default branch in place (for a session whose scope changes).
+    pub fn set_default_branch(&mut self, branch: impl Into<String>) -> ExecutorResult<()> {
         let branch = branch.into();
         let _validated = branch_name(Some(branch.as_str()), DEFAULT_BRANCH)?;
         self.default_branch = branch;
-        Ok(self)
+        Ok(())
     }
 
     /// Returns the default branch used for omitted command branches.
     #[must_use]
     pub fn default_branch(&self) -> &str {
         &self.default_branch
+    }
+
+    /// Sets the default product space used when commands omit their space.
+    ///
+    /// The executor owns branch and space session context (executor charter
+    /// §2), so every frontend resolves omitted spaces uniformly instead of
+    /// injecting a default per command.
+    pub fn with_default_space(mut self, space: impl Into<String>) -> ExecutorResult<Self> {
+        self.set_default_space(space)?;
+        Ok(self)
+    }
+
+    /// Sets the default product space in place (for a session whose scope changes).
+    pub fn set_default_space(&mut self, space: impl Into<String>) -> ExecutorResult<()> {
+        let space = space.into();
+        let _validated = product_space(Some(space.as_str()), DEFAULT_SPACE)?;
+        self.default_space = space;
+        Ok(())
+    }
+
+    /// Returns the default product space used for omitted command spaces.
+    #[must_use]
+    pub fn default_space(&self) -> &str {
+        &self.default_space
     }
 
     /// Closes the underlying database handle.

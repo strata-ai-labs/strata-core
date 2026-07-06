@@ -686,6 +686,39 @@ fn batch_put(executor: &mut Executor, entries: Vec<(&str, &str)>) {
     }
 }
 
+#[test]
+fn commands_resolve_omitted_space_from_the_executor_session_default() {
+    // CLI-4: the executor owns space session context. A command that omits its
+    // space resolves to the session default — the mechanism `command run`
+    // relies on so raw JSON honors --space — not the literal "default" space.
+    let mut executor = Executor::open_cache()
+        .expect("cache executor opens")
+        .with_default_space("app")
+        .expect("session space set");
+    assert_eq!(executor.default_space(), "app");
+
+    executor
+        .execute(Command::KvPut {
+            branch: None,
+            space: None,
+            key: bytes("k"),
+            value: bytes("v"),
+        })
+        .expect("put succeeds");
+
+    // The write landed in the session space, not the literal "default" space.
+    assert_eq!(
+        execute_get_in(&mut executor, None, Some("app"), "k"),
+        Some(bytes("v"))
+    );
+    assert_eq!(
+        execute_get_in(&mut executor, None, Some("default"), "k"),
+        None
+    );
+    // A read that also omits the space resolves to "app" and finds it.
+    assert_eq!(execute_get(&mut executor, "k"), Some(bytes("v")));
+}
+
 fn execute_get(executor: &mut Executor, key: &str) -> Option<Bytes> {
     match executor
         .execute(Command::KvGet {
