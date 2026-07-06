@@ -137,7 +137,6 @@ const RESOURCE_EXHAUSTED_CODES: &[&str] = &["resource_exhausted.engine.persisten
 const CORRUPTION_CODES: &[&str] = &[
     "corruption.engine.persistence_recovery",
     "data_loss.engine.branch_catalog",
-    "data_loss.engine.branch_create_pending",
     "data_loss.engine.branch_id",
     "data_loss.engine.control_name",
     "data_loss.engine.control_plane",

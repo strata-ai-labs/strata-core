@@ -1,9 +1,11 @@
 //! Control-plane bootstrap and load.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::api::{ControlDiagnostics, ControlHealthStatus, SpaceCatalogDiagnostics};
-use crate::branch::catalog::{BranchCatalogRecord, DEFAULT_BRANCH_GENERATION, SYSTEM_BRANCH_ID};
+use crate::branch::catalog::{
+    BranchCatalogRecord, BranchStatus, DEFAULT_BRANCH_GENERATION, SYSTEM_BRANCH_ID,
+};
 use crate::branch::BranchName;
 use crate::diagnostics::{EngineError, EngineErrorClass, EngineResult};
 use crate::persistence::{
@@ -356,18 +358,7 @@ fn load_existing_database(
     )?;
     let pending_names = decode_pending_branch_index(&pending)?;
     if !pending_names.is_empty() {
-        if let Some(name) = pending_names.first() {
-            let row = read_required(
-                persistence,
-                RowClass::BranchControl,
-                branch_pending_key(name.as_str()),
-            )?;
-            let _ = decode_pending_branch_record(&row)?;
-        }
-        return Err(EngineError::corruption(
-            "data_loss.engine.branch_create_pending",
-            "branch catalog contains an unfinished branch create operation",
-        ));
+        recover_pending_branch_operations(persistence, &pending_names)?;
     }
 
     let branch_index = read_required(persistence, RowClass::BranchControl, branch_index_key())?;
@@ -451,6 +442,106 @@ fn control_address(row_class: RowClass, key: Vec<u8>) -> RowAddress {
     RowAddress::new(SYSTEM_BRANCH_ID, row_class, key)
 }
 
+/// Recovers branch operations interrupted between their pending-marker commit
+/// and their catalog-activation commit, restoring an openable, consistent state
+/// instead of failing the whole database closed (finding F2).
+///
+/// The branch-operation contract's Publication rule requires recovery to either
+/// finish publishing the branch-control rows or clean up the destination
+/// storage state. The pending marker records the intended branch; whether that
+/// branch is already published (present in the catalog index) distinguishes an
+/// interrupted delete from an interrupted create/fork, which the pending record
+/// alone cannot (it carries no operation kind — this also resolves the
+/// misleading create-specific diagnostic of finding U17).
+fn recover_pending_branch_operations(
+    persistence: &mut StoragePersistence,
+    pending_names: &[BranchName],
+) -> EngineResult<()> {
+    let branch_index = read_required(persistence, RowClass::BranchControl, branch_index_key())?;
+    let published: BTreeSet<BranchName> =
+        decode_branch_index(&branch_index)?.into_iter().collect();
+
+    // The protocol clears a pending marker before starting the next operation,
+    // so at most one name is normally present; handle any number defensively.
+    for name in pending_names {
+        let row = read_required(
+            persistence,
+            RowClass::BranchControl,
+            branch_pending_key(name.as_str()),
+        )?;
+        let pending = decode_pending_branch_record(&row)?;
+        recover_one_pending_branch_operation(persistence, &pending, &published)?;
+    }
+    Ok(())
+}
+
+fn recover_one_pending_branch_operation(
+    persistence: &mut StoragePersistence,
+    pending: &BranchCatalogRecord,
+    published: &BTreeSet<BranchName>,
+) -> EngineResult<()> {
+    let storage_branch_id = pending.storage_branch_id();
+    if published.contains(pending.name()) {
+        // Interrupted delete: the branch is still published as active because
+        // its catalog-activation commit never ran.
+        if persistence.branch_exists(storage_branch_id)? {
+            // The storage delete never happened — abandon the delete, leaving
+            // the branch active; just clear the marker.
+            clear_pending_branch_marker(persistence, pending.name(), None)
+        } else {
+            // The storage delete completed but the catalog was not updated —
+            // finalize it so the catalog no longer references missing storage.
+            let deleted = pending.clone().with_storage_facts(
+                pending.generation(),
+                BranchStatus::Deleted,
+                pending.created_at(),
+                pending.deleted_at(),
+                pending.state_revision(),
+            );
+            clear_pending_branch_marker(persistence, pending.name(), Some(&deleted))
+        }
+    } else {
+        // Interrupted create or fork: the branch was never published. Roll back
+        // the half-created storage branch (if any) so it cannot leak, then clear
+        // the marker. The branch never becomes visible.
+        if persistence.branch_exists(storage_branch_id)? {
+            persistence.delete_branch(storage_branch_id, pending.generation())?;
+        }
+        clear_pending_branch_marker(persistence, pending.name(), None)
+    }
+}
+
+/// Clears the pending marker for `name` (empty pending index + delete the
+/// pending record). When `catalog_record` is provided, it is published in the
+/// same atomic commit — used to finalize an interrupted delete.
+fn clear_pending_branch_marker(
+    persistence: &mut StoragePersistence,
+    name: &BranchName,
+    catalog_record: Option<&BranchCatalogRecord>,
+) -> EngineResult<()> {
+    let mut mutations = vec![
+        RowMutation::put(
+            control_address(RowClass::BranchControl, branch_pending_index_key()),
+            encode_pending_branch_index(&[])?,
+        ),
+        RowMutation::delete(control_address(
+            RowClass::BranchControl,
+            branch_pending_key(name.as_str()),
+        )),
+    ];
+    if let Some(record) = catalog_record {
+        mutations.push(RowMutation::put(
+            control_address(
+                RowClass::BranchControl,
+                branch_catalog_key(record.name().as_str()),
+            ),
+            encode_branch_record(record),
+        ));
+    }
+    persistence.commit(&CommitPlan::new(SYSTEM_BRANCH_ID, mutations, None))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{bootstrap_new_database, control_address, load_existing_database, ControlPlane};
@@ -458,32 +549,154 @@ mod tests {
     use crate::branch::catalog::{BranchCatalogRecord, SYSTEM_BRANCH_ID};
     use crate::branch::BranchName;
     use crate::control::records::{
-        encode_branch_index, encode_branch_record, encode_default_branch,
-        encode_migration_registry, encode_reserved_system_space,
+        decode_pending_branch_index, encode_branch_index, encode_branch_record,
+        encode_default_branch, encode_migration_registry, encode_reserved_system_space,
     };
     use crate::diagnostics::EngineErrorClass;
     use crate::persistence::{
-        branch_catalog_key, branch_default_key, branch_index_key, capability_registry_key,
-        database_identity_key, local_instance_identity_key, migration_registry_key,
-        reserved_space_key, storage_registry_key, CommitPlan, PersistenceOpenTarget, RowClass,
-        RowMutation, StoragePersistence,
+        branch_catalog_key, branch_default_key, branch_index_key, branch_pending_index_key,
+        capability_registry_key, database_identity_key, local_instance_identity_key,
+        migration_registry_key, reserved_space_key, storage_registry_key, CommitPlan,
+        PersistenceOpenTarget, ReadSelector, RowClass, RowMutation, StoragePersistence,
     };
 
+    fn pending_names(persistence: &mut StoragePersistence) -> Vec<BranchName> {
+        let row = persistence
+            .read(
+                &control_address(RowClass::BranchControl, branch_pending_index_key()),
+                ReadSelector::Latest,
+            )
+            .expect("read pending index")
+            .expect("pending index present");
+        decode_pending_branch_index(&row).expect("decode pending index")
+    }
+
+    /// Publishes an active branch through the control plane so delete-recovery
+    /// tests have a real published branch to interrupt.
+    fn publish_branch(
+        control: &mut ControlPlane,
+        persistence: &mut StoragePersistence,
+        name: &str,
+    ) -> BranchCatalogRecord {
+        let record = BranchCatalogRecord::root(BranchName::new(name).expect("valid branch"), 1);
+        let outcome = persistence
+            .create_branch(record.storage_branch_id(), record.generation())
+            .expect("storage branch created");
+        let branch = outcome.branch();
+        let record = record.with_storage_facts(
+            branch.generation(),
+            super::BranchStatus::Active,
+            branch.created_at(),
+            branch.deleted_at(),
+            branch.state_revision(),
+        );
+        control
+            .persist_branch_record(persistence, record.clone())
+            .expect("branch published");
+        record
+    }
+
     #[test]
-    fn pending_branch_create_fails_closed_on_load() {
+    fn interrupted_create_recovers_by_clearing_the_pending_marker() {
         let (mut persistence, _) =
             StoragePersistence::open(PersistenceOpenTarget::Cache).expect("cache opens");
         bootstrap_default(&mut persistence);
         let record =
             BranchCatalogRecord::root(BranchName::new("feature").expect("valid branch"), 1);
 
+        // Crash after the pending marker but before catalog activation, with no
+        // storage branch created yet.
         ControlPlane::begin_branch_operation(&mut persistence, &record)
             .expect("pending row writes");
 
-        let error =
-            load_existing_database(&mut persistence, None).expect_err("pending row fails load");
-        assert_eq!(error.class(), EngineErrorClass::Corruption);
-        assert_eq!(error.code(), "data_loss.engine.branch_create_pending");
+        // Recovery un-bricks the database: load succeeds, the branch is absent,
+        // and the pending marker is cleared.
+        let control =
+            load_existing_database(&mut persistence, None).expect("recovery opens the database");
+        assert!(control
+            .lookup_branch(&BranchName::new("feature").expect("valid branch"))
+            .is_none());
+        assert!(pending_names(&mut persistence).is_empty());
+    }
+
+    #[test]
+    fn interrupted_create_rolls_back_an_orphaned_storage_branch() {
+        let (mut persistence, _) =
+            StoragePersistence::open(PersistenceOpenTarget::Cache).expect("cache opens");
+        bootstrap_default(&mut persistence);
+        let record =
+            BranchCatalogRecord::root(BranchName::new("feature").expect("valid branch"), 1);
+
+        // Crash after the storage branch was created but before catalog
+        // activation.
+        ControlPlane::begin_branch_operation(&mut persistence, &record)
+            .expect("pending row writes");
+        persistence
+            .create_branch(record.storage_branch_id(), record.generation())
+            .expect("storage branch created");
+        assert!(persistence
+            .branch_exists(record.storage_branch_id())
+            .expect("exists check"));
+
+        let control =
+            load_existing_database(&mut persistence, None).expect("recovery opens the database");
+        assert!(control
+            .lookup_branch(&BranchName::new("feature").expect("valid branch"))
+            .is_none());
+        // The orphaned storage branch was rolled back so it cannot leak.
+        assert!(!persistence
+            .branch_exists(record.storage_branch_id())
+            .expect("exists check"));
+        assert!(pending_names(&mut persistence).is_empty());
+    }
+
+    #[test]
+    fn interrupted_delete_with_present_storage_abandons_the_delete() {
+        let (mut persistence, _) =
+            StoragePersistence::open(PersistenceOpenTarget::Cache).expect("cache opens");
+        bootstrap_default(&mut persistence);
+        let mut control =
+            load_existing_database(&mut persistence, None).expect("initial load succeeds");
+        let feature = publish_branch(&mut control, &mut persistence, "feature");
+
+        // Crash after the delete's pending marker but before catalog activation;
+        // the storage branch was not yet deleted.
+        ControlPlane::begin_branch_operation(&mut persistence, &feature)
+            .expect("pending row writes");
+
+        // Recovery abandons the delete: the branch stays active.
+        let control =
+            load_existing_database(&mut persistence, None).expect("recovery opens the database");
+        assert!(control
+            .lookup_branch(&BranchName::new("feature").expect("valid branch"))
+            .is_some());
+        assert!(pending_names(&mut persistence).is_empty());
+    }
+
+    #[test]
+    fn interrupted_delete_with_missing_storage_finalizes_the_delete() {
+        let (mut persistence, _) =
+            StoragePersistence::open(PersistenceOpenTarget::Cache).expect("cache opens");
+        bootstrap_default(&mut persistence);
+        let mut control =
+            load_existing_database(&mut persistence, None).expect("initial load succeeds");
+        let feature = publish_branch(&mut control, &mut persistence, "feature");
+
+        // Crash after the storage delete completed but before catalog activation.
+        ControlPlane::begin_branch_operation(&mut persistence, &feature)
+            .expect("pending row writes");
+        persistence
+            .delete_branch(feature.storage_branch_id(), feature.generation())
+            .expect("storage branch deleted");
+
+        // Recovery finalizes the delete: load succeeds and the branch is no
+        // longer active (rather than dangling against missing storage).
+        let control =
+            load_existing_database(&mut persistence, None).expect("recovery opens the database");
+        assert!(control
+            .lookup_branch(&BranchName::new("feature").expect("valid branch"))
+            .is_none());
+        assert!(pending_names(&mut persistence).is_empty());
     }
 
     #[test]

@@ -67,11 +67,12 @@ fn fail_closed_control_plane_degrades_health_and_rejects_work() {
 }
 
 /// A branch creation interrupted after its durable pending marker is written
-/// leaves that marker behind; reopening the database detects it as corruption
-/// rather than silently resuming.
+/// leaves that marker behind; reopening the database must recover (roll the
+/// interrupted operation back) and open, rather than bricking the whole
+/// database with a data-loss error (finding F2).
 #[cfg(feature = "localfs")]
 #[test]
-fn interrupted_branch_creation_fails_closed_on_durable_reopen() {
+fn interrupted_branch_creation_recovers_on_durable_reopen() {
     let dir = tempfile::tempdir().expect("temp dir");
     {
         let mut db = open_durable_database(dir.path()).expect("durable opens");
@@ -88,13 +89,25 @@ fn interrupted_branch_creation_fails_closed_on_durable_reopen() {
         db.close().expect("close succeeds");
     }
 
-    let Err(error) = open_durable_database(dir.path()) else {
-        panic!("reopen should reject the interrupted operation");
-    };
-    assert_status(
-        &error,
-        EngineErrorClass::Corruption,
-        "data_loss.engine.branch_create_pending",
-        false,
+    // Recovery un-bricks the database: reopen succeeds and the interrupted
+    // branch is absent.
+    let mut db = open_durable_database(dir.path()).expect("recovery reopens the database");
+    assert!(
+        db.branches()
+            .expect("branch service opens")
+            .list()
+            .expect("branch list succeeds")
+            .iter()
+            .all(|summary| summary.name().as_str() != "feature"),
+        "the interrupted branch must not be published after recovery"
     );
+    // The pre-existing default branch and normal work are intact, and the name
+    // is free to be created cleanly.
+    db.kv(branch("default"), space("default"))
+        .expect("default branch is usable after recovery");
+    db.branches()
+        .expect("branch service opens")
+        .create(branch("feature"))
+        .expect("the interrupted name can be created cleanly after recovery");
+    db.close().expect("close succeeds");
 }
