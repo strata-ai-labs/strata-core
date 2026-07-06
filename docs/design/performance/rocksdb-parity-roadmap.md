@@ -125,7 +125,10 @@ miss, never an error. Scans use auto-ramping readahead (8 KB→256 KB,
    is retired. This is the change that makes **billion-scale** possible at all.
 4. **Then zstd** — block compression is already implemented and spec'd
    (`format/table/mod.rs:436`, spec §17) but default-off; it becomes valuable exactly when
-   blocks are read from disk.
+   blocks are read from disk. *(Status: steps 1–3 landed as BS4 on `v1-billion-scale-perf`;
+   blocks now come from disk, so this step is live — scheduled for BS6 together with scan
+   readahead and the block-size sweep. Handoff notes in `billion-scale-plan.md` §BS6;
+   measured re-baseline pending per `bs4-6-exit-runbook.md`.)*
 
 ## Sequencing
 

@@ -119,3 +119,9 @@ path = "src/bin/storage_next_l0_compact.rs"
 
 [profile.bench]
 debug = true
+
+# Explicit standalone-workspace root. A no-op in the main checkout (the root manifest already
+# excludes `benchmarks/`), but required for git worktrees: without it, cargo walks up past the
+# worktree and resolves against the ORIGINAL checkout's root manifest, whose `exclude`
+# entries don't match the worktree path — "current package believes it's in a workspace".
+[workspace]

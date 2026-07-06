@@ -182,6 +182,24 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
             let close = open.runtime.close()?;
             black_box(close);
             eprintln!("close: {}", format_duration(close_start.elapsed()));
+
+            // BS4.6 exit-gate cell: after the load and a clean close, time a cold reopen of the
+            // same durable directory (the "DB open ≤ 1 s at 100 M" gate, benchmark-measurable).
+            if config.workloads.contains(&Workload::ReopenAfterLoad) {
+                ensure_loaded(loaded, Workload::ReopenAfterLoad);
+                match open.durable_root() {
+                    None => eprintln!(
+                        "  reopen-after-load     skipped (cache engine has no durable directory)"
+                    ),
+                    Some(path) => {
+                        let result = run_reopen_after_load(path, engine, scale, &config)?
+                            .with_load_phase_context(load_phase_context)
+                            .with_source_shape_context(source_shape_context.clone());
+                        print_result(&result);
+                        results.push(result.into_benchmark_result(&config));
+                    }
+                }
+            }
             eprintln!();
         }
     }
@@ -559,6 +577,44 @@ fn run_branch_fork_current(
     )
 }
 
+/// BS4.6 exit-gate cell: time a cold reopen of the loaded durable directory and capture the
+/// fast-open counters. The disk-resident open path is O(tables) — lazy readers built from the
+/// manifest, no data decode — so `db_open_after_load_ms` must stay bounded as the scale grows
+/// and `table_lazy_full_materializations` must be zero. The reopened runtime is closed without
+/// serving reads; the read workloads already ran on the original open.
+fn run_reopen_after_load(
+    root: PathBuf,
+    engine: Engine,
+    scale: usize,
+    config: &Config,
+) -> Result<RunResult, BenchmarkError> {
+    let policy = engine
+        .storage_policy()
+        .expect("reopen-after-load requires a durable engine");
+    perf_trace::reset();
+    let open_start = Instant::now();
+    let outcome = open_durable_runtime(root, policy, config)?;
+    let open_elapsed = open_start.elapsed();
+    let open_trace = perf_trace::snapshot();
+    let mut runtime = outcome.into_runtime();
+    runtime.close()?;
+
+    Ok(RunResult::throughput(
+        Workload::ReopenAfterLoad,
+        engine,
+        scale,
+        1,
+        open_elapsed,
+    )
+    .with_perf_trace(open_trace)
+    .with_reopen_after_load_context(ReopenAfterLoadContext {
+        db_open_after_load_ms: open_elapsed.as_secs_f64() * 1_000.0,
+        table_reader_opens: open_trace.table_reader_opens(),
+        table_lazy_full_materializations: open_trace.table_lazy_full_materializations(),
+        table_data_block_reads: open_trace.table_data_block_reads(),
+    }))
+}
+
 fn measure_requests<'a, I, T, F>(requests: I, mut f: F) -> Result<TimedSamples, BenchmarkError>
 where
     I: IntoIterator<Item = &'a T>,
@@ -717,6 +773,17 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 }
 
 fn print_result(result: &RunResult) {
+    if let Some(reopen) = result.reopen_after_load_context {
+        eprintln!(
+            "  {:<20} db_open_after_load_ms={:.3} reader_opens={} lazy_full_materializations={} data_block_reads={}",
+            result.workload,
+            reopen.db_open_after_load_ms,
+            reopen.table_reader_opens,
+            reopen.table_lazy_full_materializations,
+            reopen.table_data_block_reads,
+        );
+        return;
+    }
     match &result.measurement {
         Measurement::Throughput { elapsed, ops } => {
             eprintln!(
@@ -912,7 +979,7 @@ fn print_result(result: &RunResult) {
             perf_trace.table_filter_absent_probes(),
         );
         eprintln!(
-            "    table-compaction merge_cursor_opens={} merge_advances={} merge_ns={} merge_input_rows={} merge_ns_per_input_row={} pre_validation_rows={} row_clones={} heap_key_clones={} source_order_key_clones={} boundary_key_allocations={} boundary_key_buffer_allocations={} boundary_key_buffer_reuses={} previous_key_buffer_allocations={} previous_key_buffer_reuses={} kept_rows={} dropped_rows={} peak_buffered_rows={} output_tables_built={} build_facts_from_streaming_metadata={} redundant_fact_decodes_avoided={} reader_reopens_avoided={} reader_row_vectors_reused={}",
+            "    table-compaction merge_cursor_opens={} merge_advances={} merge_ns={} merge_input_rows={} merge_ns_per_input_row={} pre_validation_rows={} row_clones={} heap_key_clones={} source_order_key_clones={} boundary_key_allocations={} boundary_key_buffer_allocations={} boundary_key_buffer_reuses={} previous_key_buffer_allocations={} previous_key_buffer_reuses={} kept_rows={} dropped_rows={} peak_buffered_rows={} output_tables_built={} build_facts_from_streaming_metadata={} redundant_fact_decodes_avoided={} reader_reopens_performed={}",
             perf_trace.table_compaction_merge_cursor_opens(),
             perf_trace.table_compaction_merge_advances(),
             perf_trace.table_compaction_merge_ns(),
@@ -933,8 +1000,7 @@ fn print_result(result: &RunResult) {
             perf_trace.table_compaction_output_tables_built(),
             perf_trace.table_build_facts_from_streaming_metadata(),
             perf_trace.table_rewrite_redundant_fact_decodes_avoided(),
-            perf_trace.table_rewrite_reader_reopens_avoided(),
-            perf_trace.table_rewrite_reader_row_vectors_reused(),
+            perf_trace.table_rewrite_reader_reopens_performed(),
         );
         eprintln!(
             "    lifecycle-compaction ops_completed={} l0={} l0_to_l1={} nonzero={} bottommost={} input_tables={} output_tables={} input_bytes={} output_bytes={} input_rows={} elapsed_ns={} trivial_moves={} selected={} selected_table_count={} selected_byte_count={} selected_target_bytes={} nonzero_input_selections={} nonzero_input_bytes={}",
@@ -1059,7 +1125,7 @@ Usage:
 Options:
   --scales LIST          Comma list: 100k,1m,10m,100m. Default: 100k
   --engines LIST         Comma list: cache,standard,always. Default: all
-  --workloads LIST       Comma list: load-seq,point-latest,point-throughput,scan-prefix,scan-range-throughput,branch-fork-current. Default: all
+  --workloads LIST       Comma list: load-seq,point-latest,point-throughput,scan-prefix,scan-range-throughput,branch-fork-current,reopen-after-load. Default: all
   --value-bytes N        Value size in bytes. Default: 64
   --batch-size N         Mutations per L9 commit during load. Default: 1000
   --flush-every N        Run public Flush maintenance every N loaded rows. Default: off
@@ -1290,16 +1356,18 @@ enum Workload {
     ScanPrefix,
     ScanRangeThroughput,
     BranchForkCurrent,
+    ReopenAfterLoad,
 }
 
 impl Workload {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 7] = [
         Self::LoadSeq,
         Self::PointLatest,
         Self::PointLatestThroughput,
         Self::ScanPrefix,
         Self::ScanRangeThroughput,
         Self::BranchForkCurrent,
+        Self::ReopenAfterLoad,
     ];
 
     fn parse(value: &str) -> Result<Self, CliError> {
@@ -1314,6 +1382,7 @@ impl Workload {
                 Ok(Self::ScanRangeThroughput)
             }
             "branch-fork-current" | "branch-fork" => Ok(Self::BranchForkCurrent),
+            "reopen-after-load" | "open-after-load" => Ok(Self::ReopenAfterLoad),
             _ => Err(CliError::InvalidWorkload(value.to_string())),
         }
     }
@@ -1332,6 +1401,7 @@ impl fmt::Display for Workload {
             Self::ScanPrefix => "scan-prefix",
             Self::ScanRangeThroughput => "scan-range-throughput",
             Self::BranchForkCurrent => "branch-fork-current",
+            Self::ReopenAfterLoad => "reopen-after-load",
         })
     }
 }
@@ -1397,6 +1467,27 @@ impl OpenBenchRuntime {
             _kept_dir: kept_dir,
         }
     }
+
+    /// The on-disk root of a durable engine's database (kept dir or live tempdir), `None` for the
+    /// cache engine. Used by the reopen-after-load cell; the tempdir stays alive until this struct
+    /// drops, so the returned path outlives the reopen.
+    fn durable_root(&self) -> Option<PathBuf> {
+        self._kept_dir.clone().or_else(|| {
+            self._tempdir
+                .as_ref()
+                .map(|tempdir| tempdir.path().to_path_buf())
+        })
+    }
+}
+
+/// Fast-open evidence captured by the reopen-after-load cell (BS4.6 exit gate #2/#5): the timed
+/// cold open plus the counters proving the open was O(tables) with no full table materialization.
+#[derive(Clone, Copy, Debug)]
+struct ReopenAfterLoadContext {
+    db_open_after_load_ms: f64,
+    table_reader_opens: u64,
+    table_lazy_full_materializations: u64,
+    table_data_block_reads: u64,
 }
 
 #[derive(Debug)]
@@ -1408,6 +1499,7 @@ struct RunResult {
     perf_trace: Option<StoragePerfSnapshot>,
     load_phase_trace: Option<LoadPhaseTrace>,
     source_shape_context: Option<SourceShapeContext>,
+    reopen_after_load_context: Option<ReopenAfterLoadContext>,
 }
 
 impl RunResult {
@@ -1426,6 +1518,7 @@ impl RunResult {
             perf_trace: None,
             load_phase_trace: None,
             source_shape_context: None,
+            reopen_after_load_context: None,
         }
     }
 
@@ -1443,11 +1536,17 @@ impl RunResult {
             perf_trace: None,
             load_phase_trace: None,
             source_shape_context: None,
+            reopen_after_load_context: None,
         }
     }
 
     const fn with_perf_trace(mut self, perf_trace: StoragePerfSnapshot) -> Self {
         self.perf_trace = Some(perf_trace);
+        self
+    }
+
+    const fn with_reopen_after_load_context(mut self, context: ReopenAfterLoadContext) -> Self {
+        self.reopen_after_load_context = Some(context);
         self
     }
 
@@ -1570,6 +1669,24 @@ impl RunResult {
             parameters.insert(
                 "post_load_source_shape".to_string(),
                 source_shape_context_json(source_shape),
+            );
+        }
+        if let Some(reopen) = self.reopen_after_load_context {
+            parameters.insert(
+                "db_open_after_load_ms".to_string(),
+                serde_json::json!(reopen.db_open_after_load_ms),
+            );
+            parameters.insert(
+                "reopen_table_reader_opens".to_string(),
+                serde_json::json!(reopen.table_reader_opens),
+            );
+            parameters.insert(
+                "reopen_table_lazy_full_materializations".to_string(),
+                serde_json::json!(reopen.table_lazy_full_materializations),
+            );
+            parameters.insert(
+                "reopen_table_data_block_reads".to_string(),
+                serde_json::json!(reopen.table_data_block_reads),
             );
         }
 
@@ -2336,12 +2453,8 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
         perf_trace.table_rewrite_redundant_fact_decodes_avoided()
     );
     field!(
-        "table_rewrite_reader_reopens_avoided",
-        perf_trace.table_rewrite_reader_reopens_avoided()
-    );
-    field!(
-        "table_rewrite_reader_row_vectors_reused",
-        perf_trace.table_rewrite_reader_row_vectors_reused()
+        "table_rewrite_reader_reopens_performed",
+        perf_trace.table_rewrite_reader_reopens_performed()
     );
     field!("append_staging_clones", perf_trace.append_staging_clones());
     field!(
@@ -4466,8 +4579,7 @@ mod tests {
             "table_compaction_previous_key_buffer_reuses",
             "table_build_facts_from_streaming_metadata",
             "table_rewrite_redundant_fact_decodes_avoided",
-            "table_rewrite_reader_reopens_avoided",
-            "table_rewrite_reader_row_vectors_reused",
+            "table_rewrite_reader_reopens_performed",
         ] {
             assert_eq!(
                 perf_trace[field].as_u64(),

@@ -1,12 +1,16 @@
 # BS4 — Disk-resident tables: implementation and test plan
 
-Status: **in progress** — 4.1, 4.2, 4.3, 4.4a–i landed (all prep + the behavior-neutral
-scaffolding); 4.4k → 4.4j (the flip) → 4.4l landed (durable flush/recovery/compaction now
-disk-resident), plus the fork-cow follow-up; **4.5 landed as two slices — 4.5a (budget remodel:
-durable admission charges metadata-resident bytes, dataset-size reject demoted to a health gauge,
-block cache rebalanced to the primary pool) and 4.5b (fast open: the always-on per-table
-`validate_manifest_reader_facts` cursor scan + the flush-watermark contiguity scan demoted to debug
-oracles, and the empty-delta checkpoint combine short-circuited). Remaining: 4.6 (exit)**. Note the
+Status: **implementation complete; exit runs pending** — 4.1, 4.2, 4.3, 4.4a–i landed (all prep +
+the behavior-neutral scaffolding); 4.4k → 4.4j (the flip) → 4.4l landed (durable
+flush/recovery/compaction now disk-resident), plus the fork-cow follow-up; **4.5 landed as two
+slices — 4.5a (budget remodel: durable admission charges metadata-resident bytes, dataset-size
+reject demoted to a health gauge, block cache rebalanced to the primary pool) and 4.5b (fast open:
+the always-on per-table `validate_manifest_reader_facts` cursor scan + the flush-watermark
+contiguity scan demoted to debug oracles, and the empty-delta checkpoint combine short-circuited).
+4.6 landed the exit scaffolding — the `#[ignore]` 100M exit-gate test (+ an always-on smoke), the
+l9 `reopen-after-load` benchmark cell, the BS-track ledger, and the runbook; the measured exit runs
+(100M@8GiB, 10M re-baseline, subcompaction re-A/B) execute in the perf environment per
+[`bs4-6-exit-runbook.md`](bs4-6-exit-runbook.md)**. Note the
 execution order was: **4.4k runs before 4.4j** — an attempt at the flip (4.4j) revealed that holding a
 lazy reader borrows the
 backend indefinitely, so every durable runtime must be built from an owned/`'static` backend; the
@@ -470,6 +474,30 @@ honest re-A/B** (gap G9 — compaction is now I/O-bound, the regime Slice 4 was 
 zstd/readahead assessment recorded for BS6; ledger rows + umbrella gap-table updates
 (G11–G16 closed; G15 → 1B-tier follow-up).
 
+**Landed (scaffolding + docs).** (a) The exit-gate integration test
+`durable_exit_gate_100m_on_8gib_budget` (`api/tests/disk_resident_reads.rs`, `#[ignore]`,
+perf-trace-gated): loads 100M × ~1 KB on an 8 GiB budget with deterministic inline
+maintenance (proactive flushes keep the memtable within budget while the on-disk dataset
+grows past it), checkpoints, closes, then times a cold reopen and asserts gates #1/#2/#5
+(dataset > budget serves; open ≤ 1 s; `lazy_full_materialization == 0` with
+`table_reader_opens > 0`). An always-on smoke (`durable_exit_gate_harness_smoke`, ~10 MB on
+8 MiB) runs the same scenario on every perf-trace test run. (b) The l9 benchmark gains a
+`reopen-after-load` cell emitting `db_open_after_load_ms` + the fast-open counters —
+gate #2 in benchmark form. (c) The BS-track ledger
+([`billion-scale-ledger.md`](billion-scale-ledger.md)) and the exact-command runbook
+([`bs4-6-exit-runbook.md`](bs4-6-exit-runbook.md)); umbrella gap table updated.
+
+**Deferred to the perf run (runbook).** The measured 100M/8GiB result, the open-time number,
+the 10 M scoreboard capture (no committed BS2/BS3 baseline exists — compare against umbrella
+§2 and commit BS4 as the first baseline), and the G9 subcompaction verdict
+(`STRATA_SUBCOMPACTIONS` 1 vs 4 on `storage_next_l0_compact`).
+
+**Known limitation (time-travel forks).** `fork_at_retained_version` / `_timestamp` still
+materialize the source branch eagerly (the `build_snapshot_l0_tables` hole — scoped in
+[`historical-fork-residency-scoping.md`](historical-fork-residency-scoping.md), not started).
+The 100M exit runs exercise live forks only; historical forks at that scale stay gated behind
+this documented limitation until the follow-up lands.
+
 ## Test strategy (cross-slice)
 
 - **Cold reads** — new `tests/disk_resident_reads.rs`: write via public API → drop runtime →
@@ -492,15 +520,25 @@ zstd/readahead assessment recorded for BS6; ledger rows + umbrella gap-table upd
 
 ## Exit gates (milestone)
 
-1. **100 M × 1 KB (~100 GB) loads and serves on an 8 GB budget** — the cell that hard-fails
-   today.
-2. **DB open ≤ 1 s at 100 M.**
+Measurement vehicles landed in 4.6; results pending the perf run
+([`bs4-6-exit-runbook.md`](bs4-6-exit-runbook.md)), tracked in
+[`billion-scale-ledger.md`](billion-scale-ledger.md).
+
+1. **100 M × 1 KB (~100 GB) loads and serves on an 8 GB budget** — the cell that hard-failed
+   pre-BS4. *Vehicle: `durable_exit_gate_100m_on_8gib_budget` + l9 `--scales 100m
+   --memory-budget 8g`. Pending run.*
+2. **DB open ≤ 1 s at 100 M.** *Vehicle: the exit test's timed reopen + the l9
+   `reopen-after-load` cell (`db_open_after_load_ms`). Pending run.*
 3. **10 M scoreboard cells within 1.5× of the BS2/BS3 results** (regression priced in;
-   reserve mitigations below if exceeded).
+   reserve mitigations below if exceeded). *Vehicle: `regression.rs --capture-baseline` + l9
+   `--scales 10m`; no committed BS2/BS3 baseline exists, so the band is judged against the
+   umbrella §2 snapshot. Pending run.*
 4. Goldens + crash-recovery byte-identity + recovery oracle + fault sweep green across both
-   format extensions (filter frame, manifest put/tombstone fields).
+   format extensions (filter frame, manifest put/tombstone fields). *Green — standing suites,
+   every slice.*
 5. `lazy_full_materialization == 0` in all exit runs; standing gates (clippy `-D warnings`,
-   fmt, source guards, fuzz inventory).
+   fmt, source guards, fuzz inventory). *Counter asserted by the exit test and its always-on
+   smoke; standing gates green.*
 
 ## Cross-cutting constraints (umbrella §2b)
 
@@ -557,11 +595,16 @@ recorded.
   4.4e.~~ **Resolved in 4.4e.**
 - ~~Manifest put/tombstone fields vs Option-degrade — decide in 4.4f.~~ **Resolved: added as the
   positional row-split extension (4.4g); recovery consumes it in 4.4j.**
-- Block-size tuning (64 KB blocks vs RocksDB's 4–64 KB) and decoded-row-block caching —
-  measure in 4.6, feed BS6.
-- Parallel manifest-replay opens for the 1 s gate — build only if the 4.5/4.6 measurement demands.
-- `resident_size_bytes` lazy estimate precision (metadata Vec + properties + loaded filter + cached
-  blocks) vs a simpler footer-derived constant — decide in 4.4j against the budget-accounting tests.
+- ~~Block-size tuning (64 KB blocks vs RocksDB's 4–64 KB) and decoded-row-block caching —
+  measure in 4.6, feed BS6.~~ **Handed to BS6** (assessment recorded in the umbrella BS6 §:
+  sweep block size together with zstd at the BS6 re-baseline; decoded-row-block caching stays
+  a read-regression reserve).
+- Parallel manifest-replay opens for the 1 s gate — **build only if the BS4.6 perf run's
+  open-time number exceeds 1 s** (runbook step; `cfg(not(wasm32))`).
+- ~~`resident_size_bytes` lazy estimate precision (metadata Vec + properties + loaded filter + cached
+  blocks) vs a simpler footer-derived constant — decide in 4.4j against the budget-accounting
+  tests.~~ **Resolved in 4.4j/4.5a** — the metadata-resident estimate is what durable admission
+  charges; precision is gated by the budget-accounting suite and the diagnostics accuracy report.
 - **Historical-fork eager residency (durable-eager hole surfaced in the 4.4l review).** After 4.4j +
   4.4l, every durable table in the flush/recovery/compaction/materialization/rewrite lifecycle installs
   lazy. The one remaining durable-eager install is `build_snapshot_l0_tables`

@@ -43,6 +43,10 @@ and correct in the regime it already supports; BS4 changes the regime.
 
 Plus: a 10 GB dataset hard-fails at an 8 GB budget; open time is O(dataset).
 
+*(Snapshot above is pre-BS. BS4 removed the hard-fail — the dataset is disk-resident and the
+budget bounds caches — and made open O(tables); the measured re-baseline (10 M cells, 100 M
+open time) is captured per `bs4-6-exit-runbook.md` and tracked in `billion-scale-ledger.md`.)*
+
 Root causes (full evidence in `rocksdb-parity-roadmap.md`):
 **RC1** — one global mutex over reads, writes, and maintenance. **RC2** — every commit re-folds
 over every SSTable 5–6× under that mutex (the load-decay). **RC3** — tables fully resident +
@@ -112,14 +116,14 @@ Every known gap, with its evidence and its home milestone. "Done" = landed this 
 | G6 | Scan path: per-key heap clones, full-row clones, whole scan under lock | `read.rs:3032-3189` | iterator over pinned snapshot; readahead | **BS2** (+BS6 readahead) |
 | G7 | Update-under-load crawl: L0→L1 throughput + retry convoy (A/F @10 M = ~110 ops/s) | diagnostic: 1.8 M `l0_paced`, 0 flush-paced | compaction keeps up + gradual admission + O(1) retries | **BS3** (with BS1/BS2) |
 | G8 | Compaction ~350 MB/s single L0→L1; publish dominates ~63% (durable fsyncs ~88 ms + backend-integrity byte re-read ~67 ms + SHA-256 content digest ~67 ms), merge byte-bound — per-row policy/encode overhead **refuted** (H2/H3) | BS3.2 decomposition (`storage_next_l0_compact` bin) | H1b batch fsyncs (safety-preserving); byte-validate elision = posture change (re-read is the only backend-write-corruption check, +16% measured); digest not cleanly deferrable | **BS3.3 (paused)** |
-| G9 | Subcompactions land no win in the memory-bound regime (WIP, `3bceb4c3`) | Slice 4 A/B | subcompactions pay off when I/O-bound | **BS3** re-eval, **BS4** re-A/B |
+| G9 | Subcompactions land no win in the memory-bound regime (WIP, `3bceb4c3`) | Slice 4 A/B | subcompactions pay off when I/O-bound | **BS4.6 re-A/B — verdict pending the perf run** (`STRATA_SUBCOMPACTIONS` 1 vs 4 on `storage_next_l0_compact`; see `bs4-6-exit-runbook.md`) |
 | G10 | Admission thresholds tight + abrupt vs RocksDB (L0 urgent/block 8/16 vs slowdown/stop 20/36) | `compaction.rs:33-47`, `admission_ramp.rs`, config comment | grades regraded to 20/36 + C3 tier matrix (BS3.4a ✓); debt-adaptive rate ramp (`SetupDelay` port) + per-commit delay cap landed **dark behind `STRATA_ADMISSION`** (BS3.4b ✓). A/B verdict: graceful admission smooths tail latency (graded strictly ≥ legacy) but the ≥50 K gate is **compaction-bound** — legacy ≈ graded ≈ 18 K ops/s. Throughput half (BS3.3) and the `graded` bake (BS3.4c) both **fold into BS4's re-baseline**. | **Admission done (dark); throughput + bake → BS4** |
-| G11 | Tables fully resident + decoded; dataset ≤ budget; budget counts encoded (under-counts) | `read.rs:586/651`, `bootstrap.rs:673` | disk-resident blocks; block cache = the RAM bound | **BS4** |
-| G12 | Open/recovery O(dataset) (decode every table) | open path | manifest replay + ≤16-file warmup (`version_builder.cc:1641`) | **BS4** |
-| G13 | Block cache: O(n) recency scan under shard mutex; shards clamp to 1 | `table/cache.rs:606/623` | sharded O(1) intrusive-LRU (`lru_cache.cc:232`) | **BS4** (prereq) |
-| G14 | No durable filter block — blooms rebuilt from decoded rows at open (impossible under lazy reads) | spec §17 filter frame "reserved"; `BuildOnOpen` | persisted filter block, cache-charged | **BS4** (format extension) |
-| G15 | No bounded table-reader cache (all readers always open) | — | TableCache LRU keyed by file, count-bounded | **BS4** |
-| G16 | Budget-ledger single global mutex (2 locks per published table) | `budget.rs:157/666` | cache-charge deltas, atomics | **BS4** |
+| G11 | Tables fully resident + decoded; dataset ≤ budget; budget counts encoded (under-counts) | `read.rs:586/651`, `bootstrap.rs:673` | disk-resident blocks; block cache = the RAM bound | **BS4 Done** (4.4j/4.4l lazy flip + 4.5a budget remodel: metadata-resident charging, dataset-size reject demoted to a health gauge) |
+| G12 | Open/recovery O(dataset) (decode every table) | open path | manifest replay + ≤16-file warmup (`version_builder.cc:1641`) | **BS4 Done** (4.5b fast open: O(tables) manifest replay, row-scan oracles demoted to debug; the ≤1 s @100 M number comes from the BS4.6 exit run — pending) |
+| G13 | Block cache: O(n) recency scan under shard mutex; shards clamp to 1 | `table/cache.rs:606/623` | sharded O(1) intrusive-LRU (`lru_cache.cc:232`) | **BS4 Done** (4.1 cache rewrite) |
+| G14 | No durable filter block — blooms rebuilt from decoded rows at open (impossible under lazy reads) | spec §17 filter frame "reserved"; `BuildOnOpen` | persisted filter block, cache-charged | **BS4 Done** (4.2 reader / 4.3 writer, golden-gated format extension) |
+| G15 | No bounded table-reader cache (all readers always open) | — | TableCache LRU keyed by file, count-bounded | **Deferred → 1 B tier** (at 100 M always-open reader metadata is ~0.15–0.3 GB and budget-charged; sizing arithmetic in `bs4-disk-resident-tables-plan.md`) |
+| G16 | Budget-ledger single global mutex (2 locks per published table) | `budget.rs:157/666` | cache-charge deltas, atomics | **BS4 Closed by the 4.5a remodel** — the ledger keeps its mutex but charges are now metadata-resident (tiny bytes, publish-frequency churn only) and the runtime total is an atomic, so the lock is off every hot path; revisit only if BS5 write-concurrency profiling surfaces it |
 | G17 | No group commit; WAL append under the global lock; memtable = BTreeMap behind RwLock | `wal.rs:912`, `mutable.rs:57` | write groups + dedicated WAL mutex + concurrent skiplist | **BS5** |
 | G18 | No per-branch sharding (cross-branch ops serialize) | one runtime lock | per-CF SuperVersions | **BS5** |
 | G19 | Same-directory publish fsync serialization (minor) | `local_fs.rs:708` | — | **BS5** (observe) |
@@ -321,6 +325,20 @@ readahead (auto-ramping); level-target and cache tuning at scale; scoreboard tie
 (dev machine: ~100 GB, fits) and 1 B (either 1 B × 100 B ≈ 100 GB on dev, or full
 1 B × 1 KB ≈ 1 TB on provisioned hardware — dev disk has 250 GB free, so the full-size run
 needs external storage); edge-tier validation (512 MB budget).
+
+**Handoff from BS4.6 (assessment).** The disk-resident regime is the precondition both levers
+were waiting for, and it is now live: (a) **zstd (G20)** — the codec is implemented, spec'd
+(§17), and golden-covered but default-off; with reads now block-I/O-bound and compaction
+I/O-bound (BS4 removed the resident-decode regime), enabling it is a pure I/O-vs-CPU trade to
+*measure*, not build. Wire-up is `table/config.rs` default + a re-baseline. (b) **readahead
+(G21)** — scans now fetch blocks on demand through the cache, so sequential-scan latency is
+the readahead-shaped gap RocksDB closes with its auto-ramping 8→256 KB window; build it over
+the same block-fetch path (`fill_cache=false` semantics for compaction cursors already
+exist). (c) **Block-size tuning** — 64 KB blocks vs RocksDB's 4–64 KB; sweep at the BS6
+re-baseline together with zstd (the two interact: compression ratio vs read amplification),
+using the BS4.6 runbook's 10 M/100 M cells as the harness. The subcompaction verdict (G9
+re-A/B, pending) also lands here: if the fan-out wins in the I/O-bound regime, its default
+flips in BS6's tuning pass.
 
 **Exit criteria.** (a) 1 B keys loaded, served (point/scan/update), crash-recovered within
 the memory envelope; (b) scoreboard within the agreed band of RocksDB across all cells and
