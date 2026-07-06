@@ -2,13 +2,19 @@
 
 ## Status
 
-Proposed strategy.
+Accepted (2026-07-06).
 
-This document describes how Strata should structure its V1 interface definition
+This document describes how Strata structures its V1 interface definition
 layer without creating a second hand-maintained product API.
 
-Implementation and test plans should be written separately after this strategy
-is accepted.
+Amended 2026-07-06 after the executor command-layer review
+(`docs/audit/executor-review-2026-07.md`) and the first-run experience design
+(`docs/design/first-run-experience.md`). The amendments settle the schema
+generation mechanism, SDK generation depth, the consumer matrix and drift
+guards, the versioning/deprecation lifecycle, and ecosystem publishing. The
+original overlay authoring model is unchanged.
+
+Implementation and test plans are written separately per slice.
 
 ## Context
 
@@ -58,10 +64,13 @@ The IDL overlay owns:
 6. docs links;
 7. SDK naming hints;
 8. CLI path hints;
-9. MCP/tooling descriptions;
-10. error bundle associations;
-11. fixture references;
-12. generation and conformance metadata.
+9. MCP/tooling descriptions, agent search terms, and curated MCP tool-set
+   membership;
+10. error bundle associations, plus per-error `hint` and stable `ref` slugs
+    (the first-run design §7.2 requires both on every public code);
+11. fixture references and inline examples;
+12. generation and conformance metadata;
+13. lifecycle facts: `wire_status`, `since`, and deprecation metadata.
 
 The IDL must not redefine executor DTO fields.
 
@@ -273,6 +282,46 @@ response_model: MutationAck<KvWrite>
 ```
 
 But the executor DTO still owns the concrete serialized fields.
+
+## Schema Layer (Decided 2026-07-06)
+
+Argument and output JSON Schemas are generated mechanically from the executor
+DTOs via `schemars`:
+
+1. `#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]` on
+   `Command`, `Output`, and every public protocol DTO. The derive compiles
+   only under the `idl-tooling` feature; the runtime path gains no dependency
+   and no cost.
+2. `strata-idl generate` emits per-command request/response schemas into
+   `generated/`, keyed by command ID, alongside the resolved command index.
+3. Schemas are derived from the same serde attributes that define the wire
+   format, so they cannot drift from it. A hand-rolled schema emitter is
+   explicitly rejected: it would be a second description of the field
+   contract, which this strategy forbids.
+4. Every golden fixture must validate against its command's generated schema
+   in CI.
+
+The schema layer is the keystone artifact: MCP tool `inputSchema`, typed SDK
+stubs, `strata agents commands --json`, and generic command-runner validation
+are all generated from it. It resolves executor-review finding META-1.
+
+## SDK Generation Depth (Decided 2026-07-06)
+
+SDK generation follows the Stainless division of labor — generated core,
+curated hand layer:
+
+1. **Generated from the IDL:** protocol models, one typed method per public
+   command, docstrings (from prose `summary`), error types (from the error
+   registry), and pagination/batch helpers driven by `kind` metadata. This
+   guarantees the full 103-command surface is in sync in every SDK without
+   per-command manual work.
+2. **Handwritten per SDK:** the ergonomic namespace layer (`db.kv.put(...)`
+   sugar), connection/lifecycle idioms, and language-native affordances.
+   Curated methods must remain lossless single-command wrappers, mirroring
+   the executor facade rule.
+3. Full Stainless-style generation of the ergonomic layer is rejected for V1:
+   it would push per-language naming and idiom configuration into the IDL,
+   which is the Spring-XML failure mode this document forbids.
 
 ## Authored Versus Resolved IDL
 
@@ -711,6 +760,86 @@ This keeps language consistent across SDKs and tools. Different SDKs may format
 docstrings differently, but they should not independently rewrite command
 semantics.
 
+## Consumer Matrix And Drift Guards
+
+The point of the IDL is to keep every surface in sync from one source. The
+full consumer set, including the surfaces added by the first-run experience
+design:
+
+| Consumer | Generated from the IDL | Delivery |
+|---|---|---|
+| CLI help, `strata explain`, command listing | resolved index + prose | embedded catalog in the binary |
+| `strata agents guide` / `commands --json` / `errors --json` | resolved index + schemas + error registry | embedded in the binary (first-run D3) |
+| MCP tool schemas + descriptions + curated tool set | schemas + prose `mcp_description` + `mcp.curated` flag | `strata mcp serve` (first-run D8) |
+| SDK models, typed methods, docstrings | schemas + resolved index + prose | Python/Node build pipelines (M9) |
+| Website command reference + `llms-full.txt` | resolved index + prose | stratadb.org build (first-run D11) |
+| Error reference pages (`/e/<code>` ref slugs) | error registry + `hint`/`ref` | stratadb.org build |
+| Golden wire tests | fixtures + schemas | executor CI |
+
+Drift guards, all CI-enforced:
+
+1. **Exhaustiveness guard.** Every `Command` enum variant must have a resolved
+   IDL entry or appear on an explicit allowlist
+   (`idl/v1/uncovered-commands.yaml`). The allowlist may only shrink; adding a
+   command variant without either fails CI. This resolves executor-review
+   finding META-3.
+2. **Consumer guard.** cli-next's verb tree must round-trip against the
+   catalog: every catalog `cli.path` marked implemented resolves to a real
+   clap verb, and every clap verb maps back to a catalog entry. The
+   handwritten clap surface and the generated catalog are reconciled by test,
+   not by discipline. This resolves executor-review finding META-4.
+3. **Freshness guard.** Generated artifacts stale after an authored change
+   fail CI (`strata-idl check`, already implemented).
+4. **Fixture-behavior guard.** Fixtures must be reproducible from a real
+   executor run, not merely schema-valid. The executor review found the
+   `kv.scan` fixture pinning `has_more` on a command that unconditionally
+   returns a terminal page (finding DSGN-2) — schema validation alone cannot
+   catch a frozen lie. `strata-idl verify-fixtures` executes each request
+   fixture against a scratch executor and diffs the response fixture.
+
+## Versioning And Deprecation
+
+The wire lifecycle vocabulary and its exposure (resolves executor-review
+findings EVOL-2 and EVOL-3):
+
+1. `wire_status` values: `stable | transitional | experimental | deprecated`.
+   The current resolver accepts only the first two; the vocabulary is extended
+   when the first consumer needs it.
+2. Every command entry carries `since: <version>`; deprecated entries carry
+   `deprecated: {since, replacement, removal_target}`. Generators render
+   deprecation into SDK docstrings, CLI help, and MCP descriptions
+   mechanically.
+3. The IDL `schema_version` and the release version are exposed at runtime
+   through `Info`/`Describe` output so a pinned SDK or third-party adapter can
+   detect skew before issuing commands.
+4. Additive-change playbook: new optional command fields must carry serde
+   defaults; new commands enter as `experimental` or `stable`; enum growth is
+   covered by `#[non_exhaustive]` (hard rule 28 — the review found three wire
+   enums missing it, finding ERR-1). Removing or renaming a wire field is a
+   major-version event, full stop.
+
+## Published IDL Artifacts For The Ecosystem
+
+Third-party adapters and plugins (LangChain/LlamaIndex integrations, CI
+actions, community SDKs) must be able to build against the contract without
+scraping docs — otherwise the surface "gets away" the moment outsiders start
+building. The resolved artifacts are therefore published, versioned release
+outputs, fanned out by the release train (first-run design §9.2):
+
+1. **In the binary:** `strata agents commands --json` and
+   `strata agents errors --json` emit the embedded resolved index and error
+   registry — the local, always-version-matched mirror for coding agents.
+2. **On stratadb.org:** `/idl/v1/command-index.json` and
+   `/idl/v1/schemas/...`, version-stamped like `llms.txt`, giving adapter
+   authors and their agents a stable fetchable contract.
+3. **In SDK packages:** the resolved index ships inside the Python wheel and
+   npm package so generators and downstream tooling can introspect the
+   installed surface offline.
+
+One generator, every mirror. An ecosystem adapter written against the
+published index is written against the same artifact the CLI, MCP server, and
+SDKs are generated from.
+
 ## Benefits
 
 ### No Duplicate Field Contract
@@ -983,8 +1112,52 @@ families to the same IDL pipeline:
 
 Only after the CLI pipeline is stable should Strata generate external SDKs.
 TypeScript should be the first SDK target, followed by Python. SDKs should start
-with `client.execute(command)` plus generated models and docs, then add curated
-resource methods for the highest-value workflows.
+with `client.execute(command)` plus generated models and docs, then add the
+generated typed per-command methods and curated resource methods per the SDK
+Generation Depth decision above.
+
+## Current State And Remaining Roadmap (2026-07-06)
+
+Where the pipeline actually stands:
+
+| Piece | Status |
+|---|---|
+| Overlay authoring model (kinds/families/defaults, prose, fixtures) | ✅ built, kv+vector (32/103 commands) |
+| Resolver + validation + freshness `check` | ✅ built (`idl_tooling.rs`) |
+| Resolved `command-index.json` + `cli-command-index.json` | ✅ generated |
+| Generic command runner (`strata command run --command-json`) | ✅ shipped in cli-next |
+| Runtime `CliCommandCatalog` | ✅ built, consumed only by its own tests |
+| JSON Schemas (schemars) | ❌ keystone gap (META-1) |
+| CLI reads the catalog (help/explain/listing) | ❌ Slice 2 unlanded; clap tree is parallel and unguarded (META-4) |
+| Exhaustiveness + consumer + fixture-behavior guards | ❌ (META-3, DSGN-2) |
+| Lifecycle vocabulary beyond `stable\|transitional`; runtime version exposure | ❌ (EVOL-2/3) |
+| Remaining 8 command families | ❌ scheduled below |
+| Publishing (binary `agents` surface, website, SDK embedding) | ❌ depends on first-run D3/D7 |
+
+Remaining work, in dependency order (slice codes assigned when scheduled into
+M9 plans):
+
+1. **Schemas.** schemars derives + per-command schema generation + fixture
+   schema validation. Unblocks everything below.
+2. **Guards.** Exhaustiveness allowlist, CLI round-trip guard,
+   `verify-fixtures`. Cheap once schemas exist; stops the drift that is
+   already live.
+3. **Family coverage.** Author the remaining 8 families (json, event, graph,
+   branch, space, admin, arrow, inference). Mechanical; the model is proven.
+   The allowlist shrinks to zero here.
+4. **CLI consumption (Slice 2 as written).** help/explain/listing from the
+   catalog; delete the duplicated help prose from the clap tree.
+5. **Agent + MCP surfaces (first-run D3/D8).** `strata agents` family and MCP
+   tool schemas generated from the resolved index; curated tool-set flags
+   authored in the overlay.
+6. **Lifecycle + publishing.** Extended `wire_status`, `since`/`deprecated`,
+   `Info`/`Describe` version exposure, release-train publishing to
+   binary/website/SDK packages.
+7. **SDK generation (M9).** Generated core (models, typed methods,
+   docstrings) for Node then Python, curated hand layer on top.
+
+Items 1–2 are small and should land before any new command family is authored;
+every family added without guards deepens the unguarded surface.
 
 ## Acceptance Criteria For The Strategy
 
