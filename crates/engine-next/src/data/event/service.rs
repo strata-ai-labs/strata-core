@@ -221,6 +221,10 @@ impl<'a> EventService<'a> {
     }
 
     /// Reads a sequence range.
+    ///
+    /// Forward ranges read `[start_seq, end_seq)`. Reverse ranges walk
+    /// backward from `start_seq` and treat `end_seq` as an exclusive lower
+    /// bound when present.
     pub fn range(
         &mut self,
         start_seq: EventSequence,
@@ -234,22 +238,42 @@ impl<'a> EventService<'a> {
         }
         let record = self.branch_record()?;
         let latest_len = self.latest_event_count(&record)?;
-        let upper = end_seq
-            .map_or(latest_len, EventSequence::as_u64)
-            .min(latest_len);
-        if start_seq.as_u64() >= upper {
-            return Ok(EventRangePage::new(Vec::new(), false, None));
-        }
-        let mut events = self.scan_sequence_window(
-            &record,
-            start_seq.as_u64(),
-            upper,
-            ReadSelector::Latest,
-            event_type,
-        )?;
-        if direction == EventRangeDirection::Reverse {
-            events.reverse();
-        }
+        let events = match direction {
+            EventRangeDirection::Forward => {
+                let upper = end_seq
+                    .map_or(latest_len, EventSequence::as_u64)
+                    .min(latest_len);
+                if start_seq.as_u64() >= upper {
+                    return Ok(EventRangePage::new(Vec::new(), false, None));
+                }
+                self.scan_sequence_window(
+                    &record,
+                    start_seq.as_u64(),
+                    upper,
+                    ReadSelector::Latest,
+                    event_type,
+                )?
+            }
+            EventRangeDirection::Reverse => {
+                if latest_len == 0 || start_seq.as_u64() >= latest_len {
+                    return Ok(EventRangePage::new(Vec::new(), false, None));
+                }
+                let lower = end_seq.map_or(0, |end| end.as_u64().saturating_add(1));
+                let upper = start_seq.as_u64().saturating_add(1).min(latest_len);
+                if lower >= upper {
+                    return Ok(EventRangePage::new(Vec::new(), false, None));
+                }
+                let mut events = self.scan_sequence_window(
+                    &record,
+                    lower,
+                    upper,
+                    ReadSelector::Latest,
+                    event_type,
+                )?;
+                events.reverse();
+                events
+            }
+        };
         Ok(page_from_events(events, limit))
     }
 

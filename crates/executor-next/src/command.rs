@@ -835,9 +835,9 @@ pub enum Command {
         /// Target product space. Defaults to `"default"`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
-        /// Inclusive start sequence.
+        /// Inclusive start sequence; with reverse direction, walk backward from this sequence.
         start_seq: u64,
-        /// Optional exclusive end sequence.
+        /// Optional exclusive end sequence; with reverse direction, exclusive lower bound.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         end_seq: Option<u64>,
         /// Optional item limit.

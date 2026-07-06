@@ -20,7 +20,7 @@ assert_json "$out" 'data["type"] == "event_records" and data["data"]["has_more"]
 out="$(cli_json event by-type user.updated --limit 5)"
 assert_json "$out" 'data["type"] == "event_records" and len(data["data"]["items"]) == 1 and data["data"]["items"][0]["event"]["event_type"] == "user.updated"' "event by type"
 
-out="$(cli_json event range 0 --end-seq 3 --direction reverse --limit 2)"
+out="$(cli_json event range 2 --direction reverse --limit 2)"
 assert_json "$out" 'data["type"] == "event_range_result" and [item["event"]["sequence"] for item in data["data"]["items"]] == [2, 1]' "event reverse range"
 
 out="$(cli_json event range-time "$first_ts" --limit 10)"

@@ -736,9 +736,9 @@ pub(crate) enum EventCommand {
     },
     /// Read an event sequence range.
     Range {
-        /// Inclusive start sequence.
+        /// Inclusive start sequence; with reverse direction, walk backward from this sequence.
         start_seq: u64,
-        /// Optional exclusive end sequence.
+        /// Optional exclusive end sequence; with reverse direction, exclusive lower bound.
         #[arg(long)]
         end_seq: Option<u64>,
         /// Optional item limit.

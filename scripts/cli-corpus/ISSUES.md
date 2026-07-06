@@ -41,13 +41,13 @@ This file tracks issues found while building and running
 10. Vector history responses were bare arrays of version entries. Fixed by
     returning present history as `{ count, items }`, while preserving
     `data: null` for missing vector keys.
+11. Event reverse ranges reversed a bounded forward interval. Fixed by making
+    reverse sequence ranges walk backward from `start_seq`, with `end_seq` as
+    an exclusive lower bound when provided.
 
 ## Product Or Contract Findings
 
-1. Event reverse ranges reverse a bounded forward interval, for example
-   `event range 0 --end-seq 3 --direction reverse`; `event range 2 --direction
-   reverse` does not mean "walk backward from sequence 2".
-2. Graph neighbor page items wrap neighbor data under `node` and edge data
+1. Graph neighbor page items wrap neighbor data under `node` and edge data
    under `edge`; neighbor ids are `item.node.node_id`.
 
 ## Corpus Harness Fixes

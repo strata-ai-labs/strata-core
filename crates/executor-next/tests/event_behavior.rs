@@ -609,9 +609,19 @@ fn assert_event_sequence_ranges(executor: &mut Executor) {
 
     let (events, _, _) = event_range(
         executor,
-        0,
-        Some(4),
+        2,
+        None,
         Some(2),
+        EventRangeDirection::Reverse,
+        None,
+    );
+    assert_eq!(event_sequences(&events), vec![2, 1]);
+
+    let (events, _, _) = event_range(
+        executor,
+        3,
+        Some(1),
+        None,
         EventRangeDirection::Reverse,
         None,
     );

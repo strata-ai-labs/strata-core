@@ -630,6 +630,12 @@ fn assert_latest_event_reads(database: &mut Database) -> EventReadFacts {
 
 fn assert_event_ranges_and_lists(database: &mut Database, reads: &EventReadFacts) {
     let mut events = event_service(database, "default", "default");
+    assert_event_sequence_ranges(&mut events);
+    assert_event_time_ranges(&mut events, reads);
+    assert_event_lists(&mut events);
+}
+
+fn assert_event_sequence_ranges(events: &mut EventService<'_>) {
     let page = events
         .range(
             EventSequence::new(0),
@@ -651,8 +657,8 @@ fn assert_event_ranges_and_lists(database: &mut Database, reads: &EventReadFacts
 
     let reverse = events
         .range(
-            EventSequence::new(0),
-            Some(EventSequence::new(4)),
+            EventSequence::new(2),
+            None,
             Some(2),
             EventRangeDirection::Reverse,
             None,
@@ -664,9 +670,31 @@ fn assert_event_ranges_and_lists(database: &mut Database, reads: &EventReadFacts
             .iter()
             .map(|event| event.sequence().as_u64())
             .collect::<Vec<_>>(),
+        vec![2, 1]
+    );
+    assert!(reverse.has_more());
+    assert_eq!(reverse.cursor().expect("cursor").as_u64(), 1);
+
+    let bounded_reverse = events
+        .range(
+            EventSequence::new(3),
+            Some(EventSequence::new(1)),
+            None,
+            EventRangeDirection::Reverse,
+            None,
+        )
+        .expect("bounded reverse range succeeds");
+    assert_eq!(
+        bounded_reverse
+            .events()
+            .iter()
+            .map(|event| event.sequence().as_u64())
+            .collect::<Vec<_>>(),
         vec![3, 2]
     );
+}
 
+fn assert_event_time_ranges(events: &mut EventService<'_>, reads: &EventReadFacts) {
     assert_eq!(
         events
             .range_by_time(
@@ -705,7 +733,9 @@ fn assert_event_ranges_and_lists(database: &mut Database, reads: &EventReadFacts
         .events()
         .windows(2)
         .all(|events| events[0].timestamp() >= events[1].timestamp()));
+}
 
+fn assert_event_lists(events: &mut EventService<'_>) {
     assert_eq!(
         events
             .list_types()
