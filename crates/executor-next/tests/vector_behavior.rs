@@ -1111,12 +1111,14 @@ fn assert_vector_history_shape(executor: &mut Executor, collection: &str, key: &
     else {
         panic!("unexpected history output");
     };
-    assert_eq!(history.len(), 3);
-    assert!(history[0].is_tombstone());
-    assert_eq!(history[0].vector_revision(), None);
-    assert_eq!(history[1].vector_revision(), Some(2));
-    assert_eq!(history[2].vector_revision(), Some(1));
-    assert!(history
+    let items = history.items();
+    assert_eq!(history.count(), 3);
+    assert_eq!(items.len(), 3);
+    assert!(items[0].is_tombstone());
+    assert_eq!(items[0].vector_revision(), None);
+    assert_eq!(items[1].vector_revision(), Some(2));
+    assert_eq!(items[2].vector_revision(), Some(1));
+    assert!(items
         .windows(2)
         .all(|window| window[0].version() > window[1].version()));
 }
@@ -2003,6 +2005,7 @@ fn assert_vector_history_has_tombstone(executor: &mut Executor, collection: &str
         panic!("unexpected history output");
     };
     assert!(history
+        .items()
         .iter()
         .any(strata_executor_next::VectorHistoryItem::is_tombstone));
 }

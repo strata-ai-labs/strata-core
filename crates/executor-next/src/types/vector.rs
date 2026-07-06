@@ -190,6 +190,38 @@ impl VectorHistoryItem {
     }
 }
 
+/// Vector history result for one key.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VectorHistoryResult {
+    count: usize,
+    items: Vec<VectorHistoryItem>,
+}
+
+impl VectorHistoryResult {
+    /// Creates a vector history result.
+    pub fn new(items: Vec<VectorHistoryItem>) -> Self {
+        Self {
+            count: items.len(),
+            items,
+        }
+    }
+
+    /// Returns the number of history items.
+    pub const fn count(&self) -> usize {
+        self.count
+    }
+
+    /// Returns vector history items from newest to oldest.
+    pub const fn items(&self) -> &[VectorHistoryItem] {
+        self.items.as_slice()
+    }
+
+    /// Consumes the result and returns its items.
+    pub fn into_items(self) -> Vec<VectorHistoryItem> {
+        self.items
+    }
+}
+
 /// One vector search match.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VectorMatch {

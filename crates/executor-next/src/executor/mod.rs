@@ -83,7 +83,7 @@ use crate::types::{
     JsonVersionedValue as OutputJsonVersionedValue, MaybeJsonValue, MaybeJsonVersionedValue,
     MutationEffect, MutationEffectKind, PageInfo, SampleItem, ScanItem, VectorBatchGetItemResult,
     VectorBatchItemResult, VectorCollectionInfo as OutputVectorCollectionInfo, VectorData,
-    VectorDistanceMetric, VectorFilterOp, VectorHistoryItem,
+    VectorDistanceMetric, VectorFilterOp, VectorHistoryItem, VectorHistoryResult,
     VectorIndexArtifactSource as OutputVectorIndexArtifactSource,
     VectorIndexDiagnostics as OutputVectorIndexDiagnostics, VectorIndexQueryResult, VectorMatch,
     VectorMetadataFilter, VectorScalar, VectorVersionedData, VersionedValue, DEFAULT_BRANCH,
@@ -156,7 +156,7 @@ use vector_convert::{
     engine_vector_metric, optional_vector_key, optional_vector_metadata, output_vector_metric,
     require_vector_collection_info, vector_batch_item_result, vector_bulk_delete_output,
     vector_collection, vector_collection_info, vector_dimension_mismatch_error, vector_embedding,
-    vector_filter, vector_history_items, vector_index_diagnostics, vector_key,
+    vector_filter, vector_history_result, vector_index_diagnostics, vector_key,
     vector_key_page_output, vector_match, vector_metadata_patch, vector_upsert_entry,
     vector_versioned_data, vector_write_output,
 };

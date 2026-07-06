@@ -58,7 +58,7 @@ pub use types::{
     MaybeJsonVersionedValue, MutationEffect, MutationEffectKind, PageInfo, SampleItem, ScanItem,
     VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorData,
     VectorDistanceMetric, VectorFilterCondition, VectorFilterOp, VectorHistoryItem,
-    VectorIndexArtifactSource, VectorIndexDiagnostics, VectorIndexQueryResult, VectorMatch,
-    VectorMetadataFilter, VectorScalar, VectorVersionedData, VersionedValue, DEFAULT_BRANCH,
-    DEFAULT_SPACE,
+    VectorHistoryResult, VectorIndexArtifactSource, VectorIndexDiagnostics, VectorIndexQueryResult,
+    VectorMatch, VectorMetadataFilter, VectorScalar, VectorVersionedData, VersionedValue,
+    DEFAULT_BRANCH, DEFAULT_SPACE,
 };

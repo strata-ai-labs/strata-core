@@ -58,7 +58,7 @@ pub(super) fn vector_read_outputs() -> Vec<Output> {
             1,
         ))),
         Output::VectorData(None),
-        Output::VectorVersionHistory(Some(vec![
+        Output::VectorVersionHistory(Some(VectorHistoryResult::new(vec![
             VectorHistoryItem::new(
                 "doc-a".to_owned(),
                 Some(VectorData::new(vec![1.0, 0.0], None)),
@@ -68,7 +68,7 @@ pub(super) fn vector_read_outputs() -> Vec<Output> {
                 false,
             ),
             VectorHistoryItem::new("doc-a".to_owned(), None, 2, 20, None, true),
-        ])),
+        ]))),
         Output::VectorVersionHistory(None),
         Output::VectorMatches(vec![VectorMatch::new(
             "doc-a".to_owned(),

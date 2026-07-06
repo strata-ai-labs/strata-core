@@ -5,7 +5,7 @@ use super::{
     required_usize, update_effect, upsert_effect, vector_batch_get_result,
     vector_batch_item_result, vector_batch_result, vector_bulk_delete_output, vector_collection,
     vector_collection_info, vector_dimension_mismatch_error, vector_embedding, vector_filter,
-    vector_history_items, vector_index_diagnostics, vector_key, vector_key_page_output,
+    vector_history_result, vector_index_diagnostics, vector_key, vector_key_page_output,
     vector_match, vector_metadata_patch, vector_upsert_entry, vector_versioned_data,
     vector_write_output, BatchVectorEntry, EngineVectorConfig, Executor, ExecutorError,
     ExecutorResult, Output, PageInfo, Timestamp, VectorBatchGetItemResult, VectorBatchItemResult,
@@ -157,7 +157,7 @@ impl Executor {
             service
                 .history(&collection, &key)?
                 .as_ref()
-                .map(|history| vector_history_items(&key, history)),
+                .map(|history| vector_history_result(&key, history)),
         ))
     }
 

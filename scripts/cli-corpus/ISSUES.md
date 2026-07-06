@@ -38,14 +38,16 @@ This file tracks issues found while building and running
    only `result.found == false`. Fixed by adding shared item status `miss` and
    using it for valid KV batch-get misses while preserving the primitive
    `found: false` payload.
+10. Vector history responses were bare arrays of version entries. Fixed by
+    returning present history as `{ count, items }`, while preserving
+    `data: null` for missing vector keys.
 
 ## Product Or Contract Findings
 
-1. Vector history responses are arrays of version entries, not `{ count, items }`.
-2. Event reverse ranges reverse a bounded forward interval, for example
+1. Event reverse ranges reverse a bounded forward interval, for example
    `event range 0 --end-seq 3 --direction reverse`; `event range 2 --direction
    reverse` does not mean "walk backward from sequence 2".
-3. Graph neighbor page items wrap neighbor data under `node` and edge data
+2. Graph neighbor page items wrap neighbor data under `node` and edge data
    under `edge`; neighbor ids are `item.node.node_id`.
 
 ## Corpus Harness Fixes

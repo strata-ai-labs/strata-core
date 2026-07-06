@@ -44,7 +44,7 @@ out="$(cli_json vector get articles doc-1)"
 assert_json "$out" 'data["type"] == "vector_data" and data["data"]["data"]["metadata"]["patched"] is True and data["data"]["data"]["metadata"]["rank"] == 999' "vector metadata patch"
 
 out="$(cli_json vector history articles doc-1)"
-assert_json "$out" 'data["type"] == "vector_version_history" and len(data["data"]) >= 2 and data["data"][0]["data"]["metadata"]["patched"] is True and data["data"][1]["data"]["metadata"]["tag"] == "review"' "vector history after patch"
+assert_json "$out" 'data["type"] == "vector_version_history" and data["data"]["count"] >= 2 and len(data["data"]["items"]) == data["data"]["count"] and data["data"]["items"][0]["data"]["metadata"]["patched"] is True and data["data"]["items"][1]["data"]["metadata"]["tag"] == "review"' "vector history after patch"
 
 filter_remove="$CLI_CORPUS_FILES/vector-filter-remove.json"
 write_json "$filter_remove" '{"conditions":[{"field":"tag","op":"eq","value":{"type":"string","value":"remove"}}]}'

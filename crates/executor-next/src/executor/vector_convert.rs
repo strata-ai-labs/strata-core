@@ -8,8 +8,8 @@ use super::{
     EngineVectorSearchMatch, EngineVectorUpsertEntry, EngineVectorVersionedEntry, ExecutorError,
     ExecutorResult, MutationEffect, Output, OutputVectorCollectionInfo,
     OutputVectorIndexArtifactSource, OutputVectorIndexDiagnostics, PageInfo, VectorBatchItemResult,
-    VectorData, VectorDistanceMetric, VectorFilterOp, VectorHistoryItem, VectorMatch,
-    VectorMetadataFilter, VectorScalar, VectorService, VectorVersionedData,
+    VectorData, VectorDistanceMetric, VectorFilterOp, VectorHistoryItem, VectorHistoryResult,
+    VectorMatch, VectorMetadataFilter, VectorScalar, VectorService, VectorVersionedData,
 };
 
 pub(super) fn vector_collection(name: String) -> ExecutorResult<EngineVectorCollectionName> {
@@ -152,15 +152,17 @@ pub(super) fn vector_versioned_data(entry: &EngineVectorVersionedEntry) -> Vecto
     )
 }
 
-pub(super) fn vector_history_items(
+pub(super) fn vector_history_result(
     key: &EngineVectorKey,
     history: &EngineVectorHistory,
-) -> Vec<VectorHistoryItem> {
-    history
-        .rows()
-        .iter()
-        .map(|row| vector_history_item(key, row))
-        .collect()
+) -> VectorHistoryResult {
+    VectorHistoryResult::new(
+        history
+            .rows()
+            .iter()
+            .map(|row| vector_history_item(key, row))
+            .collect(),
+    )
 }
 
 pub(super) fn vector_history_item(

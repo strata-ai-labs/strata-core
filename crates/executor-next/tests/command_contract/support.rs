@@ -17,8 +17,8 @@ pub(super) use strata_executor_next::{
     MaybeJsonVersionedValue, MutationEffect, MutationEffectKind, Output, PageInfo, SampleItem,
     ScanItem, VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorData,
     VectorDistanceMetric, VectorFilterCondition, VectorFilterOp, VectorHistoryItem,
-    VectorIndexArtifactSource, VectorIndexDiagnostics, VectorIndexQueryResult, VectorMatch,
-    VectorMetadataFilter, VectorScalar, VectorVersionedData, VersionedValue,
+    VectorHistoryResult, VectorIndexArtifactSource, VectorIndexDiagnostics, VectorIndexQueryResult,
+    VectorMatch, VectorMetadataFilter, VectorScalar, VectorVersionedData, VersionedValue,
 };
 
 pub(super) fn assert_json_fixture<T: serde::Serialize>(actual: &T, expected: &str) {

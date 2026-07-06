@@ -8,7 +8,7 @@ use crate::types::{
     GraphNeighborHit, GraphNodeDataOutput, HistoryResult, JsonBatchGetItemResult,
     JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition, JsonSampleItem, MaybeJsonValue,
     MaybeJsonVersionedValue, MutationEffect, PageInfo, SampleItem, ScanItem,
-    VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorHistoryItem,
+    VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorHistoryResult,
     VectorIndexQueryResult, VectorMatch, VectorVersionedData, VersionedValue,
 };
 use serde::{Deserialize, Serialize};
@@ -295,7 +295,7 @@ pub enum Output {
     /// Optional vector value.
     VectorData(Option<VectorVersionedData>),
     /// Full vector history.
-    VectorVersionHistory(Option<Vec<VectorHistoryItem>>),
+    VectorVersionHistory(Option<VectorHistoryResult>),
     /// Vector search matches.
     VectorMatches(Vec<VectorMatch>),
     /// Vector search matches plus index planner diagnostics.

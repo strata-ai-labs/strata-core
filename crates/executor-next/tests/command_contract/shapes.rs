@@ -34,6 +34,45 @@ fn kv_history_output_json_uses_counted_items_shape() {
 }
 
 #[test]
+fn vector_history_output_json_uses_counted_items_shape() {
+    let output = Output::VectorVersionHistory(Some(VectorHistoryResult::new(vec![
+        VectorHistoryItem::new(
+            "doc-a".to_owned(),
+            Some(VectorData::new(vec![1.0, 0.0], Some(json!({"rank": 2})))),
+            2,
+            20,
+            Some(2),
+            false,
+        ),
+        VectorHistoryItem::new("doc-a".to_owned(), None, 1, 10, None, true),
+    ])));
+    let encoded = serde_json::to_value(&output).expect("history output serializes");
+    assert_eq!(encoded["type"], "vector_version_history");
+    assert_eq!(encoded["data"]["count"], 2);
+    assert_eq!(
+        encoded["data"]["items"]
+            .as_array()
+            .expect("items is an array")
+            .len(),
+        2
+    );
+    assert_eq!(encoded["data"]["items"][0]["data"]["metadata"]["rank"], 2);
+    assert_eq!(
+        serde_json::from_value::<Output>(encoded).expect("output deserializes"),
+        output
+    );
+
+    let missing = Output::VectorVersionHistory(None);
+    let missing_json = serde_json::to_value(&missing).expect("missing history serializes");
+    assert_eq!(missing_json["type"], "vector_version_history");
+    assert_eq!(missing_json["data"], Value::Null);
+    assert_eq!(
+        serde_json::from_value::<Output>(missing_json).expect("output deserializes"),
+        missing
+    );
+}
+
+#[test]
 fn admin_and_space_command_json_uses_stable_tags_and_field_shape() {
     let command = Command::SpaceDelete {
         branch: None,
