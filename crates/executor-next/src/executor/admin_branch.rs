@@ -1,8 +1,8 @@
 use super::{
-    branch_cleanup_item, branch_item, branch_name, output_admin_config, output_admin_describe,
-    output_admin_health, output_admin_info, output_admin_metrics, output_space_create,
-    output_space_delete, product_space, CommitVersion, Executor, ExecutorResult, Output, PageInfo,
-    Timestamp, DEFAULT_BRANCH,
+    branch_cleanup_item, branch_item, branch_name, delete_effect, output_admin_config,
+    output_admin_describe, output_admin_health, output_admin_info, output_admin_metrics,
+    output_space_create, output_space_delete, product_space, CommitVersion, Executor,
+    ExecutorResult, Output, PageInfo, Timestamp, DEFAULT_BRANCH,
 };
 
 impl Executor {
@@ -173,6 +173,8 @@ impl Executor {
         let branch = branch_name(Some(branch), DEFAULT_BRANCH)?;
         let outcome = self.database.branches()?.delete(&branch)?;
         Ok(Output::BranchDeleteResult {
+            deleted: true,
+            effect: delete_effect(true),
             branch: branch_item(outcome.branch()),
             generation_before: outcome.generation_before(),
             generation_after: outcome.generation_after(),

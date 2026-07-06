@@ -142,6 +142,8 @@ pub(super) fn branch_outputs() -> Vec<Output> {
             page: PageInfo::terminal(),
         },
         Output::BranchDeleteResult {
+            deleted: true,
+            effect: MutationEffect::deleted(),
             branch: branch_item("scratch"),
             generation_before: Some(1),
             generation_after: Some(1),

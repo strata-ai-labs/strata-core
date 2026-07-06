@@ -94,6 +94,10 @@ pub enum Output {
     },
     /// Branch deletion result.
     BranchDeleteResult {
+        /// True when the branch was deleted.
+        deleted: bool,
+        /// Mutation effect facts.
+        effect: MutationEffect,
         /// Deleted branch summary.
         branch: BranchItem,
         /// Generation before delete.

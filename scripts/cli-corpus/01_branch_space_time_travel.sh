@@ -55,7 +55,7 @@ scenario_section "space force delete and branch delete do not poison durable reo
 out="$(cli_json_branch feature space del child-only --force)"
 assert_json "$out" 'data["type"] == "space_delete_result" and data["data"]["deleted"] is True' "child space deleted"
 out="$(cli_json branch del feature)"
-assert_json "$out" 'data["type"] == "branch_delete_result" and data["data"]["branch"]["name"] == "feature" and data["data"]["branch"]["status"] == "deleted"' "feature branch deleted"
+assert_json "$out" 'data["type"] == "branch_delete_result" and data["data"]["deleted"] is True and data["data"]["effect"]["kind"] == "deleted" and data["data"]["branch"]["name"] == "feature" and data["data"]["branch"]["status"] == "deleted"' "feature branch deleted"
 
 out="$(cli_json space create after-delete)"
 assert_json "$out" 'data["type"] == "space_create_result" and data["data"]["space"] == "after-delete"' "space create after branch delete"

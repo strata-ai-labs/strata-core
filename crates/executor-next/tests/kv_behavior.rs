@@ -277,9 +277,19 @@ fn branch_commands_delegate_to_engine_branch_service() {
             branch: "scratch".to_owned(),
         })
         .expect("branch delete succeeds");
-    let Output::BranchDeleteResult { branch, .. } = deleted else {
+    let Output::BranchDeleteResult {
+        deleted,
+        effect,
+        branch,
+        ..
+    } = deleted
+    else {
         panic!("branch delete output");
     };
+    assert!(deleted);
+    assert_eq!(effect.kind(), MutationEffectKind::Deleted);
+    assert!(effect.applied());
+    assert!(effect.matched());
     assert_eq!(branch.name(), "scratch");
 
     let error = executor
