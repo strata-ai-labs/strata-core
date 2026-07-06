@@ -17,6 +17,34 @@ fn event_contract_runs_in_cache_and_durable_modes() {
 }
 
 #[test]
+fn event_reads_return_none_for_tombstoned_rows_after_forced_space_delete() {
+    run_database_modes(|database| {
+        // Append an event into a non-default space, then force-delete the space
+        // (which tombstones the event rows).
+        let sequence = {
+            let mut events = event_service(database, "default", "tenant_a");
+            events
+                .append(event_type("user.created"), payload(json!({"id": 1})))
+                .expect("append succeeds")
+                .sequence()
+        };
+        database
+            .spaces(branch("default"))
+            .expect("space service opens")
+            .delete(&space("tenant_a"), true)
+            .expect("forced space delete succeeds");
+
+        // Reading a tombstoned event is an absence, not corruption.
+        let mut events = event_service(database, "default", "tenant_a");
+        assert!(events
+            .get(sequence)
+            .expect("get on a tombstoned event does not error")
+            .is_none());
+        assert!(!events.exists(sequence).expect("exists does not error"));
+    });
+}
+
+#[test]
 fn empty_event_log_contract_runs_in_cache_and_durable_modes() {
     run_database_modes(|database| {
         let mut events = event_service(database, "default", "default");

@@ -384,6 +384,13 @@ impl<'a> EventService<'a> {
         let Some(row) = self.persistence.read_row(&address, selector)? else {
             return Ok(None);
         };
+        // A tombstoned event row (e.g. from a forced space delete) is an absence,
+        // not corruption. event_from_row requires a value and would otherwise
+        // raise a spurious data_loss error; mirror KV/JSON/vector single reads,
+        // which filter tombstones before decoding.
+        if row.is_tombstone() {
+            return Ok(None);
+        }
         event_from_row(&self.space, &row).map(Some)
     }
 
