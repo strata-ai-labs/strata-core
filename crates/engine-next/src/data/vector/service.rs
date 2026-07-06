@@ -2735,10 +2735,15 @@ fn active_delta_count_for_refs(
     snapshot: &VectorQuerySnapshot,
     artifact_refs: &[VectorArtifactRef],
 ) -> usize {
+    // Use the maximum covered version, matching active_delta_watermark. The
+    // bounded read treats only rows past the newest sealed source as active;
+    // aggregating with min would count rows in (min, max] that a higher-covered
+    // source already sealed, over-reporting the active-delta size right after a
+    // multi-source seal (findings U61/U68).
     let Some(watermark) = artifact_refs
         .iter()
         .map(VectorArtifactRef::covered_commit_version)
-        .min()
+        .max()
     else {
         return snapshot
             .entries
