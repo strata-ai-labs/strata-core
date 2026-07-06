@@ -60,11 +60,12 @@ impl<'a> EventService<'a> {
         let outcome =
             self.batch_append([EventBatchAppendEntry::new(event_type.clone(), payload)])?;
         let item = outcome.items().first().expect("one append item");
-        if let Some(error) = item.error_message() {
-            return Err(EngineError::invalid_input(
-                "invalid_argument.engine.event_append",
-                error,
-            ));
+        if let Some(status) = item.error_status() {
+            // Propagate the entry's precise validation status (e.g.
+            // invalid_argument.engine.event_type / .event_payload) unchanged
+            // instead of collapsing it into a generic event_append code, so
+            // append() and batch_append() classify identical input identically.
+            return Err(EngineError::from_status(status.clone()));
         }
         Ok(EventAppendOutcome::new(
             item.sequence().expect("sequence assigned"),
