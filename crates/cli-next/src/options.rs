@@ -820,11 +820,17 @@ pub(crate) enum GraphCommand {
         /// Optional item limit.
         #[arg(long)]
         limit: Option<u64>,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
     },
     /// Read graph metadata.
     Meta {
         /// Graph name.
         graph: String,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
     },
     /// Add or replace a node.
     AddNode {
@@ -845,6 +851,9 @@ pub(crate) enum GraphCommand {
         graph: String,
         /// Node id.
         node_id: String,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
     },
     /// Remove a node.
     RemoveNode {
@@ -866,6 +875,9 @@ pub(crate) enum GraphCommand {
         /// Optional item limit.
         #[arg(long)]
         limit: Option<u64>,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
     },
     /// Add or replace an edge.
     AddEdge {
@@ -897,6 +909,9 @@ pub(crate) enum GraphCommand {
         edge_type: String,
         /// Destination node id.
         dst: String,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
     },
     /// Remove an edge.
     RemoveEdge {
@@ -927,6 +942,9 @@ pub(crate) enum GraphCommand {
         /// Optional item limit.
         #[arg(long)]
         limit: Option<u64>,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
     },
     /// Deferred graph ontology commands.
     #[command(hide = true)]

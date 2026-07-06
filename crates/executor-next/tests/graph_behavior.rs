@@ -143,6 +143,7 @@ fn assert_graph_executor_inherits_configured_database_default_branch(executor: &
             space: None,
             graph: "deps".to_owned(),
             node_id: "node-a".to_owned(),
+            as_of: None,
         })
         .expect_err("literal default branch is absent");
     assert_eq!(
@@ -522,6 +523,7 @@ fn assert_graph_node_crud_and_list_edges(executor: &mut Executor) {
             prefix: None,
             cursor: None,
             limit: Some(10),
+            as_of: None,
         })
         .expect_err("missing graph list fails");
     assert_eq!(missing_graph.class(), ExecutorErrorClass::NotFound);
@@ -1000,6 +1002,7 @@ fn assert_graph_error_mapping(executor: &mut Executor) {
             space: None,
             graph: "errors".to_owned(),
             node_id: String::new(),
+            as_of: None,
         })
         .expect_err("invalid node id fails");
     assert_eq!(invalid_node.class(), ExecutorErrorClass::InvalidInput);
@@ -1012,6 +1015,7 @@ fn assert_graph_error_mapping(executor: &mut Executor) {
             src: "a".to_owned(),
             edge_type: String::new(),
             dst: "b".to_owned(),
+            as_of: None,
         })
         .expect_err("invalid edge type fails");
     assert_eq!(invalid_edge_type.class(), ExecutorErrorClass::InvalidInput);
@@ -1089,6 +1093,7 @@ fn assert_graph_error_mapping(executor: &mut Executor) {
             space: None,
             graph: "missing".to_owned(),
             node_id: "a".to_owned(),
+            as_of: None,
         })
         .expect_err("missing graph read fails");
     assert_eq!(missing_read.class(), ExecutorErrorClass::NotFound);
@@ -1311,6 +1316,7 @@ fn graph_name_page(
             space: None,
             cursor,
             limit,
+            as_of: None,
         })
         .expect("graph list succeeds")
     {
@@ -1366,6 +1372,7 @@ fn graph_names(executor: &mut Executor, cursor: Option<String>, limit: Option<u6
             space: None,
             cursor,
             limit,
+            as_of: None,
         })
         .expect("graph list succeeds")
     {
@@ -1380,6 +1387,7 @@ fn get_meta(executor: &mut Executor, graph: &str) -> Option<strata_executor_next
             branch: None,
             space: None,
             graph: graph.to_owned(),
+            as_of: None,
         })
         .expect("graph metadata succeeds")
     {
@@ -1512,6 +1520,75 @@ fn graph_add_node_with_binding_in(
     }
 }
 
+#[test]
+fn graph_get_node_as_of_reads_historical_state() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    create_graph(&mut executor, "deps");
+    let t1 = add_node_capturing_timestamp(&mut executor, "deps", "n", json!({"v": 1}));
+    let _t2 = add_node_capturing_timestamp(&mut executor, "deps", "n", json!({"v": 2}));
+
+    // Latest read sees the newest value.
+    assert_eq!(
+        get_node(&mut executor, "deps", "n")
+            .expect("latest node exists")
+            .properties(),
+        Some(&json!({"v": 2}))
+    );
+
+    // ENGINE-1: reading as_of the first commit returns the historical value,
+    // proving the GraphGetNode command routes as_of into the engine's
+    // get_node_at (graph time travel is reachable from the command surface).
+    assert_eq!(
+        get_node_as_of(&mut executor, "deps", "n", t1)
+            .expect("historical node exists")
+            .properties(),
+        Some(&json!({"v": 1}))
+    );
+}
+
+fn add_node_capturing_timestamp(
+    executor: &mut Executor,
+    graph: &str,
+    node_id: &str,
+    properties: serde_json::Value,
+) -> u64 {
+    match executor
+        .execute(Command::GraphAddNode {
+            branch: None,
+            space: None,
+            graph: graph.to_owned(),
+            node_id: node_id.to_owned(),
+            properties: Some(properties),
+            binding: None,
+        })
+        .expect("graph node add succeeds")
+    {
+        Output::GraphNodeWriteResult { timestamp, .. } => timestamp,
+        output => panic!("unexpected graph node add output: {output:?}"),
+    }
+}
+
+fn get_node_as_of(
+    executor: &mut Executor,
+    graph: &str,
+    node_id: &str,
+    as_of: u64,
+) -> Option<strata_executor_next::GraphNodeDataOutput> {
+    match executor
+        .execute(Command::GraphGetNode {
+            branch: None,
+            space: None,
+            graph: graph.to_owned(),
+            node_id: node_id.to_owned(),
+            as_of: Some(as_of),
+        })
+        .expect("graph node get succeeds")
+    {
+        Output::GraphNodeResult(node) => node,
+        output => panic!("unexpected graph node get output: {output:?}"),
+    }
+}
+
 fn get_node(
     executor: &mut Executor,
     graph: &str,
@@ -1523,6 +1600,7 @@ fn get_node(
             space: None,
             graph: graph.to_owned(),
             node_id: node_id.to_owned(),
+            as_of: None,
         })
         .expect("graph node get succeeds")
     {
@@ -1544,6 +1622,7 @@ fn graph_get_node_in(
             space: space.map(str::to_owned),
             graph: graph.to_owned(),
             node_id: node_id.to_owned(),
+            as_of: None,
         })
         .expect("graph node get succeeds")
     {
@@ -1603,6 +1682,7 @@ fn node_ids(
             prefix,
             cursor,
             limit,
+            as_of: None,
         })
         .expect("graph node list succeeds")
     {
@@ -1628,6 +1708,7 @@ fn node_page(
             prefix,
             cursor,
             limit,
+            as_of: None,
         })
         .expect("graph node list succeeds")
     {
@@ -1654,6 +1735,7 @@ fn graph_node_ids_in(
             prefix: None,
             cursor: None,
             limit: Some(10),
+            as_of: None,
         })
         .expect("graph node list succeeds")
     {
@@ -1791,6 +1873,7 @@ fn get_edge(
             src: src.to_owned(),
             edge_type: edge_type.to_owned(),
             dst: dst.to_owned(),
+            as_of: None,
         })
         .expect("graph edge get succeeds")
     {
@@ -1817,6 +1900,7 @@ fn graph_get_edge_in(
             src: src.to_owned(),
             edge_type: edge_type.to_owned(),
             dst: dst.to_owned(),
+            as_of: None,
         })
         .expect("graph edge get succeeds")
     {
@@ -1863,6 +1947,7 @@ fn neighbor_node_ids_in(
             edge_type: edge_type.map(str::to_owned),
             cursor: None,
             limit: Some(10),
+            as_of: None,
         })
         .expect("graph neighbors succeeds")
     {
@@ -1895,6 +1980,7 @@ fn neighbor_page(
             edge_type: edge_type.map(str::to_owned),
             cursor,
             limit,
+            as_of: None,
         })
         .expect("graph neighbors succeeds")
     {
@@ -1954,6 +2040,7 @@ fn binding_page(
             target,
             cursor,
             limit,
+            as_of: None,
         })
         .expect("graph binding lookup succeeds")
     {
@@ -1990,6 +2077,7 @@ fn neighbor_nodes(
             edge_type,
             cursor: None,
             limit: Some(10),
+            as_of: None,
         })
         .expect("graph neighbors succeeds")
     {
@@ -2011,6 +2099,7 @@ fn binding_nodes(executor: &mut Executor, target: GraphBindingTarget) -> Vec<Str
             target,
             cursor: None,
             limit: Some(10),
+            as_of: None,
         })
         .expect("graph binding lookup succeeds")
     {
@@ -2037,6 +2126,7 @@ fn binding_nodes_in(
             target,
             cursor: None,
             limit: Some(10),
+            as_of: None,
         })
         .expect("graph binding lookup succeeds")
     {

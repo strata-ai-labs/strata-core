@@ -612,6 +612,7 @@ fn graph_list(executor: &mut Executor, space: Option<&str>) -> Vec<String> {
             space: space.map(str::to_owned),
             cursor: None,
             limit: None,
+            as_of: None,
         })
         .expect("graph list succeeds")
     else {

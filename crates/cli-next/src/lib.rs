@@ -686,16 +686,22 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             space: scope.space.clone(),
             graph,
         },
-        GraphCommand::List { cursor, limit } => Command::GraphList {
+        GraphCommand::List {
+            cursor,
+            limit,
+            as_of,
+        } => Command::GraphList {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             cursor,
             limit,
+            as_of,
         },
-        GraphCommand::Meta { graph } => Command::GraphGetMeta {
+        GraphCommand::Meta { graph, as_of } => Command::GraphGetMeta {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             graph,
+            as_of,
         },
         GraphCommand::AddNode {
             graph,
@@ -714,11 +720,16 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             )?,
             binding: None,
         },
-        GraphCommand::GetNode { graph, node_id } => Command::GraphGetNode {
+        GraphCommand::GetNode {
+            graph,
+            node_id,
+            as_of,
+        } => Command::GraphGetNode {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             graph,
             node_id,
+            as_of,
         },
         GraphCommand::RemoveNode { graph, node_id } => Command::GraphRemoveNode {
             branch: scope.branch.clone(),
@@ -731,6 +742,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             prefix,
             cursor,
             limit,
+            as_of,
         } => Command::GraphListNodes {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
@@ -738,6 +750,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             prefix,
             cursor,
             limit,
+            as_of,
         },
         GraphCommand::AddEdge {
             graph,
@@ -766,6 +779,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             src,
             edge_type,
             dst,
+            as_of,
         } => Command::GraphGetEdge {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
@@ -773,6 +787,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             src,
             edge_type,
             dst,
+            as_of,
         },
         GraphCommand::RemoveEdge {
             graph,
@@ -794,6 +809,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             edge_type,
             cursor,
             limit,
+            as_of,
         } => Command::GraphNeighbors {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
@@ -803,6 +819,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             edge_type,
             cursor,
             limit,
+            as_of,
         },
         GraphCommand::Ontology(_) => return Err(deferred_command("graph ontology")),
         GraphCommand::Analytics(_) => return Err(deferred_command("graph analytics")),

@@ -499,6 +499,7 @@ fn export_graph_nodes(
             prefix: prefix.map(str::to_owned),
             cursor,
             limit: Some(page_limit),
+            as_of: None,
         })?;
         let Output::GraphNodePage { items: nodes, page } = output else {
             return Err(unexpected_output("graph_list_nodes"));
@@ -585,6 +586,7 @@ fn export_graph_edges(
                 edge_type: None,
                 cursor,
                 limit: Some(page_limit),
+                as_of: None,
             })?;
             let Output::GraphNeighborPage {
                 items: neighbors,
@@ -688,6 +690,7 @@ fn graph_node_ids(
             prefix: None,
             cursor,
             limit: Some(PAGE_LIMIT),
+            as_of: None,
         })?;
         let Output::GraphNodePage { items: nodes, page } = output else {
             return Err(unexpected_output("graph_list_nodes"));

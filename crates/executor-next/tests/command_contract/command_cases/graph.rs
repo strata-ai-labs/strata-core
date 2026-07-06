@@ -1,5 +1,6 @@
 use crate::support::*;
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn graph_commands() -> Vec<Command> {
     vec![
         Command::GraphCreate {
@@ -17,11 +18,13 @@ pub(super) fn graph_commands() -> Vec<Command> {
             space: None,
             cursor: Some("deps".to_owned()),
             limit: Some(5),
+            as_of: None,
         },
         Command::GraphGetMeta {
             branch: None,
             space: None,
             graph: "deps".to_owned(),
+            as_of: None,
         },
         Command::GraphAddNode {
             branch: Some("feature".to_owned()),
@@ -36,6 +39,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             space: None,
             graph: "deps".to_owned(),
             node_id: "node-a".to_owned(),
+            as_of: None,
         },
         Command::GraphRemoveNode {
             branch: None,
@@ -50,6 +54,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             prefix: Some("node-".to_owned()),
             cursor: Some("node-a".to_owned()),
             limit: Some(5),
+            as_of: None,
         },
         Command::GraphAddEdge {
             branch: None,
@@ -68,6 +73,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             src: "node-a".to_owned(),
             edge_type: "depends_on".to_owned(),
             dst: "node-b".to_owned(),
+            as_of: None,
         },
         Command::GraphRemoveEdge {
             branch: None,
@@ -86,6 +92,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             edge_type: Some("depends_on".to_owned()),
             cursor: None,
             limit: Some(5),
+            as_of: None,
         },
         Command::GraphBindingsForEntity {
             branch: None,
@@ -93,6 +100,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             target: graph_binding_target(),
             cursor: None,
             limit: Some(5),
+            as_of: None,
         },
         Command::GraphBatchWrite {
             branch: None,
@@ -137,6 +145,7 @@ pub(super) fn graph_round_trip_edge_commands() -> Vec<Command> {
             edge_type: None,
             cursor: Some("cursor".to_owned()),
             limit: Some(0),
+            as_of: None,
         },
         Command::GraphNeighbors {
             branch: Some("feature".to_owned()),
@@ -147,6 +156,7 @@ pub(super) fn graph_round_trip_edge_commands() -> Vec<Command> {
             edge_type: Some("relates_to".to_owned()),
             cursor: None,
             limit: Some(1),
+            as_of: None,
         },
         Command::GraphBatchWrite {
             branch: Some("feature".to_owned()),
@@ -197,6 +207,7 @@ pub(super) fn graph_binding_target_round_trip_commands() -> Vec<Command> {
         ),
         cursor: Some(format!("cursor-{index}")),
         limit: Some(10),
+        as_of: None,
     })
     .collect()
 }

@@ -33,6 +33,7 @@ impl Executor {
             space: None,
             cursor,
             limit,
+            as_of: None,
         })
     }
 
@@ -42,6 +43,7 @@ impl Executor {
             branch: None,
             space: None,
             graph: graph.into(),
+            as_of: None,
         })
     }
 
@@ -74,6 +76,7 @@ impl Executor {
             space: None,
             graph: graph.into(),
             node_id: node_id.into(),
+            as_of: None,
         })
     }
 
@@ -106,6 +109,7 @@ impl Executor {
             prefix,
             cursor,
             limit,
+            as_of: None,
         })
     }
 
@@ -147,6 +151,7 @@ impl Executor {
             src: src.into(),
             edge_type: edge_type.into(),
             dst: dst.into(),
+            as_of: None,
         })
     }
 
@@ -187,6 +192,7 @@ impl Executor {
             edge_type,
             cursor,
             limit,
+            as_of: None,
         })
     }
 
@@ -203,6 +209,7 @@ impl Executor {
             target,
             cursor,
             limit,
+            as_of: None,
         })
     }
 

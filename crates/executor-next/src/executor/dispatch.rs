@@ -508,12 +508,14 @@ impl Executor {
                 space,
                 cursor,
                 limit,
-            } => self.execute_graph_list(branch.as_deref(), space.as_deref(), cursor, limit),
+                as_of,
+            } => self.execute_graph_list(branch.as_deref(), space.as_deref(), cursor, limit, as_of),
             Command::GraphGetMeta {
                 branch,
                 space,
                 graph,
-            } => self.execute_graph_get_meta(branch.as_deref(), space.as_deref(), graph),
+                as_of,
+            } => self.execute_graph_get_meta(branch.as_deref(), space.as_deref(), graph, as_of),
             Command::GraphAddNode {
                 branch,
                 space,
@@ -534,7 +536,14 @@ impl Executor {
                 space,
                 graph,
                 node_id,
-            } => self.execute_graph_get_node(branch.as_deref(), space.as_deref(), graph, node_id),
+                as_of,
+            } => self.execute_graph_get_node(
+                branch.as_deref(),
+                space.as_deref(),
+                graph,
+                node_id,
+                as_of,
+            ),
             Command::GraphRemoveNode {
                 branch,
                 space,
@@ -550,6 +559,7 @@ impl Executor {
                 prefix,
                 cursor,
                 limit,
+                as_of,
             } => self.execute_graph_list_nodes(
                 branch.as_deref(),
                 space.as_deref(),
@@ -557,6 +567,7 @@ impl Executor {
                 prefix,
                 cursor,
                 limit,
+                as_of,
             ),
             Command::GraphAddEdge {
                 branch,
@@ -584,6 +595,7 @@ impl Executor {
                 src,
                 edge_type,
                 dst,
+                as_of,
             } => self.execute_graph_get_edge(
                 branch.as_deref(),
                 space.as_deref(),
@@ -591,6 +603,7 @@ impl Executor {
                 src,
                 edge_type,
                 dst,
+                as_of,
             ),
             Command::GraphRemoveEdge {
                 branch,
@@ -616,6 +629,7 @@ impl Executor {
                 edge_type,
                 cursor,
                 limit,
+                as_of,
             } => self.execute_graph_neighbors(
                 branch.as_deref(),
                 space.as_deref(),
@@ -625,6 +639,7 @@ impl Executor {
                 edge_type,
                 cursor.as_deref(),
                 limit,
+                as_of,
             ),
             Command::GraphBindingsForEntity {
                 branch,
@@ -632,12 +647,14 @@ impl Executor {
                 target,
                 cursor,
                 limit,
+                as_of,
             } => self.execute_graph_bindings_for_entity(
                 branch.as_deref(),
                 space.as_deref(),
                 target,
                 cursor.as_deref(),
                 limit,
+                as_of,
             ),
             Command::GraphBatchWrite {
                 branch,

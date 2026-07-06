@@ -249,6 +249,7 @@ fn graph_command_json_uses_stable_tags_and_field_shape() {
         edge_type: Some("depends_on".to_owned()),
         cursor: Some("cursor".to_owned()),
         limit: Some(5),
+        as_of: None,
     };
     let explicit_json = serde_json::to_value(&explicit).expect("command serializes");
     assert_eq!(explicit_json["type"], "graph_neighbors");

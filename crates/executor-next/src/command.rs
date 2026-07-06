@@ -949,6 +949,9 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Reads graph metadata.
     GraphGetMeta {
@@ -960,6 +963,9 @@ pub enum Command {
         space: Option<String>,
         /// Graph name.
         graph: String,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Adds or replaces a graph node.
     GraphAddNode {
@@ -992,6 +998,9 @@ pub enum Command {
         graph: String,
         /// Node id.
         node_id: String,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Deletes a graph node and incident edges.
     GraphRemoveNode {
@@ -1025,6 +1034,9 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Adds or replaces a graph edge.
     GraphAddEdge {
@@ -1065,6 +1077,9 @@ pub enum Command {
         edge_type: String,
         /// Destination node id.
         dst: String,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Deletes a graph edge.
     GraphRemoveEdge {
@@ -1106,6 +1121,9 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Lists graph nodes bound to one entity target.
     GraphBindingsForEntity {
@@ -1123,6 +1141,9 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Applies graph mutations in one engine commit.
     GraphBatchWrite {

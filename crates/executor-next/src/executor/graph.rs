@@ -7,7 +7,7 @@ use super::{
     graph_node_page_output, graph_node_write_output, optional_graph_edge_type, optional_graph_name,
     optional_graph_node_id, optional_limit, EngineGraphBatchWrite, Executor, ExecutorResult,
     GraphBatchOperation, GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEntityBinding,
-    GraphNodeData, Output, DEFAULT_GRAPH_LIST_LIMIT,
+    GraphNodeData, Output, Timestamp, DEFAULT_GRAPH_LIST_LIMIT,
 };
 
 impl Executor {
@@ -47,13 +47,17 @@ impl Executor {
         space: Option<&str>,
         cursor: Option<String>,
         limit: Option<u64>,
+        as_of: Option<u64>,
     ) -> ExecutorResult<Output> {
         let cursor = optional_graph_name(cursor)?;
         let limit = optional_limit(limit)?.unwrap_or(DEFAULT_GRAPH_LIST_LIMIT);
         let mut service = self.graph_service(branch, space)?;
-        Ok(graph_name_page_output(
-            &service.list_graphs(cursor.as_ref(), limit)?,
-        ))
+        let page = if let Some(as_of) = as_of {
+            service.list_graphs_at(cursor.as_ref(), limit, Timestamp::from_micros(as_of))?
+        } else {
+            service.list_graphs(cursor.as_ref(), limit)?
+        };
+        Ok(graph_name_page_output(&page))
     }
 
     pub(super) fn execute_graph_get_meta(
@@ -61,12 +65,16 @@ impl Executor {
         branch: Option<&str>,
         space: Option<&str>,
         graph: String,
+        as_of: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let mut service = self.graph_service(branch, space)?;
-        Ok(Output::GraphInfoResult(
-            service.graph_info(&graph)?.as_ref().map(graph_info_data),
-        ))
+        let info = if let Some(as_of) = as_of {
+            service.graph_info_at(&graph, Timestamp::from_micros(as_of))?
+        } else {
+            service.graph_info(&graph)?
+        };
+        Ok(Output::GraphInfoResult(info.as_ref().map(graph_info_data)))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -94,15 +102,18 @@ impl Executor {
         space: Option<&str>,
         graph: String,
         node_id: String,
+        as_of: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let node_id = graph_node_id(node_id)?;
         let mut service = self.graph_service(branch, space)?;
+        let node = if let Some(as_of) = as_of {
+            service.get_node_at(&graph, &node_id, Timestamp::from_micros(as_of))?
+        } else {
+            service.get_node(&graph, &node_id)?
+        };
         Ok(Output::GraphNodeResult(
-            service
-                .get_node(&graph, &node_id)?
-                .as_ref()
-                .map(graph_node_data_output),
+            node.as_ref().map(graph_node_data_output),
         ))
     }
 
@@ -125,6 +136,7 @@ impl Executor {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn execute_graph_list_nodes(
         &mut self,
         branch: Option<&str>,
@@ -133,18 +145,25 @@ impl Executor {
         prefix: Option<String>,
         cursor: Option<String>,
         limit: Option<u64>,
+        as_of: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let prefix = optional_graph_node_id(prefix)?;
         let cursor = optional_graph_node_id(cursor)?;
         let limit = optional_limit(limit)?.unwrap_or(DEFAULT_GRAPH_LIST_LIMIT);
         let mut service = self.graph_service(branch, space)?;
-        Ok(graph_node_page_output(&service.list_nodes(
-            &graph,
-            prefix.as_ref(),
-            cursor.as_ref(),
-            limit,
-        )?))
+        let page = if let Some(as_of) = as_of {
+            service.list_nodes_at(
+                &graph,
+                prefix.as_ref(),
+                cursor.as_ref(),
+                limit,
+                Timestamp::from_micros(as_of),
+            )?
+        } else {
+            service.list_nodes(&graph, prefix.as_ref(), cursor.as_ref(), limit)?
+        };
+        Ok(graph_node_page_output(&page))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -179,17 +198,26 @@ impl Executor {
         src: String,
         edge_type: String,
         dst: String,
+        as_of: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let src = graph_node_id(src)?;
         let edge_type = graph_edge_type(edge_type)?;
         let dst = graph_node_id(dst)?;
         let mut service = self.graph_service(branch, space)?;
+        let edge = if let Some(as_of) = as_of {
+            service.get_edge_at(
+                &graph,
+                &src,
+                &edge_type,
+                &dst,
+                Timestamp::from_micros(as_of),
+            )?
+        } else {
+            service.get_edge(&graph, &src, &edge_type, &dst)?
+        };
         Ok(Output::GraphEdgeResult(
-            service
-                .get_edge(&graph, &src, &edge_type, &dst)?
-                .as_ref()
-                .map(graph_edge_data_output),
+            edge.as_ref().map(graph_edge_data_output),
         ))
     }
 
@@ -228,6 +256,7 @@ impl Executor {
         edge_type: Option<String>,
         cursor: Option<&str>,
         limit: Option<u64>,
+        as_of: Option<u64>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let node_id = graph_node_id(node_id)?;
@@ -235,16 +264,30 @@ impl Executor {
         let edge_type = optional_graph_edge_type(edge_type)?;
         let limit = optional_limit(limit)?.unwrap_or(DEFAULT_GRAPH_LIST_LIMIT);
         let mut service = self.graph_service(branch, space)?;
-        Ok(graph_neighbor_page_output(&service.neighbors(
-            &graph,
-            &node_id,
-            direction,
-            edge_type.as_ref(),
-            cursor,
-            limit,
-        )?))
+        let page = if let Some(as_of) = as_of {
+            service.neighbors_at(
+                &graph,
+                &node_id,
+                direction,
+                edge_type.as_ref(),
+                cursor,
+                limit,
+                Timestamp::from_micros(as_of),
+            )?
+        } else {
+            service.neighbors(
+                &graph,
+                &node_id,
+                direction,
+                edge_type.as_ref(),
+                cursor,
+                limit,
+            )?
+        };
+        Ok(graph_neighbor_page_output(&page))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn execute_graph_bindings_for_entity(
         &mut self,
         branch: Option<&str>,
@@ -252,13 +295,17 @@ impl Executor {
         target: GraphBindingTarget,
         cursor: Option<&str>,
         limit: Option<u64>,
+        as_of: Option<u64>,
     ) -> ExecutorResult<Output> {
         let target = engine_graph_binding_target(target)?;
         let limit = optional_limit(limit)?.unwrap_or(DEFAULT_GRAPH_LIST_LIMIT);
         let mut service = self.graph_service(branch, space)?;
-        Ok(graph_binding_page_output(
-            &service.bindings_for_entity(&target, cursor, limit)?,
-        ))
+        let page = if let Some(as_of) = as_of {
+            service.bindings_for_entity_at(&target, cursor, limit, Timestamp::from_micros(as_of))?
+        } else {
+            service.bindings_for_entity(&target, cursor, limit)?
+        };
+        Ok(graph_binding_page_output(&page))
     }
 
     pub(super) fn execute_graph_batch_write(
