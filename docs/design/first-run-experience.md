@@ -473,11 +473,11 @@ agents *expect* the surface to be — sometimes the right fix is an alias, not a
 
 | # | Deliverable | Repo | Depends on | Size |
 |---|---|---|---|---|
-| D1 | Repo-URL sweep to `stratalab` across all artifacts (org decided) | all | — | hours |
-| D2 | Bare-command footgun fix + teaching error + `STRATA_DB` (§6.1) | strata-core (cli-next) | — | S |
-| D3 | `strata agents` family generated from executor metadata (§7) | strata-core | cli_metadata/idl_tooling (exist); full IDL (#5) refines later | M |
-| D4 | Error `hint` + `ref` surfaced on all channels (§7.2) | strata-core | error_registry (exists) | S–M |
-| D5 | `strata doctor` (§6.3) | strata-core | — | S |
+| D1 | Repo-URL sweep to `stratalab` across all artifacts (org decided) — **strata-core swept 2026-07-06, other repos pending** | all | — | hours |
+| D2 | Bare-command footgun fix + teaching error + `STRATA_DB` (§6.1) — **landed 2026-07-06** | strata-core (cli-next) | — | S |
+| D3 | `strata agents` family generated from executor metadata (§7) — **landed 2026-07-06** (catalog coverage grows with IDL #5) | strata-core | cli_metadata/idl_tooling (exist); full IDL (#5) refines later | M |
+| D4 | Error `hint` + `ref` surfaced on all channels (§7.2) — **landed 2026-07-06** (refs are `stratadb.org/e/<code>`) | strata-core | error_registry (exists) | S–M |
+| D5 | `strata doctor` (§6.3) — **landed 2026-07-06** | strata-core | — | S |
 | D6 | install.sh: sha256 verify, `STRATA_VERSION`/`--version`, `--quiet`/`--json`, release.json manifest, doctor-verify, aligned epilogue (§5.1–5.2, F4) | stratadb.org | D2, release assets | S–M |
 | D7 | Release train automation (§9.2) | strata-core + all | D1 | M |
 | D8 | `@stratadb/mcp` npx shim + `strata mcp serve` V1 transport + curated tools + registry listings (§8) | strata-core + strata-mcp | D3, D7; M9 SDK cutover | M–L |
@@ -505,6 +505,8 @@ M9F/M10's bench re-baselining.
    npx-shim packaging/registry home (§8).
 3. **Bare one-shot commands refuse with a teaching error** — explicit path → `STRATA_DB` →
    refuse; never open cwd implicitly (§6.1).
+4. **Error refs are stable short slugs**: `https://stratadb.org/e/<code>` — implemented in D4
+   across the render config, IDL, and generated indexes (decided 2026-07-06).
 
 ### Still open (owner decisions)
 
