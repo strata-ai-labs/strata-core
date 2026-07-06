@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
+use base64::Engine as _;
 use serde_json::Value;
 use strata_executor_next::{Bytes, VectorMetadataFilter};
 
@@ -14,6 +15,22 @@ pub(crate) fn bytes_argument(
     file: Option<&PathBuf>,
 ) -> Result<Bytes, CliError> {
     Ok(Bytes::new(read_bytes_argument(value, file)?))
+}
+
+/// Decodes a `--cursor` continuation token.
+///
+/// KV cursors are opaque base64 tokens — the exact string printed by the
+/// previous page (and the `Bytes` wire encoding). Decoding here restores the
+/// underlying key bytes, so continuation works for non-UTF-8 keys too.
+pub(crate) fn cursor_argument(value: &str) -> Result<Bytes, CliError> {
+    base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map(Bytes::new)
+        .map_err(|error| {
+            CliError::usage(format!(
+                "invalid --cursor `{value}`: expected the base64 token printed by the previous page ({error})"
+            ))
+        })
 }
 
 pub(crate) fn text_argument(
@@ -151,5 +168,19 @@ mod tests {
             parse_vector_text("[1,2,3]").expect("parse vector"),
             vec![1.0, 2.0, 3.0]
         );
+    }
+
+    #[test]
+    fn cursor_argument_decodes_the_printed_base64_token() {
+        assert_eq!(
+            cursor_argument("YQ==").expect("valid cursor"),
+            Bytes::new(b"a".to_vec())
+        );
+    }
+
+    #[test]
+    fn cursor_argument_rejects_non_base64_input() {
+        let error = cursor_argument("not base64!").expect_err("invalid cursor");
+        assert!(matches!(error, CliError::Usage(_)));
     }
 }

@@ -291,7 +291,7 @@ pub(crate) enum KvCommand {
         /// Optional key prefix.
         #[arg(long)]
         prefix: Option<String>,
-        /// Optional continuation cursor.
+        /// Optional base64 continuation cursor as printed by the previous page.
         #[arg(long)]
         cursor: Option<String>,
         /// Optional item limit.
@@ -304,8 +304,11 @@ pub(crate) enum KvCommand {
     /// Scan rows.
     Scan {
         /// Optional inclusive start key.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "cursor")]
         start: Option<String>,
+        /// Optional base64 continuation cursor as printed by the previous page.
+        #[arg(long)]
+        cursor: Option<String>,
         /// Optional item limit.
         #[arg(long)]
         limit: Option<u64>,

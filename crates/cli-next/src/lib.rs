@@ -20,8 +20,9 @@ mod repl;
 
 use context::{CommandContext, Scope};
 use input::{
-    bytes_argument, parse_filter_argument, parse_json_argument, parse_optional_filter_argument,
-    parse_optional_json_argument, parse_relaxed_json_argument, parse_vector_argument,
+    bytes_argument, cursor_argument, parse_filter_argument, parse_json_argument,
+    parse_optional_filter_argument, parse_optional_json_argument, parse_relaxed_json_argument,
+    parse_vector_argument,
 };
 use options::{
     ArrowCommand, BranchCommand, Cli, CommandCommand, ConfigCommand, EventCommand, GraphCommand,
@@ -308,14 +309,23 @@ fn kv_command(command: KvCommand, scope: &Scope) -> Result<Command, CliError> {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
             prefix: prefix.map(bytes),
-            cursor: cursor.map(bytes),
+            cursor: cursor.as_deref().map(cursor_argument).transpose()?,
             limit,
             as_of,
         },
-        KvCommand::Scan { start, limit } => Command::KvScan {
+        KvCommand::Scan {
+            start,
+            cursor,
+            limit,
+        } => Command::KvScan {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
-            start: start.map(bytes),
+            // A cursor continues from the first unreturned row, so it maps to
+            // the inclusive scan start (clap rejects --start with --cursor).
+            start: match cursor {
+                Some(cursor) => Some(cursor_argument(&cursor)?),
+                None => start.map(bytes),
+            },
             limit,
         },
         KvCommand::Exists { key } => Command::KvExists {
