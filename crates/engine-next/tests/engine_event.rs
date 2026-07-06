@@ -58,12 +58,15 @@ fn empty_event_log_contract_runs_in_cache_and_durable_modes() {
                 .event_types(),
             &[]
         );
+        // A timestamp after the latest retained commit is an after-latest
+        // diagnostic (F7), even on an empty log — event as_of reads share the
+        // commit-timeline contract with every other capability.
         assert_eq!(
             events
                 .list_types_at(Timestamp::from_micros(u64::MAX))
-                .expect("historical type list succeeds")
-                .event_types(),
-            &[]
+                .expect_err("after-latest read is a diagnostic")
+                .code(),
+            "history_unavailable.engine.persistence_history"
         );
         assert!(events
             .range(
@@ -799,22 +802,26 @@ fn assert_event_history_and_chain(database: &mut Database) {
 
 fn assert_event_timestamp_boundaries(database: &mut Database) -> EventHistoryFacts {
     let mut events = event_service(database, "default", "default");
-    let first_event_ts = events
+    // Event `as_of` reads select by the branch commit timeline — the same
+    // timestamp domain as KV/JSON/vector `*_at` reads — not by the event's own
+    // occurrence timestamp (temporal-context contract, Binding Decisions
+    // 1/2/6; occurrence time belongs to range_by_time).
+    let first_commit_ts = events
         .get(EventSequence::new(0))
         .expect("latest read succeeds")
         .expect("first event exists")
-        .timestamp();
-    let second_event_ts = events
+        .commit_timestamp();
+    let second_commit_ts = events
         .get(EventSequence::new(1))
         .expect("latest read succeeds")
         .expect("second event exists")
-        .timestamp();
-    let third_event_ts = events
+        .commit_timestamp();
+    let third_commit_ts = events
         .get(EventSequence::new(2))
         .expect("latest read succeeds")
         .expect("third event exists")
-        .timestamp();
-    let before_first = Timestamp::from_micros(first_event_ts.as_micros().saturating_sub(1));
+        .commit_timestamp();
+    let before_first = Timestamp::from_micros(first_commit_ts.as_micros().saturating_sub(1));
     assert_eq!(
         events
             .len_at(before_first)
@@ -827,32 +834,58 @@ fn assert_event_timestamp_boundaries(database: &mut Database) -> EventHistoryFac
         .expect("historical read succeeds")
         .is_none());
     assert!(events
-        .get_at(EventSequence::new(0), first_event_ts)
+        .get_at(EventSequence::new(0), first_commit_ts)
         .expect("historical read succeeds")
         .is_some());
     assert_eq!(
-        events.len_at(first_event_ts).expect("len_at first").count(),
+        events
+            .len_at(first_commit_ts)
+            .expect("len_at first")
+            .count(),
         1
     );
     assert_eq!(
         events
-            .len_at(second_event_ts)
+            .len_at(second_commit_ts)
             .expect("len_at second")
             .count(),
         2
     );
     assert!(events
-        .get_at(EventSequence::new(2), second_event_ts)
+        .get_at(EventSequence::new(2), second_commit_ts)
         .expect("historical read succeeds")
         .is_none());
     assert!(events
-        .get_at(EventSequence::new(2), third_event_ts)
+        .get_at(EventSequence::new(2), third_commit_ts)
         .expect("historical read succeeds")
         .is_some());
+    // Out-of-range temporal reads are diagnostics, not absence or clamping
+    // (F7/F8), matching the KV boundary contract.
+    assert_eq!(
+        events
+            .get_at(EventSequence::new(0), Timestamp::EPOCH)
+            .expect_err("before-history read is a diagnostic")
+            .code(),
+        "history_unavailable.engine.persistence_history"
+    );
+    assert_eq!(
+        events
+            .get_at(EventSequence::new(0), Timestamp::MAX)
+            .expect_err("after-latest read is a diagnostic")
+            .code(),
+        "history_unavailable.engine.persistence_history"
+    );
+    assert_eq!(
+        events
+            .len_at(Timestamp::MAX)
+            .expect_err("after-latest len is a diagnostic")
+            .code(),
+        "history_unavailable.engine.persistence_history"
+    );
     EventHistoryFacts {
-        first: first_event_ts,
-        second: second_event_ts,
-        third: third_event_ts,
+        first: first_commit_ts,
+        second: second_commit_ts,
+        third: third_commit_ts,
     }
 }
 

@@ -160,15 +160,18 @@ impl<'a> EventService<'a> {
         self.get_with_selector(sequence, ReadSelector::Latest)
     }
 
-    /// Reads one event visible at a timestamp.
+    /// Reads one event visible at a commit timestamp.
+    ///
+    /// Like every other capability's `as_of` read, this selects by the branch
+    /// commit timeline (MVCC visibility), not by the event's own occurrence
+    /// timestamp — occurrence-time queries are [`Self::range_by_time`]'s job
+    /// (temporal-context contract, Binding Decisions 1/2/6).
     pub fn get_at(
         &mut self,
         sequence: EventSequence,
         timestamp: Timestamp,
     ) -> EngineResult<Option<EventVersionedRecord>> {
-        Ok(self
-            .get_with_selector(sequence, ReadSelector::Latest)?
-            .filter(|event| event.timestamp() <= timestamp))
+        self.get_with_selector(sequence, ReadSelector::AtTimestamp(timestamp))
     }
 
     /// Returns true if an event sequence exists.
@@ -182,14 +185,12 @@ impl<'a> EventService<'a> {
         Ok(EventLength::new(self.latest_event_count(&record)?))
     }
 
-    /// Returns log length visible at a timestamp.
+    /// Returns log length visible at a commit timestamp.
     pub fn len_at(&mut self, timestamp: Timestamp) -> EngineResult<EventLength> {
         let record = self.branch_record()?;
         let rows = self
-            .event_rows(&record, ReadSelector::Latest, None)?
-            .into_iter()
-            .filter(|event| event.timestamp() <= timestamp)
-            .count();
+            .event_rows(&record, ReadSelector::AtTimestamp(timestamp), None)?
+            .len();
         Ok(EventLength::new(u64::try_from(rows).unwrap_or(u64::MAX)))
     }
 
@@ -203,7 +204,7 @@ impl<'a> EventService<'a> {
         self.get_by_type_with_selector(event_type, after_sequence, limit, ReadSelector::Latest)
     }
 
-    /// Reads timestamp-visible events filtered by type.
+    /// Reads events filtered by type, visible at a commit timestamp.
     pub fn get_by_type_at(
         &mut self,
         event_type: &EventType,
@@ -211,14 +212,12 @@ impl<'a> EventService<'a> {
         after_sequence: Option<EventSequence>,
         limit: Option<usize>,
     ) -> EngineResult<Vec<EventVersionedRecord>> {
-        let mut events = self.get_by_type_with_selector(
+        self.get_by_type_with_selector(
             event_type,
             after_sequence,
             limit,
-            ReadSelector::Latest,
-        )?;
-        events.retain(|event| event.timestamp() <= timestamp);
-        Ok(events)
+            ReadSelector::AtTimestamp(timestamp),
+        )
     }
 
     /// Reads a sequence range.
@@ -278,7 +277,12 @@ impl<'a> EventService<'a> {
         Ok(page_from_events(events, limit))
     }
 
-    /// Reads a timestamp range.
+    /// Reads a range of events by their occurrence timestamps.
+    ///
+    /// This is the event-domain time API: it filters on each event's own
+    /// append timestamp. It is intentionally distinct from the `*_at` family,
+    /// which selects by the branch commit timeline like every other
+    /// capability's `as_of` reads.
     pub fn range_by_time(
         &mut self,
         start_ts: Timestamp,
@@ -315,13 +319,12 @@ impl<'a> EventService<'a> {
         Ok(EventTypeList::new(event_types))
     }
 
-    /// Lists event types visible at a timestamp.
+    /// Lists event types visible at a commit timestamp.
     pub fn list_types_at(&mut self, timestamp: Timestamp) -> EngineResult<EventTypeList> {
         let record = self.branch_record()?;
-        let events = self.event_rows(&record, ReadSelector::Latest, None)?;
+        let events = self.event_rows(&record, ReadSelector::AtTimestamp(timestamp), None)?;
         let event_types = events
             .into_iter()
-            .filter(|event| event.timestamp() <= timestamp)
             .map(|event| event.event_type().clone())
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -329,7 +332,7 @@ impl<'a> EventService<'a> {
         Ok(EventTypeList::new(event_types))
     }
 
-    /// Lists events up to a timestamp.
+    /// Lists events visible at an optional commit timestamp.
     pub fn list(
         &mut self,
         event_type: Option<&EventType>,
@@ -354,11 +357,11 @@ impl<'a> EventService<'a> {
             return Ok(EventRangePage::new(Vec::new(), false, None));
         }
         let record = self.branch_record()?;
-        let mut events = self.event_rows(&record, ReadSelector::Latest, None)?;
+        let selector = as_of.map_or(ReadSelector::Latest, ReadSelector::AtTimestamp);
+        let mut events = self.event_rows(&record, selector, None)?;
         events.retain(|event| {
             event_type.is_none_or(|expected| event.event_type() == expected)
                 && after_sequence.is_none_or(|after| event.sequence() > after)
-                && as_of.is_none_or(|timestamp| event.timestamp() <= timestamp)
         });
         Ok(page_from_events(events, limit))
     }

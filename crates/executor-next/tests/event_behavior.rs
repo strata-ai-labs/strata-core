@@ -545,17 +545,20 @@ fn assert_latest_event_reads(executor: &mut Executor) {
     assert_eq!(first.event().previous_hash(), "00".repeat(32));
     assert_eq!(first.event().hash().len(), 64);
     assert!(first.event().hash().chars().all(|c| c.is_ascii_hexdigit()));
+    // as_of selects by the branch commit timeline (the versioned record's
+    // commit timestamp), not by the event's occurrence timestamp — the same
+    // domain every other primitive's as_of uses.
     assert_eq!(
         get_event(
             executor,
             None,
             None,
             0,
-            Some(first.event().timestamp().saturating_sub(1)),
+            Some(first.timestamp().saturating_sub(1)),
         ),
         None
     );
-    assert!(get_event(executor, None, None, 0, Some(first.event().timestamp())).is_some());
+    assert!(get_event(executor, None, None, 0, Some(first.timestamp())).is_some());
 
     let second = get_event(executor, None, None, 1, None).expect("second event exists");
     assert_eq!(second.event().previous_hash(), first.event().hash());
@@ -573,7 +576,7 @@ fn assert_latest_event_reads(executor: &mut Executor) {
         "user.created",
         None,
         None,
-        Some(first.event().timestamp()),
+        Some(first.timestamp()),
     );
     assert_eq!(event_sequences(&historical), vec![0]);
 }
@@ -765,17 +768,16 @@ fn assert_event_lists(executor: &mut Executor) {
 }
 
 fn assert_event_history_and_chain(executor: &mut Executor) {
+    // Historical facts use commit timestamps (the as_of domain shared with
+    // every other primitive), not the events' occurrence timestamps.
     let first = get_event(executor, None, None, 0, None)
         .expect("first event exists")
-        .event()
         .timestamp();
     let second = get_event(executor, None, None, 1, None)
         .expect("second event exists")
-        .event()
         .timestamp();
     let third = get_event(executor, None, None, 2, None)
         .expect("third event exists")
-        .event()
         .timestamp();
 
     assert_eq!(event_len(executor, None, None, Some(first)), 1);
