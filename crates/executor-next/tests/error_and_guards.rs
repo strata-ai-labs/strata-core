@@ -117,6 +117,7 @@ fn serialized_errors_have_v1_status_shape() {
     assert_eq!(status["class"], "invalid_argument");
     assert_eq!(status["code"], "invalid_argument.executor.batch_item");
     assert_eq!(status["retry_policy"], "never");
+    assert_eq!(status["retryable"], false);
     assert_eq!(status["commit_outcome"], "not_started");
     assert_eq!(status["message"], "public message");
     assert_eq!(
@@ -138,6 +139,25 @@ fn serialized_errors_have_v1_status_shape() {
             "serialized error leaked forbidden term `{forbidden}`: {encoded}"
         );
     }
+}
+
+#[test]
+fn deserialized_error_status_derives_retryable_from_retry_policy() {
+    let status: ErrorStatus = serde_json::from_value(serde_json::json!({
+        "class": "unavailable",
+        "code": "unavailable.executor.lock_unavailable",
+        "retry_policy": "same_request",
+        "retryable": false,
+        "commit_outcome": "not_started",
+        "message": "lock unavailable",
+        "suggested_fix": "Retry the same request after the lock becomes available.",
+        "docs_url": "https://strata.dev/docs/errors/registry#unavailable.executor.lock_unavailable",
+        "reference_id": "err-test-000001"
+    }))
+    .expect("error status deserializes");
+
+    assert_eq!(status.retry_policy(), RetryPolicy::SameRequest);
+    assert!(status.retryable());
 }
 
 #[test]

@@ -79,12 +79,12 @@ assert_json "$out" 'bytes_to_text(data["data"]["value"]) == "beta"' "arrow impor
 scenario_section "executor errors render structured JSON"
 expect_json_error \
   "missing branch error" \
-  '"error" in data and data["error"]["code"].startswith("not_found.") and data["error"]["retry_policy"] == "never"' \
+  '"error" in data and data["error"]["code"].startswith("not_found.") and data["error"]["retry_policy"] == "never" and data["error"]["retryable"] is False' \
   "$STRATA" --db "$DB" --json --branch missing kv get anything
 
 expect_json_error \
   "invalid vector dimension" \
-  '"error" in data and data["error"]["code"].startswith("invalid_argument.") and data["error"]["retry_policy"] == "never"' \
+  '"error" in data and data["error"]["code"].startswith("invalid_argument.") and data["error"]["retry_policy"] == "never" and data["error"]["retryable"] is False' \
   "$STRATA" --db "$DB" --json vector upsert export-vectors bad '1.0'
 
 if "$STRATA" --db "$DB" search >/tmp/strata-cli-corpus-deferred.out 2>/tmp/strata-cli-corpus-deferred.err; then

@@ -2,6 +2,7 @@
   "class": "invalid_argument",
   "code": "invalid_argument.executor.batch_item",
   "retry_policy": "never",
+  "retryable": false,
   "commit_outcome": "not_started",
   "message": "invalid key",
   "suggested_fix": "Check the batch item input and retry with a valid key.",

@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use strata_engine_next::{
     CommitOutcomeStatus, EngineError, EngineErrorStatus, ErrorClass, ErrorDetail, RetryPolicy,
 };
@@ -149,11 +149,12 @@ pub enum ExecutorErrorClass {
 }
 
 /// Public V1 executor error status.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ErrorStatus {
     class: ErrorClass,
     code: String,
     retry_policy: RetryPolicy,
+    retryable: bool,
     commit_outcome: CommitOutcomeStatus,
     message: String,
     suggested_fix: String,
@@ -248,6 +249,12 @@ impl ErrorStatus {
         self.retry_policy
     }
 
+    /// Returns whether the retry policy permits a retry.
+    #[must_use]
+    pub const fn retryable(&self) -> bool {
+        self.retryable
+    }
+
     /// Returns the commit outcome.
     #[must_use]
     pub const fn commit_outcome(&self) -> CommitOutcomeStatus {
@@ -294,6 +301,49 @@ impl ErrorStatus {
     #[must_use]
     pub fn hints(&self) -> &[String] {
         &self.hints
+    }
+}
+
+#[derive(Deserialize)]
+struct RawErrorStatus {
+    class: ErrorClass,
+    code: String,
+    retry_policy: RetryPolicy,
+    #[serde(default, rename = "retryable")]
+    _retryable: Option<bool>,
+    commit_outcome: CommitOutcomeStatus,
+    message: String,
+    suggested_fix: String,
+    docs_url: String,
+    reference_id: String,
+    #[serde(default)]
+    trace_id: Option<String>,
+    #[serde(default)]
+    details: Vec<ErrorDetail>,
+    #[serde(default)]
+    hints: Vec<String>,
+}
+
+impl<'de> Deserialize<'de> for ErrorStatus {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawErrorStatus::deserialize(deserializer)?;
+        Ok(Self {
+            class: raw.class,
+            code: raw.code,
+            retry_policy: raw.retry_policy,
+            retryable: retry_policy_allows_retry(raw.retry_policy),
+            commit_outcome: raw.commit_outcome,
+            message: raw.message,
+            suggested_fix: raw.suggested_fix,
+            docs_url: raw.docs_url,
+            reference_id: raw.reference_id,
+            trace_id: raw.trace_id,
+            details: raw.details,
+            hints: raw.hints,
+        })
     }
 }
 
@@ -388,10 +438,7 @@ impl ExecutorError {
     /// the same request or must first change state, configuration, or input.
     #[must_use]
     pub const fn retryable(&self) -> bool {
-        matches!(
-            self.status.retry_policy(),
-            RetryPolicy::AfterStateChange | RetryPolicy::SameRequest | RetryPolicy::IdempotentOnly
-        )
+        self.status.retryable()
     }
 
     /// Returns the retry policy.
@@ -506,10 +553,12 @@ fn normalize_explicit_status(
     } else {
         suggested_fix
     };
+    let retry_policy = override_retry_policy(retry_policy, entry.retry_policy);
     ErrorStatus {
         class: entry.class,
         code,
-        retry_policy: override_retry_policy(retry_policy, entry.retry_policy),
+        retry_policy,
+        retryable: retry_policy_allows_retry(retry_policy),
         commit_outcome: override_commit_outcome(commit_outcome, entry.commit_outcome),
         message,
         suggested_fix,
@@ -610,6 +659,13 @@ const fn override_retry_policy(
         RetryPolicy::Never => registry_default,
         _ => supplied,
     }
+}
+
+const fn retry_policy_allows_retry(policy: RetryPolicy) -> bool {
+    matches!(
+        policy,
+        RetryPolicy::AfterStateChange | RetryPolicy::SameRequest | RetryPolicy::IdempotentOnly
+    )
 }
 
 const fn override_commit_outcome(

@@ -498,6 +498,7 @@ fn batch_item_failures_use_structured_error_status() {
             Some(&json!("invalid_argument.executor.batch_item"))
         );
         assert_eq!(error.get("retry_policy"), Some(&json!("never")));
+        assert_eq!(error.get("retryable"), Some(&json!(false)));
         assert_eq!(error.get("commit_outcome"), Some(&json!("not_started")));
         assert!(error.get("message").and_then(Value::as_str).is_some());
         assert!(error.get("suggested_fix").and_then(Value::as_str).is_some());

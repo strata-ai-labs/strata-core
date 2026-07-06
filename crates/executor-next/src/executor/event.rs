@@ -207,7 +207,10 @@ impl Executor {
         let page = service.list_page(event_type.as_ref(), after_sequence, limit, as_of)?;
         Ok(Output::EventRecords {
             items: event_records(page.events()),
-            page: PageInfo::new(page.has_more(), page.cursor().map(|cursor| cursor.as_u64())),
+            page: PageInfo::new(
+                page.has_more(),
+                page.cursor().map(strata_engine_next::EventSequence::as_u64),
+            ),
         })
     }
 

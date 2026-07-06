@@ -28,6 +28,9 @@ This file tracks issues found while building and running
    separate node and edge files. Fixed by documenting that split-stem contract
    in the command/CLI surface and asserting that callers consume the concrete
    `paths` returned in the export response.
+7. CLI JSON error envelopes exposed registry-style `retry_policy` without the
+   simpler boolean `retryable`. Fixed by serializing `retryable` as a derived
+   public field while preserving `retry_policy` for precise client behavior.
 
 ## Product Or Contract Findings
 
@@ -39,9 +42,7 @@ This file tracks issues found while building and running
    `event range 0 --end-seq 3 --direction reverse`; `event range 2 --direction
    reverse` does not mean "walk backward from sequence 2".
 5. Graph neighbor page items wrap neighbor data under `node` and edge data
-    under `edge`; neighbor ids are `item.node.node_id`.
-6. CLI JSON error envelopes expose registry-style `retry_policy` rather than a
-    boolean `retryable`.
+   under `edge`; neighbor ids are `item.node.node_id`.
 
 ## Corpus Harness Fixes
 
