@@ -474,6 +474,38 @@ would flatter reads on both sides.
    **52,774ms → 425ms**, throughput 984 → 2,045 ops/s; p50 rises to 332µs as pacing
    spreads across commits — the intended trade.
 
+## 10M three-way, post-fixes rerun (2026-07-07 evening, /data2, all fixes in)
+
+Rerun of the three-way with the day's fixes (off-lock GC, graded default + saturation
+fixes, replay probe, cache profile, Ln-wall demotion, watchdog liveness). One process per
+mode — the both-mode run OOM-killed at 60.4GB anon RSS (cache-phase retention + durable
+pools + unaccounted overhead on a 61GB box; RSS-vs-budget gap tracked separately).
+
+| | Strata cache | Strata durable | RocksDB |
+|---|---|---|---|
+| Load (rows/s) | 388–460K | 82–96K | 1.02M |
+| A (50r/50u) | **257,926** | 488–2,045 (see below) | 334,382 |
+| B (95r/5u) | **1,049,453** | 4,256 | 403,830 |
+| C (read-only) | **1,602,047** | 3,673 | 424,751 |
+| C read p50/p99 | 591ns / 641ns | 59.5µs / 3.3ms | 2.83µs / 4.4µs |
+
+Cache is stable run-to-run and 2.5–3.8× over RocksDB on every run phase. Durable
+workload A varies WILDLY across runs (984 / 2,045 / 488 ops/s; update max 425ms /
+48.4s): with the Ln wall demoted and the watchdog no longer aborting, the remaining
+disease is isolated — **the L0-blocking wall's relief is one L0→L1 compaction pass, and
+at 10M a single pass rewrites GBs of L1 overlap (~50s)**. A writer that hits an
+L0-blocking episode while a giant pass runs now waits it out legally (48.4s max this
+run) instead of aborting (the pre-watchdog-fix behavior) — better, but the pass size is
+the root cause. **Identified next slice: bounded L0→L1 passes** (trim the L0 input set
+per pass so relief is incremental and seconds-scale) — correctness-sensitive (partial
+L0 consumption must respect table recency ordering), needs its own design pass.
+
+Watchdog fix recorded here: a RUNNING maintenance task now counts as liveness (the
+stall watchdog fires only on a provably dead executor — zero completions, no backlog
+reduction, AND no active task). Before it, one >30s giant pass with no other
+completions converted a busy executor into a caller-visible `failed_precondition`
+load abort (observed twice: NonZeroLevel pre-demotion, L0 post-demotion).
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
