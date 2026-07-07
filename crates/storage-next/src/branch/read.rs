@@ -473,6 +473,16 @@ impl BranchScanBounds {
     }
 }
 
+/// Outcome of [`BranchReadView::classify_own_internal_row`]: whether the
+/// branch's own sources hold a byte-equal copy of the probed internal row, a
+/// same-version row with DIFFERENT content, or nothing at that version.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BranchOwnRowMatch {
+    Equal,
+    SameVersionDiffers,
+    Absent,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BranchHistoryOptions {
     before_version: Option<CommitVersion>,
@@ -1199,19 +1209,96 @@ impl BranchReadView {
         self.collect_history(key, options, BranchReadBound::at_version(visible), None)
     }
 
-    pub(crate) fn history_with_source_probe_count(
+    /// Replay idempotence probe: locate this exact internal row (physical
+    /// key + commit version) among the branch's OWN sources — active, frozen,
+    /// then owned levels. Inherited layers never hold the branch's own WAL
+    /// rows (replay reconciles only this branch's appends), so they are
+    /// skipped. Early-exits on the first byte-equal row. This replaces the
+    /// full `history(all())` walk in replay classification, which made
+    /// recovery replay O(rows × sources × key versions) — measured ~365µs
+    /// and 7 source probes per replayed row at 1M scale.
+    pub(crate) fn classify_own_internal_row(
         &self,
-        key: &PhysicalKey,
-        options: BranchHistoryOptions,
-    ) -> BranchRuntimeResult<(Vec<BranchHistoryRow>, usize)> {
-        let mut source_probes = 0usize;
-        let history = self.collect_history(
-            key,
-            options,
-            BranchReadBound::latest(),
-            Some(&mut source_probes),
-        )?;
-        Ok((history, source_probes))
+        target: &StorageRow,
+    ) -> BranchRuntimeResult<(BranchOwnRowMatch, usize)> {
+        self.require_matching_branch(target.physical_key().branch_id())?;
+        let key = target.physical_key();
+        let version = target.commit_version();
+        // A point lookup BOUNDED at the target version: each source returns
+        // its newest row ≤ version, which is the exact row iff the source
+        // holds one at that version. On lazy tables this is an in-block point
+        // seek — no decode of the block's other rows (the initial probe used
+        // `physical_key_rows`, whose decode-all dominated replay at ~118µs
+        // per row in the gdb profile).
+        let lookup = TablePreparedPointLookup::new(key, Some(version), None);
+        let mut probes = 0usize;
+        let mut same_version_differs = false;
+        // Byte-equal → done; same version with different content is
+        // remembered (a corruption signal) but the scan continues, because a
+        // byte-equal copy in a later source still classifies as Exact —
+        // identical to the history-walk semantics this replaces.
+        let fold = |row: Option<&TableRow>, same_version_differs: &mut bool| -> bool {
+            let Some(row) = row else {
+                return false;
+            };
+            if row.row().commit_version() != version {
+                return false;
+            }
+            if row.row() == target {
+                return true;
+            }
+            *same_version_differs = true;
+            false
+        };
+
+        let active = self.pinned_active();
+        probes = probes.saturating_add(1);
+        let (row, _visited) = active.seek_prepared_point(&lookup);
+        if fold(row.as_deref(), &mut same_version_differs) {
+            return Ok((BranchOwnRowMatch::Equal, probes));
+        }
+        for table in &self.frozen {
+            probes = probes.saturating_add(1);
+            let (row, _visited) = table.seek_prepared_point(&lookup);
+            if fold(row.as_deref(), &mut same_version_differs) {
+                return Ok((BranchOwnRowMatch::Equal, probes));
+            }
+        }
+        let key_bytes = TablePhysicalKeyBytes::from_physical_key(key);
+        for (level_index, tables) in self.owned_levels.iter().enumerate() {
+            if level_index == 0 {
+                for table in tables {
+                    probes = probes.saturating_add(1);
+                    let (row, _visited) = table
+                        .reader()
+                        .try_seek_prepared_point(&lookup)
+                        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+                    if fold(row.as_ref(), &mut same_version_differs) {
+                        return Ok((BranchOwnRowMatch::Equal, probes));
+                    }
+                }
+                continue;
+            }
+            if tables.is_empty() {
+                continue;
+            }
+            probes = probes.saturating_add(1);
+            let Some(table_index) = select_nonzero_level_point_table(tables, &key_bytes)? else {
+                continue;
+            };
+            let (row, _visited) = tables[table_index]
+                .reader()
+                .try_seek_prepared_point(&lookup)
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+            if fold(row.as_ref(), &mut same_version_differs) {
+                return Ok((BranchOwnRowMatch::Equal, probes));
+            }
+        }
+        if same_version_differs {
+            Ok((BranchOwnRowMatch::SameVersionDiffers, probes))
+        } else {
+            Ok((BranchOwnRowMatch::Absent, probes))
+        }
     }
 
     fn collect_history(
