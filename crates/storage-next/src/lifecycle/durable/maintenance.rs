@@ -1518,6 +1518,25 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
             }
         };
+        // BS5.2: applied rows above the visible version mean a write-group
+        // pipeline is mid-flight on this branch (rows applied, covering fsync
+        // off-lock, publish pending). Freezing or snapshotting now would hand
+        // the off-lock build rows whose WAL records are not yet durable — an
+        // installed table could then survive a crash that tears those records,
+        // resurrecting an unacked half-group. Defer; the pipeline publishes
+        // within milliseconds and post-commit scheduling re-enqueues the flush.
+        if branch
+            .max_commit_version()
+            .is_some_and(|version| version > self.visible.visible_version())
+        {
+            let outcome = MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
+                .with_source_error(LifecycleError::InvalidLifecycleState {
+                    reason: "flush deferred: write-group publish in flight on this branch",
+                });
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+            return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+        }
         let mut rotated = false;
         if branch.active_row_count() > 0 {
             if let Err(error) = require_rotate_budget(&self.budget, branch) {

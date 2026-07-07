@@ -51,7 +51,11 @@ pub(crate) struct CommitUnresolvedDurableAdmission<'a> {
 #[derive(Debug, Default)]
 struct CommitUnresolvedDurableGateState {
     unresolved: Option<CommitUnresolvedDurable>,
-    active_admission: bool,
+    /// Open admission spans (BS5.2). The pipelined commit path keeps a span
+    /// open across its off-lock covering fsync, so a later group (or a solo
+    /// commit) legitimately admits while earlier spans are still in flight;
+    /// admission is refused only while an unresolved fact is recorded.
+    active_admissions: usize,
 }
 
 impl CommitUnresolvedDurable {
@@ -260,7 +264,7 @@ impl CommitUnresolvedDurableGate {
         Self {
             state: Mutex::new(CommitUnresolvedDurableGateState {
                 unresolved: None,
-                active_admission: false,
+                active_admissions: 0,
             }),
         }
     }
@@ -290,13 +294,6 @@ impl CommitUnresolvedDurableGate {
                 reason: "durable commit must be replayed or reconciled first",
             });
         }
-        if state.active_admission {
-            perf_trace::record_commit_unresolved_gate_admission_attempt();
-            perf_trace::record_commit_unresolved_gate_rejected_active();
-            return Err(CommitRuntimeError::InvalidCommitState {
-                reason: "durable commit admission is already active",
-            });
-        }
         Ok(())
     }
 
@@ -321,8 +318,15 @@ impl CommitUnresolvedDurableGate {
     /// Release the leader's group admission span (see [`begin_group_admission`]).
     pub(crate) fn end_group_admission(&self) {
         if let Ok(mut state) = self.state.lock() {
-            state.active_admission = false;
+            state.active_admissions = state.active_admissions.saturating_sub(1);
         }
+    }
+
+    /// Open admission spans (BS5.2): >1 means other commits are mid-pipeline
+    /// right now — the sync chain uses this to decide whether a batching beat
+    /// is worth waiting before it captures.
+    pub(crate) fn open_admission_spans(&self) -> usize {
+        self.state.lock().map_or(0, |state| state.active_admissions)
     }
 
     /// Group-member admission check (BS5.1): the leader's admission span is
@@ -356,13 +360,9 @@ impl CommitUnresolvedDurableGate {
                 reason: "durable commit must be replayed or reconciled first",
             });
         }
-        if state.active_admission {
-            perf_trace::record_commit_unresolved_gate_rejected_active();
-            return Err(CommitRuntimeError::InvalidCommitState {
-                reason: "durable commit admission is already active",
-            });
-        }
-        state.active_admission = true;
+        // BS5.2: concurrent spans are legal — the pipelined commit path keeps a
+        // span open across its off-lock fsync while later commits admit.
+        state.active_admissions = state.active_admissions.saturating_add(1);
         perf_trace::record_commit_unresolved_gate_admission_acquired();
         Ok(CommitUnresolvedDurableAdmission {
             gate: self,
@@ -461,7 +461,7 @@ impl Drop for CommitUnresolvedDurableAdmission<'_> {
             return;
         }
         if let Ok(mut state) = self.gate.state.lock() {
-            state.active_admission = false;
+            state.active_admissions = state.active_admissions.saturating_sub(1);
         }
         self.active = false;
     }

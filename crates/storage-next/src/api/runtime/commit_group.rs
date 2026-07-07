@@ -157,13 +157,6 @@ struct QueueState {
 #[derive(Debug, Default)]
 pub(super) struct CommitGroupQueue {
     state: Mutex<QueueState>,
-    /// Set whenever a commit had to wait (a leader was active). A leader that
-    /// drains an empty queue consumes it to decide whether a brief formation
-    /// window is worth waiting: just-served members are typically re-joining
-    /// within microseconds of the handoff, and catching them turns a
-    /// serialized solo round into a full group. Never set single-threaded, so
-    /// uncontended commits never pay the window.
-    recent_contention: std::sync::atomic::AtomicBool,
 }
 
 impl CommitGroupQueue {
@@ -182,24 +175,7 @@ impl CommitGroupQueue {
         }
         let joiner = Arc::new(CommitGroupJoiner::new(request));
         state.queue.push_back(Arc::clone(&joiner));
-        self.recent_contention
-            .store(true, std::sync::atomic::Ordering::Release);
         JoinPath::Wait(joiner)
-    }
-
-    /// Leader-side: consume the recent-contention signal (see the field doc).
-    pub(super) fn take_recent_contention(&self) -> bool {
-        self.recent_contention
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
-    }
-
-    /// Leader-side: a multi-member group was just served — its members are
-    /// about to re-join, so the next leader should hold the formation window
-    /// open for them even if none has re-joined yet (their wake-up races the
-    /// leadership handoff).
-    pub(super) fn note_group_served(&self) {
-        self.recent_contention
-            .store(true, std::sync::atomic::Ordering::Release);
     }
 
     /// Leader-side: drain up to `max` pending joiners with their requests, in
@@ -310,6 +286,98 @@ impl CommitGroupQueue {
                 };
                 state = again;
             }
+        }
+    }
+}
+
+/// The covering-fsync chain (BS5.2): at most ONE sync runs at a time (the
+/// device flush is the serial resource — overlapping fsyncs on one file just
+/// queue at the device), and every completed sync covers all appends that
+/// preceded its ticket's capture. A pipelined group therefore either proves
+/// its appends already covered (the durable watermark passed its capture), or
+/// takes the token and syncs — its fresh capture covering everyone who
+/// appended since — or sleeps until the in-flight sync's completion tick and
+/// re-checks.
+#[derive(Debug, Default)]
+pub(super) struct WalSyncChain {
+    token: Mutex<()>,
+    completed: Mutex<u64>,
+    done: Condvar,
+}
+
+impl WalSyncChain {
+    /// Resolve a group's covering durability WITHOUT the runtime lock.
+    /// Returns `None` when the group's appends were proven covered by an
+    /// already-completed sync (nothing to redeem), otherwise `Some(result)`
+    /// of the sync this caller ran itself. The token holder syncs a FRESH
+    /// capture from `refresh` (one brief runtime-lock hold) rather than its
+    /// own phase-1 ticket, so one fsync covers every group that appended
+    /// while the previous sync ran — otherwise each group's early capture
+    /// would cover only itself and the syncs would serialize unbatched.
+    pub(super) fn sync_or_wait_covered<'t>(
+        &self,
+        durable_seq: &std::sync::atomic::AtomicU64,
+        ticket: &crate::service::WalGroupSyncTicket<'_>,
+        batching_beat: bool,
+        refresh: impl Fn() -> crate::service::WalGroupSyncTicket<'t>,
+    ) -> Option<Result<(), crate::service::WalServiceError>> {
+        use std::sync::atomic::Ordering;
+        loop {
+            if durable_seq.load(Ordering::Acquire) >= ticket.captured_seq() {
+                return None;
+            }
+            match self.token.try_lock() {
+                Ok(_token) => {
+                    // Re-check after winning the token: a completion may have
+                    // covered us while we raced for it.
+                    if durable_seq.load(Ordering::Acquire) >= ticket.captured_seq() {
+                        return None;
+                    }
+                    if batching_beat {
+                        // Other commits are mid-pipeline: the cohort served by
+                        // the previous sync is re-appending RIGHT NOW, ~3% of a
+                        // device flush away. One beat before capturing folds
+                        // them into this sync instead of the one after —
+                        // without it the cohorts alternate and every sync
+                        // covers half the writers. Never taken solo.
+                        std::thread::sleep(Duration::from_micros(250));
+                    }
+                    let fresh = refresh();
+                    let result = fresh.sync();
+                    if result.is_ok() {
+                        // Publish coverage immediately (the fsync's proof is
+                        // lock-independent); phase 2 re-asserts it under the
+                        // runtime lock via `complete_group_sync`.
+                        durable_seq.fetch_max(fresh.captured_seq(), Ordering::AcqRel);
+                    }
+                    if let Ok(mut completed) = self.completed.lock() {
+                        *completed = completed.saturating_add(1);
+                    }
+                    self.done.notify_all();
+                    return Some(result);
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {}
+                // Rationale: a poisoned chain mutex means another caller
+                // panicked mid-sync bookkeeping; degrade to syncing directly —
+                // correctness is unchanged (extra fsyncs, never fewer).
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Some(ticket.sync());
+                }
+            }
+            // A sync is in flight: sleep until its completion tick (with a
+            // timeout fallback so a lost wake-up degrades to a re-check, not
+            // a hang), then re-check coverage.
+            let Ok(completed) = self.completed.lock() else {
+                return Some(ticket.sync());
+            };
+            let observed = *completed;
+            // Rationale: on wait failure (poisoned during sleep) fall through
+            // to the outer loop's re-check rather than trusting the guard.
+            let _ = self
+                .done
+                .wait_timeout_while(completed, Duration::from_millis(20), |count| {
+                    *count == observed
+                });
         }
     }
 }

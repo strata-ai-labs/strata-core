@@ -438,3 +438,113 @@ fn sync_backend_error_kind_is_preserved_for_required_routing_cases() {
         assert_sync_error(error, &segment_one, kind);
     }
 }
+
+#[test]
+fn group_sync_ticket_covers_captured_dirty_and_leaves_inflight_appends_dirty() {
+    let backend = SyncFaultBackend::new([]);
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open WAL");
+    let segment_one = ObjectLayout::wal_segment(1).expect("segment one");
+    let first = record(1, b"group ticket first".to_vec());
+    let second = record(2, b"group ticket second".to_vec());
+    let third = record(3, b"appended while sync in flight".to_vec());
+    service.append(&first).expect("append first");
+    service.append(&second).expect("append second");
+    let covered_bytes = service.dirty_bytes();
+    assert_eq!(service.dirty_records(), 2);
+
+    let ticket = service.begin_group_sync();
+    assert_eq!(ticket.segment_id(), 1);
+    // Capture is pure: no sync issued, no state change.
+    assert!(backend.sync_calls().is_empty());
+    assert_eq!(service.dirty_bytes(), covered_bytes);
+
+    // An append that lands while the ticket's fsync is in flight must stay
+    // dirty after the ticket completes — completion retires exactly the
+    // captured amounts, never a blanket clear.
+    service.append(&third).expect("append while in flight");
+    let inflight_bytes = record_frame_len(&third);
+
+    ticket.sync().expect("covering fsync");
+    assert_eq!(backend.sync_calls(), vec![segment_one]);
+
+    service.complete_group_sync(&ticket);
+    assert_eq!(service.dirty_bytes(), inflight_bytes);
+    assert_eq!(service.dirty_records(), 1);
+}
+
+#[test]
+fn group_sync_ticket_completion_after_rotation_leaves_new_segment_dirty_alone() {
+    let first = record(1, b"pre-rotation".to_vec());
+    // Large enough that the computed segment size clears the service's
+    // 1 KiB minimum while still not fitting alongside the first record.
+    let second = record(2, vec![0x42; 1024]);
+    // Strictly smaller frame than `first` so it fits segment two's remaining
+    // budget without a second rotation.
+    let third = record(3, b"post-rot".to_vec());
+    let frame_one = record_frame_len(&first);
+    let frame_two = record_frame_len(&second);
+    // Segment fits the first record but not the second: appending the second
+    // rotates; the second still fits a fresh segment on its own.
+    let segment_size = WAL_SEGMENT_HEADER_SIZE as u64 + frame_one + frame_two - 1;
+    let backend = SyncFaultBackend::new([]);
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(segment_size),
+    )
+    .expect("open WAL");
+
+    service.append(&first).expect("append pre-rotation");
+    let ticket = service.begin_group_sync();
+    assert_eq!(ticket.segment_id(), 1);
+
+    // Rotation force-syncs segment one and resets the dirty counters itself.
+    let rotated = service.append(&second).expect("append rotates");
+    assert_eq!(rotated.segment_id(), 2);
+    service.append(&third).expect("append on new segment");
+    let new_segment_dirty_bytes = service.dirty_bytes();
+    let new_segment_dirty_records = service.dirty_records();
+
+    ticket.sync().expect("stale ticket fsync still succeeds");
+    service.complete_group_sync(&ticket);
+
+    // The stale ticket must not touch the new segment's dirty state.
+    assert_eq!(service.dirty_bytes(), new_segment_dirty_bytes);
+    assert_eq!(service.dirty_records(), new_segment_dirty_records);
+    assert_eq!(service.active_segment_id(), 2);
+}
+
+#[test]
+fn group_sync_ticket_failure_surfaces_typed_sync_error_and_preserves_dirty() {
+    let backend = SyncFaultBackend::new([BackendErrorKind::Unavailable]);
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("open WAL");
+    let segment_one = ObjectLayout::wal_segment(1).expect("segment one");
+    let first = record(1, b"ticket sync fails".to_vec());
+    service.append(&first).expect("append");
+    let dirty_before = service.dirty_bytes();
+
+    let ticket = service.begin_group_sync();
+    let error = ticket.sync().expect_err("injected sync failure");
+
+    assert_sync_error(error, &segment_one, BackendErrorKind::Unavailable);
+    // The caller does not redeem a failed ticket; dirty facts stay advanced
+    // (the durability-uncertain window), same as a failed force_durable.
+    assert_eq!(service.dirty_bytes(), dirty_before);
+    assert_eq!(service.dirty_records(), 1);
+}

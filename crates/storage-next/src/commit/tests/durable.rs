@@ -149,7 +149,6 @@ fn durable_blind_commit_does_not_capture_conflict_read_view() {
     assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
     assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
     assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 0);
-    assert_eq!(perf.commit_unresolved_gate_rejected_active(), 0);
     assert_eq!(perf.commit_branch_registry_lookups(), 1);
     assert_eq!(perf.commit_branch_registry_descriptors_scanned(), 1);
     assert_eq!(perf.commit_branch_guard_attempts(), 1);
@@ -2171,14 +2170,13 @@ fn durable_unresolved_gate_perf_trace_stops_before_source_capture_and_wal() {
 }
 
 #[test]
-fn durable_active_global_admission_blocks_same_branch_before_wal_append() {
+fn durable_commit_proceeds_alongside_open_admission_span_same_branch() {
+    // BS5.2: the pipelined commit path keeps an admission span open across its
+    // off-lock covering fsync, so a same-branch commit admitted while that
+    // span is in flight must execute to completion — the span no longer
+    // serializes admission; only an unresolved fact does.
     let branch = branch_id(76);
-    let config = CommitRuntimeConfig::default()
-        .with_admission_pressure_thresholds(
-            CommitAdmissionPressureThresholds::new(Some(1), None, Some(1), None)
-                .expect("thresholds"),
-        )
-        .expect("config");
+    let config = CommitRuntimeConfig::default();
     let mut registry = CommitBranchRegistry::new();
     register_active_branch(&mut registry, branch);
     let guard_set = CommitBranchGuardSet::new();
@@ -2196,13 +2194,11 @@ fn durable_active_global_admission_blocks_same_branch_before_wal_append() {
         },
     );
     let durable_gate = CommitUnresolvedDurableGate::new();
-    #[cfg(feature = "perf-trace")]
-    let _capture = crate::observability::perf_trace::begin_test_capture();
     let active_admission = durable_gate
         .admit_mutating_commit()
-        .expect("first durable admission");
+        .expect("in-flight pipelined span");
 
-    let error = CommitDurableRuntime::new(
+    let outcome = CommitDurableRuntime::new(
         &config,
         &registry,
         &guard_set,
@@ -2225,57 +2221,25 @@ fn durable_active_global_admission_blocks_same_branch_before_wal_append() {
         ),
         CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
     )
-    .expect_err("active durable admission blocks same-branch commit");
+    .expect("commit proceeds alongside the open span");
 
-    assert_eq!(
-        error,
-        CommitRuntimeError::InvalidCommitState {
-            reason: "durable commit admission is already active",
-        }
-    );
-    assert_eq!(
-        allocator.version_allocator().last_allocated(),
-        CommitVersion::ZERO
-    );
-    assert_eq!(wal.append_attempts, 0);
-    assert_eq!(state.active_row_count(), 0);
-    assert_eq!(visible.visible_version(), CommitVersion::ZERO);
+    assert_eq!(outcome.commit_version(), Some(CommitVersion::new(1)));
+    assert_eq!(wal.append_attempts, 1);
+    assert!(state.active_row_count() > 0);
+    assert_eq!(visible.visible_version(), CommitVersion::new(1));
     assert_eq!(durable_gate.unresolved().expect("gate read"), None);
-    #[cfg(feature = "perf-trace")]
-    {
-        let perf = crate::observability::perf_trace::snapshot();
-        assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 2);
-        assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
-        assert_eq!(perf.commit_unresolved_gate_rejected_active(), 1);
-        assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 0);
-        assert_eq!(perf.commit_admission_pressure_facts(), 1);
-        assert_eq!(perf.commit_admission_under_pressure(), 1);
-        assert_eq!(perf.commit_admission_accepted_under_pressure(), 0);
-        assert_eq!(perf.commit_admission_requires_maintenance(), 1);
-        assert_eq!(perf.commit_admission_mutations(), 1);
-        assert!(perf.commit_admission_approx_bytes() > 0);
-        assert_eq!(perf.commit_branch_guard_attempts(), 0);
-        assert_eq!(perf.conflict_sources_built(), 0);
-        assert_eq!(perf.read_view_captures(), 0);
-        assert_eq!(perf.commit_conflict_validation_calls(), 0);
-        assert_eq!(perf.commit_batches_prepared(), 0);
-        assert_eq!(perf.commit_wal_records_built(), 0);
-        assert_eq!(perf.commit_wal_appends(), 0);
-    }
     drop(active_admission);
     assert!(durable_gate.require_open_for_mutation().is_ok());
 }
 
 #[test]
-fn durable_active_global_admission_blocks_other_branch_before_wal_append() {
+fn durable_commit_proceeds_alongside_open_admission_span_other_branch() {
+    // BS5.2: cross-branch variant of the open-span test above — a commit to a
+    // DIFFERENT branch admitted while a pipelined span is in flight executes
+    // to completion.
     let active_branch = branch_id(76);
     let target_branch = branch_id(77);
-    let config = CommitRuntimeConfig::default()
-        .with_admission_pressure_thresholds(
-            CommitAdmissionPressureThresholds::new(Some(1), None, Some(1), None)
-                .expect("thresholds"),
-        )
-        .expect("config");
+    let config = CommitRuntimeConfig::default();
     let mut registry = CommitBranchRegistry::new();
     register_active_branch(&mut registry, active_branch);
     register_active_branch(&mut registry, target_branch);
@@ -2295,13 +2259,11 @@ fn durable_active_global_admission_blocks_other_branch_before_wal_append() {
         },
     );
     let durable_gate = CommitUnresolvedDurableGate::new();
-    #[cfg(feature = "perf-trace")]
-    let _capture = crate::observability::perf_trace::begin_test_capture();
     let active_admission = durable_gate
         .admit_mutating_commit()
-        .expect("first branch durable admission");
+        .expect("in-flight pipelined span");
 
-    let error = CommitDurableRuntime::new(
+    let outcome = CommitDurableRuntime::new(
         &config,
         &registry,
         &guard_set,
@@ -2316,7 +2278,7 @@ fn durable_active_global_admission_blocks_other_branch_before_wal_append() {
             target_branch,
             CommitDurabilityMode::Standard,
             vec![CommitMutation::put(
-                physical_key(target_branch, 0x20, b"blocked-by-active-durable".to_vec()),
+                physical_key(target_branch, 0x20, b"alongside-active-durable".to_vec()),
                 b"value".to_vec(),
                 CommitExpiry::None,
                 CommitRetentionHint::Append,
@@ -2324,43 +2286,13 @@ fn durable_active_global_admission_blocks_other_branch_before_wal_append() {
         ),
         CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
     )
-    .expect_err("active durable admission blocks cross-branch commit");
+    .expect("cross-branch commit proceeds alongside the open span");
 
-    assert_eq!(
-        error,
-        CommitRuntimeError::InvalidCommitState {
-            reason: "durable commit admission is already active",
-        }
-    );
-    assert_eq!(
-        allocator.version_allocator().last_allocated(),
-        CommitVersion::ZERO
-    );
-    assert_eq!(wal.append_attempts, 0);
-    assert_eq!(state.active_row_count(), 0);
-    assert_eq!(visible.visible_version(), CommitVersion::ZERO);
+    assert_eq!(outcome.commit_version(), Some(CommitVersion::new(1)));
+    assert_eq!(wal.append_attempts, 1);
+    assert!(state.active_row_count() > 0);
+    assert_eq!(visible.visible_version(), CommitVersion::new(1));
     assert_eq!(durable_gate.unresolved().expect("gate read"), None);
-    #[cfg(feature = "perf-trace")]
-    {
-        let perf = crate::observability::perf_trace::snapshot();
-        assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 2);
-        assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
-        assert_eq!(perf.commit_unresolved_gate_rejected_active(), 1);
-        assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 0);
-        assert_eq!(perf.commit_admission_pressure_facts(), 1);
-        assert_eq!(perf.commit_admission_under_pressure(), 1);
-        assert_eq!(perf.commit_admission_accepted_under_pressure(), 0);
-        assert_eq!(perf.commit_admission_requires_maintenance(), 1);
-        assert_eq!(perf.commit_admission_mutations(), 1);
-        assert!(perf.commit_admission_approx_bytes() > 0);
-        assert_eq!(perf.commit_branch_guard_attempts(), 0);
-        assert_eq!(perf.conflict_sources_built(), 0);
-        assert_eq!(perf.read_view_captures(), 0);
-        assert_eq!(perf.commit_conflict_validation_calls(), 0);
-        assert_eq!(perf.commit_batches_prepared(), 0);
-        assert_eq!(perf.commit_wal_records_built(), 0);
-        assert_eq!(perf.commit_wal_appends(), 0);
-    }
     drop(active_admission);
     assert!(durable_gate.require_open_for_mutation().is_ok());
 }

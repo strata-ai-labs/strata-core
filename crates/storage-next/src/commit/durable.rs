@@ -56,20 +56,14 @@ pub(crate) trait CommitWalAppender {
     ) -> Result<CommitWalAppendFacts, CommitWalAppendError>;
 
     /// Append without the `Always` policy's inline fsync (BS5.1 write groups). The group leader
-    /// owns durability via one covering [`force_durable_for_group`]. Defaults to the plain append
-    /// for appenders with no per-append fsync (test fakes; `Standard`-style appenders), where the
-    /// two are equivalent.
+    /// owns durability via one covering fsync (a group-sync ticket in BS5.2). Defaults to the
+    /// plain append for appenders with no per-append fsync (test fakes; `Standard`-style
+    /// appenders), where the two are equivalent.
     fn append_commit_record_deferring_durability(
         &mut self,
         record: &WalRecord,
     ) -> Result<CommitWalAppendFacts, CommitWalAppendError> {
         self.append_commit_record(record)
-    }
-
-    /// Make every previously appended record durable — the group leader's single covering fsync
-    /// (BS5.1). Defaults to success for appenders with nothing to sync (test fakes).
-    fn force_durable_for_group(&mut self) -> Result<(), CommitWalAppendError> {
-        Ok(())
     }
 }
 
@@ -112,7 +106,7 @@ impl CommitGroupState {
 
     /// Widen `fact` to cover the whole group's version block (group-of-1 widening is the
     /// identity, preserving the single-commit fact byte-for-byte).
-    fn widen_fact(
+    pub(crate) fn widen_fact(
         &self,
         fact: CommitUnresolvedDurable,
     ) -> CommitRuntimeResult<CommitUnresolvedDurable> {
@@ -271,7 +265,22 @@ where
         batch: CommitBatch,
         generation_guard: CommitBranchGenerationGuard,
     ) -> CommitRuntimeResult<CommitOutcome> {
-        self.execute_with_role(batch, generation_guard, CommitGroupRole::Solo)
+        self.execute_with_role(batch, generation_guard, CommitGroupRole::Solo, None)
+    }
+
+    /// Solo execution with a pipeline visibility floor (BS5.2): the branch-
+    /// not-ahead check and conflict bounds validate against
+    /// `max(visible, floor)` so a solo commit admitted while earlier groups
+    /// are applied-but-unpublished (their covering fsync in flight) keeps
+    /// exact serial semantics. With an empty pipeline `floor == visible` and
+    /// this is byte-identical to [`execute`].
+    pub(crate) fn execute_with_visibility_floor(
+        &mut self,
+        batch: CommitBatch,
+        generation_guard: CommitBranchGenerationGuard,
+        floor: CommitVersion,
+    ) -> CommitRuntimeResult<CommitOutcome> {
+        self.execute_with_role(batch, generation_guard, CommitGroupRole::Solo, Some(floor))
     }
 
     /// Execute one member of a write group (BS5.1). The caller is the group
@@ -286,7 +295,12 @@ where
         generation_guard: CommitBranchGenerationGuard,
         group: &mut CommitGroupState,
     ) -> CommitRuntimeResult<CommitOutcome> {
-        self.execute_with_role(batch, generation_guard, CommitGroupRole::Member(group))
+        self.execute_with_role(
+            batch,
+            generation_guard,
+            CommitGroupRole::Member(group),
+            None,
+        )
     }
 
     fn execute_with_role(
@@ -294,6 +308,7 @@ where
         batch: CommitBatch,
         generation_guard: CommitBranchGenerationGuard,
         role: CommitGroupRole<'_>,
+        visibility_floor: Option<CommitVersion>,
     ) -> CommitRuntimeResult<CommitOutcome> {
         let admission_timer = perf_trace::start_timer();
         let batch = batch.validate(self.config)?;
@@ -339,9 +354,14 @@ where
         // Group members bound conflict validation and apply order at the group
         // frontier: earlier members are applied but unpublished, and the
         // frontier stands in for the visible version each would have published
-        // solo — exact serial conflict semantics for same-branch members.
+        // solo — exact serial conflict semantics for same-branch members. A
+        // solo commit under the pipeline (BS5.2) gets the same treatment via
+        // its visibility floor.
         let current_visible_version = match &participation {
-            CommitGateParticipation::Solo(_) => self.visible.visible_version(),
+            CommitGateParticipation::Solo(_) => self
+                .visible
+                .visible_version()
+                .max(visibility_floor.unwrap_or(CommitVersion::ZERO)),
             CommitGateParticipation::Member(group) => {
                 self.visible.visible_version().max(group.frontier)
             }
@@ -369,36 +389,13 @@ where
         let wal_record_timer = perf_trace::start_timer();
         let record = build_wal_record(stamp, combined_rows)?;
         perf_trace::record_commit_wal_record_built(wal_record_timer, wal_record_rows);
-        let wal_append_timer = perf_trace::start_timer();
-        let append_result = match &participation {
-            CommitGateParticipation::Solo(_) => self.wal.append_commit_record(&record),
-            // The leader's finalize issues the group's one covering fsync.
-            CommitGateParticipation::Member(_) => {
-                self.wal.append_commit_record_deferring_durability(&record)
-            }
-        };
-        let append = match append_result {
-            Ok(append) => {
-                perf_trace::record_commit_wal_append_elapsed(
-                    wal_append_timer,
-                    append.bytes_written,
-                );
-                append
-            }
-            Err(error) => {
-                perf_trace::record_commit_wal_append_elapsed(wal_append_timer, 0);
-                return Err(error.into_commit_error(branch_id, stamp.commit_version()));
-            }
-        };
-        if matches!(participation, CommitGateParticipation::Solo(_)) {
-            // Members satisfy `Always` through the leader's covering group fsync.
-            require_append_satisfies_policy(
-                required_policy,
-                append,
-                branch_id,
-                stamp.commit_version(),
-            )?;
-        }
+        self.append_record_for_participation(
+            &participation,
+            &record,
+            required_policy,
+            branch_id,
+            stamp.commit_version(),
+        )?;
 
         let combined_rows = record.into_commit_payload().into_rows();
         let apply_timer = perf_trace::start_timer();
@@ -421,6 +418,44 @@ where
         self.publish_or_defer_to_group(&mut participation, stamp, durability, facts)?;
 
         CommitOutcome::visible(branch_id, stamp, durability, mutation_counts, facts)
+    }
+
+    /// The role-conditioned WAL append: solo appends with the policy's inline
+    /// fsync; a member defers durability to the group's covering sync (and
+    /// satisfies `Always` through it, so the per-append policy check is
+    /// solo-only).
+    fn append_record_for_participation(
+        &mut self,
+        participation: &CommitGateParticipation<'_, '_>,
+        record: &WalRecord,
+        required_policy: DurabilityPolicy,
+        branch_id: BranchId,
+        commit_version: CommitVersion,
+    ) -> CommitRuntimeResult<()> {
+        let wal_append_timer = perf_trace::start_timer();
+        let append_result = match participation {
+            CommitGateParticipation::Solo(_) => self.wal.append_commit_record(record),
+            CommitGateParticipation::Member(_) => {
+                self.wal.append_commit_record_deferring_durability(record)
+            }
+        };
+        let append = match append_result {
+            Ok(append) => {
+                perf_trace::record_commit_wal_append_elapsed(
+                    wal_append_timer,
+                    append.bytes_written,
+                );
+                append
+            }
+            Err(error) => {
+                perf_trace::record_commit_wal_append_elapsed(wal_append_timer, 0);
+                return Err(error.into_commit_error(branch_id, commit_version));
+            }
+        };
+        if matches!(participation, CommitGateParticipation::Solo(_)) {
+            require_append_satisfies_policy(required_policy, append, branch_id, commit_version)?;
+        }
+        Ok(())
     }
 
     /// Solo: publish visibility now (recording an `applied_not_visible` fact
@@ -482,39 +517,32 @@ fn record_unresolved_for_participation(
     }
 }
 
-/// Group leader finalize (BS5.1): one covering fsync for `Always`, then one
-/// visible publish to the group's max version. Returns `Ok(None)` for an empty
-/// group (no member reached the durable protocol). A failure records a gate
-/// fact widened to the group's version range so recovery reconciles the whole
-/// group; the caller treats it as group-fatal and distributes the error to
-/// every member.
-pub(crate) fn finalize_commit_group<W, V>(
+/// Group publish (BS5.2): one visible advance to the group's max version,
+/// after the group's covering durability is settled (the pipelined leader's
+/// off-lock fsync, or `Standard`'s by-class durability). Returns `Ok(None)`
+/// for an empty group (no member reached the durable protocol). A publish
+/// failure records a gate fact widened to the group's version range so
+/// recovery reconciles the whole group; the caller treats it as group-fatal
+/// and distributes the error to every member.
+pub(crate) fn publish_commit_group<V>(
     group: &CommitGroupState,
-    wal: &mut W,
     visible: &mut V,
     durable_gate: &CommitUnresolvedDurableGate,
 ) -> CommitRuntimeResult<Option<VisibleVersionPublish>>
 where
-    W: CommitWalAppender,
     V: CommitVisiblePublisher,
 {
     let (Some(stamp), Some(durability)) = (group.last_stamp, group.last_durability) else {
         return Ok(None);
     };
-    if wal.durability_policy() == DurabilityPolicy::Always {
-        if let Err(error) = wal.force_durable_for_group() {
-            // Fail closed: members are applied but the covering fsync did not
-            // complete, so the fact claims no durable progress for the range.
-            let reason = "write group covering fsync failed after members applied";
-            durable_gate.record_unresolved(group.widen_fact(
-                CommitUnresolvedDurable::applied_not_visible(
-                    stamp,
-                    CommitDurabilityClass::NotDurable,
-                    reason,
-                )?,
-            )?)?;
-            return Err(error.into_commit_error(stamp.branch_id(), stamp.commit_version()));
-        }
+    // Pipelined groups settle out of order: a LATER group may already have
+    // published above this one — its publish covers ours (version contiguity
+    // plus its covering fsync imply everything below it is applied and
+    // durable). A non-advancing publish is a no-op here, never a regression.
+    if stamp.commit_version() <= visible.visible_version() {
+        return Ok(Some(VisibleVersionPublish::Unchanged {
+            current: visible.visible_version(),
+        }));
     }
     let facts = visible_durable_facts(stamp)?;
     perf_trace::record_commit_visible_publish_attempt();
@@ -642,18 +670,6 @@ impl CommitWalAppender for WalService<'_> {
         self.append_deferring_durability(record)
             .map(|append| CommitWalAppendFacts::from_wal_append(&append))
             .map_err(map_wal_service_append_error)
-    }
-
-    fn force_durable_for_group(&mut self) -> Result<(), CommitWalAppendError> {
-        self.force_durable().map_err(|error| {
-            // A failed covering fsync leaves every deferred append's
-            // durability unknown — always uncertain, never clean.
-            CommitWalAppendError::uncertain(CommitRuntimeError::lower_layer_with(
-                CommitLowerLayer::WalService,
-                "write group covering fsync durability is uncertain",
-                error,
-            ))
-        })
     }
 }
 

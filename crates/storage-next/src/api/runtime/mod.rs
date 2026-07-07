@@ -3224,8 +3224,12 @@ where
     }
 }
 
-/// Acquire the runtime lock and lead one write group, handing leadership on afterwards (the
-/// guard promotes the next leader even if execution panics).
+/// Acquire the runtime lock and lead one write group. `Always` runtimes take
+/// the pipelined path (fsync outside the lock); `Standard` executes in a
+/// single hold. The leadership guard promotes the next leader even if
+/// execution panics — the pipelined path hands off EARLY (right after phase 1
+/// releases the lock) so the next group forms and appends during this group's
+/// covering fsync.
 fn lead_commit_group_as_leader<S>(
     slot: &RuntimeSlot<LifecycleDurableLocalRuntime<'static, S>>,
     request: commit_group::CommitGroupRequest,
@@ -3234,9 +3238,42 @@ fn lead_commit_group_as_leader<S>(
 where
     S: CommitTimestampSource,
 {
-    let _leadership = commit_group::CommitGroupLeadership::new(slot.commit_groups());
+    let leadership = commit_group::CommitGroupLeadership::new(slot.commit_groups());
     let mut runtime = slot.lock();
-    lead_commit_group(slot, &mut runtime, request, original_batch)
+    if matches!(
+        runtime.open_plan().storage_mode(),
+        LifecycleStorageMode::DurableLocalAlways
+    ) {
+        // Phase 1 under this hold: formation + admission + appends + applies
+        // + sync-ticket capture (~µs-scale next to the fsync).
+        let formed = form_commit_group(slot, &*runtime, request, original_batch);
+        let joiners = formed.joiners;
+        let member_bytes = formed.member_bytes;
+        let in_flight = runtime.execute_durable_commit_group_begin(formed.batches);
+        let durable_seq = runtime.wal_durable_seq_handle();
+        drop(runtime);
+        // Hand leadership off NOW: the next group forms, appends, and applies
+        // while this group's covering fsync runs.
+        drop(leadership);
+        // Off-lock durability: prove coverage by a completed sync, or run one
+        // through the chain (one sync in flight at a time — the device flush
+        // is the serial resource, and each completed sync covers everyone who
+        // appended before its capture).
+        let batching_beat = in_flight.concurrent_spans() > 1;
+        let sync_result = in_flight.ticket().and_then(|ticket| {
+            slot.wal_sync()
+                .sync_or_wait_covered(&durable_seq, ticket, batching_beat, || {
+                    slot.lock().wal_group_sync_ticket()
+                })
+        });
+        // Phase 2 under a fresh hold: redeem the sync, publish the group's
+        // visibility, run post-commit bookkeeping.
+        let mut runtime = slot.lock();
+        let results = runtime.execute_durable_commit_group_finish(in_flight, sync_result);
+        distribute_group_responses(&mut runtime, results, member_bytes, joiners)
+    } else {
+        lead_commit_group(slot, &mut runtime, request, original_batch)
+    }
 }
 
 /// Today's exact solo under-lock section, shared by the uncontended fast path and a leader
@@ -3277,38 +3314,50 @@ fn lead_commit_group<S>(
 where
     S: CommitTimestampSource,
 {
-    const MAX_DRAIN: usize = commit_group::COMMIT_GROUP_MAX_MEMBERS - 1;
-    let mut members = slot.commit_groups().drain_members(MAX_DRAIN);
-    // Formation window, `Always` mode only: each group pays one covering
-    // fsync (~ms), so holding formation open for ~2% of that absorbs the
-    // cohort of just-served members re-joining RIGHT NOW (their wake-up races
-    // the leadership handoff by microseconds) — without it, re-joining
-    // writers ride only every second fsync round. Standard mode's holds are
-    // ~µs, so a window would dominate them; its groups form from natural lock
-    // contention alone. Gated on observed contention: uncontended (and wasm)
-    // commits never wait.
-    if matches!(
-        runtime.open_plan().storage_mode(),
-        LifecycleStorageMode::DurableLocalAlways
-    ) && slot.commit_groups().take_recent_contention()
-    {
-        let deadline = std::time::Instant::now() + Duration::from_micros(150);
-        while members.len() < MAX_DRAIN && std::time::Instant::now() < deadline {
-            std::thread::yield_now();
-            members.extend(
-                slot.commit_groups()
-                    .drain_members(MAX_DRAIN - members.len()),
-            );
-        }
-    }
-    if members.is_empty() {
-        // Nothing actually joined: the exact solo path.
-        let commit_group::CommitGroupRequest {
-            batch,
-            generation_guard,
-        } = leader_request;
+    let formed = form_commit_group(slot, runtime, leader_request, leader_original_batch);
+    if formed.joiners.is_empty() {
+        // Nothing actually joined: the exact solo path. Only the Standard
+        // leader reaches here (Always pipelines every group, including
+        // groups of one).
+        let mut batches = formed.batches;
+        // The leader's request is the sole (last) entry by construction.
+        let Some((batch, generation_guard)) = batches.pop() else {
+            return commit_group::CommitGroupResponse {
+                outcome: Err(LifecycleError::InvalidLifecycleState {
+                    reason: "write group formed without its leader's request",
+                }),
+                admission: None,
+                pending_tasks: 0,
+                wal_growth: None,
+                throttle_delay_millis: 0,
+            };
+        };
         return solo_commit_response(runtime, batch, leader_original_batch, generation_guard);
     }
+    let results = runtime.execute_durable_commit_group(formed.batches);
+    distribute_group_responses(runtime, results, formed.member_bytes, formed.joiners)
+}
+
+/// One formed write group: queued joiners plus the leader's own request
+/// (always LAST — member order is version order), with per-member byte
+/// estimates captured before the batches are consumed.
+struct FormedCommitGroup {
+    joiners: Vec<Arc<commit_group::CommitGroupJoiner>>,
+    batches: Vec<(crate::commit::CommitBatch, CommitBranchGenerationGuard)>,
+    member_bytes: Vec<u64>,
+}
+
+fn form_commit_group<S>(
+    slot: &RuntimeSlot<LifecycleDurableLocalRuntime<'static, S>>,
+    runtime: &LifecycleDurableLocalRuntime<'static, S>,
+    leader_request: commit_group::CommitGroupRequest,
+    leader_original_batch: &crate::commit::CommitBatch,
+) -> FormedCommitGroup
+where
+    S: CommitTimestampSource,
+{
+    const MAX_DRAIN: usize = commit_group::COMMIT_GROUP_MAX_MEMBERS - 1;
+    let members = slot.commit_groups().drain_members(MAX_DRAIN);
     let graded = runtime.is_graded_admission();
     let estimate_bytes = |batch: &crate::commit::CommitBatch| {
         if graded {
@@ -3328,10 +3377,25 @@ where
     }
     member_bytes.push(estimate_bytes(leader_original_batch));
     batches.push((leader_request.batch, leader_request.generation_guard));
+    FormedCommitGroup {
+        joiners,
+        batches,
+        member_bytes,
+    }
+}
 
-    let results = runtime.execute_durable_commit_group(batches);
-    // Shared post-group snapshots: the same values each member would read under the
-    // lock after a solo commit.
+/// Build per-member responses from settled group results (the same snapshots
+/// each member would read under the lock after a solo commit), publish every
+/// member's response into its joiner, and return the leader's own (last).
+fn distribute_group_responses<S>(
+    runtime: &mut LifecycleDurableLocalRuntime<'static, S>,
+    results: Vec<crate::lifecycle::DurableGroupMemberResult>,
+    member_bytes: Vec<u64>,
+    joiners: Vec<Arc<commit_group::CommitGroupJoiner>>,
+) -> commit_group::CommitGroupResponse
+where
+    S: CommitTimestampSource,
+{
     let pending_tasks = runtime.maintenance_status().pending_tasks();
     let wal_growth = runtime.last_wal_growth_outcome().cloned();
     let mut responses: Vec<commit_group::CommitGroupResponse> = results
@@ -3365,9 +3429,6 @@ where
     for (joiner, response) in joiners.into_iter().zip(responses) {
         joiner.complete(response);
     }
-    // The members just woken are about to re-join: keep the next leader's
-    // formation window armed even if none has re-joined by handoff time.
-    slot.commit_groups().note_group_served();
     leader_response
 }
 

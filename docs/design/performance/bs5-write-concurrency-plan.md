@@ -229,9 +229,112 @@ seams are unit-covered (`covers_version` replay admission, fact widening round-t
 - Cache-mode suites unchanged (groups are durable-path; cache commits keep the serial
   path in this slice).
 
-### BS5.2 — Commit path off the runtime mutex
+### BS5.2 — Commit path off the runtime mutex — LANDED
 
-**Changes.** The leader's group execution stops taking the runtime mutex on the fast path:
+Landed per the design revision below, with these deltas discovered during implementation:
+
+- **One sync in flight, fresh capture.** Overlapping fsyncs on one file do NOT
+  parallelize (the device flush is the serial resource) — the first pipelined cut
+  measured barely above BS5.1. The landed shape is the classic group flush: a sync-chain
+  token admits ONE syncer at a time; the syncer re-captures its ticket at sync time (one
+  brief runtime-lock hold), so its fsync covers every group that appended while the
+  previous sync ran; everyone else proves coverage against an off-lock durable-sequence
+  watermark and skips syncing entirely.
+- **A 250 µs syncer beat, gated on open gate spans (>1).** The cohort served by sync k
+  re-appends microseconds AFTER sync k+1's capture; without a beat the cohorts alternate
+  and every sync covers half the writers (measured: 350 → 563 commits/s at 4T from this
+  one change). Solo commits never pay it (single span).
+- **Out-of-order settlement rules.** A later group may publish first (its covering sync
+  proves everything below it durable; apply order guarantees everything below is
+  applied), so an earlier group's publish becomes a monotone no-op — the first pipelined
+  run group-fataled on the tracker's "cannot regress" check until this rule landed. A
+  recorded fact fails a completing group only when `fact.first <= group.last`; a fact
+  strictly above the group's range does not block it. A group whose own sync failed is
+  rescued if the watermark passed its capture (a later sync covered it).
+- **Flush defers on mid-pipeline branches.** Background flush now defers when a branch
+  has applied rows above the visible version — freezing/snapshotting in the pipeline gap
+  could install a durable table containing rows whose WAL records are not yet fsynced
+  (a crash could resurrect an unacked half-group). The checkpoint/watermark paths were
+  already visible-clamped.
+- The gate's single `active_admission` slot became a counted multi-admission span
+  (BS5.2b); solo commits under the pipeline validate at the pipeline frontier
+  (`max(visible, highest in-flight applied version)`) via an explicit visibility floor —
+  byte-identical when the pipeline is empty.
+- The Always formation window from BS5.1 was deleted (the sync chain batches durability;
+  group size no longer matters), as was the BS5.1 `force_durable_for_group` seam.
+
+Measured (dev box, isolated points, medians of 3): `Always` shared 160 →
+270 / 563 / 1,117 commits/s at 2/4/8 threads — **1.7× / 3.5× / 7.0×** (BS5.1: 1.4× /
+1.7× / 2.3×; BS5.0 baseline: flat 1.0×). Per-thread fairness tightened from ~1.4× spread
+to ~1.05×. `Always` per-writer 4T: 509 (3.2×). `Standard` unregressed (~20–22.5K flat).
+Single-thread byte- and throughput-identical (160 vs 159–161 baseline). The ≥4× gate at
+exactly 4 threads is capped by flush-latency arithmetic on this box: one ~6.2 ms device
+flush per round bounds 4 threads at 4/6.45 ms ≈ 3.9× ideal; the curve through 8 threads
+(7.0×) is the gate's substance. Standard's ≥2.5× remains member-protocol-cost-bound —
+BS5.3's question, per the revision note below.
+
+Group-boundary crash sweeps landed with the phase split (BS5.1's carried debt): crash
+before the covering sync → full replay on reopen (durable-without-ack, never the
+reverse); torn WAL tail → complete-prefix replay (per-record CRC atomicity); injected
+sync failure → range fact gates commits, members report durability-uncertain, reopen
+reconciles the whole range; two-groups-in-flight fatal-above/publish-below ordering.
+
+**Design revision (measured, before implementation).** BS5.1's lock-timeline trace
+(`BS52_TRACE`) showed commit holds are already back-to-back at 4 threads (inter-hold gaps
+13–50 µs, `lock_wait ≈ 0` — background drains do NOT contend the mutex during write
+bursts). The mutex is 100% occupied by commit holds, and each ~6.3 ms hold is ~95% one
+fsync. The BS5.1 throughput variance (278–497 commits/s at 4T) is group-size luck in the
+formation race. Therefore the binding constraint is NOT runtime-mutex contention — it is
+that **formation and appends cannot overlap the in-flight fsync while both live inside one
+mutex hold**.
+
+Revised cut: instead of re-homing commit state under a dedicated commit-protocol lock
+(original D5), the leader **releases the runtime mutex across the fsync**:
+
+1. Hold 1 (runtime mutex): per-member admission + WAL appends + memtable applies
+   (~200 µs/group) + `begin_group_sync` ticket. Release.
+2. Off-lock: `backend.sync_object(wal_object)` — sound because LocalFs `sync_object`
+   fsyncs a fresh fd of the same file and the append handle is an unbuffered raw `File`
+   (POSIX fsync covers the file, not the writing fd); memory backend no-ops.
+3. Hold 2 (re-acquire): `complete_group_sync` (clear dirty state if unrotated; halt writer
+   on failure) + one visible publish to the group max + post-commit hooks. Release, then
+   complete members.
+
+While group n fsyncs, group n+1 forms, appends, and applies — groups become
+"everyone who arrived during the previous fsync", deterministically, killing both the
+formation race and the cohort alternation. Publish ordering is safe out of the box: any
+completed fsync covers all earlier appends to the same file (rotation force-syncs retired
+segments), and publish is monotone-max, so a later group publishing first implies the
+earlier group's records are durable.
+
+Semantic prerequisites (the real work):
+- **Gate multi-admission**: the durable gate's single `active_admission` slot becomes a
+  set of in-flight group ranges; the first post-append failure records ONE fact covering
+  `[oldest unacked first .. newest appended last]`; later halted completions report
+  failure without recording (their range is covered, or widened via `replace_exact`).
+- **Pipeline frontier**: `require_branch_not_ahead_of_visible` and conflict-source bounds
+  generalize from the visible version to the frontier of applied in-flight versions
+  (applied-above-visible is normal between fsync and publish); with pipelining off,
+  frontier == visible — byte-identical.
+- Ack only after the member's covering fsync and publish; fsync failure halts the writer
+  and all unacked in-flight members report durability-uncertain.
+
+The original D5 (allocator fetch-add, visible release-store atomic, per-branch apply locks,
+runtime mutex only for structural transitions) is **deferred to a data-driven decision
+after this lands**: it serves Standard-mode scaling, and the BS5.1 numbers say Standard is
+member-protocol-cost-bound (~45 µs/commit serialized work with no shared fixed cost to
+amortize), which points at BS5.3 (concurrent memtable) rather than lock decoupling. The
+lock-order rule stays as documented for whatever acquires both: commit path may acquire the
+runtime mutex; nothing holding it re-enters the join queue.
+
+Sub-slices: **BS5.2a** WAL group-sync tickets (begin/complete split, behavior-neutral);
+**BS5.2b** gate multi-admission + frontier bounds (pipelining off, byte-identical);
+**BS5.2c** the pipelined leader + matrix + bench (target: Always ≥4× at 4T);
+**BS5.2d** group-boundary crash sweeps (BS5.1's carried test debt, doubly needed now);
+**BS5.2e** gates + baseline + docs.
+
+**Original changes (superseded by the revision above; kept for the record).** The leader's
+group execution stops taking the runtime mutex on the fast path:
 - A dedicated **commit-protocol lock** serializes group leaders (allocator block
   reservation, WAL descriptor ownership, visible publish ordering); D5 converts the
   allocator to block fetch-add under it and visible to a release-store atomic.

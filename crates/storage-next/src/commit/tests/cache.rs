@@ -125,7 +125,6 @@ fn cache_blind_commit_does_not_capture_conflict_read_view() {
     assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
     assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
     assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 0);
-    assert_eq!(perf.commit_unresolved_gate_rejected_active(), 0);
     assert_eq!(perf.commit_branch_registry_lookups(), 1);
     assert_eq!(perf.commit_branch_registry_descriptors_scanned(), 1);
     assert_eq!(perf.commit_branch_guard_attempts(), 1);
@@ -909,7 +908,6 @@ fn cache_missing_branch_perf_trace_stops_before_allocation_and_guard() {
     assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
     assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
     assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 0);
-    assert_eq!(perf.commit_unresolved_gate_rejected_active(), 0);
     assert_eq!(perf.commit_branch_registry_lookups(), 1);
     assert_eq!(perf.commit_branch_registry_descriptors_scanned(), 0);
     assert_eq!(perf.commit_branch_guard_attempts(), 0);

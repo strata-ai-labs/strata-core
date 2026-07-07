@@ -1854,7 +1854,6 @@ fn durable_unresolved_rejection_under_pressure_keeps_pressure_counters_separate(
     assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
     assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 0);
     assert_eq!(perf.commit_unresolved_gate_rejected_unresolved(), 1);
-    assert_eq!(perf.commit_unresolved_gate_rejected_active(), 0);
     assert_eq!(perf.commit_branch_guard_attempts(), 0);
     assert_eq!(perf.lifecycle_write_admission_evaluations(), 0);
     assert_eq!(perf.lifecycle_write_admission_pressure_rejects(), 0);

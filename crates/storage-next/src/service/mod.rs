@@ -69,7 +69,7 @@ pub(crate) use table::{
     )
 )]
 pub(crate) use wal::{
-    WalAppend, WalDeleteReport, WalGrowthFacts, WalRepair, WalRetentionProof,
+    WalAppend, WalDeleteReport, WalGroupSyncTicket, WalGrowthFacts, WalRepair, WalRetentionProof,
     WalRetentionProofSource, WalSegmentDeleteFailure, WalSegmentDeleteOutcome, WalService,
     WalServiceConfig, WalServiceError, WalSidecarDeleteOutcome, WalTruncation,
 };

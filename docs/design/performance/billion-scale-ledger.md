@@ -131,6 +131,31 @@ size-7 groups take the same ~6.2 ms hold as solos — so the residual gap to the
 gate is hold pipelining: formation can't overlap the in-flight fsync while both live under
 the one runtime mutex. That is exactly BS5.2 (commit path off the mutex).
 
+## Pipelined covering fsync (BS5.2, dev box, same instrument, isolated points, medians of 3)
+
+The covering fsync moved OUT of the runtime mutex: an `Always` leader appends + applies
+under one short hold (phase 1), hands leadership off, settles durability off-lock through a
+sync chain (one fsync in flight at a time, captured fresh at sync time so it covers every
+group that appended since; everyone covered skips their own), then publishes under a second
+short hold (phase 2). Semantics that made it safe: gate multi-admission spans, a pipeline
+frontier bounding admissions at max(visible, in-flight applied), monotone no-op publishes
+for out-of-order settlement, fact-ordering rules (`fact.first <= group.last` fails a group;
+above it doesn't), a durable-watermark rescue for sync failures covered by later syncs, and
+flush deferral on branches with applied-above-visible rows.
+
+| engine · branches | 1 thread | 2 | 4 | 8 | vs baseline (159 flat) |
+|---|---|---|---|---|---|
+| always · shared | 160 | 270 | 563 | 1,117 | **1.7× / 3.5× / 7.0×** (BS5.1: 1.4/1.7/2.3×) |
+| always · per-writer (4T) | — | — | 509 | — | 3.2× |
+| standard · shared | 19,783 | — | 21,955 | 22,151 | unregressed (protocol-cost-bound; BS5.3's question) |
+
+Per-thread fairness tightened from ~1.4× spread (BS5.1) to ~1.05× — every writer rides
+every sync round. The ≥4× exit gate at exactly 4 threads is capped by flush arithmetic on
+this box (one ~6.2 ms flush per round → 3.9× ideal at 4T); the curve through 8 threads is
+the gate's substance. Group-boundary crash sweeps (BS5.1's carried debt) landed with the
+phase split: crash-before-sync full replay, torn-tail prefix replay, injected sync-failure
+range-fact reconciliation, and two-groups-in-flight ordering.
+
 BS5.1 also removed two pre-lock writer serializers found with the new instrument: the
 commit-timestamp base and the durability-mode resolution both took the full runtime lock per
 commit (writers queued behind an in-flight fsync before ever reaching the commit path — the

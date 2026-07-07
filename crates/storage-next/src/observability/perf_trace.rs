@@ -114,7 +114,6 @@ pub struct StoragePerfSnapshot {
     commit_unresolved_gate_admission_attempts: u64,
     commit_unresolved_gate_admission_acquired: u64,
     commit_unresolved_gate_rejected_unresolved: u64,
-    commit_unresolved_gate_rejected_active: u64,
     commit_unresolved_records: u64,
     commit_unresolved_durable_not_applied_records: u64,
     commit_unresolved_applied_not_visible_records: u64,
@@ -713,10 +712,6 @@ impl StoragePerfSnapshot {
     }
 
     /// Admission attempts rejected because another mutation is active.
-    pub const fn commit_unresolved_gate_rejected_active(self) -> u64 {
-        self.commit_unresolved_gate_rejected_active
-    }
-
     /// Unresolved durable commit records installed in the gate.
     pub const fn commit_unresolved_records(self) -> u64 {
         self.commit_unresolved_records
@@ -2485,7 +2480,6 @@ static COMMIT_UNRESOLVED_GATE_ADMISSION_ACQUIRED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_UNRESOLVED_GATE_REJECTED_UNRESOLVED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
-static COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_UNRESOLVED_RECORDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -3273,7 +3267,6 @@ pub fn reset() {
     COMMIT_UNRESOLVED_GATE_ADMISSION_ATTEMPTS.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_GATE_ADMISSION_ACQUIRED.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_GATE_REJECTED_UNRESOLVED.store(0, Ordering::Relaxed);
-    COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_RECORDS.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_DURABLE_NOT_APPLIED_RECORDS.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_APPLIED_NOT_VISIBLE_RECORDS.store(0, Ordering::Relaxed);
@@ -3683,8 +3676,6 @@ pub fn snapshot() -> StoragePerfSnapshot {
         commit_unresolved_gate_admission_acquired: COMMIT_UNRESOLVED_GATE_ADMISSION_ACQUIRED
             .load(Ordering::Relaxed),
         commit_unresolved_gate_rejected_unresolved: COMMIT_UNRESOLVED_GATE_REJECTED_UNRESOLVED
-            .load(Ordering::Relaxed),
-        commit_unresolved_gate_rejected_active: COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE
             .load(Ordering::Relaxed),
         commit_unresolved_records: COMMIT_UNRESOLVED_RECORDS.load(Ordering::Relaxed),
         commit_unresolved_durable_not_applied_records:
@@ -4624,17 +4615,6 @@ pub(crate) fn record_commit_unresolved_gate_rejected_unresolved() {
         return;
     }
     COMMIT_UNRESOLVED_GATE_REJECTED_UNRESOLVED.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_commit_unresolved_gate_rejected_active() {}
-
-#[cfg(feature = "perf-trace")]
-pub(crate) fn record_commit_unresolved_gate_rejected_active() {
-    if !recording_enabled() {
-        return;
-    }
-    COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

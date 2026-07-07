@@ -29,6 +29,10 @@ pub(super) struct RuntimeSlot<R> {
     /// Write-group join queue (BS5.1): contended durable commits enqueue here
     /// and are executed in groups by whichever caller holds the runtime lock.
     commit_groups: super::commit_group::CommitGroupQueue,
+    /// Covering-fsync chain (BS5.2): serializes the pipelined groups' off-lock
+    /// syncs so the device flush stays fat (one sync in flight, everyone it
+    /// covers skips their own).
+    wal_sync: super::commit_group::WalSyncChain,
     #[cfg(test)]
     pub(super) background_block_wait: BackgroundBlockWaitConfig,
 }
@@ -54,7 +58,8 @@ where
             .field("published_branches", &self.snapshot_registry.load().len())
             .field("background", &self.background)
             .field("background_drain", &self.background_drain.is_some())
-            .field("commit_groups", &self.commit_groups);
+            .field("commit_groups", &self.commit_groups)
+            .field("wal_sync", &self.wal_sync);
         #[cfg(test)]
         debug.field("background_block_wait", &self.background_block_wait);
         debug.finish()
@@ -243,6 +248,11 @@ impl<R> RuntimeSlot<R> {
     /// The write-group join queue (BS5.1).
     pub(super) fn commit_groups(&self) -> &super::commit_group::CommitGroupQueue {
         &self.commit_groups
+    }
+
+    /// The covering-fsync chain (BS5.2).
+    pub(super) fn wal_sync(&self) -> &super::commit_group::WalSyncChain {
+        &self.wal_sync
     }
 
     #[allow(
@@ -448,6 +458,7 @@ where
             background,
             background_drain,
             commit_groups: super::commit_group::CommitGroupQueue::default(),
+            wal_sync: super::commit_group::WalSyncChain::default(),
             #[cfg(test)]
             background_block_wait: BackgroundBlockWaitConfig::default(),
         }

@@ -9,13 +9,14 @@ use crate::branch::read::{BranchHistoryRow, BranchReadBound, BranchReadView, Bra
 use crate::branch::snapshot::{BranchSnapshotPublisher, BranchSnapshotRegistry};
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
-    finalize_commit_group, CommitBatch, CommitBatchKind, CommitBranchGeneration,
+    publish_commit_group, CommitBatch, CommitBatchKind, CommitBranchGeneration,
     CommitBranchGenerationGuard, CommitBranchGuardSet, CommitDurabilityClass, CommitDurabilityMode,
     CommitDurableRuntime, CommitFactAllocator, CommitGroupState, CommitManualTimestampSource,
     CommitOutcome, CommitReplayAction, CommitReplayRequest, CommitReplayRuntime,
     CommitRuntimeError, CommitTimestampSource, CommitUnresolvedDurable,
     CommitUnresolvedDurableGate, VisibleVersionPublish, VisibleVersionTracker,
 };
+use crate::config::mode::DurabilityPolicy;
 use crate::format::WalRecord;
 use crate::lifecycle::admission_ramp::{
     admission_mode_from_env, LifecycleAdmissionMode, WriteRateBucket,
@@ -36,6 +37,7 @@ use crate::lifecycle::{
 use crate::observability::perf_trace;
 use crate::row::PhysicalKey;
 use crate::service::WalGrowthFacts;
+use crate::service::{WalGroupSyncTicket, WalServiceError};
 use crate::table::TableRuntimeError;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -83,6 +85,13 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) last_wal_growth_outcome: Option<LifecycleWalGrowthOutcome>,
     pub(super) pressure_rejected_commit_branches: HashSet<BranchId>,
     pub(super) last_write_admission: Option<LifecycleWriteAdmissionOutcome>,
+    /// BS5.2 pipeline frontier: the highest commit version APPLIED by an
+    /// in-flight write group (its covering fsync may still be off-lock, its
+    /// publish pending). Later admissions bound their conflict validation and
+    /// branch-not-ahead checks at `max(visible, frontier)` — serial-equivalent
+    /// semantics across the pipeline. Monotone; equals the visible version
+    /// whenever no group is in flight.
+    pub(super) pipeline_frontier: CommitVersion,
     // BS3.4b graded write-admission (dark behind STRATA_ADMISSION). The debt-adaptive write rate is
     // recomputed at structural-change events (`republish_all_branch_snapshots`, which both the inline
     // and background install paths converge on) and enforced per-commit by the token bucket;
@@ -273,6 +282,9 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             last_wal_growth_outcome: None,
             pressure_rejected_commit_branches: HashSet::new(),
             last_write_admission: None,
+            // Recovered state has no in-flight groups; the floor starts at the
+            // recovered visible version via the max() in the floor read.
+            pipeline_frontier: CommitVersion::ZERO,
             admission_mode: admission_mode_from_env(),
             admission_clock,
             admission_current_rate: Cell::new(admission_initial_rate),
@@ -1527,7 +1539,40 @@ enum DurableGateAdmission {
     Member,
 }
 
-impl<S> LifecycleDurableLocalRuntime<'_, S>
+/// A write group between its two under-lock phases (BS5.2): phase 1 appended
+/// and applied the members and captured the covering-sync ticket; the caller
+/// runs the fsync WITHOUT the runtime lock (or proves coverage by a later
+/// completed sync via the ticket's captured sequence against the WAL's
+/// durable watermark), then redeems phase 2. Member outcomes inside must not
+/// be released to callers until phase 2 settles them.
+pub(crate) struct DurableGroupInFlight<'a> {
+    results: Vec<DurableGroupMemberResult>,
+    group: CommitGroupState,
+    fatal: bool,
+    /// Whether the whole-group admission span was opened (phase 2 must
+    /// release it exactly when it was).
+    admitted: bool,
+    touched_branches: Vec<BranchId>,
+    ticket: Option<WalGroupSyncTicket<'a>>,
+    /// Open gate spans at phase-1 end: >1 means other commits are
+    /// mid-pipeline and a sync-chain batching beat is worth waiting.
+    concurrent_spans: usize,
+}
+
+impl DurableGroupInFlight<'_> {
+    /// The covering-sync ticket, when this group requires one (`Always` mode
+    /// with at least one member past the WAL).
+    pub(crate) const fn ticket(&self) -> Option<&WalGroupSyncTicket<'_>> {
+        self.ticket.as_ref()
+    }
+
+    /// Open gate spans at phase-1 end (see the field doc).
+    pub(crate) const fn concurrent_spans(&self) -> usize {
+        self.concurrent_spans
+    }
+}
+
+impl<'a, S> LifecycleDurableLocalRuntime<'a, S>
 where
     S: CommitTimestampSource,
 {
@@ -1543,6 +1588,7 @@ where
             .branch_catalog
             .branch_state(branch_id)?
             .frozen_table_count();
+        let floor = self.pipeline_visibility_floor();
         let outcome = {
             let setup_timer = perf_trace::start_timer();
             let (branch, registry) = self.branch_catalog.branch_state_mut_with_registry(
@@ -1561,8 +1607,12 @@ where
                 &self.durable_gate,
             );
             perf_trace::record_commit_setup_elapsed(setup_timer);
+            // BS5.2: solo commits validate at the pipeline floor so a commit
+            // admitted while a group's fsync is off-lock keeps serial
+            // semantics; with an empty pipeline the floor equals the visible
+            // version and this is byte-identical to plain `execute`.
             runtime
-                .execute(batch, generation_guard)
+                .execute_with_visibility_floor(batch, generation_guard, floor)
                 .map_err(commit_error)
         };
         // Commit-triggered auto-rotation is a STRUCTURAL change: per the Model-2 contract
@@ -1596,6 +1646,24 @@ where
         &mut self,
         members: Vec<(CommitBatch, CommitBranchGenerationGuard)>,
     ) -> Vec<DurableGroupMemberResult> {
+        let in_flight = self.execute_durable_commit_group_begin(members);
+        let sync_result = in_flight.ticket.as_ref().map(WalGroupSyncTicket::sync);
+        self.execute_durable_commit_group_finish(in_flight, sync_result)
+    }
+
+    /// Phase 1 of a write group (BS5.2): everything that must run under the
+    /// runtime lock BEFORE the covering fsync — the whole-group admission
+    /// span, per-member admission + WAL append + memtable apply, and the sync
+    /// ticket capture (`Always` runtimes only; `Standard` needs no covering
+    /// fsync). The caller then runs the fsync WITHOUT the lock and redeems
+    /// [`execute_durable_commit_group_finish`] back under it. Between the
+    /// phases the group's rows are applied but unpublished: reads stay bounded
+    /// by the visible version, flush maintenance defers on this branch state,
+    /// and the pipeline frontier keeps later admissions serial-equivalent.
+    pub(crate) fn execute_durable_commit_group_begin(
+        &mut self,
+        members: Vec<(CommitBatch, CommitBranchGenerationGuard)>,
+    ) -> DurableGroupInFlight<'a> {
         let mut results: Vec<DurableGroupMemberResult> = Vec::with_capacity(members.len());
         // The leader's whole-group admission span. Failure (an unresolved fact) rejects every
         // member with the same typed error a solo commit would get from the gate.
@@ -1606,9 +1674,21 @@ where
                     admission: None,
                 });
             }
-            return results;
+            return DurableGroupInFlight {
+                results,
+                group: CommitGroupState::new(self.visible.visible_version()),
+                fatal: false,
+                admitted: false,
+                touched_branches: Vec::new(),
+                ticket: None,
+                concurrent_spans: 0,
+            };
         }
-        let mut group = CommitGroupState::new(self.visible.visible_version());
+        // The group frontier starts at the pipeline floor: later members (and
+        // later groups) validate against everything already APPLIED by
+        // in-flight groups, not just what is published — serial-equivalent
+        // same-branch semantics across the pipeline.
+        let mut group = CommitGroupState::new(self.pipeline_visibility_floor());
         let mut fatal = false;
         let mut touched_branches: Vec<BranchId> = Vec::new();
         for (batch, generation_guard) in members {
@@ -1637,14 +1717,79 @@ where
                 admission: self.last_write_admission,
             });
         }
+        let ticket = if !fatal && group.last_stamp().is_some() {
+            if let Some(last) = group.last_stamp() {
+                self.pipeline_frontier = self.pipeline_frontier.max(last.commit_version());
+            }
+            // Standard mode publishes without a covering fsync (same durability
+            // class as its solo path); only Always captures a sync ticket.
+            (self.services.wal.durability_policy() == DurabilityPolicy::Always)
+                .then(|| self.services.wal.begin_group_sync())
+        } else {
+            None
+        };
+        DurableGroupInFlight {
+            results,
+            group,
+            fatal,
+            admitted: true,
+            touched_branches,
+            ticket,
+            concurrent_spans: self.durable_gate.open_admission_spans(),
+        }
+    }
+
+    /// Phase 2 of a write group (BS5.2): everything after the covering fsync,
+    /// back under the runtime lock — redeem the sync outcome, publish the
+    /// group's visibility, release the admission span, and run post-commit
+    /// bookkeeping. `sync_result` is `None` when phase 1 captured no ticket
+    /// (Standard mode, rejected-only groups) or when the caller proved the
+    /// group's appends were already covered by a later completed sync.
+    pub(crate) fn execute_durable_commit_group_finish(
+        &mut self,
+        in_flight: DurableGroupInFlight<'a>,
+        sync_result: Option<Result<(), WalServiceError>>,
+    ) -> Vec<DurableGroupMemberResult> {
+        let DurableGroupInFlight {
+            mut results,
+            group,
+            mut fatal,
+            admitted,
+            touched_branches,
+            ticket,
+            concurrent_spans: _,
+        } = in_flight;
+        if !admitted {
+            return results;
+        }
         if !fatal {
-            let finalize = finalize_commit_group(
-                &group,
-                &mut self.services.wal,
-                &mut self.visible,
-                &self.durable_gate,
-            );
-            fatal = finalize.is_err();
+            match (&ticket, sync_result) {
+                (Some(ticket), Some(Ok(()))) => {
+                    self.services.wal.complete_group_sync(ticket);
+                }
+                (Some(ticket), Some(Err(error))) => {
+                    fatal = self.record_group_sync_failure(&group, ticket, &error);
+                }
+                // `(Some(_), None)`: the caller proved coverage by a later
+                // completed sync (the durable watermark passed this group's
+                // appends) — nothing to redeem. `(None, _)`: no ticket was
+                // captured (Standard mode or rejected-only group).
+                (Some(_) | None, _) => {}
+            }
+        }
+        // A fact recorded by ANOTHER in-flight group at or below our range end
+        // makes publishing unsafe (it would expose that group's unresolved
+        // versions beneath ours); a fact strictly above our range does not.
+        if !fatal {
+            if let Ok(Some(unresolved)) = self.durable_gate.unresolved() {
+                if let Some(last) = group.last_stamp() {
+                    fatal = unresolved.first_commit_version() <= last.commit_version();
+                }
+            }
+        }
+        if !fatal {
+            let publish = publish_commit_group(&group, &mut self.visible, &self.durable_gate);
+            fatal = publish.is_err();
         }
         self.durable_gate.end_group_admission();
         if fatal {
@@ -1675,6 +1820,75 @@ where
             }
         }
         results
+    }
+
+    /// Record the gate fact for a failed covering fsync (BS5.2), unless a
+    /// later completed sync already proved this group's appends durable (the
+    /// watermark rescue) or another group's fact already covers the range.
+    /// Returns whether the group is fatal.
+    fn record_group_sync_failure(
+        &mut self,
+        group: &CommitGroupState,
+        ticket: &WalGroupSyncTicket<'_>,
+        error: &WalServiceError,
+    ) -> bool {
+        // Watermark rescue: a later group's completed sync covered every
+        // append before its capture — including ours — so our records are
+        // durable despite our own sync failing.
+        if self
+            .services
+            .wal
+            .durable_seq_handle()
+            .load(Ordering::Acquire)
+            >= ticket.captured_seq()
+        {
+            return false;
+        }
+        let Some(stamp) = group.last_stamp() else {
+            return true;
+        };
+        // Fail closed: members are applied but the covering fsync did not
+        // complete (`error` says why), so the fact claims no durable progress
+        // for the range. If another in-flight group already recorded a fact,
+        // ours stays unrecorded — recovery replays the WAL contents
+        // idempotently and these members report durability-uncertain either
+        // way.
+        let _ = error;
+        let reason = "write group covering fsync failed after members applied";
+        let fact = CommitUnresolvedDurable::applied_not_visible(
+            stamp,
+            CommitDurabilityClass::NotDurable,
+            reason,
+        )
+        .and_then(|fact| group.widen_fact(fact));
+        if let Ok(fact) = fact {
+            // Rationale: recording can only fail when a DIFFERENT fact is
+            // already present; that fact already gates commits, and replay
+            // reconciles our range from the WAL contents.
+            let _ = self.durable_gate.record_unresolved(fact);
+        }
+        true
+    }
+
+    /// The pipeline visibility floor (BS5.2): what a newly admitted commit
+    /// must validate against — everything published PLUS everything applied
+    /// by in-flight groups whose covering fsync is still off-lock.
+    fn pipeline_visibility_floor(&self) -> CommitVersion {
+        self.visible.visible_version().max(self.pipeline_frontier)
+    }
+
+    /// Off-lock handle to the WAL's durable-append watermark (BS5.2): the
+    /// pipelined caller polls coverage through this atomic without the
+    /// runtime lock.
+    pub(crate) fn wal_durable_seq_handle(&self) -> Arc<AtomicU64> {
+        self.services.wal.durable_seq_handle()
+    }
+
+    /// A fresh covering-sync ticket at the CURRENT append frontier (BS5.2):
+    /// the sync-chain token holder re-captures right before syncing so one
+    /// fsync covers every group that appended while the previous sync ran.
+    pub(crate) fn wal_group_sync_ticket(&self) -> WalGroupSyncTicket<'a> {
+        self.services.wal.begin_group_sync()
     }
 
     /// Execute one group member: solo-equivalent bootstrap admission (with the gate check in
