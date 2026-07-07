@@ -506,6 +506,26 @@ reduction, AND no active task). Before it, one >30s giant pass with no other
 completions converted a busy executor into a caller-visible `failed_precondition`
 load abort (observed twice: NonZeroLevel pre-demotion, L0 post-demotion).
 
+## T4 attribution + allocator-linkage caveat (2026-07-07 evening, v2 branch)
+
+**Evidence-base caveat:** every engine-level bench bin except
+`storage-next-concurrent-writers` was silently running GLIBC MALLOC — the jemalloc
+`#[global_allocator]` lives in the benchmark lib crate and unreferenced libs don't
+link. All engine-ycsb rows above (three-ways, stall investigations) are glibc-measured:
+internally consistent (deltas stand), absolute values carry the confound. Fixed on the
+v2 branch (`1279809b`): every bin force-links the lib; the probe prints live
+`tikv-jemalloc-ctl` gauges per phase.
+
+**T4 verdict (jemalloc truly active, YCSB A durable 10M @ 32g):** the RSS runaway is
+APP-HELD — post-load allocated=13.66GB (block cache filling its 15GiB pool), post-run
+**allocated=39.25GB ≈ resident=41.84GB**: +26GB of live heap accumulated during the run
+phase's compaction churn. Stalls persist under jemalloc (max 56.3s) — the allocator
+caused neither the 61GB OOMs nor the stall lottery. Eliminated by inspection: rewrite
+outputs lazy-reopen (BS4.4l), block cache evicts per shard. Next: jemalloc sampling
+heap profiler (`profiling` feature + `_RJEM_MALLOC_CONF=prof:true,prof_final:true` —
+the `_RJEM_` prefix is mandatory) names the holder; key cells re-baseline under
+jemalloc once memory is honest.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
