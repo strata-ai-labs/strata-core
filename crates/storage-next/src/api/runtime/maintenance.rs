@@ -401,6 +401,14 @@ pub(super) fn drain_cache_background_round(
     let start = clock.now();
     let mut tasks_completed = 0;
     let mut made_progress = false;
+    // At most one in-round coverage pass: coverage re-enqueues maintenance for
+    // visible debt, but under saturation interlocks every generated task can
+    // DEFER immediately — re-scheduling coverage each time the queue drains
+    // then spins the round generating-and-deferring tasks (measured 161K
+    // tasks/s, 5.48M deferred vs 49 completed in one 34s window, the drain
+    // burning the runtime lock the real flush/compaction needed to relieve
+    // the pressure). One attempt per round; the next wake retries.
+    let mut coverage_attempted = false;
     while tasks_completed < limits.max_tasks
         && clock.now().saturating_duration_since(start) < limits.max_runtime
     {
@@ -425,6 +433,10 @@ pub(super) fn drain_cache_background_round(
             break;
         };
         let Some(step) = step else {
+            if coverage_attempted {
+                break;
+            }
+            coverage_attempted = true;
             let coverage_scheduled = {
                 let mut runtime = runtime.lock();
                 runtime.schedule_background_maintenance_coverage()
@@ -656,6 +668,9 @@ pub(super) fn drain_durable_background_round(
     // after it (WAL truncation, table rewrite, durable) is not starved — mirrors the
     // pre-D.2b under-lock fall-through.
     let mut flush_watermark_exhausted = false;
+    // At most one in-round coverage pass — see the cache round's rationale
+    // (generate-and-defer spin under saturation interlocks).
+    let mut coverage_attempted = false;
     // Anti-starvation interleave: upper-tier completions since the last low-tier service.
     let mut upper_tier_since_low = 0usize;
     while tasks_completed < limits.max_tasks
@@ -709,6 +724,10 @@ pub(super) fn drain_durable_background_round(
             break;
         };
         let Some(step) = step else {
+            if coverage_attempted {
+                break;
+            }
+            coverage_attempted = true;
             let coverage_scheduled = {
                 let mut runtime = runtime.lock();
                 runtime.schedule_background_maintenance_coverage()

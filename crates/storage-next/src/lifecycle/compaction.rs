@@ -1410,6 +1410,7 @@ pub(crate) fn defer_compaction_for_resource_policy(
     if branch.frozen_table_count() >= FROZEN_BLOCKING_FLUSH_THRESHOLD {
         return Ok(Some(flush_pressure_preempted_compaction_outcome()));
     }
+
     let Some(limit_bytes) = policy.max_bytes_per_task() else {
         return Ok(None);
     };

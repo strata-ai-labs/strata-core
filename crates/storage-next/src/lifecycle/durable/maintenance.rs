@@ -751,6 +751,22 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     }
 
     pub(crate) fn schedule_background_maintenance_coverage(&mut self) -> bool {
+        // Coverage hysteresis: under saturation interlocks every task the
+        // coverage scan generates can DEFER instantly, draining the queue
+        // right back to empty — re-scheduling coverage on every empty-queue
+        // observation then spins the drain generating-and-deferring tasks
+        // (measured 312K enqueues/s across rounds, the churn holding the
+        // runtime lock the deferred-upon flush/compaction needed to run).
+        // Fire coverage only when a maintenance task has actually COMPLETED
+        // since the last attempt; external enqueues bypass coverage entirely,
+        // so nothing is lost while the queue is being fed.
+        let completed = self.maintenance.stats().completed();
+        if let Some(last) = self.coverage_completed_watermark {
+            if completed == last {
+                return false;
+            }
+        }
+        self.coverage_completed_watermark = Some(completed);
         let outcome = self.schedule_post_commit_maintenance_for_branch(self.initial_branch_id);
         matches!(
             outcome.status(),
@@ -1552,16 +1568,35 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         }
         let mut rotated = false;
         if branch.active_row_count() > 0 {
-            if let Err(error) = require_rotate_budget(&self.budget, branch) {
-                let outcome =
-                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
+            match require_rotate_budget(&self.budget, branch) {
+                Ok(()) => {
+                    branch.rotate_active();
+                    rotated = true;
+                }
+                // Rotation would exceed the frozen-mutable pool. Deferring the
+                // WHOLE flush here livelocked under saturation: with several
+                // branches' frozen tables filling the shared pool, every
+                // branch's flush deferred on the rotate budget — while the
+                // existing frozen backlog those flushes would drain is
+                // precisely what frees that budget (measured: 4 writer
+                // branches at default budgets, 30s stall-wall timeouts, flush
+                // deferring ~13x/s per branch until the watchdog fired).
+                // Flush the existing frozen backlog WITHOUT rotating; the
+                // freed pool lets a later flush rotate. Defer only when there
+                // is nothing frozen to flush.
+                Err(error) => {
+                    if branch.frozen_table_count() == 0 {
+                        let outcome = MaintenanceOutcome::new(
+                            task.kind(),
+                            MaintenanceOutcomeStatus::Deferred,
+                        )
                         .with_source_error(error);
-                let outcome = self.maintenance.finish_started(task, outcome, false)?;
-                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
-                return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+                        let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                        self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                        return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+                    }
+                }
             }
-            branch.rotate_active();
-            rotated = true;
         }
         let branch_snapshot = branch.clone();
         // Model-2 V-before-S coverage: the rotation swapped in a fresh live active, but the

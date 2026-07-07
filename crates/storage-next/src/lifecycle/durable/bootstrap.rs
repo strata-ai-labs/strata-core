@@ -93,13 +93,17 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     /// semantics across the pipeline. Monotone; equals the visible version
     /// whenever no group is in flight.
     pub(super) pipeline_frontier: CommitVersion,
-    // BS3.4b graded write-admission (dark behind STRATA_ADMISSION). The debt-adaptive write rate is
+    // BS3.4b graded write-admission (the default since BS3.4c). The debt-adaptive write rate is
     // recomputed at structural-change events (`republish_all_branch_snapshots`, which both the inline
     // and background install paths converge on) and enforced per-commit by the token bucket;
     // `admission_clock` times both. `Cell` interior mutability keeps the commit/read paths `&self`,
     // exactly like `retention_watermark` — the runtime is `!Sync` behind the runtime mutex.
     pub(super) admission_mode: LifecycleAdmissionMode,
     pub(super) admission_clock: Arc<dyn MaintenanceClock>,
+    /// Coverage hysteresis (see `schedule_background_maintenance_coverage`):
+    /// the maintenance `completed` count at the last coverage attempt. `None`
+    /// until the first attempt, so the first coverage always fires.
+    pub(super) coverage_completed_watermark: Option<usize>,
     pub(super) admission_current_rate: Cell<u64>,
     pub(super) admission_last_debt: Cell<u64>,
     pub(super) admission_bucket: Cell<WriteRateBucket>,
@@ -252,7 +256,8 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         );
         // BS3.4b: seed the graded-admission rate at the un-throttled ceiling and the token bucket at
         // the current clock. Production uses the real clock; tests swap in a manual clock via
-        // `with_admission_clock_for_test`. `admission_mode` defaults to `Legacy` unless STRATA_ADMISSION.
+        // `with_admission_clock_for_test`. `admission_mode` defaults to `Graded` (BS3.4c);
+        // STRATA_ADMISSION=legacy selects the P-controller escape hatch.
         let admission_clock: Arc<dyn MaintenanceClock> = Arc::new(RealMaintenanceClock::new());
         let admission_initial_rate = self
             .open_plan
@@ -287,6 +292,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             // recovered visible version via the max() in the floor read.
             pipeline_frontier: CommitVersion::ZERO,
             admission_mode: admission_mode_from_env(),
+            coverage_completed_watermark: None,
             admission_clock,
             admission_current_rate: Cell::new(admission_initial_rate),
             admission_last_debt: Cell::new(0),

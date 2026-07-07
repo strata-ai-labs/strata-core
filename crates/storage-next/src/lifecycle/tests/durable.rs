@@ -3153,10 +3153,13 @@ fn graded_admission_rate_drops_inside_the_l0_delay_band() {
 
 #[test]
 fn legacy_admission_leaves_the_graded_rate_untouched() {
-    // The default (legacy) path never touches the graded rate — the ramp is inert.
+    // The legacy escape hatch (STRATA_ADMISSION=legacy) never touches the
+    // graded rate — the ramp is inert. Explicitly selected since BS3.4c made
+    // graded the default.
     let branch = branch_id(0x93);
     let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
+    runtime.with_admission_mode_for_test(LifecycleAdmissionMode::Legacy);
     let max_rate = runtime.admission_current_rate_for_test();
     build_durable_l0_tables_with_scheduled_flushes(&mut runtime, branch, 25);
     assert_eq!(

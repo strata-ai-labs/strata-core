@@ -337,6 +337,37 @@ ride free. The one trade is the bounded ~330ms worst-case pause from the near-st
 as the escape hatch until M10 hardening); decision is the product call reserved by the
 BS5 milestone exit.
 
+## Graded admission becomes the default (BS3.4c decision, 2026-07-07)
+
+The bake-off's recommendation is enacted: `STRATA_ADMISSION` now defaults to `graded`
+(`legacy` is the escape hatch until M10 retires the P-controller). Flipping the default
+and re-running the storage concurrent-writers matrix as the guardrail exposed TWO latent
+saturation defects that legacy's early pacing had always masked — both fixed in the same
+change:
+
+1. **Coverage generate-and-defer spin.** When every task the coverage scan enqueues
+   defers instantly (saturation interlocks), the drain re-scheduled coverage on each
+   empty-queue observation — measured 161–312K generated-and-deferred tasks/s, the churn
+   holding the runtime lock the deferred-upon flush/compaction needed. Fixed with
+   coverage hysteresis: re-fire only after a real maintenance completion. A companion
+   fix makes the pressure-wait slice exhaust its 250ms unless a REAL (lifecycle)
+   completion lands — executor step-wakes no longer let a stalled writer cycle
+   enqueue→defer→wake at ~16µs.
+2. **Flush/rotate budget livelock.** Flush deferred ENTIRELY when rotating the active
+   memtable would exceed the FrozenMutable pool — but the frozen backlog those flushes
+   would drain is precisely what frees that budget. With 4 writer branches at default
+   budgets the pool wedged (67MB/84MB + 16.8MB rotation), every flush deferred (~13/s
+   per branch), compaction yielded to frozen pressure, and writers ate the full 30s
+   stall-wall watchdog before rejecting. Fixed: flush the existing frozen backlog
+   WITHOUT rotating when the rotate budget is short; defer only when nothing is frozen.
+
+**Post-fix matrix (dev box, graded default, medians of 3):** per-writer 1/4/8T =
+35.5/30.1/51.0K (the 4/8T cells carry graded's post-window pacing tail in the
+denominator; in-window rates match or beat legacy), shared flat ~34.5-35.8K, and the
+previously-stalling 4T per-writer cell runs with ZERO stalls and zero deferrals
+(was: 3× 30s watchdog timeouts per run). YCSB durable A on the second NVMe: graded
+13.1K vs legacy 9.1K (+45%), consistent with the bake-off.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
