@@ -358,7 +358,44 @@ writers (readers never see torn groups; visible monotonicity).
 
 ### BS5.3 — Concurrent memtable + parallel group apply (measure-gated)
 
-**Gate:** build only if BS5.2 profiling shows leader-side apply serialization as the
+**BS5.3a — LANDED (the measure gate spoke first).** Fine-grained profiling of the
+Standard commit budget (new `--perf-breakdown` on the instrument + temporary probes)
+found the premise of the SkipMap plan wrong for today's bottleneck: the 45 µs/commit
+Standard wall was ~16 µs commit protocol (memtable apply only 7 µs of it) plus
+**10–18 µs of runtime-lock wait per commit against background maintenance holds** —
+and the maintenance-off A/B proved maintenance is load-bearing (admission stalls
+without it), so the interference had to be fixed, not avoided. True-hold attribution
+(post-acquisition clocks) found the thieves and landed three fixes:
+
+1. **Inline WAL reclaim off the lock** (the big one): `reclaim_wal_after_flush` ran two
+   durable-manifest loads, an O(rows) coverage proof, and a durable manifest replace
+   (write + fsync!) per flush INSIDE the publish phase's lock hold — ~950 ms of a 3 s
+   window. It now enqueues the coalescing background flush-watermark task (off-lock
+   scan, D.2b-2), exactly as the periodic WAL-growth policy already schedules reclaim.
+   Semantic ripple: flush-driven watermark advance is asynchronous (one drain later),
+   with the periodic policy as backstop; the single-branch and nonzero-candidate gates
+   preserved.
+2. **O(1) reserved-manifest confirmation**: `record_reserved_manifest` re-recorded every
+   catalog table per publish (O(catalog) clones + compares under the lock, and it could
+   resurrect entries removed between the publish phases) — the reserved manifest is
+   serialized FROM the catalog and phase one already recorded the new tables, so the
+   fold is now `confirm_reserved_manifest_published()` (a debt-flag clear). Recovery
+   still validates entry-by-entry.
+3. **Writers-first drain yield**: commits register as waiters (`lock_for_commit`);
+   drain rounds break between steps when a writer is blocked, after a one-task
+   fairness floor. (Secondary — most probe-round holds measured trivially small.)
+
+Measured (dev box, medians of 3): Standard shared 21K flat → **~30K at 1/4/8 threads
+(+43–48%)**; writer lock-wait 15 → 6 µs at 1T; publish-phase true holds 950 → 41 ms.
+Always and cache byte-unregressed (160/553/1105; cache identical).
+
+**Remaining, for BS5.3b (data-driven):** the flush-install phase still holds ~415 ms
+per window (~7.5 ms per flush install — the in-memory install + per-table catalog
+record); after that the ~16 µs serialized protocol (apply 7 µs, WAL append 3.5 µs,
+admission 2.5 µs) is the ceiling (~60K/s), at which point the original SkipMap +
+parallel-apply plan below becomes the relevant question for the ≥2.5× (~50K) gate.
+
+**Original gate:** build only if BS5.2 profiling shows leader-side apply serialization as the
 residual bottleneck at N ≥ 4 writers.
 
 **Changes.** Memtable storage `BTreeMap`-under-`RwLock` → `crossbeam-skiplist` `SkipMap`

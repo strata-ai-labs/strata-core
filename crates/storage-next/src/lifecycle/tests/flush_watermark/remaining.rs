@@ -1495,6 +1495,14 @@ fn flush_completion_advances_watermark_and_reclaims_wal_without_checkpoint() {
         .expect("flush outcome");
     assert_eq!(flush.status(), MaintenanceOutcomeStatus::Completed);
 
+    // BS5.3: flush-driven reclaim is asynchronous — the flush enqueued the coalescing
+    // flush-watermark task (whose coverage scan runs off-lock) instead of persisting the
+    // watermark inline under the runtime lock. Drain it before asserting the advance.
+    runtime
+        .run_next_flush_watermark_maintenance()
+        .expect("run flush watermark")
+        .expect("watermark outcome");
+
     // Flush-driven reclaim advanced the flush watermark with no checkpoint: the snapshot
     // watermark stays unset, yet flushed_through_commit_id now covers the flushed commit.
     let manifest = DatabaseManifestService::new(backend)

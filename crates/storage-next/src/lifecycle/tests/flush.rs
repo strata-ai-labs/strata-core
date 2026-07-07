@@ -739,9 +739,11 @@ fn queued_durable_flush_task_publishes_object_through_executor() {
     assert_eq!(maintenance.task_kind(), MaintenanceTaskKind::Flush);
     assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Completed);
     assert_eq!(maintenance.affected_objects(), 1);
-    // The completed flush now triggers flush-driven WAL reclaim, which advances the flush
-    // watermark and enqueues a (coalescing) WAL-truncation task — hence one pending task.
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
+    // The completed flush triggers flush-driven WAL reclaim, which enqueues a (coalescing)
+    // flush-watermark task — its coverage scan runs off-lock (BS5.3; the previous inline
+    // scan-and-persist held the runtime lock through a durable manifest fsync per flush) —
+    // plus the (coalescing) WAL-truncation task: two pending tasks.
+    assert_eq!(runtime.maintenance_status().pending_tasks(), 2);
     assert_eq!(runtime.maintenance_status().stats().completed(), 1);
     assert_eq!(runtime.branch_state().frozen_table_count(), 0);
     assert_eq!(runtime.branch_state().owned_table_count(), 1);

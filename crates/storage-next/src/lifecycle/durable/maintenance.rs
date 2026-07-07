@@ -1065,25 +1065,30 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     /// value) and the periodic WAL-growth policy remains the backstop, so a transient error here
     /// only defers reclaim to the next flush.
     fn reclaim_wal_after_flush(&mut self) {
-        let candidate = match self.highest_coverable_flush_watermark_candidate() {
-            Ok(Some(candidate)) => candidate,
-            // Nothing new is fully covered in L0 yet, or this is a multi-branch runtime
-            // (which reclaims via checkpoint instead); the next flush retries.
-            Ok(None) => return,
-            // Best-effort: a transient manifest read must not fail the flush; the periodic
-            // WAL-growth policy re-attempts reclaim.
-            Err(_error) => return,
-        };
-        // Best-effort: monotone (no-ops when not advancing); the periodic policy backstops.
-        if self
-            .persist_table_manifest_flush_watermark(candidate)
-            .is_err()
-        {
+        // BS5.3: this previously ran the coverage scan and the watermark
+        // persist INLINE — two durable-manifest loads, an O(rows) coverage
+        // proof, and a durable manifest replace (write + fsync) per flush,
+        // all inside the publish phase's runtime-lock hold (measured as the
+        // single largest writer-starvation source under sustained load:
+        // ~950 ms of a 3 s window). Route through the coalescing background
+        // flush-watermark task instead — its coverage scan runs with the lock
+        // RELEASED (D.2b-2) — exactly as the periodic WAL-growth policy
+        // already schedules reclaim. Both enqueues are best-effort: a full
+        // queue only defers reclaim to that periodic backstop.
+        let candidate = self.visible.visible_version();
+        if candidate == CommitVersion::ZERO {
+            // Nothing visible yet — no WAL below any watermark to reclaim.
             return;
         }
-        // Best-effort enqueue: truncation runs off-lock against a WAL retention clone and
-        // coalesces; if the maintenance queue is momentarily full the periodic WAL-growth
-        // policy re-enqueues it.
+        // Same gate as the previous inline path: multi-branch runtimes reclaim
+        // via checkpoint (a single branch's flush coverage cannot prove the
+        // other branches' rows durable).
+        if self.branch_catalog.registry().active_branch_ids() != vec![self.initial_branch_id] {
+            return;
+        }
+        let _ = self.enqueue_maintenance(MaintenanceTaskRequest::table_manifest_flush_watermark(
+            candidate,
+        ));
         let _ = self.enqueue_maintenance(MaintenanceTaskRequest::wal_truncation());
     }
 
@@ -2167,16 +2172,11 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         };
         let outcome = match post {
             PreparedPublishPost::Flush => match write_result {
-                Ok(write) => match self
-                    .table_catalog
-                    .record_reserved_manifest(write.manifest())
-                {
-                    Ok(()) => {
-                        flush_published = true;
-                        base_outcome
-                    }
-                    Err(error) => table_manifest_debt_outcome(base_outcome, error),
-                },
+                Ok(_write) => {
+                    self.table_catalog.confirm_reserved_manifest_published();
+                    flush_published = true;
+                    base_outcome
+                }
                 Err(error) => table_manifest_debt_outcome(base_outcome, error),
             },
             PreparedPublishPost::Compaction {
@@ -2239,13 +2239,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         manifest_debt: impl FnOnce(T, LifecycleError) -> T,
     ) -> T {
         match write_result {
-            Ok(write) => match self
-                .table_catalog
-                .record_reserved_manifest(write.manifest())
-            {
-                Ok(()) => outcome,
-                Err(error) => manifest_debt(outcome, error),
-            },
+            Ok(_write) => {
+                self.table_catalog.confirm_reserved_manifest_published();
+                outcome
+            }
             Err(error) => manifest_debt(outcome, error),
         }
     }

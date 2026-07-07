@@ -156,6 +156,28 @@ the gate's substance. Group-boundary crash sweeps (BS5.1's carried debt) landed 
 phase split: crash-before-sync full replay, torn-tail prefix replay, injected sync-failure
 range-fact reconciliation, and two-groups-in-flight ordering.
 
+## Standard-mode lock hygiene (BS5.3a, dev box, same instrument, medians of 3)
+
+The measure gate redirected BS5.3: fine-grained profiling showed Standard's flat ~21K was
+NOT memtable-bound (apply = 7 µs of a 16 µs protocol) — writers lost 10–18 µs per commit
+to background-maintenance lock holds, and true-hold attribution found the theft: the
+flush publish's INLINE WAL reclaim (durable-manifest loads + O(rows) coverage proof + a
+durable manifest replace with fsync, per flush, under the runtime lock — ~950 ms of a 3 s
+window) and an O(catalog) re-record of every table per manifest confirmation. Fixes:
+route reclaim through the coalescing off-lock flush-watermark task (periodic-policy
+backstop; advance is now one drain later), make the reserved-manifest confirmation an
+O(1) debt-flag clear, and add a writers-first drain yield (one-task fairness floor).
+
+| engine · branches | 1 thread | 4 | 8 | vs BS5.2 |
+|---|---|---|---|---|
+| standard · shared | 29,337 | 29,936 | 29,715 | **21K flat → ~30K (+43–48%)** |
+| always · shared | 160 | 553 | 1,105 | unregressed |
+| cache · shared | 15,431 | 15,402 | — | identical |
+
+Remaining Standard rocks (BS5.3b question): the flush-install lock holds (~7.5 ms per
+flush) and then the ~16 µs serialized protocol (~60K/s ceiling), where the original
+SkipMap/parallel-apply plan meets the ≥2.5× (~50K) gate.
+
 BS5.1 also removed two pre-lock writer serializers found with the new instrument: the
 commit-timestamp base and the durability-mode resolution both took the full runtime lock per
 commit (writers queued behind an in-flight fsync before ever reaching the commit path — the

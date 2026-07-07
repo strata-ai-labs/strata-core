@@ -111,6 +111,7 @@ struct Config {
     value_bytes: usize,
     window: Duration,
     root: PathBuf,
+    perf_breakdown: bool,
 }
 
 fn parse_config() -> Result<Config, String> {
@@ -125,6 +126,7 @@ fn parse_config() -> Result<Config, String> {
         root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join(".benchmark")
             .join("storage-next-concurrent-writers"),
+        perf_breakdown: false,
     };
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut index = 0;
@@ -168,6 +170,9 @@ fn parse_config() -> Result<Config, String> {
                 config.window = Duration::from_secs(
                     value("--window-secs")?.parse().map_err(|e: std::num::ParseIntError| e.to_string())?,
                 );
+            }
+            "--perf-breakdown" => {
+                config.perf_breakdown = true;
             }
             other => return Err(format!("unknown flag {other:?}")),
         }
@@ -269,6 +274,9 @@ fn run_point(config: &Config, engine: Engine, mode: BranchMode, writers: usize) 
     if config.readers > 0 {
         seed_reader_keys(&runtime, config.value_bytes);
     }
+    if config.perf_breakdown {
+        strata_storage_next::perf_trace::reset();
+    }
 
     let stop = AtomicBool::new(false);
     let read_total = AtomicU64::new(0);
@@ -358,6 +366,50 @@ fn run_point(config: &Config, engine: Engine, mode: BranchMode, writers: usize) 
     let elapsed = started.elapsed().as_secs_f64();
 
     let total_ops: u64 = per_writer_ops.iter().sum();
+    if config.perf_breakdown && total_ops > 0 {
+        let perf = strata_storage_next::perf_trace::snapshot();
+        let per = |ns: u64| ns as f64 / total_ops as f64 / 1_000.0;
+        eprintln!(
+            "[breakdown {} {}T] per-commit us: api_map={:.1} api_clone={:.1} admit={:.1} \
+             setup={:.1} exec_admission={:.1} conflict={:.1} stage={:.1} wal_build={:.1} \
+             wal_append={:.1} apply={:.1} publish={:.1} post_growth={:.1} post_maint={:.1} \
+             api_post={:.1} | api_runtime_total={:.1}",
+            engine.name(),
+            writers,
+            per(perf.api_commit_map_ns()),
+            per(perf.commit_api_batch_clone_ns()),
+            per(perf.commit_admit_ns()),
+            per(perf.commit_setup_ns()),
+            per(perf.commit_exec_admission_ns()),
+            per(perf.commit_exec_conflict_ns()),
+            per(perf.commit_exec_stage_ns()),
+            per(perf.commit_wal_record_build_ns()),
+            per(perf.commit_wal_append_ns()),
+            per(perf.commit_exec_apply_ns()),
+            per(perf.commit_exec_publish_ns()),
+            per(perf.commit_post_wal_growth_ns()),
+            per(perf.commit_post_maintenance_ns()),
+            per(perf.commit_api_post_ns()),
+            per(perf.api_commit_runtime_ns()),
+        );
+        eprintln!(
+            "[bg {} {}T] rounds={} tasks={} snapshot_lock_total_ms={:.1} task_total_ms={:.1} fg_wait_total_ms={:.1}",
+            engine.name(),
+            writers,
+            perf.lifecycle_background_drain_rounds(),
+            perf.lifecycle_background_tasks_completed(),
+            perf.lifecycle_background_task_snapshot_lock_ns() as f64 / 1e6,
+            perf.lifecycle_background_task_total_ns() as f64 / 1e6,
+            perf.lifecycle_foreground_wait_background_lock_ns() as f64 / 1e6,
+        );
+        eprintln!(
+            "[bg2 {} {}T] publish_lock_ms={:.1} unlocked_build_ms={:.1}",
+            engine.name(),
+            writers,
+            perf.lifecycle_background_task_publish_lock_ns() as f64 / 1e6,
+            perf.lifecycle_background_task_unlocked_build_ns() as f64 / 1e6,
+        );
+    }
     PointOutcome {
         total_ops,
         ops_per_sec: total_ops as f64 / elapsed,

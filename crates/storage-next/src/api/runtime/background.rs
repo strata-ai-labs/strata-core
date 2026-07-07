@@ -33,6 +33,12 @@ pub(super) struct RuntimeSlot<R> {
     /// syncs so the device flush stays fat (one sync in flight, everyone it
     /// covers skips their own).
     wal_sync: super::commit_group::WalSyncChain,
+    /// Commits currently blocked on (or about to take) the runtime lock
+    /// (BS5.3): background drain rounds yield between steps while this is
+    /// nonzero — measured at 10-18 µs of writer lock-wait PER COMMIT when
+    /// drains interleave freely. Bounded by the drains' one-task fairness
+    /// floor so maintenance never starves into the admission stall wall.
+    commit_waiters: Arc<AtomicUsize>,
     #[cfg(test)]
     pub(super) background_block_wait: BackgroundBlockWaitConfig,
 }
@@ -42,6 +48,7 @@ pub(super) type BackgroundDrainFn = Arc<
 >;
 pub(super) type BackgroundArcDrain<R> = fn(
     &Arc<ParkingMutex<R>>,
+    &AtomicUsize,
     BackgroundDrainLimits,
     &Arc<dyn MaintenanceClock>,
 ) -> BackgroundDrainRound;
@@ -59,7 +66,11 @@ where
             .field("background", &self.background)
             .field("background_drain", &self.background_drain.is_some())
             .field("commit_groups", &self.commit_groups)
-            .field("wal_sync", &self.wal_sync);
+            .field("wal_sync", &self.wal_sync)
+            .field(
+                "commit_waiters",
+                &self.commit_waiters.load(Ordering::Relaxed),
+            );
         #[cfg(test)]
         debug.field("background_block_wait", &self.background_block_wait);
         debug.finish()
@@ -255,6 +266,16 @@ impl<R> RuntimeSlot<R> {
         &self.wal_sync
     }
 
+    /// Runtime lock acquisition for the COMMIT path (BS5.3): registers as a
+    /// commit waiter for the blocked span so background drain rounds yield
+    /// between steps instead of interleaving lock holds into every commit.
+    pub(super) fn lock_for_commit(&self) -> ParkingMutexGuard<'_, R> {
+        self.commit_waiters.fetch_add(1, Ordering::Release);
+        let guard = self.lock();
+        self.commit_waiters.fetch_sub(1, Ordering::Release);
+        guard
+    }
+
     #[allow(
         dead_code,
         reason = "background lifecycle drains submit work through this handle"
@@ -447,9 +468,12 @@ where
         } else {
             None
         };
+        let commit_waiters = Arc::new(AtomicUsize::new(0));
         let background_drain = background.as_ref().map(|_| {
             let runtime = Arc::clone(&runtime);
-            Arc::new(move |limits, clock| drain(&runtime, limits, &clock)) as BackgroundDrainFn
+            let waiters = Arc::clone(&commit_waiters);
+            Arc::new(move |limits, clock| drain(&runtime, &waiters, limits, &clock))
+                as BackgroundDrainFn
         });
         Self {
             runtime,
@@ -459,6 +483,7 @@ where
             background_drain,
             commit_groups: super::commit_group::CommitGroupQueue::default(),
             wal_sync: super::commit_group::WalSyncChain::default(),
+            commit_waiters,
             #[cfg(test)]
             background_block_wait: BackgroundBlockWaitConfig::default(),
         }

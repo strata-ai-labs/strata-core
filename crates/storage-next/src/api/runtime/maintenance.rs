@@ -364,8 +364,37 @@ pub(super) fn run_next_cache_maintenance(
         .map_err(map_lifecycle_error)
 }
 
+/// Writers-first yield check (BS5.3): a commit blocked on the runtime lock
+/// takes priority over further drain steps — free interleaving cost writers
+/// 10-18 µs of lock-wait PER COMMIT. Callers apply it only after completing
+/// at least one task (the fairness floor: maintenance is load-bearing, and
+/// with none of it admission hits the stall wall); per-commit notifies
+/// re-trigger the round.
+fn commit_waiting(commit_waiters: &std::sync::atomic::AtomicUsize) -> bool {
+    commit_waiters.load(std::sync::atomic::Ordering::Acquire) > 0
+}
+
+/// The cache drain's under-lock step ladder: flush start, inline flush run,
+/// then table rewrite.
+fn start_next_cache_step(
+    runtime: &mut LifecycleCacheRuntime<ApiTimestampSource>,
+) -> Result<Option<CacheBackgroundMaintenanceStep>, LifecycleError> {
+    match runtime.start_next_background_flush_maintenance() {
+        Ok(Some(step)) => Ok(Some(step)),
+        Ok(None) => match runtime.run_next_flush_maintenance() {
+            Ok(Some(outcome)) => Ok(Some(CacheBackgroundMaintenanceStep::Completed(Box::new(
+                outcome,
+            )))),
+            Ok(None) => runtime.start_next_background_table_rewrite_maintenance(),
+            Err(error) => Err(error),
+        },
+        Err(error) => Err(error),
+    }
+}
+
 pub(super) fn drain_cache_background_round(
     runtime: &Arc<ParkingMutex<LifecycleCacheRuntime<ApiTimestampSource>>>,
+    commit_waiters: &std::sync::atomic::AtomicUsize,
     limits: BackgroundDrainLimits,
     clock: &Arc<dyn MaintenanceClock>,
 ) -> BackgroundDrainRound {
@@ -375,23 +404,16 @@ pub(super) fn drain_cache_background_round(
     while tasks_completed < limits.max_tasks
         && clock.now().saturating_duration_since(start) < limits.max_runtime
     {
+        // Writers first (BS5.3): see `commit_waiting`.
+        if tasks_completed > 0 && commit_waiting(commit_waiters) {
+            break;
+        }
         let task_start = perf_trace::start_timer();
         let snapshot_start = perf_trace::start_timer();
         let (step, pending_before) = {
             let mut runtime = runtime.lock();
             let pending_before = runtime.maintenance_status().pending_tasks();
-            let step = match runtime.start_next_background_flush_maintenance() {
-                Ok(Some(step)) => Ok(Some(step)),
-                Ok(None) => match runtime.run_next_flush_maintenance() {
-                    Ok(Some(outcome)) => Ok(Some(CacheBackgroundMaintenanceStep::Completed(
-                        Box::new(outcome),
-                    ))),
-                    Ok(None) => runtime.start_next_background_table_rewrite_maintenance(),
-                    Err(error) => Err(error),
-                },
-                Err(error) => Err(error),
-            };
-            (step, pending_before)
+            (start_next_cache_step(&mut runtime), pending_before)
         };
         perf_trace::record_lifecycle_background_task_snapshot_lock(perf_trace::timer_elapsed(
             snapshot_start,
@@ -608,6 +630,7 @@ fn start_next_background_step(
 )]
 pub(super) fn drain_durable_background_round(
     runtime: &Arc<ParkingMutex<LifecycleDurableLocalRuntime<'static, ApiTimestampSource>>>,
+    commit_waiters: &std::sync::atomic::AtomicUsize,
     limits: BackgroundDrainLimits,
     clock: &Arc<dyn MaintenanceClock>,
 ) -> BackgroundDrainRound {
@@ -624,6 +647,10 @@ pub(super) fn drain_durable_background_round(
     while tasks_completed < limits.max_tasks
         && clock.now().saturating_duration_since(start) < limits.max_runtime
     {
+        // Writers first (BS5.3): see `commit_waiting`.
+        if tasks_completed > 0 && commit_waiting(commit_waiters) {
+            break;
+        }
         let task_start = perf_trace::start_timer();
         let snapshot_start = perf_trace::start_timer();
         let mut serviced_low_tier = false;

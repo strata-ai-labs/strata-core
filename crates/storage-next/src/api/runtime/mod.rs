@@ -2301,7 +2301,7 @@ impl<'a> StorageRuntime<'a> {
             let (outcome_result, admission, pending_tasks, wal_growth, throttle_delay_millis) =
                 match &self.inner {
                     StorageRuntimeInner::Cache(slot) => {
-                        let mut runtime = slot.lock();
+                        let mut runtime = slot.lock_for_commit();
                         let result =
                             runtime.execute_cache_commit(runtime_batch.clone(), generation_guard);
                         (
@@ -3239,7 +3239,7 @@ where
     S: CommitTimestampSource,
 {
     let leadership = commit_group::CommitGroupLeadership::new(slot.commit_groups());
-    let mut runtime = slot.lock();
+    let mut runtime = slot.lock_for_commit();
     if matches!(
         runtime.open_plan().storage_mode(),
         LifecycleStorageMode::DurableLocalAlways
@@ -3263,12 +3263,12 @@ where
         let sync_result = in_flight.ticket().and_then(|ticket| {
             slot.wal_sync()
                 .sync_or_wait_covered(&durable_seq, ticket, batching_beat, || {
-                    slot.lock().wal_group_sync_ticket()
+                    slot.lock_for_commit().wal_group_sync_ticket()
                 })
         });
         // Phase 2 under a fresh hold: redeem the sync, publish the group's
         // visibility, run post-commit bookkeeping.
-        let mut runtime = slot.lock();
+        let mut runtime = slot.lock_for_commit();
         let results = runtime.execute_durable_commit_group_finish(in_flight, sync_result);
         distribute_group_responses(&mut runtime, results, member_bytes, joiners)
     } else {
