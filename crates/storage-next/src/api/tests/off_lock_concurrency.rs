@@ -217,6 +217,202 @@ fn off_lock_readers_race_a_committing_writer() {
     runtime.close().expect("close cache runtime");
 }
 
+// ---- BS5.0 — multi-writer correctness (the write-concurrency milestone's S3 gate) ----
+
+const MULTI_WRITERS: usize = 4;
+const MULTI_KEYS: usize = 4;
+
+/// One batch overwriting writer `w`'s own fixed key set (`mw{w}-{i}` → `batch_no || i`), all under
+/// one commit version — readers must observe each writer's set all-or-none.
+fn multi_writer_batch(branch: BranchId, writer: usize, batch_no: u64) -> CommitBatch {
+    let mut mutations = Vec::with_capacity(MULTI_KEYS);
+    for i in 0..MULTI_KEYS {
+        let mut value = batch_no.to_be_bytes().to_vec();
+        value.extend_from_slice(&(i as u64).to_be_bytes());
+        mutations.push(CommitMutation::Put {
+            storage_space: background_space(),
+            key: key(format!("mw{writer}-{i:04}").as_bytes()),
+            value: StorageValue::new(value),
+            ttl: None,
+        });
+    }
+    CommitBatch::new(
+        branch,
+        mutations,
+        CommitOptions::default().require_conflict_check(false),
+    )
+    .expect("valid multi-writer batch")
+}
+
+/// Latest-scan one writer's key set; enforce atomicity (homogeneous batch number, complete set).
+/// `None` before the writer's first batch is visible.
+fn multi_read_checked(
+    runtime: &StorageRuntime<'_>,
+    branch: BranchId,
+    writer: usize,
+) -> Option<u64> {
+    let scan = runtime
+        .scan_prefix(&PrefixScanReadRequest::new(
+            branch,
+            background_space(),
+            key(format!("mw{writer}-").as_bytes()),
+            ReadBound::Latest,
+            None,
+        ))
+        .expect("off-lock latest prefix scan");
+    let rows = scan.rows();
+    if rows.len() != MULTI_KEYS {
+        assert!(
+            rows.is_empty(),
+            "torn read: {} of {MULTI_KEYS} keys visible for writer {writer}",
+            rows.len()
+        );
+        return None;
+    }
+    let mut batch_no = None;
+    for row in rows {
+        let value = row.value().expect("multi-writer rows are puts").as_bytes();
+        let observed = u64::from_be_bytes(value[0..8].try_into().expect("8 bytes"));
+        match batch_no {
+            None => batch_no = Some(observed),
+            Some(seen) => assert_eq!(
+                observed, seen,
+                "torn read: mixed batch numbers for writer {writer}"
+            ),
+        }
+    }
+    batch_no
+}
+
+/// N writers share one `&runtime` on ONE branch (distinct key spaces, no conflict overlap) while
+/// checker threads verify atomicity and monotonicity per writer. The invariants BS5's write groups
+/// must preserve, pinned before any protocol change:
+/// - each writer's acked commit versions are strictly monotonic;
+/// - acked versions are globally unique across writers (the allocator's monotonic guarantee);
+/// - read-your-writes after every ack;
+/// - readers observe each writer's batches atomically and never see a batch number regress;
+/// - after the drain, every writer's final batch is the visible state of its key set.
+fn run_multi_writer_stress(runtime: &StorageRuntime<'static>, branch: BranchId, batches: u64) {
+    // Seed batch 0 for every writer so checkers always see complete sets.
+    for writer in 0..MULTI_WRITERS {
+        runtime
+            .commit(&multi_writer_batch(branch, writer, 0))
+            .expect("seed writer batch 0");
+    }
+
+    let done = AtomicBool::new(false);
+    let start = Barrier::new(MULTI_WRITERS + 2);
+    let mut acked_versions: Vec<Vec<u64>> = Vec::new();
+
+    std::thread::scope(|scope| {
+        let mut writer_handles = Vec::with_capacity(MULTI_WRITERS);
+        for writer in 0..MULTI_WRITERS {
+            let (runtime, start) = (&runtime, &start);
+            writer_handles.push(scope.spawn(move || {
+                start.wait();
+                let mut versions =
+                    Vec::with_capacity(usize::try_from(batches).expect("small batch count"));
+                let mut last_version = 0u64;
+                for batch_no in 1..=batches {
+                    let summary = runtime
+                        .commit(&multi_writer_batch(branch, writer, batch_no))
+                        .expect("multi-writer commit");
+                    let version = summary.commit_version().as_u64();
+                    assert!(
+                        version > last_version,
+                        "writer {writer}: acked version regressed ({version} <= {last_version})"
+                    );
+                    last_version = version;
+                    versions.push(version);
+                    // Read-your-writes after the ack.
+                    let seen = multi_read_checked(runtime, branch, writer)
+                        .expect("writer sees its own key set");
+                    assert!(
+                        seen >= batch_no,
+                        "writer {writer}: read-your-writes violated ({seen} < {batch_no}, \
+                         version {version})"
+                    );
+                }
+                versions
+            }));
+        }
+        // Two checkers race the writers, each verifying every writer's set stays atomic and
+        // its observed batch number never regresses.
+        for _ in 0..2 {
+            let (runtime, done, start) = (&runtime, &done, &start);
+            scope.spawn(move || {
+                start.wait();
+                let mut max_seen = [0u64; MULTI_WRITERS];
+                while !done.load(Ordering::Acquire) {
+                    for (writer, max_batch) in max_seen.iter_mut().enumerate() {
+                        if let Some(observed) = multi_read_checked(runtime, branch, writer) {
+                            assert!(
+                                observed >= *max_batch,
+                                "checker: writer {writer} batch regressed ({observed} < {max_batch})"
+                            );
+                            *max_batch = observed;
+                        }
+                    }
+                    std::thread::yield_now();
+                }
+            });
+        }
+        // Collect join results BEFORE unwrapping: a panicked writer must still release the
+        // checkers (via `done`) or the scope would hang waiting on their spin loops and mask
+        // the real failure.
+        let joined: Vec<_> = writer_handles
+            .into_iter()
+            .map(std::thread::ScopedJoinHandle::join)
+            .collect();
+        done.store(true, Ordering::Release);
+        for result in joined {
+            acked_versions.push(result.expect("writer thread"));
+        }
+    });
+
+    // Global uniqueness across writers: the allocator never hands two commits the same version.
+    let mut all_versions: Vec<u64> = acked_versions.iter().flatten().copied().collect();
+    all_versions.sort_unstable();
+    let before = all_versions.len();
+    all_versions.dedup();
+    assert_eq!(
+        before,
+        all_versions.len(),
+        "duplicate acked commit versions"
+    );
+
+    // Every writer's final batch is the visible state of its key set.
+    for writer in 0..MULTI_WRITERS {
+        assert_eq!(
+            multi_read_checked(runtime, branch, writer),
+            Some(batches),
+            "writer {writer}: final visible batch mismatch"
+        );
+    }
+}
+
+/// Cache mode: the protocol core (atomic batches, monotonic unique versions, read-your-writes)
+/// under 4 concurrent writers at high rate.
+#[test]
+fn off_lock_concurrent_writers_share_one_cache_runtime() {
+    let mut runtime = open_cache();
+    let branch = StorageRuntime::default_branch_id_for_test();
+    run_multi_writer_stress(&runtime, branch, 60);
+    runtime.close().expect("close cache runtime");
+}
+
+/// Durable mode with real background workers: the same invariants while WAL appends, flushes, and
+/// compactions run underneath — the shape BS5.1's write groups must keep intact.
+#[test]
+fn off_lock_concurrent_writers_share_one_durable_runtime() {
+    let mut runtime = open_durable_background("off-lock-multi-writer");
+    let branch = StorageRuntime::default_branch_id_for_test();
+    // Fewer batches than the cache variant: this runtime config checkpoints every ~3
+    // commits and rotates 2 KB WAL segments, so per-commit cost is deliberately heavy.
+    run_multi_writer_stress(&runtime, branch, 40);
+    runtime.close().expect("close durable runtime");
+}
+
 #[test]
 fn off_lock_fork_and_materialize_under_concurrent_reads() {
     const SEEDED: u64 = 8;

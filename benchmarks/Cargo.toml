@@ -86,6 +86,10 @@ name = "storage-next-point-spike"
 path = "src/bin/storage_next_point_spike.rs"
 
 [[bin]]
+name = "storage-next-concurrent-writers"
+path = "src/bin/storage_next_concurrent_writers.rs"
+
+[[bin]]
 name = "storage-next-concurrent-reads"
 path = "src/bin/storage_next_concurrent_reads.rs"
 

@@ -129,17 +129,30 @@ anchor (WAL records byte-identical).
 
 ## Slices
 
-### BS5.0 — Concurrent-writer benchmark + baseline (measure first)
+### BS5.0 — Concurrent-writer benchmark + baseline (measure first) — LANDED
 
-**Changes (harness only).** `engine-ycsb --writers N` (N threads issuing independent
-commit batches, per-thread ops/latency accounting; also a mixed mode: N writers + M
-readers to exercise BS2). A matching mode in `rocksdb-ycsb` (RocksDB handles concurrent
-writers natively) so the scoreboard gains a **write-scaling column**. Baseline runs:
-current engine at N ∈ {1, 2, 4, 8} writers, Standard and Always, single- and multi-branch
-— quantifying today's negative scaling under the mutex and Always's per-commit fsync cost.
+**Changes (as landed).** New `benchmarks/src/bin/storage_next_concurrent_writers.rs`
+(modeled on the concurrent-reads bin — the original `engine-ycsb --writers` idea was
+retargeted: that bin is single-threaded and drives the old engine): N writer threads share
+one `&runtime` (commit is `&self`; the runtime is `Send + Sync`), distinct-key batches, a
+fresh runtime per measurement point; `--engines cache,standard,always`,
+`--branches shared,per-writer`, optional `--readers M`, thread sweep {1,2,4,8}. Output:
+CSV + a `BenchmarkReport` row with a `threads` parameter (the permanent write-scaling
+column). A `rocksdb-ycsb` comparison mode remains an open item for the scoreboard.
 
-**Tests.** Harness-level determinism checks (op counts, per-writer acks). No production
-change.
+**Tests (as landed).** Multi-writer S3 stress in `api/tests/off_lock_concurrency.rs`
+(4 writers × cache/durable): per-writer acked versions strictly monotonic, globally unique
+across writers, read-your-writes after every ack, checker threads enforce per-writer batch
+atomicity + monotonicity.
+
+**Bugs found by this slice (fixed with it):** (1) internally generated commit timestamps
+were routed through the strict `Explicit` allocator path and spuriously rejected below the
+monotonic floor under concurrent writers — new `RuntimeGeneratedBase` policy clamps like
+`RuntimeGenerated` (only genuinely caller-supplied stamps stay strict); (2) rotation did
+not republish the Model-2 snapshot — the background flush's phase-1 rotation (off-lock
+build window) and commit-triggered auto-rotation both left the published view without the
+fresh active, so acked commits were invisible to readers for 15–140 ms (V-before-S
+coverage violation). Both republish in the same lock hold now.
 
 ### BS5.1 — Write groups (leader-executes-all, under the existing runtime lock)
 

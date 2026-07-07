@@ -91,6 +91,26 @@ snapshot. Known follow-ups: in-flight-output registry (reclaim during sustained 
 recovered-reader sharing across fork children (reopen ≤ 1 s at high fan-out),
 deleted-branch manifest cleanup, tombstone-only quarantine staging.
 
+## Write-scaling baseline (BS5.0, dev box, `storage-next-concurrent-writers` defaults: batch 10 × 16 B, 3 s windows)
+
+The BS5 instrument's control capture — commits/s by writer-thread count on one shared
+`&runtime`. The milestone's exit gates move these curves (Always ≥4× at 4 threads via group
+fsync amortization; Standard ≥2.5×); single-thread must stay within noise.
+
+| engine · branches | 1 thread | 2 | 4 | 8 | reading |
+|---|---|---|---|---|---|
+| standard · shared | 19,494 | 21,418 | 21,548 | 19,986 | **flat — the runtime mutex serializes (G17)** |
+| standard · per-writer | 30,115 | 32,858 | 32,713 | 38,491 | ≤1.28× at 8 threads — cross-branch commits still serialize on the one mutex (G18) |
+| always · shared | 159 | 154 | 160 | 159 | **flat — one fsync per commit under the lock; the group-commit target** |
+| always · per-writer | 160 | 154 | 160 | 160 | per-branch does not help fsync-bound writes |
+| cache · shared | 15,428 | 15,405 | 15,410 | 15,410 | wall-bound (frozen-budget stalls grow 1,138→8,469; totals identical) — use smaller payloads for pure protocol reads |
+
+BS5.0 also hardened the multi-writer path itself: concurrent commits could spuriously fail
+with "explicit commit timestamp is before the monotonic floor" (internally generated
+timestamps now clamp), and rotation did not republish the Model-2 snapshot (acked commits
+invisible to readers for 15–140 ms during flush build windows) — both caught by the new
+4-writer S3 stress before any protocol change.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
