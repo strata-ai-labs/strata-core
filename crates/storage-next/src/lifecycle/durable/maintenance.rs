@@ -97,6 +97,14 @@ pub(crate) enum DurableBackgroundMaintenanceStep<'a> {
     /// the lock (D.2b-2). Inputs are fully owned so the value survives the
     /// lock release.
     FlushWatermarkCompute(Box<FlushWatermarkCoverageInputs>),
+    /// BS5.5: a marked table-object sweep whose per-object staging I/O
+    /// (quarantine publish + source delete, several fsyncs each) runs off the
+    /// runtime lock. The mark ran under the lock; unreachability is monotone
+    /// (table identities are never reused), so staging cannot race a build.
+    SweepStage(Box<SweepStageInputs>),
+    /// BS5.5: a quarantine purge whose inventory load and object deletes run
+    /// off the runtime lock — purge only touches already-quarantined objects.
+    PurgeStage(Box<PurgeStageInputs>),
 }
 
 impl DurableBackgroundMaintenanceStep<'_> {
@@ -3152,6 +3160,20 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     pub(crate) fn run_next_retention_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        // Existence check BEFORE the mark scan: the pinned-object mark below is
+        // O(branches x tables) with allocations, and this entry point runs on
+        // every drain poll whose upper tiers are empty. Paying the scan without
+        // a pending task measured 29.7s of a 36.5s YCSB-A run held INSIDE the
+        // runtime lock (~0.8ms x 37K empty probes) — the durable write path's
+        // dominant stall (v1 e2e baseline, billion-scale-ledger.md).
+        if !self.maintenance.pending_tasks().iter().any(|task| {
+            matches!(
+                task.kind(),
+                MaintenanceTaskKind::SnapshotPruning | MaintenanceTaskKind::Retention
+            )
+        }) {
+            return Ok(None);
+        }
         let state = self.state;
         // Defer the table-object mark outright while builds are in flight: the sweep would
         // defer on the same condition anyway, so running the O(inventory + manifests) mark
@@ -3307,6 +3329,215 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             ));
         }
         outcome
+    }
+
+    /// BS5.5 background sweep entry: the mark (inventory listing + manifest
+    /// decode) and the interlock checks run under the lock; the per-object
+    /// staging I/O (a quarantine publish plus a source delete, several fsyncs
+    /// each — measured ~320ms lock holds per pass under YCSB churn) returns as
+    /// a [`DurableBackgroundMaintenanceStep::SweepStage`] and runs off-lock.
+    pub(crate) fn start_next_background_quarantine_sweep(
+        &mut self,
+    ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
+        let Some(pending) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Quarantine)
+        else {
+            return Ok(None);
+        };
+        let state = self.state;
+        let database_id = *self.services.assembly_facts().database_id();
+        let codec_id = LifecycleCodecId::new(self.services.assembly_facts().codec_id())?;
+        let staged_at = checkpoint_created_at(
+            self.allocator.timestamp_guard().last_allocated(),
+            self.recovered_checkpoint_timestamp_max,
+        );
+        let builds_active = self.maintenance.has_active_build_task();
+        let retired_readers_alive = self.snapshot_publisher.retired_views_alive();
+        let pinned_objects =
+            in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == pending.id())?
+        else {
+            return Ok(None);
+        };
+        // Fresh mark under this lock hold (metadata-only: inventory listing + manifest decode,
+        // never table data).
+        let candidates = table_object_retention_request(
+            &self.services,
+            self.initial_branch_id,
+            &self.current_recovery_health,
+        )
+        .map(|request| request.with_pinned_objects(pinned_objects))
+        .and_then(|request| table_object_retention_outcome(&request));
+        let candidates: Vec<crate::object::ObjectName> = match candidates {
+            Ok(outcome) => outcome
+                .decisions()
+                .iter()
+                .filter(|decision| {
+                    decision.decision() == crate::lifecycle::RetentionDecision::QuarantineCandidate
+                })
+                .filter_map(|decision| decision.object().cloned())
+                .collect(),
+            Err(error) => {
+                let outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Quarantine, {
+                    MaintenanceOutcomeStatus::Failed
+                })
+                .with_source_error(error);
+                let outcome = self.maintenance.finish_started(task, outcome, false)?;
+                self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+                return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+            }
+        };
+        if candidates.is_empty() {
+            let outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Quarantine, {
+                MaintenanceOutcomeStatus::Completed
+            })
+            .with_reason("no unreachable table objects")
+            .with_stats(LifecycleStats::new(0, 0, 1, 0, 0));
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+            return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+        }
+        if builds_active || retired_readers_alive {
+            // Interlock deferral does NOT self-requeue (that would spin the retention →
+            // quarantine chain against a long-held reader); the next rewrite publish, reopen,
+            // or explicit Reclaim re-triggers the cycle.
+            let reason = if builds_active {
+                "table-object sweep deferred: build task in flight"
+            } else {
+                "table-object sweep deferred: retired read view still held"
+            };
+            let outcome = MaintenanceOutcome::new(
+                MaintenanceTaskKind::Quarantine,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason(reason)
+            .with_stats(LifecycleStats::new(0, 0, 1, 1, 0));
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+            return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+        }
+        let capped: Vec<crate::object::ObjectName> = candidates
+            .iter()
+            .take(TABLE_OBJECT_SWEEP_MAX_OBJECTS)
+            .cloned()
+            .collect();
+        let remaining_candidates = candidates.len().saturating_sub(capped.len());
+        Ok(Some(DurableBackgroundMaintenanceStep::SweepStage(
+            Box::new(SweepStageInputs {
+                task,
+                branch_id: self.initial_branch_id,
+                database_id,
+                codec_id,
+                staged_at,
+                health: self.current_recovery_health.clone(),
+                candidates: capped,
+                remaining_candidates,
+                quarantine: self.services.quarantine().clone(),
+            }),
+        )))
+    }
+
+    /// Fold the off-lock sweep staging back in under the lock: finish the
+    /// started task and chain the follow-up purge / re-mark enqueues.
+    pub(crate) fn finish_quarantine_sweep(
+        &mut self,
+        staged: SweepStaged,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        if let Some(error) = staged.request_error {
+            let outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Quarantine, {
+                MaintenanceOutcomeStatus::Failed
+            })
+            .with_source_error(error);
+            let outcome = self
+                .maintenance
+                .finish_started(staged.task, outcome, false)?;
+            self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+            return Ok(outcome);
+        }
+        let mut outcome = MaintenanceOutcome::new(
+            MaintenanceTaskKind::Quarantine,
+            MaintenanceOutcomeStatus::Completed,
+        )
+        .with_affected_object_names(staged.staged_names)
+        .with_state_changes(staged.quarantined_objects)
+        .with_stats(LifecycleStats::new(0, staged.faults, 1, 0, 0));
+        if let Some(health) = staged.sweep_health {
+            outcome = outcome.with_recovery_health(health);
+        }
+        let outcome = self
+            .maintenance
+            .finish_started(staged.task, outcome, false)?;
+        self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+        if staged.quarantined_objects > 0 {
+            // Best-effort: the staged bytes are reclaimed by the purge; if the enqueue is
+            // rejected (budget/shutdown), the next sweep cycle re-stages idempotently.
+            let _ = self.enqueue_maintenance(MaintenanceTaskRequest::purge_quarantine(
+                self.initial_branch_id,
+            ));
+        }
+        if staged.remaining_candidates > 0 {
+            // Best-effort: capped candidates re-mark on the next retention cycle.
+            let _ = self.enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(
+                self.initial_branch_id,
+            ));
+        }
+        Ok(outcome)
+    }
+
+    /// BS5.5 background purge entry: capture the owned inputs under the lock
+    /// and return a [`DurableBackgroundMaintenanceStep::PurgeStage`]; the
+    /// inventory load and the deletes run off-lock (quarantine namespace
+    /// only — nothing else references those objects).
+    pub(crate) fn start_next_background_purge(
+        &mut self,
+    ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
+        let Some(pending) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Purge)
+        else {
+            return Ok(None);
+        };
+        let state = self.state;
+        let database_id = *self.services.assembly_facts().database_id();
+        let codec_id = LifecycleCodecId::new(self.services.assembly_facts().codec_id())?;
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == pending.id())?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(DurableBackgroundMaintenanceStep::PurgeStage(
+            Box::new(PurgeStageInputs {
+                task,
+                default_branch_id: self.initial_branch_id,
+                database_id,
+                codec_id,
+                health: self.current_recovery_health.clone(),
+                quarantine: self.services.quarantine().clone(),
+            }),
+        )))
+    }
+
+    /// Fold the off-lock purge back in under the lock.
+    pub(crate) fn finish_quarantine_purge(
+        &mut self,
+        staged: PurgeStaged,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        let outcome = match staged.result {
+            Ok(outcome) => outcome,
+            Err(error) => MaintenanceOutcome::new(MaintenanceTaskKind::Purge, {
+                MaintenanceOutcomeStatus::Failed
+            })
+            .with_source_error(error),
+        };
+        let outcome = self
+            .maintenance
+            .finish_started(staged.task, outcome, false)?;
+        self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+        Ok(outcome)
     }
 
     #[allow(
@@ -3722,6 +3953,146 @@ impl MaintenanceTaskRunner for DurableMaterializationMaintenanceRunner<'_, '_> {
             Some(self.budget),
         )?
         .maintenance_outcome())
+    }
+}
+
+/// Owned inputs for the off-lock sweep staging (BS5.5): everything the
+/// per-object quarantine loop needs, captured under the runtime lock.
+pub(crate) struct SweepStageInputs {
+    task: MaintenanceTask,
+    branch_id: strata_core_next::BranchId,
+    database_id: [u8; 16],
+    codec_id: LifecycleCodecId,
+    staged_at: Timestamp,
+    health: RecoveryHealth,
+    candidates: Vec<crate::object::ObjectName>,
+    remaining_candidates: usize,
+    quarantine: QuarantineService<'static>,
+}
+
+/// The off-lock sweep result, folded back under the lock by
+/// [`finish_quarantine_sweep`].
+pub(crate) struct SweepStaged {
+    task: MaintenanceTask,
+    staged_names: Vec<String>,
+    quarantined_objects: usize,
+    faults: usize,
+    remaining_candidates: usize,
+    sweep_health: Option<RecoveryHealth>,
+    request_error: Option<LifecycleError>,
+}
+
+impl SweepStageInputs {
+    /// Stage every candidate into quarantine — callable with NO locks held.
+    /// Each staging is idempotent (`AlreadyQuarantined` / source-missing fold
+    /// as progress), so a crash or repeated pass never double-counts.
+    pub(crate) fn stage(self) -> SweepStaged {
+        let mut staged_names = Vec::new();
+        let mut quarantined_objects = 0usize;
+        let mut faults = 0usize;
+        let mut sweep_health = None;
+        let mut request_error = None;
+        for object in &self.candidates {
+            let proof = crate::lifecycle::LifecycleQuarantineProof::from_retention_decision(
+                crate::lifecycle::RetentionDecision::QuarantineCandidate,
+                self.health.clone(),
+            );
+            let quarantine_request = match LifecycleQuarantineRequest::from_source_object(
+                self.branch_id,
+                self.database_id,
+                self.codec_id.clone(),
+                object.clone(),
+                self.staged_at,
+                proof,
+            ) {
+                Ok(request) => request,
+                Err(error) => {
+                    request_error = Some(error);
+                    break;
+                }
+            };
+            let quarantine_outcome =
+                quarantine_lifecycle_object(&self.quarantine, &quarantine_request);
+            if let Some(health) = quarantine_outcome.recovery_health() {
+                sweep_health = Some(health.clone());
+            }
+            match quarantine_outcome.status() {
+                crate::lifecycle::LifecycleQuarantineStatus::QuarantinedSourceDeleted
+                | crate::lifecycle::LifecycleQuarantineStatus::SourceDeleteRetried => {
+                    quarantined_objects += 1;
+                    staged_names.push(object.to_string());
+                }
+                // Idempotent replays after a partial earlier pass: the object is already staged
+                // (or its source already gone) — the purge will reclaim it.
+                crate::lifecycle::LifecycleQuarantineStatus::AlreadyQuarantined
+                | crate::lifecycle::LifecycleQuarantineStatus::SourceAlreadyMissingAfterPublish => {
+                    quarantined_objects += 1;
+                }
+                // Every other status (publish failures, health blocks, service rejections) leaves
+                // the object on disk for a later pass; the recorded health debt surfaces it.
+                _ => {
+                    faults += 1;
+                }
+            }
+        }
+        SweepStaged {
+            task: self.task,
+            staged_names,
+            quarantined_objects,
+            faults,
+            remaining_candidates: self.remaining_candidates,
+            sweep_health,
+            request_error,
+        }
+    }
+}
+
+/// Owned inputs for the off-lock quarantine purge (BS5.5).
+pub(crate) struct PurgeStageInputs {
+    task: MaintenanceTask,
+    default_branch_id: strata_core_next::BranchId,
+    database_id: [u8; 16],
+    codec_id: LifecycleCodecId,
+    health: RecoveryHealth,
+    quarantine: QuarantineService<'static>,
+}
+
+/// The off-lock purge result, folded back under the lock by
+/// [`finish_quarantine_purge`].
+pub(crate) struct PurgeStaged {
+    task: MaintenanceTask,
+    result: LifecycleResult<MaintenanceOutcome>,
+}
+
+impl PurgeStageInputs {
+    /// Load the inventory, derive the proof, and delete the quarantined
+    /// objects — callable with NO locks held (quarantine namespace only).
+    pub(crate) fn purge(self) -> PurgeStaged {
+        let result = (|| {
+            let branch_id = purge_branch_id_from_task(&self.task, self.default_branch_id)?;
+            let inventory = self
+                .quarantine
+                .load_inventory(branch_id, self.database_id, self.codec_id.as_str())
+                .map_err(durable_quarantine_service_error)?;
+            let (branch_id, proof) = purge_proof_from_maintenance_task(
+                &self.task,
+                self.health.clone(),
+                self.default_branch_id,
+                inventory.token(),
+            )?;
+            Ok(purge_lifecycle_quarantine(
+                &self.quarantine,
+                branch_id,
+                self.database_id,
+                &self.codec_id,
+                &proof,
+            )?
+            .maintenance_outcome())
+        })();
+        PurgeStaged {
+            task: self.task,
+            result,
+        }
     }
 }
 

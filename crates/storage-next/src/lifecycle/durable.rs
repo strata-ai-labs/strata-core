@@ -81,7 +81,9 @@ pub(crate) struct LifecycleDurableLocalServices<'a> {
     snapshot: SnapshotService<'a>,
     table_object: TableObjectService<'static>,
     checkpoint: CheckpointService<'a>,
-    quarantine: QuarantineService<'a>,
+    // 'static like `table_object`: sweep/purge staging clones this service
+    // into off-lock steps (BS5.5) — the backend handle is owned.
+    quarantine: QuarantineService<'static>,
     assembly_facts: LifecycleDurableAssemblyFacts,
     writer_guard: Option<BackendWriterGuard>,
 }
@@ -291,7 +293,7 @@ impl<'a> LifecycleDurableLocalServices<'a> {
         &self.checkpoint
     }
 
-    pub(crate) const fn quarantine(&self) -> &QuarantineService<'a> {
+    pub(crate) const fn quarantine(&self) -> &QuarantineService<'static> {
         &self.quarantine
     }
 }

@@ -549,29 +549,33 @@ pub(super) fn run_next_durable_maintenance(
 }
 
 pub(super) fn run_next_background_durable_maintenance(
-    runtime: &mut LifecycleDurableLocalRuntime<'_, ApiTimestampSource>,
-) -> StorageApiResult<Option<LifecycleMaintenanceOutcome>> {
+    runtime: &mut LifecycleDurableLocalRuntime<'static, ApiTimestampSource>,
+) -> StorageApiResult<Option<DurableBackgroundMaintenanceStep<'static>>> {
     if let Some(outcome) = runtime
         .run_next_retention_maintenance()
         .map_err(map_lifecycle_error)?
     {
-        return Ok(Some(outcome));
+        return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
     }
-    if let Some(outcome) = runtime
-        .run_next_purge_maintenance()
+    // Purge and sweep return off-lock staging steps (BS5.5): their per-object
+    // I/O (quarantine publishes, source deletes, inventory loads) measured as
+    // the durable write path's dominant runtime-lock holds.
+    if let Some(step) = runtime
+        .start_next_background_purge()
         .map_err(map_lifecycle_error)?
     {
-        return Ok(Some(outcome));
+        return Ok(Some(step));
     }
-    if let Some(outcome) = runtime
-        .run_next_quarantine_maintenance()
+    if let Some(step) = runtime
+        .start_next_background_quarantine_sweep()
         .map_err(map_lifecycle_error)?
     {
-        return Ok(Some(outcome));
+        return Ok(Some(step));
     }
     runtime
         .run_next_quarantine_repair_maintenance()
         .map_err(map_lifecycle_error)
+        .map(|outcome| outcome.map(DurableBackgroundMaintenanceStep::completed))
 }
 
 /// How many upper-tier tasks a drain round may complete before it services one pending
@@ -605,11 +609,21 @@ fn start_next_background_step(
                         Ok(None) => {
                             match runtime.start_next_background_table_rewrite_maintenance() {
                                 Ok(Some(step)) => Ok(Some(step)),
-                                Ok(None) => run_next_background_durable_maintenance(runtime).map(
-                                    |outcome| {
-                                        outcome.map(DurableBackgroundMaintenanceStep::completed)
-                                    },
-                                ),
+                                Ok(None) => {
+                                    // Ladder bottom: don't enter the low-tier
+                                    // runners at all when nothing is pending —
+                                    // each entry pays per-kind selection work
+                                    // under this lock hold on every empty poll.
+                                    if !runtime.has_pending_low_tier_maintenance() {
+                                        return Ok(None);
+                                    }
+                                    let low_tier_start = perf_trace::start_timer();
+                                    let low_tier = run_next_background_durable_maintenance(runtime);
+                                    perf_trace::record_lifecycle_background_task_low_tier(
+                                        perf_trace::timer_elapsed(low_tier_start),
+                                    );
+                                    low_tier
+                                }
                                 Err(error) => Err(map_lifecycle_error(error)),
                             }
                         }
@@ -667,10 +681,15 @@ pub(super) fn drain_durable_background_round(
                 && !runtime.has_active_build_task()
                 && runtime.has_pending_low_tier_maintenance()
             {
-                match run_next_background_durable_maintenance(&mut runtime) {
-                    Ok(Some(outcome)) => {
+                let low_tier_start = perf_trace::start_timer();
+                let low_tier = run_next_background_durable_maintenance(&mut runtime);
+                perf_trace::record_lifecycle_background_task_low_tier(perf_trace::timer_elapsed(
+                    low_tier_start,
+                ));
+                match low_tier {
+                    Ok(Some(step)) => {
                         serviced_low_tier = true;
-                        Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)))
+                        Ok(Some(step))
                     }
                     Ok(None) => start_next_background_step(&mut runtime, flush_watermark_exhausted),
                     Err(error) => Err(error),
@@ -765,6 +784,64 @@ pub(super) fn drain_durable_background_round(
                     tasks_completed += 1;
                     made_progress = true;
                     upper_tier_since_low += 1;
+                } else {
+                    perf_trace::record_lifecycle_background_task_publish_failure();
+                    break;
+                }
+            }
+            DurableBackgroundMaintenanceStep::SweepStage(inputs) => {
+                // Per-object quarantine staging (publish + source delete, several
+                // fsyncs each) runs with the runtime lock RELEASED (BS5.5); the
+                // mark ran under the start-section hold, and unreachability is
+                // monotone, so nothing can re-reference the candidates.
+                let stage_start = perf_trace::start_timer();
+                let staged = inputs.stage();
+                perf_trace::record_lifecycle_background_task_unlocked_build(
+                    perf_trace::timer_elapsed(stage_start),
+                );
+                let finish = {
+                    let mut runtime = runtime.lock();
+                    runtime.finish_quarantine_sweep(staged)
+                };
+                perf_trace::record_lifecycle_background_task_total(perf_trace::timer_elapsed(
+                    task_start,
+                ));
+                if finish.is_ok() {
+                    tasks_completed += 1;
+                    made_progress = true;
+                    if serviced_low_tier {
+                        upper_tier_since_low = 0;
+                    } else {
+                        upper_tier_since_low += 1;
+                    }
+                } else {
+                    perf_trace::record_lifecycle_background_task_publish_failure();
+                    break;
+                }
+            }
+            DurableBackgroundMaintenanceStep::PurgeStage(inputs) => {
+                // Inventory load + quarantined-object deletes run with the
+                // runtime lock RELEASED (BS5.5).
+                let purge_start = perf_trace::start_timer();
+                let staged = inputs.purge();
+                perf_trace::record_lifecycle_background_task_unlocked_build(
+                    perf_trace::timer_elapsed(purge_start),
+                );
+                let finish = {
+                    let mut runtime = runtime.lock();
+                    runtime.finish_quarantine_purge(staged)
+                };
+                perf_trace::record_lifecycle_background_task_total(perf_trace::timer_elapsed(
+                    task_start,
+                ));
+                if finish.is_ok() {
+                    tasks_completed += 1;
+                    made_progress = true;
+                    if serviced_low_tier {
+                        upper_tier_since_low = 0;
+                    } else {
+                        upper_tier_since_low += 1;
+                    }
                 } else {
                     perf_trace::record_lifecycle_background_task_publish_failure();
                     break;
