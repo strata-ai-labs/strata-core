@@ -122,11 +122,33 @@ W1.2a (subcompaction bake-off, machinery exists dark) cuts each monster's wall-t
 N×; W1.2b (concurrent lanes) lets L0→L1 run beside mid-level passes. W1.3's smaller
 L1 output targets then bound per-file overlap structurally.
 
+## W1.2a result (2026-07-07): split extended; bake-off NO-WIN; RSS escalates to blocker
+
+The subcompaction split now covers mid-level (`CompactLevel`) and bottommost rewrites
+(was L0→L1-only gating; the boundary derivation was already candidate-generic), with a
+mid-level reunion differential test. But the bake-off did NOT move the gate:
+`STRATA_SUBCOMPACTIONS=4` on YCSB A 10M produced maxes 25.8s/27.6s and WORSE throughput
+(449–461 vs 764 ops/s at SUBC=1) — likely 4-way build threads contending with the
+16-worker pool. Default stays 1; no flip without a win.
+
+**Two escalations:**
+1. **One SUBC=1 run OOM-killed at 61.3GB anon RSS — single-mode durable, 32g budget.**
+   The RSS-vs-budget gap (roadmap T4, task #59) is now an active W1 BLOCKER and a
+   probable confound in every stall measurement (RSS pressure evicts page cache → I/O
+   collapses → compaction slows → stalls lengthen). T4 attribution must run BEFORE
+   further compaction scheduling work — the stall numbers cannot be trusted until
+   memory is honest.
+2. Counter-based lane attribution has now missed twice (W1.1c bound, W1.2a
+   parallelism). Per W6 discipline: the next step is a STACK PROFILE of a live stall
+   window (gdb sampling of maintenance workers + the blocked writer during a
+   multi-second max) plus an RSS timeline, before any further scheduling changes.
+
 ## Sequencing (revised)
 
-W1.1a ✅ -> W1.1b ✅ -> W1.1c ❌(attribution above) -> **W1.2a -> W1.2b** -> re-run the
-W1.1c gate -> W1.3 -> W1.4 -> W1 exit (roadmap M-A gates: A >= 30K, tails bounded,
-debt stable). The W1.1 slice PRs to v1 together with W1.2a once the gate passes.
+W1.1a ✅ -> W1.1b ✅ -> W1.1c ❌ -> W1.2a ✅(split extended; no-win; default stays 1) ->
+**T4 RSS attribution (task #59, now blocking) + stall-window stack profile** ->
+re-attribute -> W1.2b/W1.3 as the profile directs -> re-run the W1.1c gate -> W1.4 ->
+W1 exit. The W1.1+W1.2 slices PR to v1 together once the gate passes.
 
 ## Open items
 

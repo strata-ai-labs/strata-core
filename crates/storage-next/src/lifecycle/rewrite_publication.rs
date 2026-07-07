@@ -132,8 +132,15 @@ pub(crate) fn prepare_durable_compaction_publication(
 }
 
 /// The subcompaction key ranges for one compaction: `vec![None]` (a single serial build) unless
-/// the candidate is an L0-to-L1 table rewrite large enough to split, in which case up to
-/// `subcompaction_cap()` disjoint half-open physical-key ranges.
+/// the candidate is a table rewrite large enough to split, in which case up to
+/// `subcompaction_cap()` disjoint half-open physical-key ranges. W1.2a extends the split
+/// beyond L0→L1 to mid-level and bottommost rewrites — the W1.1c attribution measured
+/// 205 of 229 passes as mid-level `CompactLevel`, occupying the single build lane for
+/// the multi-GB monsters behind which L0-blocked writers stalled (their input is one
+/// table, so the unbounded L(n+1) overlap can only be cut by key range — exactly this
+/// machinery). The boundary derivation is candidate-generic (input + overlap refs);
+/// in-level `CompactL0` rewrites stay serial (rare, and L0's overlapping tables gain
+/// nothing from range splits).
 fn subcompaction_ranges_for_publication(
     branch: &BranchLocalState,
     branch_request: &BranchCompactionRequest,
@@ -142,9 +149,13 @@ fn subcompaction_ranges_for_publication(
     let Some(candidate) = plan.candidate() else {
         return Ok(vec![None]);
     };
-    if candidate.is_metadata_promotion()
-        || branch_request.kind() != BranchCompactionKind::CompactL0ToLevelOne
-    {
+    let splittable_kind = matches!(
+        branch_request.kind(),
+        BranchCompactionKind::CompactL0ToLevelOne
+            | BranchCompactionKind::CompactLevel { .. }
+            | BranchCompactionKind::CompactBottommostLevel { .. }
+    );
+    if candidate.is_metadata_promotion() || !splittable_kind {
         return Ok(vec![None]);
     }
     let n = subcompaction_cap();

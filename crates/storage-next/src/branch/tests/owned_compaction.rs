@@ -5149,3 +5149,124 @@ fn bounded_l0_passes_match_one_unbounded_pass() {
         "bounded pass sequence must converge to the unbounded pass's state"
     );
 }
+
+/// W1.2a: the subcompaction reunion property for a MID-LEVEL (`CompactLevel`)
+/// rewrite — one L1 input table plus overlapping L2 tables, split into
+/// bounded ranges, must concatenate to the serial output row-for-row. This is
+/// the kind the split was extended to: the W1.1c attribution measured
+/// mid-level passes as the compaction lane's dominant occupants.
+#[test]
+fn midlevel_subcompaction_ranges_reunite_into_the_serial_output() {
+    const SUBCOMPACTIONS: usize = 4;
+    let branch = branch_id(0x3C);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(4, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    // L1 input: one table spanning the whole key range at newer versions.
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "mid-reunion-input",
+                vec![
+                    storage_row_with(branch, b"mid-a".to_vec(), 10, 100, Timestamp::EPOCH, b"a10".to_vec()),
+                    storage_row_with(branch, b"mid-c".to_vec(), 11, 110, Timestamp::EPOCH, b"c11".to_vec()),
+                    storage_row_with(branch, b"mid-e".to_vec(), 12, 120, Timestamp::EPOCH, b"e12".to_vec()),
+                    storage_row_with(branch, b"mid-g".to_vec(), 13, 130, Timestamp::EPOCH, b"g13".to_vec()),
+                ],
+            ),
+        )
+        .expect("install l1 input");
+    // L2 overlap: distinct-key tables (older versions), including one key
+    // duplicated against the input so a boundary must keep versions together.
+    for (index, (identity, key, version)) in [
+        ("mid-reunion-l2-a", &b"mid-a"[..], 1u64),
+        ("mid-reunion-l2-b", &b"mid-b"[..], 2),
+        ("mid-reunion-l2-d", &b"mid-d"[..], 3),
+        ("mid-reunion-l2-f", &b"mid-f"[..], 4),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let _ = index;
+        state
+            .install_owned_table_at_level(
+                BranchLevel::new(2),
+                branch_owned_table(
+                    branch,
+                    BranchLevel::new(2),
+                    identity,
+                    vec![storage_row_with(
+                        branch,
+                        key.to_vec(),
+                        version,
+                        version.saturating_mul(10),
+                        Timestamp::EPOCH,
+                        key.to_vec(),
+                    )],
+                ),
+            )
+            .expect("install l2 overlap");
+    }
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactLevel {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+        "mid-reunion-output",
+    )
+    .expect("request")
+    .with_table_compaction_config(TableCompactionConfig::new(1, 16).expect("split config"));
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert!(
+        !candidate.is_metadata_promotion(),
+        "mid-level reunion needs a real merge"
+    );
+    let ranges = state
+        .subcompaction_ranges_for_candidate(
+            candidate,
+            SUBCOMPACTIONS,
+            request.table_compaction_config().target_output_bytes(),
+        )
+        .expect("ranges");
+    assert!(
+        ranges.len() > 1,
+        "the mid-level split must fan out (got {})",
+        ranges.len()
+    );
+
+    let (serial_artifacts, _report) = state
+        .prepare_branch_compaction_plan(&request, &plan)
+        .expect("serial prepare")
+        .expect("serial output");
+    let serial_rows: Vec<StorageRow> = serial_artifacts
+        .into_iter()
+        .flat_map(|artifact| artifact.into_parts_with_rows().2)
+        .map(TableRow::into_row)
+        .collect();
+
+    let mut bounded_rows: Vec<StorageRow> = Vec::new();
+    for (index, bounds) in ranges.iter().enumerate() {
+        let (artifacts, _report) = state
+            .prepare_branch_compaction_plan_bounded(&request, &plan, bounds.as_ref(), index)
+            .expect("bounded prepare")
+            .expect("bounded output");
+        bounded_rows.extend(
+            artifacts
+                .into_iter()
+                .flat_map(|artifact| artifact.into_parts_with_rows().2)
+                .map(TableRow::into_row),
+        );
+    }
+    assert_eq!(
+        bounded_rows, serial_rows,
+        "mid-level subcompaction ranges did not reunite into the serial output"
+    );
+}
