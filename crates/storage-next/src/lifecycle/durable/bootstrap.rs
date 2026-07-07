@@ -2801,6 +2801,18 @@ fn replay_wal_into_catalog<S>(
 ) -> LifecycleResult<LifecycleRecoveryBootstrapReport> {
     let mut report = LifecycleRecoveryBootstrapReport::new(recovery.health().clone());
     let mut replayed_max = CommitVersion::ZERO;
+    // One read view per branch for the WHOLE replay (replay-probe slice):
+    // capture clones every owned-table reader handle — O(tables) — and a
+    // per-record capture made replay O(records × tables) (~169ms/record at a
+    // table-heavy close). A pre-replay capture classifies every later record
+    // correctly: replayed commit versions are unique/ascending, so a
+    // record's (key, version) row can only pre-exist from a pre-crash apply,
+    // which the first capture observed. Branch states are not rotated or
+    // restructured during bootstrap replay, so the view stays valid.
+    let mut branch_views: Vec<(
+        strata_core_next::BranchId,
+        crate::branch::read::BranchReadView,
+    )> = Vec::new();
     for record in recovery.wal().records() {
         replayed_max = replayed_max.max(record.commit_version());
         let branch_id = record.branch_id();
@@ -2815,6 +2827,17 @@ fn replay_wal_into_catalog<S>(
             .generation();
         let target_branch = branch_catalog
             .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+        if !branch_views.iter().any(|(cached, _)| *cached == branch_id) {
+            branch_views.push((
+                branch_id,
+                target_branch.capture_read_view().map_err(branch_error)?,
+            ));
+        }
+        // Rationale: the entry was just inserted above when absent.
+        let read_view = branch_views
+            .iter()
+            .find_map(|(cached, view)| (*cached == branch_id).then_some(view))
+            .expect("replay read view present after insert");
         let replay = CommitReplayRequest::new(record.clone(), durability);
         let replay_report = CommitReplayRuntime::new(
             commit_config,
@@ -2823,7 +2846,7 @@ fn replay_wal_into_catalog<S>(
             visible,
             durable_gate,
         )
-        .replay(&replay)
+        .replay_with_view(&replay, read_view)
         .map_err(commit_error)?;
         report.record_replay(&replay_report);
     }

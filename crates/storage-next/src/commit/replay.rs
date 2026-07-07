@@ -7,7 +7,7 @@ use super::{
     CommitTimelineRowKind, CommitUnresolvedDurable, CommitUnresolvedDurableGate,
     CommitVisibilityFacts, CommitVisiblePublisher,
 };
-use crate::branch::read::{BranchHistoryOptions, BranchReadView, BranchRowSource};
+use crate::branch::read::{BranchOwnRowMatch, BranchReadView};
 use crate::format::WalRecord;
 use crate::observability::perf_trace;
 use crate::row::{StorageRow, StorageSpaceId};
@@ -77,6 +77,26 @@ where
         &mut self,
         request: &CommitReplayRequest,
     ) -> CommitRuntimeResult<CommitReplayReport> {
+        let read_view = self.branch.capture_read_view()?;
+        self.replay_with_view(request, &read_view)
+    }
+
+    /// [`replay`](Self::replay) with a caller-provided read view. Capturing a
+    /// view clones every owned-table reader handle plus construction
+    /// validation — O(tables) per call — so a caller replaying a long WAL
+    /// tail captures ONCE per branch and reuses it (replay-probe slice:
+    /// per-record captures were ~169ms each at 1M scale with a table-heavy
+    /// close state). A pre-replay view stays valid for every later record's
+    /// duplicate classification: commit versions are unique and replayed in
+    /// ascending order, so a record's (key, version) row can only already
+    /// exist from a PRE-CRASH apply — never from an earlier record of this
+    /// replay pass — and pre-crash state is exactly what the first capture
+    /// observed.
+    pub(crate) fn replay_with_view(
+        &mut self,
+        request: &CommitReplayRequest,
+        read_view: &BranchReadView,
+    ) -> CommitRuntimeResult<CommitReplayReport> {
         // Replay installs already-durable rows selected by the recovery phase.
         // It does not run normal mutating admission; callers that need
         // process-wide exclusion should quiesce normal commits before invoking
@@ -92,8 +112,7 @@ where
 
         let matching_gate = self.matching_unresolved_gate(request)?;
         let rows = request.rows().to_vec();
-        let read_view = self.branch.capture_read_view()?;
-        let duplicate_state = classify_replay_rows(&read_view, &rows)?;
+        let duplicate_state = classify_replay_rows(read_view, &rows)?;
         let stamp = request.stamp()?;
         let counts = replay_mutation_counts(&rows)?;
         let facts = replay_visibility_facts(stamp)?;
@@ -348,6 +367,10 @@ fn validate_replay_rows(
     validate_no_duplicate_internal_rows(rows)
 }
 
+fn same_internal_row(left: &StorageRow, right: &StorageRow) -> bool {
+    left.physical_key() == right.physical_key() && left.commit_version() == right.commit_version()
+}
+
 fn validate_no_duplicate_internal_rows(rows: &[StorageRow]) -> CommitRuntimeResult<()> {
     for (index, left) in rows.iter().enumerate() {
         if rows
@@ -461,35 +484,25 @@ fn classify_replay_row(
     read_view: &BranchReadView,
     row: &StorageRow,
 ) -> CommitRuntimeResult<(ReplayDuplicateState, usize)> {
-    let (history, source_probes) = read_view
-        .history_with_source_probe_count(row.physical_key(), BranchHistoryOptions::all())
-        .map_err(|source| {
-            CommitRuntimeError::lower_layer_with(
-                CommitLowerLayer::BranchRuntime,
-                "branch read view failed during replay duplicate classification",
-                source,
-            )
-        })?;
-    let mut saw_same_internal = false;
-    for existing in history
-        .iter()
-        .filter(|existing| !matches!(existing.source(), BranchRowSource::Inherited { .. }))
-        .filter(|existing| same_internal_row(existing.row(), row))
-    {
-        saw_same_internal = true;
-        if existing.row() == row {
-            return Ok((ReplayDuplicateState::Exact, source_probes));
-        }
-    }
-    if saw_same_internal {
-        Ok((ReplayDuplicateState::Mismatch, source_probes))
-    } else {
-        Ok((ReplayDuplicateState::Absent, source_probes))
-    }
-}
-
-fn same_internal_row(left: &StorageRow, right: &StorageRow) -> bool {
-    left.physical_key() == right.physical_key() && left.commit_version() == right.commit_version()
+    // Bounded idempotence probe (replay-probe slice): an exact
+    // (physical key, commit version) lookup over the branch's OWN sources
+    // with a first-equal early exit, replacing the full history walk that
+    // made replay O(rows × sources × key versions). Inherited layers are
+    // excluded by the probe itself — replay reconciles only this branch's
+    // own WAL appends, and the walk it replaces filtered them out too.
+    let (matched, source_probes) = read_view.classify_own_internal_row(row).map_err(|source| {
+        CommitRuntimeError::lower_layer_with(
+            CommitLowerLayer::BranchRuntime,
+            "branch read view failed during replay duplicate classification",
+            source,
+        )
+    })?;
+    let state = match matched {
+        BranchOwnRowMatch::Equal => ReplayDuplicateState::Exact,
+        BranchOwnRowMatch::SameVersionDiffers => ReplayDuplicateState::Mismatch,
+        BranchOwnRowMatch::Absent => ReplayDuplicateState::Absent,
+    };
+    Ok((state, source_probes))
 }
 
 fn replay_mutation_counts(rows: &[StorageRow]) -> CommitRuntimeResult<CommitMutationCounts> {

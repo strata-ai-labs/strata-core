@@ -393,6 +393,37 @@ single-write group batching (recorded reopening lever) if product demands it;
 (2) scans (E, 8.8×; l9 scan cells) = BS6 territory (readahead, block compression);
 (3) reopen replay at ~365µs/row = the replay-probe slice, next up.
 
+## Replay-probe slice (2026-07-07, dev box /data2, medians where noted)
+
+Recovery replay's per-row cost drops **365µs → 52µs (7×)**; the fixed-config 1M
+load-then-reopen cell (77MB un-checkpointed WAL, ~185K-row tail) drops **72.5s → 9.66s
+(7.5×)**. Three stacked changes, each driven by a fresh profile:
+
+1. **Bounded idempotence probe.** `classify_replay_row` walked the FULL key history
+   (`BranchHistoryOptions::all()`) per replayed row. Replaced with
+   `BranchReadView::classify_own_internal_row` — own-sources-only (inherited layers never
+   hold the branch's own WAL rows), first-byte-equal early exit. Probes 7 → 2.8/row.
+2. **Capture-once-per-branch read view.** `CommitReplayRuntime::replay` captured a fresh
+   view per WAL record — O(tables) clone+validation per record (~600 records × 8.8K
+   tables at the 10M ladder). `replay_with_view` + a per-branch cache in
+   `replay_wal_into_catalog`; sound because replayed versions are unique/ascending, so a
+   record's (key, version) row can only pre-exist from a pre-crash apply, which the first
+   capture observed.
+3. **Point-seek instead of decode-all.** The gdb profile showed the remaining wall inside
+   `read_data_block_rows` → `decode_table_data_block` — every probe of an already-flushed
+   row decoded its whole block (~64 rows) to check one. The probe now uses
+   `TablePreparedPointLookup` bounded AT the target version (newest ≤ v == v iff present):
+   an in-block point seek, no decode-all. This was the big one: 29s → 9.7s at 1M.
+
+10M full ladder (this tree): fork p50 81.8ms / p95 89.2ms (tail fix holds); reopen
+16.58s with a ZERO-row replay tail this run — i.e. the pure BS4.5b O(tables) floor
+(8,850 lazy reader opens ≈ 1.9ms each). Follow-ups now cleanly separated:
+(a) the table-open floor is compaction debt at close (fewer tables → faster open);
+(b) the replay-tail SIZE varies 0–1.5M rows run-to-run with checkpoint cadence at close
+— the cadence question flagged at the v1 baseline; (c) residual 52µs/row only matters
+after (a)/(b). The old `history_with_source_probe_count` is deleted (replay was its only
+consumer).
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
