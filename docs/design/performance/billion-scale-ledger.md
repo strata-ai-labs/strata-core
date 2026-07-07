@@ -238,6 +238,43 @@ join queue always looked empty). The timestamp base now reads an off-lock atomic
 (clamp semantics unchanged; the allocator still enforces the floor under the lock) and the
 mode comes from the open summary.
 
+## V1 end-to-end baseline (2026-07-07, dev box, post-merge `d5f50899`, engine-level)
+
+First end-to-end numbers on the v1 line (engine-next `Database` API; bench harness with
+the jemalloc pin). YCSB: 100K records, 100K ops, 1KB values, 8GiB budget. Run throughput
+(ops/s):
+
+| Workload | cache | durable |
+|---|---|---|
+| A (50r/50u zipf) | 250,276 | 2,642 |
+| B (95r/5u zipf) | 927,347 | 5,451 |
+| C (100r zipf) | 1,195,705 | 874,907 |
+| D (95r/5i latest) | 844,021 | 14,433 |
+| E (5i/95scan zipf) | 20,717 | 2,290 |
+| F (50r/50rmw zipf) | 278,633 | 1,927 |
+
+engine-kv-scale (1M × 64B): load 437K/332K rows/s (cache/durable); point reads 865K/14.5K
+ops/s (durable p50 42.6µs = cold block reads); scans 9.0K/3.1K ops/s.
+engine-vector-indexing (10K × d64): writes 130–160K ops/s; HNSW query p50 ~10–13ms.
+storage-next-l9 10M standard: load-seq 260K rows/s; point-latest 2,245 ops/s p50 491µs
+and fork p50 72.8ms / p95 2.7s — both measured against live post-load compaction debt;
+reopen-after-load 15.78s (8,947 reader opens, 78K data-block reads — needs its own
+investigation against the BS4.5b fast-open expectation).
+
+**Durable write-path attribution (new `engine-ycsb --perf-breakdown`): the runtime lock
+is starved by background maintenance.** Workload A durable, one 36.5s run: commit-stage
+work totals ~0.5s; foreground commits spent **19.9s waiting for the runtime lock**;
+background tasks held it **38.6s cumulative (~93ms per task)** — compaction merges and
+flush work running under the lock. No admission stalls (0 wait timeouts), no
+checkpoints, no inline maintenance — pure lock theft. Update p50 is healthy (~80–105µs);
+p99 ≈ 3–4ms and single multi-second maxima (12.9–22.6s) are individual long
+merges/flushes holding the lock. The 1KB single-put engine workload rotates memtables
+constantly, which the small-row storage-level instrument never exercised — this is
+exactly the "real engine-layer workload data" the BS5 exit criteria reserved judgment
+for. Next lever (new slice, measure-gated): move compaction merge/build off the runtime
+lock (flush already builds off-lock via BS5.3b's identity install) or chunk merges with
+writers-first yields.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

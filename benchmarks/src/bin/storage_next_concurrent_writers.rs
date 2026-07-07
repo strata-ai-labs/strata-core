@@ -116,7 +116,11 @@ struct Config {
 
 fn parse_config() -> Result<Config, String> {
     let mut config = Config {
-        engines: vec![Engine::Cache, Engine::DurableStandard, Engine::DurableAlways],
+        engines: vec![
+            Engine::Cache,
+            Engine::DurableStandard,
+            Engine::DurableAlways,
+        ],
         branch_modes: vec![BranchMode::Shared],
         threads: DEFAULT_THREADS.to_vec(),
         readers: 0,
@@ -158,17 +162,25 @@ fn parse_config() -> Result<Config, String> {
                     .collect::<Result<_, _>>()?;
             }
             "--readers" => {
-                config.readers = value("--readers")?.parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+                config.readers = value("--readers")?
+                    .parse()
+                    .map_err(|e: std::num::ParseIntError| e.to_string())?;
             }
             "--batch-size" => {
-                config.batch_size = value("--batch-size")?.parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+                config.batch_size = value("--batch-size")?
+                    .parse()
+                    .map_err(|e: std::num::ParseIntError| e.to_string())?;
             }
             "--value-bytes" => {
-                config.value_bytes = value("--value-bytes")?.parse().map_err(|e: std::num::ParseIntError| e.to_string())?;
+                config.value_bytes = value("--value-bytes")?
+                    .parse()
+                    .map_err(|e: std::num::ParseIntError| e.to_string())?;
             }
             "--window-secs" => {
                 config.window = Duration::from_secs(
-                    value("--window-secs")?.parse().map_err(|e: std::num::ParseIntError| e.to_string())?,
+                    value("--window-secs")?
+                        .parse()
+                        .map_err(|e: std::num::ParseIntError| e.to_string())?,
                 );
             }
             "--perf-breakdown" => {
@@ -214,7 +226,11 @@ fn open_point_runtime(
 }
 
 /// The branch each writer commits to under `mode`, creating per-writer branches on demand.
-fn setup_branches(runtime: &StorageRuntime<'static>, mode: BranchMode, writers: usize) -> Vec<BranchId> {
+fn setup_branches(
+    runtime: &StorageRuntime<'static>,
+    mode: BranchMode,
+    writers: usize,
+) -> Vec<BranchId> {
     match mode {
         BranchMode::Shared => vec![SHARED_BRANCH; writers],
         BranchMode::PerWriter => (0..writers)
@@ -465,7 +481,10 @@ fn main() {
                 parameters.insert("branches".to_string(), serde_json::json!(mode.name()));
                 parameters.insert("threads".to_string(), serde_json::json!(writers));
                 parameters.insert("readers".to_string(), serde_json::json!(config.readers));
-                parameters.insert("batch_size".to_string(), serde_json::json!(config.batch_size));
+                parameters.insert(
+                    "batch_size".to_string(),
+                    serde_json::json!(config.batch_size),
+                );
                 parameters.insert(
                     "value_bytes".to_string(),
                     serde_json::json!(config.value_bytes),
