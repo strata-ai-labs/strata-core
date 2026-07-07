@@ -99,6 +99,11 @@ pub(crate) struct LifecycleCompactionRequest {
     durability: LifecycleTableRewriteDurability,
     retention_policy: BranchCompactionRetentionPolicy,
     pruning_proof: Option<BranchCompactionPruningProof>,
+    /// W1.1: per-pass input byte bound applied to L0→L1 requests (see
+    /// `L0_PASS_MAX_INPUT_BYTES`). A field rather than the bare constant so
+    /// tests and the W1.4 pacing calibration can vary it per request; every
+    /// constructor seeds the default.
+    l0_pass_max_input_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -301,9 +306,24 @@ impl LifecycleCompactionRequest {
             durability: LifecycleTableRewriteDurability::VolatileOnly,
             retention_policy: BranchCompactionRetentionPolicy::KeepAll,
             pruning_proof: None,
+            l0_pass_max_input_bytes: L0_PASS_MAX_INPUT_BYTES,
         };
         request.branch_request()?;
         Ok(request)
+    }
+
+    /// W1.1b: override the per-pass L0→L1 input byte bound (tests and pacing
+    /// calibration; production requests keep `L0_PASS_MAX_INPUT_BYTES`).
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "pass-bound override is consumed by W1 tests and tuning"
+        )
+    )]
+    pub(crate) const fn with_l0_pass_max_input_bytes(mut self, bound: u64) -> Self {
+        self.l0_pass_max_input_bytes = bound;
+        self
     }
 
     pub(crate) const fn with_durability(
@@ -382,7 +402,7 @@ impl LifecycleCompactionRequest {
         // W1.1: every lifecycle-driven L0→L1 pass is byte-bounded (all entry
         // points route through here — background, inline, explicit drains).
         if matches!(self.kind, BranchCompactionKind::CompactL0ToLevelOne) {
-            request = request.with_max_pass_input_bytes(L0_PASS_MAX_INPUT_BYTES);
+            request = request.with_max_pass_input_bytes(self.l0_pass_max_input_bytes);
         }
         Ok(request)
     }
