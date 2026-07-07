@@ -36,7 +36,9 @@ mod bootstrap;
 mod close;
 mod maintenance;
 
-pub(crate) use bootstrap::{LifecycleDurableLocalRuntime, LifecycleRecoveryBootstrapReport};
+pub(crate) use bootstrap::{
+    DurableGroupMemberResult, LifecycleDurableLocalRuntime, LifecycleRecoveryBootstrapReport,
+};
 pub(crate) use maintenance::{
     DurableBackgroundMaintenanceBuild, DurableBackgroundMaintenanceBuilt,
     DurableBackgroundMaintenanceStep, PreparedPublishStep,

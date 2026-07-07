@@ -438,6 +438,14 @@ pub(crate) struct WalAppend {
     forced_durable: bool,
 }
 
+/// Who owns the fsync for an append (BS5.1): the service's configured policy (today's per-append
+/// behavior), or a write-group caller that runs one covering `force_durable` after N appends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WalAppendDurability {
+    PolicyDriven,
+    DeferredToGroup,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WalGrowthFacts {
     retained_segments: usize,
@@ -910,6 +918,27 @@ impl<'a> WalService<'a> {
     }
 
     pub(crate) fn append(&mut self, record: &WalRecord) -> WalServiceResult<WalAppend> {
+        self.append_with_durability(record, WalAppendDurability::PolicyDriven)
+    }
+
+    /// Append without the `Always` policy's inline fsync (BS5.1 write groups): the record
+    /// accumulates dirty bytes exactly like `Standard`, and the CALLER owns durability — it must
+    /// run one [`force_durable`](Self::force_durable) covering every deferred append before any
+    /// covered commit is acked or made visible (WAL-before-visible). A group of one produces the
+    /// identical syscall sequence to [`append`](Self::append) in `Always` mode: one append, one
+    /// fsync — just sequenced by the caller.
+    pub(crate) fn append_deferring_durability(
+        &mut self,
+        record: &WalRecord,
+    ) -> WalServiceResult<WalAppend> {
+        self.append_with_durability(record, WalAppendDurability::DeferredToGroup)
+    }
+
+    fn append_with_durability(
+        &mut self,
+        record: &WalRecord,
+        durability: WalAppendDurability,
+    ) -> WalServiceResult<WalAppend> {
         if self.repair_uncertain {
             return Err(WalServiceError::RepairUncertain {
                 segment_id: self.active_segment_id,
@@ -1012,8 +1041,11 @@ impl<'a> WalService<'a> {
 
             // In always mode the append is already visible when sync runs. If sync
             // fails, dirty facts intentionally remain advanced so lifecycle can
-            // classify the durability-uncertain window.
-            let forced_durable = if self.durability_policy == DurabilityPolicy::Always {
+            // classify the durability-uncertain window. A group append defers the
+            // sync to the caller's single covering force_durable.
+            let forced_durable = if durability == WalAppendDurability::PolicyDriven
+                && self.durability_policy == DurabilityPolicy::Always
+            {
                 self.force_durable()?;
                 true
             } else {

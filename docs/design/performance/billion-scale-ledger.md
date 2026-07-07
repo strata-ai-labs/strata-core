@@ -111,6 +111,33 @@ timestamps now clamp), and rotation did not republish the Model-2 snapshot (acke
 invisible to readers for 15–140 ms during flush build windows) — both caught by the new
 4-writer S3 stress before any protocol change.
 
+## Write groups (BS5.1, dev box, same instrument, medians of 3 isolated points)
+
+Leader-executes-all write groups under the existing runtime lock: one durable-gate span per
+group (range-widened unresolved fact), N deferred WAL appends + one covering fsync
+(`Always`), one visible publish to the group max. Callers join a leadership queue; members
+wait on their own condvar (never the runtime lock) and re-join immediately on completion; an
+`Always`-only 150 µs formation window absorbs the just-served cohort into the next group.
+
+| engine · branches | 1 thread | 2 | 4 | 8 | vs BS5.0 baseline |
+|---|---|---|---|---|---|
+| always · shared | 161 | 224 | 278 | 373 | **flat → 1.7× at 4 / 2.3× at 8 threads** (was 159 flat) |
+| always · per-writer (4T) | — | — | 305 | — | 1.9× (was ≤1.28×) |
+| standard · shared | 20,284 | — | 21,945 | 21,522 | unregressed, flat-to-slightly-positive (mutex-bound; BS5.2's target) |
+
+Single-thread is byte- and throughput-identical to solo (group-of-1 equivalence is
+test-anchored on whole-backend object snapshots). Group traces show fsync batching works —
+size-7 groups take the same ~6.2 ms hold as solos — so the residual gap to the ≥4× milestone
+gate is hold pipelining: formation can't overlap the in-flight fsync while both live under
+the one runtime mutex. That is exactly BS5.2 (commit path off the mutex).
+
+BS5.1 also removed two pre-lock writer serializers found with the new instrument: the
+commit-timestamp base and the durability-mode resolution both took the full runtime lock per
+commit (writers queued behind an in-flight fsync before ever reaching the commit path — the
+join queue always looked empty). The timestamp base now reads an off-lock atomic mirror
+(clamp semantics unchanged; the allocator still enforces the floor under the lock) and the
+mode comes from the open summary.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

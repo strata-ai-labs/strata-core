@@ -79,8 +79,8 @@ pub(crate) use conflict::{
     reason = "commit scaffold exports define the local surface for later slices"
 )]
 pub(crate) use durable::{
-    CommitBranchApplyTarget, CommitDurableRuntime, CommitVisiblePublisher, CommitWalAppendError,
-    CommitWalAppendFacts, CommitWalAppender,
+    finalize_commit_group, CommitBranchApplyTarget, CommitDurableRuntime, CommitGroupState,
+    CommitVisiblePublisher, CommitWalAppendError, CommitWalAppendFacts, CommitWalAppender,
 };
 #[allow(
     unused_imports,

@@ -77,11 +77,12 @@ use crate::api::outcome::StorageCloseEffects;
 use parking_lot::{Mutex as ParkingMutex, MutexGuard as ParkingMutexGuard};
 use std::fmt;
 use std::marker::PhantomData;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 mod background;
+mod commit_group;
 mod data;
 mod diagnostics;
 mod error;
@@ -145,6 +146,14 @@ pub struct StorageRuntime<'a> {
     open_summary: Option<StorageOpenSummary>,
     last_recovery: Option<DiagnosticsRecoveryReport>,
     last_close: Option<StorageCloseSummary>,
+    /// Off-lock mirror of the allocator's last-allocated commit timestamp, in
+    /// micros (BS5.1). `0` = not yet sampled (one locked read refreshes it).
+    /// Reading this under the runtime lock serialized every writer BEFORE the
+    /// commit path, so the write-group join queue always looked empty. The
+    /// value is only a clamp candidate: the allocator enforces the real
+    /// monotonic floor under the lock, exactly as with the (equally
+    /// stale-by-interleaving) locked read this replaces.
+    last_allocated_timestamp_micros: AtomicU64,
     // BS4.4i: every durable runtime is owned/`'static` (the borrowed `Durable(<'a>)` variant was
     // removed), so `StorageRuntimeInner` no longer needs a lifetime. The public `StorageRuntime<'a>`
     // signature is retained (it is spelled across downstream crates) by parking the now-inert lifetime
@@ -219,6 +228,7 @@ impl StorageRuntime<'static> {
             open_summary: None,
             last_recovery: None,
             last_close: None,
+            last_allocated_timestamp_micros: AtomicU64::new(0),
             _marker: PhantomData,
         }
     }
@@ -583,6 +593,7 @@ fn open_durable_with_owned_backend_handle<'runtime>(
             open_summary: Some(summary),
             last_recovery: Some(recovery_report),
             last_close: None,
+            last_allocated_timestamp_micros: AtomicU64::new(0),
             _marker: PhantomData,
         },
         summary,
@@ -2116,6 +2127,7 @@ impl<'a> StorageRuntime<'a> {
                 open_summary: Some(summary),
                 last_recovery: Some(recovery),
                 last_close: None,
+                last_allocated_timestamp_micros: AtomicU64::new(0),
                 _marker: PhantomData,
             },
             summary,
@@ -2302,23 +2314,25 @@ impl<'a> StorageRuntime<'a> {
                         )
                     }
                     StorageRuntimeInner::DurableOwned(slot) => {
-                        let mut runtime = slot.lock();
                         let clone_timer = perf_trace::start_timer();
                         let exec_batch = runtime_batch.clone();
                         perf_trace::record_commit_api_batch_clone_elapsed(clone_timer);
-                        let result = runtime.execute_durable_commit(exec_batch, generation_guard);
-                        let post_timer = perf_trace::start_timer();
-                        let throttle_delay_millis =
-                            durable_commit_throttle_delay_millis(&runtime, &runtime_batch);
-                        let snapshot = (
-                            result,
-                            runtime.last_write_admission(),
-                            runtime.maintenance_status().pending_tasks(),
-                            runtime.last_wal_growth_outcome().cloned(),
-                            throttle_delay_millis,
+                        // BS5.1 write groups: uncontended callers take the exact
+                        // solo path; contended callers join a group led by
+                        // whichever caller holds the runtime lock.
+                        let response = execute_durable_commit_grouped(
+                            slot,
+                            exec_batch,
+                            &runtime_batch,
+                            generation_guard,
                         );
-                        perf_trace::record_commit_api_post_elapsed(post_timer);
-                        snapshot
+                        (
+                            response.outcome,
+                            response.admission,
+                            response.pending_tasks,
+                            response.wal_growth,
+                            response.throttle_delay_millis,
+                        )
                     }
                     StorageRuntimeInner::Closed => {
                         return Err(StorageApiError::InvalidRuntimeState {
@@ -2331,6 +2345,12 @@ impl<'a> StorageRuntime<'a> {
             }
             match outcome_result {
                 Ok(outcome) => {
+                    // Keep the off-lock timestamp mirror at the frontier
+                    // (monotone via fetch_max under concurrent committers).
+                    if let Some(timestamp) = outcome.commit_timestamp() {
+                        self.last_allocated_timestamp_micros
+                            .fetch_max(timestamp.as_micros(), Ordering::AcqRel);
+                    }
                     self.background_wait_after_wal_growth_enqueue(wal_growth.as_ref());
                     self.background_wait_after_write_throttle(throttle_delay_millis);
                     perf_trace::record_api_commit_runtime_elapsed(runtime_timer);
@@ -2780,8 +2800,24 @@ impl<'a> StorageRuntime<'a> {
                 }
             },
             StorageRuntimeInner::DurableOwned(slot) => {
-                let runtime = slot.lock();
-                match (runtime.open_plan().storage_mode(), requested) {
+                // BS5.1: the storage mode is fixed at open. Reading it through
+                // the runtime lock serialized every writer ahead of the commit
+                // path (the write-group join queue then always looked empty),
+                // so read the recorded open-summary mode off-lock; the locked
+                // read remains only as the fallback for a missing summary.
+                let storage_mode = match self.open_summary.map(StorageOpenSummary::mode) {
+                    Some(StorageMode::DurableLocal {
+                        policy: StorageDurabilityPolicy::Standard,
+                    }) => LifecycleStorageMode::DurableLocalStandard,
+                    Some(StorageMode::DurableLocal {
+                        policy: StorageDurabilityPolicy::Always,
+                    }) => LifecycleStorageMode::DurableLocalAlways,
+                    Some(_) | None => {
+                        let runtime = slot.lock();
+                        runtime.open_plan().storage_mode()
+                    }
+                };
+                match (storage_mode, requested) {
                     (
                         LifecycleStorageMode::DurableLocalStandard,
                         CommitDurability::RuntimeDefault | CommitDurability::Standard,
@@ -2822,16 +2858,32 @@ impl<'a> StorageRuntime<'a> {
     }
 
     fn next_commit_timestamp(&self) -> Timestamp {
-        let last_allocated = match &self.inner {
-            StorageRuntimeInner::Cache(slot) => {
-                let runtime = slot.lock();
-                runtime.allocator().timestamp_guard().last_allocated()
-            }
-            StorageRuntimeInner::DurableOwned(slot) => {
-                let runtime = slot.lock();
-                runtime.allocator().timestamp_guard().last_allocated()
-            }
-            StorageRuntimeInner::Closed => None,
+        // BS5.1: read the frontier off-lock (see the field's doc). The mirror
+        // is exact in steady state (updated from every commit outcome); the
+        // one-time locked sample below seeds it with the recovered allocator
+        // state after open.
+        let cached = self.last_allocated_timestamp_micros.load(Ordering::Acquire);
+        let last_allocated = if cached == 0 {
+            let sampled = match &self.inner {
+                StorageRuntimeInner::Cache(slot) => {
+                    let runtime = slot.lock();
+                    runtime.allocator().timestamp_guard().last_allocated()
+                }
+                StorageRuntimeInner::DurableOwned(slot) => {
+                    let runtime = slot.lock();
+                    runtime.allocator().timestamp_guard().last_allocated()
+                }
+                StorageRuntimeInner::Closed => None,
+            };
+            // `1` marks "sampled, nothing allocated yet" — still below the
+            // default timestamp, so the base resolution is unchanged.
+            self.last_allocated_timestamp_micros.fetch_max(
+                sampled.map_or(1, |timestamp| timestamp.as_micros().max(1)),
+                Ordering::AcqRel,
+            );
+            sampled
+        } else {
+            Some(Timestamp::from_micros(cached))
         };
         match last_allocated {
             Some(timestamp) if timestamp >= DEFAULT_TIMESTAMP => {
@@ -3089,14 +3141,34 @@ fn durable_commit_throttle_delay_millis<S>(
     runtime: &LifecycleDurableLocalRuntime<'_, S>,
     batch: &crate::commit::CommitBatch,
 ) -> u64 {
-    if runtime.is_graded_admission() {
+    let batch_bytes = if runtime.is_graded_admission() {
         // Pacing is best-effort and the commit has already succeeded; a byte-estimate error
         // (row-size overflow) falls back to 0 bytes → no pacing for this commit, never a failure.
-        let batch_bytes = estimate_commit_batch_active_bytes(batch).unwrap_or(0);
+        estimate_commit_batch_active_bytes(batch).unwrap_or(0)
+    } else {
+        0
+    };
+    durable_commit_throttle_delay_millis_from_bytes(
+        runtime,
+        batch_bytes,
+        runtime.last_write_admission(),
+    )
+}
+
+/// Throttle-delay computation from pre-captured inputs (BS5.1): group members' batches are
+/// consumed by the group execution, so the leader captures each member's byte estimate before
+/// executing and each member's admission snapshot as it completes, then computes the delay
+/// from the post-group runtime state — the same inputs a solo commit reads under the lock.
+fn durable_commit_throttle_delay_millis_from_bytes<S>(
+    runtime: &LifecycleDurableLocalRuntime<'_, S>,
+    batch_bytes: u64,
+    admission: Option<LifecycleWriteAdmissionOutcome>,
+) -> u64 {
+    if runtime.is_graded_admission() {
         return runtime.graded_write_throttle_delay_millis(batch_bytes);
     }
     write_throttle_delay_millis(
-        runtime.last_write_admission().map_or(0, |admission| {
+        admission.map_or(0, |admission| {
             admission.pressure().throttle_ratio_permille()
         }),
         runtime
@@ -3104,6 +3176,199 @@ fn durable_commit_throttle_delay_millis<S>(
             .lifecycle_config()
             .write_throttle_policy(),
     )
+}
+
+/// The durable-commit under-lock section (BS5.1): every commit joins the slot's group queue.
+/// With no leader active the caller leads immediately (a drained-empty queue = the exact solo
+/// path); otherwise it waits on its own joiner — never on the runtime lock — so served members
+/// wake the moment the leader publishes their responses and immediately re-join, keeping the
+/// next group full. Leadership hands off by promotion when the leader finishes.
+fn execute_durable_commit_grouped<S>(
+    slot: &RuntimeSlot<LifecycleDurableLocalRuntime<'static, S>>,
+    batch: crate::commit::CommitBatch,
+    original_batch: &crate::commit::CommitBatch,
+    generation_guard: CommitBranchGenerationGuard,
+) -> commit_group::CommitGroupResponse
+where
+    S: CommitTimestampSource,
+{
+    let request = commit_group::CommitGroupRequest {
+        batch,
+        generation_guard,
+    };
+    match slot.commit_groups().join(request) {
+        commit_group::JoinPath::Lead(request) => {
+            lead_commit_group_as_leader(slot, request, original_batch)
+        }
+        commit_group::JoinPath::Wait(joiner) => {
+            match slot.commit_groups().await_service(&joiner) {
+                commit_group::WaitOutcome::Done(response) => *response,
+                commit_group::WaitOutcome::Lead(request) => {
+                    lead_commit_group_as_leader(slot, request, original_batch)
+                }
+                // Leaders complete every taken member before handing off, so this is
+                // only reachable if a leader died mid-group. Fail closed; never
+                // re-execute.
+                commit_group::WaitOutcome::Abandoned => commit_group::CommitGroupResponse {
+                    outcome: Err(LifecycleError::InvalidLifecycleState {
+                        reason: "write group leader did not complete this commit; \
+                                 durability is uncertain",
+                    }),
+                    admission: None,
+                    pending_tasks: 0,
+                    wal_growth: None,
+                    throttle_delay_millis: 0,
+                },
+            }
+        }
+    }
+}
+
+/// Acquire the runtime lock and lead one write group, handing leadership on afterwards (the
+/// guard promotes the next leader even if execution panics).
+fn lead_commit_group_as_leader<S>(
+    slot: &RuntimeSlot<LifecycleDurableLocalRuntime<'static, S>>,
+    request: commit_group::CommitGroupRequest,
+    original_batch: &crate::commit::CommitBatch,
+) -> commit_group::CommitGroupResponse
+where
+    S: CommitTimestampSource,
+{
+    let _leadership = commit_group::CommitGroupLeadership::new(slot.commit_groups());
+    let mut runtime = slot.lock();
+    lead_commit_group(slot, &mut runtime, request, original_batch)
+}
+
+/// Today's exact solo under-lock section, shared by the uncontended fast path and a leader
+/// whose queue drained empty.
+fn solo_commit_response<S>(
+    runtime: &mut LifecycleDurableLocalRuntime<'_, S>,
+    batch: crate::commit::CommitBatch,
+    original_batch: &crate::commit::CommitBatch,
+    generation_guard: CommitBranchGenerationGuard,
+) -> commit_group::CommitGroupResponse
+where
+    S: CommitTimestampSource,
+{
+    let result = runtime.execute_durable_commit(batch, generation_guard);
+    let post_timer = perf_trace::start_timer();
+    let throttle_delay_millis = durable_commit_throttle_delay_millis(runtime, original_batch);
+    let response = commit_group::CommitGroupResponse {
+        outcome: result,
+        admission: runtime.last_write_admission(),
+        pending_tasks: runtime.maintenance_status().pending_tasks(),
+        wal_growth: runtime.last_wal_growth_outcome().cloned(),
+        throttle_delay_millis,
+    };
+    perf_trace::record_commit_api_post_elapsed(post_timer);
+    response
+}
+
+/// Group-leader under-lock section (BS5.1): drain queued joiners, execute the group with the
+/// leader's request last (member order is version order and WAL order), then publish every
+/// member's response BEFORE the runtime lock is released — a member waking under the lock must
+/// find its response, never an in-flight group.
+fn lead_commit_group<S>(
+    slot: &RuntimeSlot<LifecycleDurableLocalRuntime<'static, S>>,
+    runtime: &mut LifecycleDurableLocalRuntime<'static, S>,
+    leader_request: commit_group::CommitGroupRequest,
+    leader_original_batch: &crate::commit::CommitBatch,
+) -> commit_group::CommitGroupResponse
+where
+    S: CommitTimestampSource,
+{
+    const MAX_DRAIN: usize = commit_group::COMMIT_GROUP_MAX_MEMBERS - 1;
+    let mut members = slot.commit_groups().drain_members(MAX_DRAIN);
+    // Formation window, `Always` mode only: each group pays one covering
+    // fsync (~ms), so holding formation open for ~2% of that absorbs the
+    // cohort of just-served members re-joining RIGHT NOW (their wake-up races
+    // the leadership handoff by microseconds) — without it, re-joining
+    // writers ride only every second fsync round. Standard mode's holds are
+    // ~µs, so a window would dominate them; its groups form from natural lock
+    // contention alone. Gated on observed contention: uncontended (and wasm)
+    // commits never wait.
+    if matches!(
+        runtime.open_plan().storage_mode(),
+        LifecycleStorageMode::DurableLocalAlways
+    ) && slot.commit_groups().take_recent_contention()
+    {
+        let deadline = std::time::Instant::now() + Duration::from_micros(150);
+        while members.len() < MAX_DRAIN && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+            members.extend(
+                slot.commit_groups()
+                    .drain_members(MAX_DRAIN - members.len()),
+            );
+        }
+    }
+    if members.is_empty() {
+        // Nothing actually joined: the exact solo path.
+        let commit_group::CommitGroupRequest {
+            batch,
+            generation_guard,
+        } = leader_request;
+        return solo_commit_response(runtime, batch, leader_original_batch, generation_guard);
+    }
+    let graded = runtime.is_graded_admission();
+    let estimate_bytes = |batch: &crate::commit::CommitBatch| {
+        if graded {
+            // Same best-effort fallback as the solo throttle path.
+            estimate_commit_batch_active_bytes(batch).unwrap_or(0)
+        } else {
+            0
+        }
+    };
+    let mut joiners = Vec::with_capacity(members.len());
+    let mut batches = Vec::with_capacity(members.len() + 1);
+    let mut member_bytes = Vec::with_capacity(members.len() + 1);
+    for (joiner, request) in members {
+        member_bytes.push(estimate_bytes(&request.batch));
+        batches.push((request.batch, request.generation_guard));
+        joiners.push(joiner);
+    }
+    member_bytes.push(estimate_bytes(leader_original_batch));
+    batches.push((leader_request.batch, leader_request.generation_guard));
+
+    let results = runtime.execute_durable_commit_group(batches);
+    // Shared post-group snapshots: the same values each member would read under the
+    // lock after a solo commit.
+    let pending_tasks = runtime.maintenance_status().pending_tasks();
+    let wal_growth = runtime.last_wal_growth_outcome().cloned();
+    let mut responses: Vec<commit_group::CommitGroupResponse> = results
+        .into_iter()
+        .zip(member_bytes)
+        .map(|(result, batch_bytes)| commit_group::CommitGroupResponse {
+            throttle_delay_millis: durable_commit_throttle_delay_millis_from_bytes(
+                runtime,
+                batch_bytes,
+                result.admission,
+            ),
+            outcome: result.outcome,
+            admission: result.admission,
+            pending_tasks,
+            wal_growth: wal_growth.clone(),
+        })
+        .collect();
+    // The leader's request was the last member; the group runtime returns one result
+    // per member, so the pop cannot miss.
+    let leader_response = responses
+        .pop()
+        .unwrap_or_else(|| commit_group::CommitGroupResponse {
+            outcome: Err(LifecycleError::InvalidLifecycleState {
+                reason: "write group returned no result for its leader",
+            }),
+            admission: None,
+            pending_tasks,
+            wal_growth,
+            throttle_delay_millis: 0,
+        });
+    for (joiner, response) in joiners.into_iter().zip(responses) {
+        joiner.complete(response);
+    }
+    // The members just woken are about to re-join: keep the next leader's
+    // formation window armed even if none has re-joined by handoff time.
+    slot.commit_groups().note_group_served();
+    leader_response
 }
 
 /// Per-commit proportional write-throttle delay in milliseconds. Returns 0 below the policy's

@@ -9,12 +9,12 @@ use crate::branch::read::{BranchHistoryRow, BranchReadBound, BranchReadView, Bra
 use crate::branch::snapshot::{BranchSnapshotPublisher, BranchSnapshotRegistry};
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
-    CommitBatch, CommitBatchKind, CommitBranchGeneration, CommitBranchGenerationGuard,
-    CommitBranchGuardSet, CommitDurabilityClass, CommitDurabilityMode, CommitDurableRuntime,
-    CommitFactAllocator, CommitManualTimestampSource, CommitOutcome, CommitReplayAction,
-    CommitReplayRequest, CommitReplayRuntime, CommitRuntimeError, CommitTimestampSource,
-    CommitUnresolvedDurable, CommitUnresolvedDurableGate, VisibleVersionPublish,
-    VisibleVersionTracker,
+    finalize_commit_group, CommitBatch, CommitBatchKind, CommitBranchGeneration,
+    CommitBranchGenerationGuard, CommitBranchGuardSet, CommitDurabilityClass, CommitDurabilityMode,
+    CommitDurableRuntime, CommitFactAllocator, CommitGroupState, CommitManualTimestampSource,
+    CommitOutcome, CommitReplayAction, CommitReplayRequest, CommitReplayRuntime,
+    CommitRuntimeError, CommitTimestampSource, CommitUnresolvedDurable,
+    CommitUnresolvedDurableGate, VisibleVersionPublish, VisibleVersionTracker,
 };
 use crate::format::WalRecord;
 use crate::lifecycle::admission_ramp::{
@@ -1510,6 +1510,23 @@ fn branch_catalog_manifest_service_error(
     )
 }
 
+/// Per-member result of a write group (BS5.1): the commit outcome plus the member's write
+/// admission snapshot, captured immediately after the member executed so the API layer can
+/// apply the same per-caller post-commit handling as a solo commit.
+#[derive(Debug)]
+pub(crate) struct DurableGroupMemberResult {
+    pub(crate) outcome: LifecycleResult<CommitOutcome>,
+    pub(crate) admission: Option<LifecycleWriteAdmissionOutcome>,
+}
+
+/// Which durable-gate check commit admission runs (BS5.1): a solo commit requires the gate
+/// admission span to be available; a group member runs inside the leader's active span.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DurableGateAdmission {
+    Solo,
+    Member,
+}
+
 impl<S> LifecycleDurableLocalRuntime<'_, S>
 where
     S: CommitTimestampSource,
@@ -1519,28 +1536,9 @@ where
         batch: CommitBatch,
         generation_guard: CommitBranchGenerationGuard,
     ) -> LifecycleResult<CommitOutcome> {
-        let admit_timer = perf_trace::start_timer();
-        self.last_write_admission = None;
-        require_admitted(self.state, LifecycleOperationKind::Commit)?;
         let branch_id = batch.branch_id();
-        // Pre-sync shadow into catalog so the commit runtime sees any direct
-        // shadow mutations (test-only) before fetching from the catalog.
-        let generation = self
-            .branch_catalog
-            .registry()
-            .lookup(branch_id)
-            .map_err(commit_error)?
-            .generation();
-        Self::require_generation_guard(branch_id, generation, generation_guard)?;
-        Self::require_durable_commit_mode(&batch)?;
-        if batch.kind() == CommitBatchKind::Mutating {
-            self.require_no_unresolved_durable_commit()?;
-            self.require_branch_commit_guard_available(branch_id)?;
-            self.require_write_admission_recovery_health(branch_id)?;
-            self.evaluate_mutating_write_admission_for_branch(branch_id)?;
-            self.require_projected_mutating_commit_budget(branch_id, &batch)?;
-        }
-        perf_trace::record_commit_admit_elapsed(admit_timer);
+        let generation =
+            self.admit_durable_commit(&batch, generation_guard, DurableGateAdmission::Solo)?;
         let frozen_before = self
             .branch_catalog
             .branch_state(branch_id)?
@@ -1567,31 +1565,18 @@ where
                 .execute(batch, generation_guard)
                 .map_err(commit_error)
         };
+        // Commit-triggered auto-rotation is a STRUCTURAL change: per the Model-2 contract
+        // below, it must republish the snapshot in the same lock hold — the published view's
+        // live-active handle now points at the rotated-out (frozen) table, so later commits'
+        // rows in the fresh active would otherwise be invisible until the next background
+        // publish. Republish BEFORE advancing the atomic mirror so any reader observing the
+        // new visible version finds a covering snapshot (V-before-S).
         if outcome.is_ok() {
-            // Commit-triggered auto-rotation is a STRUCTURAL change: per the Model-2 contract
-            // below, it must republish the snapshot in the same lock hold — the published view's
-            // live-active handle now points at the rotated-out (frozen) table, so later commits'
-            // rows in the fresh active would otherwise be invisible until the next background
-            // publish. Republish BEFORE advancing the atomic mirror so any reader observing the
-            // new visible version finds a covering snapshot (V-before-S).
-            let frozen_after = self
-                .branch_catalog
-                .branch_state(branch_id)?
-                .frozen_table_count();
-            if frozen_after != frozen_before {
-                self.publish_branch_snapshot(branch_id);
-            }
+            self.republish_branch_snapshot_after_rotation(branch_id, frozen_before)?;
             // BS2.2: mirror the just-advanced visible version to the atomic (release) so off-lock
             // readers (BS2.4) observe it without the runtime lock. On the `applied_not_visible`
             // error path `outcome` is `Err`, so the atomic correctly does not advance.
-            self.visible_commit_version
-                .store(self.visible.visible_version().as_u64(), Ordering::Release);
-            let wal_growth_start = perf_trace::start_timer();
-            self.evaluate_and_record_wal_growth_policy();
-            perf_trace::record_commit_post_wal_growth_elapsed(wal_growth_start);
-            let maintenance_start = perf_trace::start_timer();
-            let _ = self.schedule_post_commit_maintenance_for_branch(branch_id);
-            perf_trace::record_commit_post_maintenance_elapsed(maintenance_start);
+            self.finish_durable_commit_post_publish(branch_id);
         }
         // BS2.4 Model 2: commits do NOT republish the snapshot (except the rotation case above).
         // The published snapshot holds the live (unpinned) active handle, so it already sees this
@@ -1599,6 +1584,233 @@ where
         // visible version. Only structural changes (rotation/flush/compaction/materialization/
         // fork/lifecycle) republish.
         outcome
+    }
+
+    /// Execute a write group (BS5.1): the caller is the group leader holding the runtime lock.
+    /// Members execute sequentially in member order — WAL order equals version order equals
+    /// member order — under one durable-gate admission span, deferring fsync and visible
+    /// publish to one finalize. Pre-WAL failures are clean per-member rejections; a post-WAL
+    /// failure is group-fatal: every member that reached the WAL reports durability-uncertain
+    /// and recovery reconciles the group's version range through the widened gate fact.
+    pub(crate) fn execute_durable_commit_group(
+        &mut self,
+        members: Vec<(CommitBatch, CommitBranchGenerationGuard)>,
+    ) -> Vec<DurableGroupMemberResult> {
+        let mut results: Vec<DurableGroupMemberResult> = Vec::with_capacity(members.len());
+        // The leader's whole-group admission span. Failure (an unresolved fact) rejects every
+        // member with the same typed error a solo commit would get from the gate.
+        if self.durable_gate.begin_group_admission().is_err() {
+            for _ in &members {
+                results.push(DurableGroupMemberResult {
+                    outcome: Err(self.group_admission_unavailable_error()),
+                    admission: None,
+                });
+            }
+            return results;
+        }
+        let mut group = CommitGroupState::new(self.visible.visible_version());
+        let mut fatal = false;
+        let mut touched_branches: Vec<BranchId> = Vec::new();
+        for (batch, generation_guard) in members {
+            if fatal {
+                results.push(DurableGroupMemberResult {
+                    outcome: Err(commit_error(CommitRuntimeError::DurabilityUnavailable {
+                        reason: "write group aborted before this member's WAL append",
+                    })),
+                    admission: None,
+                });
+                continue;
+            }
+            let branch_id = batch.branch_id();
+            let outcome = self.execute_group_member_commit(batch, generation_guard, &mut group);
+            if outcome.is_ok() && !touched_branches.contains(&branch_id) {
+                touched_branches.push(branch_id);
+            }
+            if outcome.is_err() {
+                // A recorded fact means the failure happened after a WAL append
+                // (durable-not-applied) — group-fatal. Pre-WAL rejections leave
+                // the gate clean and the group continues.
+                fatal = matches!(self.durable_gate.unresolved(), Ok(Some(_)) | Err(_));
+            }
+            results.push(DurableGroupMemberResult {
+                outcome,
+                admission: self.last_write_admission,
+            });
+        }
+        if !fatal {
+            let finalize = finalize_commit_group(
+                &group,
+                &mut self.services.wal,
+                &mut self.visible,
+                &self.durable_gate,
+            );
+            fatal = finalize.is_err();
+        }
+        self.durable_gate.end_group_admission();
+        if fatal {
+            // Group-fatal: nothing was published. Members that reached the WAL are covered by
+            // the widened gate fact (or a halted writer) and must not be acked — replay
+            // reconciles them idempotently after reopen.
+            for result in &mut results {
+                if let Ok(outcome) = &result.outcome {
+                    // A successful group member is always a mutating visible outcome
+                    // with an allocated version; ZERO is unreachable and only
+                    // satisfies the type.
+                    let commit_version = outcome.commit_version().unwrap_or(CommitVersion::ZERO);
+                    result.outcome = Err(commit_error(CommitRuntimeError::DurabilityUncertain {
+                        branch_id: outcome.branch_id(),
+                        commit_version,
+                        reason: "write group failed after this member's WAL append; \
+                                 replay must reconcile",
+                        source: None,
+                    }));
+                }
+            }
+            return results;
+        }
+        if group.last_stamp().is_some() {
+            self.mirror_visible_and_evaluate_wal_growth();
+            for branch_id in touched_branches {
+                self.schedule_post_commit_maintenance_best_effort(branch_id);
+            }
+        }
+        results
+    }
+
+    /// Execute one group member: solo-equivalent bootstrap admission (with the gate check in
+    /// member mode), the member commit protocol, and the same-lock-hold rotation republish.
+    fn execute_group_member_commit(
+        &mut self,
+        batch: CommitBatch,
+        generation_guard: CommitBranchGenerationGuard,
+        group: &mut CommitGroupState,
+    ) -> LifecycleResult<CommitOutcome> {
+        let branch_id = batch.branch_id();
+        let generation =
+            self.admit_durable_commit(&batch, generation_guard, DurableGateAdmission::Member)?;
+        let frozen_before = self
+            .branch_catalog
+            .branch_state(branch_id)?
+            .frozen_table_count();
+        let outcome = {
+            let setup_timer = perf_trace::start_timer();
+            let (branch, registry) = self.branch_catalog.branch_state_mut_with_registry(
+                branch_id,
+                CommitBranchGenerationGuard::exact(generation),
+            )?;
+            let mut budgeted_branch = BudgetedCommitBranch::new(branch, &self.budget);
+            let mut runtime = CommitDurableRuntime::new(
+                &self.commit_config,
+                registry,
+                &self.guard_set,
+                &mut self.allocator,
+                &mut budgeted_branch,
+                &mut self.visible,
+                &mut self.services.wal,
+                &self.durable_gate,
+            );
+            perf_trace::record_commit_setup_elapsed(setup_timer);
+            runtime
+                .execute_group_member(batch, generation_guard, group)
+                .map_err(commit_error)
+        };
+        if outcome.is_ok() {
+            // Republishing the snapshot before the group's visible publish is the safe
+            // direction of V-before-S: the snapshot covers more than the visible bound.
+            self.republish_branch_snapshot_after_rotation(branch_id, frozen_before)?;
+        }
+        outcome
+    }
+
+    /// Solo-equivalent commit admission (the phase before the commit protocol runs). In member
+    /// mode the gate check verifies only that no unresolved fact exists: the leader's admission
+    /// span is active by construction, which the solo check would reject.
+    fn admit_durable_commit(
+        &mut self,
+        batch: &CommitBatch,
+        generation_guard: CommitBranchGenerationGuard,
+        gate_admission: DurableGateAdmission,
+    ) -> LifecycleResult<CommitBranchGeneration> {
+        let admit_timer = perf_trace::start_timer();
+        self.last_write_admission = None;
+        require_admitted(self.state, LifecycleOperationKind::Commit)?;
+        let branch_id = batch.branch_id();
+        // Pre-sync shadow into catalog so the commit runtime sees any direct
+        // shadow mutations (test-only) before fetching from the catalog.
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        Self::require_generation_guard(branch_id, generation, generation_guard)?;
+        Self::require_durable_commit_mode(batch)?;
+        if batch.kind() == CommitBatchKind::Mutating {
+            match gate_admission {
+                DurableGateAdmission::Solo => self.require_no_unresolved_durable_commit()?,
+                DurableGateAdmission::Member => self
+                    .durable_gate
+                    .require_no_unresolved_fact()
+                    .map_err(commit_error)?,
+            }
+            self.require_branch_commit_guard_available(branch_id)?;
+            self.require_write_admission_recovery_health(branch_id)?;
+            self.evaluate_mutating_write_admission_for_branch(branch_id)?;
+            self.require_projected_mutating_commit_budget(branch_id, batch)?;
+        }
+        perf_trace::record_commit_admit_elapsed(admit_timer);
+        Ok(generation)
+    }
+
+    /// Same-lock-hold snapshot republish when a commit's auto-rotation changed the branch's
+    /// frozen-table count (see the Model-2 contract note in `execute_durable_commit`).
+    fn republish_branch_snapshot_after_rotation(
+        &mut self,
+        branch_id: BranchId,
+        frozen_before: usize,
+    ) -> LifecycleResult<()> {
+        let frozen_after = self
+            .branch_catalog
+            .branch_state(branch_id)?
+            .frozen_table_count();
+        if frozen_after != frozen_before {
+            self.publish_branch_snapshot(branch_id);
+        }
+        Ok(())
+    }
+
+    /// Post-publish bookkeeping shared by solo commits and group finalize: mirror the visible
+    /// version to the off-lock atomic, evaluate WAL growth, and schedule post-commit maintenance.
+    fn finish_durable_commit_post_publish(&mut self, branch_id: BranchId) {
+        self.mirror_visible_and_evaluate_wal_growth();
+        self.schedule_post_commit_maintenance_best_effort(branch_id);
+    }
+
+    fn mirror_visible_and_evaluate_wal_growth(&mut self) {
+        self.visible_commit_version
+            .store(self.visible.visible_version().as_u64(), Ordering::Release);
+        let wal_growth_start = perf_trace::start_timer();
+        self.evaluate_and_record_wal_growth_policy();
+        perf_trace::record_commit_post_wal_growth_elapsed(wal_growth_start);
+    }
+
+    fn schedule_post_commit_maintenance_best_effort(&mut self, branch_id: BranchId) {
+        let maintenance_start = perf_trace::start_timer();
+        // Rationale: maintenance scheduling is best-effort after a successful commit; a
+        // scheduling refusal must not fail the already-durable commit (same as solo).
+        let _ = self.schedule_post_commit_maintenance_for_branch(branch_id);
+        perf_trace::record_commit_post_maintenance_elapsed(maintenance_start);
+    }
+
+    /// Reproduce the per-member gate-admission error after the leader's group admission failed.
+    /// Deterministic under the runtime lock: the gate cannot change concurrently.
+    fn group_admission_unavailable_error(&self) -> LifecycleError {
+        match self.durable_gate.require_admission_available() {
+            Err(error) => commit_error(error),
+            Ok(()) => commit_error(CommitRuntimeError::InvalidCommitState {
+                reason: "write group admission unavailable",
+            }),
+        }
     }
 
     pub(crate) fn evaluate_and_record_wal_growth_policy(&mut self) {

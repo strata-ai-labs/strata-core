@@ -299,6 +299,13 @@ impl CheckpointTestBackend {
         self.events.lock().expect("events").len()
     }
 
+    /// Byte-level snapshot of every stored object — the write-group
+    /// equivalence anchor (BS5.1) compares whole-backend state between a solo
+    /// commit and a group of one.
+    pub(in crate::lifecycle::tests) fn object_snapshot(&self) -> BTreeMap<ObjectName, Vec<u8>> {
+        self.objects.lock().expect("objects").clone()
+    }
+
     pub(super) fn checkpoint_events(&self) -> Vec<CheckpointBackendEvent> {
         self.events
             .lock()

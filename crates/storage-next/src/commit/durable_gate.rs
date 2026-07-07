@@ -24,6 +24,11 @@ pub(crate) enum CommitUnresolvedDurableKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CommitUnresolvedDurable {
     branch_id: BranchId,
+    /// First commit version the unresolved state covers. Equal to `commit_version` for a
+    /// single commit; a write group's group-fatal failure records the whole group's
+    /// contiguous version block `first_commit_version..=commit_version` (BS5.1 D1), and
+    /// recovery replays every version in the range before the gate clears.
+    first_commit_version: CommitVersion,
     commit_version: CommitVersion,
     commit_timestamp: Timestamp,
     durability: CommitDurabilityClass,
@@ -59,6 +64,7 @@ impl CommitUnresolvedDurable {
     ) -> CommitRuntimeResult<Self> {
         let fact = Self {
             branch_id: stamp.branch_id(),
+            first_commit_version: stamp.commit_version(),
             commit_version: stamp.commit_version(),
             commit_timestamp: stamp.commit_timestamp(),
             durability,
@@ -68,6 +74,19 @@ impl CommitUnresolvedDurable {
         };
         fact.validate()?;
         Ok(fact)
+    }
+
+    /// Widen this fact to cover a write group's contiguous version block, starting at
+    /// `first_commit_version` (BS5.1 D1). The stamp fields stay keyed to the group's LAST member
+    /// (the range end) so recovery's replay of the final version clears the gate; a group of one
+    /// leaves the fact byte-identical to the single-commit shape.
+    pub(crate) fn covering_group_from(
+        mut self,
+        first_commit_version: CommitVersion,
+    ) -> CommitRuntimeResult<Self> {
+        self.first_commit_version = first_commit_version;
+        self.validate()?;
+        Ok(self)
     }
 
     pub(crate) fn durable_not_applied_with_facts(
@@ -119,6 +138,15 @@ impl CommitUnresolvedDurable {
         self.branch_id
     }
 
+    pub(crate) const fn first_commit_version(self) -> CommitVersion {
+        self.first_commit_version
+    }
+
+    /// Whether `version` falls inside the covered range (a single commit's range is itself).
+    pub(crate) fn covers_version(self, version: CommitVersion) -> bool {
+        version >= self.first_commit_version && version <= self.commit_version
+    }
+
     pub(crate) const fn commit_version(self) -> CommitVersion {
         self.commit_version
     }
@@ -145,6 +173,11 @@ impl CommitUnresolvedDurable {
 
     pub(crate) fn validate(self) -> CommitRuntimeResult<()> {
         self.visibility_facts.validate()?;
+        if self.first_commit_version > self.commit_version {
+            return Err(CommitRuntimeError::InvalidCommitState {
+                reason: "unresolved durable range must not start after its end",
+            });
+        }
         if self.visibility_facts.allocated_version() != Some(self.commit_version) {
             return Err(CommitRuntimeError::InvalidVisibilityFacts {
                 reason: "unresolved durable commit must preserve allocated version",
@@ -269,6 +302,45 @@ impl CommitUnresolvedDurableGate {
 
     pub(crate) fn require_open_for_mutation(&self) -> CommitRuntimeResult<()> {
         self.admit_mutating_commit().map(|_| ())
+    }
+
+    /// Leader-scoped admission span for a write group (BS5.1): identical
+    /// admission rules to [`admit_mutating_commit`], but the span is released
+    /// explicitly with [`end_group_admission`] instead of through the
+    /// borrowing RAII token, which cannot live across the leader's `&mut self`
+    /// bootstrap calls. A panic mid-span leaves admission active — equivalent
+    /// to today's panic-under-runtime-lock exposure, which is already
+    /// unrecoverable in-process.
+    pub(crate) fn begin_group_admission(&self) -> CommitRuntimeResult<()> {
+        let mut admission = self.admit_mutating_commit()?;
+        // Defuse the RAII reset: the caller now owns the span.
+        admission.active = false;
+        Ok(())
+    }
+
+    /// Release the leader's group admission span (see [`begin_group_admission`]).
+    pub(crate) fn end_group_admission(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.active_admission = false;
+        }
+    }
+
+    /// Group-member admission check (BS5.1): the leader's admission span is
+    /// active by construction while members execute, so a member verifies only
+    /// that no unresolved fact has been recorded (a mid-group failure records
+    /// one and makes the group fatal).
+    pub(crate) fn require_no_unresolved_fact(&self) -> CommitRuntimeResult<()> {
+        let state = self.lock()?;
+        if let Some(unresolved) = state.unresolved {
+            perf_trace::record_commit_unresolved_gate_admission_attempt();
+            perf_trace::record_commit_unresolved_gate_rejected_unresolved();
+            return Err(CommitRuntimeError::UnresolvedDurableCommit {
+                branch_id: unresolved.branch_id(),
+                commit_version: unresolved.commit_version(),
+                reason: "durable commit must be replayed or reconciled first",
+            });
+        }
+        Ok(())
     }
 
     pub(crate) fn admit_mutating_commit(

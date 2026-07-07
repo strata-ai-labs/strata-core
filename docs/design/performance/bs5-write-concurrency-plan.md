@@ -154,7 +154,46 @@ build window) and commit-triggered auto-rotation both left the published view wi
 fresh active, so acked commits were invisible to readers for 15–140 ms (V-before-S
 coverage violation). Both republish in the same lock hold now.
 
-### BS5.1 — Write groups (leader-executes-all, under the existing runtime lock)
+### BS5.1 — Write groups (leader-executes-all, under the existing runtime lock) — LANDED
+
+Landed as designed, with these deltas discovered during implementation:
+
+- **Two pre-lock serializers had to fall first.** `next_commit_timestamp()` and
+  `resolve_commit_durability()` each took the full runtime lock per commit, so writers
+  queued behind the in-flight fsync BEFORE reaching the commit path and the join queue
+  always drained empty (groups of 1–2, flat curves). The timestamp base now reads an
+  off-lock atomic mirror on `StorageRuntime` (clamp semantics unchanged — the allocator
+  still enforces the monotonic floor under the lock; the old locked read was equally
+  stale-by-interleaving); the mode comes from the open summary.
+- **Members wait on their own condvar, never the runtime lock.** The everyone-blocks-on-
+  the-mutex fallback design measurably starved formation (parking_lot barging interleaved
+  fresh fsync holds into the wake chain). Leadership is a queue-state flag handed off by
+  promotion, with a panic-safe drop guard and a 100 ms timed-wait self-promotion fallback
+  for lost wake-ups.
+- **`Always`-only 150 µs formation window.** Served members re-join microseconds after the
+  handoff; without holding formation open they ride only every second fsync round
+  (cohort alternation, measured). Gated on observed contention and on `Always` mode — a
+  window under Standard's ~µs holds dominates them (measured 21K → 8K before gating).
+- `require_append_satisfies_policy` is skipped for members instead of stamping
+  `forced_durable` (the leader's finalize owns the `Always` guarantee); the
+  `WalAppend::covered_by_group_durable` helper was deleted as dead.
+- Bootstrap-level per-member admission runs interleaved (admit → execute per member, not
+  all-admissions-first) so budget projections see earlier members' consumption — a
+  same-branch group is serially equivalent, including its rejections.
+
+Measured (dev box, medians of 3): `Always` shared 161 → 224/278/373 commits/s at 2/4/8
+threads (was ~159 flat); `Always` per-writer 305 at 4 threads (was ≤1.28×); `Standard`
+unregressed (~20–22K flat). Group traces confirm fsync batching (size-7 groups cost one
+solo hold). The residual gap to the ≥4× gate is formation/fsync pipelining — the two live
+under one mutex, which is exactly BS5.2's cut.
+
+Test coverage landed: group-of-1 byte-identity (whole-backend object snapshots, Standard +
+Always), version contiguity in member order, per-member clean rejection, all-rejected
+groups, mid-group WAL rotation, join-queue protocol units (FIFO/cap/promotion/handoff/
+guard), 4-writer S3 stress green across repeated release runs. **Open for the test track
+(carry into BS5.2's matrix): the group-boundary crash sweeps** — the range-fact replay
+seams are unit-covered (`covers_version` replay admission, fact widening round-trip) but
+`fault_sweep`/`crash_recovery_oracle` do not yet inject at group boundaries.
 
 **Changes.**
 1. The join queue on `RuntimeSlot` (D3): writers enqueue prepared batches; the leader

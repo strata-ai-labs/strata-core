@@ -142,7 +142,7 @@ pub(crate) use config::{
 )]
 pub(crate) use durable::{
     DurableBackgroundMaintenanceBuild, DurableBackgroundMaintenanceBuilt,
-    DurableBackgroundMaintenanceStep, LifecycleDurableAssemblyFacts,
+    DurableBackgroundMaintenanceStep, DurableGroupMemberResult, LifecycleDurableAssemblyFacts,
     LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime, LifecycleDurableLocalServices,
     LifecycleDurableLocalShell, LifecycleRecoveryBootstrapReport, PreparedPublishStep,
 };

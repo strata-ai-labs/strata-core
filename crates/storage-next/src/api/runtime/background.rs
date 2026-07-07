@@ -26,6 +26,9 @@ pub(super) struct RuntimeSlot<R> {
     snapshot_registry: Arc<BranchSnapshotRegistry>,
     background: Option<BackgroundRuntimeController>,
     background_drain: Option<BackgroundDrainFn>,
+    /// Write-group join queue (BS5.1): contended durable commits enqueue here
+    /// and are executed in groups by whichever caller holds the runtime lock.
+    commit_groups: super::commit_group::CommitGroupQueue,
     #[cfg(test)]
     pub(super) background_block_wait: BackgroundBlockWaitConfig,
 }
@@ -50,7 +53,8 @@ where
             .field("visible", &self.visible.load(Ordering::Relaxed))
             .field("published_branches", &self.snapshot_registry.load().len())
             .field("background", &self.background)
-            .field("background_drain", &self.background_drain.is_some());
+            .field("background_drain", &self.background_drain.is_some())
+            .field("commit_groups", &self.commit_groups);
         #[cfg(test)]
         debug.field("background_block_wait", &self.background_block_wait);
         debug.finish()
@@ -234,6 +238,11 @@ impl<R> RuntimeSlot<R> {
             started,
         ));
         guard
+    }
+
+    /// The write-group join queue (BS5.1).
+    pub(super) fn commit_groups(&self) -> &super::commit_group::CommitGroupQueue {
+        &self.commit_groups
     }
 
     #[allow(
@@ -438,6 +447,7 @@ where
             snapshot_registry,
             background,
             background_drain,
+            commit_groups: super::commit_group::CommitGroupQueue::default(),
             #[cfg(test)]
             background_block_wait: BackgroundBlockWaitConfig::default(),
         }

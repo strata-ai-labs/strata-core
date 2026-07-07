@@ -537,6 +537,57 @@ fn unresolved_durable_gate_replaces_only_exact_existing_fact() {
     assert_eq!(gate.unresolved().expect("gate read"), Some(replacement));
 }
 
+/// BS5.1 D1: a write group's group-fatal failure widens the fact to the group's contiguous
+/// version block. A group of one stays byte-identical to the single-commit fact; the widened
+/// fact round-trips the same exact-CAS record/clear, covers every member version, and rejects
+/// an inverted range.
+#[test]
+fn unresolved_durable_range_fact_covers_group_and_round_trips() {
+    let gate = CommitUnresolvedDurableGate::new();
+    let branch = branch_id(88);
+    let single = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        stamp(branch, 12),
+        CommitDurabilityClass::Always,
+        "group apply failed",
+    )
+    .expect("single fact");
+
+    // Group-of-1 widening is the identity.
+    assert_eq!(
+        single
+            .covering_group_from(CommitVersion::new(12))
+            .expect("identity widening"),
+        single
+    );
+
+    let group = single
+        .covering_group_from(CommitVersion::new(9))
+        .expect("group widening");
+    assert_ne!(group, single, "a widened range is a distinct fact");
+    assert_eq!(group.first_commit_version(), CommitVersion::new(9));
+    assert_eq!(group.commit_version(), CommitVersion::new(12));
+    assert!(group.covers_version(CommitVersion::new(9)));
+    assert!(group.covers_version(CommitVersion::new(11)));
+    assert!(group.covers_version(CommitVersion::new(12)));
+    assert!(!group.covers_version(CommitVersion::new(8)));
+    assert!(!group.covers_version(CommitVersion::new(13)));
+
+    // Exact-CAS semantics are preserved for the widened fact.
+    gate.record_unresolved(group).expect("record range fact");
+    assert_eq!(
+        gate.clear_exact(single),
+        Err(CommitRuntimeError::InvalidCommitState {
+            reason: "cannot clear different unresolved durable commit",
+        }),
+        "the single-stamp fact must not clear the range fact",
+    );
+    gate.clear_exact(group).expect("exact clear of range fact");
+    assert_eq!(gate.unresolved().expect("gate read"), None);
+
+    // An inverted range is rejected at construction.
+    assert!(single.covering_group_from(CommitVersion::new(13)).is_err());
+}
+
 fn stamp(branch: BranchId, version: u64) -> CommitStamp {
     CommitStamp::new(
         branch,
