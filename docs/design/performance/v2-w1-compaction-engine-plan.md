@@ -178,6 +178,24 @@ mid-level reunion differential test. But the bake-off did NOT move the gate:
      table. Bounds memory independently of pass size, which ALSO de-fangs the mid-level
      monsters (their harm was heap+page-cache, in addition to lane time).
 
+## W1.2c result (2026-07-07): memory FIXED; stalls persist — attribution still open
+
+Streaming output publish landed: each completed output table publishes (and frees)
+inside the build loop via a sink threaded through `compact_inputs_into` →
+`prepare_branch_compaction_plan_bounded_into` → `build_range_with_publishing_sink`;
+partial-publish cleanup unchanged (the sink's published list feeds the same
+`partial_publish_error`). Measured (YCSB A 10M, gauges): post-run allocated
+**39.25GB → 16.92GB**, retained **49.5GB → 5.25GB** — the +26GB accumulation and the
+50GB VM high-water spikes are gone; resident (~18GB) now tracks block cache + memtables.
+Flush-side accumulation (~2.5GB) remains as a smaller follow-up (same sink pattern
+through the flush build).
+
+**Stall lottery persists (max 46.1s)** — eliminating, in order: L0→L1 pass size
+(W1.1), build parallelism (W1.2a), memory pressure (W1.2c). Every indirect theory is
+now dead; per the W6 rule the ONLY next step is a live stack sample of a stall window
+(what every maintenance worker and the blocked writer are doing during a multi-second
+max) — no further scheduling or memory changes until that lands.
+
 ## Sequencing (revised)
 
 W1.1a ✅ -> W1.1b ✅ -> W1.1c ❌ -> W1.2a ✅(split extended; no-win; default stays 1) ->

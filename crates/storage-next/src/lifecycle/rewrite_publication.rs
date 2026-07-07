@@ -175,6 +175,74 @@ fn subcompaction_ranges_for_publication(
 /// reports into one result. Returns `None` for a metadata promotion (no build). Any subcompaction
 /// failure aborts the whole compaction and cleans up already-published objects as an orphaned
 /// partial publish.
+/// One range's build with the per-output publishing sink (W1.2c): each
+/// completed table publishes immediately (freeing its bytes); the first
+/// publish error is captured and outranks the sink's placeholder unwind, and
+/// partial-publish cleanup runs over everything published so far.
+fn build_range_with_publishing_sink(
+    branch: &BranchLocalState,
+    branch_request: &BranchCompactionRequest,
+    plan: &BranchCompactionPlan,
+    table_service: &TableObjectService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
+    budget: Option<&StorageBudgetLedger>,
+    index: usize,
+    bounds: Option<&TableKeyBounds>,
+) -> SubcompactionBuildResult {
+    // No-candidate and metadata-promotion plans build nothing — mirror
+    // the prepare path's `None` before demanding an output level.
+    let Some(candidate) = plan.candidate() else {
+        return Ok(None);
+    };
+    if candidate.is_metadata_promotion() {
+        return Ok(None);
+    }
+    let output_level = plan
+        .output_level()
+        .ok_or(LifecycleError::RewritePublicationFailed {
+            reason: "prepared compaction output requires a candidate plan",
+            source: None,
+        })?;
+    let mut published: Vec<PublishedRewriteTable> = Vec::new();
+    let mut publish_error: Option<LifecycleError> = None;
+    let report = branch.prepare_branch_compaction_plan_bounded_into(
+        branch_request,
+        plan,
+        bounds,
+        index,
+        &mut |artifact| match publish_rewrite_artifact(
+            branch.branch_id(),
+            output_level,
+            table_service,
+            reader_service,
+            artifact,
+            plan.materialization_source(),
+            budget,
+        ) {
+            Ok(output) => {
+                published.push(output);
+                Ok(())
+            }
+            Err(error) => {
+                publish_error = Some(error);
+                Err(crate::table::TableRuntimeError::OutputSinkFailed)
+            }
+        },
+    );
+    let report = match report {
+        Ok(report) => report,
+        Err(build_error) => {
+            // The sink's real error outranks the placeholder unwind.
+            let error = publish_error.unwrap_or_else(|| branch_error(build_error));
+            return Err(partial_publish_error(&published, error));
+        }
+    };
+    let Some(report) = report else {
+        return Ok(None);
+    };
+    Ok(Some((published, report)))
+}
+
 fn build_and_publish_compaction(
     branch: &BranchLocalState,
     branch_request: &BranchCompactionRequest,
@@ -185,28 +253,16 @@ fn build_and_publish_compaction(
     ranges: &[Option<TableKeyBounds>],
 ) -> SubcompactionBuildResult {
     let build_range = |index: usize, bounds: Option<&TableKeyBounds>| -> SubcompactionBuildResult {
-        let Some((artifacts, report)) = branch
-            .prepare_branch_compaction_plan_bounded(branch_request, plan, bounds, index)
-            .map_err(branch_error)?
-        else {
-            return Ok(None);
-        };
-        let output_level = plan
-            .output_level()
-            .ok_or(LifecycleError::RewritePublicationFailed {
-                reason: "prepared compaction output requires a candidate plan",
-                source: None,
-            })?;
-        let published = publish_compaction_outputs(
-            branch.branch_id(),
-            output_level,
-            plan.materialization_source(),
+        build_range_with_publishing_sink(
+            branch,
+            branch_request,
+            plan,
             table_service,
             reader_service,
-            artifacts,
             budget,
-        )?;
-        Ok(Some((published, report)))
+            index,
+            bounds,
+        )
     };
 
     if ranges.len() <= 1 {
@@ -664,33 +720,6 @@ type SubcompactionBuildResult = LifecycleResult<Option<SubcompactionBuildOutput>
 struct PublishedRewriteObject {
     facts: TableObjectFacts,
     exact_bytes_validated: bool,
-}
-
-fn publish_compaction_outputs(
-    branch_id: BranchId,
-    output_level: BranchLevel,
-    materialization_source: Option<BranchMaterializationSource>,
-    table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'static>,
-    artifacts: Vec<BuiltTableArtifact>,
-    budget: Option<&StorageBudgetLedger>,
-) -> LifecycleResult<Vec<PublishedRewriteTable>> {
-    let mut published = Vec::new();
-    for artifact in artifacts {
-        match publish_rewrite_artifact(
-            branch_id,
-            output_level,
-            table_service,
-            reader_service,
-            artifact,
-            materialization_source,
-            budget,
-        ) {
-            Ok(output) => published.push(output),
-            Err(error) => return Err(partial_publish_error(&published, error)),
-        }
-    }
-    Ok(published)
 }
 
 fn publish_materialization_outputs(

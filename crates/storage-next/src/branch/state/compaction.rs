@@ -533,6 +533,34 @@ impl BranchLocalState {
         bounds: Option<&TableKeyBounds>,
         subcompaction_index: usize,
     ) -> BranchRuntimeResult<Option<(Vec<BuiltTableArtifact>, TableCompactionReport)>> {
+        let mut artifacts = Vec::new();
+        let report = self.prepare_branch_compaction_plan_bounded_into(
+            request,
+            plan,
+            bounds,
+            subcompaction_index,
+            &mut |artifact| {
+                artifacts.push(artifact);
+                Ok(())
+            },
+        )?;
+        Ok(report.map(|report| (artifacts, report)))
+    }
+
+    /// [`prepare_branch_compaction_plan_bounded`] with each completed output
+    /// table handed to `sink` as it finishes (W1.2c): a publishing sink frees
+    /// each output's encoded bytes immediately instead of accumulating the
+    /// whole pass's outputs in heap (measured 20.6GB live at peak — ledger
+    /// § T4). The sink's error surfaces as the compaction's error; callers
+    /// that publish keep their partial-publish cleanup semantics.
+    pub(crate) fn prepare_branch_compaction_plan_bounded_into(
+        &self,
+        request: &BranchCompactionRequest,
+        plan: &BranchCompactionPlan,
+        bounds: Option<&TableKeyBounds>,
+        subcompaction_index: usize,
+        sink: &mut dyn FnMut(BuiltTableArtifact) -> crate::table::TableRuntimeResult<()>,
+    ) -> BranchRuntimeResult<Option<TableCompactionReport>> {
         self.validate_compaction_request(request)?;
         if plan.branch_id() != self.branch_id || plan.kind() != request.kind() {
             return Err(BranchRuntimeError::InvalidCompaction {
@@ -570,11 +598,11 @@ impl BranchLocalState {
             ))
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?
         };
-        let output = match request.retention_policy() {
+        let report = match request.retention_policy() {
             BranchCompactionRetentionPolicy::KeepAll => {
                 let mut policy = keep_all_policy();
                 compactor
-                    .compact_inputs(&output_identity_seed, &source_refs, &mut policy)
+                    .compact_inputs_into(&output_identity_seed, &source_refs, &mut policy, sink)
                     .map_err(|source| BranchRuntimeError::TableRuntime { source })?
             }
             BranchCompactionRetentionPolicy::DropOlderVersions
@@ -590,13 +618,12 @@ impl BranchLocalState {
                 let mut policy =
                     BranchCompactionPruningPolicy::new(request.retention_policy(), proof);
                 compactor
-                    .compact_inputs(&output_identity_seed, &source_refs, &mut policy)
+                    .compact_inputs_into(&output_identity_seed, &source_refs, &mut policy, sink)
                     .map_err(|source| BranchRuntimeError::TableRuntime { source })?
             }
         };
-        let (artifacts, report) = output.into_parts();
         perf_trace::record_branch_compaction_peak_buffered_rows(report.peak_buffered_rows());
-        Ok(Some((artifacts, report)))
+        Ok(Some(report))
     }
 
     pub(crate) fn install_branch_compaction_plan(

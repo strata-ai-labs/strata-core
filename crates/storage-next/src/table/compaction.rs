@@ -77,6 +77,30 @@ impl TableCompactor {
         )
     }
 
+    /// [`compact_inputs`](Self::compact_inputs) with each completed output
+    /// table handed to `sink` as it finishes instead of accumulated
+    /// (W1.2c). Accumulation held every output's complete encoded bytes and
+    /// rows in heap until the whole pass published — measured as 20.6GB live
+    /// at peak under a 10M compaction-churn workload (billion-scale-ledger.md
+    /// § T4). A sink that publishes-and-drops bounds the build's heap to the
+    /// one in-progress table regardless of pass size.
+    pub(crate) fn compact_inputs_into<P: TableCompactionPolicy + ?Sized>(
+        &self,
+        output_identity_seed: &TableIdentity,
+        sources: &[&dyn TableCompactionInput],
+        policy: &mut P,
+        sink: &mut dyn FnMut(BuiltTableArtifact) -> TableRuntimeResult<()>,
+    ) -> TableRuntimeResult<TableCompactionReport> {
+        compact_table_inputs_into(
+            self,
+            output_identity_seed,
+            sources,
+            policy,
+            GlobalDuplicateValidation::Skip,
+            sink,
+        )
+    }
+
     /// Run cursor-input compaction with an explicit cross-source duplicate-key validation pass.
     pub(crate) fn compact_inputs_validating_global_duplicates<P: TableCompactionPolicy + ?Sized>(
         &self,
@@ -600,6 +624,29 @@ fn compact_table_inputs(
     policy: &mut (impl TableCompactionPolicy + ?Sized),
     global_duplicate_validation: GlobalDuplicateValidation,
 ) -> TableRuntimeResult<TableCompactionOutput> {
+    let mut artifacts = Vec::new();
+    let report = compact_table_inputs_into(
+        compactor,
+        output_identity_seed,
+        sources,
+        policy,
+        global_duplicate_validation,
+        &mut |artifact| {
+            artifacts.push(artifact);
+            Ok(())
+        },
+    )?;
+    Ok(TableCompactionOutput::new(artifacts, report))
+}
+
+fn compact_table_inputs_into(
+    compactor: &TableCompactor,
+    output_identity_seed: &TableIdentity,
+    sources: &[&dyn TableCompactionInput],
+    policy: &mut (impl TableCompactionPolicy + ?Sized),
+    global_duplicate_validation: GlobalDuplicateValidation,
+    sink: &mut dyn FnMut(BuiltTableArtifact) -> TableRuntimeResult<()>,
+) -> TableRuntimeResult<TableCompactionReport> {
     let builder = ImmutableTableBuilder::new(compactor.builder_config)?;
     let mut report = TableCompactionReport::new(sources.len());
     let source_identity = output_source_identity(sources);
@@ -611,7 +658,6 @@ fn compact_table_inputs(
 
     let target_output_bytes = compactor.config.target_output_bytes();
     require_nonzero_target_output_bytes(target_output_bytes)?;
-    let mut artifacts = Vec::new();
     let mut pending_output = PendingCompactionOutput::new(
         builder,
         output_identity_seed,
@@ -643,10 +689,9 @@ fn compact_table_inputs(
                     row_approximate_bytes,
                     current_physical_key,
                 ) {
-                    pending_output.finish_current(&mut artifacts, &mut report)?;
+                    pending_output.finish_current(sink, &mut report)?;
                 }
                 pending_output.push_row(
-                    &artifacts,
                     &mut report,
                     current.row,
                     row_approximate_bytes,
@@ -668,11 +713,11 @@ fn compact_table_inputs(
         report.input_rows,
     );
 
-    pending_output.finish_current(&mut artifacts, &mut report)?;
+    pending_output.finish_current(sink, &mut report)?;
 
     perf_trace::record_table_compaction_peak_buffered_rows(report.peak_buffered_rows());
 
-    Ok(TableCompactionOutput::new(artifacts, report))
+    Ok(report)
 }
 
 fn validate_no_global_duplicate_internal_keys(
@@ -703,6 +748,9 @@ struct PendingCompactionOutput<'a> {
     current_rows: usize,
     current_approximate_bytes: u64,
     current_last_physical_key: Option<Vec<u8>>,
+    /// Outputs already handed to the sink — the output-index seed and the
+    /// `max_output_tables` bound (artifacts are no longer accumulated here).
+    finished_outputs: usize,
 }
 
 impl<'a> PendingCompactionOutput<'a> {
@@ -717,6 +765,7 @@ impl<'a> PendingCompactionOutput<'a> {
             output_identity_seed,
             source_identity,
             max_output_tables,
+            finished_outputs: 0,
             current: None,
             current_rows: 0,
             current_approximate_bytes: 0,
@@ -738,19 +787,18 @@ impl<'a> PendingCompactionOutput<'a> {
 
     fn push_row(
         &mut self,
-        artifacts: &[BuiltTableArtifact],
         report: &mut TableCompactionReport,
         row: &TableRow,
         row_approximate_bytes: u64,
         row_physical_key: &[u8],
     ) -> TableRuntimeResult<()> {
         if self.current.is_none() {
-            if artifacts.len() >= self.max_output_tables {
+            if self.finished_outputs >= self.max_output_tables {
                 return Err(TableRuntimeError::InvalidRange {
                     field: "max_output_tables",
                 });
             }
-            let output_index = artifacts.len();
+            let output_index = self.finished_outputs;
             let identity = output_identity(
                 self.output_identity_seed,
                 self.source_identity,
@@ -775,7 +823,7 @@ impl<'a> PendingCompactionOutput<'a> {
 
     fn finish_current(
         &mut self,
-        artifacts: &mut Vec<BuiltTableArtifact>,
+        sink: &mut dyn FnMut(BuiltTableArtifact) -> TableRuntimeResult<()>,
         report: &mut TableCompactionReport,
     ) -> TableRuntimeResult<()> {
         if self.current_rows == 0 {
@@ -791,8 +839,11 @@ impl<'a> PendingCompactionOutput<'a> {
         let artifact = current.finish()?;
         perf_trace::record_table_compaction_output_table_built();
         report.output_bytes = report.output_bytes.saturating_add(artifact.byte_count());
-        artifacts.push(artifact);
-        report.output_tables = artifacts.len();
+        // Hand the completed output to the sink BEFORE building the next one:
+        // a publishing sink frees the artifact's bytes immediately (W1.2c).
+        sink(artifact)?;
+        self.finished_outputs = self.finished_outputs.saturating_add(1);
+        report.output_tables = self.finished_outputs;
         report.split_count = report.output_tables.saturating_sub(1) as u64;
         Ok(())
     }
