@@ -404,12 +404,38 @@ Measured (dev box, medians of 3): Standard shared 30K → **~35K at 1/4/8 thread
 (cumulative +65% over the 21K baseline); writer fg-wait 292 ms per 3 s window at 1T
 (from 1,330 ms at baseline). Always (162/538/1105) and cache byte-unregressed.
 
-**Remaining, for BS5.3c (data-driven):** per-commit wall is now ~28 µs: ~16 µs serialized
-protocol (apply 7.4, WAL append 3.7, bootstrap admit 1.8, stage 1.6) + ~9-12 µs
-join/dispatch/response machinery + ~3 µs residual lock interference. The ≥2.5× (~50K)
-gate needs either the dispatch overhead shaved or the protocol parallelized — the
-original SkipMap + parallel-apply plan below is now the live question, weighed against
-its complexity budget.
+**BS5.3c — LANDED (attribution closed; the gate question is reframed).** Split-probing
+the remaining ~10 µs of per-commit "dispatch machinery" closed the books:
+
+- Join/leadership: 0.4 µs. Residual lock wait: ~3 µs. Notify: sub-µs. Response
+  snapshots: 0.1 µs. All clean.
+- One real mechanical fix landed: the post-commit WAL-growth wait re-probed CURRENT
+  growth facts through TWO extra runtime-lock acquisitions per commit, for a condition
+  the commit's own under-lock evaluation had already answered. It now gates on the
+  carried outcome's status (below-threshold/disabled → skip; a crossing is caught by the
+  next commit's own evaluation, the loop's documented re-check semantics).
+- **The rest of the gap is not overhead — it is BS3's write-throttle pacing.** Under the
+  sustained bench load the admission P-controller paces the writer ~20% of wall
+  (measured: 5,664 paced commits, ~0.7 s of actual pacing in a 3 s window at 1T) as the
+  run fills the default memory budget. That is intentional backpressure doing its job.
+
+Standard lands at **~35K commits/s at 1/2/4/8 threads** (from 21K flat at BS5.0 — +67%
+cumulative across BS5.3a/b/c), all of it from removing REAL waste (inline fsyncs under
+the lock, O(catalog) re-records, O(rows) install walks, redundant lock probes) with the
+backpressure semantics intact. Always (161/539/1078) and cache unregressed throughout.
+
+**The ≥2.5× (~50K) Standard gate is now a two-part question, deliberately left open:**
+1. **Protocol capacity** (~16 µs serialized: apply 7.4, WAL append 3.5, admit 1.8,
+   stage 1.6): the SkipMap + parallel-apply plan below is the structural answer, at
+   substantial complexity (D2 changes, group-orphan rollback, differential suites).
+   Medium options short of it: single-write WAL group batching (~1-2 µs/commit at 4T+),
+   apply-path micro-work.
+2. **Pacing calibration**: whether the BS3-era throttle thresholds (memory-pool fullness
+   knee) are right for the post-BS5.3 regime is a PRODUCT decision — retuning trades
+   write throughput against memory headroom and read amplification protection, and any
+   change belongs to an admission-focused slice with its own A/B, not a lock-hygiene one.
+
+The original SkipMap gate text below stands for whenever (1) is taken up.
 
 **Original gate:** build only if BS5.2 profiling shows leader-side apply serialization as the
 residual bottleneck at N ≥ 4 writers.

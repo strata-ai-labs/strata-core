@@ -2572,7 +2572,22 @@ impl<'a> StorageRuntime<'a> {
         &self,
         wal_growth: Option<&LifecycleWalGrowthOutcome>,
     ) {
-        if wal_growth.is_none() {
+        let Some(outcome) = wal_growth else {
+            return;
+        };
+        // BS5.3c: enter the wait loop only when the commit's OWN growth
+        // evaluation (computed under the lock it just held, carried in the
+        // response) signaled pressure. Re-probing current facts here cost two
+        // EXTRA runtime-lock acquisitions per commit — on every commit, for a
+        // condition that is almost always below threshold. A cap/threshold
+        // crossing between this commit and the next is caught by the next
+        // commit's own evaluation (the loop's documented re-check semantics).
+        if matches!(
+            outcome.status(),
+            LifecycleWalGrowthStatus::Disabled
+                | LifecycleWalGrowthStatus::BelowThreshold
+                | LifecycleWalGrowthStatus::NoDurableAction
+        ) {
             return;
         }
         if !self.has_background_runtime() {

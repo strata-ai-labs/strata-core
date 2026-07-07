@@ -191,6 +191,20 @@ object's reader. Standard shared: 30K → **~35K commits/s at 1/4/8 threads** (c
 serialized protocol + ~9-12 µs dispatch machinery vs the ≥2.5× (~50K) gate — the
 SkipMap/parallel-apply decision point.
 
+## Dispatch attribution closed (BS5.3c, dev box, same instrument, medians of 3)
+
+Split-probing the residual ~10 µs "dispatch machinery" found it was mostly NOT machinery:
+one real fix (the post-commit WAL-growth wait took two extra runtime-lock acquisitions
+per commit to re-probe facts the commit itself had just evaluated — now gated on the
+carried outcome), and the remainder is **BS3's write-throttle pacing working as designed**
+(~20% of wall under the sustained bench load as the default memory budget fills; 5,664
+paced commits ≈ 0.7 s actual pacing per 3 s window at 1T). Standard settles at **~35K
+commits/s at 1/4/8 threads** — +67% over the flat 21K baseline across BS5.3a/b/c, with
+backpressure semantics intact; Always (161/539/1078) and cache unregressed. The ≥2.5×
+(~50K) gate decision is recorded in the plan doc as a two-part question: protocol
+capacity (SkipMap/parallel-apply vs medium options) and pacing calibration (a product
+decision for an admission-focused slice).
+
 BS5.1 also removed two pre-lock writer serializers found with the new instrument: the
 commit-timestamp base and the durability-mode resolution both took the full runtime lock per
 commit (writers queued behind an in-flight fsync before ever reaching the commit path — the
