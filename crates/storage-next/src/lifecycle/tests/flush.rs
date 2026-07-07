@@ -15,7 +15,8 @@ use crate::commit::{
     CommitRetentionHint, CommitRuntimeConfig, CommitValidationFacts,
 };
 use crate::lifecycle::flush::{
-    flush_branch_drain_with, flush_cache_branch, flush_durable_branch, FlushDrainRequest,
+    flush_branch_drain_with, flush_cache_branch, flush_durable_branch,
+    install_prepared_durable_flush, prepare_durable_flush_with_budget, FlushDrainRequest,
 };
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
@@ -1676,6 +1677,97 @@ fn durable_put_batch(branch: BranchId, key: PhysicalKey, value: Vec<u8>) -> Comm
             CommitOrigin::StorageRuntime,
         ),
     )
+}
+
+#[test]
+fn prepared_durable_flush_installs_by_identity_after_frozen_set_shifts() {
+    // BS5.3b: the install matches its frozen table by sealed-memtable identity
+    // (O(1)), not by index or row comparison — so a freeze that lands between
+    // the off-lock build and the install (the pipelined publish gap) must not
+    // confuse it: the prepared flush replaces ITS OWN input, and the newer
+    // frozen table stays frozen.
+    let branch = branch_id(0x67);
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
+    let mut live = frozen_branch(branch, put_row(branch, b"first", 5, 5_000, b"first-value"));
+    let request = flush_request(branch, None);
+
+    // Off-lock build against a snapshot clone (shares the sealed memtable Arc).
+    let snapshot = live.clone();
+    let prepared = prepare_durable_flush_with_budget(
+        &snapshot,
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
+        &request,
+        None,
+    )
+    .expect("prepare flush")
+    .expect("prepared flush");
+
+    // The live branch moves on before the install: another row freezes.
+    live.append_committed_row(put_row(branch, b"second", 6, 6_000, b"second-value"))
+        .expect("append second row");
+    live.rotate_active();
+    assert_eq!(live.frozen_table_count(), 2);
+
+    let outcome = install_prepared_durable_flush(&mut live, prepared);
+
+    assert!(outcome.completed());
+    assert_eq!(
+        live.frozen_table_count(),
+        1,
+        "the newer freeze stays frozen"
+    );
+    assert_eq!(
+        live.owned_table_count(),
+        1,
+        "the built table installed at L0"
+    );
+}
+
+#[test]
+fn prepared_durable_flush_fails_closed_when_its_frozen_table_is_gone() {
+    // BS5.3b fail-closed arm: if the prepared flush's input frozen table is no
+    // longer present at install time (flushed by another path), the install
+    // must refuse rather than replace some other frozen table.
+    let branch = branch_id(0x68);
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
+    let mut live = frozen_branch(branch, put_row(branch, b"only", 5, 5_000, b"only-value"));
+    let request = flush_request(branch, None);
+
+    let snapshot = live.clone();
+    let prepared = prepare_durable_flush_with_budget(
+        &snapshot,
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
+        &request,
+        None,
+    )
+    .expect("prepare flush")
+    .expect("prepared flush");
+
+    // The live branch flushes the same frozen table through another path.
+    let competing = flush_durable_branch(
+        &mut live,
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
+        &request,
+    )
+    .expect("competing flush");
+    assert!(competing.completed());
+    assert_eq!(live.frozen_table_count(), 0);
+
+    let outcome = install_prepared_durable_flush(&mut live, prepared);
+
+    assert!(
+        !outcome.completed(),
+        "stale prepared flush must not install"
+    );
+    assert_eq!(live.frozen_table_count(), 0);
+    assert_eq!(
+        live.owned_table_count(),
+        1,
+        "only the competing flush's table is installed"
+    );
 }
 
 fn frozen_branch(branch: BranchId, row: StorageRow) -> BranchLocalState {

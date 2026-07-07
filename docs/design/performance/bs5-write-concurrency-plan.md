@@ -389,11 +389,27 @@ Measured (dev box, medians of 3): Standard shared 21K flat → **~30K at 1/4/8 t
 (+43–48%)**; writer lock-wait 15 → 6 µs at 1T; publish-phase true holds 950 → 41 ms.
 Always and cache byte-unregressed (160/553/1105; cache identical).
 
-**Remaining, for BS5.3b (data-driven):** the flush-install phase still holds ~415 ms
-per window (~7.5 ms per flush install — the in-memory install + per-table catalog
-record); after that the ~16 µs serialized protocol (apply 7 µs, WAL append 3.5 µs,
-admission 2.5 µs) is the ceiling (~60K/s), at which point the original SkipMap +
-parallel-apply plan below becomes the relevant question for the ≥2.5× (~50K) gate.
+**BS5.3b — LANDED.** The flush-install hold was `frozen_rows_match_table`: a row-by-row
+lockstep walk of the built table (through its reader) against the frozen memtable, under
+the runtime lock, per install (~7.5 ms each), plus an all-frozen fallback scan. Landed
+fix: the prepared durable flush captures the `Arc` identity of the sealed memtable its
+build consumed; the install matches by identity — O(1), and strictly more precise than
+row comparison (same object, not merely equal contents; a freeze landing in the publish
+gap can no longer be confused with the build's input, tested both ways). The row-equality
+verification moved into the off-lock prepare phase (end-to-end through the published
+object's reader, before install). Cache and the inline single-hold flush keep the
+row-match path (no off-lock gap; C2 conservatism).
+
+Measured (dev box, medians of 3): Standard shared 30K → **~35K at 1/4/8 threads**
+(cumulative +65% over the 21K baseline); writer fg-wait 292 ms per 3 s window at 1T
+(from 1,330 ms at baseline). Always (162/538/1105) and cache byte-unregressed.
+
+**Remaining, for BS5.3c (data-driven):** per-commit wall is now ~28 µs: ~16 µs serialized
+protocol (apply 7.4, WAL append 3.7, bootstrap admit 1.8, stage 1.6) + ~9-12 µs
+join/dispatch/response machinery + ~3 µs residual lock interference. The ≥2.5× (~50K)
+gate needs either the dispatch overhead shaved or the protocol parallelized — the
+original SkipMap + parallel-apply plan below is now the live question, weighed against
+its complexity budget.
 
 **Original gate:** build only if BS5.2 profiling shows leader-side apply serialization as the
 residual bottleneck at N ≥ 4 writers.

@@ -9,7 +9,9 @@ use super::{
 use crate::backend::{PublishError, PublishFailureKind};
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::BranchOwnedTable;
-use crate::branch::state::{BranchImmutableInstallOutcome, BranchLocalState};
+use crate::branch::state::{
+    frozen_rows_match_table, BranchImmutableInstallOutcome, BranchLocalState,
+};
 use crate::object::ObjectName;
 use crate::service::{
     TableObjectFacts, TableObjectReadError, TableObjectReaderService, TableObjectService,
@@ -88,6 +90,10 @@ pub(crate) struct PreparedCacheFlush {
 pub(crate) struct PreparedDurableFlush {
     request: FlushFrozenRequest,
     frozen_index: usize,
+    /// `Arc` identity of the sealed memtable this build consumed (BS5.3b):
+    /// the install matches by identity in O(1); row equality against this
+    /// same sealed input is verified here in the (off-lock) prepare phase.
+    frozen_identity: usize,
     table_facts: TableRuntimeFacts,
     object_facts: TableObjectFacts,
     table: Result<BranchOwnedTable, FlushFrozenOutcome>,
@@ -753,6 +759,14 @@ pub(crate) fn prepare_durable_flush_with_budget(
         artifact.bytes(),
         &table_facts,
     )?;
+    let frozen =
+        branch
+            .frozen()
+            .get(frozen_index)
+            .ok_or(LifecycleError::MaintenanceTaskFailed {
+                reason: "flush frozen index must exist",
+            })?;
+    let frozen_identity = frozen.memory_state_identity();
     let reader = match reader_service.open_reader(
         identity.clone(),
         &object_facts,
@@ -772,6 +786,7 @@ pub(crate) fn prepare_durable_flush_with_budget(
             return Ok(Some(PreparedDurableFlush {
                 request: request.clone(),
                 frozen_index,
+                frozen_identity,
                 table_facts,
                 object_facts,
                 table: Err(outcome),
@@ -780,7 +795,26 @@ pub(crate) fn prepare_durable_flush_with_budget(
     };
     let extras = artifact.extras().clone();
     let table = match branch_owned_table(branch.branch_id(), identity, reader, extras) {
-        Ok(table) => Ok(table),
+        // BS5.3b: the row-equality verification moved OFF-lock from the
+        // install (where it walked every row under the runtime lock, ~7.5 ms
+        // per flush): verify the built, published table's rows end to end
+        // through the reader against the sealed memtable the build consumed.
+        // The install then matches that memtable by O(1) identity.
+        Ok(table) => {
+            if frozen_rows_match_table(&table, frozen) {
+                Ok(table)
+            } else {
+                Err(FlushFrozenOutcome::published_not_installed_outcome(
+                    request,
+                    frozen_index,
+                    table_facts.clone(),
+                    object_facts.clone(),
+                    LifecycleError::MaintenanceTaskFailed {
+                        reason: "flush artifact rows do not match the frozen table",
+                    },
+                ))
+            }
+        }
         Err(error) => Err(FlushFrozenOutcome::published_not_installed_outcome(
             request,
             frozen_index,
@@ -792,6 +826,7 @@ pub(crate) fn prepare_durable_flush_with_budget(
     Ok(Some(PreparedDurableFlush {
         request: request.clone(),
         frozen_index,
+        frozen_identity,
         table_facts,
         object_facts,
         table,
@@ -805,6 +840,7 @@ pub(crate) fn install_prepared_durable_flush(
     let PreparedDurableFlush {
         request,
         frozen_index,
+        frozen_identity,
         table_facts,
         object_facts,
         table,
@@ -813,18 +849,19 @@ pub(crate) fn install_prepared_durable_flush(
         Ok(table) => table,
         Err(outcome) => return outcome,
     };
-    let install_outcome = match branch.replace_frozen_with_level_zero_table(frozen_index, table) {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            return FlushFrozenOutcome::published_not_installed_outcome(
-                &request,
-                frozen_index,
-                table_facts,
-                object_facts,
-                branch_error(error),
-            );
-        }
-    };
+    let install_outcome =
+        match branch.replace_frozen_with_level_zero_table_by_identity(frozen_identity, table) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return FlushFrozenOutcome::published_not_installed_outcome(
+                    &request,
+                    frozen_index,
+                    table_facts,
+                    object_facts,
+                    branch_error(error),
+                );
+            }
+        };
     FlushFrozenOutcome::completed_outcome(
         &request,
         frozen_index,

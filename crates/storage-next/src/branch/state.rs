@@ -251,6 +251,43 @@ impl BranchLocalState {
                 reason: "frozen replacement table rows must match a frozen table",
             });
         };
+        self.install_level_zero_replacement(replacement_index, table)
+    }
+
+    /// O(1)-identity flush install (BS5.3b): the prepared durable flush captured the `Arc`
+    /// identity of the sealed memtable its build consumed, so matching by identity proves
+    /// "the same frozen table" strictly more precisely than the row-by-row walk in
+    /// [`replace_frozen_with_level_zero_table`] — which ran under the runtime lock at
+    /// ~7.5 ms per install (measured), the dominant remaining flush publish-lock cost
+    /// after BS5.3a. Row equality of the BUILT table against that same sealed input is
+    /// verified off-lock in the prepare phase; a cheap row-count cross-check stays here.
+    pub(crate) fn replace_frozen_with_level_zero_table_by_identity(
+        &mut self,
+        frozen_identity: usize,
+        table: BranchOwnedTable,
+    ) -> BranchRuntimeResult<BranchImmutableInstallOutcome> {
+        let Some(replacement_index) = self
+            .frozen
+            .iter()
+            .position(|frozen| frozen.memory_state_identity() == frozen_identity)
+        else {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "frozen replacement identity must match a frozen table",
+            });
+        };
+        if self.frozen[replacement_index].len() as u64 != table.facts().row_count() {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "frozen replacement table rows must match a frozen table",
+            });
+        }
+        self.install_level_zero_replacement(replacement_index, table)
+    }
+
+    fn install_level_zero_replacement(
+        &mut self,
+        replacement_index: usize,
+        table: BranchOwnedTable,
+    ) -> BranchRuntimeResult<BranchImmutableInstallOutcome> {
         let level_index = self.validate_install_identity_and_range(BranchLevel::ZERO, &table)?;
 
         // A flush moves the same rows from a frozen table into a new L0 table, so the
@@ -770,7 +807,10 @@ fn insert_sorted_by_range(
     Ok(index)
 }
 
-fn frozen_rows_match_table(table: &BranchOwnedTable, frozen: &FrozenTable) -> bool {
+/// Row-for-row equality of a built table (read back through its reader) against a sealed
+/// memtable. BS5.3b moved the hot durable-flush call OFF the runtime lock into the prepare
+/// phase; the install matches by memtable identity instead.
+pub(crate) fn frozen_rows_match_table(table: &BranchOwnedTable, frozen: &FrozenTable) -> bool {
     if table.facts().row_count() != frozen.len() as u64 {
         return false;
     }

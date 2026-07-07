@@ -178,6 +178,19 @@ Remaining Standard rocks (BS5.3b question): the flush-install lock holds (~7.5 m
 flush) and then the ~16 µs serialized protocol (~60K/s ceiling), where the original
 SkipMap/parallel-apply plan meets the ≥2.5× (~50K) gate.
 
+## Flush-install identity (BS5.3b, dev box, same instrument, medians of 3)
+
+The ~7.5 ms flush-install hold was a row-by-row verification of the built table against
+the frozen memtable UNDER the runtime lock (plus an all-frozen fallback scan). The
+prepared flush now captures its input memtable's `Arc` identity at build time; the
+install matches by identity in O(1) — strictly more precise than row equality — and the
+row verification runs off-lock in the prepare phase, end to end through the published
+object's reader. Standard shared: 30K → **~35K commits/s at 1/4/8 threads** (cumulative
++65% over the flat 21K baseline); 1T writer lock-wait down to ~292 ms per 3 s window
+(from 1,330 ms). Always (162/538/1105) and cache unregressed. Next (BS5.3c): ~16 µs
+serialized protocol + ~9-12 µs dispatch machinery vs the ≥2.5× (~50K) gate — the
+SkipMap/parallel-apply decision point.
+
 BS5.1 also removed two pre-lock writer serializers found with the new instrument: the
 commit-timestamp base and the durability-mode resolution both took the full runtime lock per
 commit (writers queued behind an in-flight fsync before ever reaching the commit path — the
