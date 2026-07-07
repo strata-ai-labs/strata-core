@@ -99,6 +99,8 @@ pub(crate) struct LifecycleCacheRuntime<S = CommitManualTimestampSource> {
     commit_config: CommitRuntimeConfig,
     maintenance: LifecycleMaintenanceExecutor,
     maintenance_coverage_idle_rounds: usize,
+    /// Coverage hysteresis — see `schedule_background_maintenance_coverage`.
+    coverage_completed_watermark: Option<usize>,
     pressure_rejected_commit_branches: HashSet<BranchId>,
     last_write_admission: Option<LifecycleWriteAdmissionOutcome>,
     budget: StorageBudgetLedger,
@@ -452,6 +454,7 @@ impl<S> LifecycleCacheRuntime<S> {
             durable_gate: CommitUnresolvedDurableGate::new(),
             commit_config,
             maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
+            coverage_completed_watermark: None,
             maintenance_coverage_idle_rounds: 0,
             pressure_rejected_commit_branches: HashSet::new(),
             last_write_admission: None,
@@ -1149,6 +1152,17 @@ impl<S> LifecycleCacheRuntime<S> {
     }
 
     pub(crate) fn schedule_background_maintenance_coverage(&mut self) -> bool {
+        // Coverage hysteresis — same rationale as the durable runtime's
+        // scheduler: only re-fire coverage after a real maintenance
+        // completion, or an empty-queue-with-deferring-tasks state spins the
+        // drain generating work that instantly defers.
+        let completed = self.maintenance.stats().completed();
+        if let Some(last) = self.coverage_completed_watermark {
+            if completed == last {
+                return false;
+            }
+        }
+        self.coverage_completed_watermark = Some(completed);
         let outcome = self.schedule_post_commit_maintenance_for_branch(self.initial_branch_id);
         matches!(
             outcome.status(),

@@ -419,11 +419,22 @@ fn run_point(config: &Config, engine: Engine, mode: BranchMode, writers: usize) 
             perf.lifecycle_foreground_wait_background_lock_ns() as f64 / 1e6,
         );
         eprintln!(
-            "[bg2 {} {}T] publish_lock_ms={:.1} unlocked_build_ms={:.1}",
+            "[bg2 {} {}T] publish_lock_ms={:.1} unlocked_build_ms={:.1} low_tier_runs={} low_tier_ms={:.1} post_maint_enq={} post_maint_coalesced={}",
             engine.name(),
             writers,
             perf.lifecycle_background_task_publish_lock_ns() as f64 / 1e6,
             perf.lifecycle_background_task_unlocked_build_ns() as f64 / 1e6,
+            perf.lifecycle_background_task_low_tier_runs(),
+            perf.lifecycle_background_task_low_tier_ns() as f64 / 1e6,
+            perf.lifecycle_post_commit_maintenance_tasks_enqueued(),
+            perf.lifecycle_post_commit_maintenance_tasks_coalesced(),
+        );
+        let queue = runtime.maintenance_status().expect("queue status");
+        eprintln!(
+            "[queue {} {}T] {:?}",
+            engine.name(),
+            writers,
+            queue,
         );
     }
     PointOutcome {

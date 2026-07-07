@@ -1,7 +1,8 @@
 //! BS3.4b — `RocksDB` `SetupDelay` port: debt-adaptive write-rate ramp + token bucket.
 //!
-//! The pure mechanism behind graded write admission (dark behind `STRATA_ADMISSION` until BS3.4c
-//! bakes it as default). No I/O and no clock-of-record — callers pass the branch shape, the previous
+//! The pure mechanism behind graded write admission — the DEFAULT since the BS3.4c bake-off
+//! (2026-07-07: graded won every cell; `STRATA_ADMISSION=legacy` is the escape hatch until M10
+//! removes the legacy path). No I/O and no clock-of-record — callers pass the branch shape, the previous
 //! rate/debt, and a `MaintenanceInstant`, so the whole thing is deterministically unit-testable.
 //!
 //! Reference: `docs/architecture/storage-next/durable-write-pipeline-scaling.md:175-188`
@@ -13,23 +14,25 @@ use std::time::Duration;
 use super::background::MaintenanceInstant;
 
 /// Which write-admission delay-band mechanism the durable runtime uses. `Legacy` is the quadratic
-/// P-controller; `Graded` is BS3.4b's debt-adaptive rate ramp. Ships defaulting to `Legacy`; a
-/// follow-up (BS3.4c) bakes `Graded` after the out-of-band A/B.
+/// P-controller; `Graded` is BS3.4b's debt-adaptive rate ramp — the default since the BS3.4c
+/// bake-off (see `billion-scale-ledger.md` § Next-levers: graded won every cell, stall-wall
+/// preserved, small-budget improved).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LifecycleAdmissionMode {
     Legacy,
     Graded,
 }
 
-/// The admission mode seeded once from the `STRATA_ADMISSION` env var (the A/B hook). Anything other
-/// than `graded` — including unset — is `Legacy`, so default behavior is unchanged. Cached in a
-/// `OnceLock` so it is read exactly once per process; tests select the mode via a runtime override
-/// (`with_admission_mode_for_test`) rather than this global, to avoid cross-test coupling.
+/// The admission mode seeded once from the `STRATA_ADMISSION` env var. `Graded` is the default
+/// (BS3.4c decision); `legacy` selects the quadratic P-controller as the escape hatch until M10
+/// retires it. Cached in a `OnceLock` so it is read exactly once per process; tests select the
+/// mode via a runtime override (`with_admission_mode_for_test`) rather than this global, to avoid
+/// cross-test coupling.
 pub(crate) fn admission_mode_from_env() -> LifecycleAdmissionMode {
     static MODE: OnceLock<LifecycleAdmissionMode> = OnceLock::new();
     *MODE.get_or_init(|| match std::env::var("STRATA_ADMISSION").ok().as_deref() {
-        Some("graded") => LifecycleAdmissionMode::Graded,
-        _ => LifecycleAdmissionMode::Legacy,
+        Some("legacy") => LifecycleAdmissionMode::Legacy,
+        _ => LifecycleAdmissionMode::Graded,
     })
 }
 

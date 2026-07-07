@@ -2526,19 +2526,43 @@ impl<'a> StorageRuntime<'a> {
         self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
         // Drive the background drain for one bounded slice (and advance the
         // manual clock under deterministic simulation). The executor-level
-        // "progressed" flag is intentionally discarded: it reports true when the
-        // executor is merely idle, which is not real maintenance progress. The
-        // watchdog reset below is gated on the lifecycle maintenance completion
-        // count and the pressure snapshot instead.
-        let _drove_drain = match &self.inner {
-            StorageRuntimeInner::Cache(slot) => {
-                slot.wait_background_progress_until(completed_before_wait, wait_deadline)
+        // wake counts every drain STEP — including tasks that immediately
+        // DEFER under saturation interlocks — so a single wait call can
+        // return microseconds in. Treating that as the slice let a stalled
+        // writer cycle enqueue→(start-and-defer)→wake→re-enqueue at ~16µs:
+        // measured 5.4M generated-and-deferred tasks in one 34s window, with
+        // the drain churn holding the runtime lock the real flush/compaction
+        // needed to relieve the very pressure being waited on. Exhaust the
+        // full slice unless REAL progress (a lifecycle maintenance
+        // completion) lands; spurious step-wakes just re-arm the wait with a
+        // fresh baseline.
+        let mut executor_completed_baseline = completed_before_wait;
+        loop {
+            let drove_drain =
+                match &self.inner {
+                    StorageRuntimeInner::Cache(slot) => slot
+                        .wait_background_progress_until(executor_completed_baseline, wait_deadline),
+                    StorageRuntimeInner::DurableOwned(slot) => slot
+                        .wait_background_progress_until(executor_completed_baseline, wait_deadline),
+                    StorageRuntimeInner::Closed => return false,
+                };
+            if !drove_drain
+                || self.background_lifecycle_completed_for_current_runtime()
+                    > lifecycle_completed_before
+            {
+                break;
             }
-            StorageRuntimeInner::DurableOwned(slot) => {
-                slot.wait_background_progress_until(completed_before_wait, wait_deadline)
+            let Some(slice_now) = self.background_now_for_current_runtime() else {
+                break;
+            };
+            if slice_now >= wait_deadline {
+                break;
             }
-            StorageRuntimeInner::Closed => return false,
-        };
+            let Some(stats) = self.background_stats_for_current_runtime() else {
+                break;
+            };
+            executor_completed_baseline = stats.tasks_completed;
+        }
         let wait_elapsed = self
             .background_now_for_current_runtime()
             .unwrap_or(wait_start)
