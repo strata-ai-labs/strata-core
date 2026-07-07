@@ -70,6 +70,22 @@ const DEFAULT_FROZEN_MUTABLE_BYTES: u64 = 80 * 1024 * 1024;
 const DEFAULT_MAINTENANCE_QUEUE_BYTES: u64 = 1024 * 1024;
 const DEFAULT_GENERATED_ARTIFACT_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_MANIFEST_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
+
+// Cache-mode profile numerators (per cent of the declared total). Cache mode has NO durable
+// tables: the block-cache and table-reader pools are dead weight, and the durable profile's
+// split hands the active memtable only total/8 — a 32GiB cache database hard-failed with
+// `resource_exhausted` at 4.29GB resident (10M x 1KB YCSB, billion-scale-ledger.md § 10M
+// three-way). The mutable pools take ~88% here; generated-artifact keeps a working slice for
+// the explicit (testkit-only) flush/compaction paths, and the durable-only pools keep 1%
+// floors so shared validation and accounting seams never see a zero pool. Sum = 97%,
+// preserving the default profile's small reserve.
+const CACHE_ACTIVE_MUTABLE_PERCENT: u64 = 68;
+const CACHE_FROZEN_MUTABLE_PERCENT: u64 = 20;
+const CACHE_GENERATED_ARTIFACT_PERCENT: u64 = 5;
+const CACHE_BLOCK_CACHE_PERCENT: u64 = 1;
+const CACHE_TABLE_READER_PERCENT: u64 = 1;
+const CACHE_MAINTENANCE_QUEUE_PERCENT: u64 = 1;
+const CACHE_MANIFEST_CATALOG_PERCENT: u64 = 1;
 // BS4.5a: readers are metadata-only and byte-charged, so the count cap is only a backstop now. Raised
 // well above the ~1,600 always-open readers at the 100M tier (a bounded reader cache is the deferred
 // G15 1B-tier follow-up); the byte budget, not this count, is the effective bound.
@@ -255,6 +271,32 @@ impl StorageRuntimeBudget {
             maintenance_queue_bytes: scale(DEFAULT_MAINTENANCE_QUEUE_BYTES),
             generated_artifact_bytes: scale(DEFAULT_GENERATED_ARTIFACT_BYTES),
             manifest_catalog_bytes: scale(DEFAULT_MANIFEST_CATALOG_BYTES),
+            max_open_readers: DEFAULT_MAX_OPEN_READERS,
+            max_frozen_tables: DEFAULT_MAX_FROZEN_TABLES,
+            max_pending_maintenance_tasks: DEFAULT_MAX_PENDING_MAINTENANCE_TASKS,
+        })
+    }
+
+    /// Derive a CACHE-mode budget from a single storage total. Cache mode keeps the whole
+    /// working set in the mutable pools (no durable tables), so active+frozen take ~88% of the
+    /// total instead of the durable profile's ~28% — the effective capacity of a cache database
+    /// is the declared budget, not total/8. Exceeding it still fails closed with the typed
+    /// `resource_exhausted` error (cache semantics: a `:memory:`-style cap, no eviction).
+    pub(crate) fn from_total_bytes_for_cache(total_bytes: u64) -> LifecycleResult<Self> {
+        let percent = |numerator: u64| -> u64 {
+            let scaled = u128::from(total_bytes) * u128::from(numerator) / 100;
+            // A pool is at most the whole total, so `scaled <= total_bytes` and never truncates.
+            u64::try_from(scaled).unwrap_or(u64::MAX)
+        };
+        Self::from_parts(StorageRuntimeBudgetParts {
+            total_bytes,
+            block_cache_bytes: percent(CACHE_BLOCK_CACHE_PERCENT),
+            table_reader_bytes: percent(CACHE_TABLE_READER_PERCENT),
+            active_mutable_bytes: percent(CACHE_ACTIVE_MUTABLE_PERCENT),
+            frozen_mutable_bytes: percent(CACHE_FROZEN_MUTABLE_PERCENT),
+            maintenance_queue_bytes: percent(CACHE_MAINTENANCE_QUEUE_PERCENT),
+            generated_artifact_bytes: percent(CACHE_GENERATED_ARTIFACT_PERCENT),
+            manifest_catalog_bytes: percent(CACHE_MANIFEST_CATALOG_PERCENT),
             max_open_readers: DEFAULT_MAX_OPEN_READERS,
             max_frozen_tables: DEFAULT_MAX_FROZEN_TABLES,
             max_pending_maintenance_tasks: DEFAULT_MAX_PENDING_MAINTENANCE_TASKS,

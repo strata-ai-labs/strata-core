@@ -22,8 +22,15 @@ pub(super) fn default_open_storage_budget(
     options: &StorageOpenOptions,
 ) -> StorageApiResult<StorageRuntimeBudget> {
     if let Some(memory_budget) = options.memory_budget() {
-        return StorageRuntimeBudget::from_total_bytes(memory_budget.bytes())
-            .map_err(map_lifecycle_error);
+        // Cache mode holds the whole working set in the mutable pools (no
+        // durable tables), so it derives a cache-shaped split — the durable
+        // profile capped a cache database's effective capacity at total/8.
+        let budget = if options.mode() == StorageMode::Cache {
+            StorageRuntimeBudget::from_total_bytes_for_cache(memory_budget.bytes())
+        } else {
+            StorageRuntimeBudget::from_total_bytes(memory_budget.bytes())
+        };
+        return budget.map_err(map_lifecycle_error);
     }
     Ok(map_budget_policy(options.budget_policy()))
 }

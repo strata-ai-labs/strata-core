@@ -193,6 +193,61 @@ fn cache_load_records_zero_durable_and_maintenance_counters() {
     assert_eq!(perf.lifecycle_compaction_input_bytes(), 0);
 }
 
+/// The cache-shaped budget profile: a cache database's effective capacity is
+/// ~the declared total, not the durable profile's total/8 (which hard-failed
+/// a 32GiB cache database at 4.29GB resident — ledger § 10M three-way). A
+/// working set well past the OLD active cap (total/8) must be accepted.
+#[test]
+fn cache_memory_budget_capacity_is_the_declared_total_not_an_eighth() {
+    let budget =
+        crate::api::StorageMemoryBudget::new(64 * 1024 * 1024).expect("valid memory budget");
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache().with_memory_budget(budget))
+        .expect("cache open should succeed")
+        .into_runtime();
+
+    // 20MiB of values: 2.5x the durable profile's 8MiB active cap at this
+    // total, comfortably inside the cache profile's ~43MiB active pool.
+    let value = vec![0x5A; 1024 * 1024];
+    for index in 0..20 {
+        let name = format!("cache-profile-{index:04}");
+        runtime
+            .commit(&background_put_batch(name.as_bytes(), value.clone()))
+            .unwrap_or_else(|error| {
+                panic!("write {index} within the cache budget was refused: {error:?}")
+            });
+    }
+}
+
+/// Exceeding the cache-shaped budget still fails closed with the typed
+/// resource error — the cap moved to ~the declared total, it did not vanish.
+#[test]
+fn cache_memory_budget_cap_still_fails_closed() {
+    let budget =
+        crate::api::StorageMemoryBudget::new(64 * 1024 * 1024).expect("valid memory budget");
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache().with_memory_budget(budget))
+        .expect("cache open should succeed")
+        .into_runtime();
+
+    let value = vec![0x5A; 1024 * 1024];
+    let mut refused = false;
+    for index in 0..300 {
+        let name = format!("cache-cap-{index:04}");
+        match runtime.commit(&background_put_batch(name.as_bytes(), value.clone())) {
+            Ok(_) => {}
+            Err(error) => {
+                assert_eq!(error.code(), "resource_exhausted.storage_api.memory_budget");
+                assert_eq!(
+                    error.class(),
+                    crate::api::StorageApiErrorClass::ResourceExhausted
+                );
+                refused = true;
+                break;
+            }
+        }
+    }
+    assert!(refused, "a 300MiB load must exceed a 64MiB cache budget");
+}
+
 #[test]
 fn cache_over_budget_load_is_refused() {
     // Cache now obeys its memory budget (the Default profile). A sustained load that would grow

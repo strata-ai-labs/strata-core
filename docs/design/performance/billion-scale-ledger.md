@@ -450,13 +450,15 @@ Both engines were measured immediately after load (maximum debt) — a drained-s
 would flatter reads on both sides.
 
 **Two defects found by this run:**
-1. **Cache-mode budget profile (tracked):** `with_memory_budget(32g)` on a CACHE database
-   scales the durable pool profile — active_mutable gets total/8 (4GiB) and 5/8 of the
-   budget sits in block-cache/table-reader/artifact pools cache mode can never use. The
-   10M cache load hard-fails with `resource_exhausted.engine.persistence_budget` at
-   4.29GB. Worked around here by declaring `--memory-budget 96g`; the fix is a
-   cache-shaped profile (active+frozen ≈ 90%) plus understanding why active hit the hard
-   cap instead of rotating.
+1. **Cache-mode budget profile (FIXED same day):** `with_memory_budget(32g)` on a CACHE
+   database scaled the durable pool profile — active_mutable got total/8 (4GiB) and 5/8 of
+   the budget sat in block-cache/table-reader/artifact pools cache mode can never use; the
+   10M cache load hard-failed with `resource_exhausted` at 4.29GB. Cache opens now derive
+   a cache-shaped split (`from_total_bytes_for_cache`: active 68% / frozen 20% / artifact
+   5% / 1% floors on the durable-only pools) — a cache database's effective capacity is
+   ~the declared total, and exceeding it still fails closed with the same typed error.
+   Validated: the exact failing config (cache 10M × 1KB @ 32g) now runs A/B/C clean at
+   260K / 1.08M / 1.62M ops/s.
 2. **52.8s single-commit stall at 10M durable (workload A):** the saturation family
    again — past the 30s stall-wall watchdog, at single-branch 10M sustained load.
    Needs its own probe run; likely the same drain-slot/compaction-debt regime the
