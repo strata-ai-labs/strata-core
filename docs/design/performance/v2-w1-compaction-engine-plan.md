@@ -105,10 +105,28 @@ capacity. Gate: load-seq >= 400K rows/s at 10M (stretch 700K with W3 WAL batchin
 - Saturation cells every slice: 4T per-writer, sustained 10-min soak, YCSB A x5 variance.
 - Standing three-way per W1.x landing (W6 discipline).
 
-## Sequencing
+## W1.1c result (2026-07-07): gate FAILED — attribution re-sequences the workstream
 
-W1.1a -> W1.1b -> W1.1c (measure) -> W1.2a (bake-off) -> W1.2b -> W1.3 -> W1.4 -> W1 exit
-(roadmap M-A gates: A >= 30K, tails bounded, debt stable).
+5× YCSB A durable 10M with bounded L0→L1 passes: update maxes 21s / 55.3s / 1.1s /
+50.1s / 1.8s — the stall lottery survived. Per-kind counters (l9 10M load): **205 of
+229 passes are MID-LEVEL (`CompactLevel`)**, L0→L1 only 24, with the single compaction
+lane busy ~100% of the load's wall. The stalls are L0-blocked writers queueing behind
+mid-level lane occupants, which W1.1's bound does not touch. A mid-level pass cannot be
+input-trimmed (its input is already one table; the unbounded part is the L(n+1)
+overlap, and splitting overlap requires splitting the input's key range — i.e., the
+already-existing subcompaction machinery). W1.1a/b remain correct and necessary
+(bounded L0→L1 + chaining are prerequisites for lane fairness) but insufficient alone.
+
+**Re-sequenced:** W1.2 is pulled forward as the critical path —
+W1.2a (subcompaction bake-off, machinery exists dark) cuts each monster's wall-time
+N×; W1.2b (concurrent lanes) lets L0→L1 run beside mid-level passes. W1.3's smaller
+L1 output targets then bound per-file overlap structurally.
+
+## Sequencing (revised)
+
+W1.1a ✅ -> W1.1b ✅ -> W1.1c ❌(attribution above) -> **W1.2a -> W1.2b** -> re-run the
+W1.1c gate -> W1.3 -> W1.4 -> W1 exit (roadmap M-A gates: A >= 30K, tails bounded,
+debt stable). The W1.1 slice PRs to v1 together with W1.2a once the gate passes.
 
 ## Open items
 
