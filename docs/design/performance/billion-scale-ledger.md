@@ -459,11 +459,20 @@ would flatter reads on both sides.
    ~the declared total, and exceeding it still fails closed with the same typed error.
    Validated: the exact failing config (cache 10M × 1KB @ 32g) now runs A/B/C clean at
    260K / 1.08M / 1.62M ops/s.
-2. **52.8s single-commit stall at 10M durable (workload A):** the saturation family
-   again — past the 30s stall-wall watchdog, at single-branch 10M sustained load.
-   Needs its own probe run; likely the same drain-slot/compaction-debt regime the
-   BS3.4c guardrail hit at 4T, at a depth the watchdog timeout converts into a
-   52.8s caller-visible latency instead of a clean rejection.
+2. **52.8s single-commit stall at 10M durable (FIXED same day):** root-caused to the
+   NonZeroLevelTableBacklog admission wall. Blocking on Ln shape (16 tables / 4× target
+   bytes per level) is STRUCTURAL at scale — L1+ legitimately holds dataset/table-size
+   tables while the cascade catches up — and relief needs multi-GB level merges
+   (30–60s), so the wall either held one commit 52.8s (watchdog kept resetting on
+   unrelated completions) or, when one merge exceeded a 30s window with no other
+   completions, fired the watchdog into a caller-visible `failed_precondition` load
+   abort (both observed). Fix: NonZeroLevelTableBacklog severity now CAPS at Urgent —
+   Ln debt paces writers through the graded ramp (`compaction_debt`), matching the
+   RocksDB position that Ln debt is a pacing signal, never a hard stop. The bounded-
+   relief walls stay: L0 backlog (one L0 merge) and frozen backlog (a flush drain).
+   Validated at the failing config (10M × 1KB, workload A): load completes, update max
+   **52,774ms → 425ms**, throughput 984 → 2,045 ops/s; p50 rises to 332µs as pacing
+   spreads across commits — the intended trade.
 
 ## Backfilling a row after a perf run
 

@@ -500,12 +500,13 @@ fn nonzero_byte_pressure_threshold_boundaries_match_level_targets() {
         assert_eq!(severity, LifecycleStoragePressureSeverity::Urgent);
         assert!(score < 4_000);
 
+        // Past the old blocking multiplier the severity CAPS at Urgent: non-zero-
+        // level backlog is structural at scale and paces writers through the
+        // graded ramp instead of blocking admission (relief needs multi-GB level
+        // merges — measured 52.8s stalls and watchdog load aborts at 10M).
         let (severity, score, _) =
             nonzero_compaction_pressure(level, 1, blocking_threshold).expect("blocking pressure");
-        assert_eq!(
-            severity,
-            LifecycleStoragePressureSeverity::BlockMutatingAdmission
-        );
+        assert_eq!(severity, LifecycleStoragePressureSeverity::Urgent);
         assert_eq!(score, 4_000);
     }
 
@@ -520,12 +521,10 @@ fn nonzero_byte_pressure_threshold_boundaries_match_level_targets() {
     assert_eq!(severity, LifecycleStoragePressureSeverity::Urgent);
     assert_eq!(score, 2_000);
 
+    // The old count-blocking mark also caps at Urgent (see the byte case above).
     let (severity, score, _) =
         nonzero_compaction_pressure(level, 16, 1).expect("count pressure at blocking threshold");
-    assert_eq!(
-        severity,
-        LifecycleStoragePressureSeverity::BlockMutatingAdmission
-    );
+    assert_eq!(severity, LifecycleStoragePressureSeverity::Urgent);
     assert_eq!(score, 4_000);
 }
 
