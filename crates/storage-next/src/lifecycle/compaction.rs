@@ -51,6 +51,14 @@ pub(super) const fn level_zero_urgent_threshold() -> usize {
 pub(super) const fn level_zero_blocking_threshold() -> usize {
     LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD
 }
+/// W1.1: byte bound for one L0→L1 pass (input + L1 overlap). Bounds the
+/// unit of L0-blocking relief: pre-W1.1 a single pass took ALL of L0 plus all
+/// overlap — GBs at 10M scale, ~50s per pass, which made the L0 admission
+/// wall's relief a ~50s lottery (billion-scale-ledger.md § 10M three-way,
+/// roadmap-v2 T1). 256MiB ≈ seconds-scale passes; L0 count drops
+/// incrementally pass by pass.
+const L0_PASS_MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
+
 const NONZERO_LEVEL_COMPACTION_THRESHOLD: usize = 4;
 const NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD: usize = 8;
 const NONZERO_LEVEL_MIN_BASE_TARGET_BYTES: u64 = 1024 * 1024;
@@ -370,6 +378,11 @@ impl LifecycleCompactionRequest {
         .with_retention_policy(self.retention_policy);
         if let Some(proof) = self.pruning_proof {
             request = request.with_pruning_proof(proof);
+        }
+        // W1.1: every lifecycle-driven L0→L1 pass is byte-bounded (all entry
+        // points route through here — background, inline, explicit drains).
+        if matches!(self.kind, BranchCompactionKind::CompactL0ToLevelOne) {
+            request = request.with_max_pass_input_bytes(L0_PASS_MAX_INPUT_BYTES);
         }
         Ok(request)
     }

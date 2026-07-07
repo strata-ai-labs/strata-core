@@ -63,6 +63,11 @@ pub(crate) struct BranchCompactionRequest {
     output_identity_seed: TableIdentity,
     table_compaction_config: TableCompactionConfig,
     table_builder_config: TableBuilderConfig,
+    /// W1.1: byte bound for one L0→L1 pass (input tables + L1 overlap).
+    /// `None` = unbounded (the pre-W1.1 behavior). The planner trims the L0
+    /// input to the largest OLDEST-FIRST SUFFIX fitting the bound (always at
+    /// least one table, so progress is guaranteed); non-L0 kinds ignore it.
+    max_pass_input_bytes: Option<u64>,
 }
 
 impl BranchCompactionRequest {
@@ -81,7 +86,18 @@ impl BranchCompactionRequest {
             output_identity_seed,
             table_compaction_config: TableCompactionConfig::default(),
             table_builder_config: TableBuilderConfig::default(),
+            max_pass_input_bytes: None,
         })
+    }
+
+    /// W1.1: bound one L0→L1 pass's input bytes (see the field doc).
+    pub(crate) const fn with_max_pass_input_bytes(mut self, bound: u64) -> Self {
+        self.max_pass_input_bytes = Some(bound);
+        self
+    }
+
+    pub(crate) const fn max_pass_input_bytes(&self) -> Option<u64> {
+        self.max_pass_input_bytes
     }
 
     pub(crate) const fn branch_id(&self) -> BranchId {
@@ -840,7 +856,27 @@ impl BranchLocalState {
                 BranchCompactionNoopReason::EmptyInputLevel,
             ));
         }
-        let input_refs = self.table_refs_at_level(0, 0..input_count)?;
+        // W1.1: bound the pass. L0 is NEWEST-FIRST (installs at index 0), so
+        // the oldest-first consumption unit is the index SUFFIX — grow it
+        // oldest-to-newer until input + L1-overlap bytes would exceed the
+        // bound. SUFFIX-ONLY is load-bearing for recency ordering: any
+        // non-suffix subset could move a newer row to L1 while an older row
+        // for the same key stays in L0, inverting shadowing in later merges.
+        // At least one table is always taken so passes make progress; the io
+        // policy's defer path remains the backstop for single-oversized
+        // inputs.
+        let selected_count = match request.max_pass_input_bytes() {
+            None => input_count,
+            Some(bound) => self.bounded_l0_suffix_len(input_count, bound)?,
+        };
+        let input_refs =
+            self.table_refs_at_level(0, (input_count - selected_count)..input_count)?;
+        debug_assert!(
+            input_refs
+                .last()
+                .is_none_or(|last| last.table_index() == input_count - 1),
+            "bounded L0 selection must end at the oldest table (suffix-only invariant)"
+        );
         let overlap_refs = self.overlapping_refs_for_output_range(&input_refs, 1)?;
         let input_row_count = self
             .table_ref_row_count(&input_refs)?
@@ -1097,6 +1133,48 @@ impl BranchLocalState {
             kind,
             candidate,
         ))
+    }
+
+    /// W1.1: the largest oldest-first L0 SUFFIX whose input bytes plus L1
+    /// overlap bytes fit `bound` (minimum one table). Grows the suffix one
+    /// table at a time from the oldest (highest index) toward newer entries,
+    /// recomputing the overlap for the widened key range each step — L0 is
+    /// small by construction (the blocking threshold caps it at ~36), so the
+    /// quadratic-in-L0 overlap recomputation is bounded and cheap next to the
+    /// merge it sizes.
+    fn bounded_l0_suffix_len(&self, input_count: usize, bound: u64) -> BranchRuntimeResult<usize> {
+        let mut selected = 1usize;
+        while selected < input_count {
+            let next = selected + 1;
+            if self.l0_suffix_pass_bytes(input_count, next)? > bound {
+                break;
+            }
+            selected = next;
+        }
+        Ok(selected)
+    }
+
+    /// Input + L1-overlap byte total for the oldest-first L0 suffix of
+    /// `selected` tables.
+    fn l0_suffix_pass_bytes(
+        &self,
+        input_count: usize,
+        selected: usize,
+    ) -> BranchRuntimeResult<u64> {
+        let refs = self.table_refs_at_level(0, (input_count - selected)..input_count)?;
+        let overlap = self.overlapping_refs_for_output_range(&refs, 1)?;
+        let mut bytes = 0u64;
+        for table_ref in refs.iter().chain(overlap.iter()) {
+            let table =
+                self.table_for_ref(table_ref)
+                    .ok_or(BranchRuntimeError::InvalidCompaction {
+                        reason: BranchCompactionInvalidity::Generic(
+                            "compaction table ref must exist",
+                        ),
+                    })?;
+            bytes = bytes.saturating_add(table.facts().byte_count());
+        }
+        Ok(bytes)
     }
 
     fn table_refs_at_level(

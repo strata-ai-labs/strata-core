@@ -4953,3 +4953,199 @@ fn branch_owned_level_outside_configured_count_is_rejected_without_mutation() {
     ));
     assert_eq!(state, before_outside);
 }
+
+/// W1.1a differential oracle: a sequence of BOUNDED L0→L1 passes (tiny byte
+/// bound → one-or-few tables per pass, consumed as the oldest-first suffix)
+/// must converge to the same visible state as ONE unbounded pass. Rows are
+/// (key, version)-keyed, so per-key full history equality is the strongest
+/// observable: identical winners, identical shadowed versions, identical
+/// tombstone handling.
+#[test]
+fn bounded_l0_passes_match_one_unbounded_pass() {
+    let branch = branch_id(244);
+    let build_state = || {
+        let mut state = BranchLocalState::new(
+            branch,
+            BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+        )
+        .expect("state");
+        // L1: two non-overlapping tables covering the low key range.
+        state
+            .install_owned_table_at_level(
+                BranchLevel::new(1),
+                branch_owned_table(
+                    branch,
+                    BranchLevel::new(1),
+                    "oracle-l1-a",
+                    vec![
+                        storage_row_with(
+                            branch,
+                            b"ok-a".to_vec(),
+                            1,
+                            10,
+                            Timestamp::EPOCH,
+                            b"l1a".to_vec(),
+                        ),
+                        storage_row_with(
+                            branch,
+                            b"ok-c".to_vec(),
+                            1,
+                            10,
+                            Timestamp::EPOCH,
+                            b"l1c".to_vec(),
+                        ),
+                    ],
+                ),
+            )
+            .expect("install l1 a");
+        state
+            .install_owned_table_at_level(
+                BranchLevel::new(1),
+                branch_owned_table(
+                    branch,
+                    BranchLevel::new(1),
+                    "oracle-l1-b",
+                    vec![storage_row_with(
+                        branch,
+                        b"ok-m".to_vec(),
+                        2,
+                        20,
+                        Timestamp::EPOCH,
+                        b"l1m".to_vec(),
+                    )],
+                ),
+            )
+            .expect("install l1 b");
+        // L0: four tables installed oldest→newest (each install lands at
+        // index 0, so the OLDEST ends at the highest index). Overlapping keys
+        // across versions plus a tombstone shadowing an L1 row.
+        for (seed, rows) in [
+            (
+                "oracle-l0-oldest",
+                vec![
+                    storage_row_with(
+                        branch,
+                        b"ok-a".to_vec(),
+                        3,
+                        30,
+                        Timestamp::EPOCH,
+                        b"v3".to_vec(),
+                    ),
+                    storage_row_with(
+                        branch,
+                        b"ok-z".to_vec(),
+                        3,
+                        30,
+                        Timestamp::EPOCH,
+                        b"z3".to_vec(),
+                    ),
+                ],
+            ),
+            (
+                "oracle-l0-mid",
+                vec![tombstone_row(branch, b"ok-c".to_vec(), 4, 40)],
+            ),
+            (
+                "oracle-l0-newer",
+                vec![
+                    storage_row_with(
+                        branch,
+                        b"ok-a".to_vec(),
+                        5,
+                        50,
+                        Timestamp::EPOCH,
+                        b"v5".to_vec(),
+                    ),
+                    storage_row_with(
+                        branch,
+                        b"ok-m".to_vec(),
+                        5,
+                        50,
+                        Timestamp::EPOCH,
+                        b"m5".to_vec(),
+                    ),
+                ],
+            ),
+            (
+                "oracle-l0-newest",
+                vec![storage_row_with(
+                    branch,
+                    b"ok-z".to_vec(),
+                    6,
+                    60,
+                    Timestamp::EPOCH,
+                    b"z6".to_vec(),
+                )],
+            ),
+        ] {
+            state
+                .install_owned_table_at_level(
+                    BranchLevel::ZERO,
+                    branch_owned_table(branch, BranchLevel::ZERO, seed, rows),
+                )
+                .expect("install l0");
+        }
+        state
+    };
+
+    let keys: [&[u8]; 4] = [b"ok-a", b"ok-c", b"ok-m", b"ok-z"];
+    let full_history = |state: &BranchLocalState| {
+        let view = state.capture_read_view().expect("view");
+        keys.iter()
+            .map(|key| {
+                view.history(
+                    &physical_key(branch, key.to_vec()),
+                    crate::branch::read::BranchHistoryOptions::all(),
+                )
+                .expect("history")
+                .into_iter()
+                .map(|row| row.row().clone())
+                .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // State A: one unbounded pass.
+    let mut unbounded = build_state();
+    let request_a = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "oracle-unbounded",
+    )
+    .expect("request");
+    unbounded
+        .compact_branch_owned_tables(&request_a)
+        .expect("unbounded pass");
+    assert!(
+        unbounded.owned_levels()[0].is_empty(),
+        "L0 drained in one pass"
+    );
+
+    // State B: bounded passes (1-byte bound → one oldest table per pass).
+    let mut bounded = build_state();
+    let mut passes = 0usize;
+    while !bounded.owned_levels()[0].is_empty() {
+        let request = BranchCompactionRequest::new(
+            branch,
+            BranchCompactionKind::CompactL0ToLevelOne,
+            format!("oracle-bounded-{passes}"),
+        )
+        .expect("request")
+        .with_max_pass_input_bytes(1);
+        bounded
+            .compact_branch_owned_tables(&request)
+            .expect("bounded pass");
+        passes += 1;
+        assert!(passes <= 8, "bounded passes must make progress");
+    }
+    assert!(
+        passes >= 4,
+        "a 1-byte bound must take multiple passes, got {passes}"
+    );
+
+    assert_eq!(
+        full_history(&unbounded),
+        full_history(&bounded),
+        "bounded pass sequence must converge to the unbounded pass's state"
+    );
+}
