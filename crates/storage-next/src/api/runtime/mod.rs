@@ -2574,14 +2574,27 @@ impl<'a> StorageRuntime<'a> {
             .is_some_and(|(before, after)| after.relieved_since(before, *pressure_reason));
         let maintenance_completed_task =
             self.background_lifecycle_completed_for_current_runtime() > lifecycle_completed_before;
-        if backlog_reduced || maintenance_completed_task {
-            // The executor is alive and making real maintenance progress (it
-            // completed a maintenance task, or the backlog shrank this slice).
+        // A running maintenance task counts as liveness even before it
+        // completes: at 10M scale one L0→L1 compaction pass rewrites GBs of
+        // overlap and can exceed a full watchdog window with zero COMPLETIONS
+        // — the watchdog then converted a legitimately-busy executor into a
+        // caller-visible failed_precondition abort mid-load (observed on the
+        // 10M three-way rerun; the same run passed other attempts, because
+        // firing required one >30s window where that giant pass was the only
+        // live task). The watchdog's purpose is a DEAD executor, not a busy
+        // one; a wedged build thread is the same failure class as a hung
+        // fsync — outside this backstop's scope.
+        let maintenance_running = self
+            .background_stats_for_current_runtime()
+            .is_some_and(|stats| stats.active_tasks > 0);
+        if backlog_reduced || maintenance_completed_task || maintenance_running {
+            // The executor is alive and making real maintenance progress (a
+            // completion, backlog reduction, or an in-flight task this slice).
             // Reset the stall watchdog so a sustained overload that maintenance
             // can service keeps pacing the writer instead of timing out on an
             // absolute clock. The top-of-function `now >= stall_deadline` check
-            // then fires only after a full window with zero maintenance
-            // completions and no backlog reduction — a provably dead or stuck
+            // then fires only after a full window with zero completions, no
+            // backlog reduction, and NO running task — a provably dead
             // executor (the bounded liveness backstop).
             *deadline = None;
             perf_trace::record_lifecycle_write_admission_wait_progress_reset();
