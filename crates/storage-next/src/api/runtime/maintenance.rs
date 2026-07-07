@@ -632,8 +632,12 @@ pub(super) fn drain_durable_background_round(
             let pending_before = runtime.maintenance_status().pending_tasks();
             // Guaranteed low-tier progress: after every LOW_TIER_SERVICE_INTERVAL upper-tier
             // tasks with low-tier work pending, service one low-tier task before the ladder.
-            // Falls through to the ladder when the low tier has nothing startable.
+            // Falls through to the ladder when the low tier has nothing startable. Skipped
+            // while a build is in flight — the table-object mark and sweep defer on that
+            // condition anyway, and a deferred no-op would still consume the round's task
+            // budget (measured: enough to push a sustained load into the L0 admission wall).
             let step = if upper_tier_since_low >= LOW_TIER_SERVICE_INTERVAL
+                && !runtime.has_active_build_task()
                 && runtime.has_pending_low_tier_maintenance()
             {
                 match run_next_background_durable_maintenance(&mut runtime) {

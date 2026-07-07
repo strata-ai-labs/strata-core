@@ -3098,6 +3098,12 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         dead_code,
         reason = "runtime maintenance entry point is consumed by dedicated tests"
     )]
+    /// Whether any build-producing task is currently in flight (executor passthrough). The
+    /// drain's interleave and the table-object mark/sweep all defer on this condition.
+    pub(crate) fn has_active_build_task(&self) -> bool {
+        self.maintenance.has_active_build_task()
+    }
+
     /// Whether any low-tier maintenance (retention / pruning / quarantine / purge / repair /
     /// health) is queued. The background drain's anti-starvation interleave consults this so a
     /// sustained stream of upper-tier work cannot starve reclaim indefinitely.
