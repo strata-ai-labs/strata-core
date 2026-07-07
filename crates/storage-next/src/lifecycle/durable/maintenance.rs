@@ -64,8 +64,7 @@ use crate::lifecycle::{
     materialize_durable_branch_manifest_backed, policy_admission_error,
     prepare_durable_compaction_publication, purge_proof_from_maintenance_task,
     purge_quarantine as purge_lifecycle_quarantine,
-    quarantine_object as quarantine_lifecycle_object, quarantine_task_without_request,
-    repair_branch_from_maintenance_task,
+    quarantine_object as quarantine_lifecycle_object, repair_branch_from_maintenance_task,
     repair_branch_quarantine as repair_branch_lifecycle_quarantine,
     repair_quarantine_family as repair_lifecycle_quarantine_family,
     require_maintenance_enqueue_budget, require_rotate_budget, telemetry_health_debt,
@@ -509,6 +508,12 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         };
         if let Ok(compaction) = &outcome {
             record_lifecycle_compaction_outcome(compaction);
+            // Table-object GC: the foreground compaction dropped its input refs; enqueue the
+            // coalescing mark (best-effort — a rejected enqueue defers reclaim to the next cycle).
+            if !compaction.retained_input_objects().is_empty() {
+                let _ = self
+                    .enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch_id));
+            }
         }
         outcome
     }
@@ -563,6 +568,15 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         };
         // BS2.3: compaction promoted/rewrote the branch's tables; republish the branch snapshot.
         self.publish_branch_snapshot(branch_id);
+        // Table-object GC: a fixed-point drain that ran passes dropped input refs; enqueue the
+        // coalescing mark (best-effort — a rejected enqueue defers reclaim to the next cycle).
+        if outcome
+            .as_ref()
+            .is_ok_and(|drain| drain.input_tables_removed() > 0)
+        {
+            let _ =
+                self.enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch_id));
+        }
         outcome
     }
 
@@ -1096,10 +1110,19 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let health = self.current_recovery_health.clone();
         if let LifecycleRetentionScope::TableObjects { branch_id } = request.scope() {
-            let table_request = table_object_retention_request(&self.services, branch_id, &health)?;
-            return Ok(table_object_retention_outcome(&table_request)?
-                .retention()
-                .clone());
+            let pinned_objects =
+                in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
+            let table_request = table_object_retention_request(&self.services, branch_id, &health)?
+                .with_pinned_objects(pinned_objects);
+            let outcome = table_object_retention_outcome(&table_request)?;
+            // The public Reclaim verb performs reclaim, not just a report: chain the sweep
+            // (Quarantine → Purge) for the marked candidates. Best-effort, coalescing.
+            if outcome.decisions().iter().any(|decision| {
+                decision.decision() == crate::lifecycle::RetentionDecision::QuarantineCandidate
+            }) {
+                let _ = self.enqueue_maintenance(MaintenanceTaskRequest::quarantine());
+            }
+            return Ok(outcome.retention().clone());
         }
         if recovery_health_prevents_listing(request, &health) {
             let proof = retention_proof_from_assembly(request, &self.services, &health);
@@ -2104,6 +2127,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         // Set when a flush actually installed new L0 table(s); gates the flush-driven WAL
         // reclaim at the tail (after the task is finished and the publish guard released).
         let mut flush_published = false;
+        // Rewrites (compaction/materialization) supersede input objects: trigger the table-object
+        // GC mark after the publish lands (flushes only add tables — no trigger).
+        let rewrite_branch = match &post {
+            PreparedPublishPost::Compaction { branch_id, .. }
+            | PreparedPublishPost::Materialization { branch_id, .. } => Some(*branch_id),
+            PreparedPublishPost::Flush => None,
+        };
         let outcome = match post {
             PreparedPublishPost::Flush => match write_result {
                 Ok(write) => match self
@@ -2152,6 +2182,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         // released and the task finished; best-effort, never disturbs the flush result.
         if flush_published {
             self.reclaim_wal_after_flush();
+        }
+        // Table-object GC: the published rewrite dropped its input refs from the branch manifest;
+        // enqueue the coalescing mark so the superseded objects are reclaimed. Best-effort — a
+        // rejected enqueue only defers reclaim to the next cycle.
+        if let Some(branch_id) = rewrite_branch {
+            let _ =
+                self.enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch_id));
         }
         // BS2.3: the background publish phase installed flushed/compacted/materialized tables;
         // republish snapshots (a flush drain can touch several branches). BS3.4b's graded-admission
@@ -2749,6 +2786,15 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         {
             self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
         }
+        // Table-object GC: a completed foreground compaction dropped its input refs; enqueue the
+        // coalescing mark (best-effort — a rejected enqueue defers reclaim to the next cycle).
+        if outcome
+            .as_ref()
+            .is_some_and(|completed| completed.status() == MaintenanceOutcomeStatus::Completed)
+        {
+            let _ =
+                self.enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch_id));
+        }
         Ok(outcome)
     }
 
@@ -2975,6 +3021,15 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         {
             self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
         }
+        // Table-object GC: a completed materialization replaced inherited-layer refs; enqueue the
+        // coalescing mark (best-effort — a rejected enqueue defers reclaim to the next cycle).
+        if outcome
+            .as_ref()
+            .is_some_and(|completed| completed.status() == MaintenanceOutcomeStatus::Completed)
+        {
+            let _ =
+                self.enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch_id));
+        }
         Ok(outcome)
     }
 
@@ -3043,10 +3098,29 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         dead_code,
         reason = "runtime maintenance entry point is consumed by dedicated tests"
     )]
+    /// Whether any low-tier maintenance (retention / pruning / quarantine / purge / repair /
+    /// health) is queued. The background drain's anti-starvation interleave consults this so a
+    /// sustained stream of upper-tier work cannot starve reclaim indefinitely.
+    pub(crate) fn has_pending_low_tier_maintenance(&self) -> bool {
+        self.maintenance.pending_tasks().iter().any(|task| {
+            matches!(
+                task.kind(),
+                MaintenanceTaskKind::Retention
+                    | MaintenanceTaskKind::SnapshotPruning
+                    | MaintenanceTaskKind::Quarantine
+                    | MaintenanceTaskKind::Purge
+                    | MaintenanceTaskKind::Repair
+                    | MaintenanceTaskKind::HealthCollection
+            )
+        })
+    }
+
     pub(crate) fn run_next_retention_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
+        let pinned_objects =
+            in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
         let maintenance = &mut self.maintenance;
         let services = &self.services;
         let health = self.current_recovery_health.clone();
@@ -3059,6 +3133,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             health,
             pending_releases,
             pending_releases_sequence,
+            pinned_objects,
         };
         let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             matches!(
@@ -3067,6 +3142,17 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             )
         });
         self.record_optional_maintenance_health(&outcome);
+        // A completed retention pass may have marked unreachable table objects; the sweep
+        // (Quarantine task) acts on a fresh mark of its own, so chaining is unconditional and
+        // idempotent — a sweep with no candidates completes trivially, and coalescing folds
+        // repeats. Best-effort: a rejected enqueue only delays reclaim to the next cycle.
+        if matches!(
+            &outcome,
+            Ok(Some(completed)) if completed.task_kind() == MaintenanceTaskKind::Retention
+                && completed.status() == MaintenanceOutcomeStatus::Completed
+        ) {
+            let _ = self.enqueue_maintenance(MaintenanceTaskRequest::quarantine());
+        }
         outcome
     }
 
@@ -3132,12 +3218,50 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         task_id: MaintenanceTaskId,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
+        let database_id = *self.services.assembly_facts().database_id();
+        let codec_id = LifecycleCodecId::new(self.services.assembly_facts().codec_id())?;
+        let staged_at = checkpoint_created_at(
+            self.allocator.timestamp_guard().last_allocated(),
+            self.recovered_checkpoint_timestamp_max,
+        );
+        let builds_active = self.maintenance.has_active_build_task();
+        let retired_readers_alive = self.snapshot_publisher.retired_views_alive();
+        let pinned_objects =
+            in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
+        let mut runner = DurableTableObjectSweepRunner {
+            services: &self.services,
+            branch_id: self.initial_branch_id,
+            health: self.current_recovery_health.clone(),
+            database_id,
+            codec_id,
+            staged_at,
+            builds_active,
+            retired_readers_alive,
+            pinned_objects,
+            quarantined_objects: 0,
+            remaining_candidates: 0,
+            sweep_health: None,
+        };
         let maintenance = &mut self.maintenance;
-        let mut runner = DurableQuarantineMaintenanceRunner;
         let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             task.id() == task_id && task.kind() == MaintenanceTaskKind::Quarantine
         });
+        let quarantined = runner.quarantined_objects;
+        let remaining = runner.remaining_candidates;
         self.record_optional_maintenance_health(&outcome);
+        if quarantined > 0 {
+            // Best-effort: the staged bytes are reclaimed by the purge; if the enqueue is
+            // rejected (budget/shutdown), the next sweep cycle re-stages idempotently.
+            let _ = self.enqueue_maintenance(MaintenanceTaskRequest::purge_quarantine(
+                self.initial_branch_id,
+            ));
+        }
+        if remaining > 0 {
+            // Best-effort: capped/deferred candidates re-mark on the next retention cycle.
+            let _ = self.enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(
+                self.initial_branch_id,
+            ));
+        }
         outcome
     }
 
@@ -3563,6 +3687,9 @@ struct DurableRetentionMaintenanceRunner<'a, 'b> {
     health: crate::lifecycle::RecoveryHealth,
     pending_releases: &'a mut Vec<crate::branch::facts::BranchReleasePlan>,
     pending_releases_sequence: &'a mut u64,
+    /// In-memory-reachable table objects, pinned live in the mark (COW crash windows) so the
+    /// report matches what the sweep will actually reclaim.
+    pinned_objects: Vec<crate::object::ObjectName>,
 }
 
 impl DurableRetentionMaintenanceRunner<'_, '_> {
@@ -3673,6 +3800,7 @@ impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
         if let LifecycleRetentionScope::TableObjects { branch_id } = request.scope() {
             let table_retention =
                 table_object_retention_request(self.services, branch_id, &self.health)
+                    .map(|request| request.with_pinned_objects(self.pinned_objects.clone()))
                     .and_then(|request| table_object_retention_outcome(&request))?;
             return Ok(append_released_table_names(
                 table_retention.retention().maintenance_outcome(),
@@ -3730,6 +3858,7 @@ impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
                 let retention_outcome = retention_outcome_for_delegated_families(proof)?;
                 let table_retention =
                     table_object_retention_request(self.services, self.branch_id, &self.health)
+                        .map(|request| request.with_pinned_objects(self.pinned_objects.clone()))
                         .and_then(|request| table_object_retention_outcome(&request))?;
                 Ok(append_released_table_names(
                     global_retention_maintenance_outcome(
@@ -3817,17 +3946,166 @@ pub(super) fn durable_quarantine_service_error(
     )
 }
 
-struct DurableQuarantineMaintenanceRunner;
+/// Per-pass cap on quarantined objects. Quarantine staging copies the object's bytes into
+/// `quarantine/` before deleting the source, so this bounds the copy I/O held under the runtime
+/// lock; a larger backlog converges over successive retention → quarantine → purge cycles (each
+/// cycle's purge reclaims the previous cycle's staged bytes, bounding transient disk growth).
+const TABLE_OBJECT_SWEEP_MAX_OBJECTS: usize = 32;
 
-impl MaintenanceTaskRunner for DurableQuarantineMaintenanceRunner {
+/// The table-object sweep (the reclaim half of GC). Recomputes the reachability mark fresh under
+/// the same runtime-lock hold it acts in — there is no decision-to-action gap for a fork, publish,
+/// or manifest advance to invalidate — then stages each unreachable object into quarantine (the
+/// existing two-phase copy-then-delete-source safety net; physical bytes are reclaimed by the
+/// follow-up Purge task). Never deletes an object that any branch can reach: the mark unions
+/// durable-manifest reachability with in-memory pins (COW crash windows), and the sweep defers
+/// outright while an off-lock build is in flight (its unpublished outputs are durably unreachable
+/// by construction) or while a retired read view is still held (durable readers are name-addressed
+/// with no held fd, so a source delete would break their block fetches).
+struct DurableTableObjectSweepRunner<'a, 'b> {
+    services: &'a crate::lifecycle::LifecycleDurableLocalServices<'b>,
+    branch_id: strata_core_next::BranchId,
+    health: RecoveryHealth,
+    database_id: [u8; 16],
+    codec_id: LifecycleCodecId,
+    staged_at: Timestamp,
+    builds_active: bool,
+    retired_readers_alive: bool,
+    pinned_objects: Vec<crate::object::ObjectName>,
+    /// Out: objects staged into quarantine this pass (drives the follow-up Purge enqueue).
+    quarantined_objects: usize,
+    /// Out: candidates left unprocessed (cap) or deferred (interlocks) — drives re-enqueue.
+    remaining_candidates: usize,
+    /// Out: worst recovery health reported by the quarantine service this pass.
+    sweep_health: Option<RecoveryHealth>,
+}
+
+impl MaintenanceTaskRunner for DurableTableObjectSweepRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         if task.kind() != MaintenanceTaskKind::Quarantine {
             return Err(LifecycleError::MaintenanceTaskFailed {
                 reason: "quarantine runner requires quarantine task",
             });
         }
-        Ok(quarantine_task_without_request())
+        // Fresh mark under this lock hold (metadata-only: inventory listing + manifest decode,
+        // never table data).
+        let request = table_object_retention_request(self.services, self.branch_id, &self.health)?
+            .with_pinned_objects(self.pinned_objects.clone());
+        let outcome = table_object_retention_outcome(&request)?;
+        let candidates: Vec<crate::object::ObjectName> = outcome
+            .decisions()
+            .iter()
+            .filter(|decision| {
+                decision.decision() == crate::lifecycle::RetentionDecision::QuarantineCandidate
+            })
+            .filter_map(|decision| decision.object().cloned())
+            .collect();
+        if candidates.is_empty() {
+            return Ok(MaintenanceOutcome::new(MaintenanceTaskKind::Quarantine, {
+                MaintenanceOutcomeStatus::Completed
+            })
+            .with_reason("no unreachable table objects")
+            .with_stats(LifecycleStats::new(0, 0, 1, 0, 0)));
+        }
+        if self.builds_active || self.retired_readers_alive {
+            // Interlock deferral does NOT self-requeue (that would spin the retention →
+            // quarantine chain against a long-held reader); the next rewrite publish, reopen,
+            // or explicit Reclaim re-triggers the cycle.
+            let reason = if self.builds_active {
+                "table-object sweep deferred: build task in flight"
+            } else {
+                "table-object sweep deferred: retired read view still held"
+            };
+            return Ok(MaintenanceOutcome::new(
+                MaintenanceTaskKind::Quarantine,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason(reason)
+            .with_stats(LifecycleStats::new(0, 0, 1, 1, 0)));
+        }
+
+        let mut staged_names = Vec::new();
+        let mut faults = 0usize;
+        for object in candidates.iter().take(TABLE_OBJECT_SWEEP_MAX_OBJECTS) {
+            let proof = crate::lifecycle::LifecycleQuarantineProof::from_retention_decision(
+                crate::lifecycle::RetentionDecision::QuarantineCandidate,
+                self.health.clone(),
+            );
+            let quarantine_request = LifecycleQuarantineRequest::from_source_object(
+                self.branch_id,
+                self.database_id,
+                self.codec_id.clone(),
+                object.clone(),
+                self.staged_at,
+                proof,
+            )?;
+            let quarantine_outcome =
+                quarantine_lifecycle_object(self.services.quarantine(), &quarantine_request);
+            if let Some(health) = quarantine_outcome.recovery_health() {
+                self.sweep_health = Some(health.clone());
+            }
+            match quarantine_outcome.status() {
+                crate::lifecycle::LifecycleQuarantineStatus::QuarantinedSourceDeleted
+                | crate::lifecycle::LifecycleQuarantineStatus::SourceDeleteRetried => {
+                    self.quarantined_objects += 1;
+                    staged_names.push(object.to_string());
+                }
+                // Idempotent replays after a partial earlier pass: the object is already staged
+                // (or its source already gone) — the purge will reclaim it.
+                crate::lifecycle::LifecycleQuarantineStatus::AlreadyQuarantined
+                | crate::lifecycle::LifecycleQuarantineStatus::SourceAlreadyMissingAfterPublish => {
+                    self.quarantined_objects += 1;
+                }
+                // Every other status (publish failures, health blocks, service rejections) leaves
+                // the object on disk for a later pass; the recorded health debt surfaces it.
+                _ => {
+                    faults += 1;
+                }
+            }
+        }
+        self.remaining_candidates = candidates
+            .len()
+            .saturating_sub(TABLE_OBJECT_SWEEP_MAX_OBJECTS.min(candidates.len()));
+
+        let mut outcome = MaintenanceOutcome::new(
+            MaintenanceTaskKind::Quarantine,
+            MaintenanceOutcomeStatus::Completed,
+        )
+        .with_affected_object_names(staged_names)
+        .with_state_changes(self.quarantined_objects)
+        .with_stats(LifecycleStats::new(0, faults, 1, 0, 0));
+        if let Some(health) = self.sweep_health.clone() {
+            outcome = outcome.with_recovery_health(health);
+        }
+        Ok(outcome)
     }
+}
+
+/// Table objects reachable from any branch's IN-MEMORY state (owned levels + inherited layers,
+/// every live catalog branch), mapped to inventory object names via the durable table catalog.
+/// The sweep pins these as live even when no durable manifest references them — the COW crash
+/// windows (a fork child whose fork-time manifest publish failed and records only health debt)
+/// must never lose shared parent objects to reclaim.
+fn in_memory_pinned_table_objects(
+    branch_catalog: &crate::lifecycle::LifecycleBranchCatalog,
+    table_catalog: &crate::lifecycle::LifecycleDurableTableCatalog,
+) -> Vec<crate::object::ObjectName> {
+    let mut pinned = std::collections::BTreeSet::new();
+    for descriptor in branch_catalog.list_branches(false) {
+        let Ok(state) = branch_catalog.branch_state(descriptor.branch_id()) else {
+            continue;
+        };
+        let owned = state.owned_levels().iter().flatten();
+        let inherited = state
+            .inherited_layers()
+            .iter()
+            .flat_map(|layer| layer.owned_levels().iter().flatten());
+        for table in owned.chain(inherited) {
+            if let Some(object) = table_catalog.object_for_identity(table.descriptor().identity()) {
+                pinned.insert(object.clone());
+            }
+        }
+    }
+    pinned.into_iter().collect()
 }
 
 struct DurableQuarantineRepairMaintenanceRunner<'a, 'b> {

@@ -293,6 +293,15 @@ impl LifecycleDurableTableCatalog {
         self.objects.len()
     }
 
+    /// The durable object backing `identity`, if the catalog knows it. Used by the table-object
+    /// sweep to map in-memory branch state (owned + inherited tables) onto inventory object names
+    /// so in-memory-reachable objects are pinned against reclaim.
+    pub(crate) fn object_for_identity(&self, identity: &TableIdentity) -> Option<&ObjectName> {
+        self.entries
+            .get(identity.as_str())
+            .map(|entry| entry.object_facts.object())
+    }
+
     fn entry_for(
         &self,
         identity: &TableIdentity,

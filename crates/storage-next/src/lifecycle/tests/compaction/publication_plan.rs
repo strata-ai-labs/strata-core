@@ -1625,7 +1625,17 @@ fn queued_durable_compaction_does_not_resubmit_after_manifest_debt() {
     assert!(outcome.recovery_health().is_some());
     assert_eq!(runtime.branch_state().owned_levels()[1].len(), 4);
     assert_eq!(runtime.branch_state().owned_levels()[2].len(), 1);
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    // No compaction/materialization is resubmitted after manifest debt. The completed compaction
+    // does enqueue the table-object GC mark (Retention) — the designed reclaim trigger, not a
+    // rewrite resubmission.
+    assert!(runtime.maintenance_status().pending_tasks() <= 1);
+    assert!(!runtime
+        .pending_maintenance_kinds_for_test()
+        .iter()
+        .any(|kind| matches!(
+            kind,
+            MaintenanceTaskKind::Compaction | MaintenanceTaskKind::Materialization
+        )));
 }
 
 #[test]
@@ -1742,8 +1752,16 @@ fn queued_durable_compaction_of_lone_cow_layer_publishes_without_resubmitting_ma
             .inherited_layer_count(),
         1
     );
-    // A lone COW inherited layer is healthy: no materialization is resubmitted after the compaction.
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    // A lone COW inherited layer is healthy: no materialization is resubmitted after the
+    // compaction. The completed compaction does enqueue the table-object GC mark (Retention) —
+    // the designed reclaim trigger, not a rewrite resubmission.
+    assert!(!runtime
+        .pending_maintenance_kinds_for_test()
+        .iter()
+        .any(|kind| matches!(
+            kind,
+            MaintenanceTaskKind::Compaction | MaintenanceTaskKind::Materialization
+        )));
     assert!(
         runtime
             .run_next_materialization_maintenance()

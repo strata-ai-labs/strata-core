@@ -873,6 +873,13 @@ impl LifecycleCompactionOutcome {
         self.failure.as_ref()
     }
 
+    /// Superseded input objects whose manifest refs this compaction dropped. They are retained
+    /// on disk at publish (children's inherited layers may still reference them); the
+    /// table-object GC mark decides their reclaim through reachability.
+    pub(crate) fn retained_input_objects(&self) -> &[String] {
+        &self.retained_input_objects
+    }
+
     pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
         let status = match self.status {
             LifecycleCompactionStatus::Completed

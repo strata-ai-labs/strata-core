@@ -291,6 +291,20 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
         };
         // BS2.3: seed a published snapshot for every recovered branch before any read observes it.
         runtime.republish_all_branch_snapshots();
+        // Table-object GC reconcile on REOPEN only: one coalescing mark covers the whole prior
+        // session's backlog (the mark lists the global inventory against every current manifest),
+        // so stale objects from crashes or pre-GC sessions are reclaimed instead of persisting
+        // forever. A freshly created database has no prior backlog to reconcile. Best-effort: a
+        // rejected enqueue only defers reclaim to the next publish-driven cycle.
+        if runtime.open_outcome.disposition()
+            == crate::lifecycle::StorageOpenDisposition::OpenedExisting
+        {
+            let _ = runtime.enqueue_maintenance(
+                crate::lifecycle::MaintenanceTaskRequest::table_object_retention(
+                    runtime.initial_branch_id,
+                ),
+            );
+        }
         Ok(runtime)
     }
 
@@ -1251,6 +1265,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.pending_releases.push(plan);
         self.publish_branch_catalog()?;
         self.publish_pending_releases()?;
+        // Table-object GC: the buffered release plan (and the refs the clear dropped) are
+        // reclaimed by the retention → quarantine → purge cycle. Best-effort, coalescing.
+        let _ = self.enqueue_maintenance(
+            crate::lifecycle::MaintenanceTaskRequest::table_object_retention(branch_id),
+        );
         // BS2.3: clear reset the branch to an empty state; republish the (now empty) snapshot.
         self.publish_branch_snapshot(branch_id);
         Ok(outcome)
@@ -1278,6 +1297,11 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.pending_releases.push(plan);
         self.publish_branch_catalog()?;
         self.publish_pending_releases()?;
+        // Table-object GC: the deleted branch's now-unreachable objects are reclaimed by the
+        // retention → quarantine → purge cycle. Best-effort, coalescing.
+        let _ = self.enqueue_maintenance(
+            crate::lifecycle::MaintenanceTaskRequest::table_object_retention(branch_id),
+        );
         // BS2.3: the branch is tombstoned; drop its snapshot slot.
         self.remove_branch_snapshot(branch_id);
         Ok(outcome)

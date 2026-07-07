@@ -796,8 +796,12 @@ fn durable_quarantine_runs_through_runtime_maintenance_surface() {
         .expect("run quarantine")
         .expect("outcome");
 
+    // The quarantine task is the table-object sweep: with nothing unreachable it completes
+    // trivially (it no longer defers awaiting an "explicit quarantine request" — the sweep
+    // computes its own mark).
     assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Quarantine);
-    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(outcome.reason(), Some("no unreachable table objects"));
     assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
 }
 

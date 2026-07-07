@@ -552,6 +552,56 @@ pub(super) fn run_next_background_durable_maintenance(
         .map_err(map_lifecycle_error)
 }
 
+/// How many upper-tier tasks a drain round may complete before it services one pending
+/// low-tier task (retention/purge/quarantine/repair). Without this interleave the strict
+/// tier fall-through starves reclaim forever under sustained load — space debt then grows
+/// unboundedly (~9× the live dataset observed at 10M). The wake priority mapping is
+/// untouched: low-tier work still never *wakes* a worker ahead of durability work; this
+/// only bounds how long an already-awake round may ignore it.
+const LOW_TIER_SERVICE_INTERVAL: usize = 4;
+
+/// The strict upper-tier dispatch ladder of the durable background round: flush → checkpoint →
+/// flush-watermark → WAL truncation → table rewrite → (all empty) low-tier maintenance.
+fn start_next_background_step(
+    runtime: &mut LifecycleDurableLocalRuntime<'static, ApiTimestampSource>,
+    flush_watermark_exhausted: bool,
+) -> StorageApiResult<Option<DurableBackgroundMaintenanceStep<'static>>> {
+    match runtime.start_next_background_flush_maintenance() {
+        Ok(Some(step)) => Ok(Some(step)),
+        Ok(None) => match runtime.start_next_background_checkpoint_maintenance() {
+            Ok(Some(step)) => Ok(Some(step)),
+            Ok(None) => {
+                let flush_watermark_step = if flush_watermark_exhausted {
+                    Ok(None)
+                } else {
+                    runtime.start_next_background_flush_watermark_maintenance()
+                };
+                match flush_watermark_step {
+                    Ok(Some(step)) => Ok(Some(step)),
+                    Ok(None) => match runtime.start_next_background_wal_truncation_maintenance() {
+                        Ok(Some(step)) => Ok(Some(step)),
+                        Ok(None) => {
+                            match runtime.start_next_background_table_rewrite_maintenance() {
+                                Ok(Some(step)) => Ok(Some(step)),
+                                Ok(None) => run_next_background_durable_maintenance(runtime).map(
+                                    |outcome| {
+                                        outcome.map(DurableBackgroundMaintenanceStep::completed)
+                                    },
+                                ),
+                                Err(error) => Err(map_lifecycle_error(error)),
+                            }
+                        }
+                        Err(error) => Err(map_lifecycle_error(error)),
+                    },
+                    Err(error) => Err(map_lifecycle_error(error)),
+                }
+            }
+            Err(error) => Err(map_lifecycle_error(error)),
+        },
+        Err(error) => Err(map_lifecycle_error(error)),
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "durable background drain is an explicit start/build/publish state machine"
@@ -569,54 +619,33 @@ pub(super) fn drain_durable_background_round(
     // after it (WAL truncation, table rewrite, durable) is not starved — mirrors the
     // pre-D.2b under-lock fall-through.
     let mut flush_watermark_exhausted = false;
+    // Anti-starvation interleave: upper-tier completions since the last low-tier service.
+    let mut upper_tier_since_low = 0usize;
     while tasks_completed < limits.max_tasks
         && clock.now().saturating_duration_since(start) < limits.max_runtime
     {
         let task_start = perf_trace::start_timer();
         let snapshot_start = perf_trace::start_timer();
+        let mut serviced_low_tier = false;
         let (step, pending_before) = {
             let mut runtime = runtime.lock();
             let pending_before = runtime.maintenance_status().pending_tasks();
-            let step = match runtime.start_next_background_flush_maintenance() {
-                Ok(Some(step)) => Ok(Some(step)),
-                Ok(None) => match runtime.start_next_background_checkpoint_maintenance() {
-                    Ok(Some(step)) => Ok(Some(step)),
-                    Ok(None) => {
-                        let flush_watermark_step = if flush_watermark_exhausted {
-                            Ok(None)
-                        } else {
-                            runtime.start_next_background_flush_watermark_maintenance()
-                        };
-                        match flush_watermark_step {
-                            Ok(Some(step)) => Ok(Some(step)),
-                            Ok(None) => {
-                                match runtime.start_next_background_wal_truncation_maintenance() {
-                                    Ok(Some(step)) => Ok(Some(step)),
-                                    Ok(None) => {
-                                        match runtime
-                                            .start_next_background_table_rewrite_maintenance()
-                                        {
-                                            Ok(Some(step)) => Ok(Some(step)),
-                                            Ok(None) => run_next_background_durable_maintenance(
-                                                &mut runtime,
-                                            )
-                                            .map(|outcome| {
-                                                outcome.map(
-                                                    DurableBackgroundMaintenanceStep::completed,
-                                                )
-                                            }),
-                                            Err(error) => Err(map_lifecycle_error(error)),
-                                        }
-                                    }
-                                    Err(error) => Err(map_lifecycle_error(error)),
-                                }
-                            }
-                            Err(error) => Err(map_lifecycle_error(error)),
-                        }
+            // Guaranteed low-tier progress: after every LOW_TIER_SERVICE_INTERVAL upper-tier
+            // tasks with low-tier work pending, service one low-tier task before the ladder.
+            // Falls through to the ladder when the low tier has nothing startable.
+            let step = if upper_tier_since_low >= LOW_TIER_SERVICE_INTERVAL
+                && runtime.has_pending_low_tier_maintenance()
+            {
+                match run_next_background_durable_maintenance(&mut runtime) {
+                    Ok(Some(outcome)) => {
+                        serviced_low_tier = true;
+                        Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)))
                     }
-                    Err(error) => Err(map_lifecycle_error(error)),
-                },
-                Err(error) => Err(map_lifecycle_error(error)),
+                    Ok(None) => start_next_background_step(&mut runtime, flush_watermark_exhausted),
+                    Err(error) => Err(error),
+                }
+            } else {
+                start_next_background_step(&mut runtime, flush_watermark_exhausted)
             };
             (step, pending_before)
         };
@@ -647,6 +676,11 @@ pub(super) fn drain_durable_background_round(
                 ));
                 tasks_completed += 1;
                 made_progress = true;
+                if serviced_low_tier {
+                    upper_tier_since_low = 0;
+                } else {
+                    upper_tier_since_low += 1;
+                }
             }
             DurableBackgroundMaintenanceStep::Build(pending_build) => {
                 let pending_build = *pending_build;
@@ -699,6 +733,7 @@ pub(super) fn drain_durable_background_round(
                 if let Ok(_outcome) = publish {
                     tasks_completed += 1;
                     made_progress = true;
+                    upper_tier_since_low += 1;
                 } else {
                     perf_trace::record_lifecycle_background_task_publish_failure();
                     break;
@@ -723,6 +758,7 @@ pub(super) fn drain_durable_background_round(
                     Ok(Some(_outcome)) => {
                         tasks_completed += 1;
                         made_progress = true;
+                        upper_tier_since_low += 1;
                     }
                     Ok(None) => {
                         // Nothing coverable this round; skip flush-watermark for the rest

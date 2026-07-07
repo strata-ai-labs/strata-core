@@ -413,6 +413,21 @@ impl MaintenanceTaskRequest {
         request
     }
 
+    /// Table-object retention (the GC mark) for `branch_id`'s runtime — the same
+    /// `Retention`/`Branch` shape the public `Reclaim` API enqueues, emitted automatically when a
+    /// publish drops table refs, when a branch clear/delete buffers a release plan, and once after
+    /// recovery (reconciling any prior session's backlog). Branch-scoped only: the table-object
+    /// path never touches snapshots (no implicit snapshot pruning).
+    pub(crate) fn table_object_retention(branch_id: BranchId) -> Self {
+        Self::new(
+            MaintenanceTaskKind::Retention,
+            MaintenanceTaskPriority::Low,
+            MaintenanceTaskScope::Branch(branch_id),
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("table object retention task request is valid")
+    }
+
     pub(crate) fn quarantine() -> Self {
         Self::new(
             MaintenanceTaskKind::Quarantine,
@@ -1458,6 +1473,21 @@ impl LifecycleMaintenanceExecutor {
             .filter(|active| active.lane() == lane)
             .count()
             >= cap
+    }
+
+    /// Whether any build-producing task (flush / compaction / materialization) is in flight.
+    /// The table-object sweep defers while one is: an off-lock build may have written output
+    /// objects whose manifest fold has not landed yet, and such an object is inventory-listed
+    /// but reachable from no manifest — indistinguishable from garbage to the mark.
+    pub(crate) fn has_active_build_task(&self) -> bool {
+        self.active.iter().any(|task| {
+            matches!(
+                task.kind(),
+                MaintenanceTaskKind::Flush
+                    | MaintenanceTaskKind::Compaction
+                    | MaintenanceTaskKind::Materialization
+            )
+        })
     }
 
     /// Whether a candidate Rewrite task would contend with any in-flight rewrite (same branch,

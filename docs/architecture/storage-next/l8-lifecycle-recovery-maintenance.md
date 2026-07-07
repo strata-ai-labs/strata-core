@@ -227,6 +227,9 @@ L9 Storage API Boundary
         v
 L8 Lifecycle / Recovery / Maintenance
   orders recovery, flush, checkpoint, compaction, retention, repair, close
+  (the background drain services one pending low-tier task — retention/
+   quarantine/purge/repair — after every few upper-tier tasks, so sustained
+   flush/compaction load cannot starve table-object reclaim indefinitely)
         |
         +--> L7 Commit Runtime
         |      quiesce, commit facts, visible version, commit bootstrap
