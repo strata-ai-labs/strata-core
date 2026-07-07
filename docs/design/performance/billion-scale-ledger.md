@@ -368,6 +368,31 @@ previously-stalling 4T per-writer cell runs with ZERO stalls and zero deferrals
 (was: 3× 30s watchdog timeouts per run). YCSB durable A on the second NVMe: graded
 13.1K vs legacy 9.1K (+45%), consistent with the bake-off.
 
+## Consolidated v1 baseline (2026-07-07 end-of-day, post `164f70cf`, dev box nvme0)
+
+One day of levers after the first v1 end-to-end baseline (BS5.5 off-lock GC staging,
+graded admission default, coverage-spin + flush/rotate-livelock fixes). Same instrument,
+disk, and methodology as the opening baseline. YCSB run throughput (ops/s):
+
+| Workload | cache | durable | durable @ open baseline | durable change |
+|---|---|---|---|---|
+| A (50r/50u) | 253,320 | **12,975** | 2,642 | **4.9×** |
+| B (95r/5u) | 913,552 | **605,371** | 5,451 | **111×** |
+| C (100r) | 1,144,900 | 914,326 | 874,907 | par |
+| D (95r/5i) | 859,169 | **502,333** | 14,433 | **35×** |
+| E (5i/95scan) | 21,400 | 2,435 | 2,290 | par |
+| F (50r/50rmw) | 285,693 | **11,992** | 1,927 | **6.2×** |
+
+Durable A update tail: p50 99µs / p99 1.17ms / p99.9 1.54ms / max 250ms (was max 22.6s).
+
+Reading the gaps: the read-mostly workloads (B/D) now sit within 1.5–1.7× of CACHE mode
+— reads and light-write pacing are essentially settled. The remaining structural gaps:
+(1) write-heavy durable (A/F ~13K, ~20× to cache) = per-commit WAL write + debt pacing on
+1KB single-put commits — the known Standard-mode floor, next addressable by WAL
+single-write group batching (recorded reopening lever) if product demands it;
+(2) scans (E, 8.8×; l9 scan cells) = BS6 territory (readahead, block compression);
+(3) reopen replay at ~365µs/row = the replay-probe slice, next up.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
