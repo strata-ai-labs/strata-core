@@ -143,6 +143,28 @@ mid-level reunion differential test. But the bake-off did NOT move the gate:
    window (gdb sampling of maintenance workers + the blocked writer during a
    multi-second max) plus an RSS timeline, before any further scheduling changes.
 
+## T4 attribution results (2026-07-07 evening)
+
+1. **Every engine-level bench bin was silently running GLIBC MALLOC.** The jemalloc
+   `#[global_allocator]` lives in the benchmark LIB crate, and bins that never
+   reference the lib don't link it — only `storage-next-concurrent-writers` did. All
+   engine-ycsb evidence to date (three-ways, stall investigations) was measured under
+   glibc; deltas remain valid (consistent within themselves) but absolute numbers and
+   the RSS story carried an allocator confound. Fixed: every bin now
+   `extern crate strata_benchmarks`, and the probe prints live jemalloc gauges
+   (`tikv-jemalloc-ctl`: allocated/active/resident/retained per phase).
+2. **The RSS runaway is APP-HELD, not allocator retention.** With jemalloc truly
+   active: post-load allocated=13.66GB (block cache filling its 15GiB pool —
+   plausible), post-run allocated=**39.25GB ≈ resident 41.84GB** under a 32g budget —
+   +26GB of LIVE heap accumulated during the run phase's compaction churn. Stalls
+   persist under jemalloc (max 56.3s) — the allocator was not the stall cause either.
+3. Hypotheses eliminated by code/counter checks: rewrite outputs DO lazy-reopen
+   (BS4.4l applies to compaction), the block cache DOES enforce per-shard eviction.
+4. **Next (the named-structure step): jemalloc sampling heap profiler** —
+   `tikv-jemallocator` `profiling` feature, `_RJEM_MALLOC_CONF=prof:true,prof_final:true`
+   (note the `_RJEM_` prefix; plain MALLOC_CONF is ignored by the prefixed build),
+   dump analyzed via jeprof/`jemalloc_pprof`. One 10M run names the 26GB holder.
+
 ## Sequencing (revised)
 
 W1.1a ✅ -> W1.1b ✅ -> W1.1c ❌ -> W1.2a ✅(split extended; no-win; default stays 1) ->

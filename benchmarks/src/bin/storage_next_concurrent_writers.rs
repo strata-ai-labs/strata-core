@@ -430,12 +430,7 @@ fn run_point(config: &Config, engine: Engine, mode: BranchMode, writers: usize) 
             perf.lifecycle_post_commit_maintenance_tasks_coalesced(),
         );
         let queue = runtime.maintenance_status().expect("queue status");
-        eprintln!(
-            "[queue {} {}T] {:?}",
-            engine.name(),
-            writers,
-            queue,
-        );
+        eprintln!("[queue {} {}T] {:?}", engine.name(), writers, queue,);
     }
     PointOutcome {
         total_ops,
