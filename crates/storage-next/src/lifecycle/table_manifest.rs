@@ -173,6 +173,30 @@ impl LifecycleDurableTableCatalog {
         Ok(())
     }
 
+    /// Records a manifest loaded during recovery. Recovery applies per-branch manifests in
+    /// branch-id order, not sequence order, so interleaved cross-branch sequences (parent seq 1 →
+    /// fork child seq 2 → parent seq 3, with the parent's manifest applied first) are the normal
+    /// shape once forks publish child manifests — a lower sequence here is reordering, not
+    /// regression. The sequence marker advances to `max(next, seq + 1)` so post-recovery runtime
+    /// publishes stay strictly monotonic; [`record_manifest`](Self::record_manifest) keeps the
+    /// strict regression check for those runtime publishes.
+    pub(crate) fn record_recovered_manifest(
+        &mut self,
+        manifest: &TableManifest,
+    ) -> LifecycleResult<()> {
+        self.record_manifest_tables(manifest)?;
+        let advanced = manifest.manifest_sequence().checked_add(1).ok_or(
+            LifecycleError::TableManifestPublicationFailed {
+                reason: "table manifest sequence overflow",
+                source: None,
+            },
+        )?;
+        self.next_manifest_sequence = self.next_manifest_sequence.max(advanced);
+        // The loaded manifest is durable by definition: catalog and durable manifest agree.
+        self.manifest_publish_pending = false;
+        Ok(())
+    }
+
     fn record_manifest_tables(&mut self, manifest: &TableManifest) -> LifecycleResult<()> {
         for table in manifest_table_refs(manifest) {
             self.record_table_with_provenance(
@@ -567,7 +591,7 @@ pub(crate) fn apply_loaded_table_manifest_to_branch(
     let install_outcome = branch
         .install_table_manifest_recovery(request)
         .map_err(branch_error)?;
-    catalog.record_manifest(manifest)?;
+    catalog.record_recovered_manifest(manifest)?;
     Ok(LifecycleTableManifestRecoveryOutcome::installed(
         manifest_object,
         manifest,

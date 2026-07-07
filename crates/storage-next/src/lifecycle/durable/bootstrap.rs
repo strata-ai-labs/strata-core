@@ -1122,6 +1122,47 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         dead_code,
         reason = "fork-at-history surface exposed for durable callers"
     )]
+    /// Publish the forked child's table manifest at fork time, durably recording its COW
+    /// inherited-layer references. This is what makes the fork's parent-table references visible
+    /// to manifest-based recovery (O(tables) reopen instead of the O(parent dataset)
+    /// `rebuild_fork_snapshot_rows` re-materialization) and to table-object reachability (the
+    /// child's references pin shared parent objects against GC across reopen — the COW invariant:
+    /// an object is deletable only when unreachable from *every* branch's durable manifest).
+    ///
+    /// Skipped for eager (layer-less) children: their fork rows live only in the child memtable,
+    /// so an empty manifest would make recovery treat the child as durably covered and skip the
+    /// rebuild fallback — data loss on crash. Publish failure does not fail the fork (the catalog
+    /// is already durable); it records health debt, and the child recovers through the gated
+    /// rebuild fallback instead.
+    fn publish_fork_child_table_manifest(
+        &mut self,
+        outcome: &crate::lifecycle::LifecycleBranchForkOutcome,
+    ) {
+        if outcome.inherited_layer_count() == 0 {
+            return;
+        }
+        let publish_result = self
+            .branch_catalog
+            .branch_state(outcome.descriptor().branch_id())
+            .map_err(branch_error)
+            .and_then(|child| {
+                crate::lifecycle::table_manifest::publish_table_manifest_for_branch_with_budget(
+                    child,
+                    self.services.table_manifest(),
+                    &mut self.table_catalog,
+                    Some(&self.budget),
+                )
+                .map(|_| ())
+            });
+        if publish_result.is_err() {
+            if let Ok(health) = crate::lifecycle::telemetry_health_debt(
+                "fork child table manifest publish failed; recovery falls back to fork rebuild",
+            ) {
+                self.record_recovery_health(Some(&health));
+            }
+        }
+    }
+
     pub(crate) fn fork_current(
         &mut self,
         source: BranchId,
@@ -1134,6 +1175,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             self.branch_catalog
                 .fork_current(source, destination, destination_generation)?;
         self.publish_branch_catalog()?;
+        self.publish_fork_child_table_manifest(&outcome);
         self.republish_all_branch_snapshots(); // BS2.3: publish the new/forked branch snapshot.
         Ok(outcome)
     }
@@ -1160,6 +1202,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             retained_floor,
         )?;
         self.publish_branch_catalog()?;
+        self.publish_fork_child_table_manifest(&outcome);
         self.republish_all_branch_snapshots(); // BS2.3: publish the new/forked branch snapshot.
         Ok(outcome)
     }
@@ -1182,6 +1225,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             retained_floor,
         )?;
         self.publish_branch_catalog()?;
+        self.publish_fork_child_table_manifest(&outcome);
         self.republish_all_branch_snapshots(); // BS2.3: publish the new/forked branch snapshot.
         Ok(outcome)
     }
@@ -1807,6 +1851,20 @@ fn rebuild_fork_snapshot_rows(branch_catalog: &mut LifecycleBranchCatalog) -> Li
             let Some(parent) = descriptor.parent() else {
                 continue;
             };
+            // A child whose recovered state carries inherited layers is durably COW-covered:
+            // layers only enter recovered state through the child's own table manifest, which the
+            // fork now publishes at fork time. Re-materializing the parent's rows for such a child
+            // is pure redundancy — and O(parent dataset) per child (the reopen OOM). The rebuild
+            // below remains only for layer-less children: eager/historical forks whose materialized
+            // rows are not WAL'd, and the crash window where the fork's catalog publish landed but
+            // its child-manifest publish did not.
+            if !branch_catalog
+                .branch_state(descriptor.branch_id())?
+                .inherited_layers()
+                .is_empty()
+            {
+                continue;
+            }
             let rows = branch_catalog
                 .branch_state(parent.source_branch_id())?
                 .fork_snapshot_rows(parent.fork_version(), descriptor.branch_id())

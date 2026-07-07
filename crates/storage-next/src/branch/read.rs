@@ -4464,6 +4464,22 @@ fn validate_inherited_layers(
                     reason: "inherited table source branch must match layer",
                 });
             }
+            // BS4.4e-style O(1) proof (as in `BranchOwnedTable` construction): rows are
+            // internal-key-sorted and the branch id is the fixed leading key bytes, so both
+            // CRC-protected key-range endpoints carrying the source prefix proves every row does.
+            // The per-row rescan below is the debug oracle — as an always-on check it made every
+            // read-view validation (including recovery of each fork child's manifest) O(inherited
+            // rows) instead of O(tables).
+            if !key_range_matches_branch(
+                table.facts().key_range().first_key(),
+                table.facts().key_range().last_key(),
+                layer.source_branch_id(),
+            ) {
+                return Err(BranchRuntimeError::InvalidInheritedLayer {
+                    reason: "inherited table rows must match layer source branch",
+                });
+            }
+            #[cfg(debug_assertions)]
             try_for_each_reader_row(table.reader(), |row| {
                 if row.physical_key().branch_id() == layer.source_branch_id() {
                     Ok(())

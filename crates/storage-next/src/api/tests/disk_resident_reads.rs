@@ -301,6 +301,136 @@ fn durable_reopen_opens_o_tables_and_scans_no_rows() {
     assert_eq!(read_latest(&runtime, b"wide-99999"), None);
 }
 
+/// Fork-manifest fix: reopening a database with N unflushed `ForkCurrent` children stays O(tables).
+/// Each fork publishes the child's table manifest at fork time (durably recording its COW inherited
+/// layers), so recovery installs lazy readers from manifests for every child instead of
+/// re-materializing the parent's dataset per child (`rebuild_fork_snapshot_rows` — the reopen OOM:
+/// O(forks × dataset) time and memory). The children never flush anything of their own here — this is
+/// exactly the shape that OOM'd the 10M benchmark reopen with 100 forks.
+#[test]
+fn durable_fork_children_reopen_o_tables_and_read_parent_rows() {
+    const FORK_CHILDREN: u64 = 8;
+    let _capture = perf_trace::begin_test_capture();
+    let root = temp_dir_for_api_test("disk-resident-fork-fast-open");
+
+    // Seed a flushed multi-block parent (the same three-table shape as the fast-open test), then
+    // fork N children WITHOUT flushing them, and close.
+    {
+        let mut runtime = open_durable_runtime(root.clone());
+        commit_many_puts(&mut runtime, "fork-wide", 300, 1000);
+        runtime
+            .flush_default_branch_for_test()
+            .expect("flush the wide (multi-block) L0 table");
+        commit_put(&mut runtime, b"fork-t2", b"a", 5000);
+        runtime
+            .flush_default_branch_for_test()
+            .expect("flush the second L0 table");
+        commit_put(&mut runtime, b"fork-t3", b"a", 6000);
+        runtime
+            .flush_default_branch_for_test()
+            .expect("flush the third L0 table");
+        let checkpoint = MaintenanceRequest::new(
+            MaintenanceTask::Checkpoint,
+            MaintenanceScope::Branch(branch()),
+        );
+        runtime.maintenance(&checkpoint).expect("checkpoint");
+        for child_index in 0..FORK_CHILDREN {
+            let child = fork_child_id(child_index);
+            runtime
+                .branch(&BranchRequest::new(
+                    child,
+                    BranchAction::ForkCurrent { source: branch() },
+                    Some(BranchGeneration::new(1)),
+                ))
+                .expect("fork COW child");
+        }
+        runtime.close().expect("close durable runtime");
+    }
+
+    // Reopen: recovery must come entirely from manifests — no per-child parent re-materialization.
+    perf_trace::reset();
+    let runtime = open_durable_runtime(root);
+    let after_open = perf_trace::snapshot();
+
+    assert_eq!(after_open.table_lazy_full_materializations(), 0);
+    assert_eq!(
+        after_open.table_reader_opens(),
+        FAST_OPEN_TABLE_COUNT * (1 + FORK_CHILDREN),
+        "recovery must open lazy readers per manifest reference (parent + each child's inherited \
+         layer), never re-materialize the parent per child",
+    );
+    // Release: no cursor scan at open — the direct regression guard for the O(forks × dataset)
+    // fork rebuild (which cursor-scanned the parent's every row per child). Debug builds run
+    // O(rows) oracles, so release-only (matching the fast-open test above). Data-block reads are
+    // not zero — the WAL-tail replay's point probes fetch a bounded handful of blocks (a path
+    // outside this guard's scope, as in the fast-open test) — but they must stay a small constant,
+    // never scale as children × blocks the way the rebuild's full-table reads did.
+    #[cfg(not(debug_assertions))]
+    {
+        assert_eq!(
+            after_open.table_cursor_rows_visited(),
+            0,
+            "reopen with fork children must not cursor-scan any table's rows",
+        );
+        assert!(
+            after_open.table_data_block_reads() < 16,
+            "reopen data-block reads must stay a bounded WAL-tail constant, not scale with \
+             children x dataset (got {})",
+            after_open.table_data_block_reads(),
+        );
+    }
+
+    // Every child serves the parent's pre-fork rows through its recovered COW inherited layer.
+    for child_index in 0..FORK_CHILDREN {
+        let child = fork_child_id(child_index);
+        assert_eq!(
+            read_latest_on(&runtime, child, b"fork-wide-00000").as_deref(),
+            Some(b"v".as_ref()),
+            "child {child_index} must read the parent's first row through its recovered layer",
+        );
+        assert_eq!(
+            read_latest_on(&runtime, child, b"fork-t3").as_deref(),
+            Some(b"a".as_ref()),
+            "child {child_index} must read the parent's last pre-fork row",
+        );
+        assert_eq!(
+            read_latest_on(&runtime, child, b"fork-missing"),
+            None,
+            "an absent key must stay absent through the child's recovered layer",
+        );
+    }
+    // And the parent itself still reads correctly.
+    assert_eq!(
+        read_latest(&runtime, b"fork-wide-00299").as_deref(),
+        Some(b"v".as_ref())
+    );
+}
+
+/// A deterministic branch id for the `child_index`-th fork child in the fork fast-open test.
+fn fork_child_id(child_index: u64) -> BranchId {
+    let mut bytes = [0x60; BranchId::BYTE_LEN];
+    bytes[BranchId::BYTE_LEN - 1] = u8::try_from(child_index).expect("small child index");
+    BranchId::from_bytes(bytes)
+}
+
+/// The latest visible value for `key` on `branch_id`, or `None` if absent.
+fn read_latest_on(
+    runtime: &StorageRuntime<'static>,
+    branch_id: BranchId,
+    key: &[u8],
+) -> Option<Vec<u8>> {
+    runtime
+        .read_point(&PointReadRequest::new(
+            branch_id,
+            engine_space(),
+            api_key(key),
+            ReadBound::Latest,
+        ))
+        .expect("point read on branch")
+        .row()
+        .map(|row| row.value().expect("put row").as_bytes().to_vec())
+}
+
 /// BS4.4l: a durable COMPACTION output installs a lazy, disk-resident reader (not eager row-reuse). The
 /// compaction reads its lazy L0 inputs by cursor and installs the merged output lazily, so it must not
 /// fully materialize any table — the memory win that keeps L1+ tables (the bulk of a large dataset) off
