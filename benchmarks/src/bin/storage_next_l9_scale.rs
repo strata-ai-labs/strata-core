@@ -599,20 +599,16 @@ fn run_reopen_after_load(
     let mut runtime = outcome.into_runtime();
     runtime.close()?;
 
-    Ok(RunResult::throughput(
-        Workload::ReopenAfterLoad,
-        engine,
-        scale,
-        1,
-        open_elapsed,
+    Ok(
+        RunResult::throughput(Workload::ReopenAfterLoad, engine, scale, 1, open_elapsed)
+            .with_perf_trace(open_trace)
+            .with_reopen_after_load_context(ReopenAfterLoadContext {
+                db_open_after_load_ms: open_elapsed.as_secs_f64() * 1_000.0,
+                table_reader_opens: open_trace.table_reader_opens(),
+                table_lazy_full_materializations: open_trace.table_lazy_full_materializations(),
+                table_data_block_reads: open_trace.table_data_block_reads(),
+            }),
     )
-    .with_perf_trace(open_trace)
-    .with_reopen_after_load_context(ReopenAfterLoadContext {
-        db_open_after_load_ms: open_elapsed.as_secs_f64() * 1_000.0,
-        table_reader_opens: open_trace.table_reader_opens(),
-        table_lazy_full_materializations: open_trace.table_lazy_full_materializations(),
-        table_data_block_reads: open_trace.table_data_block_reads(),
-    }))
 }
 
 fn measure_requests<'a, I, T, F>(requests: I, mut f: F) -> Result<TimedSamples, BenchmarkError>
@@ -924,7 +920,8 @@ fn print_result(result: &RunResult) {
             perf_trace.commit_unresolved_gate_admission_attempts(),
             perf_trace.commit_unresolved_gate_admission_acquired(),
             perf_trace.commit_unresolved_gate_rejected_unresolved(),
-            perf_trace.commit_unresolved_gate_rejected_active(),
+            // gate_rejected_active counter removed in BS5 (write groups made it dead)
+            0_u64,
             perf_trace.commit_unresolved_records(),
             perf_trace.commit_unresolved_durable_not_applied_records(),
             perf_trace.commit_unresolved_applied_not_visible_records(),
@@ -1848,10 +1845,6 @@ fn perf_trace_json(perf_trace: StoragePerfSnapshot) -> serde_json::Value {
     field!(
         "commit_unresolved_gate_rejected_unresolved",
         perf_trace.commit_unresolved_gate_rejected_unresolved()
-    );
-    field!(
-        "commit_unresolved_gate_rejected_active",
-        perf_trace.commit_unresolved_gate_rejected_active()
     );
     field!(
         "commit_unresolved_records",

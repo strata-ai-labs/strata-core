@@ -29,9 +29,7 @@ use strata_engine_next::{
 #[path = "../../benches/ycsb_workloads.rs"]
 mod ycsb_workloads;
 
-use ycsb_workloads::{
-    workload_by_label, ycsb_key, FastRng, KeyChooser, Operation, WorkloadSpec,
-};
+use ycsb_workloads::{workload_by_label, ycsb_key, FastRng, KeyChooser, Operation, WorkloadSpec};
 
 const DEFAULT_RECORDS: usize = 100_000;
 const DEFAULT_OPS: usize = 100_000;
@@ -133,7 +131,56 @@ fn run_workload(
     let load_elapsed = load_start.elapsed();
 
     // Run phase: weighted operation mix over the chosen request distribution.
+    if config.perf_breakdown {
+        strata_storage_next::perf_trace::reset();
+    }
     let run = run_phase(&mut database, config, workload, &value)?;
+    // Storage-side attribution of the run phase (requires the perf-trace
+    // feature, on for benchmarks): separates commit-stage work from runtime-
+    // lock wait and from background maintenance lock holds — the numbers that
+    // explain durable tail latency.
+    if config.perf_breakdown && mode == BenchMode::Durable {
+        let perf = strata_storage_next::perf_trace::snapshot();
+        eprintln!(
+            "  [probe] admission: evals={} clean={} pressure_accepts={} urgent={} pressure_rejects={} retryable_rejects={} wait_attempts={} wait_timeouts={} block_wait_ms={:.1}",
+            perf.lifecycle_write_admission_evaluations(),
+            perf.lifecycle_write_admission_clean_accepts(),
+            perf.lifecycle_write_admission_under_pressure_accepts(),
+            perf.lifecycle_write_admission_urgent_accepts(),
+            perf.lifecycle_write_admission_pressure_rejects(),
+            perf.lifecycle_write_admission_retryable_rejects(),
+            perf.lifecycle_write_admission_wait_attempts(),
+            perf.lifecycle_write_admission_wait_timeouts(),
+            perf.lifecycle_write_admission_block_wait_ns() as f64 / 1e6,
+        );
+        eprintln!(
+            "  [probe] wal/ckpt: checkpoint_enqueues={} checkpoint_coalesced={} post_maint_enq={} post_maint_coalesced={}",
+            perf.lifecycle_wal_checkpoint_enqueue_events(),
+            perf.lifecycle_wal_checkpoint_coalesced_events(),
+            perf.lifecycle_post_commit_maintenance_tasks_enqueued(),
+            perf.lifecycle_post_commit_maintenance_tasks_coalesced(),
+        );
+        eprintln!(
+            "  [probe] inline: admission_inline={} urgent_inline={} inline_maint_attempts={} inline_maint_ms={:.1}",
+            perf.lifecycle_write_admission_inline_attempts(),
+            perf.lifecycle_write_admission_urgent_inline_attempts(),
+            perf.lifecycle_inline_maintenance_attempts(),
+            perf.lifecycle_inline_maintenance_ns() as f64 / 1e6,
+        );
+        eprintln!(
+            "  [probe] time: api_runtime_total_ms={:.0} stages_ms admit={:.0} stage={:.0} wal_append={:.0} apply={:.0} post_growth={:.0} post_maint={:.0} | fg_lock_wait_ms={:.0} bg_task_ms={:.0} bg_snapshot_lock_ms={:.0}",
+            perf.api_commit_runtime_ns() as f64 / 1e6,
+            perf.commit_admit_ns() as f64 / 1e6,
+            perf.commit_exec_stage_ns() as f64 / 1e6,
+            perf.commit_wal_append_ns() as f64 / 1e6,
+            perf.commit_exec_apply_ns() as f64 / 1e6,
+            perf.commit_post_wal_growth_ns() as f64 / 1e6,
+            perf.commit_post_maintenance_ns() as f64 / 1e6,
+            perf.lifecycle_foreground_wait_background_lock_ns() as f64 / 1e6,
+            perf.lifecycle_background_task_total_ns() as f64 / 1e6,
+            perf.lifecycle_background_task_snapshot_lock_ns() as f64 / 1e6,
+        );
+    }
 
     Ok(WorkloadResult {
         workload: workload.label,
@@ -154,9 +201,9 @@ fn run_workload(
 
 fn open_database(config: &Config, mode: BenchMode, path: &Path) -> EngineResult<Database> {
     let outcome = match mode {
-        BenchMode::Cache => {
-            Database::open_cache(CacheOpenOptions::new().with_memory_budget(config.memory_budget_bytes))?
-        }
+        BenchMode::Cache => Database::open_cache(
+            CacheOpenOptions::new().with_memory_budget(config.memory_budget_bytes),
+        )?,
         BenchMode::Durable => Database::open_local(
             path,
             DurableLocalOpenOptions::new().with_memory_budget(config.memory_budget_bytes),
@@ -474,6 +521,8 @@ struct Config {
     scan_max: usize,
     load_batch: usize,
     memory_budget_bytes: u64,
+    /// Print the storage perf-trace attribution after each durable run phase.
+    perf_breakdown: bool,
 }
 
 impl Config {
@@ -487,6 +536,7 @@ impl Config {
             scan_max: DEFAULT_SCAN_MAX,
             load_batch: DEFAULT_LOAD_BATCH,
             memory_budget_bytes: DEFAULT_MEMORY_BUDGET_BYTES,
+            perf_breakdown: false,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -507,6 +557,7 @@ impl Config {
                 "--scan-max" => config.scan_max = parse_positive_usize(&arg, args.next())?,
                 "--load-batch" => config.load_batch = parse_positive_usize(&arg, args.next())?,
                 "--memory-budget" => config.memory_budget_bytes = parse_size(&arg, args.next())?,
+                "--perf-breakdown" => config.perf_breakdown = true,
                 "-q" | "--quick" => {
                     config.records = QUICK_RECORDS;
                     config.ops = QUICK_OPS;
@@ -596,7 +647,7 @@ fn parse_size(flag: &str, value: Option<String>) -> Result<u64, String> {
 fn usage() -> String {
     "usage: engine-ycsb [--workload a,b,c,d,e,f] [--mode cache|durable|both] \
      [--records N] [--ops N] [--value-bytes N] [--scan-max N] [--load-batch N] \
-     [--memory-budget SIZE] [-q]\n  \
+     [--memory-budget SIZE] [--perf-breakdown] [-q]\n  \
      records/ops accept k/m suffixes (decimal); SIZE accepts k/m/g (binary)."
         .to_owned()
 }

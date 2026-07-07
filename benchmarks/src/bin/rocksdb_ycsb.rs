@@ -100,7 +100,11 @@ fn run(config: Config) -> Result<(), String> {
     Ok(())
 }
 
-fn run_workload(config: &Config, workload: &WorkloadSpec, path: &Path) -> Result<WorkloadResult, String> {
+fn run_workload(
+    config: &Config,
+    workload: &WorkloadSpec,
+    path: &Path,
+) -> Result<WorkloadResult, String> {
     let mut opts = Options::default();
     opts.create_if_missing(true);
     let db = DB::open(&opts, path).map_err(|e| format!("open rocksdb: {e}"))?;
@@ -186,7 +190,8 @@ fn run_phase(
                 let key = ycsb_key(insert_counter);
                 insert_counter += 1;
                 key_chooser.set_max_key(insert_counter);
-                db.put(key.as_bytes(), value).map_err(|e| format!("put: {e}"))?;
+                db.put(key.as_bytes(), value)
+                    .map_err(|e| format!("put: {e}"))?;
             }
             Operation::Scan => {
                 let key = ycsb_key(key_chooser.next(&mut rng));
@@ -318,7 +323,10 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
 fn print_result(result: &WorkloadResult) {
     println!(
         "  [rocksdb] load={:.0} ops/s ({}ms)  run={:.0} ops/s ({}ms)",
-        result.load_ops_per_sec, result.load_elapsed_ms, result.run_ops_per_sec, result.run_elapsed_ms,
+        result.load_ops_per_sec,
+        result.load_elapsed_ms,
+        result.run_ops_per_sec,
+        result.run_elapsed_ms,
     );
     for (label, summary) in &result.operations {
         println!(

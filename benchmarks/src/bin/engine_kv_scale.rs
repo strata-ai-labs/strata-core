@@ -75,10 +75,10 @@ fn run(config: Config) -> EngineResult<()> {
 
 fn run_mode(config: &Config, mode: BenchMode, path: &Path) -> EngineResult<ModeReport> {
     let mut database = match mode {
-        BenchMode::Cache => {
-            Database::open_cache(CacheOpenOptions::new().with_memory_budget(config.memory_budget_bytes))?
-                .into_database()
-        }
+        BenchMode::Cache => Database::open_cache(
+            CacheOpenOptions::new().with_memory_budget(config.memory_budget_bytes),
+        )?
+        .into_database(),
         BenchMode::Durable => Database::open_local(
             path,
             DurableLocalOpenOptions::new().with_memory_budget(config.memory_budget_bytes),
