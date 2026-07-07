@@ -3264,7 +3264,16 @@ where
         let formed = form_commit_group(slot, &*runtime, request, original_batch);
         let joiners = formed.joiners;
         let member_bytes = formed.member_bytes;
-        let in_flight = runtime.execute_durable_commit_group_begin(formed.batches);
+        let mut in_flight = runtime.execute_durable_commit_group_begin(formed.batches);
+        // Parallel branch applies (BS5.4c) inside this hold: checked-out
+        // states must be back before the lock drops, or the NEXT group
+        // (forming during our fsync) would fail closed on those branches.
+        let apply_fatal = run_group_applies_parallel(
+            &mut runtime,
+            &mut in_flight,
+            &joiners,
+            &formed.member_branches,
+        );
         let durable_seq = runtime.wal_durable_seq_handle();
         drop(runtime);
         // Hand leadership off NOW: the next group forms, appends, and applies
@@ -3284,7 +3293,11 @@ where
         // Phase 2 under a fresh hold: redeem the sync, publish the group's
         // visibility, run post-commit bookkeeping.
         let mut runtime = slot.lock_for_commit();
-        let results = runtime.execute_durable_commit_group_finish(in_flight, sync_result);
+        let results = runtime.execute_durable_commit_group_finish_with_apply_outcome(
+            in_flight,
+            sync_result,
+            apply_fatal,
+        );
         distribute_group_responses(&mut runtime, results, member_bytes, joiners)
     } else {
         lead_commit_group(slot, &mut runtime, request, original_batch)
@@ -3349,8 +3362,77 @@ where
         };
         return solo_commit_response(runtime, batch, leader_original_batch, generation_guard);
     }
-    let results = runtime.execute_durable_commit_group(formed.batches);
+    let mut in_flight = runtime.execute_durable_commit_group_begin(formed.batches);
+    // Standard captures no sync ticket; the group's applies run in parallel
+    // across the deferring members' parked threads (BS5.4c) inside this
+    // single hold.
+    let apply_fatal = run_group_applies_parallel(
+        runtime,
+        &mut in_flight,
+        &formed.joiners,
+        &formed.member_branches,
+    );
+    let results = runtime.execute_durable_commit_group_finish_with_apply_outcome(
+        in_flight,
+        None,
+        apply_fatal,
+    );
     distribute_group_responses(runtime, results, formed.member_bytes, formed.joiners)
+}
+
+/// BS5.4c: run the group's deferred branch applies in parallel — each
+/// deferring member's parked thread applies its own branch's rows on an
+/// owned, checked-out state (no locks held) while the leader applies the
+/// remainder and then collects the barrier. Runs entirely under the leader's
+/// runtime-lock hold, so checked-out states are never observable across
+/// groups. Returns whether the group must go fatal (an apply failed, or an
+/// outcome went missing).
+fn run_group_applies_parallel<S>(
+    runtime: &mut LifecycleDurableLocalRuntime<'static, S>,
+    in_flight: &mut crate::lifecycle::DurableGroupInFlight<'static>,
+    joiners: &[Arc<commit_group::CommitGroupJoiner>],
+    member_branches: &[BranchId],
+) -> bool
+where
+    S: CommitTimestampSource,
+{
+    let work = runtime.take_deferred_apply_work(in_flight);
+    if work.is_empty() {
+        return false;
+    }
+    let exchange = Arc::new(commit_group::GroupApplyExchange::default());
+    let mut expected = 0_usize;
+    let mut leader_work = Vec::new();
+    for unit in work {
+        let branch = unit.branch_id();
+        // Route to the branch's first member thread; work is self-contained
+        // (owned state + rows), so WHICH thread runs it is only a
+        // load-balancing choice. The leader (last, unlisted) keeps its own.
+        let Some(index) = member_branches.iter().position(|member| *member == branch) else {
+            leader_work.push(unit);
+            continue;
+        };
+        match joiners[index].request_apply(Box::new(commit_group::GroupApplyHandoff {
+            work: unit,
+            exchange: Arc::clone(&exchange),
+        })) {
+            Ok(()) => expected += 1,
+            Err(handoff) => leader_work.push(handoff.work),
+        }
+    }
+    // The leader's own share overlaps the members' applies.
+    let leader_done: Vec<_> = leader_work
+        .into_iter()
+        .map(crate::lifecycle::DurableGroupApplyWork::apply)
+        .collect();
+    let mut done = exchange.wait_for(expected);
+    // A missing outcome means a member thread died mid-apply (panic-class):
+    // group-fatal, and that branch stays checked out — every later access
+    // fails closed until reopen.
+    let missing = expected.saturating_sub(done.len());
+    done.extend(leader_done);
+    let apply_fatal = runtime.finish_deferred_apply_work(done, in_flight.group_state());
+    apply_fatal || missing > 0
 }
 
 /// One formed write group: queued joiners plus the leader's own request
@@ -3360,6 +3442,9 @@ struct FormedCommitGroup {
     joiners: Vec<Arc<commit_group::CommitGroupJoiner>>,
     batches: Vec<(crate::commit::CommitBatch, CommitBranchGenerationGuard)>,
     member_bytes: Vec<u64>,
+    /// Branch of each joiner member (aligned with `joiners`; the leader is
+    /// not listed), for routing deferred applies back to member threads.
+    member_branches: Vec<BranchId>,
 }
 
 fn form_commit_group<S>(
@@ -3385,8 +3470,10 @@ where
     let mut joiners = Vec::with_capacity(members.len());
     let mut batches = Vec::with_capacity(members.len() + 1);
     let mut member_bytes = Vec::with_capacity(members.len() + 1);
+    let mut member_branches = Vec::with_capacity(members.len());
     for (joiner, request) in members {
         member_bytes.push(estimate_bytes(&request.batch));
+        member_branches.push(request.batch.branch_id());
         batches.push((request.batch, request.generation_guard));
         joiners.push(joiner);
     }
@@ -3396,6 +3483,7 @@ where
         joiners,
         batches,
         member_bytes,
+        member_branches,
     }
 }
 

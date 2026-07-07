@@ -9,12 +9,13 @@ use crate::branch::read::{BranchHistoryRow, BranchReadBound, BranchReadView, Bra
 use crate::branch::snapshot::{BranchSnapshotPublisher, BranchSnapshotRegistry};
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
-    publish_commit_group, CommitBatch, CommitBatchKind, CommitBranchGeneration,
-    CommitBranchGenerationGuard, CommitBranchGuardSet, CommitDurabilityClass, CommitDurabilityMode,
-    CommitDurableRuntime, CommitFactAllocator, CommitGroupState, CommitManualTimestampSource,
-    CommitOutcome, CommitReplayAction, CommitReplayRequest, CommitReplayRuntime,
-    CommitRuntimeError, CommitTimestampSource, CommitUnresolvedDurable,
-    CommitUnresolvedDurableGate, VisibleVersionPublish, VisibleVersionTracker,
+    publish_commit_group, CommitBatch, CommitBatchKind, CommitBranchApplyTarget,
+    CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
+    CommitDurabilityClass, CommitDurabilityMode, CommitDurableRuntime, CommitFactAllocator,
+    CommitGroupState, CommitManualTimestampSource, CommitOutcome, CommitReplayAction,
+    CommitReplayRequest, CommitReplayRuntime, CommitRuntimeError, CommitStamp,
+    CommitTimestampSource, CommitUnresolvedDurable, CommitUnresolvedDurableGate,
+    VisibleVersionPublish, VisibleVersionTracker,
 };
 use crate::config::mode::DurabilityPolicy;
 use crate::format::WalRecord;
@@ -1557,6 +1558,90 @@ pub(crate) struct DurableGroupInFlight<'a> {
     /// Open gate spans at phase-1 end: >1 means other commits are
     /// mid-pipeline and a sync-chain batching beat is worth waiting.
     concurrent_spans: usize,
+    /// Per-branch deferred applies (BS5.4): each entry is the committed rows
+    /// of that branch's single deferred member, applied before the group
+    /// publishes. A branch defers only while it has ONE member in the group;
+    /// a second same-branch member flushes the pending apply and the branch
+    /// goes eager for the rest of the group (a later member's conflict source
+    /// must see the earlier rows applied), so shared-branch groups keep
+    /// today's path exactly.
+    deferred_applies: Vec<DeferredBranchApply>,
+}
+
+/// One branch's deferred group apply (BS5.4): the rows are WAL-durable
+/// (appended in phase 1) and invisible until the group publishes; an apply
+/// failure records the group's widened durable-not-applied fact, exactly as
+/// an eager member apply failure would.
+#[derive(Debug)]
+pub(crate) struct DeferredBranchApply {
+    branch_id: BranchId,
+    generation: CommitBranchGeneration,
+    stamp: CommitStamp,
+    durability: CommitDurabilityClass,
+    rows: Vec<crate::row::StorageRow>,
+}
+
+/// A deferred branch apply packaged with its checked-out state (BS5.4c): a
+/// self-contained unit an applier THREAD can run with no locks and no runtime
+/// access — the state is owned, the budget handle is shared-safe. Produced by
+/// [`LifecycleDurableLocalRuntime::take_deferred_apply_work`] under the
+/// runtime mutex; the outcome (state included) must return to
+/// [`LifecycleDurableLocalRuntime::finish_deferred_apply_work`] under it.
+#[derive(Debug)]
+pub(crate) struct DurableGroupApplyWork {
+    state: BranchLocalState,
+    pending: DeferredBranchApply,
+    budget: StorageBudgetLedger,
+    frozen_before: usize,
+}
+
+/// The result of one [`DurableGroupApplyWork::apply`], carrying the owned
+/// branch state back for restoration.
+#[derive(Debug)]
+pub(crate) struct DurableGroupApplyDone {
+    state: BranchLocalState,
+    branch_id: BranchId,
+    stamp: CommitStamp,
+    durability: CommitDurabilityClass,
+    frozen_before: usize,
+    result: Result<(), CommitRuntimeError>,
+}
+
+impl DurableGroupApplyWork {
+    /// The branch this work applies to (for member-thread routing).
+    pub(crate) fn branch_id(&self) -> BranchId {
+        self.pending.branch_id
+    }
+
+    /// Run the apply against the owned state — callable from ANY thread, no
+    /// locks (the same budget wrapper as an eager member apply).
+    pub(crate) fn apply(self) -> DurableGroupApplyDone {
+        let DurableGroupApplyWork {
+            mut state,
+            pending,
+            budget,
+            frozen_before,
+        } = self;
+        let DeferredBranchApply {
+            branch_id,
+            generation: _,
+            stamp,
+            durability,
+            rows,
+        } = pending;
+        let result = {
+            let mut budgeted = BudgetedCommitBranch::new(&mut state, &budget);
+            CommitBranchApplyTarget::append_committed_rows_atomically(&mut budgeted, rows)
+        };
+        DurableGroupApplyDone {
+            state,
+            branch_id,
+            stamp,
+            durability,
+            frozen_before,
+            result,
+        }
+    }
 }
 
 impl DurableGroupInFlight<'_> {
@@ -1564,6 +1649,12 @@ impl DurableGroupInFlight<'_> {
     /// with at least one member past the WAL).
     pub(crate) const fn ticket(&self) -> Option<&WalGroupSyncTicket<'_>> {
         self.ticket.as_ref()
+    }
+
+    /// The group's commit-state view, for the parallel-apply finish
+    /// (BS5.4c fact widening).
+    pub(crate) const fn group_state(&self) -> &CommitGroupState {
+        &self.group
     }
 
     /// Open gate spans at phase-1 end (see the field doc).
@@ -1682,6 +1773,7 @@ where
                 touched_branches: Vec::new(),
                 ticket: None,
                 concurrent_spans: 0,
+                deferred_applies: Vec::new(),
             };
         }
         // The group frontier starts at the pipeline floor: later members (and
@@ -1691,6 +1783,8 @@ where
         let mut group = CommitGroupState::new(self.pipeline_visibility_floor());
         let mut fatal = false;
         let mut touched_branches: Vec<BranchId> = Vec::new();
+        let mut deferred_applies: Vec<DeferredBranchApply> = Vec::new();
+        let mut eager_branches: Vec<BranchId> = Vec::new();
         for (batch, generation_guard) in members {
             if fatal {
                 results.push(DurableGroupMemberResult {
@@ -1702,7 +1796,37 @@ where
                 continue;
             }
             let branch_id = batch.branch_id();
-            let outcome = self.execute_group_member_commit(batch, generation_guard, &mut group);
+            // Deferral rule (BS5.4): a branch defers its (single) apply while
+            // it has one member in the group. A repeat same-branch member
+            // flushes the pending apply NOW — its conflict validation must
+            // see those rows — and the branch goes eager for the rest of the
+            // group, preserving today's shared-branch semantics exactly.
+            if let Some(position) = deferred_applies
+                .iter()
+                .position(|pending| pending.branch_id == branch_id)
+            {
+                let pending = deferred_applies.swap_remove(position);
+                if let Err(error) = self.apply_deferred_branch(&group, pending) {
+                    results.push(DurableGroupMemberResult {
+                        outcome: Err(error),
+                        admission: self.last_write_admission,
+                    });
+                    fatal = true;
+                    continue;
+                }
+                eager_branches.push(branch_id);
+            }
+            let defer = !eager_branches.contains(&branch_id);
+            let outcome = if defer {
+                self.execute_group_member_commit_deferring_apply(
+                    batch,
+                    generation_guard,
+                    &mut group,
+                    &mut deferred_applies,
+                )
+            } else {
+                self.execute_group_member_commit(batch, generation_guard, &mut group)
+            };
             if outcome.is_ok() && !touched_branches.contains(&branch_id) {
                 touched_branches.push(branch_id);
             }
@@ -1736,6 +1860,7 @@ where
             touched_branches,
             ticket,
             concurrent_spans: self.durable_gate.open_admission_spans(),
+            deferred_applies,
         }
     }
 
@@ -1750,6 +1875,19 @@ where
         in_flight: DurableGroupInFlight<'a>,
         sync_result: Option<Result<(), WalServiceError>>,
     ) -> Vec<DurableGroupMemberResult> {
+        self.execute_durable_commit_group_finish_with_apply_outcome(in_flight, sync_result, false)
+    }
+
+    /// [`execute_durable_commit_group_finish`] for callers that ran the
+    /// group's deferred applies in parallel (BS5.4c): `parallel_apply_fatal`
+    /// carries [`finish_deferred_apply_work`]'s verdict into the group-fatal
+    /// path.
+    pub(crate) fn execute_durable_commit_group_finish_with_apply_outcome(
+        &mut self,
+        in_flight: DurableGroupInFlight<'a>,
+        sync_result: Option<Result<(), WalServiceError>>,
+        parallel_apply_fatal: bool,
+    ) -> Vec<DurableGroupMemberResult> {
         let DurableGroupInFlight {
             mut results,
             group,
@@ -1758,9 +1896,24 @@ where
             touched_branches,
             ticket,
             concurrent_spans: _,
+            deferred_applies,
         } = in_flight;
         if !admitted {
             return results;
+        }
+        fatal |= parallel_apply_fatal;
+        // BS5.4: land the deferred per-branch applies BEFORE durability
+        // settles and visibility publishes. The rows are WAL-durable from
+        // phase 1; an apply failure here records the group's widened
+        // durable-not-applied fact — the same failure class as an eager
+        // member apply — and the group goes fatal without publishing.
+        if !fatal {
+            for pending in deferred_applies {
+                if let Err(_error) = self.apply_deferred_branch(&group, pending) {
+                    fatal = true;
+                    break;
+                }
+            }
         }
         if !fatal {
             match (&ticket, sync_result) {
@@ -1893,6 +2046,223 @@ where
 
     /// Execute one group member: solo-equivalent bootstrap admission (with the gate check in
     /// member mode), the member commit protocol, and the same-lock-hold rotation republish.
+    /// Apply one branch's deferred group rows (BS5.4), with the same budget
+    /// wrapper, rotation republish, and failure fact as an eager member apply.
+    fn apply_deferred_branch(
+        &mut self,
+        group: &CommitGroupState,
+        pending: DeferredBranchApply,
+    ) -> LifecycleResult<()> {
+        let DeferredBranchApply {
+            branch_id,
+            generation,
+            stamp,
+            durability,
+            rows,
+        } = pending;
+        let frozen_before = self
+            .branch_catalog
+            .branch_state(branch_id)?
+            .frozen_table_count();
+        let apply_result = {
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            let mut budgeted = BudgetedCommitBranch::new(branch, &self.budget);
+            CommitBranchApplyTarget::append_committed_rows_atomically(&mut budgeted, rows)
+        };
+        if let Err(source) = apply_result {
+            let reason = "branch state rejected durable commit rows after WAL append";
+            let fact =
+                CommitUnresolvedDurable::durable_not_applied_with_facts(stamp, durability, reason)
+                    .and_then(|fact| group.widen_fact(fact))
+                    .map_err(commit_error)?;
+            // Rationale: recording can only fail when a DIFFERENT fact is
+            // already present; that fact already gates commits, and replay
+            // reconciles this range from the WAL contents.
+            let _ = self.durable_gate.record_unresolved(fact);
+            return Err(commit_error(
+                CommitRuntimeError::durable_but_not_visible_with(
+                    branch_id,
+                    stamp.commit_version(),
+                    reason,
+                    source,
+                ),
+            ));
+        }
+        self.republish_branch_snapshot_after_rotation(branch_id, frozen_before)?;
+        Ok(())
+    }
+
+    /// BS5.4c: drain the in-flight group's deferred applies as owned,
+    /// thread-portable work units (states checked OUT of the catalog).
+    /// Caller contract: runs under the runtime mutex; every unit's outcome
+    /// must come back through [`finish_deferred_apply_work`] before the
+    /// group publishes (also under the mutex). Units left undrained fall
+    /// back to the leader-applied path in
+    /// [`execute_durable_commit_group_finish`].
+    pub(crate) fn take_deferred_apply_work(
+        &mut self,
+        in_flight: &mut DurableGroupInFlight<'a>,
+    ) -> Vec<DurableGroupApplyWork> {
+        if in_flight.fatal {
+            return Vec::new();
+        }
+        let mut work = Vec::with_capacity(in_flight.deferred_applies.len());
+        // Drain back-to-front so a checkout failure leaves the remainder for
+        // the leader-applied fallback in finish.
+        while let Some(pending) = in_flight.deferred_applies.pop() {
+            let Ok(current) = self.branch_catalog.branch_state(pending.branch_id) else {
+                in_flight.deferred_applies.push(pending);
+                break;
+            };
+            let frozen_before = current.frozen_table_count();
+            let Ok(state) = self.branch_catalog.take_branch_state(
+                pending.branch_id,
+                CommitBranchGenerationGuard::exact(pending.generation),
+            ) else {
+                in_flight.deferred_applies.push(pending);
+                break;
+            };
+            work.push(DurableGroupApplyWork {
+                state,
+                pending,
+                budget: self.budget.clone(),
+                frozen_before,
+            });
+        }
+        work
+    }
+
+    /// BS5.4c: restore the checked-out states and fold the apply outcomes.
+    /// Returns whether the group is fatal (any apply failed; the widened
+    /// durable-not-applied fact is recorded). Must run under the runtime
+    /// mutex, before the group publishes.
+    pub(crate) fn finish_deferred_apply_work(
+        &mut self,
+        done: Vec<DurableGroupApplyDone>,
+        group: &CommitGroupState,
+    ) -> bool {
+        let mut fatal = false;
+        for outcome in done {
+            let DurableGroupApplyDone {
+                state,
+                branch_id,
+                stamp,
+                durability,
+                frozen_before,
+                result,
+            } = outcome;
+            // Restore FIRST: even a failed apply returns the state (fail-
+            // closed absence would wedge the branch until reopen).
+            if self.branch_catalog.restore_branch_state(state).is_err() {
+                fatal = true;
+                continue;
+            }
+            match result {
+                Ok(()) => {
+                    // Rationale: republish failure here means the branch
+                    // vanished mid-group (structurally impossible under the
+                    // held mutex); the group-fatal path fails closed.
+                    if self
+                        .republish_branch_snapshot_after_rotation(branch_id, frozen_before)
+                        .is_err()
+                    {
+                        fatal = true;
+                    }
+                }
+                Err(_source) => {
+                    let reason = "branch state rejected durable commit rows after WAL append";
+                    if let Ok(fact) = CommitUnresolvedDurable::durable_not_applied_with_facts(
+                        stamp, durability, reason,
+                    )
+                    .and_then(|fact| group.widen_fact(fact))
+                    {
+                        // Rationale: recording can only fail when a DIFFERENT
+                        // fact is already present; that fact already gates
+                        // commits, and replay reconciles from the WAL.
+                        let _ = self.durable_gate.record_unresolved(fact);
+                    }
+                    fatal = true;
+                }
+            }
+        }
+        fatal
+    }
+
+    /// [`execute_group_member_commit`] with the memtable apply deferred
+    /// (BS5.4): the committed rows are queued per branch and applied before
+    /// the group publishes. Only the branch's FIRST member in the group may
+    /// defer; the caller owns that rule.
+    fn execute_group_member_commit_deferring_apply(
+        &mut self,
+        batch: CommitBatch,
+        generation_guard: CommitBranchGenerationGuard,
+        group: &mut CommitGroupState,
+        deferred_applies: &mut Vec<DeferredBranchApply>,
+    ) -> LifecycleResult<CommitOutcome> {
+        let branch_id = batch.branch_id();
+        let generation =
+            self.admit_durable_commit(&batch, generation_guard, DurableGateAdmission::Member)?;
+        let frozen_before = self
+            .branch_catalog
+            .branch_state(branch_id)?
+            .frozen_table_count();
+        let mut deferred_rows: Option<Vec<crate::row::StorageRow>> = None;
+        let outcome = {
+            let setup_timer = perf_trace::start_timer();
+            let (branch, registry) = self.branch_catalog.branch_state_mut_with_registry(
+                branch_id,
+                CommitBranchGenerationGuard::exact(generation),
+            )?;
+            let mut budgeted_branch = BudgetedCommitBranch::new(branch, &self.budget);
+            let mut runtime = CommitDurableRuntime::new(
+                &self.commit_config,
+                registry,
+                &self.guard_set,
+                &mut self.allocator,
+                &mut budgeted_branch,
+                &mut self.visible,
+                &mut self.services.wal,
+                &self.durable_gate,
+            );
+            perf_trace::record_commit_setup_elapsed(setup_timer);
+            runtime
+                .execute_group_member_deferring_apply(
+                    batch,
+                    generation_guard,
+                    group,
+                    &mut deferred_rows,
+                )
+                .map_err(commit_error)
+        };
+        if let Ok(committed) = &outcome {
+            let rows = deferred_rows
+                .take()
+                .ok_or(LifecycleError::InvalidLifecycleState {
+                    reason: "deferred group member produced no rows to apply",
+                })?;
+            // The member's own stamp for failure-fact context at apply time.
+            let stamp = group
+                .last_stamp()
+                .ok_or(LifecycleError::InvalidLifecycleState {
+                    reason: "deferred group member recorded no stamp",
+                })?;
+            deferred_applies.push(DeferredBranchApply {
+                branch_id,
+                generation,
+                stamp,
+                durability: committed.durability(),
+                rows,
+            });
+            // Rotation cannot have happened (the apply was deferred), but the
+            // check is cheap and keeps this wrapper shape-identical to the
+            // eager one.
+            self.republish_branch_snapshot_after_rotation(branch_id, frozen_before)?;
+        }
+        outcome
+    }
+
     fn execute_group_member_commit(
         &mut self,
         batch: CommitBatch,

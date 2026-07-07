@@ -652,3 +652,58 @@ fn cache_put_batch(branch: BranchId, key: PhysicalKey) -> CommitBatch {
         ),
     )
 }
+
+#[test]
+fn branch_state_checkout_round_trips_and_fails_closed_while_out() {
+    // BS5.4: the write group's parallel apply checks branch states OUT of the
+    // catalog by ownership transfer. While a state is out, every accessor
+    // fails closed (the leader holds the runtime mutex for the whole window,
+    // so this is a same-thread-bug guard, not a concurrency surface).
+    let branch = branch_id(0xa0);
+    let mut catalog = LifecycleBranchCatalog::new(BranchRuntimeConfig::default()).expect("catalog");
+    catalog
+        .create_branch(branch, generation(1), None)
+        .expect("create branch");
+
+    let state = catalog
+        .take_branch_state(branch, CommitBranchGenerationGuard::exact(generation(1)))
+        .expect("checkout");
+    assert_eq!(state.branch_id(), branch);
+
+    // Every access while checked out fails closed.
+    assert!(matches!(
+        catalog.branch_state(branch),
+        Err(LifecycleError::BranchNotWritable { .. })
+    ));
+    assert!(matches!(
+        catalog.branch_state_mut(branch, CommitBranchGenerationGuard::exact(generation(1))),
+        Err(LifecycleError::BranchNotWritable { .. })
+    ));
+    // Double checkout fails closed.
+    assert!(matches!(
+        catalog.take_branch_state(branch, CommitBranchGenerationGuard::exact(generation(1))),
+        Err(LifecycleError::BranchNotWritable { .. })
+    ));
+
+    catalog.restore_branch_state(state).expect("restore");
+    assert!(catalog.branch_state(branch).is_ok());
+}
+
+#[test]
+fn branch_state_restore_rejects_states_that_were_not_checked_out() {
+    let branch = branch_id(0xa1);
+    let mut catalog = LifecycleBranchCatalog::new(BranchRuntimeConfig::default()).expect("catalog");
+    catalog
+        .create_branch(branch, generation(1), None)
+        .expect("create branch");
+
+    // A state that was never checked out (a stray clone) must be refused —
+    // restoring it would silently discard the catalog's live slot semantics.
+    let stray = catalog.branch_state(branch).expect("read state").clone();
+    assert!(matches!(
+        catalog.restore_branch_state(stray),
+        Err(LifecycleError::InvalidLifecycleState { .. })
+    ));
+    // The live slot is untouched.
+    assert!(catalog.branch_state(branch).is_ok());
+}

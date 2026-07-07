@@ -293,10 +293,22 @@ fn multi_read_checked(
 /// - readers observe each writer's batches atomically and never see a batch number regress;
 /// - after the drain, every writer's final batch is the visible state of its key set.
 fn run_multi_writer_stress(runtime: &StorageRuntime<'static>, branch: BranchId, batches: u64) {
+    run_multi_writer_stress_on(runtime, &[branch; MULTI_WRITERS], batches);
+}
+
+/// The multi-writer stress with a branch PER WRITER slot: `branches[w]` is
+/// writer `w`'s target. Distinct branches drive the BS5.4 deferred-apply
+/// group path (each first-of-branch member's apply runs on its own parked
+/// thread); a shared branch drives the eager path. Invariants are identical.
+fn run_multi_writer_stress_on(
+    runtime: &StorageRuntime<'static>,
+    branches: &[BranchId; MULTI_WRITERS],
+    batches: u64,
+) {
     // Seed batch 0 for every writer so checkers always see complete sets.
-    for writer in 0..MULTI_WRITERS {
+    for (writer, branch) in branches.iter().enumerate() {
         runtime
-            .commit(&multi_writer_batch(branch, writer, 0))
+            .commit(&multi_writer_batch(*branch, writer, 0))
             .expect("seed writer batch 0");
     }
 
@@ -306,7 +318,7 @@ fn run_multi_writer_stress(runtime: &StorageRuntime<'static>, branch: BranchId, 
 
     std::thread::scope(|scope| {
         let mut writer_handles = Vec::with_capacity(MULTI_WRITERS);
-        for writer in 0..MULTI_WRITERS {
+        for (writer, &branch) in branches.iter().enumerate() {
             let (runtime, start) = (&runtime, &start);
             writer_handles.push(scope.spawn(move || {
                 start.wait();
@@ -345,7 +357,9 @@ fn run_multi_writer_stress(runtime: &StorageRuntime<'static>, branch: BranchId, 
                 let mut max_seen = [0u64; MULTI_WRITERS];
                 while !done.load(Ordering::Acquire) {
                     for (writer, max_batch) in max_seen.iter_mut().enumerate() {
-                        if let Some(observed) = multi_read_checked(runtime, branch, writer) {
+                        if let Some(observed) =
+                            multi_read_checked(runtime, branches[writer], writer)
+                        {
                             assert!(
                                 observed >= *max_batch,
                                 "checker: writer {writer} batch regressed ({observed} < {max_batch})"
@@ -382,9 +396,9 @@ fn run_multi_writer_stress(runtime: &StorageRuntime<'static>, branch: BranchId, 
     );
 
     // Every writer's final batch is the visible state of its key set.
-    for writer in 0..MULTI_WRITERS {
+    for (writer, branch) in branches.iter().enumerate() {
         assert_eq!(
-            multi_read_checked(runtime, branch, writer),
+            multi_read_checked(runtime, *branch, writer),
             Some(batches),
             "writer {writer}: final visible batch mismatch"
         );
@@ -410,6 +424,30 @@ fn off_lock_concurrent_writers_share_one_durable_runtime() {
     // Fewer batches than the cache variant: this runtime config checkpoints every ~3
     // commits and rotates 2 KB WAL segments, so per-commit cost is deliberately heavy.
     run_multi_writer_stress(&runtime, branch, 40);
+    runtime.close().expect("close durable runtime");
+}
+
+/// Durable mode, one branch PER WRITER: every write group spans distinct
+/// branches, so each member's memtable apply is deferred and runs on its own
+/// parked thread (BS5.4c parallel appliers) — the checkout/restore, barrier,
+/// and per-branch publish must preserve the exact single-branch invariants.
+#[test]
+fn off_lock_concurrent_writers_on_distinct_branches_share_one_durable_runtime() {
+    let mut runtime = open_durable_background("off-lock-multi-branch-writer");
+    let default_branch = StorageRuntime::default_branch_id_for_test();
+    let mut branches = [default_branch; MULTI_WRITERS];
+    for (writer, slot) in branches.iter_mut().enumerate().skip(1) {
+        let branch = branch_id(0xB0 + u8::try_from(writer).expect("small writer index"));
+        runtime
+            .branch(&BranchRequest::new(
+                branch,
+                BranchAction::Create,
+                Some(BranchGeneration::new(1)),
+            ))
+            .expect("create writer branch");
+        *slot = branch;
+    }
+    run_multi_writer_stress_on(&runtime, &branches, 40);
     runtime.close().expect("close durable runtime");
 }
 

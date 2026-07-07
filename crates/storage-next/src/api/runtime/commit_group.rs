@@ -54,6 +54,9 @@ enum JoinState {
     Taken,
     /// Promoted to lead: the waiter takes its request back and leads.
     Promoted(CommitGroupRequest),
+    /// The leader handed this (taken) member its branch's deferred group
+    /// apply (BS5.4c); the waiter runs it lock-free and resumes waiting.
+    Apply(Box<GroupApplyHandoff>),
     // Boxed: the response (~760 bytes) dwarfs the other variants, and each
     // joiner completes at most once.
     Done(Box<CommitGroupResponse>),
@@ -242,6 +245,26 @@ impl CommitGroupQueue {
                 // executing our request right now (possibly a long fsync) —
                 // keep waiting for its completion in both cases.
                 JoinState::Pending(_) | JoinState::Taken => {}
+                JoinState::Apply(_) => {
+                    match std::mem::replace(&mut *state, JoinState::Taken) {
+                        JoinState::Apply(handoff) => {
+                            // Run the apply OFF the joiner mutex (the work is
+                            // owned; the leader may complete us meanwhile).
+                            drop(state);
+                            let GroupApplyHandoff { work, exchange } = *handoff;
+                            exchange.submit(work.apply());
+                            let Ok(again) = joiner.state.lock() else {
+                                return WaitOutcome::Abandoned;
+                            };
+                            state = again;
+                            // Re-match immediately: the response may already
+                            // be in.
+                            continue;
+                        }
+                        // Unreachable: matched Apply under this hold.
+                        _ => return WaitOutcome::Abandoned,
+                    }
+                }
                 JoinState::Promoted(_) | JoinState::Done(_) => {
                     match std::mem::replace(&mut *state, JoinState::Taken) {
                         JoinState::Promoted(request) => return WaitOutcome::Lead(request),
@@ -555,5 +578,81 @@ mod tests {
             // Guard dropped here without an explicit finish.
         }
         assert!(matches!(queue.join(request(2)), JoinPath::Lead(_)));
+    }
+}
+
+/// The leader→member handoff of one branch's deferred group apply (BS5.4c):
+/// the work is fully owned (checked-out state, no locks), the exchange
+/// collects the outcome back for the leader's barrier.
+#[derive(Debug)]
+pub(super) struct GroupApplyHandoff {
+    pub(super) work: crate::lifecycle::DurableGroupApplyWork,
+    pub(super) exchange: Arc<GroupApplyExchange>,
+}
+
+/// Barrier collecting parallel group-apply outcomes (BS5.4c): appliers submit
+/// as they finish; the leader waits for the expected count. The timed wait is
+/// a lost-wake safety net only.
+#[derive(Debug, Default)]
+pub(super) struct GroupApplyExchange {
+    returns: Mutex<Vec<crate::lifecycle::DurableGroupApplyDone>>,
+    done: Condvar,
+}
+
+impl GroupApplyExchange {
+    pub(super) fn submit(&self, outcome: crate::lifecycle::DurableGroupApplyDone) {
+        if let Ok(mut returns) = self.returns.lock() {
+            returns.push(outcome);
+        }
+        // Rationale: a poisoned exchange mutex means the leader panicked; the
+        // outcome (and its checked-out state) is unrecoverable either way.
+        self.done.notify_all();
+    }
+
+    /// Wait until `expected` outcomes arrived and drain them. A member thread
+    /// dying mid-apply is panic-class (process-fatal by policy); the bounded
+    /// deadline turns it into a fail-closed short count instead of a hang —
+    /// the leader treats missing outcomes as group-fatal and their branches
+    /// stay checked out (every access fails closed until reopen).
+    pub(super) fn wait_for(&self, expected: usize) -> Vec<crate::lifecycle::DurableGroupApplyDone> {
+        if expected == 0 {
+            // Nothing was dispatched (C1 wasm always lands here: groups of 1
+            // route the sole apply to the leader) — never touch the clock or
+            // the condvar.
+            return Vec::new();
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let Ok(mut returns) = self.returns.lock() else {
+            return Vec::new();
+        };
+        while returns.len() < expected && std::time::Instant::now() < deadline {
+            let Ok((next, _timeout)) = self.done.wait_timeout(returns, Duration::from_millis(20))
+            else {
+                return Vec::new();
+            };
+            returns = next;
+        }
+        std::mem::take(&mut *returns)
+    }
+}
+
+impl CommitGroupJoiner {
+    /// Leader-side (BS5.4c): hand this (taken, parked) member its branch's
+    /// deferred apply. Returns the handoff back if the member is not in the
+    /// taken state (the leader then applies the work itself).
+    pub(super) fn request_apply(
+        &self,
+        handoff: Box<GroupApplyHandoff>,
+    ) -> Result<(), Box<GroupApplyHandoff>> {
+        let Ok(mut state) = self.state.lock() else {
+            return Err(handoff);
+        };
+        if !matches!(&*state, JoinState::Taken) {
+            return Err(handoff);
+        }
+        *state = JoinState::Apply(handoff);
+        drop(state);
+        self.ready.notify_one();
+        Ok(())
     }
 }

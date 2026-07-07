@@ -212,6 +212,25 @@ The Standard remainder is attributed (protocol capacity + intentional throttle p
 with reopening criteria and recommended sequencing recorded in the plan doc's milestone-
 exit section — see `bs5-write-concurrency-plan.md` § Perf validation.
 
+## Parallel per-branch group apply (BS5.4, dev box, same instrument, medians of 3)
+
+The multi-branch measurement met BS5.4's trigger: per-writer-branch Standard was flat at
+~35–39K across 1–8T (identical to shared-branch — the serialized group protocol, not the
+branch guards, was the ceiling), with ~13 µs of the ~17 µs per-member protocol
+per-branch-parallelizable (apply 8.3 µs the dominant term). The landed remedy keeps the
+memtable single-writer (D2) and parallelizes across branches: first-of-branch group
+members hand their WAL-durable rows back instead of applying; the leader checks each
+deferred branch's state out of the catalog (ownership transfer; accessors fail closed
+while out) and hands each apply to its member's parked thread; a barrier restores every
+state before the runtime lock drops (checked-out states are never observable across
+groups). Results: **per-writer 8T 39.2K → 53.2K (+36%, 1.51× single-writer)** — 2.5× the
+21K pre-milestone baseline — with per-thread fairness tightening from a 23–42K spread to
+20.1–20.2K; 1T/2T/4T within noise (group occupancy too low to pay the barrier at ≤4T);
+shared-branch, Always (fsync-bound), single-thread, and cache all unchanged. New
+multi-branch multi-writer stress + checkout fail-closed tests; recovery oracle, fault
+sweeps, and group byte-identity anchors green (the deferral moves WHEN rows apply, never
+what the WAL or the publish contains).
+
 BS5.1 also removed two pre-lock writer serializers found with the new instrument: the
 commit-timestamp base and the durability-mode resolution both took the full runtime lock per
 commit (writers queued behind an in-flight fsync before ever reaching the commit path — the

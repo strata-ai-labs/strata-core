@@ -265,7 +265,7 @@ where
         batch: CommitBatch,
         generation_guard: CommitBranchGenerationGuard,
     ) -> CommitRuntimeResult<CommitOutcome> {
-        self.execute_with_role(batch, generation_guard, CommitGroupRole::Solo, None)
+        self.execute_with_role(batch, generation_guard, CommitGroupRole::Solo, None, None)
     }
 
     /// Solo execution with a pipeline visibility floor (BS5.2): the branch-
@@ -280,7 +280,13 @@ where
         generation_guard: CommitBranchGenerationGuard,
         floor: CommitVersion,
     ) -> CommitRuntimeResult<CommitOutcome> {
-        self.execute_with_role(batch, generation_guard, CommitGroupRole::Solo, Some(floor))
+        self.execute_with_role(
+            batch,
+            generation_guard,
+            CommitGroupRole::Solo,
+            Some(floor),
+            None,
+        )
     }
 
     /// Execute one member of a write group (BS5.1). The caller is the group
@@ -300,6 +306,31 @@ where
             generation_guard,
             CommitGroupRole::Member(group),
             None,
+            None,
+        )
+    }
+
+    /// Member execution with the memtable apply DEFERRED (BS5.4 parallel
+    /// cross-branch apply): everything through the WAL append runs exactly as
+    /// [`execute_group_member`], but the committed rows are returned through
+    /// `deferred_rows` instead of applied — the caller applies them against
+    /// the branch's checked-out state before the group publishes. Only legal
+    /// for a branch's FIRST member in the group (a later same-branch member's
+    /// conflict source must see the earlier rows applied); the caller owns
+    /// that rule.
+    pub(crate) fn execute_group_member_deferring_apply(
+        &mut self,
+        batch: CommitBatch,
+        generation_guard: CommitBranchGenerationGuard,
+        group: &mut CommitGroupState,
+        deferred_rows: &mut Option<Vec<StorageRow>>,
+    ) -> CommitRuntimeResult<CommitOutcome> {
+        self.execute_with_role(
+            batch,
+            generation_guard,
+            CommitGroupRole::Member(group),
+            None,
+            Some(deferred_rows),
         )
     }
 
@@ -309,6 +340,7 @@ where
         generation_guard: CommitBranchGenerationGuard,
         role: CommitGroupRole<'_>,
         visibility_floor: Option<CommitVersion>,
+        deferred_rows: Option<&mut Option<Vec<StorageRow>>>,
     ) -> CommitRuntimeResult<CommitOutcome> {
         let admission_timer = perf_trace::start_timer();
         let batch = batch.validate(self.config)?;
@@ -398,20 +430,29 @@ where
         )?;
 
         let combined_rows = record.into_commit_payload().into_rows();
-        let apply_timer = perf_trace::start_timer();
-        let apply_result = self.branch.append_committed_rows_atomically(combined_rows);
-        perf_trace::record_commit_exec_apply_elapsed(apply_timer);
-        if let Err(source) = apply_result {
-            let reason = "branch state rejected durable commit rows after WAL append";
-            let fact =
-                CommitUnresolvedDurable::durable_not_applied_with_facts(stamp, durability, reason)?;
-            record_unresolved_for_participation(&mut participation, self.durable_gate, fact)?;
-            return Err(CommitRuntimeError::durable_but_not_visible_with(
-                branch_id,
-                stamp.commit_version(),
-                reason,
-                source,
-            ));
+        if let Some(deferred) = deferred_rows {
+            // BS5.4: hand the committed rows to the caller for the group's
+            // deferred (parallel, per-branch) apply. Post-WAL failure handling
+            // moves with the apply: a deferred apply failure records the same
+            // widened durable-not-applied fact at the group level.
+            *deferred = Some(combined_rows);
+        } else {
+            let apply_timer = perf_trace::start_timer();
+            let apply_result = self.branch.append_committed_rows_atomically(combined_rows);
+            perf_trace::record_commit_exec_apply_elapsed(apply_timer);
+            if let Err(source) = apply_result {
+                let reason = "branch state rejected durable commit rows after WAL append";
+                let fact = CommitUnresolvedDurable::durable_not_applied_with_facts(
+                    stamp, durability, reason,
+                )?;
+                record_unresolved_for_participation(&mut participation, self.durable_gate, fact)?;
+                return Err(CommitRuntimeError::durable_but_not_visible_with(
+                    branch_id,
+                    stamp.commit_version(),
+                    reason,
+                    source,
+                ));
+            }
         }
 
         let facts = visible_durable_facts(stamp)?;

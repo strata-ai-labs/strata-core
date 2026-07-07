@@ -142,10 +142,10 @@ pub(crate) use config::{
 )]
 pub(crate) use durable::{
     DurableBackgroundMaintenanceBuild, DurableBackgroundMaintenanceBuilt,
-    DurableBackgroundMaintenanceStep, DurableGroupInFlight, DurableGroupMemberResult,
-    LifecycleDurableAssemblyFacts, LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime,
-    LifecycleDurableLocalServices, LifecycleDurableLocalShell, LifecycleRecoveryBootstrapReport,
-    PreparedPublishStep,
+    DurableBackgroundMaintenanceStep, DurableGroupApplyDone, DurableGroupApplyWork,
+    DurableGroupInFlight, DurableGroupMemberResult, LifecycleDurableAssemblyFacts,
+    LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime, LifecycleDurableLocalServices,
+    LifecycleDurableLocalShell, LifecycleRecoveryBootstrapReport, PreparedPublishStep,
 };
 #[allow(
     unused_imports,

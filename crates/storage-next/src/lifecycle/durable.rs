@@ -37,8 +37,8 @@ mod close;
 mod maintenance;
 
 pub(crate) use bootstrap::{
-    DurableGroupInFlight, DurableGroupMemberResult, LifecycleDurableLocalRuntime,
-    LifecycleRecoveryBootstrapReport,
+    DurableGroupApplyDone, DurableGroupApplyWork, DurableGroupInFlight, DurableGroupMemberResult,
+    LifecycleDurableLocalRuntime, LifecycleRecoveryBootstrapReport,
 };
 pub(crate) use maintenance::{
     DurableBackgroundMaintenanceBuild, DurableBackgroundMaintenanceBuilt,

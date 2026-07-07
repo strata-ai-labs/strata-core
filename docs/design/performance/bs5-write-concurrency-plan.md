@@ -455,13 +455,67 @@ sequence pinning, freeze/rotation semantics, iterator order) run as a property t
 concurrent-insert stress with pinned readers (no torn reads, pins stable); orphan-sweep
 test (unpublished rows never surface, eventually collected); BS2 stress re-run.
 
-### BS5.4 — Per-branch sharding (deferred unless measured)
+### BS5.4 — Per-branch parallel group apply (measured, then LANDED 2026-07-07)
 
 With the branch guards already per-branch and BS5.2's off-mutex fast path, different-branch
 commits already parallelize up to the commit-protocol lock. Sharding the catalog/registry
-(per-branch runtime state partitions, M4P-L8I Group E) is recorded as
+(per-branch runtime state partitions, M4P-L8I Group E) was recorded as
 **deferred-unless-measured**: build only if the BS5.0 multi-branch benchmark shows the
 commit-protocol lock or structural-transition mutex as the multi-branch ceiling.
+
+**Measurement (trigger met).** Per-writer-branch `Standard` throughput was flat at every
+thread count (~35–39K, identical to shared-branch) — the serialized group protocol, not
+the branch guards, was the multi-branch ceiling. `--perf-breakdown` decomposed the ~17 µs
+per-member protocol into apply 8.3 µs + WAL append 3.0 µs + admit 2.3 µs + stage 1.7 µs +
+post-maintenance 1.5 µs: ~13 µs is per-branch-parallelizable, ~4 µs is the true serial
+floor. `Always` per-writer at 8T was fsync-bound (~1,009) — sharding is irrelevant there.
+
+**Remedy (cheaper than full sharding or the SkipMap).** The memtable stays single-writer
+(D2 intact); parallelism comes from applying DIFFERENT branches' rows on different
+threads:
+
+- **5.4a — branch-state checkout.** `LifecycleBranchCatalog::take_branch_state` /
+  `restore_branch_state` transfer ownership of one branch's `BranchLocalState` out of the
+  catalog (a `checked_out` side-list records it; every accessor fails closed with
+  `BranchNotWritable { state: "checked out" }` while out). No catalog refactor — the
+  117 call sites are untouched.
+- **5.4b — deferring member protocol.** A group member whose branch appears for the FIRST
+  time in the group appends to the WAL as before but hands its committed rows back
+  (`DeferredBranchApply`) instead of applying; a SECOND same-branch member flushes the
+  pending apply eagerly first (its conflict source must see the earlier rows) and the
+  branch goes eager for the rest of the group — shared-branch groups are byte-identical
+  by construction. Apply order across branches is not load-bearing (rows are keyed by
+  `(physical_key, version)`; visibility is publish-gated).
+- **5.4c — parallel appliers on member threads.** Under the leader's runtime-lock hold
+  (phase 1 for `Always`, the single hold for `Standard`), the leader checks each deferred
+  branch's state out, wraps it with the budget handle as a self-contained
+  `DurableGroupApplyWork`, and hands each unit to its member's parked thread via the
+  joiner (`JoinState::Apply`); members apply lock-free on owned state and submit outcomes
+  to a `GroupApplyExchange` barrier while the leader applies the remainder. The leader
+  restores every state and folds failures (the widened durable-not-applied fact — same
+  class as an eager apply failure) BEFORE the lock drops, so checked-out states are never
+  observable across groups: the next `Always` group forming during this group's fsync
+  sees a fully restored catalog. A missing outcome (member thread death, panic-class) is
+  group-fatal and leaves that branch checked out — fail-closed until reopen.
+
+**Results (dev box, medians of 3, per-writer branches, `Standard`):** 1T/2T unchanged
+(~35K/34K — group occupancy too low to pay for the barrier), 4T ~37.5K (flat, groups
+mostly 2–3 wide), **8T 39.2K → 53.2K (+36%, 1.51× single-writer)** with per-thread
+fairness tightening from 23–42K spread to 20.1–20.2K (the barrier round-robins members).
+Shared-branch (~34–36K at every thread count) and `Always` (~500/4T, ~1,020/8T,
+fsync-bound) unchanged. Single-thread within noise every mode.
+
+**Tests.** Catalog checkout round-trip + fail-closed unit tests; multi-branch multi-writer
+stress (`off_lock_concurrent_writers_on_distinct_branches_share_one_durable_runtime`: one
+branch per writer drives the deferred path under real background maintenance — atomicity,
+monotonic acked versions, global version uniqueness, read-your-writes, final visibility);
+the shared-branch stresses, group byte-identity anchors, recovery oracle, and fault
+sweeps re-run green (deferral moves WHEN rows apply, never what the WAL or the publish
+contains).
+
+Full catalog/registry sharding remains out of scope: the remaining serial floor (~4 µs
+admission + allocation + gate) is below the throttle-pacing residual recorded at the
+milestone exit, so the same reopening criteria govern.
 
 ## Perf validation (milestone exit)
 
@@ -478,7 +532,10 @@ Control = BS4-final binary; treatment = per slice; the BS5.0 benchmark is the in
      at ~3.9× ideal); the curve through 8 threads carries the gate's substance —
      **substance met, exact-4T number machine-bound.**
    - `Standard`: **~1.7× at 4T (21K flat → ~35K at every thread count, +67%)** —
-     **gate DELIBERATELY PARKED, not abandoned.** BS5.3c closed the attribution: the
+     **gate DELIBERATELY PARKED, not abandoned.** (BS5.4, landed after this status was
+     recorded, subsequently lifted the PER-WRITER-BRANCH 8T cell to **53.2K — 2.5× the
+     21K pre-milestone baseline**; the 4T single- and shared-branch cells the gate is
+     stated against are unchanged, so the parked status stands.) BS5.3c closed the attribution: the
      remaining gap decomposes into (a) the ~16 µs serialized commit protocol (apply
      7.4 µs, WAL append 3.5 µs) and (b) BS3's write-throttle admission pacing (~20% of
      wall under the sustained bench load as the default memory budget fills —
@@ -503,8 +560,9 @@ Control = BS4-final binary; treatment = per slice; the BS5.0 benchmark is the in
 3. **Secondary:** `Always`-mode single-writer latency (group formation must not add
    latency when uncontended — empty-queue fast path); mixed writers+readers stress
    throughput; multi-branch scaling (BS5.4 gate data). **Met** — solo-in-Always
-   pipelines as group-of-1 at unchanged throughput; per-writer branches 3.2× at 4T;
-   BS5.4 remains deferred-unless-measured per its own section.
+   pipelines as group-of-1 at unchanged throughput; the multi-branch measurement
+   triggered BS5.4, which landed parallel per-branch group applies (per-writer
+   branches 8T: 39.2K → 53.2K; see the BS5.4 section).
 4. Recovery oracle + fault sweep + group-boundary crash sweeps green — **mandatory every
    slice**; ledger rows per slice. **Met every slice** (group-boundary sweeps landed in
    BS5.2d).
@@ -541,7 +599,7 @@ Control = BS4-final binary; treatment = per slice; the BS5.0 benchmark is the in
 
 ## Sequencing & PR discipline
 
-BS5.0 → BS5.1 → BS5.2 → (BS5.3 measure-gated) → (BS5.4 deferred-unless-measured). One PR
+BS5.0 → BS5.1 → BS5.2 → (BS5.3 measure-gated) → (BS5.4 measured → landed). One PR
 per slice, `BS5.{n}` titles, ≤1,500 LOC net, standing gates every slice (full suite +
 recovery oracle + fault sweep + wasm check-build + cache-mode suites + clippy/fmt).
 Depends on BS4 (re-baselined numbers; the block cache absorbs the read side of mixed
@@ -556,4 +614,6 @@ workloads); BS2's visible-atomic and snapshot machinery are prerequisites for BS
   acquisitions — measure in BS5.1.
 - The lock-free CAS join + spin/park ladder (RocksDB `write_thread.cc`) — adopt only if
   the queue mutex shows contention at N ≥ 8.
-- BS5.4 trigger criteria — defined by the BS5.0 multi-branch baseline.
+- ~~BS5.4 trigger criteria — defined by the BS5.0 multi-branch baseline.~~ Resolved:
+  the multi-branch bench showed the serialized protocol as the ceiling; BS5.4 landed
+  parallel per-branch group applies (see its section).
