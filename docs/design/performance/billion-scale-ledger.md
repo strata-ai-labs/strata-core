@@ -292,6 +292,51 @@ fork-only run samples at maximum post-load compaction debt and did not converge 
 — re-run with the full workload ladder (as the baseline was measured) alongside the
 reopen-after-load investigation. Full narrative in bs5-write-concurrency-plan.md § BS5.5.
 
+## Next-levers session (2026-07-07, post-BS5.5): fork validated, reopen attributed, graded admission bake-off
+
+**Fork latency (10M, full ladder): VALIDATED.** p50 72.8ms → 86.9ms, **p95 2.72s → 100ms,
+p99 107.8ms** — the BS5.5 off-lock GC removed the fork tail entirely.
+
+**Reopen-after-load: attributed to WAL replay, two layers.** The full-ladder 10M reopen
+measured 223.5s (was 15.8s at the baseline) — but reader opens were flat (8,826 vs 8,947)
+and the delta is replay volume, not the BS4.5b lazy-open path:
+1. **Pre-existing elephant: replay runs at ~365µs/row.** `classify_replay_row` performs a
+   FULL history walk (`BranchHistoryOptions::all()`) per replayed row for idempotence
+   classification — measured 7 source probes per row (1.39M probes for a 198K-row tail at
+   1M; 72s reopen after a load-only close). The duplicate check needs an exact
+   (key, version) existence probe with early exit, not an all-sources history walk.
+   Fix candidate: bounded/exact-version probe in replay classification — expected 10-50×
+   on replay-heavy reopens. NEW SLICE.
+2. **BS5.5 fattened the un-checkpointed tail at close** (223s vs 15.8s ≈ 600K-row vs
+   ~45K-row tail at 365µs/row): live GC (sweep staging + purge + re-mark chains) competes
+   for drain slots/worker time with checkpoint and flush-watermark cadence during the
+   ladder. Quantify alongside the replay fix; the 1M control showed close-tail parity
+   pre/post BS5.5 at load-only, so the interaction is ladder-cadence-specific.
+   Instrument landed: the l9 reopen cell now prints replay_rows / replay_probes /
+   replay_history_calls.
+
+**Graded admission bake-off (BS3.4c): graded wins every cell.** engine-ycsb durable on
+the idle second NVMe (/data2), interleaved 3×3 on A plus B/F and a 512MiB small-budget
+gate, legacy vs `STRATA_ADMISSION=graded`:
+
+| Cell | legacy | graded |
+|---|---|---|
+| A (50/50) median of 3 | 10.8K ops/s (7.9–13.2K) | **15.8K** (13.4–16.2K) |
+| A update p99 | 0.6–2.2ms | ~1.1ms |
+| A update max | 41–52ms | 304–337ms (bounded near-stop brake) |
+| B (95r/5u) | 17.7K | **576K** (32×) |
+| F (50r/50rmw) | 7.6K | **12.1K** |
+| A @ 512MiB budget | 6.6K, 21K pressure rejects | **8.9K**, 6K rejects |
+
+Stall-wall preserved (wait_timeouts=0 in every cell); the small-budget cell IMPROVES
+under graded (fewer rejects, third the block-wait). The legacy P-controller paces by pool
+fullness, so light writers (B) pay constantly; graded paces by compaction debt, so they
+ride free. The one trade is the bounded ~330ms worst-case pause from the near-stop brake
+(vs legacy ~45ms) — by design, and 70× better than the pre-BS5.5 22.6s stalls.
+**Recommendation: flip graded to the default admission mode** (keep `STRATA_ADMISSION`
+as the escape hatch until M10 hardening); decision is the product call reserved by the
+BS5 milestone exit.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
