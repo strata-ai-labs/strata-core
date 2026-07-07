@@ -180,6 +180,19 @@ fn run_workload(
             perf.lifecycle_background_task_total_ns() as f64 / 1e6,
             perf.lifecycle_background_task_snapshot_lock_ns() as f64 / 1e6,
         );
+        eprintln!(
+            "  [probe] bg split: rounds={} tasks_completed={} start_lock_ms={:.0} unlocked_build_ms={:.0} publish_lock_ms={:.0}",
+            perf.lifecycle_background_drain_rounds(),
+            perf.lifecycle_background_tasks_completed(),
+            perf.lifecycle_background_task_snapshot_lock_ns() as f64 / 1e6,
+            perf.lifecycle_background_task_unlocked_build_ns() as f64 / 1e6,
+            perf.lifecycle_background_task_publish_lock_ns() as f64 / 1e6,
+        );
+        eprintln!(
+            "  [probe] low-tier under lock: runs={} total_ms={:.0}",
+            perf.lifecycle_background_task_low_tier_runs(),
+            perf.lifecycle_background_task_low_tier_ns() as f64 / 1e6,
+        );
     }
 
     Ok(WorkloadResult {

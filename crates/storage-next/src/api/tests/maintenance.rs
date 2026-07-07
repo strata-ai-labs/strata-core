@@ -1328,6 +1328,86 @@ fn api_cow_fork_child_pins_shared_objects_against_gc() {
     assert_eq!(child_value, b"pre-fork");
 }
 
+/// The same mark → sweep → purge chain driven by the BACKGROUND drain rounds
+/// (BS5.5): the sweep's per-object staging and the purge's deletes run OFF the
+/// runtime lock through `SweepStage` / `PurgeStage` steps on worker threads.
+/// The inline `drain_maintenance` variant above cannot reach that path.
+#[cfg(feature = "localfs")]
+#[test]
+fn api_background_gc_reclaims_superseded_table_objects_off_lock() {
+    let root = temp_dir_for_api_test("maintenance-gc-background-off-lock");
+    let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        backend,
+    )
+    .expect("open durable runtime")
+    .into_runtime();
+
+    runtime.commit(&put_batch(b"gc-a", b"one")).expect("commit");
+    runtime
+        .flush_default_branch_for_test()
+        .expect("flush first L0 table");
+    runtime.commit(&put_batch(b"gc-a", b"two")).expect("commit");
+    runtime.commit(&put_batch(b"gc-b", b"x")).expect("commit");
+    runtime
+        .flush_default_branch_for_test()
+        .expect("flush second L0 table");
+    let before = table_data_object_files(&root);
+    assert!(
+        before.len() >= 2,
+        "two flushes must produce at least two data objects, got {}",
+        before.len()
+    );
+
+    let compact =
+        MaintenanceRequest::new(MaintenanceTask::Compact, MaintenanceScope::Branch(branch()));
+    runtime.maintenance(&compact).expect("compact");
+    // Let the BACKGROUND workers run the chain: compaction publish enqueues the
+    // mark, the mark chains the sweep (off-lock staging), the sweep chains the
+    // purge (off-lock deletes). Each link needs a wake, and a quiescent runtime
+    // only wakes on commits — so nudge with unrelated commits, exactly the way
+    // a live workload drives the chain.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut nudge = 0u64;
+    loop {
+        runtime
+            .commit(&put_batch(format!("gc-nudge-{nudge}").as_bytes(), b"n"))
+            .expect("nudge commit");
+        nudge += 1;
+        runtime.wait_background_idle_for_test();
+        let after = table_data_object_files(&root);
+        if before.iter().all(|superseded| !after.contains(superseded)) {
+            assert!(
+                !after.is_empty(),
+                "the compaction output object must survive the sweep",
+            );
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background GC did not reclaim superseded objects: before={before:?} after={after:?}",
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let value = runtime
+        .read_point(&PointReadRequest::new(
+            branch(),
+            engine_space(),
+            api_key(b"gc-a"),
+            ReadBound::Latest,
+        ))
+        .expect("read after background gc")
+        .row()
+        .and_then(|row| row.value().map(|value| value.as_bytes().to_vec()));
+    assert_eq!(
+        value,
+        Some(b"two".to_vec()),
+        "reads must stay correct after off-lock reclaim",
+    );
+    runtime.close().expect("close durable runtime");
+}
+
 /// Reader interlock: the sweep defers while a retired read view is still held (durable readers
 /// are name-addressed with no held fd — deleting a superseded source object would break their
 /// block fetches), and proceeds once the reader drops it.

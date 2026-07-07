@@ -517,6 +517,50 @@ Full catalog/registry sharding remains out of scope: the remaining serial floor 
 admission + allocation + gate) is below the throttle-pacing residual recorded at the
 milestone exit, so the same reopening criteria govern.
 
+### BS5.5 — Off-lock GC staging (post-milestone addendum, LANDED 2026-07-07)
+
+The v1 end-to-end baseline (engine-ycsb, 1KB single-put commits) exposed a stall class
+the small-row storage instrument never exercised: durable writes ran at 2.6K ops/s with
+multi-second maxima (up to 22.6s), and the new `engine-ycsb --perf-breakdown` attributed
+it to background maintenance holding the runtime lock — 38.6s cumulative in a 36.5s run
+against ~0.5s of commit-stage work.
+
+**Attribution (two layers, both fixed).** The ledger's first guess — compaction merges
+under the lock — was WRONG: flush, compaction, checkpoint, and WAL truncation already
+build off-lock (BS5.3b's Build steps). The real thieves were in the LOW tier:
+
+1. **Retention's eager mark scan.** `run_next_retention_maintenance` computed the
+   O(branches × tables) pinned-object mark BEFORE checking whether a retention task was
+   even pending — and the drain ladder's bottom rung entered the low-tier runners on
+   every empty poll. 37K empty probes × ~0.8ms = 29.7s under the lock per YCSB-A run.
+   Fixed with a task-existence check before the scan and a
+   `has_pending_low_tier_maintenance` guard at the ladder bottom.
+2. **GC staging I/O under the lock.** The remaining ~71 real executions each held the
+   lock ~320ms: the table-object sweep stages every marked object into quarantine (a
+   durable publish plus a source delete — several fsyncs each, 32 objects per pass) and
+   the purge deletes quarantined objects, all inside the drain's start-section hold.
+   Fixed with the Build treatment: `SweepStage` / `PurgeStage` steps capture owned
+   inputs under the lock (including a cloned `QuarantineService<'static>`), run the
+   per-object I/O with the lock RELEASED, and fold outcomes back under a short hold.
+   Safety: the mark still runs under the lock with the build/reader interlocks, and
+   unreachability is monotone — table identities are never reused, so a build starting
+   during off-lock staging cannot re-reference a marked object. Staging and purge are
+   idempotent (`AlreadyQuarantined` / source-missing fold as progress), so crash or
+   repetition never double-counts.
+
+**Results (dev box, YCSB durable, 100K × 1KB).** Foreground runtime-lock wait
+23.0s → 0.05–0.2s per run (>100×); background under-lock time 36.2s → ~0.2s; update
+tail max 22,600ms → **50ms** (p99.9 ~14ms). Throughput: A 2.6K → ~3.2K, B 5.5K → 11.9K,
+F 1.9K → 2.4K; C/D/E unchanged. The residual wall is BS3 write-throttle pacing — the
+milestone exit's parked calibration question, now cleanly isolated as the next lever.
+
+**Tests.** New end-to-end background-GC test
+(`api_background_gc_reclaims_superseded_table_objects_off_lock`) drives the mark →
+off-lock sweep → off-lock purge chain through real worker threads (the inline
+`drain_maintenance` variant cannot reach the new steps); full suites, fault sweeps,
+recovery oracle, format goldens, wasm check green. The inline task-id entry points are
+retained for the explicit-drain path and its existing suites.
+
 ## Perf validation (milestone exit)
 
 Control = BS4-final binary; treatment = per slice; the BS5.0 benchmark is the instrument.

@@ -275,6 +275,23 @@ for. Next lever (new slice, measure-gated): move compaction merge/build off the 
 lock (flush already builds off-lock via BS5.3b's identity install) or chunk merges with
 writers-first yields.
 
+## Off-lock GC staging (BS5.5, dev box, engine-ycsb instrument, 2026-07-07)
+
+Correction to the entry above: the "under-lock compaction merge" attribution was wrong —
+builds were already off-lock. The dominant stall was the GC low tier: retention's
+O(tables) mark scan ran on every empty drain poll BEFORE checking a task existed
+(29.7s/36.5s under lock, 37K probes), and the sweep/purge executions held the lock
+~320ms each for per-object quarantine publishes and deletes. BS5.5 landed: existence
+check before the mark, a pending guard at the drain ladder bottom, and `SweepStage` /
+`PurgeStage` off-lock staging steps (mark and interlocks stay under the lock;
+unreachability is monotone so staging cannot race builds). YCSB durable: fg lock wait
+23.0s → 0.05–0.2s, update max 22.6s → **50ms**, B 5.5K → 11.9K ops/s, A/F +20–25%.
+Remaining wall = BS3 throttle pacing (the parked calibration question, now isolated).
+The l9-10M fork-latency re-validation (baseline p50 72.8ms / p95 2.7s) is PENDING: a
+fork-only run samples at maximum post-load compaction debt and did not converge in-session
+— re-run with the full workload ladder (as the baseline was measured) alongside the
+reopen-after-load investigation. Full narrative in bs5-write-concurrency-plan.md § BS5.5.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

@@ -182,6 +182,8 @@ pub struct StoragePerfSnapshot {
     lifecycle_background_task_snapshot_lock_ns: u64,
     lifecycle_background_task_unlocked_build_ns: u64,
     lifecycle_background_task_publish_lock_ns: u64,
+    lifecycle_background_task_low_tier_ns: u64,
+    lifecycle_background_task_low_tier_runs: u64,
     lifecycle_background_publish_manifest_persist_ns: u64,
     lifecycle_background_publish_offlock_ns: u64,
     lifecycle_background_task_total_ns: u64,
@@ -1050,6 +1052,17 @@ impl StoragePerfSnapshot {
     /// Nanoseconds spent holding the runtime lock while publishing background task output.
     pub const fn lifecycle_background_task_publish_lock_ns(self) -> u64 {
         self.lifecycle_background_task_publish_lock_ns
+    }
+
+    /// Nanoseconds low-tier maintenance (retention/purge/quarantine/repair)
+    /// ran INSIDE the drain's start-section lock hold.
+    pub const fn lifecycle_background_task_low_tier_ns(self) -> u64 {
+        self.lifecycle_background_task_low_tier_ns
+    }
+
+    /// Low-tier maintenance executions timed by the counter above.
+    pub const fn lifecycle_background_task_low_tier_runs(self) -> u64 {
+        self.lifecycle_background_task_low_tier_runs
     }
     /// Nanoseconds spent persisting the table manifest (durable write + fsync)
     /// within the locked publish window; subtract from publish-lock time to
@@ -2617,6 +2630,10 @@ static LIFECYCLE_BACKGROUND_TASK_UNLOCKED_BUILD_NS: AtomicU64 = AtomicU64::new(0
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_TASK_LOW_TIER_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_BACKGROUND_TASK_LOW_TIER_RUNS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_BACKGROUND_PUBLISH_MANIFEST_PERSIST_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_BACKGROUND_PUBLISH_OFFLOCK_NS: AtomicU64 = AtomicU64::new(0);
@@ -3335,6 +3352,8 @@ pub fn reset() {
     LIFECYCLE_BACKGROUND_TASK_SNAPSHOT_LOCK_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_TASK_UNLOCKED_BUILD_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_TASK_LOW_TIER_NS.store(0, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_TASK_LOW_TIER_RUNS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_PUBLISH_MANIFEST_PERSIST_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_PUBLISH_OFFLOCK_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_BACKGROUND_TASK_TOTAL_NS.store(0, Ordering::Relaxed);
@@ -3805,6 +3824,10 @@ pub fn snapshot() -> StoragePerfSnapshot {
         lifecycle_background_task_snapshot_lock_ns: LIFECYCLE_BACKGROUND_TASK_SNAPSHOT_LOCK_NS
             .load(Ordering::Relaxed),
         lifecycle_background_task_unlocked_build_ns: LIFECYCLE_BACKGROUND_TASK_UNLOCKED_BUILD_NS
+            .load(Ordering::Relaxed),
+        lifecycle_background_task_low_tier_ns: LIFECYCLE_BACKGROUND_TASK_LOW_TIER_NS
+            .load(Ordering::Relaxed),
+        lifecycle_background_task_low_tier_runs: LIFECYCLE_BACKGROUND_TASK_LOW_TIER_RUNS
             .load(Ordering::Relaxed),
         lifecycle_background_task_publish_lock_ns: LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS
             .load(Ordering::Relaxed),
@@ -5256,6 +5279,21 @@ pub(crate) fn record_lifecycle_background_task_publish_lock(duration: std::time:
         return;
     }
     LIFECYCLE_BACKGROUND_TASK_PUBLISH_LOCK_NS.fetch_add(
+        u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
+        Ordering::Relaxed,
+    );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_background_task_low_tier(_duration: std::time::Duration) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_background_task_low_tier(duration: std::time::Duration) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_BACKGROUND_TASK_LOW_TIER_RUNS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_BACKGROUND_TASK_LOW_TIER_NS.fetch_add(
         u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
         Ordering::Relaxed,
     );
