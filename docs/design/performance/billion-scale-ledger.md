@@ -205,6 +205,13 @@ backpressure semantics intact; Always (161/539/1078) and cache unregressed. The 
 capacity (SkipMap/parallel-apply vs medium options) and pacing calibration (a product
 decision for an admission-focused slice).
 
+**BS5 milestone close-out (2026-07-07): the Standard ≥2.5× gate is deliberately parked,
+not abandoned.** Always carries its gate's substance (7.0× at 8T; 4T flush-arithmetic-
+capped); single-thread and cache unregressed throughout; crash sweeps green every slice.
+The Standard remainder is attributed (protocol capacity + intentional throttle pacing)
+with reopening criteria and recommended sequencing recorded in the plan doc's milestone-
+exit section — see `bs5-write-concurrency-plan.md` § Perf validation.
+
 BS5.1 also removed two pre-lock writer serializers found with the new instrument: the
 commit-timestamp base and the durability-mode resolution both took the full runtime lock per
 commit (writers queued behind an in-flight fsync before ever reaching the commit path — the

@@ -467,17 +467,47 @@ commit-protocol lock or structural-transition mutex as the multi-branch ceiling.
 
 Control = BS4-final binary; treatment = per slice; the BS5.0 benchmark is the instrument.
 
+**Milestone exit status (recorded at BS5.3c close, 2026-07-07, dev-box medians of 3):**
+
 1. **Primary (gate):** write scaling at 4 writer threads — `Always` mode ≥ **4×**
    single-writer throughput (group fsync amortization is the dominant term); `Standard`
    mode ≥ **2.5×**. Near-linearity band to 8 threads recorded, not gated (memory-bandwidth
    and WAL-lock ceilings expected).
+   - `Always`: **3.5× at 4T / 7.0× at 8T** (160 → 553 / 1,117). The 4T number is capped by
+     flush arithmetic on the dev box (one ~6.2 ms device flush per round bounds 4 threads
+     at ~3.9× ideal); the curve through 8 threads carries the gate's substance —
+     **substance met, exact-4T number machine-bound.**
+   - `Standard`: **~1.7× at 4T (21K flat → ~35K at every thread count, +67%)** —
+     **gate DELIBERATELY PARKED, not abandoned.** BS5.3c closed the attribution: the
+     remaining gap decomposes into (a) the ~16 µs serialized commit protocol (apply
+     7.4 µs, WAL append 3.5 µs) and (b) BS3's write-throttle admission pacing (~20% of
+     wall under the sustained bench load as the default memory budget fills —
+     intentional backpressure, not waste). Neither residual is a lock-hygiene fix:
+     closing it requires the SkipMap + parallel-apply restructuring (D2 change, group-
+     orphan rollback, 3–5 slices) and/or a pacing-calibration decision that trades write
+     throughput against memory headroom (a product call — the same binary targets
+     512 MB devices). Full data and sequencing analysis in the BS5.3c section above.
+   - **Reopening criteria:** (i) the admission-focused slice that runs BS3.4c's
+     graded-admission bake-off (pacing calibration belongs there, with stall-wall and
+     small-budget guardrails as hard gates); (ii) real multi-writer workload data once
+     the engine/executor layers run on storage-next (decides whether the SkipMap
+     complexity is workload-motivated); (iii) the milestone review choosing to restate
+     the gate against unpaced protocol capacity. Recommended order if reopened:
+     admission A/B → single-write WAL group batching (~1–2 µs at 4T+) → re-measure →
+     SkipMap only if still short.
 2. **Primary (gate):** single-threaded scoreboard cells within noise of BS4 baseline
-   (group-of-1 equivalence makes this structural, the gate verifies it).
+   (group-of-1 equivalence makes this structural, the gate verifies it). **Met** —
+   single-thread byte- and throughput-identical every slice (`Always` 159–162 across
+   BS5.0→5.3c; `Standard` 1T improved with the same fixes that improved 4T/8T; cache
+   identical).
 3. **Secondary:** `Always`-mode single-writer latency (group formation must not add
    latency when uncontended — empty-queue fast path); mixed writers+readers stress
-   throughput; multi-branch scaling (BS5.4 gate data).
+   throughput; multi-branch scaling (BS5.4 gate data). **Met** — solo-in-Always
+   pipelines as group-of-1 at unchanged throughput; per-writer branches 3.2× at 4T;
+   BS5.4 remains deferred-unless-measured per its own section.
 4. Recovery oracle + fault sweep + group-boundary crash sweeps green — **mandatory every
-   slice**; ledger rows per slice.
+   slice**; ledger rows per slice. **Met every slice** (group-boundary sweeps landed in
+   BS5.2d).
 
 ## Cross-cutting constraints (umbrella §2b)
 
