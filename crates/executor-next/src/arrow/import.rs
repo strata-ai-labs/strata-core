@@ -6,7 +6,7 @@ use crate::error::ExecutorResult;
 use crate::output::Output;
 use crate::types::{
     ArrowFileFormat, ArrowImportResult, ArrowImportTarget, BatchJsonEntry, BatchKvEntry,
-    BatchVectorEntry, Bytes, VectorDistanceMetric,
+    BatchVectorEntry, Bytes,
 };
 use crate::{Command, Executor};
 
@@ -15,7 +15,7 @@ use super::reader::read_file;
 use super::schema::{
     json_document, key_bytes, resolve_mapping, value_bytes, vector_embedding, vector_metadata,
 };
-use super::{invalid_input, required_option, unexpected_output};
+use super::{invalid_input, not_found, required_option, unexpected_output};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn import_file(
@@ -93,8 +93,8 @@ fn import_kv(
             let Output::BatchResults(results) = output else {
                 return Err(unexpected_output("kv_batch_put"));
             };
-            for result in results {
-                if result.error().is_some() || !result.applied() {
+            for item in results.items() {
+                if item.error_status().is_some() || !item.applied() {
                     counts.rows_skipped += 1;
                 } else {
                     counts.rows_imported += 1;
@@ -139,8 +139,8 @@ fn import_json(
             let Output::JsonBatchResults(results) = output else {
                 return Err(unexpected_output("json_batch_set"));
             };
-            for result in results {
-                if result.error().is_some() {
+            for item in results.items() {
+                if item.error_status().is_some() {
                     counts.rows_skipped += 1;
                 } else {
                     counts.rows_imported += 1;
@@ -161,7 +161,7 @@ fn import_vector(
     mapping: &super::schema::ImportMapping,
 ) -> ExecutorResult<ImportCounts> {
     let mut counts = ImportCounts::default();
-    let mut collection_ready = collection_exists(executor, branch, space, collection)?;
+    let collection_ready = collection_exists(executor, branch, space, collection)?;
     for batch in batches {
         let mut entries = Vec::with_capacity(batch.num_rows());
         for row in 0..batch.num_rows() {
@@ -180,8 +180,15 @@ fn import_vector(
                 continue;
             };
             if !collection_ready {
-                create_vector_collection(executor, branch, space, collection, vector.len())?;
-                collection_ready = true;
+                // The executor must not invent a distance metric (a semantic the
+                // metric cannot be inferred from the data); require the target
+                // collection to pre-exist so the user chooses it explicitly.
+                return Err(not_found(
+                    "not_found.executor.vector_collection",
+                    format!(
+                        "vector collection `{collection}` does not exist; create it with the desired distance metric before importing (Arrow import does not create vector collections)"
+                    ),
+                ));
             }
             let metadata = vector_metadata(batch, mapping, row)?;
             entries.push(BatchVectorEntry::new(key, vector, metadata));
@@ -196,8 +203,8 @@ fn import_vector(
             let Output::VectorBatchUpsertResults(results) = output else {
                 return Err(unexpected_output("vector_batch_upsert"));
             };
-            for result in results {
-                if result.error().is_some() || !result.applied() {
+            for item in results.items() {
+                if item.error_status().is_some() || !item.applied() {
                     counts.rows_skipped += 1;
                 } else {
                     counts.rows_imported += 1;
@@ -219,34 +226,11 @@ fn collection_exists(
         branch: branch.map(str::to_owned),
         space: space.map(str::to_owned),
     })?;
-    let Output::VectorCollectionList(collections) = output else {
+    let Output::VectorCollectionList {
+        items: collections, ..
+    } = output
+    else {
         return Err(unexpected_output("vector_list_collections"));
     };
     Ok(collections.iter().any(|entry| entry.name() == collection))
-}
-
-fn create_vector_collection(
-    executor: &mut Executor,
-    branch: Option<&str>,
-    space: Option<&str>,
-    collection: &str,
-    dimension: usize,
-) -> ExecutorResult<()> {
-    let dimension = u64::try_from(dimension).map_err(|_| {
-        invalid_input(
-            "invalid_argument.executor.arrow_vector_dimension",
-            "vector dimension does not fit u64",
-        )
-    })?;
-    let output = executor.execute(Command::VectorCreateCollection {
-        branch: branch.map(str::to_owned),
-        space: space.map(str::to_owned),
-        collection: collection.to_owned(),
-        dimension,
-        metric: VectorDistanceMetric::Cosine,
-    })?;
-    let Output::VectorCollectionList(_) = output else {
-        return Err(unexpected_output("vector_create_collection"));
-    };
-    Ok(())
 }

@@ -355,12 +355,6 @@ impl<R> RuntimeSlot<R> {
             .map(|background| background.shutdown(timeout))
     }
 
-    pub(super) fn request_background_shutdown(&self) -> Option<MaintenanceExecutorStats> {
-        self.background
-            .as_ref()
-            .map(BackgroundRuntimeController::request_shutdown)
-    }
-
     #[cfg(test)]
     pub(super) fn background_shutdown_requested_flag(&self) -> Option<Arc<AtomicBool>> {
         self.background
@@ -492,7 +486,17 @@ where
 
 impl<R> Drop for RuntimeSlot<R> {
     fn drop(&mut self) {
-        let _ = self.request_background_shutdown();
+        // Join the workers (bounded, same policy as close), don't just signal:
+        // an in-flight background task holds the runtime Arc — and with it the
+        // backend writer lock — so a signal-only drop leaves a window where an
+        // immediate reopen of the same database fails EWOULDBLOCK (post-delete
+        // GC publishes a pending-releases manifest through several fsyncs).
+        // Drop must release the lock deterministically; the timeout preserves
+        // liveness by detaching workers that fail to quiesce, exactly like the
+        // close path.
+        // Rationale: shutdown stats are close()'s diagnostics concern; a drop
+        // site has no caller to report them to.
+        let _ = self.shutdown_background(Some(super::DEFAULT_BACKGROUND_CLOSE_SHUTDOWN_TIMEOUT));
     }
 }
 
@@ -683,13 +687,6 @@ impl BackgroundRuntimeController {
             stats: self.executor.stats(),
             first_shutdown,
         }
-    }
-
-    fn request_shutdown(&self) -> MaintenanceExecutorStats {
-        if !self.close_requested.swap(true, Ordering::AcqRel) {
-            let _ = self.executor.request_shutdown();
-        }
-        self.executor.stats()
     }
 
     #[cfg(test)]

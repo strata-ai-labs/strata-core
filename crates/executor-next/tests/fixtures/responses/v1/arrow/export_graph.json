@@ -1,0 +1,13 @@
+{
+  "type": "arrow_export_result",
+  "data": {
+    "primitive": "graph",
+    "format": "parquet",
+    "paths": [
+      "graph_nodes.parquet",
+      "graph_edges.parquet"
+    ],
+    "row_count": 11,
+    "size_bytes": 1024
+  }
+}

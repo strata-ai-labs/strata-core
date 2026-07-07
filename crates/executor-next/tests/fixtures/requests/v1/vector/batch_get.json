@@ -1,0 +1,8 @@
+{
+  "type": "vector_batch_get",
+  "collection": "docs",
+  "keys": [
+    "doc-a",
+    "missing"
+  ]
+}

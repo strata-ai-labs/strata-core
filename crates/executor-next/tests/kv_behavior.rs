@@ -2,7 +2,8 @@
 
 use strata_engine_next::{CacheOpenOptions, Database};
 use strata_executor_next::{
-    BatchKvEntry, Bytes, Command, Executor, ExecutorErrorClass, Output, DEFAULT_BRANCH,
+    BatchKvEntry, Bytes, Command, Executor, ExecutorErrorClass, MutationEffectKind, Output,
+    VersionedValue, DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -10,6 +11,136 @@ use tempfile::TempDir;
 fn cache_executor_runs_complete_kv_command_suite() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
     run_kv_command_suite(&mut executor);
+}
+
+#[test]
+fn kv_write_outputs_report_commit_receipts_and_effects() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    let created = executor
+        .execute(Command::KvPut {
+            branch: None,
+            space: None,
+            key: bytes("effect-key"),
+            value: bytes("one"),
+        })
+        .expect("create succeeds");
+    let Output::WriteResult { effect, commit, .. } = created else {
+        panic!("unexpected create output: {created:?}");
+    };
+    assert_eq!(effect.kind(), MutationEffectKind::Created);
+    assert!(effect.applied());
+    assert!(!effect.matched());
+    assert_eq!(effect.affected_count(), 1);
+    assert_eq!(commit.put_count(), 1);
+    assert_eq!(commit.delete_count(), 0);
+
+    let updated = executor
+        .execute(Command::KvPut {
+            branch: None,
+            space: None,
+            key: bytes("effect-key"),
+            value: bytes("two"),
+        })
+        .expect("update succeeds");
+    let Output::WriteResult { effect, commit, .. } = updated else {
+        panic!("unexpected update output: {updated:?}");
+    };
+    assert_eq!(effect.kind(), MutationEffectKind::Updated);
+    assert!(effect.applied());
+    assert!(effect.matched());
+    assert_eq!(commit.put_count(), 1);
+    assert_eq!(commit.delete_count(), 0);
+
+    let deleted = executor
+        .execute(Command::KvDelete {
+            branch: None,
+            space: None,
+            key: bytes("effect-key"),
+        })
+        .expect("delete succeeds");
+    let Output::DeleteResult { effect, commit, .. } = deleted else {
+        panic!("unexpected delete output: {deleted:?}");
+    };
+    assert_eq!(effect.kind(), MutationEffectKind::Deleted);
+    assert!(effect.applied());
+    assert!(effect.matched());
+    assert!(commit.is_some());
+
+    let missing = executor
+        .execute(Command::KvDelete {
+            branch: None,
+            space: None,
+            key: bytes("effect-key"),
+        })
+        .expect("missing delete succeeds");
+    let Output::DeleteResult { effect, commit, .. } = missing else {
+        panic!("unexpected missing delete output: {missing:?}");
+    };
+    assert_eq!(effect.kind(), MutationEffectKind::NotFound);
+    assert!(!effect.applied());
+    assert!(!effect.matched());
+    assert_eq!(effect.affected_count(), 0);
+    assert!(commit.is_none());
+}
+
+#[test]
+fn kv_batch_write_outputs_report_per_item_commit_receipts_and_effects() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    write(&mut executor, None, None, "batch-effect-existing", "old");
+
+    let output = executor
+        .execute(Command::KvBatchPut {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchKvEntry::new(bytes("batch-effect-created"), bytes("new")),
+                BatchKvEntry::new(bytes("batch-effect-existing"), bytes("updated")),
+            ],
+        })
+        .expect("batch put succeeds");
+    let Output::BatchResults(results) = output else {
+        panic!("unexpected batch put output: {output:?}");
+    };
+    assert_eq!(results.len(), 2);
+    let created = results[0].effect().expect("created effect");
+    assert_eq!(created.kind(), MutationEffectKind::Created);
+    assert!(created.applied());
+    assert!(!created.matched());
+    let updated = results[1].effect().expect("updated effect");
+    assert_eq!(updated.kind(), MutationEffectKind::Updated);
+    assert!(updated.applied());
+    assert!(updated.matched());
+    let batch_commit = results[0].commit().expect("created commit");
+    assert_eq!(batch_commit.put_count(), 2);
+    assert_eq!(batch_commit.delete_count(), 0);
+    assert_eq!(
+        results[1].commit().expect("updated commit").version(),
+        batch_commit.version()
+    );
+
+    let output = executor
+        .execute(Command::KvBatchDelete {
+            branch: None,
+            space: None,
+            keys: vec![bytes("batch-effect-created"), bytes("batch-effect-missing")],
+        })
+        .expect("batch delete succeeds");
+    let Output::BatchResults(results) = output else {
+        panic!("unexpected batch delete output: {output:?}");
+    };
+    assert_eq!(results.len(), 2);
+    let deleted = results[0].effect().expect("deleted effect");
+    assert_eq!(deleted.kind(), MutationEffectKind::Deleted);
+    assert!(deleted.applied());
+    assert!(deleted.matched());
+    let missing = results[1].effect().expect("missing effect");
+    assert_eq!(missing.kind(), MutationEffectKind::NotFound);
+    assert!(!missing.applied());
+    assert!(!missing.matched());
+    assert!(results[0].commit().is_some());
+    assert!(results[1].commit().is_none());
 }
 
 #[test]
@@ -129,7 +260,10 @@ fn branch_commands_delegate_to_engine_branch_service() {
     let listed = executor
         .execute(Command::BranchList)
         .expect("branch list succeeds");
-    let Output::Branches(branches) = listed else {
+    let Output::Branches {
+        items: branches, ..
+    } = listed
+    else {
         panic!("branch list output");
     };
     assert!(branches
@@ -143,9 +277,19 @@ fn branch_commands_delegate_to_engine_branch_service() {
             branch: "scratch".to_owned(),
         })
         .expect("branch delete succeeds");
-    let Output::BranchDeleteResult { branch, .. } = deleted else {
+    let Output::BranchDeleteResult {
+        deleted,
+        effect,
+        branch,
+        ..
+    } = deleted
+    else {
         panic!("branch delete output");
     };
+    assert!(deleted);
+    assert_eq!(effect.kind(), MutationEffectKind::Deleted);
+    assert!(effect.applied());
+    assert!(effect.matched());
     assert_eq!(branch.name(), "scratch");
 
     let error = executor
@@ -248,8 +392,8 @@ fn command_to_output_mapping_is_explicit_for_every_variant() {
     assert!(matches!(outputs[0], Output::WriteResult { .. }));
     assert!(matches!(outputs[1], Output::KvVersionedValue(_)));
     assert!(matches!(outputs[2], Output::DeleteResult { .. }));
-    assert!(matches!(outputs[3], Output::Keys(_)));
-    assert!(matches!(outputs[4], Output::KvScanResult(_)));
+    assert!(matches!(outputs[3], Output::Keys { .. }));
+    assert!(matches!(outputs[4], Output::KvScanResult { .. }));
     assert!(matches!(outputs[5], Output::BatchResults(_)));
     assert!(matches!(outputs[6], Output::BatchGetResults(_)));
     assert!(matches!(outputs[7], Output::BatchResults(_)));
@@ -282,7 +426,7 @@ fn duplicate_batch_writes_fail_before_partial_application() {
 fn empty_batches_return_empty_outputs() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
 
-    assert_eq!(
+    assert!(matches!(
         executor
             .execute(Command::KvBatchPut {
                 branch: None,
@@ -290,9 +434,9 @@ fn empty_batches_return_empty_outputs() {
                 entries: Vec::new(),
             })
             .expect("empty batch put succeeds"),
-        Output::BatchResults(Vec::new())
-    );
-    assert_eq!(
+        Output::BatchResults(results) if results.is_empty() && !results.applied()
+    ));
+    assert!(matches!(
         executor
             .execute(Command::KvBatchDelete {
                 branch: None,
@@ -300,9 +444,9 @@ fn empty_batches_return_empty_outputs() {
                 keys: Vec::new(),
             })
             .expect("empty batch delete succeeds"),
-        Output::BatchResults(Vec::new())
-    );
-    assert_eq!(
+        Output::BatchResults(results) if results.is_empty() && !results.applied()
+    ));
+    assert!(matches!(
         executor
             .execute(Command::KvBatchGet {
                 branch: None,
@@ -310,8 +454,8 @@ fn empty_batches_return_empty_outputs() {
                 keys: Vec::new(),
             })
             .expect("empty batch get succeeds"),
-        Output::BatchGetResults(Vec::new())
-    );
+        Output::BatchGetResults(results) if results.is_empty() && !results.applied()
+    ));
 }
 
 #[test]
@@ -334,6 +478,10 @@ fn invalid_batch_items_are_positional_errors() {
     assert_eq!(results.len(), 2);
     assert!(!results[0].applied());
     assert!(results[0].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("item error status").code(),
+        "invalid_argument.engine.kv_key"
+    );
     assert!(results[1].applied());
     assert_eq!(execute_get(&mut executor, "valid"), Some(bytes("good")));
 
@@ -349,6 +497,10 @@ fn invalid_batch_items_are_positional_errors() {
     };
     assert_eq!(results.len(), 2);
     assert!(results[0].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("item error status").code(),
+        "invalid_argument.engine.kv_key"
+    );
     assert_eq!(results[1].value(), Some(&bytes("good")));
 
     let output = executor
@@ -363,6 +515,10 @@ fn invalid_batch_items_are_positional_errors() {
     };
     assert_eq!(results.len(), 2);
     assert!(results[0].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("item error status").code(),
+        "invalid_argument.engine.kv_key"
+    );
     assert!(results[1].applied());
     assert!(execute_get(&mut executor, "valid").is_none());
 }
@@ -414,10 +570,11 @@ fn run_kv_command_suite(executor: &mut Executor) {
     write(executor, None, None, "delete-me", "gone");
 
     assert_eq!(execute_get(executor, "alpha"), Some(bytes("one-updated")));
-    assert_eq!(
-        execute_get_as_of(executor, "alpha", first.timestamp),
-        Some(bytes("one"))
-    );
+    let first_as_of =
+        execute_get_as_of(executor, "alpha", first.timestamp).expect("historical value exists");
+    assert_eq!(first_as_of.value(), &bytes("one"));
+    assert_eq!(first_as_of.version(), first.version);
+    assert_eq!(first_as_of.timestamp(), first.timestamp);
     assert!(execute_exists(executor, "alpha"));
     assert!(!execute_exists(executor, "missing"));
 
@@ -492,9 +649,13 @@ fn write(
         })
         .expect("put succeeds")
     {
-        Output::WriteResult {
-            version, timestamp, ..
-        } => WriteFacts { version, timestamp },
+        Output::WriteResult { effect, commit, .. } => {
+            assert!(effect.applied());
+            WriteFacts {
+                version: commit.version(),
+                timestamp: commit.timestamp(),
+            }
+        }
         output => panic!("unexpected put output: {output:?}"),
     }
 }
@@ -519,12 +680,43 @@ fn batch_put(executor: &mut Executor, entries: Vec<(&str, &str)>) {
         .expect("batch put succeeds")
     {
         Output::BatchResults(results) => {
-            assert!(results
-                .iter()
-                .all(strata_executor_next::BatchItemResult::applied));
+            assert!(results.iter().all(strata_executor_next::BatchItem::applied));
         }
         output => panic!("unexpected batch put output: {output:?}"),
     }
+}
+
+#[test]
+fn commands_resolve_omitted_space_from_the_executor_session_default() {
+    // CLI-4: the executor owns space session context. A command that omits its
+    // space resolves to the session default — the mechanism `command run`
+    // relies on so raw JSON honors --space — not the literal "default" space.
+    let mut executor = Executor::open_cache()
+        .expect("cache executor opens")
+        .with_default_space("app")
+        .expect("session space set");
+    assert_eq!(executor.default_space(), "app");
+
+    executor
+        .execute(Command::KvPut {
+            branch: None,
+            space: None,
+            key: bytes("k"),
+            value: bytes("v"),
+        })
+        .expect("put succeeds");
+
+    // The write landed in the session space, not the literal "default" space.
+    assert_eq!(
+        execute_get_in(&mut executor, None, Some("app"), "k"),
+        Some(bytes("v"))
+    );
+    assert_eq!(
+        execute_get_in(&mut executor, None, Some("default"), "k"),
+        None
+    );
+    // A read that also omits the space resolves to "app" and finds it.
+    assert_eq!(execute_get(&mut executor, "k"), Some(bytes("v")));
 }
 
 fn execute_get(executor: &mut Executor, key: &str) -> Option<Bytes> {
@@ -564,7 +756,7 @@ fn execute_get_in(
     }
 }
 
-fn execute_get_as_of(executor: &mut Executor, key: &str, as_of: u64) -> Option<Bytes> {
+fn execute_get_as_of(executor: &mut Executor, key: &str, as_of: u64) -> Option<VersionedValue> {
     match executor
         .execute(Command::KvGet {
             branch: None,
@@ -574,7 +766,7 @@ fn execute_get_as_of(executor: &mut Executor, key: &str, as_of: u64) -> Option<B
         })
         .expect("historical get succeeds")
     {
-        Output::KvValue(value) => value,
+        Output::KvVersionedValue(value) => value,
         output => panic!("unexpected historical get output: {output:?}"),
     }
 }
@@ -588,7 +780,7 @@ fn execute_delete(executor: &mut Executor, key: &str) -> bool {
         })
         .expect("delete succeeds")
     {
-        Output::DeleteResult { deleted, .. } => deleted,
+        Output::DeleteResult { effect, .. } => effect.applied(),
         output => panic!("unexpected delete output: {output:?}"),
     }
 }
@@ -605,7 +797,7 @@ fn execute_list(executor: &mut Executor, prefix: Option<&str>) -> Vec<Bytes> {
         })
         .expect("list succeeds")
     {
-        Output::Keys(keys) => keys,
+        Output::Keys { items: keys, .. } => keys,
         output => panic!("unexpected list output: {output:?}"),
     }
 }
@@ -627,7 +819,7 @@ fn execute_list_page(
         })
         .expect("list page succeeds")
     {
-        Output::KeysPage { keys, has_more, .. } => (keys, has_more),
+        Output::KeysPage { items: keys, page } => (keys, page.has_more()),
         output => panic!("unexpected list page output: {output:?}"),
     }
 }
@@ -644,8 +836,72 @@ fn execute_list_as_of(executor: &mut Executor, prefix: Option<&str>, as_of: u64)
         })
         .expect("historical list succeeds")
     {
-        Output::Keys(keys) => keys,
+        Output::Keys { items: keys, .. } => keys,
         output => panic!("unexpected historical list output: {output:?}"),
+    }
+}
+
+#[test]
+fn kv_scan_paginates_honestly_with_a_cursor() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    for i in 0..6 {
+        executor
+            .execute(Command::KvPut {
+                branch: None,
+                space: None,
+                key: bytes(&format!("k{i}")),
+                value: bytes("v"),
+            })
+            .expect("put succeeds");
+    }
+
+    // DSGN-2: page through in chunks of 2. The union of pages must be all six
+    // keys with no overlap and no gap, and only the final page ends (cursor
+    // None). Previously every scan lied with a terminal page (cursor None),
+    // truncating callers to the first page.
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    let mut start: Option<Bytes> = None;
+    let mut pages = 0;
+    loop {
+        let (keys, cursor) = scan_page(&mut executor, start, 2);
+        assert!(keys.len() <= 2);
+        seen.extend(keys.iter().map(|key| key.as_slice().to_vec()));
+        pages += 1;
+        assert!(pages <= 6, "pagination did not terminate");
+        match cursor {
+            Some(next) => start = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(pages, 3);
+    seen.sort();
+    let mut deduped = seen.clone();
+    deduped.dedup();
+    assert_eq!(deduped.len(), seen.len(), "no duplicate keys across pages");
+    let mut expected: Vec<Vec<u8>> = (0..6).map(|i| format!("k{i}").into_bytes()).collect();
+    expected.sort();
+    assert_eq!(seen, expected);
+}
+
+fn scan_page(
+    executor: &mut Executor,
+    start: Option<Bytes>,
+    limit: u64,
+) -> (Vec<Bytes>, Option<Bytes>) {
+    match executor
+        .execute(Command::KvScan {
+            branch: None,
+            space: None,
+            start,
+            limit: Some(limit),
+        })
+        .expect("scan succeeds")
+    {
+        Output::KvScanResult { items, page } => (
+            items.iter().map(|item| item.key().clone()).collect(),
+            page.cursor().cloned(),
+        ),
+        output => panic!("unexpected scan output: {output:?}"),
     }
 }
 
@@ -663,7 +919,7 @@ fn execute_scan(
         })
         .expect("scan succeeds")
     {
-        Output::KvScanResult(rows) => rows
+        Output::KvScanResult { items: rows, .. } => rows
             .into_iter()
             .take_while(|row| row.key().as_slice().starts_with(b"prefix-"))
             .map(|row| (row.key().clone(), row.value().clone()))
@@ -757,7 +1013,9 @@ fn execute_sample(executor: &mut Executor, prefix: Option<&str>, count: u64) -> 
         })
         .expect("sample succeeds")
     {
-        Output::SampleResult { total_count, items } => (
+        Output::SampleResult {
+            total_count, items, ..
+        } => (
             total_count,
             items.into_iter().map(|item| item.key().clone()).collect(),
         ),
@@ -776,6 +1034,7 @@ fn assert_history_has_tombstone(executor: &mut Executor, key: &str) {
     {
         Output::VersionHistory(Some(history)) => assert!(
             history
+                .items()
                 .iter()
                 .any(strata_executor_next::HistoryItem::is_tombstone),
             "history should include a tombstone"

@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use strata_engine_next::{CacheOpenOptions, Database};
 use strata_executor_next::{
     BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, Bytes, Command, Executor,
-    ExecutorErrorClass, JsonIndexType, Output, DEFAULT_BRANCH,
+    ExecutorErrorClass, JsonIndexType, MutationEffectKind, Output, DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -12,6 +12,191 @@ use tempfile::TempDir;
 fn cache_executor_runs_complete_json_command_suite() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
     run_json_command_suite(&mut executor);
+}
+
+#[test]
+fn json_write_outputs_report_commit_receipts_and_effects() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    let created = executor
+        .execute(Command::JsonSet {
+            branch: None,
+            space: None,
+            key: "effect-doc".to_owned(),
+            path: "$".to_owned(),
+            value: json!({"name": "Ada"}),
+        })
+        .expect("create succeeds");
+    let Output::JsonWriteResult {
+        key,
+        effect,
+        commit,
+    } = created
+    else {
+        panic!("unexpected create output: {created:?}");
+    };
+    assert_eq!(key, "effect-doc");
+    assert_eq!(effect.kind(), MutationEffectKind::Created);
+    assert!(effect.applied());
+    assert!(!effect.matched());
+    assert_eq!(commit.put_count(), 1);
+    assert_eq!(commit.delete_count(), 0);
+
+    let updated = executor
+        .execute(Command::JsonSet {
+            branch: None,
+            space: None,
+            key: "effect-doc".to_owned(),
+            path: "$.name".to_owned(),
+            value: json!("Grace"),
+        })
+        .expect("update succeeds");
+    let Output::JsonWriteResult {
+        key,
+        effect,
+        commit,
+    } = updated
+    else {
+        panic!("unexpected update output: {updated:?}");
+    };
+    assert_eq!(key, "effect-doc");
+    assert_eq!(effect.kind(), MutationEffectKind::Updated);
+    assert!(effect.applied());
+    assert!(effect.matched());
+    assert_eq!(commit.put_count(), 1);
+    assert_eq!(commit.delete_count(), 0);
+
+    let deleted = executor
+        .execute(Command::JsonDelete {
+            branch: None,
+            space: None,
+            key: "effect-doc".to_owned(),
+            path: "$".to_owned(),
+        })
+        .expect("delete succeeds");
+    let Output::JsonDeleteResult {
+        key,
+        effect,
+        commit,
+    } = deleted
+    else {
+        panic!("unexpected delete output: {deleted:?}");
+    };
+    assert_eq!(key, "effect-doc");
+    assert_eq!(effect.kind(), MutationEffectKind::Deleted);
+    assert!(effect.applied());
+    assert!(effect.matched());
+    assert!(commit.is_some());
+
+    let missing = executor
+        .execute(Command::JsonDelete {
+            branch: None,
+            space: None,
+            key: "effect-doc".to_owned(),
+            path: "$".to_owned(),
+        })
+        .expect("missing delete succeeds");
+    let Output::JsonDeleteResult {
+        key,
+        effect,
+        commit,
+    } = missing
+    else {
+        panic!("unexpected missing delete output: {missing:?}");
+    };
+    assert_eq!(key, "effect-doc");
+    assert_eq!(effect.kind(), MutationEffectKind::NotFound);
+    assert!(!effect.applied());
+    assert!(!effect.matched());
+    assert_eq!(effect.affected_count(), 0);
+    assert!(commit.is_none());
+}
+
+#[test]
+fn json_batch_write_outputs_report_per_item_commit_receipts_and_effects() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    write_json(
+        &mut executor,
+        None,
+        None,
+        "batch-effect-existing",
+        "$",
+        json!({"name": "Ada"}),
+    );
+
+    let output = executor
+        .execute(Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonEntry::new("batch-effect-created", "$", json!({"name": "Grace"})),
+                BatchJsonEntry::new("batch-effect-created", "$.lang", json!("rust")),
+                BatchJsonEntry::new("batch-effect-existing", "$.name", json!("Katherine")),
+            ],
+        })
+        .expect("JSON batch set succeeds");
+    let Output::JsonBatchResults(results) = output else {
+        panic!("unexpected JSON batch set output: {output:?}");
+    };
+    assert_eq!(results.len(), 3);
+    let created = results[0].effect().expect("created effect");
+    assert_eq!(created.kind(), MutationEffectKind::Created);
+    assert!(created.applied());
+    assert!(!created.matched());
+    assert_eq!(results[0].document_version(), Some(1));
+    let repeated_update = results[1].effect().expect("repeated update effect");
+    assert_eq!(repeated_update.kind(), MutationEffectKind::Updated);
+    assert!(repeated_update.applied());
+    assert!(repeated_update.matched());
+    assert_eq!(results[1].document_version(), Some(2));
+    let existing_update = results[2].effect().expect("existing update effect");
+    assert_eq!(existing_update.kind(), MutationEffectKind::Updated);
+    assert!(existing_update.applied());
+    assert!(existing_update.matched());
+    assert_eq!(results[2].document_version(), Some(2));
+    let batch_commit = results[0].commit().expect("created commit");
+    assert_eq!(batch_commit.put_count(), 2);
+    assert_eq!(batch_commit.delete_count(), 0);
+    assert_eq!(
+        results[1]
+            .commit()
+            .expect("repeated update commit")
+            .version(),
+        batch_commit.version()
+    );
+    assert_eq!(
+        results[2]
+            .commit()
+            .expect("existing update commit")
+            .version(),
+        batch_commit.version()
+    );
+
+    let output = executor
+        .execute(Command::JsonBatchDelete {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonDeleteEntry::new("batch-effect-created", "$"),
+                BatchJsonDeleteEntry::new("batch-effect-missing", "$"),
+            ],
+        })
+        .expect("JSON batch delete succeeds");
+    let Output::JsonBatchResults(results) = output else {
+        panic!("unexpected JSON batch delete output: {output:?}");
+    };
+    assert_eq!(results.len(), 2);
+    let deleted = results[0].effect().expect("deleted effect");
+    assert_eq!(deleted.kind(), MutationEffectKind::Deleted);
+    assert!(deleted.applied());
+    assert!(deleted.matched());
+    let missing = results[1].effect().expect("missing effect");
+    assert_eq!(missing.kind(), MutationEffectKind::NotFound);
+    assert!(!missing.applied());
+    assert!(!missing.matched());
+    assert!(results[0].commit().is_some());
+    assert!(results[1].commit().is_none());
 }
 
 #[test]
@@ -33,7 +218,7 @@ fn durable_executor_reopens_json_documents_history_and_indexes() {
     assert_eq!(execute_json_count(&mut reopened, Some("doc-")), 4);
     assert_json_history_has_tombstone(&mut reopened, "doc-delete");
 
-    let Output::JsonIndexList(indexes) = reopened
+    let Output::JsonIndexList { items: indexes, .. } = reopened
         .execute(Command::JsonListIndexes {
             branch: None,
             space: None,
@@ -44,6 +229,36 @@ fn durable_executor_reopens_json_documents_history_and_indexes() {
     };
     assert_eq!(indexes.len(), 1);
     assert_eq!(indexes[0].name(), "by-name");
+}
+
+#[test]
+fn json_null_documents_are_listed_as_present_documents() {
+    run_executor_modes(|executor| {
+        let null_write = write_json(executor, None, None, "doc-null", "$", Value::Null);
+        write_json(
+            executor,
+            None,
+            None,
+            "doc-object",
+            "$",
+            json!({"name": "Ada"}),
+        );
+
+        assert_eq!(
+            execute_json_get_value(executor, "doc-null", "$"),
+            Some(Value::Null)
+        );
+        assert_eq!(execute_json_get_value(executor, "doc-missing", "$"), None);
+        assert_eq!(
+            execute_json_list(executor, Some("doc-"), None, 10),
+            (vec!["doc-null".to_owned(), "doc-object".to_owned()], false)
+        );
+        assert_eq!(execute_json_count(executor, Some("doc-")), 2);
+        assert_eq!(
+            execute_json_list_as_of(executor, Some("doc-"), null_write.timestamp),
+            vec!["doc-null".to_owned()]
+        );
+    });
 }
 
 #[test]
@@ -330,9 +545,9 @@ fn json_mapping_commands() -> Vec<Command> {
 }
 
 fn assert_json_mapping_outputs(outputs: &[Output]) {
-    assert!(matches!(outputs[0], Output::WriteResult { .. }));
+    assert!(matches!(outputs[0], Output::JsonWriteResult { .. }));
     assert!(matches!(outputs[1], Output::JsonVersionedValue(_)));
-    assert!(matches!(outputs[2], Output::DeleteResult { .. }));
+    assert!(matches!(outputs[2], Output::JsonDeleteResult { .. }));
     assert!(matches!(outputs[3], Output::JsonVersionHistory(_)));
     assert!(matches!(outputs[4], Output::Bool(_)));
     assert!(matches!(outputs[5], Output::JsonBatchResults(_)));
@@ -343,7 +558,7 @@ fn assert_json_mapping_outputs(outputs: &[Output]) {
     assert!(matches!(outputs[10], Output::JsonSampleResult { .. }));
     assert!(matches!(outputs[11], Output::JsonIndexDefinition(_)));
     assert!(matches!(outputs[12], Output::Bool(_)));
-    assert!(matches!(outputs[13], Output::JsonIndexList(_)));
+    assert!(matches!(outputs[13], Output::JsonIndexList { .. }));
 }
 
 #[test]
@@ -365,6 +580,10 @@ fn json_invalid_batch_items_are_positional_errors() {
     };
     assert_eq!(results.len(), 2);
     assert!(results[0].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("item error status").code(),
+        "invalid_argument.engine.json_document_id"
+    );
     assert!(results[1].version().is_some());
     assert_eq!(
         execute_json_get_value(&mut executor, "valid", "$.name"),
@@ -386,6 +605,10 @@ fn json_invalid_batch_items_are_positional_errors() {
     };
     assert_eq!(results.len(), 2);
     assert!(results[0].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("item error status").code(),
+        "invalid_argument.engine.json_document_id"
+    );
     assert_eq!(results[1].value(), Some(&json!("Ada")));
 
     let output = executor
@@ -403,6 +626,10 @@ fn json_invalid_batch_items_are_positional_errors() {
     };
     assert_eq!(results.len(), 2);
     assert!(results[0].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("item error status").code(),
+        "invalid_argument.engine.json_document_id"
+    );
     assert!(results[1].version().is_some());
     assert_eq!(
         execute_json_get_value(&mut executor, "valid", "$.name"),
@@ -577,7 +804,7 @@ fn assert_json_batch_edges(executor: &mut Executor) {
 }
 
 fn assert_empty_json_batches(executor: &mut Executor) {
-    assert_eq!(
+    assert!(matches!(
         executor
             .execute(Command::JsonBatchSet {
                 branch: None,
@@ -585,9 +812,9 @@ fn assert_empty_json_batches(executor: &mut Executor) {
                 entries: Vec::new(),
             })
             .expect("empty batch set succeeds"),
-        Output::JsonBatchResults(Vec::new())
-    );
-    assert_eq!(
+        Output::JsonBatchResults(results) if results.is_empty() && !results.applied()
+    ));
+    assert!(matches!(
         executor
             .execute(Command::JsonBatchGet {
                 branch: None,
@@ -595,9 +822,9 @@ fn assert_empty_json_batches(executor: &mut Executor) {
                 entries: Vec::new(),
             })
             .expect("empty batch get succeeds"),
-        Output::JsonBatchGetResults(Vec::new())
-    );
-    assert_eq!(
+        Output::JsonBatchGetResults(results) if results.is_empty() && !results.applied()
+    ));
+    assert!(matches!(
         executor
             .execute(Command::JsonBatchDelete {
                 branch: None,
@@ -605,8 +832,8 @@ fn assert_empty_json_batches(executor: &mut Executor) {
                 entries: Vec::new(),
             })
             .expect("empty batch delete succeeds"),
-        Output::JsonBatchResults(Vec::new())
-    );
+        Output::JsonBatchResults(results) if results.is_empty() && !results.applied()
+    ));
 }
 
 fn assert_json_list_count_sample_edges(executor: &mut Executor) {
@@ -719,7 +946,11 @@ fn assert_json_command_error_classes(executor: &mut Executor) {
     for command in invalid_input_json_commands() {
         let error = executor.execute(command).expect_err("command fails");
         assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
-        assert!(error.code().contains(".executor."));
+        assert!(
+            error.code().contains(".engine.") || error.code().contains(".executor."),
+            "unexpected public error code: {}",
+            error.code()
+        );
     }
 
     for command in missing_branch_json_commands() {
@@ -837,11 +1068,22 @@ fn assert_json_batch_item_error_boundaries(executor: &mut Executor) {
     assert_eq!(results.len(), 3);
     assert!(results[0].error().is_some());
     assert!(results[1].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("path error status").code(),
+        "invalid_argument.engine.json_path"
+    );
+    assert_eq!(
+        results[1]
+            .error_status()
+            .expect("value error status")
+            .code(),
+        "invalid_argument.engine.json_document_too_deep"
+    );
     assert!(results[2].version().is_some());
     assert!(
         results
             .iter()
-            .filter_map(strata_executor_next::JsonBatchItemResult::error)
+            .filter_map(|result| result.error())
             .all(error_message_is_public),
         "batch item errors leaked lower-layer details: {results:?}"
     );
@@ -1140,7 +1382,7 @@ fn list_json_indexes_in(
     branch: Option<&str>,
     space: Option<&str>,
 ) -> Vec<strata_executor_next::JsonIndexDefinition> {
-    let Output::JsonIndexList(indexes) = executor
+    let Output::JsonIndexList { items: indexes, .. } = executor
         .execute(Command::JsonListIndexes {
             branch: branch.map(str::to_owned),
             space: space.map(str::to_owned),
@@ -1197,9 +1439,13 @@ fn write_json(
         })
         .expect("JSON set succeeds")
     {
-        Output::WriteResult {
-            version, timestamp, ..
-        } => WriteFacts { version, timestamp },
+        Output::JsonWriteResult { effect, commit, .. } => {
+            assert!(effect.applied());
+            WriteFacts {
+                version: commit.version(),
+                timestamp: commit.timestamp(),
+            }
+        }
         output => panic!("unexpected JSON set output: {output:?}"),
     }
 }
@@ -1263,13 +1509,12 @@ fn execute_json_get_versioned(
         })
         .expect("JSON get succeeds")
     {
-        Output::JsonVersionedValue(Some(value)) => Some(VersionedJsonFacts {
+        Output::JsonVersionedValue(value) => value.value().map(|value| VersionedJsonFacts {
             value: value.value().clone(),
             version: value.version(),
             timestamp: value.timestamp(),
             document_version: value.document_version(),
         }),
-        Output::JsonVersionedValue(None) => None,
         output => panic!("unexpected JSON get output: {output:?}"),
     }
 }
@@ -1291,8 +1536,7 @@ fn execute_json_get_value_in(
         })
         .expect("JSON get succeeds")
     {
-        Output::JsonVersionedValue(Some(value)) => Some(value.value().clone()),
-        Output::JsonVersionedValue(None) => None,
+        Output::JsonVersionedValue(value) => value.value().map(|value| value.value().clone()),
         output => panic!("unexpected JSON get output: {output:?}"),
     }
 }
@@ -1313,7 +1557,7 @@ fn execute_json_get_as_of(
         })
         .expect("historical JSON get succeeds")
     {
-        Output::JsonValue(value) => value,
+        Output::JsonValue(value) => value.into_option(),
         output => panic!("unexpected historical JSON get output: {output:?}"),
     }
 }
@@ -1328,7 +1572,7 @@ fn execute_json_delete(executor: &mut Executor, key: &str, path: &str) -> bool {
         })
         .expect("JSON delete succeeds")
     {
-        Output::DeleteResult { deleted, .. } => deleted,
+        Output::JsonDeleteResult { effect, .. } => effect.applied(),
         output => panic!("unexpected JSON delete output: {output:?}"),
     }
 }
@@ -1390,7 +1634,7 @@ fn execute_json_list(
         })
         .expect("JSON list succeeds")
     {
-        Output::JsonListResult { keys, has_more, .. } => (keys, has_more),
+        Output::JsonListResult { items: keys, page } => (keys, page.has_more()),
         output => panic!("unexpected JSON list output: {output:?}"),
     }
 }
@@ -1411,7 +1655,7 @@ fn execute_json_list_as_of(
         })
         .expect("historical JSON list succeeds")
     {
-        Output::JsonListResult { keys, .. } => keys,
+        Output::JsonListResult { items: keys, .. } => keys,
         output => panic!("unexpected historical JSON list output: {output:?}"),
     }
 }
@@ -1489,7 +1733,9 @@ fn execute_json_sample_items_in(
         })
         .expect("JSON sample succeeds")
     {
-        Output::JsonSampleResult { total_count, items } => (
+        Output::JsonSampleResult {
+            total_count, items, ..
+        } => (
             total_count,
             items
                 .into_iter()

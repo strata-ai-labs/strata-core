@@ -1,0 +1,12 @@
+{
+  "type": "vector_matches",
+  "data": [
+    {
+      "key": "doc-a",
+      "score": 1.0,
+      "metadata": {
+        "kind": "doc"
+      }
+    }
+  ]
+}

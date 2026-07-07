@@ -146,6 +146,15 @@ impl JsonValue {
     }
 
     pub(crate) fn validate(&self) -> EngineResult<()> {
+        // Enforce the nesting bound FIRST, with an iterative traversal, so a
+        // pathologically deep value is rejected before the recursive
+        // serialization/measurement below can overflow the stack (finding U36).
+        if exceeds_nesting_depth(&self.0, MAX_NESTING_DEPTH) {
+            return Err(EngineError::invalid_input(
+                "invalid_argument.engine.json_document_too_deep",
+                "JSON document exceeds the maximum nesting depth",
+            ));
+        }
         let size = serde_json::to_vec(&self.0)
             .map_err(|error| {
                 EngineError::invalid_input(
@@ -158,13 +167,6 @@ impl JsonValue {
             return Err(EngineError::invalid_input(
                 "invalid_argument.engine.json_document_too_large",
                 "JSON document exceeds the maximum encoded size",
-            ));
-        }
-        let depth = nesting_depth(&self.0);
-        if depth > MAX_NESTING_DEPTH {
-            return Err(EngineError::invalid_input(
-                "invalid_argument.engine.json_document_too_deep",
-                "JSON document exceeds the maximum nesting depth",
             ));
         }
         let array_size = max_array_size(&self.0);
@@ -753,12 +755,31 @@ fn validate_component(
     Ok(())
 }
 
-fn nesting_depth(value: &Value) -> usize {
-    match value {
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => 0,
-        Value::Array(array) => 1 + array.iter().map(nesting_depth).max().unwrap_or(0),
-        Value::Object(object) => 1 + object.values().map(nesting_depth).max().unwrap_or(0),
+/// Returns true if `value` nests deeper than `max` container levels, using an
+/// explicit stack so an arbitrarily deep value is detected without recursion.
+///
+/// Matches the previous recursive definition where each array/object counts as
+/// one level and scalars as zero; the root container is level 1.
+fn exceeds_nesting_depth(value: &Value, max: usize) -> bool {
+    let mut stack: Vec<(&Value, usize)> = vec![(value, 0)];
+    while let Some((node, containers_above)) = stack.pop() {
+        match node {
+            Value::Array(array) => {
+                if containers_above + 1 > max {
+                    return true;
+                }
+                stack.extend(array.iter().map(|child| (child, containers_above + 1)));
+            }
+            Value::Object(object) => {
+                if containers_above + 1 > max {
+                    return true;
+                }
+                stack.extend(object.values().map(|child| (child, containers_above + 1)));
+            }
+            _ => {}
+        }
     }
+    false
 }
 
 fn max_array_size(value: &Value) -> usize {
@@ -856,6 +877,19 @@ mod tests {
         let too_deep = JsonValue::new(deep).expect_err("too deep");
         assert_eq!(
             too_deep.code(),
+            "invalid_argument.engine.json_document_too_deep"
+        );
+
+        // A value far past the bound is rejected by the iterative pre-check
+        // before any recursive serialization runs (finding U36). (A depth in
+        // the tens of thousands is avoided here only because serde_json::Value's
+        // own Drop is recursive, which is outside validate()'s control.)
+        let mut very_deep = json!(null);
+        for _ in 0..2_000 {
+            very_deep = Value::Array(vec![very_deep]);
+        }
+        assert_eq!(
+            JsonValue::new(very_deep).expect_err("far too deep").code(),
             "invalid_argument.engine.json_document_too_deep"
         );
 

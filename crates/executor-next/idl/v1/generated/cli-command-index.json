@@ -1,0 +1,1932 @@
+{
+  "generated": true,
+  "schema_version": "strata.cli.v1",
+  "generator_version": "strata-executor-cli-idl.1",
+  "source": {
+    "path": "crates/executor-next/idl/v1/generated/command-index.json",
+    "checksum_sha256": "c8fb6629a63d80d2440dffe66c630beb184edaa600a6db4e22cfea85ad2611a3",
+    "schema_version": "strata.idl.v1",
+    "generator_version": "strata-executor-idl.1"
+  },
+  "command_count": 32,
+  "families": [
+    {
+      "id": "kv",
+      "command_count": 13,
+      "commands": [
+        "kv.batch_delete",
+        "kv.batch_exists",
+        "kv.batch_get",
+        "kv.batch_put",
+        "kv.count",
+        "kv.delete",
+        "kv.exists",
+        "kv.get",
+        "kv.history",
+        "kv.list",
+        "kv.put",
+        "kv.sample",
+        "kv.scan"
+      ]
+    },
+    {
+      "id": "vector",
+      "command_count": 19,
+      "commands": [
+        "vector.batch_delete",
+        "vector.batch_get",
+        "vector.batch_upsert",
+        "vector.collection.create",
+        "vector.collection.delete",
+        "vector.collection.list",
+        "vector.collection.stats",
+        "vector.count",
+        "vector.delete",
+        "vector.delete_all",
+        "vector.delete_by_filter",
+        "vector.exists",
+        "vector.get",
+        "vector.history",
+        "vector.index.query",
+        "vector.keys",
+        "vector.metadata.update",
+        "vector.query",
+        "vector.upsert"
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "id": "kv.batch_delete",
+      "path": [
+        "kv",
+        "batch-delete"
+      ],
+      "path_display": "kv batch-delete",
+      "family": "kv",
+      "op": "batch_delete",
+      "kind": "batch.itemwise_mutation",
+      "title": "Batch delete KV values",
+      "summary": "Delete multiple KV keys in one itemwise batch.",
+      "description": "Deletes multiple KV keys and returns one positional mutation result per key. Missing keys are represented as no-op item results.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/kv/batch_delete",
+      "feature": "core",
+      "access": "write",
+      "commit": "itemwise_shared_commit",
+      "pagination": "none",
+      "batch": "itemwise",
+      "input": "Command::KvBatchDelete",
+      "outputs": [
+        "Output::BatchResults"
+      ],
+      "response_model": "BatchResult<KvMutationItem>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.kv_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
+        },
+        {
+          "code": "invalid_argument.engine.kv_batch",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_batch"
+        },
+        {
+          "code": "invalid_argument.engine.kv_batch_duplicate_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_batch_duplicate_key"
+        },
+        {
+          "code": "invalid_argument.executor.kv_batch_duplicate_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.kv_batch_duplicate_key"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/kv/batch_delete.json",
+        "response": "responses/v1/kv/batch_mutation_partial.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "kv.batch_exists",
+      "path": [
+        "kv",
+        "batch-exists"
+      ],
+      "path_display": "kv batch-exists",
+      "family": "kv",
+      "op": "batch_exists",
+      "kind": "batch.itemwise_status",
+      "title": "Batch check KV existence",
+      "summary": "Check existence for multiple KV keys.",
+      "description": "Checks several KV keys and returns positional boolean status values. The response preserves the input order.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/kv/batch_exists",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "itemwise",
+      "input": "Command::KvBatchExists",
+      "outputs": [
+        "Output::BoolList"
+      ],
+      "response_model": "BatchResult<StatusValue<bool>>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.kv_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
+        },
+        {
+          "code": "invalid_argument.engine.kv_batch",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_batch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/kv/batch_exists.json",
+        "response": "responses/v1/kv/batch_exists.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "kv.batch_get",
+      "path": [
+        "kv",
+        "batch-get"
+      ],
+      "path_display": "kv batch-get",
+      "family": "kv",
+      "op": "batch_get",
+      "kind": "batch.itemwise_read",
+      "title": "Batch get KV values",
+      "summary": "Read multiple KV values by key.",
+      "description": "Reads several KV keys and returns positional item results. Each item records whether the corresponding key was found and includes value metadata when present.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/kv/batch_get",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "itemwise",
+      "input": "Command::KvBatchGet",
+      "outputs": [
+        "Output::BatchGetResults"
+      ],
+      "response_model": "BatchResult<Maybe<Bytes>>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.kv_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
+        },
+        {
+          "code": "invalid_argument.engine.kv_batch",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_batch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/kv/batch_get.json",
+        "response": "responses/v1/kv/batch_get_ok.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "kv.batch_put",
+      "path": [
+        "kv",
+        "batch-put"
+      ],
+      "path_display": "kv batch-put",
+      "family": "kv",
+      "op": "batch_put",
+      "kind": "batch.itemwise_mutation",
+      "title": "Batch put KV values",
+      "summary": "Store multiple KV values in one itemwise batch.",
+      "description": "Writes multiple KV entries using the executor batch contract. Valid items share commit facts where the underlying engine applies them together.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/kv/batch_put",
+      "feature": "core",
+      "access": "write",
+      "commit": "itemwise_shared_commit",
+      "pagination": "none",
+      "batch": "itemwise",
+      "input": "Command::KvBatchPut",
+      "outputs": [
+        "Output::BatchResults"
+      ],
+      "response_model": "BatchResult<KvMutationItem>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.kv_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
+        },
+        {
+          "code": "invalid_argument.engine.kv_batch",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_batch"
+        },
+        {
+          "code": "invalid_argument.engine.kv_batch_duplicate_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_batch_duplicate_key"
+        },
+        {
+          "code": "invalid_argument.executor.kv_batch_duplicate_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.kv_batch_duplicate_key"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/kv/batch_put.json",
+        "response": "responses/v1/kv/batch_mutation_ok.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "kv.count",
+      "path": [
+        "kv",
+        "count"
+      ],
+      "path_display": "kv count",
+      "family": "kv",
+      "op": "count",
+      "kind": "read.status",
+      "title": "Count KV keys",
+      "summary": "Count visible KV keys.",
+      "description": "Counts visible KV keys in the selected branch and space, optionally constrained by a key prefix.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/kv/count",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::KvCount",
+      "outputs": [
+        "Output::Uint"
+      ],
+      "response_model": "StatusValue<u64>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.kv_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/kv/count.json",
+        "response": "responses/v1/status/uint_count.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "kv.delete",
+      "path": [
+        "kv",
+        "delete"
+      ],
+      "path_display": "kv delete",
+      "family": "kv",
+      "op": "delete",
+      "kind": "mutation.delete",
+      "title": "Delete KV value",
+      "summary": "Delete one visible KV key.",
+      "description": "Deletes the current visible value for a KV key. Missing keys produce a no-op delete acknowledgement rather than a read-style missing value.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/kv/delete",
+      "feature": "core",
+      "access": "write",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::KvDelete",
+      "outputs": [
+        "Output::DeleteResult"
+      ],
+      "response_model": "MutationAck<KvDelete>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.kv_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/kv/delete.json",
+        "response": "responses/v1/kv/delete_missing.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "kv.exists",
+      "path": [
+        "kv",
+        "exists"
+      ],
+      "path_display": "kv exists",
+      "family": "kv",
+      "op": "exists",
+      "kind": "read.status",
+      "title": "Check KV existence",
+      "summary": "Check whether one KV key exists.",
+      "description": "Returns a boolean status for one KV key without loading the stored value.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/kv/exists",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::KvExists",
+      "outputs": [
+        "Output::Bool"
+      ],
+      "response_model": "StatusValue<bool>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.kv_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/kv/exists.json",
+        "response": "responses/v1/status/bool_true.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "kv.get",
+      "path": [
+        "kv",
+        "get"
+      ],
+      "path_display": "kv get",
+      "family": "kv",
+      "op": "get",
+      "kind": "read.get",
+      "title": "Get KV value",
+      "summary": "Read the current or historical value for one KV key.",
+      "description": "Reads one KV key from the selected branch and space. The optional timestamp reads the value visible at that point in time when history is retained.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/kv/get",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::KvGet",
+      "outputs": [
+        "Output::KvVersionedValue"
+      ],
+      "response_model": "Maybe<VersionedValue>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.kv_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/kv/get.json",
+        "response": "responses/v1/kv/get_found.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "kv.history",
+      "path": [
+        "kv",
+        "history"
+      ],
+      "path_display": "kv history",
+      "family": "kv",
+      "op": "history",
+      "kind": "read.history",
+      "title": "Read KV history",
+      "summary": "Read retained version history for one KV key.",
+      "description": "Returns retained history rows for a KV key when history is available. Missing or unavailable history maps to an optional-read result.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/kv/history",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::KvGetv",
+      "outputs": [
+        "Output::VersionHistory"
+      ],
+      "response_model": "Maybe<Vec<HistoryItem>>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.kv_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/kv/history.json",
+        "response": "responses/v1/kv/history_found.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "kv.list",
+      "path": [
+        "kv",
+        "list"
+      ],
+      "path_display": "kv list",
+      "family": "kv",
+      "op": "list",
+      "kind": "read.page",
+      "title": "List KV keys",
+      "summary": "List KV keys with optional prefix filtering.",
+      "description": "Lists visible KV keys in byte order. Prefix, cursor, limit, and timestamp parameters constrain the page returned by the executor.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/kv/list",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "input": "Command::KvList",
+      "outputs": [
+        "Output::Keys",
+        "Output::KeysPage"
+      ],
+      "response_model": "Page<Bytes, Bytes>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.kv_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/kv/list.json",
+        "response": "responses/v1/kv/list_page.json",
+        "responses": [
+          "responses/v1/kv/list_keys.json"
+        ]
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "kv.put",
+      "path": [
+        "kv",
+        "put"
+      ],
+      "path_display": "kv put",
+      "family": "kv",
+      "op": "put",
+      "kind": "mutation.put",
+      "title": "Put KV value",
+      "summary": "Store or replace a KV value by key.",
+      "description": "Writes a binary value to the selected KV space. If the key already exists, Strata replaces the visible value and records a new version.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/kv/put",
+      "feature": "core",
+      "access": "write",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::KvPut",
+      "outputs": [
+        "Output::WriteResult"
+      ],
+      "response_model": "MutationAck<KvWrite>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.kv_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/kv/put.json",
+        "response": "responses/v1/kv/write_applied.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "kv.sample",
+      "path": [
+        "kv",
+        "sample"
+      ],
+      "path_display": "kv sample",
+      "family": "kv",
+      "op": "sample",
+      "kind": "read.sample",
+      "title": "Sample KV rows",
+      "summary": "Sample visible KV rows.",
+      "description": "Returns a deterministic bounded sample of visible KV rows plus the total matching count.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/kv/sample",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "sample",
+      "batch": "none",
+      "input": "Command::KvSample",
+      "outputs": [
+        "Output::SampleResult"
+      ],
+      "response_model": "SamplePage<SampleItem>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.kv_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/kv/sample.json",
+        "response": "responses/v1/kv/sample_page.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "kv.scan",
+      "path": [
+        "kv",
+        "scan"
+      ],
+      "path_display": "kv scan",
+      "family": "kv",
+      "op": "scan",
+      "kind": "read.page",
+      "title": "Scan KV rows",
+      "summary": "Scan KV rows with values and version facts.",
+      "description": "Scans visible KV rows starting at an optional key. Each item includes the key, value, and commit metadata exposed by the executor output.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/kv/scan",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "input": "Command::KvScan",
+      "outputs": [
+        "Output::KvScanResult"
+      ],
+      "response_model": "Page<ScanItem, Bytes>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.kv_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.kv_key"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/kv/scan.json",
+        "response": "responses/v1/kv/scan_page.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.batch_delete",
+      "path": [
+        "vector",
+        "batch-delete"
+      ],
+      "path_display": "vector batch-delete",
+      "family": "vector",
+      "op": "batch_delete",
+      "kind": "batch.itemwise_mutation",
+      "title": "Batch delete vectors",
+      "summary": "Delete multiple vectors by key.",
+      "description": "Deletes multiple vector keys and returns one positional mutation result per input key.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/vector/batch_delete",
+      "feature": "core",
+      "access": "write",
+      "commit": "itemwise_shared_commit",
+      "pagination": "none",
+      "batch": "itemwise",
+      "input": "Command::VectorBatchDelete",
+      "outputs": [
+        "Output::VectorBatchDeleteResults"
+      ],
+      "response_model": "BatchResult<VectorMutationItem>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_batch",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_batch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/batch_delete.json",
+        "response": "responses/v1/vector/batch_delete_ok.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.batch_get",
+      "path": [
+        "vector",
+        "batch-get"
+      ],
+      "path_display": "vector batch-get",
+      "family": "vector",
+      "op": "batch_get",
+      "kind": "batch.itemwise_read",
+      "title": "Batch get vectors",
+      "summary": "Read multiple vectors by key.",
+      "description": "Reads several vector keys and returns positional item results. Each item records found or missing state.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/vector/batch_get",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "itemwise",
+      "input": "Command::VectorBatchGet",
+      "outputs": [
+        "Output::VectorBatchGetResults"
+      ],
+      "response_model": "BatchResult<Maybe<VectorVersionedData>>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_batch",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_batch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/batch_get.json",
+        "response": "responses/v1/vector/batch_get_ok.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.batch_upsert",
+      "path": [
+        "vector",
+        "batch-upsert"
+      ],
+      "path_display": "vector batch-upsert",
+      "family": "vector",
+      "op": "batch_upsert",
+      "kind": "batch.itemwise_mutation",
+      "title": "Batch upsert vectors",
+      "summary": "Upsert multiple vectors in one itemwise batch.",
+      "description": "Writes multiple vector entries and returns positional mutation results. Valid items share commit facts where the engine applies them together.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/vector/batch_upsert",
+      "feature": "core",
+      "access": "write",
+      "commit": "itemwise_shared_commit",
+      "pagination": "none",
+      "batch": "itemwise",
+      "input": "Command::VectorBatchUpsert",
+      "outputs": [
+        "Output::VectorBatchUpsertResults"
+      ],
+      "response_model": "BatchResult<VectorMutationItem>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_batch",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_batch"
+        },
+        {
+          "code": "invalid_argument.engine.vector_dimension",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_dimension"
+        },
+        {
+          "code": "invalid_argument.engine.vector_embedding",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_embedding"
+        },
+        {
+          "code": "invalid_argument.executor.vector_dimension",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.vector_dimension"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/batch_upsert.json",
+        "response": "responses/v1/vector/batch_upsert_ok.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.collection.create",
+      "path": [
+        "vector",
+        "collection",
+        "create"
+      ],
+      "path_display": "vector collection create",
+      "family": "vector",
+      "op": "collection.create",
+      "kind": "mutation.create",
+      "title": "Create vector collection",
+      "summary": "Create a vector collection with a dimension and metric.",
+      "description": "Creates a collection for dense vectors. The dimension and metric become part of the collection contract for future upserts and queries.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/vector/collection/create",
+      "feature": "core",
+      "access": "write",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::VectorCreateCollection",
+      "outputs": [
+        "Output::VectorCollectionList"
+      ],
+      "response_model": "MutationAck<VectorCollectionCreate>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_dimension",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_dimension"
+        },
+        {
+          "code": "invalid_argument.executor.vector_dimension",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.vector_dimension"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/collection_create.json",
+        "response": "responses/v1/vector/collection_list.json"
+      },
+      "wire_status": "transitional"
+    },
+    {
+      "id": "vector.collection.delete",
+      "path": [
+        "vector",
+        "collection",
+        "delete"
+      ],
+      "path_display": "vector collection delete",
+      "family": "vector",
+      "op": "collection.delete",
+      "kind": "mutation.delete",
+      "title": "Delete vector collection",
+      "summary": "Delete a vector collection.",
+      "description": "Deletes the selected vector collection from the current branch and space. The current wire response is a transitional boolean status.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/vector/collection/delete",
+      "feature": "core",
+      "access": "write",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::VectorDeleteCollection",
+      "outputs": [
+        "Output::Bool"
+      ],
+      "response_model": "MutationAck<VectorCollectionDelete>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/collection_delete.json",
+        "response": "responses/v1/status/bool_true.json"
+      },
+      "wire_status": "transitional"
+    },
+    {
+      "id": "vector.collection.list",
+      "path": [
+        "vector",
+        "collection",
+        "list"
+      ],
+      "path_display": "vector collection list",
+      "family": "vector",
+      "op": "collection.list",
+      "kind": "read.page",
+      "title": "List vector collections",
+      "summary": "List vector collections.",
+      "description": "Lists vector collections visible in the selected branch and space, including collection dimension, metric, and count facts.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/vector/collection/list",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "input": "Command::VectorListCollections",
+      "outputs": [
+        "Output::VectorCollectionList"
+      ],
+      "response_model": "Page<VectorCollectionInfo, String>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/collection_list.json",
+        "response": "responses/v1/vector/collection_list.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.collection.stats",
+      "path": [
+        "vector",
+        "collection",
+        "stats"
+      ],
+      "path_display": "vector collection stats",
+      "family": "vector",
+      "op": "collection.stats",
+      "kind": "read.status",
+      "title": "Read vector collection stats",
+      "summary": "Read facts for one vector collection.",
+      "description": "Reads collection-level facts for one vector collection. The current wire response uses the collection-list output with one item.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/vector/collection/stats",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::VectorCollectionStats",
+      "outputs": [
+        "Output::VectorCollectionList"
+      ],
+      "response_model": "StatusResponse<VectorCollectionInfo>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/collection_stats.json",
+        "response": "responses/v1/vector/collection_list.json"
+      },
+      "wire_status": "transitional"
+    },
+    {
+      "id": "vector.count",
+      "path": [
+        "vector",
+        "count"
+      ],
+      "path_display": "vector count",
+      "family": "vector",
+      "op": "count",
+      "kind": "read.status",
+      "title": "Count vectors",
+      "summary": "Count visible vectors in a collection.",
+      "description": "Counts vectors visible in the selected collection, branch, and space.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/vector/count",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::VectorCount",
+      "outputs": [
+        "Output::Uint"
+      ],
+      "response_model": "StatusValue<u64>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/count.json",
+        "response": "responses/v1/status/uint_count.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.delete",
+      "path": [
+        "vector",
+        "delete"
+      ],
+      "path_display": "vector delete",
+      "family": "vector",
+      "op": "delete",
+      "kind": "mutation.delete",
+      "title": "Delete vector",
+      "summary": "Delete one vector key.",
+      "description": "Deletes one visible vector entry from a collection. Missing keys are represented as no-op mutation acknowledgements.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/vector/delete",
+      "feature": "core",
+      "access": "write",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::VectorDelete",
+      "outputs": [
+        "Output::VectorDeleteResult"
+      ],
+      "response_model": "MutationAck<VectorDelete>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/delete.json",
+        "response": "responses/v1/vector/delete_applied.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.delete_all",
+      "path": [
+        "vector",
+        "delete-all"
+      ],
+      "path_display": "vector delete-all",
+      "family": "vector",
+      "op": "delete_all",
+      "kind": "mutation.bulk_delete",
+      "title": "Delete all vectors",
+      "summary": "Delete all vectors in a collection.",
+      "description": "Deletes all vectors visible in the selected collection while preserving the collection itself.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/vector/delete_all",
+      "feature": "core",
+      "access": "write",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::VectorDeleteAll",
+      "outputs": [
+        "Output::VectorBulkDeleteResult"
+      ],
+      "response_model": "MutationAck<VectorBulkDelete>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/delete_all.json",
+        "response": "responses/v1/vector/bulk_delete_applied.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.delete_by_filter",
+      "path": [
+        "vector",
+        "delete-by-filter"
+      ],
+      "path_display": "vector delete-by-filter",
+      "family": "vector",
+      "op": "delete_by_filter",
+      "kind": "mutation.bulk_delete",
+      "title": "Delete vectors by filter",
+      "summary": "Delete vectors matching a metadata filter.",
+      "description": "Scans the collection for visible vectors matching the metadata filter and deletes the matching rows as a bulk mutation.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/vector/delete_by_filter",
+      "feature": "core",
+      "access": "write",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::VectorDeleteByFilter",
+      "outputs": [
+        "Output::VectorBulkDeleteResult"
+      ],
+      "response_model": "MutationAck<VectorBulkDelete>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_filter",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_filter"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/delete_by_filter.json",
+        "response": "responses/v1/vector/bulk_delete_applied.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.exists",
+      "path": [
+        "vector",
+        "exists"
+      ],
+      "path_display": "vector exists",
+      "family": "vector",
+      "op": "exists",
+      "kind": "read.status",
+      "title": "Check vector existence",
+      "summary": "Check whether one vector key exists.",
+      "description": "Returns a boolean status for one vector key without loading the embedding.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/vector/exists",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::VectorExists",
+      "outputs": [
+        "Output::Bool"
+      ],
+      "response_model": "StatusValue<bool>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/exists.json",
+        "response": "responses/v1/status/bool_true.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.get",
+      "path": [
+        "vector",
+        "get"
+      ],
+      "path_display": "vector get",
+      "family": "vector",
+      "op": "get",
+      "kind": "read.get",
+      "title": "Get vector",
+      "summary": "Read one vector by key.",
+      "description": "Reads one visible vector entry. The optional timestamp reads the vector visible at that point in time when retained history allows it.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/vector/get",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::VectorGet",
+      "outputs": [
+        "Output::VectorData"
+      ],
+      "response_model": "Maybe<VectorVersionedData>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/get.json",
+        "response": "responses/v1/vector/get_found.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.history",
+      "path": [
+        "vector",
+        "history"
+      ],
+      "path_display": "vector history",
+      "family": "vector",
+      "op": "history",
+      "kind": "read.history",
+      "title": "Read vector history",
+      "summary": "Read retained vector history for one key.",
+      "description": "Returns retained history rows for one vector key, including vector revision facts and tombstones when present.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/vector/history",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::VectorGetv",
+      "outputs": [
+        "Output::VectorVersionHistory"
+      ],
+      "response_model": "Maybe<Vec<VectorHistoryItem>>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/history.json",
+        "response": "responses/v1/vector/history_found.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.index.query",
+      "path": [
+        "vector",
+        "index",
+        "query"
+      ],
+      "path_display": "vector index query",
+      "family": "vector",
+      "op": "index.query",
+      "kind": "read.diagnostics",
+      "title": "Query vector index",
+      "summary": "Search vectors and return index diagnostics.",
+      "description": "Runs vector search and includes planner diagnostics such as index policy, source usage, artifact status, and fallback facts.\n\nSearch responses return a bounded list of matches ordered by the engine. They are not cursor pages unless a later command explicitly advertises pagination.\n\nDiagnostic responses include operational facts intended for debugging and tuning. They should not be required for application correctness.",
+      "docs": "/docs/vector/index/query",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "bounded",
+      "batch": "none",
+      "input": "Command::VectorIndexQuery",
+      "outputs": [
+        "Output::VectorIndexQuery"
+      ],
+      "response_model": "SearchResult<VectorMatch> + IndexDiagnostics",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_filter",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_filter"
+        },
+        {
+          "code": "invalid_argument.executor.vector_limit",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.vector_limit"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/index_query.json",
+        "response": "responses/v1/vector/search_with_index_diagnostics.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.keys",
+      "path": [
+        "vector",
+        "keys"
+      ],
+      "path_display": "vector keys",
+      "family": "vector",
+      "op": "keys",
+      "kind": "read.page",
+      "title": "List vector keys",
+      "summary": "List vector keys in a collection.",
+      "description": "Lists visible vector keys with optional prefix and cursor arguments.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/vector/keys",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "input": "Command::VectorListKeys",
+      "outputs": [
+        "Output::VectorKeyPage"
+      ],
+      "response_model": "Page<String, String>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/keys.json",
+        "response": "responses/v1/vector/key_page.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.metadata.update",
+      "path": [
+        "vector",
+        "metadata",
+        "update"
+      ],
+      "path_display": "vector metadata update",
+      "family": "vector",
+      "op": "metadata.update",
+      "kind": "mutation.metadata_update",
+      "title": "Update vector metadata",
+      "summary": "Patch metadata for one vector.",
+      "description": "Applies a top-level metadata patch to one visible vector. Missing vectors return a no-op mutation acknowledgement.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/vector/metadata/update",
+      "feature": "core",
+      "access": "write",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::VectorUpdateMetadata",
+      "outputs": [
+        "Output::VectorMetadataUpdateResult"
+      ],
+      "response_model": "MutationAck<VectorMetadataUpdate>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_metadata_patch",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_metadata_patch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/metadata_update.json",
+        "response": "responses/v1/vector/metadata_update_applied.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.query",
+      "path": [
+        "vector",
+        "query"
+      ],
+      "path_display": "vector query",
+      "family": "vector",
+      "op": "query",
+      "kind": "read.search",
+      "title": "Query vectors",
+      "summary": "Search a vector collection.",
+      "description": "Runs vector search through the engine planner and returns the best matches with scores and optional metadata.\n\nSearch responses return a bounded list of matches ordered by the engine. They are not cursor pages unless a later command explicitly advertises pagination.",
+      "docs": "/docs/vector/query",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "bounded",
+      "batch": "none",
+      "input": "Command::VectorQuery",
+      "outputs": [
+        "Output::VectorMatches"
+      ],
+      "response_model": "SearchResult<VectorMatch>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_filter",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_filter"
+        },
+        {
+          "code": "invalid_argument.executor.vector_limit",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.vector_limit"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/query.json",
+        "response": "responses/v1/vector/search.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "vector.upsert",
+      "path": [
+        "vector",
+        "upsert"
+      ],
+      "path_display": "vector upsert",
+      "family": "vector",
+      "op": "upsert",
+      "kind": "mutation.put",
+      "title": "Upsert vector",
+      "summary": "Insert or replace one vector.",
+      "description": "Upserts one vector key with a dense embedding and optional metadata. The vector dimension must match the collection configuration.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/vector/upsert",
+      "feature": "core",
+      "access": "write",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::VectorUpsert",
+      "outputs": [
+        "Output::VectorWriteResult"
+      ],
+      "response_model": "MutationAck<VectorWrite>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_dimension",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_dimension"
+        },
+        {
+          "code": "invalid_argument.engine.vector_embedding",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_embedding"
+        },
+        {
+          "code": "invalid_argument.engine.vector_metadata",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_metadata"
+        },
+        {
+          "code": "invalid_argument.executor.vector_dimension",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.vector_dimension"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/upsert.json",
+        "response": "responses/v1/vector/upsert_applied.json"
+      },
+      "wire_status": "stable"
+    }
+  ],
+  "lookup": {
+    "by_id": {
+      "kv.batch_delete": 0,
+      "kv.batch_exists": 1,
+      "kv.batch_get": 2,
+      "kv.batch_put": 3,
+      "kv.count": 4,
+      "kv.delete": 5,
+      "kv.exists": 6,
+      "kv.get": 7,
+      "kv.history": 8,
+      "kv.list": 9,
+      "kv.put": 10,
+      "kv.sample": 11,
+      "kv.scan": 12,
+      "vector.batch_delete": 13,
+      "vector.batch_get": 14,
+      "vector.batch_upsert": 15,
+      "vector.collection.create": 16,
+      "vector.collection.delete": 17,
+      "vector.collection.list": 18,
+      "vector.collection.stats": 19,
+      "vector.count": 20,
+      "vector.delete": 21,
+      "vector.delete_all": 22,
+      "vector.delete_by_filter": 23,
+      "vector.exists": 24,
+      "vector.get": 25,
+      "vector.history": 26,
+      "vector.index.query": 27,
+      "vector.keys": 28,
+      "vector.metadata.update": 29,
+      "vector.query": 30,
+      "vector.upsert": 31
+    },
+    "by_path": {
+      "kv batch-delete": "kv.batch_delete",
+      "kv batch-exists": "kv.batch_exists",
+      "kv batch-get": "kv.batch_get",
+      "kv batch-put": "kv.batch_put",
+      "kv count": "kv.count",
+      "kv delete": "kv.delete",
+      "kv exists": "kv.exists",
+      "kv get": "kv.get",
+      "kv history": "kv.history",
+      "kv list": "kv.list",
+      "kv put": "kv.put",
+      "kv sample": "kv.sample",
+      "kv scan": "kv.scan",
+      "vector batch-delete": "vector.batch_delete",
+      "vector batch-get": "vector.batch_get",
+      "vector batch-upsert": "vector.batch_upsert",
+      "vector collection create": "vector.collection.create",
+      "vector collection delete": "vector.collection.delete",
+      "vector collection list": "vector.collection.list",
+      "vector collection stats": "vector.collection.stats",
+      "vector count": "vector.count",
+      "vector delete": "vector.delete",
+      "vector delete-all": "vector.delete_all",
+      "vector delete-by-filter": "vector.delete_by_filter",
+      "vector exists": "vector.exists",
+      "vector get": "vector.get",
+      "vector history": "vector.history",
+      "vector index query": "vector.index.query",
+      "vector keys": "vector.keys",
+      "vector metadata update": "vector.metadata.update",
+      "vector query": "vector.query",
+      "vector upsert": "vector.upsert"
+    }
+  }
+}

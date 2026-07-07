@@ -1,0 +1,23 @@
+{
+  "type": "graph_node_write_result",
+  "data": {
+    "graph": "deps",
+    "node_id": "node-a",
+    "created": true,
+    "effect": {
+      "applied": true,
+      "kind": "created",
+      "matched": false,
+      "affected_count": 1
+    },
+    "commit": {
+      "version": 2,
+      "timestamp": 20,
+      "durable": true,
+      "put_count": 2,
+      "delete_count": 0
+    },
+    "version": 2,
+    "timestamp": 20
+  }
+}

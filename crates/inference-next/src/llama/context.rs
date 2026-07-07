@@ -54,6 +54,7 @@ impl LlamaCppContext {
         n_seq_max: u32,
         mode: &str,
     ) -> Result<Self, InferenceError> {
+        let _api_guard = llama_api_lock();
         let api = Arc::new(LlamaCppApi::load().map_err(InferenceError::LlamaCpp)?);
 
         let c_path = path_to_cstring(path)?;
@@ -136,6 +137,7 @@ impl LlamaCppContext {
         path: &Path,
         ctx_override: Option<usize>,
     ) -> Result<Self, InferenceError> {
+        let _api_guard = llama_api_lock();
         let api = Arc::new(LlamaCppApi::load().map_err(InferenceError::LlamaCpp)?);
 
         let c_path = path_to_cstring(path)?;
@@ -301,6 +303,7 @@ impl LlamaCppContext {
 
 impl Drop for LlamaCppContext {
     fn drop(&mut self) {
+        let _api_guard = llama_api_lock();
         // Free context first (references model internals), then model
         self.api.free(self.ctx);
         self.api.model_free(self.model);

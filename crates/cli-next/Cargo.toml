@@ -1,0 +1,39 @@
+[package]
+name = "strata-cli-next"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Handwritten command-line interface for Strata V1"
+
+[features]
+default = []
+inference = ["strata-executor-next/inference"]
+inference-anthropic = ["strata-executor-next/inference-anthropic"]
+inference-google = ["strata-executor-next/inference-google"]
+inference-local = ["strata-executor-next/inference-local"]
+inference-openai = ["strata-executor-next/inference-openai"]
+
+[dependencies]
+base64 = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+rustyline = "14"
+serde = { workspace = true }
+serde_json = { workspace = true }
+shlex = "1.3"
+strata-executor-next = { path = "../executor-next" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[[bin]]
+name = "strata"
+path = "src/main.rs"
+
+[lints]
+workspace = true

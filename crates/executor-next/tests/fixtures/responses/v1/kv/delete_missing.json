@@ -1,0 +1,12 @@
+{
+  "type": "delete_result",
+  "data": {
+    "key": "bWlzc2luZw==",
+    "effect": {
+      "applied": false,
+      "kind": "not_found",
+      "matched": false,
+      "affected_count": 0
+    }
+  }
+}

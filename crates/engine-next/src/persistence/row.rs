@@ -56,6 +56,12 @@ impl RowMutation {
     pub(crate) const fn is_delete(&self) -> bool {
         matches!(self, Self::Delete { .. })
     }
+
+    pub(crate) const fn address(&self) -> &RowAddress {
+        match self {
+            Self::Put { address, .. } | Self::Delete { address } => address,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

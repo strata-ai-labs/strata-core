@@ -61,6 +61,7 @@ impl<'a> BranchService<'a> {
         self.reject_duplicate_active(&name)?;
         let generation = self.control.next_generation_for_name(&name);
         let record = BranchCatalogRecord::root(name, generation);
+        self.reject_aliasing_storage_branch(&record)?;
 
         ControlPlane::begin_branch_operation(self.persistence, &record)?;
         let outcome = match self
@@ -118,6 +119,7 @@ impl<'a> BranchService<'a> {
         );
         let record = BranchCatalogRecord::forked(name, generation, placeholder_parent);
         let storage_branch_id = record.storage_branch_id();
+        self.reject_aliasing_storage_branch(&record)?;
 
         ControlPlane::begin_branch_operation(self.persistence, &record)?;
         let fork_outcome = match self.persistence.fork_branch_current(
@@ -127,7 +129,7 @@ impl<'a> BranchService<'a> {
         ) {
             Ok(outcome) => outcome,
             Err(error) => {
-                if error.code() == "not_found.engine.persistence_history" {
+                if error.code() == "history_unavailable.engine.persistence_history" {
                     let outcome = match self
                         .persistence
                         .create_branch(storage_branch_id, generation)
@@ -156,9 +158,7 @@ impl<'a> BranchService<'a> {
         let outcome = match self.persistence.describe_branch(storage_branch_id) {
             Ok(outcome) => outcome,
             Err(error) => {
-                self.control
-                    .fail_closed_after_branch_operation_error(&error);
-                return Err(error);
+                return Err(self.roll_back_forked_branch(&record, error));
             }
         };
         let parent = BranchParentRecord::new(
@@ -189,7 +189,7 @@ impl<'a> BranchService<'a> {
             parent.fork_version(),
             parent.fork_timestamp(),
         ) {
-            return Err(self.clear_pending_after_storage_error(&record, error));
+            return Err(self.roll_back_forked_branch(&record, error));
         }
         self.persist_catalog_record(record.clone())?;
 
@@ -301,6 +301,7 @@ impl<'a> BranchService<'a> {
         let generation = self.control.next_generation_for_name(&name);
         let pending = BranchCatalogRecord::root(name.clone(), generation);
         let storage_branch_id = pending.storage_branch_id();
+        self.reject_aliasing_storage_branch(&pending)?;
         ControlPlane::begin_branch_operation(self.persistence, &pending)?;
         let outcome = match fork(
             self.persistence,
@@ -342,12 +343,32 @@ impl<'a> BranchService<'a> {
             parent.fork_version(),
             parent.fork_timestamp(),
         ) {
-            return Err(self.clear_pending_after_storage_error(&record, error));
+            return Err(self.roll_back_forked_branch(&record, error));
         }
         self.persist_catalog_record(record.clone())?;
         Ok(BranchCreateOutcome::new(BranchSummary::from_catalog(
             &record,
         )))
+    }
+
+    /// Rejects a new branch whose derived storage identity collides with an
+    /// existing branch of a different name (finding U8), before any durable
+    /// state is written.
+    fn reject_aliasing_storage_branch(&self, record: &BranchCatalogRecord) -> EngineResult<()> {
+        if let Some(existing) = self
+            .control
+            .find_aliasing_storage_branch(record.name(), record.storage_branch_id())
+        {
+            return Err(EngineError::conflict(
+                "already_exists.engine.branch",
+                format!(
+                    "branch `{}` derives the same storage identity as existing branch `{}`",
+                    record.name(),
+                    existing.name()
+                ),
+            ));
+        }
+        Ok(())
     }
 
     fn reject_duplicate_active(&self, name: &BranchName) -> EngineResult<()> {
@@ -372,6 +393,51 @@ impl<'a> BranchService<'a> {
                     .fail_closed_after_branch_operation_error(&error);
                 error
             }
+        }
+    }
+
+    /// Rolls back a fork/create that failed AFTER its storage branch was already
+    /// durably created, so no orphaned storage branch is left behind with no
+    /// catalog row (finding U12).
+    ///
+    /// The storage branch is deleted (tombstoned) and a matching deleted catalog
+    /// record is published, which both removes the orphan and advances the
+    /// name's generation past the storage tombstone — storage's recreate guard
+    /// requires a strictly higher generation, so without this the name would be
+    /// permanently poisoned (a clean retry would fail). The deleted record is
+    /// keyed by name, so a successful retry overwrites it. If the storage
+    /// rollback itself fails, fail closed and leave the pending marker for reopen
+    /// recovery to reconcile.
+    fn roll_back_forked_branch(
+        &mut self,
+        record: &BranchCatalogRecord,
+        original: EngineError,
+    ) -> EngineError {
+        let deleted = match self
+            .persistence
+            .delete_branch(record.storage_branch_id(), record.generation())
+        {
+            Ok(outcome) => {
+                let branch = outcome.branch();
+                record.clone().with_storage_facts(
+                    branch.generation(),
+                    branch_status(branch),
+                    branch.created_at(),
+                    branch.deleted_at(),
+                    branch.state_revision(),
+                )
+            }
+            Err(error) => {
+                self.control
+                    .fail_closed_after_branch_operation_error(&error);
+                return error;
+            }
+        };
+        // persist_catalog_record writes the (deleted) record and clears the
+        // pending marker in one commit, and fails closed on its own error.
+        match self.persist_catalog_record(deleted) {
+            Ok(()) => original,
+            Err(error) => error,
         }
     }
 
@@ -554,7 +620,7 @@ mod tests {
             .fork_current(&BranchName::default_branch(), feature.clone())
             .expect_err("fallback create fails");
         assert_eq!(error.class(), EngineErrorClass::Conflict);
-        assert_eq!(error.code(), "conflict.engine.persistence");
+        assert_eq!(error.code(), "already_exists.engine.persistence");
         assert!(!control.contains_branch(&feature));
 
         let loaded = bootstrap_or_load(&mut persistence, false, None)

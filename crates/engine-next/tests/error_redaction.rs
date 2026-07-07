@@ -33,11 +33,11 @@ fn assert_redacted(error: &EngineError) {
 fn storage_mapped_commit_errors_redact_and_carry_retry_policy() {
     for (kind, retryable) in [
         (StorageFaultKind::ResourceExhausted, true),
-        (StorageFaultKind::AmbiguousCommit, true),
+        (StorageFaultKind::AmbiguousCommit, false),
         (StorageFaultKind::RecoveryDegraded, false),
         (StorageFaultKind::Unavailable, true),
         (StorageFaultKind::NotFound, false),
-        (StorageFaultKind::Conflict, false),
+        (StorageFaultKind::Conflict, true),
     ] {
         let mut db = open_cache_database().expect("cache database opens");
         db.inject_commit_fault_for_test(kind);

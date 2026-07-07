@@ -1,0 +1,9 @@
+{
+  "type": "kv_batch_put",
+  "entries": [
+    {
+      "key": "YQ==",
+      "value": "b25l"
+    }
+  ]
+}

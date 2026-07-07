@@ -245,6 +245,29 @@ impl<'a> GraphService<'a> {
             .transpose()
     }
 
+    /// Rejects a relationship binding whose target names a different branch.
+    ///
+    /// Cross-branch references are forbidden (CLAUDE.md Hard Rule 18;
+    /// entity-ref-and-relationship-layer-contract Branch Scope rule 4 / Binding
+    /// Decision 6 / conformance test 9). A `None` target branch means "the
+    /// node's own branch" and is accepted; an explicit target branch is accepted
+    /// only when it equals the node's branch.
+    fn validate_binding_target(&self, target: &GraphBindingTarget) -> EngineResult<()> {
+        if let Some(target_branch) = target.branch() {
+            if target_branch != &self.branch {
+                return Err(EngineError::unsupported(
+                    "unsupported.engine.graph_binding_cross_branch",
+                    format!(
+                        "graph relationship binding targets branch `{}` but the node lives on branch `{}`; cross-branch bindings are not supported",
+                        target_branch.as_str(),
+                        self.branch.as_str(),
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Upserts one graph node.
     pub fn upsert_node(
         &mut self,
@@ -254,6 +277,9 @@ impl<'a> GraphService<'a> {
     ) -> EngineResult<GraphWriteOutcome> {
         let record = self.branch_record()?;
         self.require_graph(&record, graph)?;
+        if let Some(binding) = data.binding() {
+            self.validate_binding_target(binding.target())?;
+        }
         let current = self.node_record(&record, graph, &node_id)?;
         let created = current.is_none();
         let new_record = GraphNodeRecord::new(graph.clone(), node_id.clone(), data);
@@ -763,6 +789,9 @@ impl<'a> GraphService<'a> {
         for (index, operation) in batch.operations().iter().enumerate() {
             match operation {
                 GraphBatchOperation::UpsertNode { node_id, data } => {
+                    if let Some(binding) = data.binding() {
+                        self.validate_binding_target(binding.target())?;
+                    }
                     let created = !nodes.contains_key(node_id);
                     if let Some(old) = nodes
                         .get(node_id)
@@ -1452,13 +1481,21 @@ impl<'a> GraphService<'a> {
                 "graph batch must contain at least one mutation",
             ));
         }
+        // Count only authored rows (graph metadata, nodes, forward edges) for
+        // the user-facing commit counts. Derived reverse-edge and binding-index
+        // rows are engine-maintained and must not inflate the caller's view of
+        // rows written/deleted (one edge upsert would otherwise report 2).
         let user_put_count = mutations
             .iter()
-            .filter(|mutation| mutation.is_put())
+            .filter(|mutation| {
+                mutation.is_put() && is_authored_graph_row(mutation.address().row_class())
+            })
             .count();
         let user_delete_count = mutations
             .iter()
-            .filter(|mutation| mutation.is_delete())
+            .filter(|mutation| {
+                mutation.is_delete() && is_authored_graph_row(mutation.address().row_class())
+            })
             .count();
         let mut space_mutations =
             ControlPlane::space_registration_mutations(self.persistence, record, &self.space)?;
@@ -1476,6 +1513,16 @@ impl<'a> GraphService<'a> {
             .commit(&plan)?
             .with_counts(user_put_count, user_delete_count))
     }
+}
+
+/// Returns true for graph row classes that represent authored data (metadata,
+/// nodes, forward edges) as opposed to engine-derived rows (reverse edges,
+/// binding index) that must not be counted in user-facing commit outcomes.
+const fn is_authored_graph_row(row_class: RowClass) -> bool {
+    matches!(
+        row_class,
+        RowClass::GraphMetadata | RowClass::GraphNode | RowClass::GraphEdge
+    )
 }
 
 #[derive(Default)]

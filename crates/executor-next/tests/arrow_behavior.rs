@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use strata_executor_next::{
     ArrowExportPrimitive, ArrowExportResult, ArrowFileFormat, ArrowImportResult, ArrowImportTarget,
     BatchEventEntry, Bytes, Command, Executor, ExecutorErrorClass, GraphBindingPrimitive,
-    GraphBindingTarget, GraphEntityBinding, Output, DEFAULT_BRANCH,
+    GraphBindingTarget, GraphEntityBinding, Output, VectorDistanceMetric, DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -180,6 +180,7 @@ fn parquet_vector_import_and_export_uses_batch_commands() {
     write_vector_parquet(&input_path);
 
     let mut executor = Executor::open_cache().expect("cache executor opens");
+    create_docs_collection(&mut executor);
     let output = executor
         .execute(Command::ArrowImport {
             branch: None,
@@ -222,6 +223,30 @@ fn parquet_vector_import_and_export_uses_batch_commands() {
     };
     assert_eq!(result.row_count(), 2);
     assert!(output_path.exists());
+}
+
+#[test]
+fn vector_import_into_missing_collection_fails_instead_of_defaulting_a_metric() {
+    let dir = TempDir::new().expect("temp dir");
+    let input_path = dir.path().join("vectors.parquet");
+    write_vector_parquet(&input_path);
+
+    // THIN-2: the executor must not invent a distance metric by auto-creating a
+    // Cosine collection; import into a non-existent vector collection fails.
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let error = executor
+        .execute(Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: input_path.to_string_lossy().into_owned(),
+            format: Some(ArrowFileFormat::Parquet),
+            target: ArrowImportTarget::Vector,
+            key_column: None,
+            value_column: None,
+            collection: Some("missing".to_owned()),
+        })
+        .expect_err("import into a missing vector collection is rejected");
+    assert_eq!(error.code(), "not_found.executor.vector_collection");
 }
 
 #[test]
@@ -336,6 +361,7 @@ fn durable_arrow_import_survives_reopen_and_exports() {
                 collection: None,
             })
             .expect("json import succeeds");
+        create_docs_collection(&mut executor);
         executor
             .execute(Command::ArrowImport {
                 branch: None,
@@ -455,9 +481,19 @@ fn graph_export_writes_node_and_edge_tables() {
     };
     assert_eq!(result.primitive(), ArrowExportPrimitive::Graph);
     assert_eq!(result.row_count(), 3);
-    assert_eq!(result.paths().len(), 2);
     let node_path = dir.path().join("graph_nodes.jsonl");
     let edge_path = dir.path().join("graph_edges.jsonl");
+    assert_eq!(
+        result.paths(),
+        &[
+            node_path.to_string_lossy().into_owned(),
+            edge_path.to_string_lossy().into_owned(),
+        ]
+    );
+    assert!(
+        !output_path.exists(),
+        "graph export path is a stem; use returned paths for written files"
+    );
     assert!(node_path.exists());
     assert!(edge_path.exists());
     let nodes = fs::read_to_string(&node_path).expect("nodes");
@@ -593,7 +629,7 @@ fn kv_keys(executor: &mut Executor) -> Vec<Bytes> {
         })
         .expect("kv list succeeds");
     match output {
-        Output::Keys(keys) | Output::KeysPage { keys, .. } => keys,
+        Output::Keys { items: keys, .. } | Output::KeysPage { items: keys, .. } => keys,
         output => panic!("unexpected kv list output: {output:?}"),
     }
 }
@@ -640,7 +676,7 @@ fn json_get_in(
     let Output::JsonVersionedValue(value) = output else {
         panic!("unexpected json get output");
     };
-    value.map(|value| value.value().clone())
+    value.value().map(|value| value.value().clone())
 }
 
 fn vector_count(executor: &mut Executor, collection: &str) -> u64 {
@@ -685,6 +721,18 @@ fn vector_get_metadata(executor: &mut Executor, collection: &str, key: &str) -> 
         panic!("unexpected vector get output");
     };
     value.data().metadata().cloned().expect("metadata")
+}
+
+fn create_docs_collection(executor: &mut Executor) {
+    executor
+        .execute(Command::VectorCreateCollection {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            dimension: 2,
+            metric: VectorDistanceMetric::Cosine,
+        })
+        .expect("collection create succeeds");
 }
 
 fn write_vector_parquet(path: &Path) {

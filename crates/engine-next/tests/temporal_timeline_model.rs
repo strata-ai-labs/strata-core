@@ -98,14 +98,19 @@ proptest! {
             }
         }
 
-        let mut timestamps: BTreeSet<Timestamp> = BTreeSet::new();
+        // Real commit versions and timestamps are the in-range points (commit
+        // versions are not contiguous — control-plane commits interleave — so
+        // only recorded commits are guaranteed to resolve to a retained
+        // frontier). EPOCH/MAX and version 0/MAX are the out-of-range boundaries
+        // checked separately below.
+        let mut commit_versions: BTreeSet<CommitVersion> = BTreeSet::new();
+        let mut commit_timestamps: BTreeSet<Timestamp> = BTreeSet::new();
         for timeline in &timelines {
             for event in timeline {
-                timestamps.insert(event.timestamp);
+                commit_versions.insert(event.version);
+                commit_timestamps.insert(event.timestamp);
             }
         }
-        timestamps.insert(Timestamp::EPOCH);
-        timestamps.insert(Timestamp::MAX);
 
         for (index, timeline) in timelines.iter().enumerate() {
             let target = key(KEYS[index]);
@@ -113,27 +118,47 @@ proptest! {
             let latest = kv.get(&target).expect("get").map(|read| read.as_bytes().to_vec());
             prop_assert_eq!(latest, oracle_latest(timeline));
 
-            for raw in 0..=max_version {
-                let version = CommitVersion::new(raw);
+            // Recorded commit versions resolve to a valid retained frontier; the
+            // key may or may not have a value there (Ok/None per the oracle).
+            for &version in &commit_versions {
                 let actual = kv
                     .get_at_version(&target, version)
-                    .expect("get_at_version")
+                    .expect("in-range version read succeeds")
                     .map(|read| read.as_bytes().to_vec());
                 prop_assert_eq!(actual, oracle_at_version(timeline, version));
             }
-            // A version past the latest commit does not fall back to latest the
-            // way an `as_of` timestamp does; it reads as absent (test-plan §5.3).
-            let past_latest = kv
-                .get_at_version(&target, CommitVersion::MAX)
-                .expect("get_at_version past latest");
-            prop_assert!(past_latest.is_none());
 
-            for &timestamp in &timestamps {
+            // Real commit timestamps resolve to a valid retained frontier.
+            for &timestamp in &commit_timestamps {
                 let actual = kv
                     .get_at(&target, timestamp)
-                    .expect("get_at")
+                    .expect("in-range timestamp read succeeds")
                     .map(|read| read.as_bytes().to_vec());
                 prop_assert_eq!(actual, oracle_at_timestamp(timeline, timestamp));
+            }
+
+            // Out-of-range reads are diagnostics, never clamp-to-latest or
+            // ordinary absence (F7/F8): before the retained floor (version 0 /
+            // EPOCH) and after the latest retained commit (version MAX /
+            // Timestamp::MAX). Only meaningful once at least one commit exists.
+            if max_version >= 1 {
+                const HISTORY_CODE: &str = "history_unavailable.engine.persistence_history";
+                let below_floor = kv
+                    .get_at_version(&target, CommitVersion::new(0))
+                    .expect_err("below-floor version is a diagnostic");
+                prop_assert_eq!(below_floor.code(), HISTORY_CODE);
+                let past_latest_version = kv
+                    .get_at_version(&target, CommitVersion::MAX)
+                    .expect_err("past-latest version is a diagnostic");
+                prop_assert_eq!(past_latest_version.code(), HISTORY_CODE);
+                let before_history = kv
+                    .get_at(&target, Timestamp::EPOCH)
+                    .expect_err("before-history timestamp is a diagnostic");
+                prop_assert_eq!(before_history.code(), HISTORY_CODE);
+                let after_latest = kv
+                    .get_at(&target, Timestamp::MAX)
+                    .expect_err("after-latest timestamp is a diagnostic");
+                prop_assert_eq!(after_latest.code(), HISTORY_CODE);
             }
         }
     }

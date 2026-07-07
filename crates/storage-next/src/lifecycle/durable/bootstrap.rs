@@ -2520,11 +2520,12 @@ fn commit_durability_class_for_mode(mode: StorageMode) -> LifecycleResult<Commit
 }
 
 /// Validate the recovered WAL package against the rebuilt catalog. Each
-/// record must reference a branch present in the catalog and not in
-/// `Deleted` status; unknown or deleted branches indicate corruption or
-/// post-deletion resurrection attempts and must fail closed. Records
-/// must remain strictly ordered by commit version across all branches —
-/// the WAL is a single durable log.
+/// record must reference a branch present in the catalog. Records for a
+/// deleted branch are valid only when they are at or before that branch's
+/// durable deletion watermark; later records indicate a post-deletion
+/// resurrection attempt and must fail closed. Records must remain strictly
+/// ordered by commit version across all branches — the WAL is a single
+/// durable log.
 fn validate_recovered_wal_package(
     catalog: &LifecycleBranchCatalog,
     records: &[WalRecord],
@@ -2538,7 +2539,9 @@ fn validate_recovered_wal_package(
             .map_err(|_| LifecycleError::RecoveryFailed {
                 reason: "recovered WAL package references an unknown branch",
             })?;
-        if descriptor.status() == LifecycleBranchStatus::Deleted {
+        if descriptor.status() == LifecycleBranchStatus::Deleted
+            && !deleted_branch_allows_recovered_version(descriptor, record.commit_version())
+        {
             return Err(LifecycleError::RecoveryFailed {
                 reason: "recovered WAL package references a deleted branch",
             });
@@ -2551,6 +2554,15 @@ fn validate_recovered_wal_package(
         previous = Some(record.commit_version());
     }
     Ok(())
+}
+
+fn deleted_branch_allows_recovered_version(
+    descriptor: crate::lifecycle::LifecycleBranchDescriptor,
+    version: CommitVersion,
+) -> bool {
+    descriptor
+        .deleted_at()
+        .is_some_and(|deleted_at| version <= deleted_at)
 }
 
 /// Enumerate persisted per-branch table manifests and install each into
@@ -2614,11 +2626,13 @@ fn recover_per_branch_table_manifests(
 /// has been rebuilt from `BranchCatalogManifest` and per-branch table
 /// manifests.
 ///
-/// Validation: each row's `branch_id` must be present in the catalog
-/// and not in `Deleted` status. Unknown or deleted `branch_ids` fail
-/// closed with typed `RecoveryFailed` errors, mirroring the multi-branch
-/// WAL validator. Empty input is a no-op (common when the seeded branch
-/// is the only branch with checkpoint coverage).
+/// Validation: each row's `branch_id` must be present in the catalog. Rows
+/// for deleted branches are valid only when they are at or before that
+/// branch's durable deletion watermark, and are skipped rather than
+/// installed. Unknown branches or post-delete rows fail closed with typed
+/// `RecoveryFailed` errors, mirroring the multi-branch WAL validator. Empty
+/// input is a no-op (common when the seeded branch is the only branch with
+/// checkpoint coverage).
 fn install_non_seeded_checkpoint_rows(
     branch_catalog: &mut LifecycleBranchCatalog,
     rows: &[crate::row::StorageRow],
@@ -2628,11 +2642,6 @@ fn install_non_seeded_checkpoint_rows(
     if rows.is_empty() {
         return Ok(());
     }
-    let Some(identity_seed) = identity_seed else {
-        return Err(LifecycleError::RecoveryFailed {
-            reason: "non-seeded checkpoint rows require an install identity seed",
-        });
-    };
     let mut affected: Vec<BranchId> = Vec::new();
     for row in rows {
         let id = row.physical_key().branch_id();
@@ -2641,6 +2650,7 @@ fn install_non_seeded_checkpoint_rows(
         }
     }
     affected.sort_by_key(|id| *id.as_bytes());
+    let mut active_affected = Vec::new();
     for id in &affected {
         let descriptor =
             branch_catalog
@@ -2649,18 +2659,45 @@ fn install_non_seeded_checkpoint_rows(
                     reason: "checkpoint references an unknown branch",
                 })?;
         if descriptor.status() == LifecycleBranchStatus::Deleted {
+            if rows
+                .iter()
+                .filter(|row| row.physical_key().branch_id() == *id)
+                .all(|row| {
+                    deleted_branch_allows_recovered_version(descriptor, row.commit_version())
+                })
+            {
+                continue;
+            }
             return Err(LifecycleError::RecoveryFailed {
                 reason: "checkpoint references a deleted branch",
             });
         }
+        active_affected.push(*id);
     }
-    let mut staged: Vec<BranchLocalState> = affected
+    if active_affected.is_empty() {
+        return Ok(());
+    }
+    let Some(identity_seed) = identity_seed else {
+        return Err(LifecycleError::RecoveryFailed {
+            reason: "non-seeded checkpoint rows require an install identity seed",
+        });
+    };
+    let mut staged: Vec<BranchLocalState> = active_affected
         .iter()
         .map(|id| branch_catalog.branch_state(*id).cloned())
         .collect::<LifecycleResult<Vec<_>>>()?;
+    let active_rows = rows
+        .iter()
+        .filter(|row| {
+            active_affected
+                .iter()
+                .any(|id| row.physical_key().branch_id() == *id)
+        })
+        .cloned()
+        .collect();
     let request = crate::branch::state::snapshot::BranchSnapshotInstallRequest::from_rows(
         identity_seed.as_str(),
-        rows.to_vec(),
+        active_rows,
     )
     .map_err(branch_error)?;
     crate::branch::state::snapshot::install_snapshot_rows_into_branches(&mut staged, &request)
@@ -2761,6 +2798,10 @@ fn replay_wal_into_catalog<S>(
     for record in recovery.wal().records() {
         replayed_max = replayed_max.max(record.commit_version());
         let branch_id = record.branch_id();
+        let descriptor = branch_catalog.lookup(branch_id)?;
+        if descriptor.status() == crate::lifecycle::LifecycleBranchStatus::Deleted {
+            continue;
+        }
         let generation = branch_catalog
             .registry()
             .lookup(branch_id)

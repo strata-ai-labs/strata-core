@@ -8,6 +8,8 @@
 //! index artifacts) stays in the dedicated per-capability suites; this suite
 //! exists so the five capabilities cannot drift apart on the shared skeleton.
 
+#![allow(clippy::result_large_err)]
+
 mod common;
 
 use common::{assert_status, branch, key, open_cache_database, space, value};

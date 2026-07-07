@@ -125,7 +125,8 @@ The suite must fail if any change:
 2. Cache-mode absence counters unchanged (cache has no checkpoint/snapshot).
 3. `format_golden` structural goldens pass; snapshot content goldens regenerated with
    rationale.
-4. Type-inventory snapshot regenerated and within caps if any new types are added.
+4. Any new named storage boundary type is documented with its owning layer and
+   rationale.
 
 ## Regression commands
 

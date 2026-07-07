@@ -1,0 +1,23 @@
+{
+  "type": "vector_delete_result",
+  "data": {
+    "collection": "docs",
+    "key": "doc-a",
+    "deleted": true,
+    "effect": {
+      "applied": true,
+      "kind": "deleted",
+      "matched": true,
+      "affected_count": 1
+    },
+    "commit": {
+      "version": 3,
+      "timestamp": 30,
+      "durable": true,
+      "put_count": 0,
+      "delete_count": 1
+    },
+    "version": 3,
+    "timestamp": 30
+  }
+}

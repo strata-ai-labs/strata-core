@@ -1,0 +1,24 @@
+{
+  "type": "vector_metadata_update_result",
+  "data": {
+    "collection": "docs",
+    "key": "doc-a",
+    "updated": true,
+    "effect": {
+      "applied": true,
+      "kind": "updated",
+      "matched": true,
+      "affected_count": 1
+    },
+    "commit": {
+      "version": 2,
+      "timestamp": 20,
+      "durable": true,
+      "put_count": 1,
+      "delete_count": 0
+    },
+    "version": 2,
+    "timestamp": 20,
+    "vector_revision": 2
+  }
+}

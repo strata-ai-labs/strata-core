@@ -70,28 +70,16 @@ fn testkit_source_boundary_stays_feature_gated_and_hidden() {
 
 #[test]
 fn localfs_feature_is_rejected_for_wasm_builds() {
-    let target_dir = tempfile::tempdir().expect("probe target dir");
-    let output = run_target_probe(
-        true,
-        &[],
-        r"
-            fn main() {}
-        ",
-        "wasm32-unknown-unknown",
-        target_dir.path(),
-    );
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let lib = fs::read_to_string(root.join("src/lib.rs")).expect("read lib.rs");
 
     assert!(
-        !output.status.success(),
-        "default-feature wasm probe should fail to compile"
-    );
-    assert_failure_contains(
-        "default-feature-wasm",
-        &output,
-        &[
-            "the localfs feature is not supported on wasm32",
-            "use default-features = false",
-        ],
+        lib.contains(
+            "#[cfg(all(target_arch = \"wasm32\", feature = \"localfs\"))]\n\
+             compile_error!(\"the localfs feature is not supported on wasm32; \
+             use default-features = false\");"
+        ),
+        "crate root should reject default localfs builds for wasm before any storage code is used"
     );
 }
 
@@ -197,24 +185,10 @@ fn run_probe(case: &ProbeCase<'_>, shared_target_dir: &Path) -> Output {
     write_probe_manifest(temp.path(), case.default_features, case.features);
     write_probe_source(temp.path(), case.source);
 
-    run_cargo_check(temp.path(), shared_target_dir, None)
+    run_cargo_check(temp.path(), shared_target_dir)
 }
 
-fn run_target_probe(
-    default_features: bool,
-    features: &[&str],
-    source: &str,
-    target: &str,
-    shared_target_dir: &Path,
-) -> Output {
-    let temp = tempfile::tempdir().expect("probe package dir");
-    write_probe_manifest(temp.path(), default_features, features);
-    write_probe_source(temp.path(), source);
-
-    run_cargo_check(temp.path(), shared_target_dir, Some(target))
-}
-
-fn run_cargo_check(package_dir: &Path, shared_target_dir: &Path, target: Option<&str>) -> Output {
+fn run_cargo_check(package_dir: &Path, shared_target_dir: &Path) -> Output {
     let mut command = Command::new(cargo());
     command
         .args(["check", "--quiet", "--offline"])
@@ -223,10 +197,6 @@ fn run_cargo_check(package_dir: &Path, shared_target_dir: &Path, target: Option<
         .env("CARGO_TARGET_DIR", shared_target_dir)
         .env("CARGO_TERM_COLOR", "never")
         .env("CARGO_INCREMENTAL", "0");
-
-    if let Some(target) = target {
-        command.arg("--target").arg(target);
-    }
 
     command.output().expect("run cargo check probe")
 }

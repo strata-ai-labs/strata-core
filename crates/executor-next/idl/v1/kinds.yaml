@@ -1,0 +1,99 @@
+kinds:
+  - id: mutation.create
+    access: write
+    commit: commits_on_success
+    response_model: MutationAck<{result}>
+    snippets:
+      - mutation-ack.md
+  - id: mutation.put
+    access: write
+    commit: commits_on_success
+    response_model: MutationAck<{result}>
+    snippets:
+      - mutation-ack.md
+  - id: mutation.delete
+    access: write
+    commit: commits_on_success
+    response_model: MutationAck<{result}>
+    snippets:
+      - mutation-ack.md
+  - id: mutation.bulk_delete
+    access: write
+    commit: commits_on_success
+    response_model: MutationAck<{result}>
+    snippets:
+      - mutation-ack.md
+  - id: mutation.metadata_update
+    access: write
+    commit: commits_on_success
+    response_model: MutationAck<{result}>
+    snippets:
+      - mutation-ack.md
+  - id: read.get
+    access: read
+    commit: none
+    response_model: Maybe<{result}>
+    snippets:
+      - optional-read.md
+  - id: read.history
+    access: read
+    commit: none
+    response_model: Maybe<Vec<{result}>>
+    snippets:
+      - optional-read.md
+  - id: read.page
+    access: read
+    commit: none
+    pagination: cursor
+    response_model: Page<{result}>
+    snippets:
+      - cursor-page.md
+  - id: read.search
+    access: read
+    commit: none
+    pagination: bounded
+    response_model: SearchResult<{result}>
+    snippets:
+      - search-result.md
+  - id: read.diagnostics
+    access: read
+    commit: none
+    pagination: bounded
+    response_model: SearchResult<{result}> + IndexDiagnostics
+    snippets:
+      - search-result.md
+      - diagnostics.md
+  - id: read.status
+    access: read
+    commit: none
+    response_model: StatusValue<{result}>
+    snippets:
+      - status-value.md
+  - id: read.sample
+    access: read
+    commit: none
+    pagination: sample
+    response_model: SamplePage<{result}>
+    snippets:
+      - cursor-page.md
+  - id: batch.itemwise_mutation
+    access: write
+    commit: itemwise_shared_commit
+    batch: itemwise
+    response_model: BatchResult<{result}>
+    snippets:
+      - itemwise-batch.md
+  - id: batch.itemwise_read
+    access: read
+    commit: none
+    batch: itemwise
+    response_model: BatchResult<{result}>
+    snippets:
+      - itemwise-batch.md
+  - id: batch.itemwise_status
+    access: read
+    commit: none
+    batch: itemwise
+    response_model: BatchResult<{result}>
+    snippets:
+      - itemwise-batch.md

@@ -1,6 +1,16 @@
 # Storage-Next Type Proliferation Reduction Plan
 
-Status: draft cleanup plan
+Status: historical cleanup plan; temporary inventory guard retired
+
+## Retirement Note
+
+The generated type-inventory tooling was temporary cleanup scaffolding. It
+helped drive the storage-next type-reduction pass, but it is now retired and
+should not be regenerated for future work.
+
+Future storage cleanup should rely on focused source guards, behavior tests,
+format goldens, review of new boundary types, and the design guidance in this
+document rather than on generated inventory artifacts.
 
 ## Decision
 
@@ -187,15 +197,15 @@ This is the single roadmap for the cleanup. Each row is a PR-sized or
 sub-PR-sized unit; if the measured diff would exceed 1,500 net LOC, split the
 row further before opening the PR.
 
-The inventory baseline should be committed before `CLN-T1` starts and re-run
-at every PR boundary. The current rough count is about 660 production
-structs/enums, depending on the counting script. The first numeric target is a
-crate-private production type count of 450 or lower, excluding public API and
-durable-format types that the ledger marks as intentionally retained.
+Historical note: the initial inventory and closeout slices used generated
+type-inventory artifacts during the cleanup pass. That machinery has been
+retired. The remaining guidance is qualitative: keep new types at real
+boundaries, avoid private operation scaffolding, and prove cleanup with focused
+source guards and behavior tests.
 
 | Code | Unit | Primary files | Primary action | Expected result |
 |---|---|---|---|---|
-| `CLN-T0` | Inventory baseline | `crates/storage-next/src/**` | Add a repeatable script that counts structs/enums, suffix families, parent re-exports, files over threshold, one-call-site candidates, and existing `allow(unused_imports)` / `expect(dead_code)` scaffold blocks | Committed baseline with totals and per-module counts |
+| `CLN-T0` | Inventory baseline | `crates/storage-next/src/**` | Historical: added repeatable inventory tooling during cleanup | Retired after cleanup completion |
 | `CLN-T1` | Branch facade | `branch/mod.rs` | Remove broad re-exports, delete existing speculative `allow(unused_imports)` blocks as exports disappear, and update call sites to explicit submodule imports | Smaller branch public-in-crate surface |
 | `CLN-T2A` | Branch state extraction: append/rotation | `branch/state.rs` | Move append and active/frozen rotation code into owned modules without semantic changes | First file-size reduction under budget |
 | `CLN-T2B` | Branch state extraction: fork/read hooks | `branch/state.rs` | Move fork and read-facing helper code into owned modules without semantic changes | Branch state ownership gets clearer |
@@ -221,7 +231,7 @@ durable-format types that the ledger marks as intentionally retained.
 | `CLN-T9D` | Quarantine service | `service/quarantine/*` | Reduce reconcile helper proliferation | Inventory mismatch behavior unchanged |
 | `CLN-T9E` | Snapshot service | `service/snapshot.rs` | Localize snapshot publication helper types | Snapshot golden/fault tests unchanged |
 | `CLN-T10` | API/testkit reports | `api/*`, `testkit/*` | Keep public API types; reduce duplicate testkit counters and dead shells | Clearer diagnostics and conformance surface |
-| `CLN-T11` | Closeout guards | source guards and inventory script | Add re-export count, suffix-family count, scaffold-allowance, and inventory-diff guards | Re-growth trips CI or review |
+| `CLN-T11` | Closeout guards | source guards and temporary inventory tooling | Historical: pinned cleanup progress with generated inventory artifacts | Retired; source guards and review now carry the regression pressure |
 
 ## Execution Rules
 
@@ -260,10 +270,10 @@ message or cleanup ledger:
    caller is one lifecycle or API file, document why that is a real boundary;
    if no external caller exists, treat it as private scaffolding unless it
    guards a proof or durable fact.
-7. Did total type count, operation-family type count, and parent re-export
-   count go down?
-8. Did the committed inventory diff prove the change, including any
-   intentionally retained public API or durable-format types?
+7. Did the operation-family surface and parent re-export count go down or stay
+   intentionally flat?
+8. Did the change preserve the operation boundary and avoid broad facade
+   re-growth?
 
 ## Keep/Remove Examples
 

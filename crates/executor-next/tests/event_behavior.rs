@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use strata_engine_next::{CacheOpenOptions, Database};
 use strata_executor_next::{
     BatchEventEntry, Command, EventRangeDirection, EventVersionedData, Executor,
-    ExecutorErrorClass, Output, DEFAULT_BRANCH,
+    ExecutorErrorClass, MutationEffect, Output, PageInfo, DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -245,7 +245,7 @@ fn durable_event_batch_append_preserves_positional_results() {
 }
 
 fn run_event_batch_append_edges(executor: &mut Executor) {
-    assert_eq!(
+    assert!(matches!(
         executor
             .execute(Command::EventBatchAppend {
                 branch: None,
@@ -253,8 +253,8 @@ fn run_event_batch_append_edges(executor: &mut Executor) {
                 entries: Vec::new(),
             })
             .expect("empty batch succeeds"),
-        Output::EventBatchAppendResults(Vec::new())
-    );
+        Output::EventBatchAppendResults(results) if results.is_empty() && !results.applied()
+    ));
 
     let output = executor
         .execute(Command::EventBatchAppend {
@@ -273,16 +273,50 @@ fn run_event_batch_append_edges(executor: &mut Executor) {
     };
     assert_eq!(results.len(), 4);
     assert!(results[0].error().is_some());
+    assert_eq!(
+        results[0].error_status().expect("event type status").code(),
+        "invalid_argument.engine.event_type"
+    );
     assert_eq!(results[1].sequence(), Some(0));
     assert_eq!(results[1].event_type(), Some("user.created"));
     assert!(results[1].version().is_some());
     assert!(results[1].timestamp().is_some());
+    assert_eq!(results[1].effect(), Some(&MutationEffect::created()));
+    assert_eq!(
+        results[1]
+            .commit()
+            .expect("first valid item commit")
+            .version(),
+        results[1].version().expect("first valid item version")
+    );
     assert!(results[1].error().is_none());
+    assert_eq!(results[0].effect(), None);
+    assert_eq!(results[0].commit(), None);
     assert!(results[2].error().is_some());
+    assert_eq!(
+        results[2]
+            .error_status()
+            .expect("event payload status")
+            .code(),
+        "invalid_argument.engine.event_payload"
+    );
+    assert_eq!(results[2].effect(), None);
+    assert_eq!(results[2].commit(), None);
     assert_eq!(results[3].sequence(), Some(1));
     assert_eq!(results[3].event_type(), Some("user.updated"));
     assert!(results[3].version().is_some());
     assert!(results[3].timestamp().is_some());
+    assert_eq!(results[3].effect(), Some(&MutationEffect::created()));
+    assert_eq!(
+        results[3]
+            .commit()
+            .expect("second valid item commit")
+            .version(),
+        results[1]
+            .commit()
+            .expect("first valid item commit")
+            .version()
+    );
     assert!(results[3].error().is_none());
     assert_eq!(event_len(executor, None, None, None), 2);
 
@@ -305,12 +339,12 @@ fn event_convenience_facade_runs_complete_event_command_suite() {
         executor.event_len().expect("len succeeds"),
         Output::EventLength { count: 0 }
     );
-    assert_eq!(
+    assert!(matches!(
         executor
             .event_batch_append(Vec::new())
             .expect("empty batch succeeds"),
-        Output::EventBatchAppendResults(Vec::new())
-    );
+        Output::EventBatchAppendResults(results) if results.is_empty() && !results.applied()
+    ));
 
     assert!(matches!(
         executor
@@ -344,7 +378,7 @@ fn event_convenience_facade_runs_complete_event_command_suite() {
         executor
             .event_get_by_type("facade.created", Some(10), None)
             .expect("type read succeeds"),
-        Output::EventRecords(records) if event_sequences(&records) == vec![0]
+        Output::EventRecords { items: records, .. } if event_sequences(&records) == vec![0]
     ));
     assert_eq!(
         executor.event_len().expect("len succeeds"),
@@ -354,24 +388,24 @@ fn event_convenience_facade_runs_complete_event_command_suite() {
         executor
             .event_range(0, None, None, EventRangeDirection::Forward, None)
             .expect("range succeeds"),
-        Output::EventRangeResult { events, .. } if event_sequences(&events) == vec![0, 1]
+        Output::EventRangeResult { items: events, .. } if event_sequences(&events) == vec![0, 1]
     ));
     assert!(matches!(
         executor
             .event_range_by_time(0, None, None, EventRangeDirection::Forward, None)
             .expect("time range succeeds"),
-        Output::EventRangeResult { events, .. } if event_sequences(&events) == vec![0, 1]
+        Output::EventRangeResult { items: events, .. } if event_sequences(&events) == vec![0, 1]
     ));
     assert_eq!(
         executor.event_list_types().expect("type list succeeds"),
-        Output::EventTypeList(vec![
-            "facade.created".to_owned(),
-            "facade.updated".to_owned()
-        ])
+        Output::EventTypeList {
+            items: vec!["facade.created".to_owned(), "facade.updated".to_owned()],
+            page: PageInfo::terminal(),
+        }
     );
     assert!(matches!(
         executor.event_list(None, None).expect("list succeeds"),
-        Output::EventRecords(records) if event_sequences(&records) == vec![0, 1]
+        Output::EventRecords { items: records, .. } if event_sequences(&records) == vec![0, 1]
     ));
     assert!(matches!(
         executor.event_verify_chain().expect("verify succeeds"),
@@ -427,12 +461,12 @@ fn event_command_to_output_mapping_is_explicit_for_every_variant() {
     assert!(matches!(outputs[1], Output::EventAppendResult { .. }));
     assert!(matches!(outputs[2], Output::EventRecord(_)));
     assert!(matches!(outputs[3], Output::Bool(_)));
-    assert!(matches!(outputs[4], Output::EventRecords(_)));
+    assert!(matches!(outputs[4], Output::EventRecords { .. }));
     assert!(matches!(outputs[5], Output::EventLength { .. }));
     assert!(matches!(outputs[6], Output::EventRangeResult { .. }));
     assert!(matches!(outputs[7], Output::EventRangeResult { .. }));
-    assert!(matches!(outputs[8], Output::EventTypeList(_)));
-    assert!(matches!(outputs[9], Output::EventRecords(_)));
+    assert!(matches!(outputs[8], Output::EventTypeList { .. }));
+    assert!(matches!(outputs[9], Output::EventRecords { .. }));
     assert!(matches!(outputs[10], Output::EventChainVerification(_)));
 }
 
@@ -511,17 +545,20 @@ fn assert_latest_event_reads(executor: &mut Executor) {
     assert_eq!(first.event().previous_hash(), "00".repeat(32));
     assert_eq!(first.event().hash().len(), 64);
     assert!(first.event().hash().chars().all(|c| c.is_ascii_hexdigit()));
+    // as_of selects by the branch commit timeline (the versioned record's
+    // commit timestamp), not by the event's occurrence timestamp — the same
+    // domain every other primitive's as_of uses.
     assert_eq!(
         get_event(
             executor,
             None,
             None,
             0,
-            Some(first.event().timestamp().saturating_sub(1)),
+            Some(first.timestamp().saturating_sub(1)),
         ),
         None
     );
-    assert!(get_event(executor, None, None, 0, Some(first.event().timestamp())).is_some());
+    assert!(get_event(executor, None, None, 0, Some(first.timestamp())).is_some());
 
     let second = get_event(executor, None, None, 1, None).expect("second event exists");
     assert_eq!(second.event().previous_hash(), first.event().hash());
@@ -539,7 +576,7 @@ fn assert_latest_event_reads(executor: &mut Executor) {
         "user.created",
         None,
         None,
-        Some(first.event().timestamp()),
+        Some(first.timestamp()),
     );
     assert_eq!(event_sequences(&historical), vec![0]);
 }
@@ -575,9 +612,19 @@ fn assert_event_sequence_ranges(executor: &mut Executor) {
 
     let (events, _, _) = event_range(
         executor,
-        0,
-        Some(4),
+        2,
+        None,
         Some(2),
+        EventRangeDirection::Reverse,
+        None,
+    );
+    assert_eq!(event_sequences(&events), vec![2, 1]);
+
+    let (events, _, _) = event_range(
+        executor,
+        3,
+        Some(1),
+        None,
         EventRangeDirection::Reverse,
         None,
     );
@@ -700,25 +747,37 @@ fn assert_event_lists(executor: &mut Executor) {
         event_sequences(&event_list(executor, None, None, None)),
         vec![0, 1, 2, 3]
     );
+    let (events, has_more, cursor) = event_list_page(executor, None, Some(2), None, None);
+    assert_eq!(event_sequences(&events), vec![0, 1]);
+    assert!(has_more);
+    assert_eq!(cursor, Some(1));
+    let (events, has_more, cursor) = event_list_page(executor, None, Some(2), cursor, None);
+    assert_eq!(event_sequences(&events), vec![2, 3]);
+    assert!(!has_more);
+    assert_eq!(cursor, None);
     assert!(event_list(executor, None, Some(0), None).is_empty());
     assert_eq!(
         event_sequences(&event_list(executor, Some("user.created"), Some(1), None)),
         vec![0]
     );
+    let (events, has_more, cursor) =
+        event_list_page(executor, Some("user.created"), Some(10), Some(0), None);
+    assert_eq!(event_sequences(&events), vec![2]);
+    assert!(!has_more);
+    assert_eq!(cursor, None);
 }
 
 fn assert_event_history_and_chain(executor: &mut Executor) {
+    // Historical facts use commit timestamps (the as_of domain shared with
+    // every other primitive), not the events' occurrence timestamps.
     let first = get_event(executor, None, None, 0, None)
         .expect("first event exists")
-        .event()
         .timestamp();
     let second = get_event(executor, None, None, 1, None)
         .expect("second event exists")
-        .event()
         .timestamp();
     let third = get_event(executor, None, None, 2, None)
         .expect("third event exists")
-        .event()
         .timestamp();
 
     assert_eq!(event_len(executor, None, None, Some(first)), 1);
@@ -776,10 +835,10 @@ fn event_mapping_commands() -> Vec<Command> {
             space: None,
             sequence: 0,
         },
-        Command::EventGetByType {
+        Command::EventList {
             branch: None,
             space: None,
-            event_type: "map.created".to_owned(),
+            event_type: Some("map.created".to_owned()),
             limit: None,
             after_sequence: None,
             as_of: None,
@@ -817,6 +876,7 @@ fn event_mapping_commands() -> Vec<Command> {
             space: None,
             event_type: Some("map.created".to_owned()),
             limit: Some(1),
+            after_sequence: None,
             as_of: None,
         },
         Command::EventVerifyChain {
@@ -865,18 +925,18 @@ fn invalid_input_event_commands() -> Vec<Command> {
             event_type: "bad.payload".to_owned(),
             payload: json!(null),
         },
-        Command::EventGetByType {
+        Command::EventList {
             branch: None,
             space: None,
-            event_type: String::new(),
+            event_type: Some(String::new()),
             limit: None,
             after_sequence: None,
             as_of: None,
         },
-        Command::EventGetByType {
+        Command::EventList {
             branch: None,
             space: None,
-            event_type: long_event_type,
+            event_type: Some(long_event_type),
             limit: None,
             after_sequence: None,
             as_of: None,
@@ -921,14 +981,21 @@ fn append_event(
         Output::EventAppendResult {
             sequence,
             event_type,
+            effect,
+            commit,
             version,
             timestamp,
-        } => AppendFacts {
-            sequence,
-            event_type,
-            version,
-            timestamp,
-        },
+        } => {
+            assert_eq!(effect, MutationEffect::created());
+            assert_eq!(commit.version(), version);
+            assert_eq!(commit.timestamp(), timestamp);
+            AppendFacts {
+                sequence,
+                event_type,
+                version,
+                timestamp,
+            }
+        }
         output => panic!("unexpected append output: {output:?}"),
     }
 }
@@ -955,7 +1022,10 @@ fn event_batch_append(
         })
         .expect("batch append succeeds")
     {
-        Output::EventBatchAppendResults(results) => results,
+        Output::EventBatchAppendResults(results) => results
+            .into_iter()
+            .map(|item| item.into_result().expect("primitive event batch item"))
+            .collect(),
         output => panic!("unexpected batch append output: {output:?}"),
     }
 }
@@ -1008,17 +1078,17 @@ fn event_records_by_type(
     as_of: Option<u64>,
 ) -> Vec<EventVersionedData> {
     match executor
-        .execute(Command::EventGetByType {
+        .execute(Command::EventList {
             branch: None,
             space: None,
-            event_type: event_type.to_owned(),
+            event_type: Some(event_type.to_owned()),
             limit,
             after_sequence,
             as_of,
         })
         .expect("type read succeeds")
     {
-        Output::EventRecords(records) => records,
+        Output::EventRecords { items: records, .. } => records,
         output => panic!("unexpected type read output: {output:?}"),
     }
 }
@@ -1078,10 +1148,9 @@ fn event_range_in(
         .expect("range succeeds")
     {
         Output::EventRangeResult {
-            events,
-            has_more,
-            cursor,
-        } => (events, has_more, cursor),
+            items: events,
+            page,
+        } => (events, page.has_more(), page.cursor().copied()),
         output => panic!("unexpected range output: {output:?}"),
     }
 }
@@ -1122,10 +1191,9 @@ fn event_range_by_time_in(
         .expect("time range succeeds")
     {
         Output::EventRangeResult {
-            events,
-            has_more,
-            cursor,
-        } => (events, has_more, cursor),
+            items: events,
+            page,
+        } => (events, page.has_more(), page.cursor().copied()),
         output => panic!("unexpected time range output: {output:?}"),
     }
 }
@@ -1144,7 +1212,7 @@ fn event_types(
         })
         .expect("type list succeeds")
     {
-        Output::EventTypeList(types) => types,
+        Output::EventTypeList { items: types, .. } => types,
         output => panic!("unexpected type list output: {output:?}"),
     }
 }
@@ -1155,17 +1223,31 @@ fn event_list(
     limit: Option<u64>,
     as_of: Option<u64>,
 ) -> Vec<EventVersionedData> {
+    event_list_page(executor, event_type, limit, None, as_of).0
+}
+
+fn event_list_page(
+    executor: &mut Executor,
+    event_type: Option<&str>,
+    limit: Option<u64>,
+    after_sequence: Option<u64>,
+    as_of: Option<u64>,
+) -> (Vec<EventVersionedData>, bool, Option<u64>) {
     match executor
         .execute(Command::EventList {
             branch: None,
             space: None,
             event_type: event_type.map(str::to_owned),
             limit,
+            after_sequence,
             as_of,
         })
         .expect("list succeeds")
     {
-        Output::EventRecords(records) => records,
+        Output::EventRecords {
+            items: records,
+            page,
+        } => (records, page.has_more(), page.cursor().copied()),
         output => panic!("unexpected list output: {output:?}"),
     }
 }

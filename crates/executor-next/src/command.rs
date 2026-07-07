@@ -795,26 +795,6 @@ pub enum Command {
         /// Event sequence.
         sequence: u64,
     },
-    /// Reads events by type.
-    EventGetByType {
-        /// Target branch. Defaults to the executor handle branch.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        branch: Option<String>,
-        /// Target product space. Defaults to `"default"`.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        space: Option<String>,
-        /// Event type.
-        event_type: String,
-        /// Optional item limit.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        limit: Option<u64>,
-        /// Optional exclusive sequence cursor.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        after_sequence: Option<u64>,
-        /// Optional timestamp in microseconds.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        as_of: Option<u64>,
-    },
     /// Counts visible events.
     EventLen {
         /// Target branch. Defaults to the executor handle branch.
@@ -835,9 +815,9 @@ pub enum Command {
         /// Target product space. Defaults to `"default"`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         space: Option<String>,
-        /// Inclusive start sequence.
+        /// Inclusive start sequence; with reverse direction, walk backward from this sequence.
         start_seq: u64,
-        /// Optional exclusive end sequence.
+        /// Optional exclusive end sequence; with reverse direction, exclusive lower bound.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         end_seq: Option<u64>,
         /// Optional item limit.
@@ -897,6 +877,9 @@ pub enum Command {
         /// Optional item limit.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
+        /// Optional exclusive sequence cursor.
+        #[serde(default, alias = "cursor", skip_serializing_if = "Option::is_none")]
+        after_sequence: Option<u64>,
         /// Optional timestamp in microseconds.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
@@ -946,6 +929,9 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Reads graph metadata.
     GraphGetMeta {
@@ -957,6 +943,9 @@ pub enum Command {
         space: Option<String>,
         /// Graph name.
         graph: String,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Adds or replaces a graph node.
     GraphAddNode {
@@ -989,6 +978,9 @@ pub enum Command {
         graph: String,
         /// Node id.
         node_id: String,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Deletes a graph node and incident edges.
     GraphRemoveNode {
@@ -1022,6 +1014,9 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Adds or replaces a graph edge.
     GraphAddEdge {
@@ -1062,6 +1057,9 @@ pub enum Command {
         edge_type: String,
         /// Destination node id.
         dst: String,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Deletes a graph edge.
     GraphRemoveEdge {
@@ -1103,6 +1101,9 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Lists graph nodes bound to one entity target.
     GraphBindingsForEntity {
@@ -1120,6 +1121,9 @@ pub enum Command {
         /// Optional item limit. Defaults to 100.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         limit: Option<u64>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Applies graph mutations in one engine commit.
     GraphBatchWrite {
@@ -1171,7 +1175,7 @@ pub enum Command {
         primitive: ArrowExportPrimitive,
         /// Output file format.
         format: ArrowFileFormat,
-        /// Output file path. Graph exports derive node and edge file names from this path.
+        /// Output file path. Graph exports treat this as a stem and return concrete node and edge paths.
         path: String,
         /// Optional key, document, vector-key, or node-id prefix.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1342,7 +1346,6 @@ impl Command {
             Self::EventAppend { .. } => "event_append",
             Self::EventGet { .. } => "event_get",
             Self::EventExists { .. } => "event_exists",
-            Self::EventGetByType { .. } => "event_get_by_type",
             Self::EventLen { .. } => "event_len",
             Self::EventRange { .. } => "event_range",
             Self::EventRangeByTime { .. } => "event_range_by_time",

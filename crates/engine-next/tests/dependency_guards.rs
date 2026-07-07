@@ -2,7 +2,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 #[test]
 fn storage_crate_imports_stay_inside_persistence_adapter() {
@@ -847,35 +846,36 @@ fn open_options_remain_explicit() {
     }
 }
 
+/// Lists every `.rs` file under `root` with a self-contained directory walk.
+///
+/// This deliberately avoids shelling out to an external tool (e.g. ripgrep) so
+/// the crate-shape guard suite is deterministic and runs on a stock rustup +
+/// cargo toolchain with no undeclared prerequisites, per the crate-shape /
+/// test-harness contract ("harnesses should be reusable, deterministic, and
+/// explicitly invoked").
 fn rust_files(root: &Path) -> Vec<PathBuf> {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let output = Command::new("rg")
-        .arg("--files")
-        .arg(root)
-        .output()
-        .expect("run rg source file listing");
-    assert!(
-        output.status.success(),
-        "rg failed while listing source files: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("source listing is UTF-8")
-        .lines()
-        .filter(|line| {
-            Path::new(line)
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
-        })
-        .map(|line| {
-            let path = PathBuf::from(line);
-            if path.is_absolute() {
-                path
-            } else {
-                manifest.join(path)
-            }
-        })
-        .collect()
+    let mut files = Vec::new();
+    collect_rust_files(root, &mut files);
+    files
+}
+
+fn collect_rust_files(dir: &Path, files: &mut Vec<PathBuf>) {
+    // A missing root (e.g. an absent sibling crate) yields no files, matching
+    // the previous behavior where such roots contributed nothing to scan.
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rust_files(&path, files);
+        } else if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
+        {
+            files.push(path);
+        }
+    }
 }
 
 fn function_body<'a>(source: &'a str, signature: &str) -> &'a str {

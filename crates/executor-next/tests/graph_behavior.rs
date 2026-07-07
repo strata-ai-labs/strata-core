@@ -1,14 +1,14 @@
 //! Executor graph command behavior tests.
 
-#![allow(clippy::too_many_lines)]
+#![allow(clippy::result_large_err, clippy::too_many_lines)]
 
 use serde_json::json;
 use strata_engine_next::{CacheOpenOptions, Database, DurableLocalOpenOptions};
 use strata_executor_next::{
-    Command, Executor, ExecutorError, ExecutorErrorClass, GraphBatchItemResult,
+    Command, CommitReceipt, Executor, ExecutorError, ExecutorErrorClass, GraphBatchItemResult,
     GraphBatchOperation, GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget,
-    GraphDirection, GraphEdgeData, GraphEntityBinding, GraphNeighborHit, GraphNodeData, Output,
-    DEFAULT_BRANCH,
+    GraphDirection, GraphEdgeData, GraphEntityBinding, GraphNeighborHit, GraphNodeData,
+    MutationEffect, MutationEffectKind, Output, DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -143,6 +143,7 @@ fn assert_graph_executor_inherits_configured_database_default_branch(executor: &
             space: None,
             graph: "deps".to_owned(),
             node_id: "node-a".to_owned(),
+            as_of: None,
         })
         .expect_err("literal default branch is absent");
     assert_eq!(
@@ -522,6 +523,7 @@ fn assert_graph_node_crud_and_list_edges(executor: &mut Executor) {
             prefix: None,
             cursor: None,
             limit: Some(10),
+            as_of: None,
         })
         .expect_err("missing graph list fails");
     assert_eq!(missing_graph.class(), ExecutorErrorClass::NotFound);
@@ -798,6 +800,9 @@ fn assert_graph_batch_success_atomicity_and_delete_edges(executor: &mut Executor
     let empty =
         graph_batch_write_output(executor, "batch", Vec::new()).expect("empty batch succeeds");
     assert!(empty.results.is_empty());
+    assert!(!empty.effect.applied());
+    assert!(empty.effect.matched());
+    assert_eq!(empty.effect.kind(), MutationEffectKind::Unchanged);
     assert!(empty.version.is_none());
     assert!(empty.timestamp.is_none());
 
@@ -833,6 +838,13 @@ fn assert_graph_batch_success_atomicity_and_delete_edges(executor: &mut Executor
         .results
         .iter()
         .all(|result| result.created() == Some(true)));
+    assert_eq!(created.effect.affected_count(), 4);
+    assert_eq!(created.effect.kind(), MutationEffectKind::Created);
+    assert!(!created.effect.matched());
+    assert!(created
+        .results
+        .iter()
+        .all(|result| result.effect() == Some(&MutationEffect::created())));
     assert!(get_edge(executor, "batch", "a", "links", "b").is_some());
     assert!(get_edge(executor, "batch", "b", "back", "a").is_some());
 
@@ -855,6 +867,13 @@ fn assert_graph_batch_success_atomicity_and_delete_edges(executor: &mut Executor
     .expect("update batch succeeds");
     assert_eq!(updated.results[0].created(), Some(false));
     assert_eq!(updated.results[1].created(), Some(false));
+    assert_eq!(updated.effect.affected_count(), 2);
+    assert_eq!(updated.effect.kind(), MutationEffectKind::Updated);
+    assert!(updated.effect.matched());
+    assert!(updated
+        .results
+        .iter()
+        .all(|result| result.effect() == Some(&MutationEffect::updated())));
 
     let invalid_endpoint = graph_batch_write_output(
         executor,
@@ -935,6 +954,21 @@ fn assert_graph_batch_success_atomicity_and_delete_edges(executor: &mut Executor
     assert_eq!(deletes.results[0].deleted(), Some(true));
     assert_eq!(deletes.results[1].deleted(), Some(true));
     assert_eq!(deletes.results[2].deleted(), Some(false));
+    assert_eq!(deletes.effect.affected_count(), 2);
+    assert_eq!(deletes.effect.kind(), MutationEffectKind::Deleted);
+    assert!(deletes.effect.matched());
+    assert_eq!(
+        deletes.results[0].effect(),
+        Some(&MutationEffect::deleted())
+    );
+    assert_eq!(
+        deletes.results[1].effect(),
+        Some(&MutationEffect::deleted())
+    );
+    assert_eq!(
+        deletes.results[2].effect(),
+        Some(&MutationEffect::not_found())
+    );
     assert!(deletes.results[2].version().is_none());
     assert!(get_edge(executor, "batch", "a", "links", "b").is_none());
     assert!(get_edge(executor, "batch", "b", "back", "a").is_none());
@@ -968,6 +1002,7 @@ fn assert_graph_error_mapping(executor: &mut Executor) {
             space: None,
             graph: "errors".to_owned(),
             node_id: String::new(),
+            as_of: None,
         })
         .expect_err("invalid node id fails");
     assert_eq!(invalid_node.class(), ExecutorErrorClass::InvalidInput);
@@ -980,6 +1015,7 @@ fn assert_graph_error_mapping(executor: &mut Executor) {
             src: "a".to_owned(),
             edge_type: String::new(),
             dst: "b".to_owned(),
+            as_of: None,
         })
         .expect_err("invalid edge type fails");
     assert_eq!(invalid_edge_type.class(), ExecutorErrorClass::InvalidInput);
@@ -1057,6 +1093,7 @@ fn assert_graph_error_mapping(executor: &mut Executor) {
             space: None,
             graph: "missing".to_owned(),
             node_id: "a".to_owned(),
+            as_of: None,
         })
         .expect_err("missing graph read fails");
     assert_eq!(missing_read.class(), ExecutorErrorClass::NotFound);
@@ -1249,6 +1286,7 @@ struct NeighborSummaryPage {
 #[derive(Debug, PartialEq)]
 struct GraphBatchOutput {
     results: Vec<GraphBatchItemResult>,
+    effect: MutationEffect,
     version: Option<u64>,
     timestamp: Option<u64>,
 }
@@ -1278,17 +1316,17 @@ fn graph_name_page(
             space: None,
             cursor,
             limit,
+            as_of: None,
         })
         .expect("graph list succeeds")
     {
         Output::GraphNamePage {
-            graphs,
-            has_more,
-            cursor,
+            items: graphs,
+            page,
         } => StringPage {
             items: graphs,
-            has_more,
-            cursor,
+            has_more: page.has_more(),
+            cursor: page.cursor().cloned(),
         },
         output => panic!("unexpected graph list output: {output:?}"),
     }
@@ -1334,10 +1372,11 @@ fn graph_names(executor: &mut Executor, cursor: Option<String>, limit: Option<u6
             space: None,
             cursor,
             limit,
+            as_of: None,
         })
         .expect("graph list succeeds")
     {
-        Output::GraphNamePage { graphs, .. } => graphs,
+        Output::GraphNamePage { items: graphs, .. } => graphs,
         output => panic!("unexpected graph list output: {output:?}"),
     }
 }
@@ -1348,6 +1387,7 @@ fn get_meta(executor: &mut Executor, graph: &str) -> Option<strata_executor_next
             branch: None,
             space: None,
             graph: graph.to_owned(),
+            as_of: None,
         })
         .expect("graph metadata succeeds")
     {
@@ -1374,7 +1414,17 @@ fn add_node(
         })
         .expect("graph node add succeeds")
     {
-        Output::GraphNodeWriteResult { .. } => {}
+        Output::GraphNodeWriteResult {
+            effect,
+            commit,
+            version,
+            timestamp,
+            ..
+        } => {
+            assert!(effect.applied());
+            assert_eq!(commit.version(), version);
+            assert_eq!(commit.timestamp(), timestamp);
+        }
         output => panic!("unexpected graph node add output: {output:?}"),
     }
 }
@@ -1397,7 +1447,26 @@ fn graph_add_node_output(
         })
         .expect("graph node add succeeds")
     {
-        Output::GraphNodeWriteResult { created, .. } => created,
+        Output::GraphNodeWriteResult {
+            created,
+            effect,
+            commit,
+            version,
+            timestamp,
+            ..
+        } => {
+            assert_eq!(
+                effect,
+                if created {
+                    MutationEffect::created()
+                } else {
+                    MutationEffect::updated()
+                }
+            );
+            assert_eq!(commit.version(), version);
+            assert_eq!(commit.timestamp(), timestamp);
+            created
+        }
         output => panic!("unexpected graph node add output: {output:?}"),
     }
 }
@@ -1451,6 +1520,75 @@ fn graph_add_node_with_binding_in(
     }
 }
 
+#[test]
+fn graph_get_node_as_of_reads_historical_state() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    create_graph(&mut executor, "deps");
+    let t1 = add_node_capturing_timestamp(&mut executor, "deps", "n", json!({"v": 1}));
+    let _t2 = add_node_capturing_timestamp(&mut executor, "deps", "n", json!({"v": 2}));
+
+    // Latest read sees the newest value.
+    assert_eq!(
+        get_node(&mut executor, "deps", "n")
+            .expect("latest node exists")
+            .properties(),
+        Some(&json!({"v": 2}))
+    );
+
+    // ENGINE-1: reading as_of the first commit returns the historical value,
+    // proving the GraphGetNode command routes as_of into the engine's
+    // get_node_at (graph time travel is reachable from the command surface).
+    assert_eq!(
+        get_node_as_of(&mut executor, "deps", "n", t1)
+            .expect("historical node exists")
+            .properties(),
+        Some(&json!({"v": 1}))
+    );
+}
+
+fn add_node_capturing_timestamp(
+    executor: &mut Executor,
+    graph: &str,
+    node_id: &str,
+    properties: serde_json::Value,
+) -> u64 {
+    match executor
+        .execute(Command::GraphAddNode {
+            branch: None,
+            space: None,
+            graph: graph.to_owned(),
+            node_id: node_id.to_owned(),
+            properties: Some(properties),
+            binding: None,
+        })
+        .expect("graph node add succeeds")
+    {
+        Output::GraphNodeWriteResult { timestamp, .. } => timestamp,
+        output => panic!("unexpected graph node add output: {output:?}"),
+    }
+}
+
+fn get_node_as_of(
+    executor: &mut Executor,
+    graph: &str,
+    node_id: &str,
+    as_of: u64,
+) -> Option<strata_executor_next::GraphNodeDataOutput> {
+    match executor
+        .execute(Command::GraphGetNode {
+            branch: None,
+            space: None,
+            graph: graph.to_owned(),
+            node_id: node_id.to_owned(),
+            as_of: Some(as_of),
+        })
+        .expect("graph node get succeeds")
+    {
+        Output::GraphNodeResult(node) => node,
+        output => panic!("unexpected graph node get output: {output:?}"),
+    }
+}
+
 fn get_node(
     executor: &mut Executor,
     graph: &str,
@@ -1462,6 +1600,7 @@ fn get_node(
             space: None,
             graph: graph.to_owned(),
             node_id: node_id.to_owned(),
+            as_of: None,
         })
         .expect("graph node get succeeds")
     {
@@ -1483,6 +1622,7 @@ fn graph_get_node_in(
             space: space.map(str::to_owned),
             graph: graph.to_owned(),
             node_id: node_id.to_owned(),
+            as_of: None,
         })
         .expect("graph node get succeeds")
     {
@@ -1542,10 +1682,11 @@ fn node_ids(
             prefix,
             cursor,
             limit,
+            as_of: None,
         })
         .expect("graph node list succeeds")
     {
-        Output::GraphNodePage { nodes, .. } => {
+        Output::GraphNodePage { items: nodes, .. } => {
             nodes.iter().map(|node| node.node_id().to_owned()).collect()
         }
         output => panic!("unexpected graph node list output: {output:?}"),
@@ -1567,17 +1708,14 @@ fn node_page(
             prefix,
             cursor,
             limit,
+            as_of: None,
         })
         .expect("graph node list succeeds")
     {
-        Output::GraphNodePage {
-            nodes,
-            has_more,
-            cursor,
-        } => StringPage {
+        Output::GraphNodePage { items: nodes, page } => StringPage {
             items: nodes.iter().map(|node| node.node_id().to_owned()).collect(),
-            has_more,
-            cursor,
+            has_more: page.has_more(),
+            cursor: page.cursor().cloned(),
         },
         output => panic!("unexpected graph node list output: {output:?}"),
     }
@@ -1597,10 +1735,11 @@ fn graph_node_ids_in(
             prefix: None,
             cursor: None,
             limit: Some(10),
+            as_of: None,
         })
         .expect("graph node list succeeds")
     {
-        Output::GraphNodePage { nodes, .. } => {
+        Output::GraphNodePage { items: nodes, .. } => {
             nodes.iter().map(|node| node.node_id().to_owned()).collect()
         }
         output => panic!("unexpected graph node list output: {output:?}"),
@@ -1628,7 +1767,17 @@ fn add_edge(
         })
         .expect("graph edge add succeeds")
     {
-        Output::GraphEdgeWriteResult { .. } => {}
+        Output::GraphEdgeWriteResult {
+            effect,
+            commit,
+            version,
+            timestamp,
+            ..
+        } => {
+            assert!(effect.applied());
+            assert_eq!(commit.version(), version);
+            assert_eq!(commit.timestamp(), timestamp);
+        }
         output => panic!("unexpected graph edge add output: {output:?}"),
     }
 }
@@ -1656,7 +1805,26 @@ fn graph_add_edge_output(
         })
         .expect("graph edge add succeeds")
     {
-        Output::GraphEdgeWriteResult { created, .. } => created,
+        Output::GraphEdgeWriteResult {
+            created,
+            effect,
+            commit,
+            version,
+            timestamp,
+            ..
+        } => {
+            assert_eq!(
+                effect,
+                if created {
+                    MutationEffect::created()
+                } else {
+                    MutationEffect::updated()
+                }
+            );
+            assert_eq!(commit.version(), version);
+            assert_eq!(commit.timestamp(), timestamp);
+            created
+        }
         output => panic!("unexpected graph edge add output: {output:?}"),
     }
 }
@@ -1705,6 +1873,7 @@ fn get_edge(
             src: src.to_owned(),
             edge_type: edge_type.to_owned(),
             dst: dst.to_owned(),
+            as_of: None,
         })
         .expect("graph edge get succeeds")
     {
@@ -1731,6 +1900,7 @@ fn graph_get_edge_in(
             src: src.to_owned(),
             edge_type: edge_type.to_owned(),
             dst: dst.to_owned(),
+            as_of: None,
         })
         .expect("graph edge get succeeds")
     {
@@ -1777,12 +1947,15 @@ fn neighbor_node_ids_in(
             edge_type: edge_type.map(str::to_owned),
             cursor: None,
             limit: Some(10),
+            as_of: None,
         })
         .expect("graph neighbors succeeds")
     {
-        Output::GraphNeighborPage { neighbors, .. } => neighbors
+        Output::GraphNeighborPage {
+            items: neighbors, ..
+        } => neighbors
             .iter()
-            .map(|hit| hit.node().node_id().to_owned())
+            .map(|hit| hit.node_id().to_owned())
             .collect(),
         output => panic!("unexpected graph neighbors output: {output:?}"),
     }
@@ -1807,17 +1980,17 @@ fn neighbor_page(
             edge_type: edge_type.map(str::to_owned),
             cursor,
             limit,
+            as_of: None,
         })
         .expect("graph neighbors succeeds")
     {
         Output::GraphNeighborPage {
-            neighbors,
-            has_more,
-            cursor,
+            items: neighbors,
+            page,
         } => NeighborSummaryPage {
             hits: neighbors.iter().map(neighbor_summary).collect(),
-            has_more,
-            cursor,
+            has_more: page.has_more(),
+            cursor: page.cursor().cloned(),
         },
         output => panic!("unexpected graph neighbors output: {output:?}"),
     }
@@ -1825,9 +1998,9 @@ fn neighbor_page(
 
 fn neighbor_summary(hit: &GraphNeighborHit) -> NeighborSummary {
     NeighborSummary {
-        node_id: hit.node().node_id().to_owned(),
+        node_id: hit.node_id().to_owned(),
         direction: hit.direction(),
-        edge_type: hit.edge().edge_type().to_owned(),
+        edge_type: hit.edge_type().to_owned(),
     }
 }
 
@@ -1867,21 +2040,21 @@ fn binding_page(
             target,
             cursor,
             limit,
+            as_of: None,
         })
         .expect("graph binding lookup succeeds")
     {
         Output::GraphBindingPage {
-            bindings,
-            has_more,
-            cursor,
+            items: bindings,
+            page,
         } => StringPage {
             items: bindings
                 .iter()
                 .map(GraphBindingHit::node_id)
                 .map(str::to_owned)
                 .collect(),
-            has_more,
-            cursor,
+            has_more: page.has_more(),
+            cursor: page.cursor().cloned(),
         },
         output => panic!("unexpected graph binding output: {output:?}"),
     }
@@ -1904,12 +2077,15 @@ fn neighbor_nodes(
             edge_type,
             cursor: None,
             limit: Some(10),
+            as_of: None,
         })
         .expect("graph neighbors succeeds")
     {
-        Output::GraphNeighborPage { neighbors, .. } => neighbors
+        Output::GraphNeighborPage {
+            items: neighbors, ..
+        } => neighbors
             .iter()
-            .map(|hit| hit.node().node_id().to_owned())
+            .map(|hit| hit.node_id().to_owned())
             .collect(),
         output => panic!("unexpected graph neighbors output: {output:?}"),
     }
@@ -1923,10 +2099,13 @@ fn binding_nodes(executor: &mut Executor, target: GraphBindingTarget) -> Vec<Str
             target,
             cursor: None,
             limit: Some(10),
+            as_of: None,
         })
         .expect("graph binding lookup succeeds")
     {
-        Output::GraphBindingPage { bindings, .. } => bindings
+        Output::GraphBindingPage {
+            items: bindings, ..
+        } => bindings
             .iter()
             .map(|binding| binding.node_id().to_owned())
             .collect(),
@@ -1947,10 +2126,13 @@ fn binding_nodes_in(
             target,
             cursor: None,
             limit: Some(10),
+            as_of: None,
         })
         .expect("graph binding lookup succeeds")
     {
-        Output::GraphBindingPage { bindings, .. } => bindings
+        Output::GraphBindingPage {
+            items: bindings, ..
+        } => bindings
             .iter()
             .map(|binding| binding.node_id().to_owned())
             .collect(),
@@ -1972,7 +2154,10 @@ fn graph_batch_write(
         })
         .expect("graph batch write succeeds")
     {
-        Output::GraphBatchWriteResult { results, .. } => results,
+        Output::GraphBatchWriteResult { batch, .. } => batch
+            .into_iter()
+            .map(|item| item.into_result().expect("primitive graph batch item"))
+            .collect(),
         output => panic!("unexpected graph batch output: {output:?}"),
     }
 }
@@ -1990,18 +2175,65 @@ fn graph_batch_write_output(
             operations,
         })
         .map(|output| match output {
-            Output::GraphBatchWriteResult {
-                results,
-                version,
-                timestamp,
-                ..
-            } => GraphBatchOutput {
-                results,
-                version,
-                timestamp,
-            },
+            Output::GraphBatchWriteResult { batch, .. } => {
+                let effect = graph_batch_effect(
+                    batch
+                        .items()
+                        .iter()
+                        .map(|item| item.result().expect("primitive graph batch item")),
+                );
+                let version = batch.commit().map(CommitReceipt::version);
+                let timestamp = batch.commit().map(CommitReceipt::timestamp);
+                GraphBatchOutput {
+                    results: batch
+                        .into_iter()
+                        .map(|item| item.into_result().expect("primitive graph batch item"))
+                        .collect(),
+                    effect,
+                    version,
+                    timestamp,
+                }
+            }
             output => panic!("unexpected graph batch output: {output:?}"),
         })
+}
+
+fn graph_batch_effect<'a>(
+    items: impl IntoIterator<Item = &'a GraphBatchItemResult>,
+) -> MutationEffect {
+    let items = items.into_iter().collect::<Vec<_>>();
+    let mut affected_count = 0_u64;
+    let mut aggregate_kind = None;
+    let mut mixed_kind = false;
+    let mut matched = false;
+    for item in &items {
+        let Some(item_effect) = item.effect() else {
+            continue;
+        };
+        if !item_effect.applied() {
+            continue;
+        }
+        affected_count = affected_count.saturating_add(1);
+        matched |= item_effect.matched();
+        match aggregate_kind {
+            None => aggregate_kind = Some(item_effect.kind()),
+            Some(kind) if kind == item_effect.kind() => {}
+            Some(_) => mixed_kind = true,
+        }
+    }
+    if affected_count == 0 {
+        if items.is_empty() {
+            return MutationEffect::new(false, MutationEffectKind::Unchanged, true, 0);
+        }
+        MutationEffect::not_found()
+    } else {
+        let kind = if mixed_kind {
+            MutationEffectKind::Updated
+        } else {
+            aggregate_kind.expect("applied graph batch has an aggregate effect kind")
+        };
+        MutationEffect::new(true, kind, matched, affected_count)
+    }
 }
 
 fn target(key: &str) -> GraphBindingTarget {

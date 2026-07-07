@@ -1282,7 +1282,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     }
 
     /// Derives commits-since-checkpoint (the count surfaced in the WAL-growth
-    /// outcome and the public maintenance summary) from the cached retention
+    /// outcome and the maintenance summary record) from the cached retention
     /// watermark — no per-commit manifest read. Extracted so
     /// `evaluate_wal_growth_policy` stays within the per-function line budget.
     fn wal_growth_commits_since_checkpoint(&self) -> LifecycleResult<u64> {

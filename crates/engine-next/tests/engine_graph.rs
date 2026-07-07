@@ -7,9 +7,9 @@ mod common;
 use serde_json::json;
 use strata_core_next::CommitVersion;
 use strata_engine_next::{
-    Database, EngineErrorClass, GraphBatchOperation, GraphBatchWrite, GraphBindingPrimitive,
-    GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEdgeType, GraphEntityBinding,
-    GraphName, GraphNodeData, GraphNodeId, GraphProperties, GraphService,
+    BranchName, Database, EngineErrorClass, GraphBatchOperation, GraphBatchWrite,
+    GraphBindingPrimitive, GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEdgeType,
+    GraphEntityBinding, GraphName, GraphNodeData, GraphNodeId, GraphProperties, GraphService,
 };
 
 use common::{branch, open_cache_database, open_durable_database, space};
@@ -42,6 +42,16 @@ fn graph_dense_edges_self_loop_and_neighbor_pages_run_in_cache_and_durable_modes
 #[test]
 fn graph_binding_lookup_pages_and_isolation_run_in_cache_and_durable_modes() {
     run_database_modes(exercise_graph_binding_lookup_pages_and_isolation);
+}
+
+#[test]
+fn graph_rejects_cross_branch_relationship_bindings_in_cache_and_durable_modes() {
+    run_database_modes(exercise_graph_cross_branch_binding_rejection);
+}
+
+#[test]
+fn graph_commit_counts_exclude_derived_rows_in_cache_and_durable_modes() {
+    run_database_modes(exercise_graph_commit_counts_exclude_derived_rows);
 }
 
 #[test]
@@ -1718,6 +1728,137 @@ fn graph_historical_edge_reads_never_dangle_or_corrupt() {
         .collect();
     at_ts.sort();
     assert_eq!(at_ts, vec!["b".to_owned()]);
+}
+
+/// Conformance test 9 (entity-ref-and-relationship-layer-contract Branch Scope
+/// rule 4 / Binding Decision 6) and CLAUDE.md Hard Rule 18: a relationship
+/// binding whose target names a different branch must be rejected, on both the
+/// single-node and batch write paths, while same-branch and current-branch
+/// (`None`) targets are accepted.
+fn exercise_graph_cross_branch_binding_rejection(mut database: Database) {
+    let mut graph = graph_service(&mut database, "default", "default");
+    graph
+        .create_graph(graph_name("deps"))
+        .expect("graph create succeeds");
+
+    let cross_branch = GraphEntityBinding::new(
+        GraphBindingTarget::new(
+            GraphBindingPrimitive::Json,
+            Some(BranchName::new("other").expect("valid branch name")),
+            space("docs"),
+            "doc-1",
+        )
+        .expect("valid binding target"),
+    );
+
+    // Single-node path rejects with the structured unsupported code.
+    let error = graph
+        .upsert_node(
+            &graph_name("deps"),
+            node("cross"),
+            node_data(json!({"kind": "doc"}), Some(cross_branch.clone())),
+        )
+        .expect_err("cross-branch binding rejected");
+    assert_eq!(
+        error.code(),
+        "unsupported.engine.graph_binding_cross_branch"
+    );
+
+    // Batch path rejects the same way (whole batch fails atomically).
+    let batch_error = graph
+        .batch_write(
+            &graph_name("deps"),
+            &GraphBatchWrite::new(vec![GraphBatchOperation::UpsertNode {
+                node_id: node("cross-batch"),
+                data: node_data(json!({"kind": "doc"}), Some(cross_branch)),
+            }]),
+        )
+        .expect_err("cross-branch binding rejected in batch");
+    assert_eq!(
+        batch_error.code(),
+        "unsupported.engine.graph_binding_cross_branch"
+    );
+
+    // An explicit same-branch target and an implicit (None) target are accepted.
+    let same_branch = GraphEntityBinding::new(
+        GraphBindingTarget::new(
+            GraphBindingPrimitive::Json,
+            Some(BranchName::new("default").expect("valid branch name")),
+            space("docs"),
+            "doc-1",
+        )
+        .expect("valid binding target"),
+    );
+    graph
+        .upsert_node(
+            &graph_name("deps"),
+            node("same"),
+            node_data(json!({"kind": "doc"}), Some(same_branch)),
+        )
+        .expect("same-branch binding accepted");
+    graph
+        .upsert_node(
+            &graph_name("deps"),
+            node("implicit"),
+            node_data(
+                json!({"kind": "doc"}),
+                Some(binding(GraphBindingPrimitive::Json, "docs", "doc-2")),
+            ),
+        )
+        .expect("current-branch (None) binding accepted");
+}
+
+/// U28: user-facing commit counts must reflect authored rows only. One edge
+/// upsert emits a forward + reverse row, and a node re-bind emits a binding
+/// index row; those derived rows must not inflate put/delete counts.
+fn exercise_graph_commit_counts_exclude_derived_rows(mut database: Database) {
+    let mut graph = graph_service(&mut database, "default", "default");
+    graph
+        .create_graph(graph_name("deps"))
+        .expect("graph create succeeds");
+    for id in ["a", "b"] {
+        graph
+            .upsert_node(&graph_name("deps"), node(id), node_data(json!({}), None))
+            .expect("node upsert succeeds");
+    }
+
+    // One edge writes a forward row + a derived reverse row; count is 1.
+    let edge = graph
+        .upsert_edge(
+            &graph_name("deps"),
+            node("a"),
+            edge_type("depends_on"),
+            node("b"),
+            edge_data(1.0, json!({})),
+        )
+        .expect("edge upsert succeeds");
+    assert_eq!(edge.commit().put_count(), 1);
+
+    // A node with a binding writes a node row + a derived binding-index row;
+    // count is 1.
+    let bound = graph
+        .upsert_node(
+            &graph_name("deps"),
+            node("c"),
+            node_data(
+                json!({}),
+                Some(binding(GraphBindingPrimitive::Json, "docs", "doc-1")),
+            ),
+        )
+        .expect("bound node upsert succeeds");
+    assert_eq!(bound.commit().put_count(), 1);
+
+    // Removing the edge deletes forward + derived reverse rows; count is 1.
+    let removed = graph
+        .delete_edge(
+            &graph_name("deps"),
+            &node("a"),
+            &edge_type("depends_on"),
+            &node("b"),
+        )
+        .expect("edge delete succeeds");
+    let commit = removed.commit().expect("delete commits");
+    assert_eq!(commit.delete_count(), 1);
 }
 
 fn run_database_modes(exercise: fn(Database)) {

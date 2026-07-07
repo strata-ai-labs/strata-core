@@ -1,0 +1,50 @@
+{
+  "type": "vector_index_query",
+  "data": {
+    "matches": [
+      {
+        "key": "doc-a",
+        "score": 1.0,
+        "metadata": {
+          "kind": "doc"
+        }
+      }
+    ],
+    "diagnostics": {
+      "collection": "docs",
+      "manifest_status": "loaded",
+      "manifest_generation": 7,
+      "manifest_ref_count": 2,
+      "manifest_inherited_ref_count": 1,
+      "manifest_owned_ref_count": 1,
+      "active_delta_count": 3,
+      "policy_mode": "auto",
+      "collection_exact_threshold": 64,
+      "source_flat_threshold": 64,
+      "source_hnsw_threshold": 18446744073709551615,
+      "overfetch_factor": 4,
+      "filtered_underfill_fallback": true,
+      "active_delta_seal_threshold": 16,
+      "hnsw_memory_budget_bytes": 67108864,
+      "source_candidate_limit": 40,
+      "resolved_index_kind_summary": "flat",
+      "exact_fallback_count": 0,
+      "hnsw_graph_builds": 0,
+      "indexed_source_count": 1,
+      "exact_source_count": 0,
+      "flat_source_count": 1,
+      "hnsw_source_count": 0,
+      "active_delta_source_count": 1,
+      "indexed_vector_count": 100,
+      "derived_bytes": 8192,
+      "last_query_used_index": true,
+      "artifact_sources": [
+        {
+          "artifact_id": "artifact-flat-1",
+          "status": "loaded",
+          "searched": true
+        }
+      ]
+    }
+  }
+}

@@ -9,77 +9,38 @@ autobins = false
 
 [features]
 default = []
-embed = ["stratadb/embed"]
+rocksdb-compare = ["dep:rocksdb"]
 
 [dependencies]
-stratadb = { path = ".." }
-strata-core = { path = "../crates/core" }
-strata-engine = { path = "../crates/engine" }
 strata-engine-next = { path = "../crates/engine-next", features = ["testkit"] }
-strata-storage = { path = "../crates/storage", features = ["perf-trace"] }
 strata-storage-next = { path = "../crates/storage-next", features = ["perf-trace"] }
-# Required only for the B6 materialize smoke in `src/bin/regression.rs`:
-# the benchmark opens a fresh engine `Database` rather than reusing the
-# `Strata` executor, which does not expose `storage().materialize_layer`.
-# The engine-owned graph/vector/search subsystems preserve the product runtime
-# hooks needed by that direct engine open.
 serde = { version = "1.0", features = ["derive"] }
+# The old root `stratadb` package (a bench dependency until the V1 cutover)
+# installed jemalloc as the global allocator, so every recorded benchmark
+# number is a jemalloc number. Pin it here explicitly to keep the instrument
+# comparable across the cutover — glibc malloc costs ~25% on the write path.
+tikv-jemallocator = "0.6"
+
 serde_json = "1.0"
 tempfile = "3.8"
 fastrand = "2.0.0"
 chrono = "0.4"
-# Used by the `rocksdb-ycsb` comparison bin (and the `ycsb_compare` bench); a
-# regular dependency so the bin can link it.
-rocksdb = { version = "0.22.0", default-features = false, features = ["lz4"] }
+rocksdb = { version = "0.22.0", default-features = false, features = [
+    "lz4",
+], optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-redb = "2"
-heed = "0.22"
-sled = "0.34.7"
-fjall = "=2.11"
-rusqlite = { version = "0.32", features = ["bundled"] }
-ctrlc = "3.2.3"
-env_logger = "0.11"
-comfy-table = "7.0.1"
 byte-unit = "5.1.6"
 walkdir = "2.5.0"
 hex = "0.4"
-
-[[bench]]
-name = "redb_benchmark"
-path = "benches/redb_benchmark.rs"
-harness = false
-
-[[bench]]
-name = "ycsb_compare"
-path = "benches/ycsb_compare.rs"
-harness = false
-
-[[bench]]
-name = "wal_latency"
-path = "benches/wal_latency.rs"
-harness = false
-
-[[bin]]
-name = "beir"
-path = "src/bin/beir.rs"
 
 [[bin]]
 name = "bench-compare"
 path = "src/bin/compare.rs"
 
 [[bin]]
-name = "regression"
-path = "src/bin/regression.rs"
-
-[[bin]]
 name = "storage-next-l9-scale"
 path = "src/bin/storage_next_l9_scale.rs"
-
-[[bin]]
-name = "storage-old-cache-scale"
-path = "src/bin/storage_old_cache_scale.rs"
 
 [[bin]]
 name = "storage-next-point-spike"
@@ -108,6 +69,7 @@ path = "src/bin/engine_ycsb.rs"
 [[bin]]
 name = "rocksdb-ycsb"
 path = "src/bin/rocksdb_ycsb.rs"
+required-features = ["rocksdb-compare"]
 
 [[bin]]
 name = "engine-vector-indexing"

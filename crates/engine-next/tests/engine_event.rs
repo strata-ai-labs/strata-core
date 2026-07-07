@@ -17,6 +17,34 @@ fn event_contract_runs_in_cache_and_durable_modes() {
 }
 
 #[test]
+fn event_reads_return_none_for_tombstoned_rows_after_forced_space_delete() {
+    run_database_modes(|database| {
+        // Append an event into a non-default space, then force-delete the space
+        // (which tombstones the event rows).
+        let sequence = {
+            let mut events = event_service(database, "default", "tenant_a");
+            events
+                .append(event_type("user.created"), payload(json!({"id": 1})))
+                .expect("append succeeds")
+                .sequence()
+        };
+        database
+            .spaces(branch("default"))
+            .expect("space service opens")
+            .delete(&space("tenant_a"), true)
+            .expect("forced space delete succeeds");
+
+        // Reading a tombstoned event is an absence, not corruption.
+        let mut events = event_service(database, "default", "tenant_a");
+        assert!(events
+            .get(sequence)
+            .expect("get on a tombstoned event does not error")
+            .is_none());
+        assert!(!events.exists(sequence).expect("exists does not error"));
+    });
+}
+
+#[test]
 fn empty_event_log_contract_runs_in_cache_and_durable_modes() {
     run_database_modes(|database| {
         let mut events = event_service(database, "default", "default");
@@ -30,12 +58,15 @@ fn empty_event_log_contract_runs_in_cache_and_durable_modes() {
                 .event_types(),
             &[]
         );
+        // A timestamp after the latest retained commit is an after-latest
+        // diagnostic (F7), even on an empty log — event as_of reads share the
+        // commit-timeline contract with every other capability.
         assert_eq!(
             events
                 .list_types_at(Timestamp::from_micros(u64::MAX))
-                .expect("historical type list succeeds")
-                .event_types(),
-            &[]
+                .expect_err("after-latest read is a diagnostic")
+                .code(),
+            "history_unavailable.engine.persistence_history"
         );
         assert!(events
             .range(
@@ -327,7 +358,14 @@ fn exercise_event_batch_append_edge_cases(database: &mut Database) {
     assert!(mixed.items()[1]
         .error_message()
         .expect("validation error recorded")
-        .contains("invalid_argument.engine.event_type"));
+        .contains("event type"));
+    assert_eq!(
+        mixed.items()[1]
+            .error_status()
+            .expect("validation error status")
+            .code(),
+        "invalid_argument.engine.event_type"
+    );
     assert_eq!(mixed.items()[2].sequence(), Some(EventSequence::new(1)));
     assert_eq!(events.len().expect("mixed len succeeds").count(), 2);
 
@@ -465,6 +503,49 @@ fn assert_event_timestamp_and_list_edges(events: &mut EventService<'_>) {
         .list(None, Some(0), None)
         .expect("zero limit list succeeds")
         .is_empty());
+    let first_page = events
+        .list_page(None, None, Some(2), None)
+        .expect("first event list page succeeds");
+    assert_eq!(
+        first_page
+            .events()
+            .iter()
+            .map(|event| event.sequence().as_u64())
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+    assert!(first_page.has_more());
+    assert_eq!(first_page.cursor().map(EventSequence::as_u64), Some(1));
+
+    let second_page = events
+        .list_page(None, first_page.cursor(), Some(2), None)
+        .expect("second event list page succeeds");
+    assert_eq!(
+        second_page
+            .events()
+            .iter()
+            .map(|event| event.sequence().as_u64())
+            .collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+    assert!(!second_page.has_more());
+    assert_eq!(second_page.cursor(), None);
+
+    assert_eq!(
+        events
+            .list_page(
+                Some(&event_type("user.created")),
+                Some(EventSequence::new(0)),
+                Some(10),
+                None
+            )
+            .expect("typed event list page succeeds")
+            .events()
+            .iter()
+            .map(|event| event.sequence().as_u64())
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
 }
 
 fn exercise_event_contract(database: &mut Database) {
@@ -580,6 +661,12 @@ fn assert_latest_event_reads(database: &mut Database) -> EventReadFacts {
 
 fn assert_event_ranges_and_lists(database: &mut Database, reads: &EventReadFacts) {
     let mut events = event_service(database, "default", "default");
+    assert_event_sequence_ranges(&mut events);
+    assert_event_time_ranges(&mut events, reads);
+    assert_event_lists(&mut events);
+}
+
+fn assert_event_sequence_ranges(events: &mut EventService<'_>) {
     let page = events
         .range(
             EventSequence::new(0),
@@ -601,8 +688,8 @@ fn assert_event_ranges_and_lists(database: &mut Database, reads: &EventReadFacts
 
     let reverse = events
         .range(
-            EventSequence::new(0),
-            Some(EventSequence::new(4)),
+            EventSequence::new(2),
+            None,
             Some(2),
             EventRangeDirection::Reverse,
             None,
@@ -614,9 +701,31 @@ fn assert_event_ranges_and_lists(database: &mut Database, reads: &EventReadFacts
             .iter()
             .map(|event| event.sequence().as_u64())
             .collect::<Vec<_>>(),
+        vec![2, 1]
+    );
+    assert!(reverse.has_more());
+    assert_eq!(reverse.cursor().expect("cursor").as_u64(), 1);
+
+    let bounded_reverse = events
+        .range(
+            EventSequence::new(3),
+            Some(EventSequence::new(1)),
+            None,
+            EventRangeDirection::Reverse,
+            None,
+        )
+        .expect("bounded reverse range succeeds");
+    assert_eq!(
+        bounded_reverse
+            .events()
+            .iter()
+            .map(|event| event.sequence().as_u64())
+            .collect::<Vec<_>>(),
         vec![3, 2]
     );
+}
 
+fn assert_event_time_ranges(events: &mut EventService<'_>, reads: &EventReadFacts) {
     assert_eq!(
         events
             .range_by_time(
@@ -655,7 +764,9 @@ fn assert_event_ranges_and_lists(database: &mut Database, reads: &EventReadFacts
         .events()
         .windows(2)
         .all(|events| events[0].timestamp() >= events[1].timestamp()));
+}
 
+fn assert_event_lists(events: &mut EventService<'_>) {
     assert_eq!(
         events
             .list_types()
@@ -691,22 +802,26 @@ fn assert_event_history_and_chain(database: &mut Database) {
 
 fn assert_event_timestamp_boundaries(database: &mut Database) -> EventHistoryFacts {
     let mut events = event_service(database, "default", "default");
-    let first_event_ts = events
+    // Event `as_of` reads select by the branch commit timeline — the same
+    // timestamp domain as KV/JSON/vector `*_at` reads — not by the event's own
+    // occurrence timestamp (temporal-context contract, Binding Decisions
+    // 1/2/6; occurrence time belongs to range_by_time).
+    let first_commit_ts = events
         .get(EventSequence::new(0))
         .expect("latest read succeeds")
         .expect("first event exists")
-        .timestamp();
-    let second_event_ts = events
+        .commit_timestamp();
+    let second_commit_ts = events
         .get(EventSequence::new(1))
         .expect("latest read succeeds")
         .expect("second event exists")
-        .timestamp();
-    let third_event_ts = events
+        .commit_timestamp();
+    let third_commit_ts = events
         .get(EventSequence::new(2))
         .expect("latest read succeeds")
         .expect("third event exists")
-        .timestamp();
-    let before_first = Timestamp::from_micros(first_event_ts.as_micros().saturating_sub(1));
+        .commit_timestamp();
+    let before_first = Timestamp::from_micros(first_commit_ts.as_micros().saturating_sub(1));
     assert_eq!(
         events
             .len_at(before_first)
@@ -719,32 +834,58 @@ fn assert_event_timestamp_boundaries(database: &mut Database) -> EventHistoryFac
         .expect("historical read succeeds")
         .is_none());
     assert!(events
-        .get_at(EventSequence::new(0), first_event_ts)
+        .get_at(EventSequence::new(0), first_commit_ts)
         .expect("historical read succeeds")
         .is_some());
     assert_eq!(
-        events.len_at(first_event_ts).expect("len_at first").count(),
+        events
+            .len_at(first_commit_ts)
+            .expect("len_at first")
+            .count(),
         1
     );
     assert_eq!(
         events
-            .len_at(second_event_ts)
+            .len_at(second_commit_ts)
             .expect("len_at second")
             .count(),
         2
     );
     assert!(events
-        .get_at(EventSequence::new(2), second_event_ts)
+        .get_at(EventSequence::new(2), second_commit_ts)
         .expect("historical read succeeds")
         .is_none());
     assert!(events
-        .get_at(EventSequence::new(2), third_event_ts)
+        .get_at(EventSequence::new(2), third_commit_ts)
         .expect("historical read succeeds")
         .is_some());
+    // Out-of-range temporal reads are diagnostics, not absence or clamping
+    // (F7/F8), matching the KV boundary contract.
+    assert_eq!(
+        events
+            .get_at(EventSequence::new(0), Timestamp::EPOCH)
+            .expect_err("before-history read is a diagnostic")
+            .code(),
+        "history_unavailable.engine.persistence_history"
+    );
+    assert_eq!(
+        events
+            .get_at(EventSequence::new(0), Timestamp::MAX)
+            .expect_err("after-latest read is a diagnostic")
+            .code(),
+        "history_unavailable.engine.persistence_history"
+    );
+    assert_eq!(
+        events
+            .len_at(Timestamp::MAX)
+            .expect_err("after-latest len is a diagnostic")
+            .code(),
+        "history_unavailable.engine.persistence_history"
+    );
     EventHistoryFacts {
-        first: first_event_ts,
-        second: second_event_ts,
-        third: third_event_ts,
+        first: first_commit_ts,
+        second: second_commit_ts,
+        third: third_commit_ts,
     }
 }
 

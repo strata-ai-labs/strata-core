@@ -9,7 +9,7 @@ use strata_engine_next::{
 
 use common::{
     assert_branch_value, assert_no_storage_type_in_engine_error, branch, key, open_cache_database,
-    space, value,
+    open_durable_database, space, value,
 };
 
 #[test]
@@ -69,6 +69,48 @@ fn branch_name_validation_rejects_reserved_aliases_and_control_names() {
 }
 
 #[test]
+fn branch_names_that_alias_another_branchs_storage_identity_are_rejected() {
+    // "main" derives the v5 id 1f64c067-…-38ec; the UUID-form name equal to
+    // those bytes derives the same id, so the two would share a storage branch
+    // (finding U8). Whichever is created second must be rejected with a
+    // structured already_exists error, not a raw storage generation conflict.
+    let aliasing_uuid = "1f64c067-acf2-5034-a5d0-92d5764138ec";
+
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .create(branch("main"))
+        .expect("main branch created");
+    let error = database
+        .branches()
+        .expect("branch service opens")
+        .create(branch(aliasing_uuid))
+        .expect_err("aliasing UUID-form branch rejected");
+    assert_eq!(error.code(), "already_exists.engine.branch");
+
+    // The collision is also detected against a deleted branch: recreate the
+    // scenario in reverse and delete the first branch before the second create.
+    let mut database = open_cache_database().expect("cache open succeeds");
+    database
+        .branches()
+        .expect("branch service opens")
+        .create(branch(aliasing_uuid))
+        .expect("UUID branch created");
+    database
+        .branches()
+        .expect("branch service opens")
+        .delete(&branch(aliasing_uuid))
+        .expect("UUID branch deleted");
+    let error = database
+        .branches()
+        .expect("branch service opens")
+        .create(branch("main"))
+        .expect_err("aliasing name rejected even against a deleted branch");
+    assert_eq!(error.code(), "already_exists.engine.branch");
+}
+
+#[test]
 fn reserved_branch_identity_aliases_cannot_be_selected_as_defaults() {
     for rejected in [
         "01010101-0101-0101-0101-010101010101",
@@ -125,6 +167,36 @@ fn root_branch_create_starts_empty_and_isolated() {
         .get(&key(b"scratch-only"))
         .expect("default read succeeds")
         .is_none());
+}
+
+#[test]
+fn durable_reopen_after_branch_delete_remains_usable() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    {
+        let mut database = open_durable_database(dir.path()).expect("durable open succeeds");
+        database
+            .branches()
+            .expect("branch service opens")
+            .create(branch("scratch"))
+            .expect("branch created");
+        database
+            .branches()
+            .expect("branch service opens")
+            .delete(&branch("scratch"))
+            .expect("branch deleted");
+    }
+
+    let mut reopened = open_durable_database(dir.path()).expect("durable reopen succeeds");
+    reopened
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .create(space("docs"))
+        .expect("space create succeeds after branch delete");
+    assert!(reopened
+        .spaces(branch("default"))
+        .expect("space service opens")
+        .exists(&space("docs"))
+        .expect("space exists succeeds"));
 }
 
 #[test]

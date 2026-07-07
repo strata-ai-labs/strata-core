@@ -2,8 +2,8 @@
 
 use serde_json::json;
 use strata_executor_next::{
-    AdminHealthStatus, AdminOpenTarget, Bytes, Command, Executor, ExecutorErrorClass, Output,
-    VectorDistanceMetric, DEFAULT_BRANCH,
+    AdminHealthStatus, AdminOpenTarget, Bytes, Command, Executor, ExecutorErrorClass,
+    MutationEffect, Output, VectorDistanceMetric, DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -19,6 +19,8 @@ fn space_commands_manage_branch_local_catalogs() {
     let Output::SpaceCreateResult {
         space,
         created,
+        effect,
+        commit,
         version,
         timestamp,
     } = executor
@@ -32,12 +34,16 @@ fn space_commands_manage_branch_local_catalogs() {
     };
     assert_eq!(space, "tenant_a");
     assert!(created);
+    assert_eq!(effect, MutationEffect::created());
+    assert!(commit.is_some());
     assert!(version.is_some());
     assert!(timestamp.is_some());
     assert_eq!(space_list(&mut executor, None), vec!["default", "tenant_a"]);
 
     let Output::SpaceCreateResult {
         created,
+        effect,
+        commit,
         version,
         timestamp,
         ..
@@ -51,6 +57,9 @@ fn space_commands_manage_branch_local_catalogs() {
         panic!("unexpected idempotent space create output");
     };
     assert!(!created);
+    assert!(!effect.applied());
+    assert!(effect.matched());
+    assert_eq!(commit, None);
     assert!(version.is_none());
     assert!(timestamp.is_none());
 
@@ -100,7 +109,7 @@ fn space_delete_is_conservative_and_force_removes_visible_data() {
         })
         .expect_err("non-empty delete without force fails");
     assert_eq!(error.class(), ExecutorErrorClass::Conflict);
-    assert_eq!(error.code(), "failed_precondition.executor.space_not_empty");
+    assert_eq!(error.code(), "failed_precondition.engine.space_not_empty");
     assert!(space_exists(&mut executor, None, "tenant_a"));
     assert_eq!(kv_count(&mut executor, Some("tenant_a")), 1);
 
@@ -109,6 +118,8 @@ fn space_delete_is_conservative_and_force_removes_visible_data() {
         deleted,
         force,
         deleted_rows,
+        effect,
+        commit,
         version,
         timestamp,
     } = executor
@@ -125,6 +136,8 @@ fn space_delete_is_conservative_and_force_removes_visible_data() {
     assert!(deleted);
     assert!(force);
     assert!(deleted_rows >= 5);
+    assert_eq!(effect, MutationEffect::deleted());
+    assert!(commit.is_some());
     assert!(version.is_some());
     assert!(timestamp.is_some());
 
@@ -144,6 +157,8 @@ fn space_delete_is_conservative_and_force_removes_visible_data() {
 
     let Output::SpaceDeleteResult {
         deleted,
+        effect,
+        commit,
         version,
         timestamp,
         ..
@@ -158,6 +173,8 @@ fn space_delete_is_conservative_and_force_removes_visible_data() {
         panic!("unexpected missing space delete output");
     };
     assert!(!deleted);
+    assert_eq!(effect, MutationEffect::not_found());
+    assert_eq!(commit, None);
     assert!(version.is_none());
     assert!(timestamp.is_none());
 }
@@ -417,7 +434,7 @@ fn create_space(executor: &mut Executor, branch: Option<&str>, space: &str) {
 }
 
 fn space_list(executor: &mut Executor, branch: Option<&str>) -> Vec<String> {
-    let Output::SpaceList(spaces) = executor
+    let Output::SpaceList { items: spaces, .. } = executor
         .execute(Command::SpaceList {
             branch: branch.map(str::to_owned),
         })
@@ -442,7 +459,9 @@ fn space_exists(executor: &mut Executor, branch: Option<&str>, space: &str) -> b
 }
 
 fn branch_names(executor: &mut Executor) -> Vec<String> {
-    let Output::Branches(branches) = executor
+    let Output::Branches {
+        items: branches, ..
+    } = executor
         .execute(Command::BranchList)
         .expect("branch list succeeds")
     else {
@@ -569,7 +588,9 @@ fn event_len(executor: &mut Executor, space: Option<&str>) -> u64 {
 }
 
 fn vector_collections(executor: &mut Executor, space: Option<&str>) -> Vec<String> {
-    let Output::VectorCollectionList(collections) = executor
+    let Output::VectorCollectionList {
+        items: collections, ..
+    } = executor
         .execute(Command::VectorListCollections {
             branch: None,
             space: space.map(str::to_owned),
@@ -585,12 +606,13 @@ fn vector_collections(executor: &mut Executor, space: Option<&str>) -> Vec<Strin
 }
 
 fn graph_list(executor: &mut Executor, space: Option<&str>) -> Vec<String> {
-    let Output::GraphNamePage { graphs, .. } = executor
+    let Output::GraphNamePage { items: graphs, .. } = executor
         .execute(Command::GraphList {
             branch: None,
             space: space.map(str::to_owned),
             cursor: None,
             limit: None,
+            as_of: None,
         })
         .expect("graph list succeeds")
     else {

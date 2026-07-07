@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use tracing::info;
 
 use crate::llama::context::LlamaCppContext;
+use crate::llama::ffi::llama_api_lock;
 use crate::InferenceError;
 
 /// High-level embedding engine backed by llama.cpp.
@@ -109,6 +110,7 @@ impl EmbeddingEngine {
             .ctx
             .lock()
             .map_err(|e| InferenceError::LlamaCpp(format!("mutex poisoned: {}", e)))?;
+        let _api_guard = llama_api_lock();
 
         // 1. Tokenize
         let mut tokens = ctx.tokenize(text, true);
@@ -187,6 +189,7 @@ impl EmbeddingEngine {
             .ctx
             .lock()
             .map_err(|e| InferenceError::LlamaCpp(format!("mutex poisoned: {}", e)))?;
+        let _api_guard = llama_api_lock();
 
         let n_embd = ctx.n_embd;
         let n_ctx = ctx.n_ctx;

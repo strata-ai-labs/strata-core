@@ -1,4 +1,4 @@
-#![allow(dead_code)]
+#![allow(clippy::result_large_err, dead_code)]
 
 use strata_engine_next::{
     BranchName, CacheOpenOptions, Database, DatabaseOpenOutcome, DurableLocalOpenOptions,
