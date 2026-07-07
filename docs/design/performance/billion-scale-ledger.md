@@ -424,6 +424,45 @@ load-then-reopen cell (77MB un-checkpointed WAL, ~185K-row tail) drops **72.5s �
 after (a)/(b). The old `history_with_source_probe_count` is deleted (replay was its only
 consumer).
 
+## 10M three-way: Strata cache / Strata durable / RocksDB (2026-07-07, /data2 nvme1)
+
+YCSB A/B/C at 10M records × 1KB values, 100K ops, zipfian; engine-ycsb vs rocksdb-ycsb
+(identical harness shape). RocksDB is the storage-ENGINE reference point (Strata's product
+peers are SQLite/DuckDB/Redis; RocksDB bounds the single-writer LSM KV floor).
+
+| | Strata cache | Strata durable | RocksDB |
+|---|---|---|---|
+| Load (rows/s, batch 1000) | 457K | 85–99K | **1.03M** |
+| A (50r/50u) run ops/s | **257,941** | 984 | 337,385 |
+| B (95r/5u) | **1,050,928** | 5,108 | 412,603 |
+| C (read-only) | **1,576,332** | 3,311 | 423,709 |
+| C read p50 / p99 | 591ns / 1.1µs | 65.6µs / 2.05ms | 2.83µs / 4.5µs |
+| A update max | sub-ms | **52.8s** (!) | 217µs |
+
+**Reading it.** Strata CACHE beats RocksDB 2.5–3.7× on every run phase (in-memory reads at
+591ns) and loses the load 2.2× (457K vs 1.03M rows/s single-writer ingest). Strata DURABLE
+at this scale/shape is 80–340× behind RocksDB — the compounding of every gap already on
+the books, now measured together at scale: cold-read path with a 4GiB block-cache pool and
+no readahead plus post-load compaction-debt tails (BS6 territory; read p50 65µs is fine,
+p99 2ms is the debt), the per-commit WAL floor + debt pacing on writes (recorded levers),
+and ingest sinking from 330K (100K records) to ~90K rows/s as compaction debt accumulates.
+Both engines were measured immediately after load (maximum debt) — a drained-state re-run
+would flatter reads on both sides.
+
+**Two defects found by this run:**
+1. **Cache-mode budget profile (tracked):** `with_memory_budget(32g)` on a CACHE database
+   scales the durable pool profile — active_mutable gets total/8 (4GiB) and 5/8 of the
+   budget sits in block-cache/table-reader/artifact pools cache mode can never use. The
+   10M cache load hard-fails with `resource_exhausted.engine.persistence_budget` at
+   4.29GB. Worked around here by declaring `--memory-budget 96g`; the fix is a
+   cache-shaped profile (active+frozen ≈ 90%) plus understanding why active hit the hard
+   cap instead of rotating.
+2. **52.8s single-commit stall at 10M durable (workload A):** the saturation family
+   again — past the 30s stall-wall watchdog, at single-branch 10M sustained load.
+   Needs its own probe run; likely the same drain-slot/compaction-debt regime the
+   BS3.4c guardrail hit at 4T, at a depth the watchdog timeout converts into a
+   52.8s caller-visible latency instead of a clean rejection.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
