@@ -529,6 +529,30 @@ the 26–50GB peaks, both OOMs, and (via page-cache eviction) the stall physics.
 slice W1.2c: stream outputs to disk per completed table inside the build loop. Key
 cells re-baseline under jemalloc once landed.
 
+## W1.2c landed: memory term (T4) closed for compaction; stalls persist (2026-07-07, `2399d7b1`)
+
+Streaming output publish (sink through `compact_inputs_into` →
+`prepare_branch_compaction_plan_bounded_into` → `build_range_with_publishing_sink`;
+each completed output table publishes and frees inside the build loop). Same cell,
+before → after (YCSB A durable 10M @ 32g, jemalloc gauges):
+
+| gauge | pre-W1.2c | post-W1.2c |
+|---|---|---|
+| post-load allocated | 13.66GB | 12.25GB |
+| post-run allocated | **39.25GB** | **16.92GB** |
+| post-run resident | 41.84GB | 17.98GB |
+| post-run retained (VM high-water proxy) | **37.65GB** | **5.25GB** |
+| load / run ops/s | 120,594 / 610 | 115,693 / 697 |
+| update max | 56.3s | **46.1s (persists)** |
+
+The +26GB run-phase heap accumulation and the ~50GB VM peaks are GONE — resident now
+tracks block cache + memtables; both 61GB OOM modes are physically impossible at this
+shape. Flush-side accumulation (~2.5GB) is a recorded smaller follow-up (same sink
+pattern through the flush build). **Stall attribution is now fully open again:** pass
+size (W1.1), parallelism (W1.2a), and memory (W1.2c) are all eliminated as causes of
+the 40–70s update max. Per the W6 rule, next action is a live stack sample of a stall
+window — no scheduling/memory slices until the stacks name the holder.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
