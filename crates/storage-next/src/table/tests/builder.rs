@@ -3,10 +3,10 @@ use crate::format::{
 };
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
-    sort_table_rows_by_key, BuiltTableArtifact, ImmutableTableBuilder, ImmutableTableReader,
-    MutableTable, TableBuilderConfig, TableCacheConfig, TableCompactionConfig, TableCursor,
-    TableIdentity, TableKeyBounds, TablePhysicalKeyBytes, TableReaderConfig, TableRow,
-    TableRuntimeConfig, TableRuntimeError,
+    sort_table_rows_by_key, BuiltTableArtifact, BytesTableSource, ImmutableTableBuilder,
+    ImmutableTableReader, MutableTable, TableBloomFilter, TableBuilderConfig, TableCacheConfig,
+    TableCompactionConfig, TableCursor, TableIdentity, TableKeyBounds, TablePhysicalKeyBytes,
+    TableReaderConfig, TableReaderFilter, TableRow, TableRuntimeConfig, TableRuntimeError,
 };
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -438,6 +438,54 @@ fn immutable_builder_is_deterministic_across_rows_mutable_and_frozen_sources() {
 }
 
 #[test]
+fn resident_metadata_bytes_agree_between_build_and_reopen() {
+    // BS4.5a: the table-reader budget is charged at build time (durable flush / compaction, from
+    // `BuiltTableArtifact::resident_metadata_bytes`) and again at reopen time (recovery, from a decoded
+    // `ImmutableTableMetadata::resident_metadata_bytes`). Both route through the same free fn
+    // `table_resident_metadata_bytes`, so for one object they must be byte-identical — otherwise the
+    // admission decision at flush and the residency counted after reopen would disagree. Covers a table
+    // with and without a persisted filter frame (the filter frame length is part of the footprint).
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        tombstone_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+        put_row(b"echo".to_vec(), 5),
+    ];
+    let table_rows = sorted_table_rows(&rows);
+    for filter_bits in [None, Some(10_usize)] {
+        let config = TableBuilderConfig::new(1024, 2, TableCompression::Uncompressed)
+            .expect("builder config")
+            .with_filter_bits_per_key(filter_bits);
+        let artifact = ImmutableTableBuilder::new(config)
+            .expect("builder")
+            .build_from_rows(identity("resident-metadata-agree"), &table_rows)
+            .expect("build artifact");
+
+        let build_time = artifact.resident_metadata_bytes();
+        // Reopen-time value through the real lazy seam: a lazy reader's `resident_size_bytes` is exactly
+        // its `resident_metadata_bytes` (recovery charges this).
+        let reopen_time = ImmutableTableReader::open_source(
+            identity("resident-metadata-agree"),
+            BytesTableSource::new(artifact.bytes().to_vec()),
+            TableReaderConfig::default(),
+        )
+        .expect("open lazy reader")
+        .resident_size_bytes();
+        assert_eq!(
+            build_time, reopen_time,
+            "build-time and reopen-time metadata-resident bytes must agree (filter_bits={filter_bits:?})",
+        );
+        assert!(
+            build_time < artifact.byte_count(),
+            "metadata-resident bytes must exclude the data blocks (filter_bits={filter_bits:?}): \
+             build_time={build_time}, object={}",
+            artifact.byte_count(),
+        );
+    }
+}
+
+#[test]
 fn immutable_builder_streaming_matches_batch_builder_with_block_bounded_buffer() {
     let rows = vec![
         put_row(b"alpha".to_vec(), 1),
@@ -656,4 +704,223 @@ fn immutable_builder_validation_errors_keep_display_bounded() {
     ));
     assert!(duplicate_display.contains("...("));
     assert!(duplicate_display.len() < 128);
+}
+
+// ---- BS4.3: the builder computes + emits the persisted filter frame, config-gated ----
+
+// Distinct from the eager reader's 10-bits/key rescan, so a loaded persisted filter's shape proves
+// the reader used the *written* frame rather than rebuilding.
+const BS43_FILTER_BITS_PER_KEY: usize = 20;
+
+fn bs43_rows() -> Vec<StorageRow> {
+    vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+    ]
+}
+
+fn build_table_bytes(
+    config: TableBuilderConfig,
+    name: &'static str,
+    rows: &[StorageRow],
+) -> Vec<u8> {
+    ImmutableTableBuilder::new(config)
+        .expect("builder config")
+        .build_from_storage_rows(identity(name), rows)
+        .expect("build table")
+        .into_bytes()
+}
+
+#[test]
+fn builder_default_writes_no_filter_frame() {
+    let bytes = build_table_bytes(TableBuilderConfig::default(), "bs43-default", &bs43_rows());
+    // The default (unconfigured) builder writes a zero-slot, unfiltered table.
+    assert!(
+        decode_immutable_table(&bytes)
+            .expect("decode")
+            .filter()
+            .is_none(),
+        "default builder must not write a filter frame",
+    );
+    // The lazy reader therefore has no persisted filter (matching pre-BS4.3 behavior).
+    let lazy = ImmutableTableReader::open_source(
+        identity("bs43-default"),
+        BytesTableSource::new(bytes),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy");
+    assert!(!lazy.runtime_facts().filter_available());
+}
+
+#[test]
+fn builder_writes_filter_frame_loaded_by_reader() {
+    let rows = bs43_rows();
+    let table_rows: Vec<TableRow> = rows.iter().cloned().map(TableRow::new).collect();
+    let config =
+        TableBuilderConfig::default().with_filter_bits_per_key(Some(BS43_FILTER_BITS_PER_KEY));
+    let bytes = build_table_bytes(config, "bs43-filtered", &rows);
+
+    // 1. The builder emitted a real filter frame equal to a bloom over the same physical keys.
+    let decoded = decode_immutable_table(&bytes).expect("decode");
+    let frame = decoded.filter().expect("builder must write a filter frame");
+    let expected = TableBloomFilter::build(
+        table_rows.iter().map(|row| row.key().physical_key_bytes()),
+        BS43_FILTER_BITS_PER_KEY,
+    )
+    .expect("expected bloom");
+    assert_eq!(frame.probes, expected.probes());
+    assert_eq!(
+        usize::try_from(frame.bit_count).expect("bit count"),
+        expected.bit_count()
+    );
+    assert_eq!(
+        usize::try_from(frame.key_count).expect("key count"),
+        expected.key_count()
+    );
+    assert_eq!(frame.bits, expected.bits());
+
+    // 2. Both reader paths load it, and it's the written 20-bit filter (not the 10-bit eager rescan).
+    let expected_shape = (
+        expected.probes(),
+        expected.bit_count(),
+        expected.key_count(),
+    );
+    let eager = ImmutableTableReader::open_bytes(
+        identity("bs43-filtered"),
+        bytes.clone(),
+        TableReaderConfig::default(),
+    )
+    .expect("open eager");
+    assert!(eager.runtime_facts().filter_available());
+    assert_eq!(
+        eager
+            .loaded_filter()
+            .and_then(TableReaderFilter::bloom_shape),
+        Some(expected_shape),
+        "eager reader must load the written 20-bit filter, not a 10-bit rescan",
+    );
+
+    let lazy = ImmutableTableReader::open_source(
+        identity("bs43-filtered"),
+        BytesTableSource::new(bytes),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy");
+    assert!(lazy.runtime_facts().filter_available());
+    assert_eq!(
+        lazy.loaded_filter()
+            .and_then(TableReaderFilter::bloom_shape),
+        Some(expected_shape),
+    );
+
+    // 3. No data loss: every built key still seeks to Some through the filter (both paths).
+    for row in &table_rows {
+        let key = row.physical_key();
+        assert!(
+            eager.seek_physical_key(key, None, None).0.is_some(),
+            "eager: a live key must be found through the written filter",
+        );
+        assert!(
+            lazy.seek_physical_key(key, None, None).0.is_some(),
+            "lazy: a live key must be found through the written filter",
+        );
+    }
+
+    // 4. An absent key is not falsely returned.
+    let absent = physical_key(1, 0x20, b"zzz-absent".to_vec());
+    assert!(eager.seek_physical_key(&absent, None, None).0.is_none());
+    assert!(lazy.seek_physical_key(&absent, None, None).0.is_none());
+}
+
+#[test]
+fn builder_rejects_zero_filter_bits_per_key() {
+    assert!(matches!(
+        ImmutableTableBuilder::new(TableBuilderConfig::default().with_filter_bits_per_key(Some(0))),
+        Err(TableRuntimeError::InvalidConfig {
+            field: "filter_bits_per_key",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn builder_writes_filter_frame_over_multiple_data_blocks() {
+    let rows = bs43_rows();
+    let table_rows: Vec<TableRow> = rows.iter().cloned().map(TableRow::new).collect();
+    // rows_per_block = 2 over four rows => two data blocks; the filter frame sits after both.
+    let config = TableBuilderConfig::new(1024, 2, TableCompression::Uncompressed)
+        .expect("builder config")
+        .with_filter_bits_per_key(Some(BS43_FILTER_BITS_PER_KEY));
+    let bytes = build_table_bytes(config, "bs43-multiblock", &rows);
+
+    let decoded = decode_immutable_table(&bytes).expect("decode");
+    assert_eq!(
+        decoded.data_blocks().len(),
+        2,
+        "fixture must span two data blocks",
+    );
+    assert!(
+        decoded.filter().is_some(),
+        "builder must write a filter frame"
+    );
+
+    let eager = ImmutableTableReader::open_bytes(
+        identity("bs43-multiblock"),
+        bytes.clone(),
+        TableReaderConfig::default(),
+    )
+    .expect("open eager");
+    let lazy = ImmutableTableReader::open_source(
+        identity("bs43-multiblock"),
+        BytesTableSource::new(bytes),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy");
+    assert!(eager.runtime_facts().filter_available());
+    assert!(lazy.runtime_facts().filter_available());
+
+    // Every live key across both blocks still seeks to Some through the filter.
+    for row in &table_rows {
+        let key = row.physical_key();
+        assert!(eager.seek_physical_key(key, None, None).0.is_some());
+        assert!(lazy.seek_physical_key(key, None, None).0.is_some());
+    }
+}
+
+#[test]
+fn builder_filter_handles_multiple_versions_per_key() {
+    // Two physical keys, each with two commit versions (MVCC). The builder feeds each physical key
+    // once per row into the bloom (duplicates); every version must still read back through the filter.
+    let rows = sorted_storage_rows(&[
+        put_row(b"alpha".to_vec(), 2),
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"bravo".to_vec(), 1),
+    ]);
+    let config =
+        TableBuilderConfig::default().with_filter_bits_per_key(Some(BS43_FILTER_BITS_PER_KEY));
+    let bytes = build_table_bytes(config, "bs43-mvcc", &rows);
+
+    let decoded = decode_immutable_table(&bytes).expect("decode");
+    let frame = decoded.filter().expect("builder must write a filter frame");
+    // key_count counts inserted keys (one per row = 4), not distinct physical keys — nonzero, so the
+    // reader never short-circuits a live key to DefinitelyAbsent.
+    assert_eq!(frame.key_count, 4);
+
+    let reader = ImmutableTableReader::open_bytes(
+        identity("bs43-mvcc"),
+        bytes,
+        TableReaderConfig::default(),
+    )
+    .expect("open");
+    assert!(reader.runtime_facts().filter_available());
+    for user_key in [b"alpha".as_slice(), b"bravo".as_slice()] {
+        let key = physical_key(1, 0x20, user_key.to_vec());
+        assert!(
+            reader.seek_physical_key(&key, None, None).0.is_some(),
+            "an MVCC key must be found through the filter",
+        );
+    }
 }

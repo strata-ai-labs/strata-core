@@ -8,6 +8,7 @@
     )
 )]
 
+mod admission_ramp;
 mod background;
 mod branch_lifecycle;
 mod budget;
@@ -33,6 +34,22 @@ mod state;
 mod table_manifest;
 mod table_reachability;
 mod wal_growth;
+
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+
+use crate::branch::snapshot::BranchSnapshotRegistry;
+
+/// Off-lock read handles a runtime exposes so the API slot can bound (the visible-commit-version
+/// atomic `V`) and load (the published per-branch snapshot) a branch read without taking the
+/// runtime lock (BS2.4). Both concrete runtimes hold these as shared `Arc`s already; this trait
+/// lets `RuntimeSlot<R>` clone them out at construction.
+pub(crate) trait RuntimeReadHandles {
+    /// The shared visible-commit-version atomic (the read visibility bound `V`).
+    fn visible_handle(&self) -> Arc<AtomicU64>;
+    /// The shared per-branch published-snapshot registry.
+    fn snapshot_registry(&self) -> Arc<BranchSnapshotRegistry>;
+}
 
 #[allow(
     unused_imports,
@@ -108,6 +125,7 @@ pub(crate) use compaction::{
     LifecycleCompactionStatus, LifecycleMaterializationOutcome, LifecycleMaterializationRequest,
     LifecycleMaterializationStatus, LifecycleStoragePressure, LifecycleStoragePressureReason,
     LifecycleStoragePressureSeverity, LifecycleTableRewriteDurability,
+    LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD,
 };
 #[allow(
     unused_imports,
@@ -116,6 +134,7 @@ pub(crate) use compaction::{
 pub(crate) use config::{
     LifecycleCloseTimeoutPolicy, LifecycleCompactionIoPolicy, LifecycleConfig,
     LifecycleLossyRecoveryPolicy, LifecycleMaintenanceSchedulingPolicy, LifecycleWalGrowthPolicy,
+    LifecycleWriteThrottlePolicy,
 };
 #[allow(
     unused_imports,
@@ -123,7 +142,8 @@ pub(crate) use config::{
 )]
 pub(crate) use durable::{
     DurableBackgroundMaintenanceBuild, DurableBackgroundMaintenanceBuilt,
-    DurableBackgroundMaintenanceStep, LifecycleDurableAssemblyFacts,
+    DurableBackgroundMaintenanceStep, DurableGroupApplyDone, DurableGroupApplyWork,
+    DurableGroupInFlight, DurableGroupMemberResult, LifecycleDurableAssemblyFacts,
     LifecycleDurableLocalOpenRequest, LifecycleDurableLocalRuntime, LifecycleDurableLocalServices,
     LifecycleDurableLocalShell, LifecycleRecoveryBootstrapReport, PreparedPublishStep,
 };
@@ -161,15 +181,15 @@ pub(crate) use health::{
     reason = "maintenance executor exports define the local surface for later slices"
 )]
 pub(crate) use maintenance::{
-    evaluate_mutating_write_admission, maintenance_ready_for_recovery_health,
-    telemetry_health_debt, LifecycleMaintenanceExecutor, LifecycleMaintenanceStats,
-    LifecyclePostCommitMaintenanceOutcome, LifecyclePostCommitMaintenanceStatus,
-    LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus, MaintenanceCancelOutcome,
-    MaintenanceCheckpointOptions, MaintenanceClosePolicy, MaintenanceCoalesceKey,
-    MaintenanceEnqueueOutcome, MaintenanceExecutorStatus, MaintenanceFaultHook,
-    MaintenanceFaultPoint, MaintenanceRetentionOptions, MaintenanceTask, MaintenanceTaskId,
-    MaintenanceTaskPolicy, MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner,
-    MaintenanceTaskScope,
+    compaction_lane_cap, evaluate_mutating_write_admission, maintenance_ready_for_recovery_health,
+    subcompaction_cap, telemetry_health_debt, LifecycleMaintenanceExecutor,
+    LifecycleMaintenanceStats, LifecyclePostCommitMaintenanceOutcome,
+    LifecyclePostCommitMaintenanceStatus, LifecycleWriteAdmissionOutcome,
+    LifecycleWriteAdmissionStatus, MaintenanceCancelOutcome, MaintenanceCheckpointOptions,
+    MaintenanceClosePolicy, MaintenanceCoalesceKey, MaintenanceEnqueueOutcome,
+    MaintenanceExecutorStatus, MaintenanceFaultHook, MaintenanceFaultPoint,
+    MaintenanceRetentionOptions, MaintenanceTask, MaintenanceTaskId, MaintenanceTaskPolicy,
+    MaintenanceTaskPriority, MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope,
 };
 #[allow(
     unused_imports,

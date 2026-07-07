@@ -249,6 +249,12 @@ impl<S: CommitTimestampSource> CommitFactAllocator<S> {
                 let candidate = self.source.next_timestamp()?;
                 Ok(self.timestamps.preview_generated(candidate))
             }
+            // A pre-lock runtime-generated candidate: clamp to the monotonic floor exactly like
+            // a fresh generated read — a concurrent commit advancing the floor in between is
+            // ordinary interleaving, never a rejection.
+            CommitTimestampPolicy::RuntimeGeneratedBase(candidate) => {
+                Ok(self.timestamps.preview_generated(candidate))
+            }
             CommitTimestampPolicy::Explicit(timestamp) => {
                 let timestamp = self.timestamps.preview_explicit(timestamp)?;
                 Ok((timestamp, CommitTimestampAllocationSource::Explicit))

@@ -9,9 +9,10 @@ use super::properties::{
     TableProperties,
 };
 use super::{
-    decode_table_block_frame_as, decode_table_footer, decode_table_footer_metadata,
-    decode_table_header, encode_table_block_frame, encode_table_footer, encode_table_header,
-    TableBlockFrame, TableBlockKind, TableCompression, TableFooter, TableHeader,
+    decode_filter_frame, decode_table_block_frame_as, decode_table_footer,
+    decode_table_footer_metadata, decode_table_header, encode_filter_frame,
+    encode_table_block_frame, encode_table_footer, encode_table_header, TableBlockFrame,
+    TableBlockKind, TableCompression, TableFilterFrame, TableFooter, TableHeader,
     MAX_TABLE_DATA_BLOCKS, MAX_TABLE_ROWS, TABLE_FOOTER_SIZE, TABLE_HEADER_SIZE,
 };
 use crate::format::FormatError;
@@ -27,6 +28,9 @@ pub(crate) struct ImmutableTable {
     index: TableIndexBlock,
     properties: TableProperties,
     rows: Vec<StorageRow>,
+    // BS4.2: the decoded + validated persisted filter frame, or `None` for a zero-slot table. Carried
+    // for BS4.2b (the reader attaches it); decode already rejects a corrupt frame.
+    filter: Option<TableFilterFrame>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -35,6 +39,10 @@ pub(crate) struct ImmutableTableMetadata {
     index: TableIndexBlock,
     properties: TableProperties,
     byte_count: u64,
+    // BS4.2b: the footer's filter slot (0 = absent), so the lazy reader can range-fetch the filter
+    // frame without reading the whole table. Validated as part of the footer layout at decode time.
+    filter_block_offset: u64,
+    filter_block_frame_len: u32,
 }
 
 impl ImmutableTableMetadata {
@@ -53,6 +61,53 @@ impl ImmutableTableMetadata {
     pub(crate) const fn byte_count(&self) -> u64 {
         self.byte_count
     }
+
+    /// BS4.2b: byte offset of the persisted filter frame, or `0` when absent.
+    pub(crate) const fn filter_block_offset(&self) -> u64 {
+        self.filter_block_offset
+    }
+
+    /// BS4.2b: length of the persisted filter frame, or `0` when absent.
+    pub(crate) const fn filter_block_frame_len(&self) -> u32 {
+        self.filter_block_frame_len
+    }
+
+    /// BS4.2b: whether a persisted filter frame is present (nonzero slot).
+    pub(crate) const fn has_filter(&self) -> bool {
+        self.filter_block_frame_len != 0
+    }
+
+    /// BS4.4j: the resident (in-RAM) metadata footprint of a lazy table — the index block (one entry per
+    /// data block, each carrying its first/last key), the properties summary, and the loaded filter
+    /// frame. Data blocks stay on disk and are fetched on demand (accounted DB-wide by the block cache),
+    /// so they are deliberately excluded: this is what a held lazy reader actually pins in memory, as
+    /// opposed to `byte_count()` (the whole encoded object). `filter_block_frame_len` is `0` when absent.
+    pub(crate) fn resident_metadata_bytes(&self) -> u64 {
+        table_resident_metadata_bytes(&self.index, self.filter_block_frame_len)
+    }
+}
+
+/// BS4.5a: single source of truth for a lazy table's resident metadata footprint — the index block
+/// (one entry per data block, each with its first/last key), the properties summary, and the filter
+/// frame. Shared by the reader's `ImmutableTableMetadata` (reopen-time) and the streaming builder's
+/// output (build-time) so the budget charged at flush/compaction and the residency counted for a
+/// reopened reader are computed identically and can never drift. `filter_block_frame_len` is `0`
+/// when absent.
+pub(crate) fn table_resident_metadata_bytes(
+    index: &TableIndexBlock,
+    filter_block_frame_len: u32,
+) -> u64 {
+    let index_bytes: u64 = index
+        .entries()
+        .iter()
+        .map(|entry| {
+            (std::mem::size_of::<TableIndexEntry>()
+                + entry.first_key_bytes().len()
+                + entry.last_key_bytes().len()) as u64
+        })
+        .sum();
+    let properties_bytes = std::mem::size_of::<TableProperties>() as u64;
+    index_bytes + properties_bytes + u64::from(filter_block_frame_len)
 }
 
 impl ImmutableTable {
@@ -74,6 +129,12 @@ impl ImmutableTable {
 
     pub(crate) fn rows(&self) -> &[StorageRow] {
         &self.rows
+    }
+
+    /// BS4.2: the decoded persisted filter frame, or `None` for a zero-slot table. BS4.2b converts
+    /// this to a `TableBloomFilter` and attaches it to the reader.
+    pub(crate) const fn filter(&self) -> Option<&TableFilterFrame> {
+        self.filter.as_ref()
     }
 }
 
@@ -129,11 +190,21 @@ pub(crate) struct ImmutableTableStreamingOutput {
     max_key_bytes: Vec<u8>,
     commit_min: CommitVersion,
     commit_max: CommitVersion,
+    // BS4.5a: the lazy reader's metadata-resident footprint, computed here at build from the index +
+    // filter frame via `table_resident_metadata_bytes` — the same fn a reopened reader uses — so the
+    // table-reader budget charged at install matches a reopened reader's residency exactly.
+    resident_metadata_bytes: u64,
 }
 
 impl ImmutableTableStreamingOutput {
     pub(crate) fn into_bytes(self) -> Vec<u8> {
         self.bytes
+    }
+
+    /// BS4.5a: the metadata-resident footprint (index + properties + filter frame) of the lazy reader
+    /// this object installs — charged against the table-reader budget in place of the full object.
+    pub(crate) const fn resident_metadata_bytes(&self) -> u64 {
+        self.resident_metadata_bytes
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
@@ -235,8 +306,13 @@ impl ImmutableTableStreamingEncoder {
         self.peak_buffered_rows
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "linear table assembly; splitting hurts readability"
+    )]
     pub(crate) fn finish_with_metadata(
         mut self,
+        filter: Option<&TableFilterFrame>,
     ) -> Result<ImmutableTableStreamingOutput, FormatError> {
         self.flush_current_block()?;
         let data_block_count = self.index_entries.len();
@@ -284,6 +360,26 @@ impl ImmutableTableStreamingEncoder {
         let header_bytes = encode_table_header(&header);
         self.table_bytes[..TABLE_HEADER_SIZE].copy_from_slice(&header_bytes);
 
+        // BS4.3: a supplied filter frame (if any) sits between the data region and the index.
+        let (filter_block_offset, filter_block_frame_len) = match filter {
+            Some(filter) => {
+                let filter_frame_bytes = encode_filter_frame(filter)?;
+                let offset = u64::try_from(self.table_bytes.len()).map_err(|_| {
+                    FormatError::InvalidLength {
+                        field: "filter_block_offset",
+                    }
+                })?;
+                let len = u32::try_from(filter_frame_bytes.len()).map_err(|_| {
+                    FormatError::InvalidLength {
+                        field: "filter_block_frame_len",
+                    }
+                })?;
+                self.table_bytes.extend_from_slice(&filter_frame_bytes);
+                (offset, len)
+            }
+            None => (0, 0),
+        };
+
         let index = TableIndexBlock::new(self.index_entries)?;
         let index_frame = TableBlockFrame::new(
             TableBlockKind::Index,
@@ -319,14 +415,19 @@ impl ImmutableTableStreamingEncoder {
             })?;
         self.table_bytes.extend_from_slice(&properties_frame_bytes);
 
-        let footer = TableFooter::new(
+        let footer = TableFooter::new_with_filter(
             index_block_offset,
             index_block_frame_len,
+            filter_block_offset,
+            filter_block_frame_len,
             properties_block_offset,
             properties_block_frame_len,
         )?;
         self.table_bytes
             .extend_from_slice(&encode_table_footer(&footer, &self.table_bytes)?);
+        // BS4.5a: capture the lazy reader's metadata-resident footprint now (index built above,
+        // filter frame len known) via the shared fn, so install-time budget == reopen-time residency.
+        let resident_metadata_bytes = table_resident_metadata_bytes(&index, filter_block_frame_len);
         Ok(ImmutableTableStreamingOutput {
             bytes: self.table_bytes,
             row_count: properties.row_count(),
@@ -335,6 +436,7 @@ impl ImmutableTableStreamingEncoder {
             max_key_bytes: properties.max_key_bytes().to_vec(),
             commit_min: properties.commit_min(),
             commit_max: properties.commit_max(),
+            resident_metadata_bytes,
         })
     }
 
@@ -411,14 +513,23 @@ pub(crate) fn encode_immutable_table(
         target_data_block_size,
         rows_per_block,
         &vec![compression; block_count],
+        None,
     )
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "linear table assembly; splitting hurts readability"
+)]
 pub(crate) fn encode_immutable_table_with_block_compressions(
     rows: &[StorageRow],
     target_data_block_size: u32,
     rows_per_block: usize,
     data_compressions: &[TableCompression],
+    // BS4.2: a supplied filter frame is written between the data region and the index (and its footer
+    // slot set); `None` reproduces the historical zero-slot layout byte-for-byte. Batch encoder only —
+    // BS4.3 wires the streaming builder to compute and supply this.
+    filter: Option<&TableFilterFrame>,
 ) -> Result<Vec<u8>, FormatError> {
     if rows.is_empty() {
         return Err(FormatError::InvalidLength { field: "row_count" });
@@ -476,6 +587,25 @@ pub(crate) fn encode_immutable_table_with_block_compressions(
         table_bytes.extend_from_slice(&frame_bytes);
     }
 
+    // BS4.2: the filter frame (if supplied) sits between the data region and the index.
+    let (filter_block_offset, filter_block_frame_len) = match filter {
+        Some(filter) => {
+            let filter_frame_bytes = encode_filter_frame(filter)?;
+            let offset =
+                u64::try_from(table_bytes.len()).map_err(|_| FormatError::InvalidLength {
+                    field: "filter_block_offset",
+                })?;
+            let len = u32::try_from(filter_frame_bytes.len()).map_err(|_| {
+                FormatError::InvalidLength {
+                    field: "filter_block_frame_len",
+                }
+            })?;
+            table_bytes.extend_from_slice(&filter_frame_bytes);
+            (offset, len)
+        }
+        None => (0, 0),
+    };
+
     let index = TableIndexBlock::new(index_entries)?;
     let index_frame = TableBlockFrame::new(
         TableBlockKind::Index,
@@ -509,9 +639,11 @@ pub(crate) fn encode_immutable_table_with_block_compressions(
         })?;
     table_bytes.extend_from_slice(&properties_frame_bytes);
 
-    let footer = TableFooter::new(
+    let footer = TableFooter::new_with_filter(
         index_block_offset,
         index_block_frame_len,
+        filter_block_offset,
+        filter_block_frame_len,
         properties_block_offset,
         properties_block_frame_len,
     )?;
@@ -559,7 +691,38 @@ pub(crate) fn decode_immutable_table(bytes: &[u8]) -> Result<ImmutableTable, For
         });
     }
 
-    let (data_blocks, data_locations) = decode_data_region(bytes, index_start)?;
+    // BS4.2: a present filter frame occupies [filter_start, index_start); the data region ends at
+    // filter_start. `decode_table_footer` already validated the slot via `validate_footer_layout`.
+    let data_end = if footer.has_filter() {
+        let (filter_start, filter_end) = table_range(
+            footer.filter_block_offset(),
+            footer.filter_block_frame_len(),
+            "filter_block",
+        )?;
+        if filter_end != index_start {
+            return Err(FormatError::InvalidLength {
+                field: "table_footer_layout",
+            });
+        }
+        filter_start
+    } else {
+        index_start
+    };
+
+    let (data_blocks, data_locations) = decode_data_region(bytes, data_end)?;
+    let filter = if footer.has_filter() {
+        let filter_slice = &bytes[data_end..index_start];
+        let (filter_frame, consumed) = decode_filter_frame(filter_slice)?;
+        if consumed != filter_slice.len() {
+            return Err(FormatError::TrailingData {
+                format: TABLE_ARTIFACT_FORMAT,
+                remaining: filter_slice.len() - consumed,
+            });
+        }
+        Some(filter_frame)
+    } else {
+        None
+    };
     let (index_frame, _) =
         decode_exact_frame(&bytes[index_start..index_end], TableBlockKind::Index)?;
     let index = decode_table_index_block_for_data_blocks(
@@ -578,7 +741,7 @@ pub(crate) fn decode_immutable_table(bytes: &[u8]) -> Result<ImmutableTable, For
         &data_locations,
         &index,
         &properties,
-        index_start,
+        data_end,
     )?;
 
     let rows = data_blocks
@@ -592,6 +755,7 @@ pub(crate) fn decode_immutable_table(bytes: &[u8]) -> Result<ImmutableTable, For
         index,
         properties,
         rows,
+        filter,
     })
 }
 
@@ -637,12 +801,21 @@ pub(crate) fn decode_immutable_table_metadata(
     let properties = decode_table_properties(properties_frame.decoded_payload())?;
 
     validate_metadata_against_header_and_footer(&header, &footer, &index, &properties)?;
-    let index_start =
+    // BS4.2: bound data-block ranges by the end of the data region, which is the filter frame's start
+    // when a filter is present (else the index start). This matches the eager `decode_immutable_table`
+    // path so a data-block pointer that lands inside the filter frame is rejected here too, not only
+    // deferred to block-read time.
+    let data_end = if footer.has_filter() {
+        usize::try_from(footer.filter_block_offset()).map_err(|_| FormatError::InvalidLength {
+            field: "filter_block_offset",
+        })?
+    } else {
         usize::try_from(footer.index_block_offset()).map_err(|_| FormatError::InvalidLength {
             field: "index_block_offset",
-        })?;
+        })?
+    };
     for index_entry in index.entries() {
-        validate_index_entry_range(index_entry, index_start)?;
+        validate_index_entry_range(index_entry, data_end)?;
     }
 
     Ok(ImmutableTableMetadata {
@@ -650,6 +823,9 @@ pub(crate) fn decode_immutable_table_metadata(
         index,
         properties,
         byte_count,
+        // BS4.2b: carry the footer's filter slot so the lazy reader can locate the frame.
+        filter_block_offset: footer.filter_block_offset(),
+        filter_block_frame_len: footer.filter_block_frame_len(),
     })
 }
 

@@ -764,7 +764,7 @@ Stable V1 table object envelope:
 ```text
 table_header           64 bytes
 data_block_frames      repeated, at least one
-filter_block_frame     optional, absent until a V1 filter subformat is assigned
+filter_block_frame     optional; present iff the footer filter slot is nonzero (BS4.2)
 index_block_frame      one, required
 properties_block_frame one, required
 table_footer           64 bytes
@@ -801,8 +801,8 @@ Stable V1 table footer:
 ```text
 index_block_offset     u64 LE
 index_block_frame_len  u32 LE
-filter_block_offset    u64 LE, MUST be 0 until filter subformat assignment
-filter_block_frame_len u32 LE, MUST be 0 until filter subformat assignment
+filter_block_offset    u64 LE, 0 = absent; else the offset of the filter frame (BS4.2)
+filter_block_frame_len u32 LE, 0 = absent; else the filter frame length (BS4.2)
 props_block_offset     u64 LE
 props_block_frame_len  u32 LE
 footer_magic           4 bytes   "STTF"
@@ -839,7 +839,7 @@ Stable V1 table block types:
 ```text
 1                      data
 2                      index
-3                      filter, reserved until assigned by a later V1 subformat
+3                      filter (bloom subformat 1, assigned in BS4.2)
 4                      properties
 ```
 
@@ -847,6 +847,25 @@ Readers MUST reject unknown block types, unknown compression codecs, nonzero
 block flags, impossible offsets, checksum mismatch, future format versions, and
 pre-V1 development bytes. The old `STRAKV`/version-7 table format and its
 prefix-compressed entry encoding are not V1 compatibility formats.
+
+BS4.2 filter frame (block type 3) payload, LE, inside a standard block frame
+(the frame CRC covers it); present iff the footer filter slot is nonzero, and
+positioned so `data_end == filter_start` and `filter_end == index_start`:
+
+```text
+filter_format_version  u32 LE, only 1 is assigned; readers reject other values
+probes                 u8,  bloom probe count (<= 30)
+key_count              u64 LE, keys inserted (0 => empty table => DefinitelyAbsent)
+bit_count              u64 LE, bloom bit count
+bits                   ceil(bit_count / 8) bytes, LSB-first within each byte
+```
+
+A reader MUST reject a filter frame whose version is unknown, whose `bits`
+length is not `ceil(bit_count/8)`, or whose `probes` exceeds the ceiling, and
+MUST verify a loaded filter belongs to the table (content fingerprint) before
+trusting a `DefinitelyAbsent` answer. Compatibility: binaries older than BS4.2
+hard-reject any nonzero filter slot, so a filter writer MUST NOT ship before the
+BS4.2 reader is released.
 
 Stable V1 data block payload:
 
@@ -1172,6 +1191,9 @@ Required golden vector categories:
 - table properties block payload
 - complete one-block immutable table
 - complete two-block immutable table
+- standalone filter frame (BS4.2)
+- complete immutable table with a persisted filter frame (BS4.2)
+- complete multi-block immutable table with a persisted filter frame (BS4.2)
 - segment metadata sidecar, if retained
 - quarantine inventory, empty
 - quarantine inventory, multiple entries

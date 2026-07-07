@@ -7,15 +7,16 @@ use super::key::table_internal_physical_key_bytes;
 use super::{
     BoundedTableCursor, TableBlockAddress, TableBlockCache, TableBlockCacheKey,
     TableBlockCacheKind, TableBloomFilter, TableBloomProbe, TableCacheTableId, TableCommitRange,
-    TableIdentity, TableInternalKeyBytes, TableKeyBounds, TableKeyRange, TablePhysicalKeyBytes,
-    TablePreparedPointLookup, TableReaderConfig, TableReaderEagerFilterMode, TableRow,
-    TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
+    TableIdentity, TableInternalKeyBytes, TableKeyBounds, TableKeyRange,
+    TableMaterializationPolicy, TablePhysicalKeyBytes, TablePreparedPointLookup, TableReaderConfig,
+    TableReaderEagerFilterMode, TableRow, TableRuntimeError, TableRuntimeFacts, TableRuntimeResult,
 };
 use crate::format::seek_immutable_table_data_block_point;
 use crate::format::{
-    decode_immutable_table, decode_immutable_table_data_block, decode_immutable_table_metadata,
-    decode_table_footer_metadata, decode_table_header, ImmutableTableMetadata,
-    TableDataBlockPointSeek, TableIndexEntry, MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE,
+    decode_filter_frame, decode_immutable_table, decode_immutable_table_data_block,
+    decode_immutable_table_metadata, decode_table_footer_metadata, decode_table_header,
+    ImmutableTableMetadata, TableDataBlockPointSeek, TableFilterFrame, TableIndexEntry,
+    MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE,
 };
 use crate::observability::perf_trace;
 use crate::row::{InternalKey, PhysicalKey};
@@ -105,12 +106,28 @@ impl TableContentFingerprint {
                 (Some(left), Some(right)) if left == right
             )
     }
+
+    /// BS4.4a-i: content equality without requiring a SHA-256 on both sides. Byte count + both CRC32s
+    /// pin byte-identical content; the SHA-256 is an extra check only when both sides carry it. Unlike
+    /// `matches_exact_content`, this treats an eager reader (SHA present) and a lazy reader (SHA absent)
+    /// over the same table as equal — matching the pre-BS4.4a row-compare behavior.
+    fn matches_content(self, other: Self) -> bool {
+        self.byte_count == other.byte_count
+            && self.table_crc32 == other.table_crc32
+            && self.metadata_crc32 == other.metadata_crc32
+            && match (self.content_sha256, other.content_sha256) {
+                (Some(left), Some(right)) => left == right,
+                _ => true,
+            }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum TableReaderFilterState {
     Unavailable,
-    Bloom(Box<TableReaderBloomFilterState>),
+    // `Arc`, not `Box`: the bloom is immutable once built, so cloning a reader (and thus a
+    // `BranchOwnedTable`) shares the filter by refcount instead of deep-copying its bits.
+    Bloom(Arc<TableReaderBloomFilterState>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -158,12 +175,70 @@ impl TableReaderFilter {
             bits_per_key,
         )?;
         Ok(Self {
-            state: TableReaderFilterState::Bloom(Box::new(TableReaderBloomFilterState {
+            state: TableReaderFilterState::Bloom(Arc::new(TableReaderBloomFilterState {
                 facts,
                 fingerprint,
                 filter,
             })),
         })
+    }
+
+    /// BS4.2b: build a reader filter from a table's persisted filter frame, without scanning rows.
+    /// The frame's own CRC (verified during `decode_filter_frame`) plus the `from_frame_parts` bounds
+    /// are the integrity gate. The state carries the reader's own `facts`/`fingerprint`; the reader
+    /// attaches this directly, bypassing the `matches_table` gate (which guards *externally supplied*
+    /// filters and, for a lazy reader whose fingerprint carries no content hash, would reject it).
+    fn from_persisted_frame(
+        facts: TableRuntimeFacts,
+        fingerprint: TableContentFingerprint,
+        frame: TableFilterFrame,
+    ) -> TableRuntimeResult<Self> {
+        // A persisted frame only exists for a non-empty table, so an empty filter (`key_count == 0`)
+        // is malformed — and, since `might_contain` short-circuits an empty filter to
+        // `DefinitelyAbsent`, would false-absent every live row (silent data loss). Reject it rather
+        // than trust it; a well-formed filter over a non-empty table always has `key_count >= 1`.
+        if frame.key_count == 0 {
+            return Err(TableRuntimeError::InvalidRange {
+                field: "table_filter_key_count",
+            });
+        }
+        let filter = TableBloomFilter::from_frame_parts(
+            frame.probes,
+            frame.key_count,
+            frame.bit_count,
+            frame.bits,
+        )?;
+        Ok(Self {
+            state: TableReaderFilterState::Bloom(Arc::new(TableReaderBloomFilterState {
+                facts,
+                fingerprint,
+                filter,
+            })),
+        })
+    }
+
+    /// Allocation address of the shared bloom state, or `None` when unavailable. Test-only: lets a
+    /// clone-sharing test assert the filter is shared by `Arc` refcount rather than deep-copied.
+    #[cfg(test)]
+    pub(crate) fn bloom_alloc_addr(&self) -> Option<usize> {
+        match &self.state {
+            TableReaderFilterState::Unavailable => None,
+            TableReaderFilterState::Bloom(state) => Some(Arc::as_ptr(state) as usize),
+        }
+    }
+
+    /// The loaded bloom's shape `(probes, bit_count, key_count)`, or `None` when unavailable. Test-only:
+    /// lets a test prove the *persisted* filter was loaded (its shape differs from a rescan's).
+    #[cfg(test)]
+    pub(crate) fn bloom_shape(&self) -> Option<(u8, usize, usize)> {
+        match &self.state {
+            TableReaderFilterState::Unavailable => None,
+            TableReaderFilterState::Bloom(state) => Some((
+                state.filter.probes(),
+                state.filter.bit_count(),
+                state.filter.key_count(),
+            )),
+        }
     }
 
     pub(crate) fn probe_physical_key(&self, key: &TablePhysicalKeyBytes) -> TableBloomProbe {
@@ -216,14 +291,13 @@ pub(crate) struct ImmutableTableReader<'a> {
 
 impl PartialEq for ImmutableTableReader<'_> {
     fn eq(&self, other: &Self) -> bool {
-        if self.config != other.config || self.facts != other.facts {
-            return false;
-        }
-        match (self.try_rows(), other.try_rows()) {
-            (Ok(left), Ok(right)) => left == right,
-            (Err(left), Err(right)) => left == right,
-            _ => false,
-        }
+        // BS4.4a-i: compare by content fingerprint instead of materializing both readers' rows. Sealed
+        // tables are content-immutable, so equal config + facts + fingerprint (byte count + CRC32s)
+        // implies byte-identical content. `matches_content` is lazy-safe and preserves the old
+        // row-compare behavior: an eager and a lazy reader of the same table still compare equal.
+        self.config == other.config
+            && self.facts == other.facts
+            && self.fingerprint.matches_content(other.fingerprint)
     }
 }
 
@@ -300,6 +374,13 @@ impl<'a> TableReaderRows<'a> {
         }
     }
 
+    fn materialize_for_oracle(&self) -> TableRuntimeResult<Vec<TableRow>> {
+        match self {
+            Self::Eager(rows) => Ok(rows.rows().to_vec()),
+            Self::Lazy(rows) => rows.materialize_for_oracle(),
+        }
+    }
+
     fn into_materialized(
         self,
         facts: TableRuntimeFacts,
@@ -355,10 +436,11 @@ impl<'a> TableReaderRows<'a> {
     fn cursor<'reader>(
         &'reader self,
         bounds_hint: Option<TableKeyBounds>,
+        fill_cache: bool,
     ) -> ImmutableTableCursor<'reader, 'a> {
         match self {
             Self::Eager(rows) => ImmutableTableCursor::eager(&rows.rows),
-            Self::Lazy(rows) => rows.cursor(bounds_hint),
+            Self::Lazy(rows) => rows.cursor(bounds_hint, fill_cache),
         }
     }
 
@@ -379,6 +461,14 @@ impl<'a> TableReaderRows<'a> {
             Self::Lazy(rows) => rows.with_filter(filter),
         }
     }
+
+    #[cfg(test)]
+    fn filter(&self) -> Option<&TableReaderFilter> {
+        match self {
+            Self::Eager(rows) => Some(&rows.filter),
+            Self::Lazy(rows) => rows.state.filter.as_ref(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -388,13 +478,19 @@ struct LazyTableRows<'a> {
 }
 
 impl<'a> LazyTableRows<'a> {
-    fn new(source: SharedTableSource<'a>, metadata: ImmutableTableMetadata) -> Self {
+    fn new(
+        source: SharedTableSource<'a>,
+        metadata: ImmutableTableMetadata,
+        materialization_policy: TableMaterializationPolicy,
+    ) -> Self {
         Self {
             state: LazyTableState {
                 source,
-                metadata,
+                metadata: Arc::new(metadata),
                 cache: None,
                 filter: None,
+                materialization_policy,
+                fill_cache: true,
             },
             rows: OnceLock::new(),
         }
@@ -408,6 +504,24 @@ impl<'a> LazyTableRows<'a> {
             Ok(rows) => Ok(rows.as_slice()),
             Err(error) => Err(error.clone()),
         }
+    }
+
+    fn materialize_for_oracle(&self) -> TableRuntimeResult<Vec<TableRow>> {
+        // Oracle hatch: reuse the row cache if a legitimate read already populated it; otherwise do a
+        // throwaway full read that bypasses the `DenyRuntime` guard and the lazy-materialization
+        // counter (this read is not a durable consumer forcing materialization — it is a debug oracle
+        // cross-checking a facts-based fast path). It populates neither the row cache (`OnceLock`) nor
+        // the block cache (the read is forced no-fill), so it cannot warm a table a cold-read path
+        // expects to stay unmaterialized. It still validates, so the oracle sees exactly the rows a
+        // permitted full read would yield.
+        if let Some(cached) = self.rows.get() {
+            return cached.clone();
+        }
+        let mut state = self.state.clone();
+        state.fill_cache = false;
+        let rows = read_rows_from_metadata(&state)?;
+        super::validate_strictly_sorted_unique_rows(&rows)?;
+        Ok(rows)
     }
 
     fn try_get_exact(&self, key: &TableInternalKeyBytes) -> TableRuntimeResult<Option<TableRow>> {
@@ -479,11 +593,16 @@ impl<'a> LazyTableRows<'a> {
     fn cursor<'reader>(
         &'reader self,
         bounds_hint: Option<TableKeyBounds>,
+        fill_cache: bool,
     ) -> ImmutableTableCursor<'reader, 'a> {
         match self.rows.get() {
             Some(Ok(rows)) => ImmutableTableCursor::eager(rows),
             Some(Err(error)) => ImmutableTableCursor::failed(error.clone()),
-            None => ImmutableTableCursor::lazy(self.state.clone(), bounds_hint),
+            None => {
+                let mut state = self.state.clone();
+                state.fill_cache = fill_cache;
+                ImmutableTableCursor::lazy(state, bounds_hint)
+            }
         }
     }
 
@@ -501,9 +620,19 @@ impl<'a> LazyTableRows<'a> {
 #[derive(Clone, Debug)]
 struct LazyTableState<'a> {
     source: SharedTableSource<'a>,
-    metadata: ImmutableTableMetadata,
+    // BS4.4g: `Arc`-shared so cloning a lazy reader — per cursor open (`reader.rs` cursor path) and
+    // per install copy-on-write (`Arc::make_mut` on `BranchLayout`) — is a pointer bump rather than a
+    // deep clone of the index-block `Vec`, the dominant per-table metadata cost. Accessors deref
+    // through the `Arc` unchanged. (The filter's bloom is already `Arc`-shared internally.)
+    metadata: Arc<ImmutableTableMetadata>,
     cache: Option<LazyTableBlockCache>,
     filter: Option<TableReaderFilter>,
+    materialization_policy: TableMaterializationPolicy,
+    // BS4.4g: when false, a data-block miss reads from the source but does NOT insert into the block
+    // cache — set on read-once compaction/materialization merge-input cursors so streaming a large
+    // table through a merge cannot evict the working set of the point-read cache. Default true (a
+    // normal reader/cursor fills the cache); a cache hit is still served regardless.
+    fill_cache: bool,
 }
 
 impl LazyTableState<'_> {
@@ -724,13 +853,18 @@ impl LazyTableState<'_> {
         )?;
         perf_trace::record_table_data_block_read(frame_bytes.len());
         let bytes = Arc::<[u8]>::from(frame_bytes);
-        Ok(DataBlockFrame {
-            bytes,
-            cache_insert: self
-                .cache
+        // BS4.4g: a no-fill cursor reads the missed block but does not populate the cache.
+        let cache_insert = if self.fill_cache {
+            self.cache
                 .as_ref()
                 .zip(cache_key)
-                .map(|(cache, key)| (Arc::clone(&cache.cache), key)),
+                .map(|(cache, key)| (Arc::clone(&cache.cache), key))
+        } else {
+            None
+        };
+        Ok(DataBlockFrame {
+            bytes,
+            cache_insert,
         })
     }
 }
@@ -884,8 +1018,17 @@ impl<'a> ImmutableTableReader<'a> {
     ) -> TableRuntimeResult<Self> {
         require_validate_on_open(config);
         perf_trace::record_table_reader_open();
-        let (facts, fingerprint, rows) = decode_reader_rows(identity, &bytes)?;
-        let rows = EagerTableRows::from_vec(facts.clone(), fingerprint, rows, config)?;
+        let (facts, fingerprint, rows, persisted_filter) = decode_reader_rows(identity, &bytes)?;
+        // BS4.2b: a persisted filter always wins — load it (no scan) when present; otherwise fall back
+        // to the row scan, which still honors `eager_filter_mode`.
+        let rows = match persisted_filter {
+            Some(frame) => {
+                let filter =
+                    TableReaderFilter::from_persisted_frame(facts.clone(), fingerprint, frame)?;
+                EagerTableRows::from_vec_with_filter(rows, filter)
+            }
+            None => EagerTableRows::from_vec(facts.clone(), fingerprint, rows, config)?,
+        };
         let runtime_facts = TableReaderRuntimeFacts::eager(
             TableReaderOpenMode::EagerBytes,
             facts.data_block_count(),
@@ -911,13 +1054,53 @@ impl<'a> ImmutableTableReader<'a> {
         let source = SharedTableSource::new(source);
         let (metadata, fingerprint) = read_table_metadata(&source)?;
         let facts = table_facts_from_metadata(identity, &metadata)?;
-        let runtime_facts = TableReaderRuntimeFacts::lazy(TableReaderOpenMode::LazySource);
+        // BS4.2b: load the persisted filter frame (a small targeted range read) before `source` moves
+        // into the lazy state, so the lazy reader can short-circuit misses without reading data blocks.
+        let filter = if metadata.has_filter() {
+            let filter_len = usize::try_from(metadata.filter_block_frame_len()).map_err(|_| {
+                TableRuntimeError::InvalidRange {
+                    field: "filter_block_frame_len",
+                }
+            })?;
+            let frame_bytes = read_exact_source(
+                &source,
+                metadata.filter_block_offset(),
+                filter_len,
+                "short table filter read",
+            )?;
+            let (frame, consumed) = decode_filter_frame(&frame_bytes)
+                .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
+            if consumed != frame_bytes.len() {
+                return Err(TableRuntimeError::InvalidRange {
+                    field: "filter_block_frame_len",
+                });
+            }
+            Some(TableReaderFilter::from_persisted_frame(
+                facts.clone(),
+                fingerprint,
+                frame,
+            )?)
+        } else {
+            None
+        };
+        // Attach the frame-loaded filter directly (not via `with_table_filter`): its
+        // `facts`/`fingerprint` are already the reader's own, and the lazy fingerprint carries no
+        // `content_sha256` (no full-content read), so the `matches_table` exact-content gate — meant
+        // for externally supplied filters — would spuriously reject it. The frame's CRC (verified in
+        // `decode_filter_frame`) is the real integrity guarantee.
+        let mut lazy = LazyTableRows::new(source, metadata, config.materialization_policy());
+        let filter_available = match filter {
+            Some(filter) => lazy.with_filter(filter),
+            None => false,
+        };
+        let runtime_facts = TableReaderRuntimeFacts::lazy(TableReaderOpenMode::LazySource)
+            .with_filter_available(filter_available);
         Ok(Self {
             config,
             facts,
             fingerprint,
             runtime_facts,
-            rows: TableReaderRows::Lazy(Box::new(LazyTableRows::new(source, metadata))),
+            rows: TableReaderRows::Lazy(Box::new(lazy)),
         })
     }
 
@@ -958,8 +1141,27 @@ impl<'a> ImmutableTableReader<'a> {
         self.runtime_facts
     }
 
+    /// The reader's loaded filter, or `None` when unavailable/absent. Test-only: lets a test inspect
+    /// the filter's shape to prove the persisted frame was loaded rather than rescanned.
+    #[cfg(test)]
+    pub(crate) fn loaded_filter(&self) -> Option<&TableReaderFilter> {
+        self.rows.filter()
+    }
+
     pub(crate) const fn byte_count(&self) -> u64 {
         self.facts.byte_count()
+    }
+
+    /// BS4.4j resident/object seam: the approximate in-RAM footprint of this reader, as opposed to
+    /// `byte_count()` (the encoded object size used for compaction/level accounting). An eager reader
+    /// holds the whole decoded object; a lazy (disk-resident) reader pins only its metadata (index +
+    /// properties + loaded filter) — data blocks stay on disk and are accounted DB-wide by the block
+    /// cache, so they are excluded here (counting them would double-count the cache's own resident total).
+    pub(crate) fn resident_size_bytes(&self) -> u64 {
+        match &self.rows {
+            TableReaderRows::Eager(_) => self.byte_count(),
+            TableReaderRows::Lazy(lazy) => lazy.state.metadata.resident_metadata_bytes(),
+        }
     }
 
     pub(crate) fn rows(&self) -> &[TableRow] {
@@ -969,6 +1171,18 @@ impl<'a> ImmutableTableReader<'a> {
 
     pub(crate) fn try_rows(&self) -> TableRuntimeResult<&[TableRow]> {
         self.rows.try_rows()
+    }
+
+    /// Materialize every row for a **debug oracle**, bypassing the BS4.4d `DenyRuntime` guard and
+    /// the lazy-materialization counter that `rows()`/`try_rows()` enforce.
+    ///
+    /// The guard exists to catch a durable *consumer* forcing a full read of a lazy table. Debug
+    /// oracles (extras provenance, read-view facts, duplicate-key, durable one-pass facts) legitimately
+    /// need the full row set to cross-check a facts-based fast path; this is their only sanctioned path
+    /// to it. Returns an owned copy and never populates the row cache. Source-guarded to the oracle call
+    /// sites (`api/tests/source_guards.rs`).
+    pub(crate) fn materialize_rows_for_oracle(&self) -> TableRuntimeResult<Vec<TableRow>> {
+        self.rows.materialize_for_oracle()
     }
 
     pub(crate) fn get_exact(&self, key: &TableInternalKeyBytes) -> Option<TableRow> {
@@ -1001,14 +1215,6 @@ impl<'a> ImmutableTableReader<'a> {
             .expect("lazy table physical key seek failed")
     }
 
-    pub(crate) fn seek_prepared_point_candidate(
-        &self,
-        lookup: &TablePreparedPointLookup,
-    ) -> (Option<TablePointLookupRow<'_>>, usize) {
-        self.try_seek_prepared_point_candidate(lookup)
-            .expect("lazy table physical key seek failed")
-    }
-
     pub(crate) fn try_seek_physical_key(
         &self,
         key: &PhysicalKey,
@@ -1033,11 +1239,6 @@ impl<'a> ImmutableTableReader<'a> {
         self.rows.try_seek_prepared_point_candidate(lookup)
     }
 
-    pub(crate) fn physical_key_rows(&self, key: &PhysicalKey) -> (Vec<TableRow>, usize) {
-        self.try_physical_key_rows(key)
-            .expect("lazy table physical key history failed")
-    }
-
     pub(crate) fn try_physical_key_rows(
         &self,
         key: &PhysicalKey,
@@ -1046,11 +1247,32 @@ impl<'a> ImmutableTableReader<'a> {
     }
 
     pub(crate) fn cursor(&self) -> ImmutableTableCursor<'_, 'a> {
-        self.rows.cursor(None)
+        self.rows.cursor(None, true)
+    }
+
+    /// BS4.4g: a cursor that reads missed blocks but never inserts them into the block cache — for
+    /// read-once compaction/materialization merge inputs, so streaming a large table cannot evict the
+    /// point-read working set.
+    pub(crate) fn cursor_without_cache_fill(&self) -> ImmutableTableCursor<'_, 'a> {
+        self.rows.cursor(None, false)
     }
 
     pub(crate) fn bounded_cursor(&self, bounds: TableKeyBounds) -> BoundedTableCursor<'_> {
-        BoundedTableCursor::new(Box::new(self.rows.cursor(Some(bounds.clone()))), bounds)
+        BoundedTableCursor::new(
+            Box::new(self.rows.cursor(Some(bounds.clone()), true)),
+            bounds,
+        )
+    }
+
+    /// BS4.4g: the no-cache-fill counterpart of [`bounded_cursor`](Self::bounded_cursor).
+    pub(crate) fn bounded_cursor_without_cache_fill(
+        &self,
+        bounds: TableKeyBounds,
+    ) -> BoundedTableCursor<'_> {
+        BoundedTableCursor::new(
+            Box::new(self.rows.cursor(Some(bounds.clone()), false)),
+            bounds,
+        )
     }
 
     pub(crate) fn into_materialized(self) -> TableRuntimeResult<ImmutableTableReader<'static>> {
@@ -1421,7 +1643,12 @@ fn require_validate_on_open(config: TableReaderConfig) {
 fn decode_reader_rows(
     identity: TableIdentity,
     bytes: &[u8],
-) -> TableRuntimeResult<(TableRuntimeFacts, TableContentFingerprint, Vec<TableRow>)> {
+) -> TableRuntimeResult<(
+    TableRuntimeFacts,
+    TableContentFingerprint,
+    Vec<TableRow>,
+    Option<TableFilterFrame>,
+)> {
     let decoded = decode_immutable_table(bytes)
         .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
     perf_trace::record_table_data_blocks_decoded(decoded.data_blocks().len(), decoded.rows().len());
@@ -1434,7 +1661,10 @@ fn decode_reader_rows(
     super::validate_strictly_sorted_unique_rows(&rows)?;
     let facts = table_facts_from_decoded(identity, bytes, &decoded)?;
     let fingerprint = table_content_fingerprint_from_bytes(bytes)?;
-    Ok((facts, fingerprint, rows))
+    // BS4.2b: carry the persisted filter frame (BS4.2a already decoded + validated it) so the eager
+    // path can load it instead of rescanning every key.
+    let persisted_filter = decoded.filter().cloned();
+    Ok((facts, fingerprint, rows, persisted_filter))
 }
 
 fn validate_filter_rows_match_facts(
@@ -1713,6 +1943,19 @@ fn read_rows_from_metadata(state: &LazyTableState<'_>) -> TableRuntimeResult<Vec
 }
 
 fn read_and_validate_rows(state: &LazyTableState<'_>) -> TableRuntimeResult<Vec<TableRow>> {
+    // BS4.4d: the single choke point where a lazy reader decodes every row (reached by `try_rows` and
+    // `into_materialized`). Under `DenyRuntime` a full read is a bug on the durable path — debug-assert
+    // to fail loudly in tests, then return a typed error in release. `Allow` readers tally the counter.
+    if state.materialization_policy == TableMaterializationPolicy::DenyRuntime {
+        debug_assert!(
+            false,
+            "lazy table materialized all rows under DenyRuntime — a durable consumer forced a full read"
+        );
+        return Err(TableRuntimeError::LazyMaterializationDenied {
+            reason: "lazy reader full materialization denied by runtime policy",
+        });
+    }
+    perf_trace::record_lazy_full_materialization();
     let rows = read_rows_from_metadata(state)?;
     super::validate_strictly_sorted_unique_rows(&rows)?;
     Ok(rows)

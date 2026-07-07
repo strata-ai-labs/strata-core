@@ -1,7 +1,9 @@
 # Durable single-commit write cliff — root cause and fix plan
 
-Status: fix #1 (size-driven flush) implemented; fixes #2 (lock-free maintenance
-install) and #3 (throttle-not-reject backpressure) still planned. See
+Status: **resolved by fix #1** (size-driven flush, implemented). Fix #2
+("lock-free maintenance install") was found to **already exist** in the engine
+(off-lock publish, M4P-L8K) — no work needed. Fix #3 (throttle-not-reject
+backpressure) remains an optional robustness follow-up. See
 [Planned fix](#planned-fix) for status per step.
 
 Layers touched: [L6 branch LSM runtime](./l6-branch-isolated-lsm-runtime.md),
@@ -16,24 +18,34 @@ the workload proceeds, and at intermediate scales writes are sometimes
 **hard-rejected** with a `LevelZeroTableBacklog` blocking-admission error. The
 same data loaded in batches (1000 rows/commit) runs at full speed.
 
-The collapse has **two independent root causes**, both of which the pre-V1
-engine (`crates/storage`) and RocksDB — its design model — avoid by design (see
+The root cause is a single one, which the pre-V1 engine (`crates/storage`) and
+RocksDB — its design model — avoid by design (see
 [Reference designs](#reference-designs-how-this-is-supposed-to-work)):
 
-1. **A commit-count checkpoint trigger.** The WAL-growth policy forces a
-   checkpoint + memtable flush every `max_commits_since_checkpoint = 1024`
-   commits, regardless of how little data those commits carried. With one row
-   per commit this fires every 1024 rows, manufacturing a stream of tiny L0
-   tables and the compaction churn that follows.
-2. **A single global runtime mutex.** All background flush/compaction runs under
-   the same `ParkingMutex` that every foreground commit must take, so commits
-   serialize behind maintenance I/O. Once maintenance is active, per-commit
-   latency is dominated by lock-wait.
+> **A commit-count checkpoint trigger.** The WAL-growth policy forces a
+> checkpoint + memtable flush every `max_commits_since_checkpoint = 1024`
+> commits, regardless of how little data those commits carried. With one row
+> per commit this fires every 1024 rows, manufacturing a relentless stream of
+> tiny L0 tables and the compaction churn that follows.
 
-Batching hides both: 1000× fewer commits never reach the 1024-commit trigger,
-and the few commits that do barely contend on the lock. Concurrency (multiple
-writer threads) would also amortize the lock, which is how YCSB normally drives
-durable stores — but our single-threaded loaders expose the cliff directly.
+A harsh **overload response** turns the churn's worst case into an outright
+write *rejection* rather than backpressure (the `LevelZeroTableBacklog`
+blocking-admission error) — that is a robustness gap, not a separate cause of
+the slowdown, and is the subject of the optional fix #3.
+
+> **Note (correction):** an earlier draft of this doc listed a second root
+> cause — "the single global runtime mutex held across flush/compaction I/O."
+> That was an **incorrect inference**. storage-next already runs the table build
+> and the manifest fsync *off-lock* (M4P-L8K; see Root cause §3 below). The large
+> `foreground_wait_background_lock` measured pre-fix came from the *volume* of
+> brief metadata lock-holds during the commit-count churn, which fix #1 removed —
+> not from I/O under the lock.
+
+Batching hides the cliff: 1000× fewer commits never reach the 1024-commit
+trigger, so there is no checkpoint churn and almost no maintenance to contend
+with. (Concurrency — multiple writer threads — is how YCSB normally drives
+durable stores; our single-threaded loaders expose the per-commit cliff
+directly.)
 
 ## Symptoms
 
@@ -118,63 +130,68 @@ and drives L0 past the blocking threshold
 (`LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD = 16`), which is the source of the
 non-deterministic `LevelZeroTableBacklog` write rejection.
 
-### 3. The single global runtime mutex serializes commits with maintenance
+### 3. The lock-wait was maintenance *volume*, not I/O under the lock
 
 `crates/storage-next/src/api/runtime/background.rs::RuntimeSlot::lock()` is the
-single `ParkingMutex` around the entire runtime; it records
-`foreground_wait_background_lock`. Background flush/compaction holds this mutex
-while it runs, so every foreground commit blocks behind maintenance.
+single `ParkingMutex` around the runtime; it records
+`foreground_wait_background_lock`. It is tempting to conclude commits block
+behind maintenance *I/O* — but they do **not**. The background maintenance round
+(`api/runtime/maintenance.rs::drain_durable_background_round`) is already
+three-phase off-lock (the M4P-L8K off-lock publish mechanism):
 
-Per-commit decomposition, single-row durable `load-seq` (scale 1k → 5k):
+- the table build runs with the lock **released** (`maintenance.rs:644`,
+  `pending_build.build()`, perf counter `record_lifecycle_background_task_unlocked_build`);
+- the manifest fsync runs with the lock **released** (`:670`, `persist_off_lock`);
+- the lock is taken only for brief metadata work — task selection/snapshot
+  (Phase 1) and the in-memory install + manifest record (Phase 3).
 
-| per-commit | 1k | 5k |
-|---|--:|--:|
-| `commit_call` | 103 µs | 258 µs (growing) |
-| `wal_append` | 20 µs | 19 µs (flat — *not* the cause) |
-| `foreground_wait_background_lock` | 0.1 ms total | **393 ms total** |
-
-The growing cost is **not** WAL/fsync (durable mode is `Standard`, which defers
-fsync — only `Always` syncs per commit). It is lock-wait behind background
-maintenance plus the per-commit pressure bookkeeping.
+So the pre-fix `foreground_wait_background_lock` (18.3 s at 100k) was contention
+from the *count* of those brief metadata lock-holds — ~14,000 maintenance ops
+(the commit-count churn) each taking and releasing the lock — not from I/O held
+under it. Removing the churn (fix #1) cut it to **150 ms**, and per-commit cost
+dropped to the base ~110 µs. The growing pre-fix `commit_call` (103 → 258 µs over
+1k → 5k) tracked the rising maintenance volume, not WAL/fsync (`wal_append` stays
+flat at ~20 µs; durable mode is `Standard`, which defers fsync).
 
 ### Two failure modes
 
-- **Slowdown** when background compaction keeps up: commits merely stall on the
-  lock, and per-commit cost climbs to ~17 ms.
-- **Hard rejection** when L0 creation outruns compaction: L0 crosses 16 and
-  admission rejects writes. At slow ingest (e.g. the already-degraded 100k run)
-  compaction keeps up and the run completes slowly; at faster intermediate
-  ingest it can spike L0 and reject. Hence the non-determinism.
+- **Slowdown** — the dominant one: per-commit cost climbs (to ~17 ms at 100k) as
+  the commit-count checkpoint churn and its compaction grow. Removed by fix #1.
+- **Hard rejection** — when L0 creation outruns compaction, L0 crosses
+  `LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD = 16` and admission *rejects* the
+  commit (`LevelZeroTableBacklog`) rather than throttling. Timing-dependent. Fix
+  #1 removes the churn that caused it here; making admission throttle instead of
+  reject is the optional fix #3.
 
 ## Why batching / concurrency hide it
 
 - **Batching:** 1000 rows/commit means the 1024-commit trigger fires every
   ~1,024,000 rows instead of every 1024 — effectively never at these scales — so
-  there is no checkpoint churn, and there are 1000× fewer commits to contend on
-  the lock. Measured: batched durable `load-seq` at 100k = **893,503 ops/s** vs
-  **58 ops/s** single-row (~15,000×).
-- **Concurrency:** multiple writer threads would amortize the lock via group
-  commit. Our loaders are single-threaded, which is the honest worst case and
-  what surfaces the cliff. Canonical YCSB drives durable stores with many client
-  threads for exactly this reason.
+  there is no checkpoint churn and almost no maintenance. Measured: batched
+  durable `load-seq` at 100k = **893,503 ops/s** vs **58 ops/s** single-row
+  (~15,000×).
+- **Concurrency:** multiple writer threads amortize the per-commit cost via WAL
+  group commit. Our loaders are single-threaded, the honest worst case, which
+  surfaces both the (now-fixed) churn cliff and the residual per-commit base cost.
+  Canonical YCSB drives durable stores with many client threads for this reason.
 
 ## Reference designs: how this is supposed to work
 
 Both the pre-V1 segmented engine (`crates/storage`) and RocksDB — the LSM the
 pre-V1 engine was modeled on — handle this identical workload without a cliff.
-They diverge from storage-next on exactly the two axes above, and RocksDB makes a
-third divergence explicit: overload is handled by *throttling* writers, never by
-rejecting a write.
+storage-next diverges on the **flush trigger** (the root cause) and on **overload
+handling** (the robustness gap). On the lock axis it already **matches** the
+references — table build and manifest fsync run off-lock (M4P-L8K).
 
 | Axis | RocksDB (reference) | pre-V1 `crates/storage` | storage-next |
 |---|---|---|---|
-| Flush trigger | **Size** — `write_buffer_size` (64 MiB) + `max_write_buffer_number` (2); WAL size → CF flush. No commit-count notion. | **Size** — `maybe_rotate_branch` when `active.approx_bytes() >= write_buffer_size`. No commit-count notion. | **Commit-count** (`max_commits_since_checkpoint = 1024`) **plus** size. |
-| WAL bound | `max_total_wal_size` → flush oldest CF | flush watermark (data-driven) | commit-count / byte WAL-growth triggers |
-| Lock during flush/compaction I/O | **Released** — `Unlock` → build SST / merge → `Lock` → install | **Released** — build SST outside lock → atomic `ArcSwap` install | **Held** — global `ParkingMutex` spans the I/O |
-| Install | `VersionSet::LogAndApply` under mutex | atomic `ArcSwap` swap | under the held mutex |
-| Overload handling | **Throttle**: `WriteController` *sleeps* the writer; hard-stop *waits*. **Never an error.** | write-stall: pause *rotation* when frozen memtables pile up | **Hard-rejects** the commit (`LevelZeroTableBacklog`) |
-| L0 slowdown / stop | 20 / 36 files; pending-bytes 64 GiB / 256 GiB | stop-writes by frozen count | **block at 16 L0 tables**, no slowdown tier |
-| Group commit | Yes — leader writes many writers' WAL in one fsync | per-branch commit lock | single global commit path |
+| Flush trigger | **Size** — `write_buffer_size` (64 MiB) + `max_write_buffer_number` (2); WAL size → CF flush. No commit-count notion. | **Size** — `maybe_rotate_branch` when `active.approx_bytes() >= write_buffer_size`. No commit-count notion. | **Fixed by #1** — size-driven by default; the commit-count trigger is now opt-in. |
+| WAL bound | `max_total_wal_size` → flush oldest CF | flush watermark (data-driven) | byte/segment WAL-growth triggers + segment rolling |
+| Lock during flush/compaction I/O | **Released** — `Unlock` → build SST / merge → `Lock` → install | **Released** — build SST outside lock → atomic `ArcSwap` install | **Released** — already off-lock (M4P-L8K): build `maintenance.rs:644`, fsync `:670`; lock held only for metadata install |
+| Install | `VersionSet::LogAndApply` under mutex | atomic `ArcSwap` swap | brief metadata under the runtime lock |
+| Overload handling | **Throttle**: `WriteController` *sleeps* the writer; hard-stop *waits*. **Never an error.** | write-stall: pause *rotation* when frozen memtables pile up | **Hard-rejects** the commit (`LevelZeroTableBacklog`) — *gap, fix #3* |
+| L0 slowdown / stop | 20 / 36 files; pending-bytes 64 GiB / 256 GiB | stop-writes by frozen count | **block at 16 L0 tables**, no slowdown tier — *fix #3* |
+| Group commit | Yes — leader writes many writers' WAL in one fsync | per-branch commit lock | single global commit path (the residual single-thread cost) |
 
 ### Pre-V1 engine (`crates/storage`)
 
@@ -245,35 +262,17 @@ These were prototyped and reverted; recorded so they are not retried.
    does. So `active_bytes` is also monotonic up to 64 MiB and the half-rotation
    gate latched open mid-cycle.
 4. **Gate on un-flushed memtable bytes at the full rotation size (64 MiB).**
-   Pushed the onset from ~1k to ~5–30k commits but the cliff still returns at
-   scale, because regression #2 (the global lock) reintroduces it the moment any
-   size-driven maintenance starts. A checkpoint-trigger tweak cannot reach the
-   lock contention.
+   A *gate* re-opens the commit-count trigger above the rotation size, so the
+   churn returned at scale. The right shape was to **disable** the commit-count
+   trigger outright (the shipped fix #1), not gate it.
 
-Lesson: regression #1 (commit-count trigger) and regression #2 (global lock) are
-independent. Fixing only #1 cannot eliminate the cliff.
+Lesson: the cliff has a single cause — the commit-count checkpoint trigger.
+Disabling it (fix #1) eliminates the cliff; the lock was never held across the
+I/O, so there was no second cause to fix.
 
 ## Planned fix
 
-### Primary — lock-free maintenance install (addresses #2)
-
-Adopt the pattern shared by both reference engines (RocksDB
-`flush_job.cc` / `compaction_job.cc`: `Unlock` → I/O → `Lock` → `LogAndApply`;
-pre-V1 `flush_oldest_frozen`: build outside lock → atomic `ArcSwap` install).
-Background flush/compaction must do its I/O-heavy work **without** holding the
-runtime mutex, taking the lock only for the brief atomic install of the result.
-
-- Build the output segment(s) / run the compaction merge outside the lock.
-- Re-acquire the lock only to swap the new segment set into the branch's level
-  view (an `ArcSwap`-style atomic install) and update the manifest reference.
-- Foreground commits then contend with maintenance only for the duration of the
-  swap, not the I/O.
-
-This removes the foreground stall for *all* maintenance, not just checkpoints,
-and is the only change that addresses the dominant `foreground_wait_background_lock`
-term. It is the larger architectural lift and the highest-leverage fix.
-
-### Complement — size-driven flush / checkpoint (addresses #1) — IMPLEMENTED
+### Size-driven flush / checkpoint (the root-cause fix) — IMPLEMENTED
 
 Done. The commit-count WAL-growth trigger is **off by default**: the internal
 `LifecycleWalGrowthPolicy.max_commits_since_checkpoint` is now `Option<u64>`,
@@ -298,10 +297,22 @@ Measured (single-row durable `load-seq`, default budget, 64 B values):
 `LevelZeroTableBacklog` rejection; `engine-ycsb` durable workload A
 **141 → 16,948 ops/s**, update p50 **12.84 ms → 116 µs**. Batched load unchanged
 (~full speed). The residual at 100k is the base per-commit cost (~110 µs) with
-background maintenance running concurrently — the global-lock stalls that remain
-at larger scale are fix #2.
+background maintenance running concurrently (post-fix `foreground_wait_background_lock`
+≈ 150 ms / 100k commits — negligible). Further single-threaded throughput is
+bounded by that per-commit cost, addressed by WAL group commit / concurrency, not
+by anything in this doc.
 
-### Backpressure — throttle, don't reject (addresses the hard-reject failure mode)
+### Lock-free maintenance install — ALREADY IMPLEMENTED (was "fix #2")
+
+No work needed. An earlier draft planned to release the runtime lock during
+flush/compaction I/O. storage-next already does this: the off-lock publish
+mechanism (`74e817e0 M4P-L8K`) runs the table build off-lock
+(`api/runtime/maintenance.rs:644`) and the manifest fsync off-lock (`:670`),
+matching RocksDB (`flush_job`/`compaction_job` `Unlock → I/O → Lock → LogAndApply`)
+and the pre-V1 engine (`flush_oldest_frozen` build-outside-lock → `ArcSwap`). The
+lock is held only for brief metadata install/record. See Root cause §3.
+
+### Backpressure — throttle, don't reject (optional, addresses the hard-reject failure mode)
 
 storage-next's overload response is the harshest of the three designs: at 16 L0
 tables it returns a `LevelZeroTableBacklog` error and aborts the commit, with no
@@ -316,21 +327,22 @@ Adopt the `WriteController` model:
 - Reserve hard rejection for genuine resource exhaustion (the memory budget),
   not for transient compaction lag.
 
-With the primary fix in place, compaction keeps up and these tiers rarely engage;
-but they convert the remaining worst case from a write *failure* into graceful
-backpressure, matching RocksDB semantics. (Group commit — batching concurrent
-writers' WAL into one fsync, RocksDB `WriteThread` — is the complementary lever
-for *concurrent* durable throughput and is tracked separately.)
+With the size-driven fix in place, compaction keeps up and these tiers rarely
+engage; but they convert the remaining worst case from a write *failure* into
+graceful backpressure, matching RocksDB semantics. (Group commit — batching
+concurrent writers' WAL into one fsync, RocksDB `WriteThread` — is the
+complementary lever for *concurrent* durable throughput and is tracked separately.)
 
 ### Sequencing
 
-1. ✅ **Done** — the complement (#1, size-driven flush): a contained, low-risk
+1. ✅ **Done** — size-driven flush (the root-cause fix): a contained, low-risk
    change with a matching test slice; it removes the per-1024-commit churn
-   (100k single-row durable 58 → 9,068 ops/s) and de-risks the larger change.
-2. Land the primary (#2, lock-free maintenance install); this is the real fix and
-   needs careful concurrency review (it changes the runtime locking contract).
-3. Land the backpressure change (#3, throttle-not-reject) to remove the hard
-   `LevelZeroTableBacklog` rejection failure mode.
+   (100k single-row durable 58 → 9,068 ops/s) and resolves the cliff.
+2. ✅ **Already in the engine** — lock-free maintenance install (off-lock publish,
+   M4P-L8K). No work.
+3. ⬚ **Optional** — backpressure (throttle-not-reject) to convert the hard
+   `LevelZeroTableBacklog` rejection into graceful slowdown. Not required to
+   resolve the cliff; a robustness improvement for sustained-overload workloads.
 
 ## Verification plan
 
@@ -347,14 +359,16 @@ Re-run the reproductions and require:
 
 ## Risks and open questions
 
-- The global runtime mutex may have been chosen deliberately for correctness or
-  simplicity in the rewrite; the lock-free install must preserve commit/branch
-  MVCC ordering and recovery invariants. Needs a concurrency review against the
-  L7/L8 contracts.
 - Loosening the commit-count bound increases worst-case recovery replay for
-  pathological many-tiny-commit workloads; bounded by the 256 MiB byte trigger.
-- Multi-branch behaviour: any size-driven gate must consider per-branch
-  un-flushed data, not just the initial branch.
+  pathological many-tiny-commit workloads; bounded by the 256 MiB byte trigger +
+  segment rolling. Covered by the recovery test suites (all green).
+- WAL truncation is coupled to the WAL-growth checkpoint path, so with the
+  commit-count trigger off the WAL is trimmed on the byte/segment triggers +
+  segment rolling rather than at flush cadence. Bounded, but decoupling truncation
+  to track flush cadence (smaller retained WAL) is a possible follow-up.
+- Residual single-threaded durable throughput is the per-commit base cost
+  (~110 µs); raising it needs WAL group commit / writer concurrency, out of scope
+  for the cliff.
 
 ## References
 

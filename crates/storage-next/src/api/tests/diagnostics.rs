@@ -70,7 +70,7 @@ fn usage(report: &DiagnosticsBudgetReport, pool: DiagnosticsBudgetPool) -> Diagn
 
 #[test]
 fn diagnostics_reports_healthy_recovery() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let commit = runtime
         .commit(&put_batch(b"health", b"ok"))
         .expect("commit");
@@ -358,7 +358,7 @@ fn diagnostics_reports_durable_background_scheduler_facts() {
 
 #[test]
 fn diagnostics_reports_memory_budget_usage() {
-    let mut runtime = open_manual_runtime();
+    let runtime = open_manual_runtime();
     runtime
         .enqueue_maintenance(&MaintenanceRequest::new(
             MaintenanceTask::Flush,
@@ -467,7 +467,7 @@ fn diagnostics_reports_cache_volatile_in_memory_shape() {
     // Cache reports its volatile in-memory source layout explicitly (Known with
     // active/frozen rows and zero owned/inherited tables) rather than treating
     // absent durable table shape as unknown. Durable-only facts are Unsupported.
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     runtime
         .commit(&put_batch(b"volatile-shape", b"value"))
         .expect("commit");
@@ -570,7 +570,7 @@ fn diagnostics_reports_source_layout_after_flush_and_compact() {
 
 #[test]
 fn diagnostics_branch_scope_reports_requested_branch_pressure() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let child = branch_id(0x45);
     runtime
         .branch(&BranchRequest::new(
@@ -716,7 +716,7 @@ fn diagnostics_manifest_read_failure_marks_checkpoint_unknown() {
 
 #[test]
 fn diagnostics_reports_branch_count_and_generation_summary() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let child = branch_id(0x44);
     runtime
         .branch(&BranchRequest::new(
@@ -742,7 +742,7 @@ fn diagnostics_reports_branch_count_and_generation_summary() {
 
 #[test]
 fn diagnostics_branch_generation_summary_ignores_deleted_branches() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let active = branch_id(0x47);
     let deleted = branch_id(0x48);
     runtime

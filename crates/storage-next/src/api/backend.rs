@@ -133,23 +133,19 @@ impl StorageBackend {
         }
     }
 
-    pub(crate) fn as_backend_handle(&self) -> BackendHandle<'_> {
-        BackendHandle::borrowed(self.as_backend())
-    }
-
     #[cfg(feature = "localfs")]
     pub(crate) fn to_owned_backend_handle(&self) -> Option<BackendHandle<'static>> {
         match &self.inner {
+            // Cache-only, never opened durable, so it needs no owned durable handle.
             StorageBackendInner::Memory(_) => None,
             StorageBackendInner::LocalFs(backend) => Some(BackendHandle::owned(backend.clone())),
-            // A faulting backend holds a Mutex and cannot be cloned, so it has no
-            // owned handle; sweeps open it via the borrowed (evaluate-and-enqueue)
-            // path instead of background scheduling.
+            // BS4.4h: the fault/reordering backends `Arc`-share their state and are now `Clone`, so
+            // a clone yields an owned handle over the same fault state — durable opens are uniformly
+            // owned/`'static`, including the soak tests (which retain their own clone to inspect after).
             #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
-            StorageBackendInner::Fault(_) => None,
-            // Also Mutex-backed (records the unsynced boundary), so no owned handle.
+            StorageBackendInner::Fault(backend) => Some(BackendHandle::owned(backend.clone())),
             #[cfg(all(any(test, feature = "fault-injection"), feature = "localfs"))]
-            StorageBackendInner::Reordering(_) => None,
+            StorageBackendInner::Reordering(backend) => Some(BackendHandle::owned(backend.clone())),
         }
     }
 

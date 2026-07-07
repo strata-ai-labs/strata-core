@@ -47,6 +47,13 @@ pub(crate) struct LifecycleTableObjectRetentionRequest {
     manifests: Vec<TableManifest>,
     inventory: Vec<LifecycleTableObjectInventoryEntry>,
     quarantined_objects: Vec<ObjectName>,
+    /// In-memory-reachable table objects (every catalog branch's owned levels + inherited
+    /// layers) that must be treated as live even when no durable manifest references them.
+    /// COW invariant: an object is deletable only when unreachable from EVERY branch, and a
+    /// branch's references can be durably invisible in narrow windows (a fork child whose
+    /// fork-time manifest publish failed, a freshly installed table whose manifest publish
+    /// is still in flight). Empty for report-only marks; the sweep supplies it.
+    pinned_objects: Vec<ObjectName>,
     completeness: LifecycleTableObjectProofCompleteness,
     allow_telemetry_degraded_recovery: bool,
 }
@@ -189,11 +196,19 @@ impl LifecycleTableObjectRetentionRequest {
             manifests,
             inventory,
             quarantined_objects,
+            pinned_objects: Vec::new(),
             completeness: LifecycleTableObjectProofCompleteness::complete(),
             allow_telemetry_degraded_recovery: true,
         };
         request.validate()?;
         Ok(request)
+    }
+
+    /// Objects reachable from in-memory branch state (see the field doc): treated as live
+    /// alongside the durable-manifest reachability set.
+    pub(crate) fn with_pinned_objects(mut self, pinned_objects: Vec<ObjectName>) -> Self {
+        self.pinned_objects = pinned_objects;
+        self
     }
 
     pub(crate) fn with_manifest_complete(mut self, complete: bool) -> Self {
@@ -304,7 +319,15 @@ impl LifecycleTableObjectProofToken {
 
 impl LifecycleTableObjectRetentionOutcome {
     pub(crate) fn new(request: &LifecycleTableObjectRetentionRequest) -> LifecycleResult<Self> {
-        let live_tables = live_table_objects(&request.manifests);
+        let mut live_tables = live_table_objects(&request.manifests);
+        // COW invariant: union in-memory-reachable objects (durably-invisible references such
+        // as a fork child in its manifest-publish crash window) into the live set — an object
+        // is deletable only when unreachable from EVERY branch.
+        for object in &request.pinned_objects {
+            live_tables
+                .entry(object.clone())
+                .or_insert(LiveTableReason::Shared);
+        }
         let proof_status = proof_status_for_request(request, &live_tables);
         let proof = LifecycleRetentionProof::new(
             proof_status,

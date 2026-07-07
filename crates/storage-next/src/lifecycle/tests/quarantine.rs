@@ -53,7 +53,9 @@ fn quarantine_proof_complete_from_candidate_and_blocks_unsafe_health() {
 
 #[test]
 fn quarantine_incomplete_proof_defers_without_backend_access() {
-    let backend = QuarantineTestBackend::durable().with_object(source_object(), b"table-bytes");
+    let backend: &'static QuarantineTestBackend = Box::leak(Box::new(
+        QuarantineTestBackend::durable().with_object(source_object(), b"table-bytes"),
+    ));
     let request = quarantine_request(
         LifecycleQuarantineProof::from_retention_decision(
             RetentionDecision::SkipUntilProof,
@@ -62,7 +64,7 @@ fn quarantine_incomplete_proof_defers_without_backend_access() {
         source_object(),
     );
 
-    let outcome = quarantine_object(&QuarantineService::new(&backend), &request);
+    let outcome = quarantine_object(&QuarantineService::new(backend), &request);
 
     assert_eq!(
         outcome.status(),
@@ -227,7 +229,9 @@ fn quarantine_proof_blocks_when_telemetry_debt_targets_candidate_branch() {
 
 #[test]
 fn quarantine_referenced_proof_defers_without_backend_access() {
-    let backend = QuarantineTestBackend::durable().with_object(source_object(), b"table-bytes");
+    let backend: &'static QuarantineTestBackend = Box::leak(Box::new(
+        QuarantineTestBackend::durable().with_object(source_object(), b"table-bytes"),
+    ));
     let request = quarantine_request(
         LifecycleQuarantineProof::from_retention_decision(
             RetentionDecision::Retain,
@@ -236,7 +240,7 @@ fn quarantine_referenced_proof_defers_without_backend_access() {
         source_object(),
     );
 
-    let outcome = quarantine_object(&QuarantineService::new(&backend), &request);
+    let outcome = quarantine_object(&QuarantineService::new(backend), &request);
 
     assert_eq!(
         outcome.status(),
@@ -248,13 +252,15 @@ fn quarantine_referenced_proof_defers_without_backend_access() {
 #[test]
 fn quarantine_stages_inventory_copy_and_source_delete_in_order() {
     let source = source_object();
-    let backend = QuarantineTestBackend::durable().with_object(source.clone(), b"table-bytes");
+    let backend: &'static QuarantineTestBackend = Box::leak(Box::new(
+        QuarantineTestBackend::durable().with_object(source.clone(), b"table-bytes"),
+    ));
     let request = quarantine_request(
         LifecycleQuarantineProof::safe(RecoveryHealth::Healthy),
         source.clone(),
     );
 
-    let outcome = quarantine_object(&QuarantineService::new(&backend), &request);
+    let outcome = quarantine_object(&QuarantineService::new(backend), &request);
 
     assert_eq!(
         outcome.status(),
@@ -286,14 +292,16 @@ fn quarantine_stages_inventory_copy_and_source_delete_in_order() {
 #[test]
 fn quarantine_inventory_publish_failure_does_not_copy_or_delete_source() {
     let source = source_object();
-    let backend = QuarantineTestBackend::durable().with_object(source.clone(), b"table-bytes");
+    let backend: &'static QuarantineTestBackend = Box::leak(Box::new(
+        QuarantineTestBackend::durable().with_object(source.clone(), b"table-bytes"),
+    ));
     backend.fail_next_publish(PublishFailureKind::FailedBeforeVisibility);
     let request = quarantine_request(
         LifecycleQuarantineProof::safe(RecoveryHealth::Healthy),
         source.clone(),
     );
 
-    let outcome = quarantine_object(&QuarantineService::new(&backend), &request);
+    let outcome = quarantine_object(&QuarantineService::new(backend), &request);
 
     assert_eq!(
         outcome.status(),
@@ -355,8 +363,9 @@ fn quarantine_inventory_mismatch_blocks_followup_purge() {
         LifecyclePurgeStatus::BlockedByRecoveryHealth
     );
 
-    let runtime_backend = CheckpointTestBackend::new();
-    let mut runtime = open_durable_runtime(branch_id(), &runtime_backend);
+    let runtime_backend: &'static CheckpointTestBackend =
+        Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_durable_runtime(branch_id(), runtime_backend);
     runtime.record_recovery_health_for_test(health);
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::purge_quarantine(branch_id()))
@@ -373,14 +382,16 @@ fn quarantine_inventory_mismatch_blocks_followup_purge() {
 #[test]
 fn quarantine_source_delete_failure_reports_retryable_health_debt() {
     let source = source_object();
-    let backend = QuarantineTestBackend::durable().with_object(source.clone(), b"table-bytes");
+    let backend: &'static QuarantineTestBackend = Box::leak(Box::new(
+        QuarantineTestBackend::durable().with_object(source.clone(), b"table-bytes"),
+    ));
     backend.fail_delete(source.clone(), BackendErrorKind::Interrupted);
     let request = quarantine_request(
         LifecycleQuarantineProof::safe(RecoveryHealth::Healthy),
         source,
     );
 
-    let outcome = quarantine_object(&QuarantineService::new(&backend), &request);
+    let outcome = quarantine_object(&QuarantineService::new(backend), &request);
 
     assert_eq!(
         outcome.status(),
@@ -396,14 +407,16 @@ fn quarantine_source_delete_failure_reports_retryable_health_debt() {
 #[test]
 fn quarantine_non_durable_source_delete_reports_retryable_health_debt() {
     let source = source_object();
-    let backend = QuarantineTestBackend::durable().with_object(source.clone(), b"table-bytes");
+    let backend: &'static QuarantineTestBackend = Box::leak(Box::new(
+        QuarantineTestBackend::durable().with_object(source.clone(), b"table-bytes"),
+    ));
     backend.make_delete_non_durable(source.clone());
     let request = quarantine_request(
         LifecycleQuarantineProof::safe(RecoveryHealth::Healthy),
         source.clone(),
     );
 
-    let outcome = quarantine_object(&QuarantineService::new(&backend), &request);
+    let outcome = quarantine_object(&QuarantineService::new(backend), &request);
 
     assert_eq!(
         outcome.status(),
@@ -421,8 +434,10 @@ fn quarantine_non_durable_source_delete_reports_retryable_health_debt() {
 #[test]
 fn quarantine_existing_matching_entry_is_idempotent_and_retries_source_delete() {
     let source = source_object();
-    let backend = QuarantineTestBackend::durable().with_object(source.clone(), b"table-bytes");
-    let service = QuarantineService::new(&backend);
+    let backend: &'static QuarantineTestBackend = Box::leak(Box::new(
+        QuarantineTestBackend::durable().with_object(source.clone(), b"table-bytes"),
+    ));
+    let service = QuarantineService::new(backend);
     let request = quarantine_request(
         LifecycleQuarantineProof::safe(RecoveryHealth::Healthy),
         source.clone(),
@@ -454,13 +469,14 @@ fn quarantine_missing_source_is_transient_service_failure_not_publish_failure() 
     // concurrent operation; a retry could succeed if the source returns,
     // so the maintenance outcome must report Failed-but-retryable.
     let source = source_object();
-    let backend = QuarantineTestBackend::durable();
+    let backend: &'static QuarantineTestBackend =
+        Box::leak(Box::new(QuarantineTestBackend::durable()));
     let request = quarantine_request(
         LifecycleQuarantineProof::safe(RecoveryHealth::Healthy),
         source,
     );
 
-    let outcome = quarantine_object(&QuarantineService::new(&backend), &request);
+    let outcome = quarantine_object(&QuarantineService::new(backend), &request);
 
     assert_eq!(
         outcome.status(),
@@ -482,9 +498,10 @@ fn quarantine_missing_source_is_transient_service_failure_not_publish_failure() 
 
 #[test]
 fn purge_requires_fresh_proof_before_backend_access() {
-    let backend = QuarantineTestBackend::durable();
+    let backend: &'static QuarantineTestBackend =
+        Box::leak(Box::new(QuarantineTestBackend::durable()));
     let outcome = purge_quarantine(
-        &QuarantineService::new(&backend),
+        &QuarantineService::new(backend),
         branch_id(),
         DATABASE_ID,
         &LifecycleCodecId::identity(),
@@ -502,8 +519,9 @@ fn purge_requires_fresh_proof_before_backend_access() {
 
 #[test]
 fn purge_request_rejects_missing_database_id_before_backend_access() {
-    let backend = QuarantineTestBackend::durable();
-    let service = QuarantineService::new(&backend);
+    let backend: &'static QuarantineTestBackend =
+        Box::leak(Box::new(QuarantineTestBackend::durable()));
+    let service = QuarantineService::new(backend);
     assert_eq!(
         purge_quarantine(
             &service,
@@ -521,7 +539,8 @@ fn purge_request_rejects_missing_database_id_before_backend_access() {
 
 #[test]
 fn purge_blocked_recovery_health_defers_before_backend_access() {
-    let backend = QuarantineTestBackend::durable();
+    let backend: &'static QuarantineTestBackend =
+        Box::leak(Box::new(QuarantineTestBackend::durable()));
     let health = RecoveryHealth::degraded(
         RecoveryDegradationClass::PolicyDowngrade,
         vec![RecoveryFault::new(
@@ -532,11 +551,11 @@ fn purge_blocked_recovery_health_defers_before_backend_access() {
     )
     .expect("health");
     let outcome = purge_quarantine(
-        &QuarantineService::new(&backend),
+        &QuarantineService::new(backend),
         branch_id(),
         DATABASE_ID,
         &LifecycleCodecId::identity(),
-        &fresh_purge_proof(&QuarantineService::new(&backend), health),
+        &fresh_purge_proof(&QuarantineService::new(backend), health),
     )
     .expect("purge outcome");
 
@@ -550,8 +569,10 @@ fn purge_blocked_recovery_health_defers_before_backend_access() {
 #[test]
 fn purge_deletes_inventory_listed_quarantine_objects() {
     let source = source_object();
-    let backend = QuarantineTestBackend::durable().with_object(source, b"table-bytes");
-    let service = QuarantineService::new(&backend);
+    let backend: &'static QuarantineTestBackend = Box::leak(Box::new(
+        QuarantineTestBackend::durable().with_object(source, b"table-bytes"),
+    ));
+    let service = QuarantineService::new(backend);
     let quarantine = quarantine_object(
         &service,
         &quarantine_request(
@@ -590,8 +611,10 @@ fn purge_deletes_inventory_listed_quarantine_objects() {
 #[test]
 fn purge_delete_failure_retains_entry_and_preserves_source_error() {
     let source = source_object();
-    let backend = QuarantineTestBackend::durable().with_object(source, b"table-bytes");
-    let service = QuarantineService::new(&backend);
+    let backend: &'static QuarantineTestBackend = Box::leak(Box::new(
+        QuarantineTestBackend::durable().with_object(source, b"table-bytes"),
+    ));
+    let service = QuarantineService::new(backend);
     let quarantine = quarantine_object(
         &service,
         &quarantine_request(
@@ -696,10 +719,11 @@ fn repair_request_rejects_missing_database_id_before_backend_access() {
 
 #[test]
 fn repair_backend_unavailable_preserves_source_chain() {
-    let backend = QuarantineTestBackend::durable();
+    let backend: &'static QuarantineTestBackend =
+        Box::leak(Box::new(QuarantineTestBackend::durable()));
     backend.fail_list(BackendErrorKind::Interrupted);
     let outcome = repair_branch_quarantine(
-        &QuarantineService::new(&backend),
+        &QuarantineService::new(backend),
         branch_id(),
         DATABASE_ID,
         &LifecycleCodecId::identity(),
@@ -713,9 +737,10 @@ fn repair_backend_unavailable_preserves_source_chain() {
 
 #[test]
 fn repair_mutation_is_rejected_before_backend_access() {
-    let backend = QuarantineTestBackend::durable();
+    let backend: &'static QuarantineTestBackend =
+        Box::leak(Box::new(QuarantineTestBackend::durable()));
     let error = crate::lifecycle::quarantine::repair_branch_quarantine_with_mutation_for_test(
-        &QuarantineService::new(&backend),
+        &QuarantineService::new(backend),
         branch_id(),
         DATABASE_ID,
         &LifecycleCodecId::identity(),
@@ -760,8 +785,8 @@ fn queued_quarantine_task_drains_as_deferred_without_service_payload() {
 
 #[test]
 fn durable_quarantine_runs_through_runtime_maintenance_surface() {
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_durable_runtime(branch_id(), &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_durable_runtime(branch_id(), backend);
 
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::quarantine())
@@ -771,21 +796,25 @@ fn durable_quarantine_runs_through_runtime_maintenance_surface() {
         .expect("run quarantine")
         .expect("outcome");
 
+    // The quarantine task is the table-object sweep: with nothing unreachable it completes
+    // trivially (it no longer defers awaiting an "explicit quarantine request" — the sweep
+    // computes its own mark).
     assert_eq!(outcome.task_kind(), MaintenanceTaskKind::Quarantine);
-    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Deferred);
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(outcome.reason(), Some("no unreachable table objects"));
     assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
 }
 
 #[test]
 fn durable_purge_runs_through_runtime_maintenance_surface() {
     let branch = branch_id();
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let source =
         ObjectLayout::table_object(&branch.to_string(), 0, "runtime-purge").expect("source object");
     backend
         .write_object(&source, b"runtime-table")
         .expect("source write");
-    let mut runtime = open_durable_runtime(branch, &backend);
+    let mut runtime = open_durable_runtime(branch, backend);
     let request = LifecycleQuarantineRequest::from_source_object(
         branch,
         [0x7d; 16],
@@ -820,8 +849,8 @@ fn durable_purge_runs_through_runtime_maintenance_surface() {
 #[test]
 fn durable_purge_uses_current_recovery_health_not_open_snapshot() {
     let branch = branch_id();
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_durable_runtime(branch, &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_durable_runtime(branch, backend);
     let health = RecoveryHealth::degraded(
         RecoveryDegradationClass::PolicyDowngrade,
         vec![RecoveryFault::new(
@@ -850,13 +879,13 @@ fn durable_purge_uses_current_recovery_health_not_open_snapshot() {
 #[test]
 fn durable_repair_runs_through_runtime_maintenance_surface() {
     let branch = branch_id();
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let orphan =
         ObjectLayout::quarantine_object(&branch.to_string(), "runtime-orphan").expect("object");
     backend
         .write_object(&orphan, b"orphan")
         .expect("orphan write");
-    let mut runtime = open_durable_runtime(branch, &backend);
+    let mut runtime = open_durable_runtime(branch, backend);
 
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::repair_quarantine(branch))

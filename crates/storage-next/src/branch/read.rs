@@ -553,21 +553,24 @@ impl BranchOwnedTable {
     pub(crate) fn new(
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
-        reader: ImmutableTableReader<'_>,
+        reader: ImmutableTableReader<'static>,
+        extras: TableSummaryExtras,
     ) -> BranchRuntimeResult<Self> {
-        Self::new_with_materialization_layer(branch_id, descriptor, reader, None)
+        Self::new_with_materialization_layer(branch_id, descriptor, reader, extras, None)
     }
 
     pub(crate) fn new_materialization_replacement(
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
-        reader: ImmutableTableReader<'_>,
+        reader: ImmutableTableReader<'static>,
+        extras: TableSummaryExtras,
         materialization_source: BranchMaterializationSource,
     ) -> BranchRuntimeResult<Self> {
         Self::new_with_materialization_layer(
             branch_id,
             descriptor,
             reader,
+            extras,
             Some(materialization_source),
         )
     }
@@ -575,7 +578,8 @@ impl BranchOwnedTable {
     fn new_with_materialization_layer(
         branch_id: BranchId,
         descriptor: BranchTableDescriptor,
-        reader: ImmutableTableReader<'_>,
+        reader: ImmutableTableReader<'static>,
+        extras: TableSummaryExtras,
         materialization_source: Option<BranchMaterializationSource>,
     ) -> BranchRuntimeResult<Self> {
         if descriptor.facts() != reader.facts() {
@@ -583,30 +587,43 @@ impl BranchOwnedTable {
                 reason: "branch-owned table descriptor facts must match reader facts",
             });
         }
-        let reader = reader
-            .into_materialized()
-            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
-        if reader.rows().is_empty() {
+        // BS4.4j: the reader is installed as-is. Durable flush/recovery readers are now lazy (disk-backed)
+        // and held without decoding rows — the `into_materialized()` eager bridge is gone. The O(1) facts
+        // checks below (and the debug oracle) validate the table without a full scan.
+        if reader.facts().row_count() == 0 {
             return Err(BranchRuntimeError::InvalidBranchState {
                 reason: "branch-owned table must not be empty",
             });
         }
-        if reader
-            .rows()
-            .iter()
-            .any(|row| row.physical_key().branch_id() != branch_id)
-        {
+        // BS4.4e: branch id is the fixed leading 16 bytes of every internal key and rows are
+        // internal-key-sorted, so both endpoints of the key range sharing the branch prefix proves every
+        // row does — an O(1) facts check instead of an O(rows) scan (which would trip the guard when lazy).
+        if !key_range_matches_branch(
+            reader.facts().key_range().first_key(),
+            reader.facts().key_range().last_key(),
+            branch_id,
+        ) {
             return Err(BranchRuntimeError::InvalidBranchRow {
                 reason: "branch-owned table rows must match the target branch",
             });
         }
-        // A sealed table is immutable, so compute its summary (timestamp +
-        // physical-key bounds, put/tombstone split) once here — in the off-lock
-        // build phase that already materializes the rows — and read it O(1)
-        // thereafter. This is the single construction choke point, so every
-        // branch-owned table carries an up-to-date summary by construction.
-        let extras = TableSummaryExtras::from_rows(reader.rows())
-            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        // BS4.4f: `extras` is supplied by the caller — the build artifact's precomputed summary
+        // (`BuiltTableArtifact::extras()`), a promoted table's cloned summary, or a recovery scan — instead
+        // of the constructor re-materializing every row. BS4.4g: this debug cross-check reads via the
+        // oracle hatch, which bypasses the BS4.4d guard, so it keeps validating the supplied summary once
+        // durable readers go lazy (where a plain `rows()` would trip the guard).
+        #[cfg(debug_assertions)]
+        {
+            let scanned_rows = reader
+                .materialize_rows_for_oracle()
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+            let scanned = TableSummaryExtras::from_rows(&scanned_rows)
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+            debug_assert_eq!(
+                extras, scanned,
+                "branch-owned table extras must match a full row scan"
+            );
+        }
         Ok(Self {
             branch_id,
             descriptor,
@@ -628,6 +645,12 @@ impl BranchOwnedTable {
         self.descriptor.facts()
     }
 
+    /// BS4.4a-i: the table's row count as `usize`, without materializing rows. Saturating — a table's
+    /// row count always fits `usize` (it equals a `usize` row length), so this never truncates.
+    pub(crate) fn row_count_usize(&self) -> usize {
+        usize::try_from(self.facts().row_count()).unwrap_or(usize::MAX)
+    }
+
     pub(crate) const fn level(&self) -> BranchLevel {
         self.descriptor.level()
     }
@@ -640,6 +663,15 @@ impl BranchOwnedTable {
         self.reader.rows()
     }
 
+    /// Materialize all rows for a **debug oracle** via the reader's oracle hatch, bypassing the
+    /// BS4.4d guard. Panics on a materialization error (a corrupt-table bug), matching the old
+    /// `rows()` — the callers are debug-only oracles cross-checking a facts-based fast path.
+    pub(crate) fn materialize_rows_for_oracle(&self) -> Vec<TableRow> {
+        self.reader
+            .materialize_rows_for_oracle()
+            .expect("branch-owned table oracle materialization failed")
+    }
+
     pub(crate) const fn extras(&self) -> &TableSummaryExtras {
         &self.extras
     }
@@ -648,17 +680,139 @@ impl BranchOwnedTable {
         &self.reader
     }
 
-    /// Approximate resident bytes for this owned table. The materialized reader holds the whole
-    /// table object in memory, so its encoded byte count is the in-RAM footprint.
-    pub(crate) const fn approximate_size_bytes(&self) -> u64 {
-        self.reader.byte_count()
+    /// Approximate **resident** (in-RAM) bytes for this owned table — the value the branch's shape
+    /// aggregates and memory accounting want. BS4.4g routes this through the reader's resident/object
+    /// seam (`resident_size_bytes`); object/level size is sourced separately from `facts().byte_count()`.
+    /// Today an eager reader holds the whole object, so resident == object; BS4.4h makes it drop for a
+    /// lazy reader.
+    pub(crate) fn approximate_size_bytes(&self) -> u64 {
+        self.reader.resident_size_bytes()
     }
+}
+
+/// Immutable snapshot of a branch's own on-disk table levels (L0..Ln) — the unit that
+/// flush / compaction / materialization install replaces. Introduced for Group D:
+/// it becomes the `ArcSwap`-published layout so reads / compaction scoring / flush-watermark
+/// coverage take no runtime lock. Per-table facts (commit/key ranges) live in each
+/// `BranchOwnedTable`, so a reader holding a layout snapshot is self-consistent; branch-total
+/// aggregate facts (max commit version, row counts, timestamp span) stay on `BranchLocalState`
+/// because they also count the active/frozen memtable and are not layout-derived. In D.1 this
+/// was a plain field with in-place mutation; D.2a makes the `BranchLocalState` field
+/// `Arc<BranchLayout>` (plain `Arc`, not `ArcSwap`: installs are serialized under the runtime
+/// mutex, so an install builds a new value via `Arc::make_mut` and off-lock readers hold a
+/// cheap immutable snapshot). `ArcSwap` for off-lock install composes later with Group C.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BranchLayout {
+    owned_levels: Vec<Vec<BranchOwnedTable>>,
+}
+
+impl BranchLayout {
+    pub(crate) fn with_level_count(level_count: usize) -> Self {
+        Self {
+            owned_levels: vec![Vec::new(); level_count],
+        }
+    }
+
+    pub(crate) fn from_levels(owned_levels: Vec<Vec<BranchOwnedTable>>) -> Self {
+        Self { owned_levels }
+    }
+
+    pub(crate) fn levels(&self) -> &[Vec<BranchOwnedTable>] {
+        &self.owned_levels
+    }
+
+    pub(crate) fn levels_mut(&mut self) -> &mut Vec<Vec<BranchOwnedTable>> {
+        &mut self.owned_levels
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn into_levels(self) -> Vec<Vec<BranchOwnedTable>> {
+        self.owned_levels
+    }
+}
+
+/// Historical-fork COW (Option A): the `<= fork_version` version/timestamp extremes of an inherited
+/// layer that references at least one "straddle" table (one holding rows both at/below and above the
+/// fork). Computed once at construction so the per-mutation observed-row and read-view facts folds
+/// contribute the layer's in-fork extremes in O(1) instead of re-scanning the straddle tables on every
+/// recompute. A non-straddle layer (e.g. `fork_current`, every table `<= V`) is `None` and folds from
+/// cached facts, exactly as before.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct InheritedLayerReadViewSummary {
+    max_commit_version: Option<CommitVersion>,
+    timestamp_min: Option<Timestamp>,
+    timestamp_max: Option<Timestamp>,
+}
+
+impl InheritedLayerReadViewSummary {
+    pub(crate) const fn max_commit_version(self) -> Option<CommitVersion> {
+        self.max_commit_version
+    }
+
+    pub(crate) const fn timestamp_min(self) -> Option<Timestamp> {
+        self.timestamp_min
+    }
+
+    pub(crate) const fn timestamp_max(self) -> Option<Timestamp> {
+        self.timestamp_max
+    }
+}
+
+/// Fold the `<= fork_version` version/timestamp extremes of `owned_levels`, returning `Some` only when
+/// at least one table straddles the fork (otherwise the cheap facts-based folds already suffice and
+/// there is no scan to amortize). Straddle tables are scanned once here; non-straddle tables fold from
+/// their sealed facts — so the result equals `ObservedBranchRows::record_inherited_layer`'s full scan,
+/// which the observed-facts debug oracle re-checks on every mutation.
+fn compute_straddle_read_view_summary(
+    owned_levels: &[Vec<BranchOwnedTable>],
+    fork_version: CommitVersion,
+) -> BranchRuntimeResult<Option<InheritedLayerReadViewSummary>> {
+    let has_straddle = owned_levels
+        .iter()
+        .flatten()
+        .any(|table| table.facts().commit_range().max().as_u64() > fork_version.as_u64());
+    if !has_straddle {
+        return Ok(None);
+    }
+    let mut max_commit_version: Option<CommitVersion> = None;
+    let mut timestamp_min: Option<Timestamp> = None;
+    let mut timestamp_max: Option<Timestamp> = None;
+    for table in owned_levels.iter().flatten() {
+        if table.facts().commit_range().max().as_u64() <= fork_version.as_u64() {
+            record_commit_version(&mut max_commit_version, table.facts().commit_range().max());
+            let extras = table.extras();
+            if let Some(timestamp) = extras.timestamp_min() {
+                record_timestamp(&mut timestamp_min, &mut timestamp_max, timestamp);
+            }
+            if let Some(timestamp) = extras.timestamp_max() {
+                record_timestamp(&mut timestamp_min, &mut timestamp_max, timestamp);
+            }
+        } else {
+            try_for_each_reader_row(table.reader(), |row| {
+                if row.commit_version().as_u64() <= fork_version.as_u64() {
+                    record_commit_version(&mut max_commit_version, row.commit_version());
+                    record_timestamp(
+                        &mut timestamp_min,
+                        &mut timestamp_max,
+                        row.commit_timestamp(),
+                    );
+                }
+                Ok(())
+            })?;
+        }
+    }
+    Ok(Some(InheritedLayerReadViewSummary {
+        max_commit_version,
+        timestamp_min,
+        timestamp_max,
+    }))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct BranchInheritedLayer {
     descriptor: InheritedLayerDescriptor,
     owned_levels: Vec<Vec<BranchOwnedTable>>,
+    straddle_read_view_summary: Option<InheritedLayerReadViewSummary>,
 }
 
 impl BranchInheritedLayer {
@@ -680,28 +834,35 @@ impl BranchInheritedLayer {
                     reason: "inherited table branch id must match source branch",
                 });
             }
-            if table
-                .rows()
-                .iter()
-                .any(|row| row.physical_key().branch_id() != descriptor.source_branch_id())
-            {
+            // BS4.4e: same fixed-16-byte-prefix bounds argument as the owned path — verify the source
+            // branch by the sealed table's key range instead of scanning every row.
+            if !key_range_matches_branch(
+                table.facts().key_range().first_key(),
+                table.facts().key_range().last_key(),
+                descriptor.source_branch_id(),
+            ) {
                 return Err(BranchRuntimeError::InvalidInheritedLayer {
                     reason: "inherited table rows must match source branch",
                 });
             }
-            if table
-                .rows()
-                .iter()
-                .any(|row| row.commit_version().as_u64() > descriptor.fork_version().as_u64())
-            {
+            // Historical-fork COW (Option A): admit "straddle" tables — the parent's current boundary
+            // tables that hold rows both at/below and above the fork version, which a fork at V < the
+            // parent's current version must reference. Every inherited read/observe/materialize path
+            // caps per-row to `<= fork_version` (`for_inherited_layer`, the summary folds, the
+            // materialization cursor), so the `> V` rows are never visible. Reject only a table with no
+            // in-fork rows at all (`min > V`) — referencing it would be meaningless.
+            if table.facts().commit_range().min().as_u64() > descriptor.fork_version().as_u64() {
                 return Err(BranchRuntimeError::InvalidInheritedLayer {
-                    reason: "inherited table rows must not be newer than the fork version",
+                    reason: "inherited table has no rows at or before the fork version",
                 });
             }
         }
+        let straddle_read_view_summary =
+            compute_straddle_read_view_summary(&owned_levels, descriptor.fork_version())?;
         Ok(Self {
             descriptor,
             owned_levels,
+            straddle_read_view_summary,
         })
     }
 
@@ -710,9 +871,13 @@ impl BranchInheritedLayer {
         descriptor: InheritedLayerDescriptor,
         owned_levels: Vec<Vec<BranchOwnedTable>>,
     ) -> Self {
+        let straddle_read_view_summary =
+            compute_straddle_read_view_summary(&owned_levels, descriptor.fork_version())
+                .expect("straddle read-view summary for unchecked test inherited layer");
         Self {
             descriptor,
             owned_levels,
+            straddle_read_view_summary,
         }
     }
 
@@ -734,6 +899,12 @@ impl BranchInheritedLayer {
 
     pub(crate) fn owned_levels(&self) -> &[Vec<BranchOwnedTable>] {
         &self.owned_levels
+    }
+
+    /// The cached `<= fork_version` extremes for a straddle layer, or `None` when every table is
+    /// entirely at/below the fork (the folds then use the per-table facts fast path).
+    pub(crate) const fn straddle_read_view_summary(&self) -> Option<InheritedLayerReadViewSummary> {
+        self.straddle_read_view_summary
     }
 
     pub(crate) fn with_status(&self, status: InheritedLayerStatus) -> BranchRuntimeResult<Self> {
@@ -885,6 +1056,12 @@ impl BranchReadView {
         self.frozen.len()
     }
 
+    /// Strong-count of a frozen table's backing `Arc`, for the BS2.4b snapshot-lifetime probe.
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn frozen_table_strong_count(&self, index: usize) -> Option<usize> {
+        Some(self.frozen.get(index)?.memory_state_strong_count())
+    }
+
     pub(crate) fn owned_table_count(&self) -> usize {
         owned_table_count(&self.owned_levels)
     }
@@ -925,6 +1102,16 @@ impl BranchReadView {
         self.read_point(key, BranchReadBound::at_version(version))
     }
 
+    /// Pin the (in Model 2, live) active memtable for the duration of one read: a consistent
+    /// sequence cut plus fresh facts, so the multi-source read observes a stable active while
+    /// commits may be appending off-lock. Idempotent on an already-pinned active (the under-lock
+    /// conflict-validation and diagnostics paths), so it is O(1) there. Structural sources
+    /// (`frozen`/`owned_levels`/`inherited_layers`) are immutable once published and read by
+    /// reference — the pin never clones them.
+    fn pinned_active(&self) -> MutableTable {
+        self.active.clone_for_read_view()
+    }
+
     pub(crate) fn read_point(
         &self,
         key: &PhysicalKey,
@@ -933,6 +1120,15 @@ impl BranchReadView {
         self.require_matching_branch(key.branch_id())?;
         let effective_bound = effective_own_read_bound(bound);
         self.require_timestamp_coverage(bound)?;
+        // BS2.5: point reads do NOT pin the (live) active. Gate B (`commit_version <= V`, carried in
+        // `effective_bound`) already filters everything the sequence pin (gate A) would, because
+        // appends are monotonic in BOTH sequence and commit_version and each happens-before the
+        // `visible` bump the reader's Acquire load synchronizes with — so no `<= V` row is ever
+        // back-dated into the active after V is observed, and any row appended after has
+        // `commit_version > V` and is dropped by gate B regardless of gate A. The conflict/
+        // diagnostics callers pass an already-pinned view (`Some` bound), so `&self.active` still
+        // applies gate A there. Saves a per-read RwLock acquire + a reader-reader-contended
+        // `Arc<TableMemoryState>` refcount RMW + 2 heap allocs.
         let selected = select_ordered_visible_point_candidate(
             self.branch_id,
             &self.active,
@@ -948,12 +1144,59 @@ impl BranchReadView {
         }))
     }
 
+    /// Latest-style point read that returns the newest row **including tombstones** (a delete is a
+    /// tombstone row, not `None`), for the off-lock `read_point` Latest verb. Mirrors
+    /// [`BranchLocalState::read_point_or_tombstone_borrowed`] but on a published snapshot, pinning
+    /// the active at read time.
+    pub(crate) fn read_point_or_tombstone(
+        &self,
+        key: &PhysicalKey,
+        bound: BranchReadBound,
+    ) -> BranchRuntimeResult<Option<BranchHistoryRow>> {
+        self.require_matching_branch(key.branch_id())?;
+        self.require_timestamp_coverage(bound)?;
+        let effective_bound = effective_own_read_bound(bound);
+        // BS2.5: unpinned — gate B (the visible bound) suffices; see `read_point`.
+        let selected = select_ordered_visible_point_candidate(
+            self.branch_id,
+            &self.active,
+            &self.frozen,
+            &self.owned_levels,
+            &self.inherited_layers,
+            key,
+            bound,
+            effective_bound,
+        )?;
+        Ok(selected.and_then(|candidate| {
+            if row_is_expired_at(
+                candidate_row_ref(&candidate),
+                effective_bound.max_commit_timestamp(),
+            ) {
+                None
+            } else {
+                Some(candidate_into_history_row(candidate))
+            }
+        }))
+    }
+
     pub(crate) fn history(
         &self,
         key: &PhysicalKey,
         options: BranchHistoryOptions,
     ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
-        self.collect_history(key, options, None)
+        self.collect_history(key, options, BranchReadBound::latest(), None)
+    }
+
+    /// Off-lock history capped at the visible version `V`: identical to [`history`](Self::history)
+    /// but the candidate collection is bounded so rows newer than the visibility bound (e.g. an
+    /// `applied_not_visible` commit, or a batch mid-apply on another thread) are hidden.
+    pub(crate) fn history_visible(
+        &self,
+        key: &PhysicalKey,
+        options: BranchHistoryOptions,
+        visible: CommitVersion,
+    ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
+        self.collect_history(key, options, BranchReadBound::at_version(visible), None)
     }
 
     pub(crate) fn history_with_source_probe_count(
@@ -962,7 +1205,12 @@ impl BranchReadView {
         options: BranchHistoryOptions,
     ) -> BranchRuntimeResult<(Vec<BranchHistoryRow>, usize)> {
         let mut source_probes = 0usize;
-        let history = self.collect_history(key, options, Some(&mut source_probes))?;
+        let history = self.collect_history(
+            key,
+            options,
+            BranchReadBound::latest(),
+            Some(&mut source_probes),
+        )?;
         Ok((history, source_probes))
     }
 
@@ -970,6 +1218,7 @@ impl BranchReadView {
         &self,
         key: &PhysicalKey,
         options: BranchHistoryOptions,
+        candidate_bound: BranchReadBound,
         source_probes: Option<&mut usize>,
     ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
         self.require_matching_branch(key.branch_id())?;
@@ -977,15 +1226,16 @@ impl BranchReadView {
             return Ok(Vec::new());
         }
 
+        let active = self.pinned_active();
         let mut rows = history_candidates(
             self.branch_id,
-            &self.active,
+            &active,
             &self.frozen,
             &self.owned_levels,
             &self.inherited_layers,
             key,
-            BranchReadBound::latest(),
-            effective_own_read_bound(BranchReadBound::latest()),
+            candidate_bound,
+            effective_own_read_bound(candidate_bound),
             source_probes,
         )?;
         sort_candidates_newest_first(&mut rows);
@@ -1081,9 +1331,10 @@ impl BranchReadView {
         self.require_matching_branch(bounds.branch_id())?;
         let effective_bound = effective_own_read_bound(bound);
         self.require_timestamp_coverage(bound)?;
+        let active = self.pinned_active();
         let rows = scan_including_tombstones_from_sources(
             self.branch_id,
-            &self.active,
+            &active,
             &self.frozen,
             &self.owned_levels,
             &self.inherited_layers,
@@ -1110,9 +1361,10 @@ impl BranchReadView {
     ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
         self.require_matching_branch(bounds.branch_id())?;
         self.require_timestamp_coverage(bound)?;
+        let active = self.pinned_active();
         scan_including_tombstones_from_sources(
             self.branch_id,
-            &self.active,
+            &active,
             &self.frozen,
             &self.owned_levels,
             &self.inherited_layers,
@@ -1121,6 +1373,35 @@ impl BranchReadView {
             after_version,
             None,
             effective_own_read_bound(bound).max_commit_timestamp(),
+            true,
+        )
+    }
+
+    /// Latest-style scan including tombstones with a visible-row limit, for the off-lock
+    /// `scan_prefix`/`scan_range` Latest verbs. Mirrors
+    /// [`BranchLocalState::scan_including_tombstones_borrowed`] on a published snapshot (the
+    /// deleted Latest bridge passed `visible_limit_timestamp = None`), pinning the active at read
+    /// time.
+    pub(crate) fn scan_including_tombstones_visible(
+        &self,
+        bounds: &BranchScanBounds,
+        bound: BranchReadBound,
+        visible_limit: Option<usize>,
+    ) -> BranchRuntimeResult<Vec<BranchHistoryRow>> {
+        self.require_matching_branch(bounds.branch_id())?;
+        self.require_timestamp_coverage(bound)?;
+        let active = self.pinned_active();
+        scan_including_tombstones_from_sources(
+            self.branch_id,
+            &active,
+            &self.frozen,
+            &self.owned_levels,
+            &self.inherited_layers,
+            bounds,
+            bound,
+            None,
+            visible_limit,
+            None,
             true,
         )
     }
@@ -1333,7 +1614,10 @@ fn collect_owned_level_history_candidates(
     if level_index == 0 {
         for (table_index, table) in tables.iter().enumerate() {
             add_history_source_probes(source_probes, 1);
-            let (table_rows, visited) = table.reader().physical_key_rows(key);
+            let (table_rows, visited) = table
+                .reader()
+                .try_physical_key_rows(key)
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             *rows_visited = (*rows_visited).saturating_add(visited);
             history_counts.owned_l0 = history_counts.owned_l0.saturating_add(visited);
             push_history_rows(
@@ -1358,7 +1642,10 @@ fn collect_owned_level_history_candidates(
     };
     let table = &tables[table_index];
     add_history_source_probes(source_probes, 1);
-    let (table_rows, visited) = table.reader().physical_key_rows(key);
+    let (table_rows, visited) = table
+        .reader()
+        .try_physical_key_rows(key)
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
     *rows_visited = (*rows_visited).saturating_add(visited);
     history_counts.owned_nonzero = history_counts.owned_nonzero.saturating_add(visited);
     push_history_rows(
@@ -1433,7 +1720,10 @@ fn collect_inherited_level_history_candidates(
     if level_index == 0 {
         for table in tables {
             add_history_source_probes(source_probes, 1);
-            let (table_rows, visited) = table.reader().physical_key_rows(source_key);
+            let (table_rows, visited) = table
+                .reader()
+                .try_physical_key_rows(source_key)
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             *rows_visited = (*rows_visited).saturating_add(visited);
             history_counts.inherited_l0 = history_counts.inherited_l0.saturating_add(visited);
             push_history_rows(
@@ -1458,7 +1748,10 @@ fn collect_inherited_level_history_candidates(
         return Ok(());
     };
     add_history_source_probes(source_probes, 1);
-    let (table_rows, visited) = tables[table_index].reader().physical_key_rows(source_key);
+    let (table_rows, visited) = tables[table_index]
+        .reader()
+        .try_physical_key_rows(source_key)
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
     *rows_visited = (*rows_visited).saturating_add(visited);
     history_counts.inherited_nonzero = history_counts.inherited_nonzero.saturating_add(visited);
     push_history_rows(
@@ -1859,7 +2152,10 @@ fn select_owned_level_point_candidate<'a>(
                 .saturating_add(1);
             selection.source_counts.table_seeks =
                 selection.source_counts.table_seeks.saturating_add(1);
-            let (row, visited) = table.reader().seek_prepared_point_candidate(lookup);
+            let (row, visited) = table
+                .reader()
+                .try_seek_prepared_point_candidate(lookup)
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
             selection.add_rows_visited(visited);
             if let Some(row) = row {
                 selection.consider_lookup_table_row(
@@ -1891,7 +2187,10 @@ fn select_owned_level_point_candidate<'a>(
         .owned_nonzero_table_probes
         .saturating_add(1);
     selection.source_counts.table_seeks = selection.source_counts.table_seeks.saturating_add(1);
-    let (row, visited) = table.reader().seek_prepared_point_candidate(lookup);
+    let (row, visited) = table
+        .reader()
+        .try_seek_prepared_point_candidate(lookup)
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
     selection.add_rows_visited(visited);
     if let Some(row) = row {
         selection.consider_lookup_table_row(
@@ -1927,7 +2226,7 @@ fn select_inherited_level_point_candidate<'a>(
                 table,
                 lookup,
                 selection,
-            );
+            )?;
         }
         return Ok(());
     }
@@ -1954,7 +2253,7 @@ fn select_inherited_level_point_candidate<'a>(
         &tables[table_index],
         lookup,
         selection,
-    );
+    )?;
     Ok(())
 }
 
@@ -1965,9 +2264,12 @@ fn append_ordered_inherited_point_table_candidate<'a>(
     table: &'a BranchOwnedTable,
     lookup: &TablePreparedPointLookup,
     selection: &mut PointSelection<'a>,
-) {
+) -> BranchRuntimeResult<()> {
     selection.source_counts.table_seeks = selection.source_counts.table_seeks.saturating_add(1);
-    let (row, visited) = table.reader().seek_prepared_point_candidate(lookup);
+    let (row, visited) = table
+        .reader()
+        .try_seek_prepared_point_candidate(lookup)
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
     selection.add_rows_visited(visited);
     if let Some(row) = row {
         selection.consider_inherited_table_row(
@@ -1977,6 +2279,7 @@ fn append_ordered_inherited_point_table_candidate<'a>(
             layer_index,
         );
     }
+    Ok(())
 }
 
 fn ordered_point_can_stop(
@@ -3285,6 +3588,43 @@ fn collect_immutable_table_rows(
     Ok(rows)
 }
 
+/// BS4.4a-ii-a: stream a reader's rows through its cursor — in ascending internal-key order, the same
+/// order `rows()` yields — applying `f` to each row without materializing the whole table. `f` returning
+/// `Err` stops the walk early (so `.any()`-style validations map to an error-returning closure). Cursor
+/// seek/advance failures map to `InvalidBranchState`, matching `collect_immutable_table_rows`.
+pub(crate) fn try_for_each_reader_row(
+    reader: &ImmutableTableReader<'_>,
+    mut f: impl FnMut(&TableRow) -> BranchRuntimeResult<()>,
+) -> BranchRuntimeResult<()> {
+    let mut cursor = reader.cursor();
+    cursor
+        .seek_to_first()
+        .map_err(|_| BranchRuntimeError::InvalidBranchState {
+            reason: "reader cursor seek failed",
+        })?;
+    while let Some(row) = cursor.current() {
+        f(row)?;
+        cursor
+            .advance()
+            .map_err(|_| BranchRuntimeError::InvalidBranchState {
+                reason: "reader cursor advance failed",
+            })?;
+    }
+    Ok(())
+}
+
+/// BS4.4g: infallible fold over a reader's rows via its cursor — for the internal shape/summary
+/// scans that were `for row in table.rows()` folds. Streams block-by-block, so it never trips the
+/// BS4.4d full-materialization guard on a lazy durable reader; panics on a cursor failure, matching
+/// the `rows()` it replaces (which `.expect()`d materialization).
+pub(crate) fn for_each_reader_row(reader: &ImmutableTableReader<'_>, mut f: impl FnMut(&TableRow)) {
+    try_for_each_reader_row(reader, |row| {
+        f(row);
+        Ok(())
+    })
+    .expect("reader cursor walk failed");
+}
+
 fn immutable_source_history_row(
     row: &StorageRow,
     source: ImmutableTableSourceKind,
@@ -3809,18 +4149,28 @@ fn validate_read_view_inputs(
             )?;
         }
     }
-    for tables in owned_levels {
-        for table in tables {
-            for row in table.rows() {
-                record_read_view_row_facts(
-                    branch_id,
-                    row.row(),
-                    &mut max_commit_version,
-                    &mut timestamp_min,
-                    &mut timestamp_max,
-                )?;
-            }
+    for table in owned_levels.iter().flatten() {
+        // BS4.4c: owned tables are branch-validated at construction, so fold their sealed-time
+        // aggregates (facts + extras) instead of scanning every row.
+        let commit_max = table.facts().commit_range().max();
+        let extras = table.extras();
+        record_commit_version(&mut max_commit_version, commit_max);
+        if let Some(timestamp) = extras.timestamp_min() {
+            record_timestamp(&mut timestamp_min, &mut timestamp_max, timestamp);
         }
+        if let Some(timestamp) = extras.timestamp_max() {
+            record_timestamp(&mut timestamp_min, &mut timestamp_max, timestamp);
+        }
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            (
+                Some(commit_max),
+                extras.timestamp_min(),
+                extras.timestamp_max()
+            ),
+            owned_read_view_facts_by_scan(table),
+            "read-view owned facts diverged from a full row scan",
+        );
     }
     for layer in inherited_layers {
         record_inherited_layer_read_view_facts(
@@ -3828,7 +4178,7 @@ fn validate_read_view_inputs(
             &mut max_commit_version,
             &mut timestamp_min,
             &mut timestamp_max,
-        )?;
+        );
     }
     if max_commit_version != facts.max_commit_version()
         || timestamp_min != facts.timestamp_min()
@@ -3892,7 +4242,7 @@ fn read_view_validation_row_count(
             owned_levels
                 .iter()
                 .flatten()
-                .map(|table| table.rows().len())
+                .map(BranchOwnedTable::row_count_usize)
                 .sum::<usize>(),
         )
         .saturating_add(
@@ -3900,7 +4250,7 @@ fn read_view_validation_row_count(
                 .iter()
                 .filter(|layer| layer.status() != InheritedLayerStatus::Materialized)
                 .flat_map(|layer| layer.owned_levels().iter().flatten())
-                .map(|table| table.rows().len())
+                .map(BranchOwnedTable::row_count_usize)
                 .sum::<usize>(),
         )
 }
@@ -4033,20 +4383,44 @@ fn validate_owned_levels(owned_levels: &[Vec<BranchOwnedTable>]) -> BranchRuntim
     Ok(())
 }
 
+/// BS4.4e: cross-table internal-key uniqueness is a defensive invariant on sealed inherited tables,
+/// which compaction already dedups. A full scan per fork/reopen would defeat O(1) fork at billion scale,
+/// so release trusts the invariant; debug still verifies it by streaming (guard-safe cursors).
 fn validate_inherited_layer_unique_keys(
+    owned_levels: &[Vec<BranchOwnedTable>],
+) -> BranchRuntimeResult<()> {
+    #[cfg(debug_assertions)]
+    debug_validate_inherited_layer_unique_keys(owned_levels)?;
+    #[cfg(not(debug_assertions))]
+    let _ = owned_levels;
+    Ok(())
+}
+
+#[cfg(debug_assertions)]
+fn debug_validate_inherited_layer_unique_keys(
     owned_levels: &[Vec<BranchOwnedTable>],
 ) -> BranchRuntimeResult<()> {
     let mut keys = BTreeSet::<TableInternalKeyBytes>::new();
     for table in owned_levels.iter().flatten() {
-        for row in table.rows() {
-            if !keys.insert(row.key().clone()) {
-                return Err(BranchRuntimeError::InvalidInheritedLayer {
+        try_for_each_reader_row(table.reader(), |row| {
+            if keys.insert(row.key().clone()) {
+                Ok(())
+            } else {
+                Err(BranchRuntimeError::InvalidInheritedLayer {
                     reason: "inherited layer tables must not contain duplicate internal keys",
-                });
+                })
             }
-        }
+        })?;
     }
     Ok(())
+}
+
+/// BS4.4e: does the sealed table's internal-key range prove every row carries `branch_id`? Branch id is
+/// the fixed leading 16 bytes and rows are internal-key-sorted, so both endpoints matching ⟹ all rows do.
+fn key_range_matches_branch(first_key: &[u8], last_key: &[u8], branch_id: BranchId) -> bool {
+    let prefix: &[u8] = branch_id.as_bytes();
+    first_key.get(..BranchId::BYTE_LEN) == Some(prefix)
+        && last_key.get(..BranchId::BYTE_LEN) == Some(prefix)
 }
 
 fn validate_inherited_layer_unique_table_identities(
@@ -4090,15 +4464,31 @@ fn validate_inherited_layers(
                     reason: "inherited table source branch must match layer",
                 });
             }
-            if table
-                .rows()
-                .iter()
-                .any(|row| row.physical_key().branch_id() != layer.source_branch_id())
-            {
+            // BS4.4e-style O(1) proof (as in `BranchOwnedTable` construction): rows are
+            // internal-key-sorted and the branch id is the fixed leading key bytes, so both
+            // CRC-protected key-range endpoints carrying the source prefix proves every row does.
+            // The per-row rescan below is the debug oracle — as an always-on check it made every
+            // read-view validation (including recovery of each fork child's manifest) O(inherited
+            // rows) instead of O(tables).
+            if !key_range_matches_branch(
+                table.facts().key_range().first_key(),
+                table.facts().key_range().last_key(),
+                layer.source_branch_id(),
+            ) {
                 return Err(BranchRuntimeError::InvalidInheritedLayer {
                     reason: "inherited table rows must match layer source branch",
                 });
             }
+            #[cfg(debug_assertions)]
+            try_for_each_reader_row(table.reader(), |row| {
+                if row.physical_key().branch_id() == layer.source_branch_id() {
+                    Ok(())
+                } else {
+                    Err(BranchRuntimeError::InvalidInheritedLayer {
+                        reason: "inherited table rows must match layer source branch",
+                    })
+                }
+            })?;
         }
     }
     Ok(())
@@ -4178,24 +4568,66 @@ fn record_inherited_layer_read_view_facts(
     max_commit_version: &mut Option<CommitVersion>,
     timestamp_min: &mut Option<Timestamp>,
     timestamp_max: &mut Option<Timestamp>,
-) -> BranchRuntimeResult<()> {
+) {
     if layer.status() == InheritedLayerStatus::Materialized {
-        return Ok(());
+        return;
     }
-    for table in layer.owned_levels().iter().flatten() {
-        for row in table.rows() {
-            if row.physical_key().branch_id() != layer.source_branch_id() {
-                return Err(BranchRuntimeError::InvalidInheritedLayer {
-                    reason: "inherited read view source rows must match layer source branch",
-                });
-            }
-            if row.commit_version().as_u64() <= layer.fork_version().as_u64() {
-                record_commit_version(max_commit_version, row.commit_version());
-                record_timestamp(timestamp_min, timestamp_max, row.commit_timestamp());
-            }
+    // Historical-fork COW: a straddle layer folds its cached `<= fork_version` extremes in O(1) rather
+    // than re-scanning the straddle tables on every recompute.
+    if let Some(summary) = layer.straddle_read_view_summary() {
+        if let Some(version) = summary.max_commit_version() {
+            record_commit_version(max_commit_version, version);
         }
+        if let Some(timestamp) = summary.timestamp_min() {
+            record_timestamp(timestamp_min, timestamp_max, timestamp);
+        }
+        if let Some(timestamp) = summary.timestamp_max() {
+            record_timestamp(timestamp_min, timestamp_max, timestamp);
+        }
+        return;
     }
-    Ok(())
+    // Non-straddle layer: every table sits entirely at/below the fork, so fold its sealed facts + extras.
+    for table in layer.owned_levels().iter().flatten() {
+        let commit_max = table.facts().commit_range().max();
+        let extras = table.extras();
+        record_commit_version(max_commit_version, commit_max);
+        if let Some(timestamp) = extras.timestamp_min() {
+            record_timestamp(timestamp_min, timestamp_max, timestamp);
+        }
+        if let Some(timestamp) = extras.timestamp_max() {
+            record_timestamp(timestamp_min, timestamp_max, timestamp);
+        }
+        #[cfg(debug_assertions)]
+        debug_assert_eq!(
+            (
+                Some(commit_max),
+                extras.timestamp_min(),
+                extras.timestamp_max()
+            ),
+            owned_read_view_facts_by_scan(table),
+            "read-view inherited facts diverged from a full row scan",
+        );
+    }
+}
+
+/// BS4.4c oracle: fold a durable table's read-view facts (max commit version + timestamp bounds) by
+/// scanning every row — the reference the facts/extras fast path is `debug_assert`'d against.
+#[cfg(debug_assertions)]
+fn owned_read_view_facts_by_scan(
+    table: &BranchOwnedTable,
+) -> (Option<CommitVersion>, Option<Timestamp>, Option<Timestamp>) {
+    let mut max_commit_version = None;
+    let mut timestamp_min = None;
+    let mut timestamp_max = None;
+    for row in &table.materialize_rows_for_oracle() {
+        record_commit_version(&mut max_commit_version, row.commit_version());
+        record_timestamp(
+            &mut timestamp_min,
+            &mut timestamp_max,
+            row.commit_timestamp(),
+        );
+    }
+    (max_commit_version, timestamp_min, timestamp_max)
 }
 
 fn record_commit_version(

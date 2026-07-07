@@ -69,6 +69,10 @@ pub(crate) struct TableBuilderConfig {
     target_data_block_size: u32,
     rows_per_block: usize,
     compression: TableCompression,
+    // BS4.3: `Some(bits_per_key)` makes the builder compute + persist a bloom filter frame; `None`
+    // (the default) writes a zero-slot, unfiltered table. Config-gated and off by default until a
+    // later slice flips it on for production.
+    filter_bits_per_key: Option<usize>,
 }
 
 impl TableBuilderConfig {
@@ -81,9 +85,20 @@ impl TableBuilderConfig {
             target_data_block_size,
             rows_per_block,
             compression,
+            filter_bits_per_key: None,
         };
         config.validate()?;
         Ok(config)
+    }
+
+    /// BS4.3: enable (or disable) writing a persisted bloom filter frame. `Some(bits_per_key)` sizes
+    /// the bloom; `None` writes an unfiltered table.
+    pub(crate) const fn with_filter_bits_per_key(
+        mut self,
+        filter_bits_per_key: Option<usize>,
+    ) -> Self {
+        self.filter_bits_per_key = filter_bits_per_key;
+        self
     }
 
     pub(crate) const fn target_data_block_size(self) -> u32 {
@@ -96,6 +111,11 @@ impl TableBuilderConfig {
 
     pub(crate) const fn compression(self) -> TableCompression {
         self.compression
+    }
+
+    /// BS4.3: bits-per-key for the persisted bloom filter, or `None` when filter writing is disabled.
+    pub(crate) const fn filter_bits_per_key(self) -> Option<usize> {
+        self.filter_bits_per_key
     }
 
     pub(crate) fn validate(self) -> TableRuntimeResult<()> {
@@ -111,6 +131,12 @@ impl TableBuilderConfig {
                 reason: "must be nonzero",
             });
         }
+        if self.filter_bits_per_key == Some(0) {
+            return Err(TableRuntimeError::InvalidConfig {
+                field: "filter_bits_per_key",
+                reason: "must be nonzero",
+            });
+        }
         Ok(())
     }
 }
@@ -121,6 +147,7 @@ impl Default for TableBuilderConfig {
             target_data_block_size: DEFAULT_TARGET_DATA_BLOCK_SIZE,
             rows_per_block: DEFAULT_ROWS_PER_BLOCK,
             compression: TableCompression::Uncompressed,
+            filter_bits_per_key: None,
         }
     }
 }
@@ -129,6 +156,7 @@ impl Default for TableBuilderConfig {
 pub(crate) struct TableReaderConfig {
     validation: TableReaderValidationMode,
     eager_filter: TableReaderEagerFilterMode,
+    materialization_policy: TableMaterializationPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,11 +170,22 @@ pub(crate) enum TableReaderEagerFilterMode {
     Unavailable,
 }
 
+/// BS4.4d: whether a lazy (disk-backed) reader may materialize all of its rows at runtime. `DenyRuntime`
+/// makes `try_rows`/`into_materialized` refuse (a typed error, debug-asserted first) so an accidental
+/// full-table read on the durable path is caught once the constructor flips to lazy (BS4.4f). Eager
+/// readers never reach the lazy materialization path, so the policy is irrelevant to them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TableMaterializationPolicy {
+    Allow,
+    DenyRuntime,
+}
+
 impl TableReaderConfig {
     pub(crate) const fn new() -> Self {
         Self {
             validation: TableReaderValidationMode::ValidateOnOpen,
             eager_filter: TableReaderEagerFilterMode::BuildOnOpen,
+            materialization_policy: TableMaterializationPolicy::Allow,
         }
     }
 
@@ -161,6 +200,15 @@ impl TableReaderConfig {
 
     pub(crate) const fn eager_filter_mode(self) -> TableReaderEagerFilterMode {
         self.eager_filter
+    }
+
+    pub(crate) const fn deny_runtime_materialization(mut self) -> Self {
+        self.materialization_policy = TableMaterializationPolicy::DenyRuntime;
+        self
+    }
+
+    pub(crate) const fn materialization_policy(self) -> TableMaterializationPolicy {
+        self.materialization_policy
     }
 }
 

@@ -1445,3 +1445,127 @@ impl std::fmt::Display for DrainFailureSource {
 }
 
 impl std::error::Error for DrainFailureSource {}
+
+#[test]
+fn rewrite_lane_cap_admits_up_to_the_cap() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(8).expect("executor");
+    executor.set_rewrite_lane_cap(2);
+    let branch = branch_id(0x51);
+    // Non-conflicting levels; per-(branch, level) coalescing keeps them distinct tasks.
+    for level in [0_u8, 2, 4] {
+        executor
+            .enqueue(open, MaintenanceTaskRequest::compaction(branch, level))
+            .expect("enqueue");
+    }
+    let is_compaction = |task: &MaintenanceTask| task.kind() == MaintenanceTaskKind::Compaction;
+    let first = executor
+        .start_next_matching(open, is_compaction)
+        .expect("start ok")
+        .expect("first rewrite starts");
+    let second = executor
+        .start_next_matching(open, is_compaction)
+        .expect("start ok")
+        .expect("second rewrite starts under cap 2");
+    let third = executor
+        .start_next_matching(open, is_compaction)
+        .expect("start ok");
+    assert_ne!(first.id(), second.id());
+    assert!(third.is_none(), "cap 2 blocks a third concurrent rewrite");
+    assert_eq!(executor.status().active_tasks(), 2);
+}
+
+#[test]
+fn default_rewrite_lane_cap_serializes_rewrites() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(8).expect("executor");
+    // Default cap is 1 — legacy single-lane behavior, unchanged.
+    let branch = branch_id(0x52);
+    for level in [0_u8, 2] {
+        executor
+            .enqueue(open, MaintenanceTaskRequest::compaction(branch, level))
+            .expect("enqueue");
+    }
+    let is_compaction = |task: &MaintenanceTask| task.kind() == MaintenanceTaskKind::Compaction;
+    executor
+        .start_next_matching(open, is_compaction)
+        .expect("start ok")
+        .expect("first rewrite starts");
+    let second = executor
+        .start_next_matching(open, is_compaction)
+        .expect("start ok");
+    assert!(
+        second.is_none(),
+        "default cap 1 keeps the Rewrite lane single"
+    );
+    assert_eq!(executor.status().active_tasks(), 1);
+}
+
+#[test]
+fn rewrite_conflict_is_same_branch_adjacent_level() {
+    let open = open_state();
+    let mut executor = LifecycleMaintenanceExecutor::new(8).expect("executor");
+    executor.set_rewrite_lane_cap(4);
+    let branch = branch_id(0x60);
+    let other = branch_id(0x61);
+    executor
+        .enqueue(open, MaintenanceTaskRequest::compaction(branch, 3))
+        .expect("enqueue active");
+    let active = executor
+        .start_next_matching(open, |task| task.kind() == MaintenanceTaskKind::Compaction)
+        .expect("start ok")
+        .expect("active rewrite");
+    assert_eq!(
+        active.scope(),
+        MaintenanceTaskScope::TableLevel {
+            branch_id: branch,
+            level: 3,
+        }
+    );
+
+    for request in [
+        MaintenanceTaskRequest::compaction(branch, 4),
+        MaintenanceTaskRequest::compaction(branch, 5),
+        MaintenanceTaskRequest::compaction(other, 3),
+        MaintenanceTaskRequest::materialization_layer(branch, 0),
+    ] {
+        executor.enqueue(open, request).expect("enqueue candidate");
+    }
+    let peek_scope = |scope: MaintenanceTaskScope| {
+        executor
+            .next_matching_task(move |task| task.scope() == scope)
+            .expect("queued candidate")
+    };
+    let adjacent = peek_scope(MaintenanceTaskScope::TableLevel {
+        branch_id: branch,
+        level: 4,
+    });
+    let non_adjacent = peek_scope(MaintenanceTaskScope::TableLevel {
+        branch_id: branch,
+        level: 5,
+    });
+    let cross_branch = peek_scope(MaintenanceTaskScope::TableLevel {
+        branch_id: other,
+        level: 3,
+    });
+    let materialization = executor
+        .next_matching_task(|task| task.kind() == MaintenanceTaskKind::Materialization)
+        .expect("queued materialization");
+
+    assert!(
+        executor.rewrite_conflicts_with_active(adjacent),
+        "same branch, |3-4|=1 conflicts"
+    );
+    assert!(
+        !executor.rewrite_conflicts_with_active(non_adjacent),
+        "same branch, |3-5|=2 does not conflict"
+    );
+    assert!(
+        !executor.rewrite_conflicts_with_active(cross_branch),
+        "different branch never conflicts"
+    );
+    assert!(
+        executor.rewrite_conflicts_with_active(materialization),
+        "materialization conflicts with any same-branch rewrite"
+    );
+}

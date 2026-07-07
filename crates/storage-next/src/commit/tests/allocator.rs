@@ -316,6 +316,68 @@ fn commit_fact_allocator_accepts_equal_explicit_timestamp() {
     );
 }
 
+/// BS5.0 regression: an internally generated timestamp base read BEFORE the runtime lock must
+/// CLAMP to the monotonic floor, never reject — with concurrent writers, another commit routinely
+/// advances the floor between the pre-lock read and allocation (the multi-writer stress caught the
+/// old Explicit routing failing spuriously with "before the monotonic floor").
+#[test]
+fn commit_fact_allocator_clamps_pre_lock_generated_base_below_floor() {
+    let branch = branch_id(48);
+    let batch = mutating_batch(
+        branch,
+        CommitBatchOptions::new(
+            CommitDurabilityMode::Cache,
+            CommitConflictValidationMode::Validate,
+            CommitDuplicateKeyPolicy::Reject,
+            CommitTimestampPolicy::RuntimeGeneratedBase(Timestamp::from_micros(99)),
+            CommitOrigin::StorageRuntime,
+        ),
+    );
+    let mut allocator = CommitFactAllocator::new(
+        CommitVersionAllocator::new(CommitVersion::new(10)),
+        CommitTimestampGuard::new(Some(Timestamp::from_micros(100))),
+        CommitManualTimestampSource::new(Timestamp::from_micros(1)),
+    );
+
+    let allocation = allocator
+        .allocate_for_batch(&batch)
+        .expect("stale generated base clamps instead of rejecting");
+    let stamp = allocation.stamp().expect("mutating stamp");
+
+    assert_eq!(stamp.commit_version(), CommitVersion::new(11));
+    assert_eq!(stamp.commit_timestamp(), Timestamp::from_micros(100));
+    assert_eq!(
+        allocation.timestamp_source(),
+        Some(CommitTimestampAllocationSource::RuntimeGeneratedClamped)
+    );
+
+    // A base at-or-above the floor passes through unclamped.
+    let fresh = mutating_batch(
+        branch,
+        CommitBatchOptions::new(
+            CommitDurabilityMode::Cache,
+            CommitConflictValidationMode::Validate,
+            CommitDuplicateKeyPolicy::Reject,
+            CommitTimestampPolicy::RuntimeGeneratedBase(Timestamp::from_micros(120)),
+            CommitOrigin::StorageRuntime,
+        ),
+    );
+    let allocation = allocator
+        .allocate_for_batch(&fresh)
+        .expect("fresh generated base allocates");
+    assert_eq!(
+        allocation
+            .stamp()
+            .expect("mutating stamp")
+            .commit_timestamp(),
+        Timestamp::from_micros(120)
+    );
+    assert_eq!(
+        allocation.timestamp_source(),
+        Some(CommitTimestampAllocationSource::RuntimeGenerated)
+    );
+}
+
 #[test]
 fn commit_fact_allocator_rejects_invalid_explicit_timestamp_before_version_allocation() {
     let branch = branch_id(43);

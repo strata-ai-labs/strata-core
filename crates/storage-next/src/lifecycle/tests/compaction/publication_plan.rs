@@ -128,9 +128,9 @@ fn durable_rewrite_uses_ordinary_maintenance_admission() {
 
 #[test]
 fn durable_rewrite_releases_admission_after_publish_failure() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xb7);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, "admission-release");
     backend.fail_table_object_create_on_call(1);
 
@@ -161,8 +161,8 @@ fn durable_compaction_publishes_output_before_install() {
 #[test]
 fn durable_compaction_reopens_output_before_install() {
     let branch = branch_id(0xb9);
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_runtime(branch, &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, "reopen-before-install");
 
     let outcome = runtime
@@ -191,8 +191,8 @@ fn durable_compaction_reopens_output_before_install() {
 #[test]
 fn durable_compaction_validates_output_facts_before_install() {
     let branch = branch_id(0xba);
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_runtime(branch, &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(
         runtime.branch_state_mut(),
         branch,
@@ -211,8 +211,8 @@ fn durable_compaction_validates_output_facts_before_install() {
 #[test]
 fn durable_compaction_installs_only_after_all_outputs_validate() {
     let branch = branch_id(0xbb);
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_runtime(branch, &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_runtime(branch, backend);
     install_many_inputs(runtime.branch_state_mut(), branch, "all-validate", 6);
     backend.corrupt_table_object_create_on_call(1);
 
@@ -226,9 +226,9 @@ fn durable_compaction_installs_only_after_all_outputs_validate() {
 
 #[test]
 fn durable_compaction_no_candidate_is_deferred() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xfa);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
 
     let outcome = runtime
         .compact_branch_tables(&compaction_request(branch, "no-candidate"))
@@ -246,7 +246,7 @@ fn durable_compaction_no_candidate_is_deferred() {
 fn durable_compaction_manifest_includes_outputs() {
     let branch = branch_id(0xbc);
     let (backend, _) = successful_compaction(branch, "manifest-outputs");
-    let runtime = open_runtime(branch, &backend);
+    let runtime = open_runtime(branch, backend);
     let manifest = runtime
         .services()
         .table_manifest()
@@ -265,7 +265,7 @@ fn durable_compaction_manifest_includes_outputs() {
 fn durable_compaction_manifest_excludes_replaced_inputs() {
     let branch = branch_id(0xbd);
     let (backend, _) = successful_compaction(branch, "manifest-excludes");
-    let runtime = open_runtime(branch, &backend);
+    let runtime = open_runtime(branch, backend);
     let manifest = runtime
         .services()
         .table_manifest()
@@ -281,8 +281,8 @@ fn durable_compaction_manifest_excludes_replaced_inputs() {
 #[test]
 fn durable_compaction_metadata_promotion_updates_manifest_without_table_publish() {
     let branch = branch_id(0x6b);
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_runtime(branch, &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,
@@ -393,7 +393,7 @@ fn durable_compaction_metadata_promotion_updates_manifest_without_table_publish(
 
     let promoted_identity = branch_outcome.output_refs()[0].table_identity().clone();
     drop(runtime);
-    let mut reopened = open_runtime(branch, &backend);
+    let mut reopened = open_runtime(branch, backend);
     assert!(
         reopened.branch_state().owned_levels()[usize::from(first_nonzero_level.raw())].is_empty()
     );
@@ -442,8 +442,8 @@ fn durable_compaction_metadata_promotion_updates_manifest_without_table_publish(
 #[test]
 fn durable_compaction_metadata_promotion_manifest_failure_uses_previous_manifest_on_reopen() {
     let branch = branch_id(0x6c);
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_runtime(branch, &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,
@@ -508,7 +508,7 @@ fn durable_compaction_metadata_promotion_manifest_failure_uses_previous_manifest
     );
 
     drop(runtime);
-    let reopened = open_runtime(branch, &backend);
+    let reopened = open_runtime(branch, backend);
     assert_eq!(
         reopened.branch_state().owned_levels()[usize::from(first_nonzero_level.raw())].len(),
         1
@@ -525,11 +525,11 @@ fn durable_compaction_metadata_promotion_manifest_failure_uses_previous_manifest
 fn durable_explicit_compaction_drain_obeys_io_budget_policy_before_publish() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     let branch = branch_id(0x6d);
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let config = LifecycleConfig::default()
         .with_compaction_io_policy(LifecycleCompactionIoPolicy::per_task_byte_budget(1))
         .expect("compaction IO policy");
-    let mut runtime = open_runtime_with_lifecycle_config(branch, &backend, config);
+    let mut runtime = open_runtime_with_lifecycle_config(branch, backend, config);
     for index in 0..4 {
         install_l0_table(
             runtime.branch_state_mut(),
@@ -592,9 +592,9 @@ fn durable_compaction_catalog_marks_replaced_inputs_retained() {
 #[test]
 fn durable_compaction_output_identities_are_retry_stable() {
     let branch = branch_id(0xbf);
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     {
-        let mut runtime = open_runtime(branch, &backend);
+        let mut runtime = open_runtime(branch, backend);
         install_compaction_inputs(runtime.branch_state_mut(), branch, "stable-output");
         runtime
             .compact_branch_tables(&compaction_request(branch, "stable-output"))
@@ -602,7 +602,7 @@ fn durable_compaction_output_identities_are_retry_stable() {
     }
     let first_objects = backend.table_object_names();
     {
-        let mut runtime = open_runtime(branch, &backend);
+        let mut runtime = open_runtime(branch, backend);
         *runtime.branch_state_mut() = BranchLocalState::empty(branch);
         install_compaction_inputs(runtime.branch_state_mut(), branch, "stable-output");
         runtime
@@ -615,9 +615,9 @@ fn durable_compaction_output_identities_are_retry_stable() {
 
 #[test]
 fn durable_materialization_binds_handle_before_output_publish() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let child = branch_id(0xc1);
-    let mut runtime = materialization_runtime(child, branch_id(0xc0), &backend);
+    let mut runtime = materialization_runtime(child, branch_id(0xc0), backend);
 
     let outcome = runtime
         .materialize_inherited_layer(&materialization_request(child, "handle-before-publish"))
@@ -630,9 +630,9 @@ fn durable_materialization_binds_handle_before_output_publish() {
 
 #[test]
 fn durable_materialization_publishes_replacement_before_layer_removal() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let child = branch_id(0xc3);
-    let mut runtime = materialization_runtime(child, branch_id(0xc2), &backend);
+    let mut runtime = materialization_runtime(child, branch_id(0xc2), backend);
 
     let outcome = runtime
         .materialize_inherited_layer(&materialization_request(child, "replacement-before-remove"))
@@ -648,9 +648,9 @@ fn durable_materialization_publishes_replacement_before_layer_removal() {
 
 #[test]
 fn durable_materialization_reopens_replacement_before_install() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let child = branch_id(0xc5);
-    let mut runtime = materialization_runtime(child, branch_id(0xc4), &backend);
+    let mut runtime = materialization_runtime(child, branch_id(0xc4), backend);
 
     let outcome = runtime
         .materialize_inherited_layer(&materialization_request(child, "reopen-replacement"))
@@ -665,9 +665,9 @@ fn durable_materialization_reopens_replacement_before_install() {
 
 #[test]
 fn durable_materialization_validates_replacement_facts() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let child = branch_id(0xc7);
-    let mut runtime = materialization_runtime(child, branch_id(0xc6), &backend);
+    let mut runtime = materialization_runtime(child, branch_id(0xc6), backend);
     backend.corrupt_table_object_create_on_call(1);
 
     let error = runtime
@@ -680,9 +680,9 @@ fn durable_materialization_validates_replacement_facts() {
 
 #[test]
 fn durable_materialization_manifest_removes_inherited_layer() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let child = branch_id(0xc9);
-    let mut runtime = materialization_runtime(child, branch_id(0xc8), &backend);
+    let mut runtime = materialization_runtime(child, branch_id(0xc8), backend);
 
     runtime
         .materialize_inherited_layer(&materialization_request(child, "manifest-removes-layer"))
@@ -699,9 +699,9 @@ fn durable_materialization_manifest_removes_inherited_layer() {
 
 #[test]
 fn durable_materialization_manifest_includes_replacements() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let child = branch_id(0xcb);
-    let mut runtime = materialization_runtime(child, branch_id(0xca), &backend);
+    let mut runtime = materialization_runtime(child, branch_id(0xca), backend);
 
     let outcome = runtime
         .materialize_inherited_layer(&materialization_request(child, "manifest-replacements"))
@@ -726,10 +726,10 @@ fn durable_materialization_manifest_includes_replacements() {
 
 #[test]
 fn durable_materialization_preserves_child_local_precedence() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let parent = branch_id(0xcc);
     let child = branch_id(0xcd);
-    let mut runtime = open_runtime(child, &backend);
+    let mut runtime = open_runtime(child, backend);
     *runtime.branch_state_mut() = materialization_read_state(parent, child);
     let shared = physical_key(child, b"shared");
 
@@ -751,9 +751,9 @@ fn durable_materialization_preserves_child_local_precedence() {
 
 #[test]
 fn durable_materialization_retry_after_removed_layer_uses_source_identity() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let child = branch_id(0xcf);
-    let mut runtime = materialization_runtime(child, branch_id(0xce), &backend);
+    let mut runtime = materialization_runtime(child, branch_id(0xce), backend);
     let first = runtime
         .materialize_inherited_layer(&materialization_request(child, "source-retry"))
         .expect("first materialization");
@@ -965,9 +965,9 @@ fn durable_materialization_preserves_fork_version_gate() {
 
 #[test]
 fn rewrite_output_publish_uncertain_reports_health_debt() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xde);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, "uncertain-debt");
     backend.uncertain_table_object_create_on_call(1);
 
@@ -981,9 +981,9 @@ fn rewrite_output_publish_uncertain_reports_health_debt() {
 
 #[test]
 fn rewrite_output_reopen_failure_leaves_reads_unchanged() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xdf);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, "reopen-unchanged");
     let before = latest_value_from_state(runtime.branch_state(), branch, b"right");
     backend.corrupt_table_object_create_on_call(1);
@@ -1002,8 +1002,8 @@ fn rewrite_output_reopen_failure_leaves_reads_unchanged() {
 #[test]
 fn rewrite_output_fact_mismatch_leaves_reads_unchanged() {
     let branch = branch_id(0xe0);
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_runtime(branch, &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, "fact-mismatch");
     runtime
         .compact_branch_tables(&compaction_request(branch, "fact-mismatch"))
@@ -1032,9 +1032,9 @@ fn rewrite_output_fact_mismatch_leaves_reads_unchanged() {
 
 #[test]
 fn rewrite_install_failure_after_publish_names_orphan_outputs() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xe1);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, "install-collision");
     let output_identity =
         predicted_compaction_output_identity(&runtime, branch, "install-collision");
@@ -1063,9 +1063,9 @@ fn rewrite_install_failure_after_publish_names_orphan_outputs() {
 
 #[test]
 fn rewrite_install_failure_after_publish_does_not_delete_outputs() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xe2);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(
         runtime.branch_state_mut(),
         branch,
@@ -1091,9 +1091,9 @@ fn rewrite_install_failure_after_publish_does_not_delete_outputs() {
 
 #[test]
 fn rewrite_manifest_publish_failure_after_install_keeps_new_reads_visible() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xe3);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(
         runtime.branch_state_mut(),
         branch,
@@ -1117,9 +1117,9 @@ fn rewrite_manifest_publish_failure_after_install_keeps_new_reads_visible() {
 
 #[test]
 fn rewrite_manifest_publish_failure_after_install_reports_manifest_debt() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xe4);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, "manifest-failure-debt");
     backend.fail_table_manifest_replacement_on_call(1);
 
@@ -1137,9 +1137,9 @@ fn rewrite_manifest_publish_failure_after_install_reports_manifest_debt() {
 
 #[test]
 fn durable_fixed_point_drain_stops_after_manifest_debt() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xeb);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, "drain-manifest-debt");
     backend.fail_table_manifest_replacement_on_call(1);
     let request =
@@ -1165,9 +1165,9 @@ fn durable_fixed_point_drain_stops_after_manifest_debt() {
 
 #[test]
 fn rewrite_manifest_publish_uncertain_after_install_reports_uncertainty() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xe5);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(
         runtime.branch_state_mut(),
         branch,
@@ -1191,9 +1191,9 @@ fn rewrite_manifest_publish_uncertain_after_install_reports_uncertainty() {
 
 #[test]
 fn rewrite_retry_after_manifest_failure_reuses_catalog_entries() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let child = branch_id(0xe7);
-    let mut runtime = materialization_runtime(child, branch_id(0xe6), &backend);
+    let mut runtime = materialization_runtime(child, branch_id(0xe6), backend);
     backend.fail_table_manifest_replacement_on_call(1);
     let first = runtime
         .materialize_inherited_layer(&materialization_request(child, "manifest-retry"))
@@ -1219,8 +1219,8 @@ fn rewrite_retry_after_manifest_failure_reuses_catalog_entries() {
 #[test]
 fn rewrite_retry_after_output_publish_collision_rejects_conflict() {
     let branch = branch_id(0xe8);
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_runtime(branch, &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, "collision");
     runtime
         .compact_branch_tables(&compaction_request(branch, "collision"))
@@ -1244,9 +1244,9 @@ fn rewrite_retry_after_output_publish_collision_rejects_conflict() {
 
 #[test]
 fn rewrite_stale_candidate_after_publish_fails_without_resurrection() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xe9);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, "stale-resurrection");
 
     let _ = publish_output_then_stale_install(&mut runtime, branch, "stale-resurrection")
@@ -1261,10 +1261,10 @@ fn rewrite_stale_candidate_after_publish_fails_without_resurrection() {
 
 #[test]
 fn recovery_after_manifest_publish_failure_uses_previous_manifest_or_wal() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xea);
     {
-        let mut runtime = open_runtime(branch, &backend);
+        let mut runtime = open_runtime(branch, backend);
         install_compaction_inputs(runtime.branch_state_mut(), branch, "first-manifest");
         runtime
             .compact_branch_tables(&compaction_request(branch, "first-manifest"))
@@ -1277,7 +1277,7 @@ fn recovery_after_manifest_publish_failure_uses_previous_manifest_or_wal() {
             .expect("manifest debt");
     }
 
-    let reopened = open_runtime(branch, &backend);
+    let reopened = open_runtime(branch, backend);
 
     assert_eq!(reopened.branch_state().owned_table_count(), 1);
     assert!(reopened
@@ -1293,9 +1293,9 @@ fn recovery_after_manifest_publish_failure_uses_previous_manifest_or_wal() {
 
 #[test]
 fn recovery_after_install_before_manifest_records_health_debt() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xeb);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(
         runtime.branch_state_mut(),
         branch,
@@ -1314,9 +1314,9 @@ fn recovery_after_install_before_manifest_records_health_debt() {
 #[test]
 fn recovery_rejects_corrupt_rewrite_output_listed_by_manifest() {
     let branch = branch_id(0xec);
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     {
-        let mut runtime = open_runtime(branch, &backend);
+        let mut runtime = open_runtime(branch, backend);
         install_compaction_inputs(runtime.branch_state_mut(), branch, "recover-corrupt");
         runtime
             .compact_branch_tables(&compaction_request(branch, "recover-corrupt"))
@@ -1326,7 +1326,7 @@ fn recovery_rejects_corrupt_rewrite_output_listed_by_manifest() {
     backend
         .write_object(&object, b"corrupt table bytes")
         .expect("corrupt table object");
-    let mut shell = assemble_shell(branch, &backend).expect("shell");
+    let mut shell = assemble_shell(branch, backend).expect("shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
 
@@ -1340,9 +1340,9 @@ fn recovery_rejects_corrupt_rewrite_output_listed_by_manifest() {
 #[test]
 fn recovery_rejects_missing_rewrite_output_listed_by_manifest() {
     let branch = branch_id(0xed);
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     {
-        let mut runtime = open_runtime(branch, &backend);
+        let mut runtime = open_runtime(branch, backend);
         install_compaction_inputs(runtime.branch_state_mut(), branch, "recover-missing");
         runtime
             .compact_branch_tables(&compaction_request(branch, "recover-missing"))
@@ -1350,7 +1350,7 @@ fn recovery_rejects_missing_rewrite_output_listed_by_manifest() {
     }
     let object = backend.table_object_names().pop().expect("object");
     backend.delete_object(&object).expect("delete table object");
-    let mut shell = assemble_shell(branch, &backend).expect("shell");
+    let mut shell = assemble_shell(branch, backend).expect("shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
 
@@ -1363,10 +1363,10 @@ fn recovery_rejects_missing_rewrite_output_listed_by_manifest() {
 
 #[test]
 fn recovery_preserves_reads_after_wal_tail_replay() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xee);
     {
-        let mut runtime = open_runtime(branch, &backend);
+        let mut runtime = open_runtime(branch, backend);
         runtime
             .execute_durable_commit(
                 durable_batch(branch, b"checkpoint-key", b"checkpoint-value"),
@@ -1387,7 +1387,7 @@ fn recovery_preserves_reads_after_wal_tail_replay() {
             .expect("commit");
     }
 
-    let reopened = open_runtime(branch, &backend);
+    let reopened = open_runtime(branch, backend);
 
     let view = reopened.read_view().expect("read view");
     let visible = view
@@ -1401,7 +1401,7 @@ fn recovery_preserves_reads_after_wal_tail_replay() {
 fn durable_rewrite_completion_does_not_directly_persist_flush_watermark() {
     let branch = branch_id(0xef);
     let (backend, _) = successful_compaction(branch, "no-watermark");
-    let runtime = open_runtime(branch, &backend);
+    let runtime = open_runtime(branch, backend);
     let manifest = runtime
         .services()
         .manifest()
@@ -1424,7 +1424,7 @@ fn durable_rewrite_completion_does_not_directly_truncate_wal() {
 fn durable_rewrite_manifest_facts_can_build_flush_coverage_candidate() {
     let branch = branch_id(0xf1);
     let (backend, _) = successful_compaction(branch, "coverage-facts");
-    let runtime = open_runtime(branch, &backend);
+    let runtime = open_runtime(branch, backend);
     let manifest = runtime
         .services()
         .table_manifest()
@@ -1440,9 +1440,9 @@ fn durable_rewrite_manifest_facts_can_build_flush_coverage_candidate() {
 
 #[test]
 fn durable_rewrite_manifest_failure_cannot_build_flush_coverage_candidate() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xf2);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, "no-coverage");
     backend.fail_table_manifest_replacement_on_call(1);
 
@@ -1464,9 +1464,9 @@ fn durable_rewrite_manifest_failure_cannot_build_flush_coverage_candidate() {
 
 #[test]
 fn durable_rewrite_checkpoint_debt_reduced_only_after_manifest_success() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xf3);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, "debt-first");
     backend.fail_table_manifest_replacement_on_call(1);
     let failed = runtime
@@ -1505,9 +1505,9 @@ fn durable_rewrite_does_not_quarantine_replaced_inputs() {
 
 #[test]
 fn durable_rewrite_does_not_delete_published_orphan_outputs() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xf6);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, "no-delete-orphan");
     backend.corrupt_table_object_create_on_call(1);
     let _ = runtime
@@ -1560,9 +1560,9 @@ fn durable_rewrite_does_not_call_purge() {
 
 #[test]
 fn queued_durable_compaction_publishes_manifest_through_maintenance_runner() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xfb);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, "queued-compaction");
     let queued = runtime
         .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
@@ -1591,9 +1591,9 @@ fn queued_durable_compaction_publishes_manifest_through_maintenance_runner() {
 
 #[test]
 fn queued_durable_compaction_does_not_resubmit_after_manifest_debt() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xfe);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     for index in 0..5 {
         install_owned_table(
             runtime.branch_state_mut(),
@@ -1625,12 +1625,22 @@ fn queued_durable_compaction_does_not_resubmit_after_manifest_debt() {
     assert!(outcome.recovery_health().is_some());
     assert_eq!(runtime.branch_state().owned_levels()[1].len(), 4);
     assert_eq!(runtime.branch_state().owned_levels()[2].len(), 1);
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+    // No compaction/materialization is resubmitted after manifest debt. The completed compaction
+    // does enqueue the table-object GC mark (Retention) — the designed reclaim trigger, not a
+    // rewrite resubmission.
+    assert!(runtime.maintenance_status().pending_tasks() <= 1);
+    assert!(!runtime
+        .pending_maintenance_kinds_for_test()
+        .iter()
+        .any(|kind| matches!(
+            kind,
+            MaintenanceTaskKind::Compaction | MaintenanceTaskKind::Materialization
+        )));
 }
 
 #[test]
 fn queued_durable_materialization_publishes_manifest_through_maintenance_runner() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let child = branch_id(0xfd);
     let parent = branch_id(0xfc);
     let mut parent_state = BranchLocalState::empty(parent);
@@ -1643,7 +1653,7 @@ fn queued_durable_materialization_publishes_manifest_through_maintenance_runner(
     let (child_state, _) = parent_state
         .fork_into_empty_child(child)
         .expect("fork child");
-    let mut runtime = open_runtime(child, &backend);
+    let mut runtime = open_runtime(child, backend);
     *runtime.branch_state_mut() = child_state;
     let queued = runtime
         .enqueue_maintenance(MaintenanceTaskRequest::materialization_layer(child, 0))
@@ -1673,11 +1683,13 @@ fn queued_durable_materialization_publishes_manifest_through_maintenance_runner(
 }
 
 #[test]
-fn queued_durable_compaction_resubmits_materialization_and_publishes_followup_manifest() {
-    let backend = CheckpointTestBackend::new();
+fn queued_durable_compaction_of_lone_cow_layer_publishes_without_resubmitting_materialization() {
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    // fork-cow.3: a branch carrying a single COW inherited layer is healthy — its durable compaction
+    // publishes normally and does not resubmit materialization (the lone layer stays lazy).
     let parent = branch_id(0xfa);
     let child = branch_id(0xff);
-    let mut runtime = open_runtime(parent, &backend);
+    let mut runtime = open_runtime(parent, backend);
     install_compaction_inputs(runtime.branch_state_mut(), parent, "durable-chain-parent");
     runtime
         .compact_branch_tables(&compaction_request(parent, "durable-chain-parent"))
@@ -1740,38 +1752,30 @@ fn queued_durable_compaction_resubmits_materialization_and_publishes_followup_ma
             .inherited_layer_count(),
         1
     );
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
-
-    let materialization = runtime
-        .run_next_materialization_maintenance()
-        .expect("run materialization")
-        .expect("materialization outcome");
+    // A lone COW inherited layer is healthy: no materialization is resubmitted after the
+    // compaction. The completed compaction does enqueue the table-object GC mark (Retention) —
+    // the designed reclaim trigger, not a rewrite resubmission.
+    assert!(!runtime
+        .pending_maintenance_kinds_for_test()
+        .iter()
+        .any(|kind| matches!(
+            kind,
+            MaintenanceTaskKind::Compaction | MaintenanceTaskKind::Materialization
+        )));
+    assert!(
+        runtime
+            .run_next_materialization_maintenance()
+            .expect("poll materialization")
+            .is_none(),
+        "a lone COW inherited layer must not schedule materialization"
+    );
     let manifest = runtime
         .services()
         .table_manifest()
         .load_current(child)
         .expect("load manifest")
         .expect("manifest");
-
-    assert_eq!(
-        materialization.task_kind(),
-        MaintenanceTaskKind::Materialization
-    );
-    assert_eq!(
-        materialization.status(),
-        MaintenanceOutcomeStatus::Completed
-    );
-    assert_eq!(
-        runtime
-            .branch_catalog()
-            .branch_state(child)
-            .expect("child state")
-            .inherited_layer_count(),
-        0
-    );
-    assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
-    assert!(manifest.inherited_layers().is_empty());
-    assert_eq!(backend.table_manifest_replace_calls(), 3);
+    assert_eq!(manifest.inherited_layers().len(), 1);
 }
 
 struct TestMaterializationRunner<'a> {
@@ -1788,9 +1792,9 @@ impl MaintenanceTaskRunner for TestMaterializationRunner<'_> {
 fn successful_compaction(
     branch: strata_core_next::BranchId,
     seed: &str,
-) -> (CheckpointTestBackend, LifecycleCompactionOutcome) {
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_runtime(branch, &backend);
+) -> (&'static CheckpointTestBackend, LifecycleCompactionOutcome) {
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_runtime(branch, backend);
     install_compaction_inputs(runtime.branch_state_mut(), branch, seed);
     let outcome = runtime
         .compact_branch_tables(&compaction_request(branch, seed))
@@ -1802,8 +1806,8 @@ fn successful_compaction(
 fn materialization_runtime(
     child: strata_core_next::BranchId,
     parent: strata_core_next::BranchId,
-    backend: &CheckpointTestBackend,
-) -> LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource> {
+    backend: &'static CheckpointTestBackend,
+) -> LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource> {
     let mut parent_state = BranchLocalState::empty(parent);
     install_l0_table(
         &mut parent_state,
@@ -1881,8 +1885,8 @@ fn compact_read_parity(
     crate::branch::read::BranchReadView,
     crate::branch::read::BranchReadView,
 ) {
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_runtime(branch, &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_runtime(branch, backend);
     *runtime.branch_state_mut() = read_shape_state(branch);
     let before = runtime.branch_state().capture_read_view().expect("before");
     runtime
@@ -1899,8 +1903,8 @@ fn materialization_read_parity(
     crate::branch::read::BranchReadView,
     crate::branch::read::BranchReadView,
 ) {
-    let backend = CheckpointTestBackend::new();
-    let mut runtime = open_runtime(child, &backend);
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
+    let mut runtime = open_runtime(child, backend);
     *runtime.branch_state_mut() = materialization_read_state(parent, child);
     let before = runtime.branch_state().capture_read_view().expect("before");
     runtime
@@ -1930,7 +1934,7 @@ fn latest_value_from_state(
 }
 
 fn predicted_compaction_output_identity(
-    runtime: &LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
+    runtime: &LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource>,
     branch: strata_core_next::BranchId,
     seed: &str,
 ) -> crate::table::TableIdentity {
@@ -1950,7 +1954,7 @@ fn predicted_compaction_output_identity(
 }
 
 fn publish_output_then_stale_install(
-    runtime: &mut LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource>,
+    runtime: &mut LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource>,
     branch: strata_core_next::BranchId,
     seed: &str,
 ) -> crate::branch::error::BranchRuntimeResult<

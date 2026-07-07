@@ -1029,7 +1029,7 @@ fn generated_read_contract_matches_model_for_mutations_and_reads() {
     });
     runner
         .run(&vec(any::<u8>(), 1..=96), |script| {
-            let mut runtime = open_runtime();
+            let runtime = open_runtime();
             let mut model = BTreeMap::<Vec<u8>, Vec<ModelRow>>::new();
 
             for (index, chunk) in script.chunks(4).take(24).enumerate() {

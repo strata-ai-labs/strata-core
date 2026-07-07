@@ -24,6 +24,11 @@ pub(crate) enum CommitUnresolvedDurableKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct CommitUnresolvedDurable {
     branch_id: BranchId,
+    /// First commit version the unresolved state covers. Equal to `commit_version` for a
+    /// single commit; a write group's group-fatal failure records the whole group's
+    /// contiguous version block `first_commit_version..=commit_version` (BS5.1 D1), and
+    /// recovery replays every version in the range before the gate clears.
+    first_commit_version: CommitVersion,
     commit_version: CommitVersion,
     commit_timestamp: Timestamp,
     durability: CommitDurabilityClass,
@@ -46,7 +51,11 @@ pub(crate) struct CommitUnresolvedDurableAdmission<'a> {
 #[derive(Debug, Default)]
 struct CommitUnresolvedDurableGateState {
     unresolved: Option<CommitUnresolvedDurable>,
-    active_admission: bool,
+    /// Open admission spans (BS5.2). The pipelined commit path keeps a span
+    /// open across its off-lock covering fsync, so a later group (or a solo
+    /// commit) legitimately admits while earlier spans are still in flight;
+    /// admission is refused only while an unresolved fact is recorded.
+    active_admissions: usize,
 }
 
 impl CommitUnresolvedDurable {
@@ -59,6 +68,7 @@ impl CommitUnresolvedDurable {
     ) -> CommitRuntimeResult<Self> {
         let fact = Self {
             branch_id: stamp.branch_id(),
+            first_commit_version: stamp.commit_version(),
             commit_version: stamp.commit_version(),
             commit_timestamp: stamp.commit_timestamp(),
             durability,
@@ -68,6 +78,19 @@ impl CommitUnresolvedDurable {
         };
         fact.validate()?;
         Ok(fact)
+    }
+
+    /// Widen this fact to cover a write group's contiguous version block, starting at
+    /// `first_commit_version` (BS5.1 D1). The stamp fields stay keyed to the group's LAST member
+    /// (the range end) so recovery's replay of the final version clears the gate; a group of one
+    /// leaves the fact byte-identical to the single-commit shape.
+    pub(crate) fn covering_group_from(
+        mut self,
+        first_commit_version: CommitVersion,
+    ) -> CommitRuntimeResult<Self> {
+        self.first_commit_version = first_commit_version;
+        self.validate()?;
+        Ok(self)
     }
 
     pub(crate) fn durable_not_applied_with_facts(
@@ -119,6 +142,15 @@ impl CommitUnresolvedDurable {
         self.branch_id
     }
 
+    pub(crate) const fn first_commit_version(self) -> CommitVersion {
+        self.first_commit_version
+    }
+
+    /// Whether `version` falls inside the covered range (a single commit's range is itself).
+    pub(crate) fn covers_version(self, version: CommitVersion) -> bool {
+        version >= self.first_commit_version && version <= self.commit_version
+    }
+
     pub(crate) const fn commit_version(self) -> CommitVersion {
         self.commit_version
     }
@@ -145,6 +177,11 @@ impl CommitUnresolvedDurable {
 
     pub(crate) fn validate(self) -> CommitRuntimeResult<()> {
         self.visibility_facts.validate()?;
+        if self.first_commit_version > self.commit_version {
+            return Err(CommitRuntimeError::InvalidCommitState {
+                reason: "unresolved durable range must not start after its end",
+            });
+        }
         if self.visibility_facts.allocated_version() != Some(self.commit_version) {
             return Err(CommitRuntimeError::InvalidVisibilityFacts {
                 reason: "unresolved durable commit must preserve allocated version",
@@ -227,13 +264,23 @@ impl CommitUnresolvedDurableGate {
         Self {
             state: Mutex::new(CommitUnresolvedDurableGateState {
                 unresolved: None,
-                active_admission: false,
+                active_admissions: 0,
             }),
         }
     }
 
     pub(crate) fn unresolved(&self) -> CommitRuntimeResult<Option<CommitUnresolvedDurable>> {
         Ok(self.lock()?.unresolved)
+    }
+
+    /// Whether the gate currently holds no unresolved durable commit. Debug-assert helper for the
+    /// BS2.2 visibility-bound equivalence check (type-checked in release, evaluated only in
+    /// debug); a poisoned lock relaxes to `true` so a panic in flight is not compounded by a
+    /// spurious assert.
+    pub(crate) fn is_clean(&self) -> bool {
+        self.lock()
+            .map(|state| state.unresolved.is_none())
+            .unwrap_or(true)
     }
 
     pub(crate) fn require_admission_available(&self) -> CommitRuntimeResult<()> {
@@ -247,18 +294,57 @@ impl CommitUnresolvedDurableGate {
                 reason: "durable commit must be replayed or reconciled first",
             });
         }
-        if state.active_admission {
-            perf_trace::record_commit_unresolved_gate_admission_attempt();
-            perf_trace::record_commit_unresolved_gate_rejected_active();
-            return Err(CommitRuntimeError::InvalidCommitState {
-                reason: "durable commit admission is already active",
-            });
-        }
         Ok(())
     }
 
     pub(crate) fn require_open_for_mutation(&self) -> CommitRuntimeResult<()> {
         self.admit_mutating_commit().map(|_| ())
+    }
+
+    /// Leader-scoped admission span for a write group (BS5.1): identical
+    /// admission rules to [`admit_mutating_commit`], but the span is released
+    /// explicitly with [`end_group_admission`] instead of through the
+    /// borrowing RAII token, which cannot live across the leader's `&mut self`
+    /// bootstrap calls. A panic mid-span leaves admission active — equivalent
+    /// to today's panic-under-runtime-lock exposure, which is already
+    /// unrecoverable in-process.
+    pub(crate) fn begin_group_admission(&self) -> CommitRuntimeResult<()> {
+        let mut admission = self.admit_mutating_commit()?;
+        // Defuse the RAII reset: the caller now owns the span.
+        admission.active = false;
+        Ok(())
+    }
+
+    /// Release the leader's group admission span (see [`begin_group_admission`]).
+    pub(crate) fn end_group_admission(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.active_admissions = state.active_admissions.saturating_sub(1);
+        }
+    }
+
+    /// Open admission spans (BS5.2): >1 means other commits are mid-pipeline
+    /// right now — the sync chain uses this to decide whether a batching beat
+    /// is worth waiting before it captures.
+    pub(crate) fn open_admission_spans(&self) -> usize {
+        self.state.lock().map_or(0, |state| state.active_admissions)
+    }
+
+    /// Group-member admission check (BS5.1): the leader's admission span is
+    /// active by construction while members execute, so a member verifies only
+    /// that no unresolved fact has been recorded (a mid-group failure records
+    /// one and makes the group fatal).
+    pub(crate) fn require_no_unresolved_fact(&self) -> CommitRuntimeResult<()> {
+        let state = self.lock()?;
+        if let Some(unresolved) = state.unresolved {
+            perf_trace::record_commit_unresolved_gate_admission_attempt();
+            perf_trace::record_commit_unresolved_gate_rejected_unresolved();
+            return Err(CommitRuntimeError::UnresolvedDurableCommit {
+                branch_id: unresolved.branch_id(),
+                commit_version: unresolved.commit_version(),
+                reason: "durable commit must be replayed or reconciled first",
+            });
+        }
+        Ok(())
     }
 
     pub(crate) fn admit_mutating_commit(
@@ -274,13 +360,9 @@ impl CommitUnresolvedDurableGate {
                 reason: "durable commit must be replayed or reconciled first",
             });
         }
-        if state.active_admission {
-            perf_trace::record_commit_unresolved_gate_rejected_active();
-            return Err(CommitRuntimeError::InvalidCommitState {
-                reason: "durable commit admission is already active",
-            });
-        }
-        state.active_admission = true;
+        // BS5.2: concurrent spans are legal — the pipelined commit path keeps a
+        // span open across its off-lock fsync while later commits admit.
+        state.active_admissions = state.active_admissions.saturating_add(1);
         perf_trace::record_commit_unresolved_gate_admission_acquired();
         Ok(CommitUnresolvedDurableAdmission {
             gate: self,
@@ -379,7 +461,7 @@ impl Drop for CommitUnresolvedDurableAdmission<'_> {
             return;
         }
         if let Ok(mut state) = self.gate.state.lock() {
-            state.active_admission = false;
+            state.active_admissions = state.active_admissions.saturating_sub(1);
         }
         self.active = false;
     }

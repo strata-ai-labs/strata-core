@@ -585,7 +585,7 @@ mod tests {
         {
             // A small write quota: some commits fit, then ENOSPC.
             let backend = StorageBackend::faulting_local_fs_with_quota(dir.path(), 4096);
-            let mut runtime = StorageRuntime::open_with_backend(
+            let runtime = StorageRuntime::open_with_backend(
                 durable_borrowed_options(StorageDurabilityPolicy::Always),
                 &backend,
             )
@@ -618,7 +618,7 @@ mod tests {
         // Reopen with space "freed" (no quota): acknowledged commits recover and
         // writes resume.
         let backend = StorageBackend::local_fs(dir.path());
-        let mut runtime = StorageRuntime::open_with_backend(
+        let runtime = StorageRuntime::open_with_backend(
             durable_borrowed_options(StorageDurabilityPolicy::Standard),
             &backend,
         )
@@ -668,7 +668,7 @@ mod tests {
                     FaultMode::Continuously,
                 )]),
             );
-            let mut runtime = StorageRuntime::open_with_backend(
+            let runtime = StorageRuntime::open_with_backend(
                 durable_borrowed_options(StorageDurabilityPolicy::Always),
                 &backend,
             )
@@ -691,7 +691,7 @@ mod tests {
         // Reopen clean: the in-doubt commit is present-or-absent atomically, and
         // writes resume.
         let backend = StorageBackend::local_fs(dir.path());
-        let mut runtime = StorageRuntime::open_with_backend(
+        let runtime = StorageRuntime::open_with_backend(
             durable_borrowed_options(StorageDurabilityPolicy::Standard),
             &backend,
         )

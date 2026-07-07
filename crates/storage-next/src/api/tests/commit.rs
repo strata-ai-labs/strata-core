@@ -131,7 +131,7 @@ fn commit_rejects_unknown_branch() {
         CommitOptions::default(),
     )
     .expect("valid shape");
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime.commit(&batch).expect_err("unknown branch rejected");
 
@@ -146,7 +146,7 @@ fn commit_rejects_generation_mismatch() {
         CommitOptions::default().with_expected_generation(BranchGeneration::new(99)),
     )
     .expect("valid shape");
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .commit(&batch)
@@ -167,7 +167,7 @@ fn commit_rejects_zero_expected_generation() {
         CommitOptions::default().with_expected_generation(BranchGeneration::ZERO),
     )
     .expect("valid shape");
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .commit(&batch)
@@ -199,7 +199,7 @@ fn commit_rejects_unsupported_durability_for_cache() {
         CommitOptions::default().with_durability(CommitDurability::Standard),
     )
     .expect("valid shape");
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .commit(&batch)
@@ -212,7 +212,7 @@ fn commit_rejects_unsupported_durability_for_cache() {
 #[cfg(feature = "localfs")]
 fn commit_rejects_always_request_on_standard_runtime() {
     let backend = StorageBackend::local_fs(temp_dir_for_api_test("commit-always-on-standard"));
-    let mut runtime = StorageRuntime::open_with_backend(
+    let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
         &backend,
     )
@@ -237,7 +237,7 @@ fn commit_rejects_always_request_on_standard_runtime() {
 #[cfg(feature = "localfs")]
 fn commit_rejects_standard_request_on_always_runtime() {
     let backend = StorageBackend::local_fs(temp_dir_for_api_test("commit-standard-on-always"));
-    let mut runtime = StorageRuntime::open_with_backend(
+    let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
         &backend,
     )
@@ -262,7 +262,7 @@ fn commit_rejects_standard_request_on_always_runtime() {
 #[cfg(feature = "localfs")]
 fn commit_rejects_not_durable_request_on_durable_runtime() {
     let backend = StorageBackend::local_fs(temp_dir_for_api_test("commit-not-durable-on-durable"));
-    let mut runtime = StorageRuntime::open_with_backend(
+    let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
         &backend,
     )
@@ -293,7 +293,7 @@ fn commit_rejects_transaction_id_field_absence_by_type() {
 
 #[test]
 fn cache_commit_returns_not_durable_outcome() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let summary = runtime
         .commit(&put_batch(b"cache", b"value"))
@@ -321,7 +321,7 @@ fn cache_commit_returns_not_durable_outcome() {
 #[cfg(feature = "localfs")]
 fn standard_commit_returns_standard_outcome() {
     let backend = StorageBackend::local_fs(temp_dir_for_api_test("commit-standard"));
-    let mut runtime = StorageRuntime::open_with_backend(
+    let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
         &backend,
     )
@@ -339,7 +339,7 @@ fn standard_commit_returns_standard_outcome() {
 #[cfg(feature = "localfs")]
 fn always_commit_returns_always_outcome() {
     let backend = StorageBackend::local_fs(temp_dir_for_api_test("commit-always"));
-    let mut runtime = StorageRuntime::open_with_backend(
+    let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
         &backend,
     )
@@ -358,7 +358,7 @@ fn always_commit_returns_always_outcome() {
 fn durable_runtime_default_uses_configured_policy() {
     let standard_backend =
         StorageBackend::local_fs(temp_dir_for_api_test("commit-runtime-default-standard"));
-    let mut standard_runtime = StorageRuntime::open_with_backend(
+    let standard_runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
         &standard_backend,
     )
@@ -381,7 +381,7 @@ fn durable_runtime_default_uses_configured_policy() {
 
     let always_backend =
         StorageBackend::local_fs(temp_dir_for_api_test("commit-runtime-default-always"));
-    let mut always_runtime = StorageRuntime::open_with_backend(
+    let always_runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Always),
         &always_backend,
     )
@@ -402,7 +402,7 @@ fn durable_runtime_default_uses_configured_policy() {
 
 #[test]
 fn commit_put_then_read_latest_observes_value() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let summary = runtime
         .commit(&put_batch(b"alpha", b"value"))
         .expect("commit");
@@ -416,7 +416,7 @@ fn commit_put_then_read_latest_observes_value() {
 
 #[test]
 fn commit_delete_then_read_latest_observes_tombstone() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     runtime.commit(&put_batch(b"alpha", b"value")).expect("put");
     let summary = runtime.commit(&delete_batch(b"alpha")).expect("delete");
 
@@ -430,7 +430,7 @@ fn commit_delete_then_read_latest_observes_tombstone() {
 
 #[test]
 fn commit_ttl_metadata_roundtrips_to_read_facts() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let batch = CommitBatch::new(
         branch(),
         vec![put_mutation_with_ttl(
@@ -464,7 +464,7 @@ fn commit_outcome_reports_mutation_counts() {
         CommitOptions::default(),
     )
     .expect("valid batch");
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let summary = runtime.commit(&batch).expect("commit");
 
@@ -476,7 +476,7 @@ fn commit_outcome_reports_mutation_counts() {
 
 #[test]
 fn commit_outcome_reports_timestamp_and_version() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let summary = runtime
         .commit(&put_batch(b"facts", b"value"))
@@ -488,7 +488,7 @@ fn commit_outcome_reports_timestamp_and_version() {
 
 #[test]
 fn commit_rejected_request_does_not_allocate_version() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let first = runtime
         .commit(&put_batch(b"before-reject", b"value"))
         .expect("first commit");
@@ -515,7 +515,7 @@ fn commit_rejected_request_does_not_allocate_version() {
 
 #[test]
 fn commit_rejects_ttl_duration_too_large() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let batch = CommitBatch::new(
         branch(),
         vec![put_mutation_with_ttl(
@@ -535,7 +535,7 @@ fn commit_rejects_ttl_duration_too_large() {
 
 #[test]
 fn commit_rejects_ttl_expiration_overflow() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let batch = CommitBatch::new(
         branch(),
         vec![put_mutation_with_ttl(
@@ -557,7 +557,7 @@ fn commit_rejects_ttl_expiration_overflow() {
 
 #[test]
 fn commit_outcome_timestamps_advance() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let first = runtime
         .commit(&put_batch(b"first-time", b"value"))
@@ -571,7 +571,7 @@ fn commit_outcome_timestamps_advance() {
 
 #[test]
 fn commit_ttl_uses_actual_commit_timestamp_after_prior_commit() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     runtime
         .commit(&put_batch(b"prior", b"value"))
         .expect("prior commit");
@@ -604,7 +604,7 @@ fn commit_ttl_uses_actual_commit_timestamp_after_prior_commit() {
 
 #[test]
 fn commit_blind_write_succeeds_without_read_set() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     runtime
         .commit(&put_batch(b"blind", b"value"))
         .expect("blind write");
@@ -612,7 +612,7 @@ fn commit_blind_write_succeeds_without_read_set() {
 
 #[test]
 fn commit_expected_version_match_succeeds() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let first = runtime.commit(&put_batch(b"cas", b"old")).expect("first");
     let batch = CommitBatch::new(
         branch(),
@@ -632,7 +632,7 @@ fn commit_expected_version_match_succeeds() {
 
 #[test]
 fn commit_expected_version_mismatch_conflicts() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     runtime.commit(&put_batch(b"cas", b"old")).expect("first");
     let batch = CommitBatch::new(
         branch(),
@@ -654,7 +654,7 @@ fn commit_expected_version_mismatch_conflicts() {
 
 #[test]
 fn commit_expected_absent_match_succeeds() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let batch = CommitBatch::new(
         branch(),
         vec![put_mutation(b"absent", b"value")],
@@ -672,7 +672,7 @@ fn commit_expected_absent_match_succeeds() {
 
 #[test]
 fn commit_expected_absent_mismatch_conflicts() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     runtime
         .commit(&put_batch(b"absent", b"old"))
         .expect("first");
@@ -695,7 +695,7 @@ fn commit_expected_absent_mismatch_conflicts() {
 
 #[test]
 fn commit_expected_absent_succeeds_after_visible_delete() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     runtime
         .commit(&put_batch(b"deleted-cas", b"old"))
         .expect("first");
@@ -732,7 +732,7 @@ fn commit_expected_absent_succeeds_after_visible_delete() {
 
 #[test]
 fn commit_expected_present_rejects_after_visible_delete() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let first = runtime
         .commit(&put_batch(b"deleted-present-cas", b"old"))
         .expect("first");
@@ -765,7 +765,7 @@ fn commit_expected_present_rejects_after_visible_delete() {
 
 #[test]
 fn commit_conditions_are_explicit_cas_not_captured_read_sets() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let guarded = runtime
         .commit(&put_batch(b"guarded", b"v1"))
         .expect("initial guarded row");
@@ -822,7 +822,7 @@ fn commit_condition_rejects_zero_expected_present_version() {
 
 #[test]
 fn commit_conflict_error_has_structured_branch_and_key() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     runtime
         .commit(&put_batch(b"structured", b"old"))
         .expect("first");
@@ -953,7 +953,7 @@ fn commit_rejects_condition_with_multi_byte_storage_space() {
         api_key(b"condition-space"),
     )])
     .expect("condition shape accepted");
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .commit(&batch)

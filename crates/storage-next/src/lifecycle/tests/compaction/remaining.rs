@@ -9,7 +9,9 @@ use crate::branch::state::materialization::{
 };
 use crate::branch::state::BranchLocalState;
 use crate::lifecycle::compaction::{
-    current_compaction_request_from_maintenance_task, stale_compaction_maintenance_outcome,
+    current_compaction_request_from_maintenance_task, defer_compaction_for_resource_policy,
+    stale_compaction_maintenance_outcome, table_rewrite_outcome_was_flush_preempted,
+    FROZEN_BLOCKING_FLUSH_THRESHOLD,
 };
 use crate::lifecycle::tests::checkpoint::shared::{
     open_runtime, CheckpointBackendEvent, CheckpointTestBackend,
@@ -18,6 +20,60 @@ use crate::table::{
     sort_table_rows_by_key, ImmutableTableBuilder, TableBuilderConfig, TableIdentity, TableRow,
 };
 use strata_core_next::{CommitVersion, Timestamp};
+
+#[test]
+fn compaction_flush_preemption_gate_yields_only_at_the_blocking_threshold() {
+    let branch = branch_id(0x72);
+    let request =
+        LifecycleCompactionRequest::new(branch, BranchCompactionKind::CompactL0, "a3-gate")
+            .expect("compaction request");
+
+    let with_frozen = |count: usize| -> BranchLocalState {
+        let mut state = BranchLocalState::empty(branch);
+        for i in 0..count {
+            let n = u64::try_from(i).expect("index fits");
+            state
+                .append_committed_row(put_row(
+                    branch,
+                    format!("frozen-{i}").as_bytes(),
+                    n + 1,
+                    (n + 1) * 1_000,
+                    b"value",
+                ))
+                .expect("append");
+            state.rotate_active();
+        }
+        assert_eq!(state.frozen_table_count(), count);
+        state
+    };
+
+    // Below the blocking threshold: compaction is NOT flush-preempted. With the
+    // Unlimited io policy the gate has no other reason to defer, so it returns None.
+    for frozen in 1..FROZEN_BLOCKING_FLUSH_THRESHOLD {
+        let state = with_frozen(frozen);
+        assert!(
+            defer_compaction_for_resource_policy(
+                &state,
+                &request,
+                crate::lifecycle::config::LifecycleCompactionIoPolicy::Unlimited,
+            )
+            .expect("defer")
+            .is_none(),
+            "frozen={frozen} (< {FROZEN_BLOCKING_FLUSH_THRESHOLD}) must not flush-preempt compaction"
+        );
+    }
+
+    // At the blocking threshold: flush is blocking admission, so compaction yields.
+    let state = with_frozen(FROZEN_BLOCKING_FLUSH_THRESHOLD);
+    let outcome = defer_compaction_for_resource_policy(
+        &state,
+        &request,
+        crate::lifecycle::config::LifecycleCompactionIoPolicy::Unlimited,
+    )
+    .expect("defer")
+    .expect("compaction is flush-preempted at the blocking threshold");
+    assert!(table_rewrite_outcome_was_flush_preempted(&outcome));
+}
 
 #[test]
 fn table_rewrite_requests_reject_bad_components_and_wrong_branch_execution() {
@@ -49,7 +105,7 @@ fn table_rewrite_requests_reject_bad_components_and_wrong_branch_execution() {
 }
 
 #[test]
-fn compaction_chain_tasks_coalesce_by_branch_scope() {
+fn compaction_chain_tasks_coalesce_per_branch_and_level() {
     let branch = branch_id(0x72);
     let other = branch_id(0x73);
     let mut executor = LifecycleMaintenanceExecutor::new(8).expect("executor");
@@ -81,15 +137,18 @@ fn compaction_chain_tasks_coalesce_by_branch_scope() {
 
     assert_eq!(duplicate.task_id(), first.task_id());
     assert!(duplicate.was_coalesced());
-    assert_eq!(other_level.task_id(), first.task_id());
-    assert!(other_level.was_coalesced());
+    // Per-(branch, level) coalescing: a different level on the same branch is now its own
+    // pending task (previously collapsed into the branch's single compaction task), so
+    // concurrent workers have distinct non-conflicting levels to pick.
+    assert_ne!(other_level.task_id(), first.task_id());
+    assert!(!other_level.was_coalesced());
     assert_ne!(other_branch.task_id(), first.task_id());
     assert_eq!(
         duplicate_materialization.task_id(),
         materialization.task_id()
     );
-    assert_eq!(executor.status().pending_tasks(), 3);
-    assert_eq!(executor.stats().coalesced(), 3);
+    assert_eq!(executor.status().pending_tasks(), 4);
+    assert_eq!(executor.stats().coalesced(), 2);
 }
 
 #[test]
@@ -429,7 +488,10 @@ fn materialization_preserves_range_scan_and_child_immutable_precedence() {
 }
 
 #[test]
-fn materializing_inherited_layers_report_pressure_without_mutating_reads() {
+fn materializing_lone_inherited_layer_stays_below_gate_without_mutating_reads() {
+    // fork-cow.3: a lone inherited layer is a healthy COW fork below the proactive materialization gate,
+    // so it reports no InheritedLayerBacklog pressure even mid-materialization — but marking it
+    // Materializing must never change what reads see.
     let parent = branch_id(0x7d);
     let child = branch_id(0x7e);
     let mut child_state = materialization_read_state(parent, child);
@@ -456,11 +518,8 @@ fn materializing_inherited_layers_report_pressure_without_mutating_reads() {
         .row()
         .clone();
 
-    assert_eq!(
-        pressure.reason(),
-        LifecycleStoragePressureReason::InheritedLayerBacklog
-    );
-    assert_eq!(pressure.inherited_layers(), 1);
+    assert_eq!(pressure.reason(), LifecycleStoragePressureReason::None);
+    assert_eq!(child_state.inherited_layer_count(), 1);
     assert_eq!(before, after);
 }
 
@@ -601,7 +660,7 @@ fn pressure_debug_output_uses_storage_vocabulary() {
 fn storage_pressure_blocks_mutating_admission_for_large_table_backlog() {
     let branch = branch_id(0x82);
     let mut state = BranchLocalState::empty(branch);
-    for index in 0_u64..16 {
+    for index in 0_u64..36 {
         install_l0_table(
             &mut state,
             branch,
@@ -626,7 +685,7 @@ fn storage_pressure_blocks_mutating_admission_for_large_table_backlog() {
         pressure.reason(),
         LifecycleStoragePressureReason::LevelZeroTableBacklog
     );
-    assert_eq!(pressure.level_zero_tables(), 16);
+    assert_eq!(pressure.level_zero_tables(), 36);
     assert!(matches!(
         pressure.suggested_task().map(MaintenanceTaskRequest::kind),
         Some(MaintenanceTaskKind::Compaction)
@@ -693,9 +752,9 @@ fn materialization_branch_errors_preserve_source_chain_and_code() {
 
 #[test]
 fn durable_compaction_publishes_manifest_after_install() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x91);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,
@@ -742,9 +801,9 @@ fn durable_compaction_publishes_manifest_after_install() {
 
 #[test]
 fn durable_compaction_manifest_failure_reports_debt_after_install() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x92);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,
@@ -791,9 +850,9 @@ fn durable_compaction_manifest_failure_reports_debt_after_install() {
 
 #[test]
 fn durable_compaction_rejects_existing_output_with_conflicting_bytes() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x9a);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,
@@ -869,7 +928,7 @@ fn durable_compaction_rejects_existing_output_with_conflicting_bytes() {
 
 #[test]
 fn durable_materialization_publishes_manifest_after_layer_removal() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let parent = branch_id(0x93);
     let child = branch_id(0x94);
     let mut parent_state = BranchLocalState::empty(parent);
@@ -882,7 +941,7 @@ fn durable_materialization_publishes_manifest_after_layer_removal() {
     let (child_state, _) = parent_state
         .fork_into_empty_child(child)
         .expect("fork child");
-    let mut runtime = open_runtime(child, &backend);
+    let mut runtime = open_runtime(child, backend);
     *runtime.branch_state_mut() = child_state;
     let request =
         LifecycleMaterializationRequest::new(child, 0, "durable-materialization").expect("request");
@@ -924,7 +983,7 @@ fn durable_materialization_publishes_manifest_after_layer_removal() {
 
 #[test]
 fn durable_materialization_retry_after_manifest_debt_publishes_manifest() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let parent = branch_id(0x9b);
     let child = branch_id(0x9c);
     let mut parent_state = BranchLocalState::empty(parent);
@@ -937,7 +996,7 @@ fn durable_materialization_retry_after_manifest_debt_publishes_manifest() {
     let (child_state, _) = parent_state
         .fork_into_empty_child(child)
         .expect("fork child");
-    let mut runtime = open_runtime(child, &backend);
+    let mut runtime = open_runtime(child, backend);
     *runtime.branch_state_mut() = child_state;
     backend.fail_table_manifest_replacement_on_call(1);
     let request = LifecycleMaterializationRequest::new(child, 0, "durable-materialization-retry")
@@ -983,9 +1042,9 @@ fn durable_materialization_retry_after_manifest_debt_publishes_manifest() {
 
 #[test]
 fn durable_compaction_publishes_output_before_manifest_and_reopens_before_install() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x9d);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,
@@ -1027,9 +1086,9 @@ fn durable_compaction_publishes_output_before_manifest_and_reopens_before_instal
 
 #[test]
 fn durable_compaction_manifest_includes_outputs_and_excludes_replaced_inputs() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x9e);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,
@@ -1079,9 +1138,9 @@ fn durable_compaction_manifest_includes_outputs_and_excludes_replaced_inputs() {
 
 #[test]
 fn durable_compaction_no_candidate_is_deferred_without_publication() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x9f);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
 
     let outcome = runtime
         .compact_branch_tables(
@@ -1101,7 +1160,7 @@ fn durable_compaction_no_candidate_is_deferred_without_publication() {
 
 #[test]
 fn durable_materialization_manifest_includes_replacements_and_removes_inherited_layer() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let parent = branch_id(0xa0);
     let child = branch_id(0xa1);
     let mut parent_state = BranchLocalState::empty(parent);
@@ -1114,7 +1173,7 @@ fn durable_materialization_manifest_includes_replacements_and_removes_inherited_
     let (child_state, _) = parent_state
         .fork_into_empty_child(child)
         .expect("fork child");
-    let mut runtime = open_runtime(child, &backend);
+    let mut runtime = open_runtime(child, backend);
     *runtime.branch_state_mut() = child_state;
 
     let outcome = runtime
@@ -1144,9 +1203,9 @@ fn durable_materialization_manifest_includes_replacements_and_removes_inherited_
 
 #[test]
 fn durable_compaction_preserves_reads_tombstones_timestamps_and_ttl_rows() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xa2);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     *runtime.branch_state_mut() = read_shape_state(branch);
     let history_key = physical_key(branch, b"history");
     let scan_prefix = physical_key(branch, b"scan-");
@@ -1223,10 +1282,10 @@ fn durable_compaction_preserves_reads_tombstones_timestamps_and_ttl_rows() {
 
 #[test]
 fn durable_materialization_preserves_reads_and_fork_gate() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let parent = branch_id(0xa3);
     let child = branch_id(0xa4);
-    let mut runtime = open_runtime(child, &backend);
+    let mut runtime = open_runtime(child, backend);
     let mut parent_state = BranchLocalState::empty(parent);
     install_l0_table(
         &mut parent_state,
@@ -1283,9 +1342,9 @@ fn durable_materialization_preserves_reads_and_fork_gate() {
 
 #[test]
 fn rewrite_output_publish_failure_leaves_reads_unchanged() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xa5);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,
@@ -1346,9 +1405,9 @@ fn rewrite_output_publish_failure_leaves_reads_unchanged() {
 
 #[test]
 fn rewrite_output_publish_uncertain_names_possibly_visible_object() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xa6);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,
@@ -1387,9 +1446,9 @@ fn rewrite_output_publish_uncertain_names_possibly_visible_object() {
 
 #[test]
 fn rewrite_output_reopen_failure_leaves_reads_unchanged_and_names_orphan() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xa7);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,
@@ -1430,9 +1489,9 @@ fn rewrite_output_reopen_failure_leaves_reads_unchanged_and_names_orphan() {
 
 #[test]
 fn rewrite_manifest_publish_uncertain_after_install_reports_debt() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xa8);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,
@@ -1474,10 +1533,10 @@ fn rewrite_manifest_publish_uncertain_after_install_reports_debt() {
 
 #[test]
 fn recovery_after_durable_compaction_uses_manifest_outputs() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xa9);
     {
-        let mut runtime = open_runtime(branch, &backend);
+        let mut runtime = open_runtime(branch, backend);
         install_l0_table(
             runtime.branch_state_mut(),
             branch,
@@ -1502,7 +1561,7 @@ fn recovery_after_durable_compaction_uses_manifest_outputs() {
             .expect("durable compaction");
     }
 
-    let reopened = open_runtime(branch, &backend);
+    let reopened = open_runtime(branch, backend);
     let visible = reopened
         .branch_state()
         .capture_read_view()
@@ -1529,7 +1588,7 @@ fn recovery_after_durable_compaction_uses_manifest_outputs() {
 
 #[test]
 fn recovery_after_durable_materialization_uses_manifest_replacements() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let parent = branch_id(0xaa);
     let child = branch_id(0xab);
     {
@@ -1543,7 +1602,7 @@ fn recovery_after_durable_materialization_uses_manifest_replacements() {
         let (child_state, _) = parent_state
             .fork_into_empty_child(child)
             .expect("fork child");
-        let mut runtime = open_runtime(child, &backend);
+        let mut runtime = open_runtime(child, backend);
         *runtime.branch_state_mut() = child_state;
         runtime
             .materialize_inherited_layer(
@@ -1553,7 +1612,7 @@ fn recovery_after_durable_materialization_uses_manifest_replacements() {
             .expect("durable materialization");
     }
 
-    let reopened = open_runtime(child, &backend);
+    let reopened = open_runtime(child, backend);
     let visible = reopened
         .branch_state()
         .capture_read_view()
@@ -1581,10 +1640,10 @@ fn recovery_after_durable_materialization_uses_manifest_replacements() {
 
 #[test]
 fn recovery_after_output_publish_before_install_ignores_orphan_output() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xac);
     {
-        let mut runtime = open_runtime(branch, &backend);
+        let mut runtime = open_runtime(branch, backend);
         install_l0_table(
             runtime.branch_state_mut(),
             branch,
@@ -1612,7 +1671,7 @@ fn recovery_after_output_publish_before_install_ignores_orphan_output() {
         assert_eq!(backend.table_object_names().len(), 1);
     }
 
-    let reopened = open_runtime(branch, &backend);
+    let reopened = open_runtime(branch, backend);
 
     assert!(reopened.branch_state().is_empty());
     assert!(reopened
@@ -1625,9 +1684,9 @@ fn recovery_after_output_publish_before_install_ignores_orphan_output() {
 
 #[test]
 fn durable_rewrite_completion_does_not_persist_flush_watermark_or_truncate_wal() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xad);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,
@@ -1664,11 +1723,11 @@ fn durable_rewrite_completion_does_not_persist_flush_watermark_or_truncate_wal()
 
 #[cfg(feature = "perf-trace")]
 #[test]
-fn durable_rewrite_uses_build_facts_and_in_memory_reader_handoff() {
+fn durable_rewrite_uses_build_facts_and_lazy_reader_reopen() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xaf);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,
@@ -1698,16 +1757,18 @@ fn durable_rewrite_uses_build_facts_and_in_memory_reader_handoff() {
     assert_eq!(perf.table_compaction_output_tables_built(), 1);
     assert_eq!(perf.table_build_facts_from_streaming_metadata(), 1);
     assert_eq!(perf.table_rewrite_redundant_fact_decodes_avoided(), 1);
-    assert_eq!(perf.table_rewrite_reader_reopens_avoided(), 1);
-    assert_eq!(perf.table_rewrite_reader_row_vectors_reused(), 1);
+    // BS4.4l: the durable output now reopens lazily (metadata-only, disk-resident) instead of the eager
+    // row-reuse handoff, and must not fully materialize.
+    assert_eq!(perf.table_rewrite_reader_reopens_performed(), 1);
+    assert_eq!(perf.table_lazy_full_materializations(), 0);
     assert_eq!(runtime.branch_state().owned_levels()[0].len(), 1);
 }
 
 #[test]
 fn durable_rewrite_manifest_success_can_build_flush_coverage_candidate() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xae);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,
@@ -1742,9 +1803,9 @@ fn durable_rewrite_manifest_success_can_build_flush_coverage_candidate() {
 
 #[test]
 fn durable_rewrite_does_not_delete_or_quarantine_replaced_or_orphaned_objects() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xaf);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
     install_l0_table(
         runtime.branch_state_mut(),
         branch,

@@ -14,6 +14,7 @@ pub(crate) mod facts;
 pub(crate) mod identity;
 pub(crate) mod pruning;
 pub(crate) mod read;
+pub(crate) mod snapshot;
 pub(crate) mod state;
 
 #[cfg(test)]

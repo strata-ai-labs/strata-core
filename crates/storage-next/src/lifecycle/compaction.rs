@@ -30,9 +30,27 @@ use crate::table::{
 };
 use strata_core_next::BranchId;
 
+/// L0 write-admission grades, aligned to `RocksDB`'s slowdown/stop triggers
+/// (`durable-write-pipeline-scaling.md:184`, `db/column_family.cc:992`): compaction is scheduled at
+/// 4, writes enter the slowdown (delay) band at 20, and mutating admission hard-blocks at 36 — matching
+/// `RocksDB`'s L0 defaults. Strata's earlier 8/16 blocked ~2x sooner, collapsing the update-heavy crawl
+/// into a stall with little compaction runway (G10, BS3.4a). The block ceiling is 36 x 64 MiB ~=
+/// 2.3 GiB of L0 *on disk* worst-case; write-path memory stays bounded by the active/frozen byte pools
+/// independently of this count grade (see the profile-tier matrix test). BS3.4b replaces the quadratic
+/// delay band between 20 and 36 with a debt-adaptive rate ramp.
 const LEVEL_ZERO_COMPACTION_THRESHOLD: usize = 4;
-const LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD: usize = 8;
-const LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD: usize = 16;
+pub(crate) const LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD: usize = 20;
+pub(crate) const LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD: usize = 36;
+
+/// L0 slowdown (delay-band onset) grade, for the BS3.4b graded-admission rate ramp.
+pub(super) const fn level_zero_urgent_threshold() -> usize {
+    LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD
+}
+
+/// L0 hard-stop grade, for the BS3.4b near-stop braking + delay-band ceiling.
+pub(super) const fn level_zero_blocking_threshold() -> usize {
+    LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD
+}
 const NONZERO_LEVEL_COMPACTION_THRESHOLD: usize = 4;
 const NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD: usize = 8;
 const NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD: usize = 16;
@@ -41,10 +59,20 @@ const NONZERO_LEVEL_MAX_BASE_TARGET_BYTES: u64 = 256 * 1024 * 1024;
 const NONZERO_LEVEL_TARGET_GROWTH_FACTOR: u64 = 10;
 const NONZERO_LEVEL_URGENT_TARGET_MULTIPLIER: u64 = 2;
 const NONZERO_LEVEL_BLOCKING_TARGET_MULTIPLIER: u64 = 4;
+// Urgency-score normalizer for inherited-layer backlog (`count_pressure_score(layer_count, ..)`): a layer
+// counts as `layer_count * 1000` pressure, so materialization ranks linearly by backlog depth against
+// compaction. This is the *rank* input and is deliberately independent of the onset gate below.
 const INHERITED_LAYER_MATERIALIZATION_THRESHOLD: usize = 1;
+// Onset gate: proactive inherited-layer flattening starts at 2 layers, not 1. A lone Active inherited layer
+// is a healthy copy-on-write fork (every historical COW fork and every `fork_current`), and flattening it
+// would re-materialize the parent's `<= fork_version` snapshot into O(dataset) child-owned tables — the
+// exact copy COW eliminates. A lone layer therefore stays lazy indefinitely; its pinned snapshot is retained
+// correctly (the child needs it, and reachability-gated reclaim never deletes a still-referenced object).
+// Deeper fork-of-fork chains still flatten: Background (2-3), Urgent (>=4), Blocking write-admission (>=16).
+const INHERITED_LAYER_PROACTIVE_MATERIALIZATION_MIN: usize = 2;
 const INHERITED_LAYER_URGENT_MATERIALIZATION_THRESHOLD: usize = 4;
 const INHERITED_LAYER_BLOCKING_MATERIALIZATION_THRESHOLD: usize = 16;
-const FROZEN_BLOCKING_FLUSH_THRESHOLD: usize = 4;
+pub(crate) const FROZEN_BLOCKING_FLUSH_THRESHOLD: usize = 4;
 const PENDING_MAINTENANCE_BLOCKING_THRESHOLD: usize = 16;
 const DEFAULT_COMPACTION_DRAIN_PASS_LIMIT: usize = 16;
 const BOTTOMMOST_COMPACTION_INPUT_LIMIT: usize = 4;
@@ -180,6 +208,10 @@ pub(crate) struct LifecycleStoragePressure {
     table_rewrite_bytes: u64,
     inherited_layers: usize,
     pending_maintenance: usize,
+    /// Continuous write-throttle fullness in permille (0..=1000): the max of the
+    /// active-pool, frozen-pool, and L0 fullness ratios. Drives the proportional
+    /// pre-budget write throttle (fix #2). 0 for cache mode and below all soft thresholds.
+    throttle_ratio_permille: u16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -542,12 +574,10 @@ pub(super) fn nonzero_level_targets_from_level_bytes(level_bytes: &[u64]) -> Vec
 }
 
 fn nonzero_level_targets_for_branch(branch: &BranchLocalState) -> Vec<u64> {
-    let level_bytes = branch
-        .owned_levels()
-        .iter()
-        .map(|tables| level_byte_count(tables))
-        .collect::<Vec<_>>();
-    nonzero_level_targets_from_level_bytes(&level_bytes)
+    // The cached per-level bytes are the same fold `level_byte_count` computes for each level
+    // (`facts().byte_count()` sum), maintained at structural-mutation cadence, so this is O(1) in
+    // the number of tables and byte-identical to the previous per-level fold.
+    nonzero_level_targets_from_level_bytes(branch.per_level_bytes())
 }
 
 fn nonzero_level_target_bytes_for_branch(
@@ -841,6 +871,13 @@ impl LifecycleCompactionOutcome {
 
     pub(crate) const fn failure(&self) -> Option<&LifecycleError> {
         self.failure.as_ref()
+    }
+
+    /// Superseded input objects whose manifest refs this compaction dropped. They are retained
+    /// on disk at publish (children's inherited layers may still reference them); the
+    /// table-object GC mark decides their reclaim through reachability.
+    pub(crate) fn retained_input_objects(&self) -> &[String] {
+        &self.retained_input_objects
     }
 
     pub(crate) fn maintenance_outcome(&self) -> MaintenanceOutcome {
@@ -1233,6 +1270,8 @@ impl LifecycleStoragePressure {
             severity: LifecycleStoragePressureSeverity::None,
             reason: LifecycleStoragePressureReason::None,
             suggested_task: None,
+            // Cache mode never throttles writes on source/table shape.
+            throttle_ratio_permille: 0,
             ..self
         }
     }
@@ -1304,6 +1343,10 @@ impl LifecycleStoragePressure {
     pub(crate) const fn pending_maintenance(self) -> usize {
         self.pending_maintenance
     }
+
+    pub(crate) const fn throttle_ratio_permille(self) -> u16 {
+        self.throttle_ratio_permille
+    }
 }
 
 pub(crate) fn compact_cache_branch(
@@ -1360,7 +1403,11 @@ pub(crate) fn defer_compaction_for_resource_policy(
     request: &LifecycleCompactionRequest,
     policy: LifecycleCompactionIoPolicy,
 ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-    if branch.frozen_table_count() > 0 {
+    // Yield to flush only when the frozen backlog is at the blocking threshold — i.e.
+    // flush is so far behind it is blocking write admission. Below that, compaction runs
+    // concurrently with flush (different lanes, owned-table-only inputs) instead of
+    // churning on preempt/requeue while a single frozen memtable exists.
+    if branch.frozen_table_count() >= FROZEN_BLOCKING_FLUSH_THRESHOLD {
         return Ok(Some(flush_pressure_preempted_compaction_outcome()));
     }
     let Some(limit_bytes) = policy.max_bytes_per_task() else {
@@ -1404,6 +1451,15 @@ pub(crate) fn record_lifecycle_compaction_outcome(outcome: &LifecycleCompactionO
             crate::observability::perf_trace::LifecycleCompactionOperationKind::Bottommost
         }
     };
+    crate::debug_trace::trace(format_args!(
+        "compact level={} input={} overlap={} in_bytes={} ms={} promo={}",
+        candidate.output_level().raw(),
+        candidate.input_refs().len(),
+        candidate.overlap_refs().len(),
+        io_facts.input_bytes(),
+        outcome.elapsed().as_millis(),
+        candidate.is_metadata_promotion(),
+    ));
     crate::observability::perf_trace::record_lifecycle_compaction_operation(
         candidate.output_level().raw(),
         operation_kind,
@@ -1788,6 +1844,16 @@ pub(crate) fn collect_storage_pressure_with_budget(
         false,
     );
 
+    let throttle_ratio_permille = storage_pressure_throttle_ratio_permille(
+        branch,
+        active_bytes,
+        frozen_bytes,
+        frozen_tables,
+        level_zero_tables,
+        pending_maintenance,
+        budget,
+    );
+
     LifecycleStoragePressure {
         branch_id,
         severity,
@@ -1802,7 +1868,78 @@ pub(crate) fn collect_storage_pressure_with_budget(
         table_rewrite_bytes,
         inherited_layers,
         pending_maintenance,
+        throttle_ratio_permille,
     }
+}
+
+/// The eligible table-rewrite task (compaction/materialization) for the most-backed-up
+/// level, decoupled from the flush-first `suggested_task` cascade so a backed-up level is
+/// scheduled even while frozen memtables pin the single suggestion to flush. Returns
+/// `None` when no level is at its rewrite trigger, or when an optional (Background)
+/// rewrite is held back under global memory pressure (mirroring the `suggested_task`
+/// deferral, but keyed on the rewrite's own severity rather than the overall pressure).
+pub(crate) fn eligible_compaction_task(
+    branch: &BranchLocalState,
+    budget: Option<StorageRuntimeBudget>,
+    global: StorageBudgetPressureSeverity,
+) -> Option<MaintenanceTaskRequest> {
+    let score = selected_table_rewrite_score(branch, budget)?;
+    if score.severity == LifecycleStoragePressureSeverity::Background
+        && global.defers_optional_maintenance()
+    {
+        return None;
+    }
+    Some(score.task_request(branch.branch_id()))
+}
+
+/// Every eligible compaction level for the branch as a separate task request (plus
+/// materialization if eligible), rather than only the single top-scored one. Per-(branch,
+/// level) coalescing keeps re-enqueues idempotent; concurrent workers then pick disjoint
+/// levels. Applies the same background/global-pressure defer gate per level as
+/// [`eligible_compaction_task`].
+pub(crate) fn eligible_compaction_tasks(
+    branch: &BranchLocalState,
+    _budget: Option<StorageRuntimeBudget>,
+    global: StorageBudgetPressureSeverity,
+) -> Vec<MaintenanceTaskRequest> {
+    let mut compaction_scores: Vec<LifecycleCompactionScore> =
+        level_zero_compaction_score(branch).into_iter().collect();
+    let level_targets = nonzero_level_targets_for_branch(branch);
+    for (level_index, tables) in branch
+        .owned_levels()
+        .iter()
+        .enumerate()
+        .skip(usize::from(BranchLevel::ZERO.raw()) + 1)
+    {
+        let Some(target_bytes) = level_targets.get(level_index).copied() else {
+            continue;
+        };
+        if is_final_configured_level(branch, level_index) {
+            continue;
+        }
+        if let Some(score) =
+            nonzero_compaction_score_for_branch(branch, level_index, tables, target_bytes)
+        {
+            compaction_scores.push(score);
+        }
+    }
+
+    let defers = global.defers_optional_maintenance();
+    let branch_id = branch.branch_id();
+    let mut requests = Vec::new();
+    for score in compaction_scores {
+        let rewrite = LifecycleTableRewriteScore::from(score);
+        if rewrite.severity == LifecycleStoragePressureSeverity::Background && defers {
+            continue;
+        }
+        requests.push(rewrite.task_request(branch_id));
+    }
+    if let Some(score) = materialization_score(branch) {
+        if !(score.severity == LifecycleStoragePressureSeverity::Background && defers) {
+            requests.push(score.task_request(branch_id));
+        }
+    }
+    requests
 }
 
 fn storage_pressure_decision(
@@ -2001,6 +2138,68 @@ fn proportional_threshold(total: u64, numerator: u64, denominator: u64) -> u64 {
     total.saturating_mul(numerator).div_ceil(denominator).max(1)
 }
 
+/// Fullness of `used` against `limit` in permille; 0 when `limit == 0` (mirrors the
+/// byte-pressure guards). May exceed 1000 when over the limit; the caller clamps.
+fn fullness_permille(used: u64, limit: u64) -> u64 {
+    if limit == 0 {
+        return 0;
+    }
+    used.saturating_mul(1000) / limit
+}
+
+/// `fullness_permille` for count-based dimensions (usize used/limit).
+fn count_fullness_permille(used: usize, limit: usize) -> u64 {
+    fullness_permille(
+        u64::try_from(used).unwrap_or(u64::MAX),
+        u64::try_from(limit).unwrap_or(u64::MAX),
+    )
+}
+
+/// Max write-throttle fullness across every hard-block admission trigger — active-pool bytes,
+/// frozen-pool bytes, frozen-table count, L0-table count, and pending-maintenance depth — in
+/// permille (0..=1000). Pure function of values already loaded by
+/// `collect_storage_pressure_with_budget` (no extra branch reads). Taking the max over all
+/// triggers makes the proportional throttle ramp before *each* binary block; the frozen-count
+/// and L0-count cliffs are the in-budget RC2 collapse drivers, and the frozen-pool projection
+/// (frozen+active vs the frozen budget) leads the rotation stall.
+fn storage_pressure_throttle_ratio_permille(
+    branch: &BranchLocalState,
+    active_bytes: u64,
+    frozen_bytes: u64,
+    frozen_tables: usize,
+    level_zero_tables: usize,
+    pending_maintenance: usize,
+    budget: Option<StorageRuntimeBudget>,
+) -> u16 {
+    let rotation_bytes = u64::try_from(branch.config().active_rotation_bytes()).unwrap_or(u64::MAX);
+    let mut ratio = fullness_permille(active_bytes, rotation_bytes);
+
+    if frozen_tables > 0 {
+        if let Some(budget) = budget {
+            let frozen_limit = budget.pool_limit_bytes(StorageBudgetPool::FrozenMutable);
+            ratio = ratio.max(fullness_permille(
+                frozen_bytes.saturating_add(active_bytes),
+                frozen_limit,
+            ));
+        }
+    }
+
+    ratio = ratio.max(count_fullness_permille(
+        frozen_tables,
+        FROZEN_BLOCKING_FLUSH_THRESHOLD,
+    ));
+    ratio = ratio.max(count_fullness_permille(
+        level_zero_tables,
+        LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD,
+    ));
+    ratio = ratio.max(count_fullness_permille(
+        pending_maintenance,
+        PENDING_MAINTENANCE_BLOCKING_THRESHOLD,
+    ));
+
+    u16::try_from(ratio.min(1000)).unwrap_or(1000)
+}
+
 fn record_active_byte_pressure(severity: Option<LifecycleStoragePressureSeverity>) {
     let Some(severity) = severity else {
         return;
@@ -2157,7 +2356,8 @@ fn level_zero_compaction_score(branch: &BranchLocalState) -> Option<LifecycleCom
     if table_count < LEVEL_ZERO_COMPACTION_THRESHOLD {
         return None;
     }
-    let byte_count = level_byte_count(tables);
+    // Cached `per_level_bytes()[0]` — byte-identical to `level_byte_count(tables)`, O(1).
+    let byte_count = branch.per_level_bytes().first().copied().unwrap_or(0);
     let severity = if table_count >= LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD {
         LifecycleStoragePressureSeverity::BlockMutatingAdmission
     } else if table_count >= LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD {
@@ -2187,12 +2387,14 @@ fn level_zero_compaction_score(branch: &BranchLocalState) -> Option<LifecycleCom
 fn nonzero_compaction_score(
     level_index: usize,
     tables: &[crate::branch::read::BranchOwnedTable],
+    byte_count: u64,
     target_bytes: u64,
 ) -> Option<LifecycleCompactionScore> {
     let level = u8::try_from(level_index).ok()?;
     crate::observability::perf_trace::record_lifecycle_compaction_level_target(level, target_bytes);
     let table_count = tables.len();
-    let byte_count = level_byte_count(tables);
+    // `byte_count` is the caller's cached `per_level_bytes()[level_index]` — identical to
+    // `level_byte_count(tables)` but O(1). `tables` is retained only for the O(1) `table_count`.
     let (severity, score, target_bytes) =
         nonzero_compaction_pressure_for_target(table_count, byte_count, target_bytes)?;
     crate::observability::perf_trace::record_lifecycle_compaction_score_candidate(
@@ -2222,7 +2424,12 @@ fn nonzero_compaction_score_for_branch(
     if is_final_configured_level(branch, level_index) {
         return None;
     }
-    let mut score = nonzero_compaction_score(level_index, tables, target_bytes)?;
+    let byte_count = branch
+        .per_level_bytes()
+        .get(level_index)
+        .copied()
+        .unwrap_or(0);
+    let mut score = nonzero_compaction_score(level_index, tables, byte_count, target_bytes)?;
     score.table_index = selected_nonzero_compaction_table_index_for_branch(branch, level_index);
     Some(score)
 }
@@ -2270,7 +2477,7 @@ fn materialization_score_for_layer(
     layer_index: usize,
 ) -> Option<LifecycleTableRewriteScore> {
     let layer_count = branch.inherited_layer_count();
-    if layer_count < INHERITED_LAYER_MATERIALIZATION_THRESHOLD {
+    if layer_count < INHERITED_LAYER_PROACTIVE_MATERIALIZATION_MIN {
         return None;
     }
     let layer = branch.inherited_layers().get(layer_index)?;

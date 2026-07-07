@@ -22,6 +22,7 @@ mod snapshot_rows;
 mod storage_row;
 mod table;
 mod table_manifest;
+mod table_row_split_extension;
 mod wal;
 mod watermark;
 
@@ -78,6 +79,10 @@ pub(crate) use table_manifest::{
     TableManifestTableBounds, TableManifestTableFacts, TableManifestTableProvenance,
     TableManifestTableRef,
 };
+// BS4.4g: the writer emits the row-split section; BS4.4j recovery consumes it (via `from_parts`) to
+// rebuild each table's summary without a full row scan, so the decoder is now a live production import.
+pub(crate) use table_row_split_extension::decode_table_row_split_extension_section;
+pub(crate) use table_row_split_extension::{table_row_split_extension_section, TableRowSplit};
 #[expect(
     unused_imports,
     reason = "direct payload codec exports are used by payload fuzz/testkit routing after record integration"
@@ -88,6 +93,11 @@ pub(crate) use wal::{
     encode_wal_record_envelope_bytes_into, encode_wal_record_into_reusing,
     encode_wal_segment_header, WalRecord, WalSegmentHeader,
 };
+// BS4.2b: the reader consumes the persisted filter frame, so the decode side is a non-test export.
+pub(crate) use table::{decode_filter_frame, TableFilterFrame};
+// BS4.2: `encode_filter_frame` stays test-only until BS4.3 wires the writer.
+#[cfg(test)]
+pub(crate) use table::encode_filter_frame;
 #[cfg(test)]
 pub(crate) use wal::{encode_wal_record, encode_wal_record_envelope, WalRecordEnvelope};
 

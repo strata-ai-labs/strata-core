@@ -222,6 +222,42 @@ impl TableSummaryExtras {
         })
     }
 
+    /// Reassemble the summary from separately-persisted parts, without a row scan.
+    ///
+    /// Recovery uses this once durable readers are lazy: the timestamp/physical-key
+    /// bounds come from the table's durable record (`TableManifestTableFacts` /
+    /// `TableManifestTableBounds`, persisted since BS4.4a) and the put/tombstone split
+    /// from the durable row-split extension (BS4.4g). A `from_rows` scan over the same
+    /// sealed table yields a byte-identical summary — the recovery-time equivalence the
+    /// row-split extension exists to preserve. The bound orderings are structural
+    /// invariants of any non-empty table; they are debug-checked here so a corrupt or
+    /// mismatched durable record fails loudly in tests without a release-path scan.
+    pub(crate) fn from_parts(
+        timestamp_min: Option<Timestamp>,
+        timestamp_max: Option<Timestamp>,
+        physical_key_min: Vec<u8>,
+        physical_key_max: Vec<u8>,
+        put_rows: u64,
+        tombstone_rows: u64,
+    ) -> Self {
+        debug_assert!(
+            physical_key_min <= physical_key_max,
+            "physical-key bounds must be ordered"
+        );
+        debug_assert!(
+            timestamp_min <= timestamp_max,
+            "timestamp bounds must be ordered"
+        );
+        Self {
+            timestamp_min,
+            timestamp_max,
+            physical_key_min,
+            physical_key_max,
+            put_rows,
+            tombstone_rows,
+        }
+    }
+
     pub(crate) const fn timestamp_min(&self) -> Option<Timestamp> {
         self.timestamp_min
     }

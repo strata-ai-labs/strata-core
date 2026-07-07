@@ -7,8 +7,8 @@ use super::state::compaction::{BranchCompactionCandidate, BranchCompactionRetent
 use super::state::BranchLocalState;
 use crate::row::PhysicalKey;
 use crate::table::{
-    TableCompactionDecision, TableCompactionDropReason, TableCompactionPolicy,
-    TableCompactionRowContext, TableIdentity, TableRow, TableRuntimeResult,
+    MergeTableCursor, TableCompactionDecision, TableCompactionDropReason, TableCompactionPolicy,
+    TableCompactionRowContext, TableCursor, TableIdentity, TableRow, TableRuntimeResult,
 };
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -610,28 +610,57 @@ fn candidate_has_tombstone_resurrection_risk(
     candidate: &BranchCompactionCandidate,
     proof: BranchCompactionPruningProof,
 ) -> BranchRuntimeResult<bool> {
-    let rows = candidate_rows(branch, candidate)?;
-    for row in &rows {
-        if !row.is_tombstone() || !row_below_floors(row, proof) {
-            continue;
+    // BS4.4e: stream the candidate + overlap tables through a merged cursor instead of flattening every
+    // row into a `Vec`. The merge yields ascending internal key, so rows of one physical key are
+    // contiguous and — via the inverted commit suffix — in descending commit order. Within a physical-key
+    // group a below-floor tombstone seen at a higher commit would resurrect any later (lower-commit)
+    // surviving live row; O(1) state per group replaces the old O(n^2) self-join.
+    let mut cursor = candidate_merge_cursor(branch, candidate)?;
+    cursor
+        .seek_to_first()
+        .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+    let mut group_key: Option<PhysicalKey> = None;
+    let mut max_below_floor_tombstone_commit: Option<CommitVersion> = None;
+    while let Some(row) = cursor.current() {
+        // Copy out what we need so the row borrow ends before `advance` (same idiom as
+        // `try_for_each_reader_row`).
+        let physical_key = row.physical_key().clone();
+        let commit = row.commit_version();
+        let is_tombstone = row.is_tombstone();
+        let below_floors = row_below_floors(row, proof);
+        let would_drop = row_would_drop_as_expired(row, proof);
+        if group_key.as_ref() != Some(&physical_key) {
+            group_key = Some(physical_key);
+            max_below_floor_tombstone_commit = None;
         }
-        if rows.iter().any(|other| {
-            !other.is_tombstone()
-                && other.physical_key() == row.physical_key()
-                && other.commit_version() < row.commit_version()
-                && !row_would_drop_as_expired(other, proof)
-        }) {
+        // Resurrection risk ⟺ a surviving live row exists STRICTLY below a below-floor tombstone of the
+        // same key (matches the old self-join's `other.commit < tombstone.commit`). The strict compare
+        // avoids treating a same-commit duplicate internal key — an invariant violation — as risk.
+        if !is_tombstone
+            && !would_drop
+            && max_below_floor_tombstone_commit
+                .is_some_and(|tombstone| tombstone.as_u64() > commit.as_u64())
+        {
             return Ok(true);
         }
+        if is_tombstone && below_floors {
+            max_below_floor_tombstone_commit = Some(match max_below_floor_tombstone_commit {
+                Some(existing) if existing.as_u64() >= commit.as_u64() => existing,
+                _ => commit,
+            });
+        }
+        cursor
+            .advance()
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
     }
     Ok(false)
 }
 
-fn candidate_rows<'a>(
+fn candidate_merge_cursor<'a>(
     branch: &'a BranchLocalState,
     candidate: &BranchCompactionCandidate,
-) -> BranchRuntimeResult<Vec<&'a TableRow>> {
-    let mut rows = Vec::new();
+) -> BranchRuntimeResult<MergeTableCursor<'a>> {
+    let mut children: Vec<Box<dyn TableCursor + 'a>> = Vec::new();
     for table_ref in candidate
         .input_refs()
         .iter()
@@ -648,9 +677,9 @@ fn candidate_rows<'a>(
                 reason: BranchCompactionInvalidity::CandidateMissingTable,
             });
         };
-        rows.extend(table.rows());
+        children.push(Box::new(table.reader().cursor()));
     }
-    Ok(rows)
+    Ok(MergeTableCursor::new(children))
 }
 
 fn row_below_floors(row: &TableRow, proof: BranchCompactionPruningProof) -> bool {
@@ -698,11 +727,38 @@ fn hash_owned_levels(hash: &mut u64, levels: &[Vec<BranchOwnedTable>]) {
                 }
                 None => hash_u64(hash, 0),
             }
-            hash_u64(hash, table.rows().len() as u64);
-            for row in table.rows() {
-                hash_row(hash, row);
-            }
+            hash_table_facts(hash, table);
         }
+    }
+}
+
+/// BS4.4e: hash a sealed owned/inherited table by its facts+extras instead of streaming every row.
+/// Sealed tables are content-immutable and install rejects identity collisions, so within a process
+/// identity ⟹ content; the identity is already folded in by the caller and the facts/extras below are
+/// defense-in-depth. This keeps the pruning-proof fingerprint O(1) per table once tables are disk-backed
+/// (BS4.4f) — a `table.rows()` scan would otherwise trip the materialization guard.
+fn hash_table_facts(hash: &mut u64, table: &BranchOwnedTable) {
+    let facts = table.facts();
+    hash_u64(hash, facts.row_count());
+    hash_u64(hash, facts.byte_count());
+    hash_u64(hash, facts.commit_range().min().as_u64());
+    hash_u64(hash, facts.commit_range().max().as_u64());
+    hash_bytes(hash, facts.key_range().first_key());
+    hash_bytes(hash, facts.key_range().last_key());
+    let extras = table.extras();
+    hash_optional_timestamp(hash, extras.timestamp_min());
+    hash_optional_timestamp(hash, extras.timestamp_max());
+    hash_u64(hash, extras.put_rows());
+    hash_u64(hash, extras.tombstone_rows());
+}
+
+fn hash_optional_timestamp(hash: &mut u64, timestamp: Option<Timestamp>) {
+    match timestamp {
+        Some(timestamp) => {
+            hash_u64(hash, 1);
+            hash_u64(hash, timestamp.as_micros());
+        }
+        None => hash_u64(hash, 0),
     }
 }
 

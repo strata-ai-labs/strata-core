@@ -9,7 +9,7 @@
 //! primitives and handed back to a plain reopen for the recovery oracle.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::backend::local_fs::LocalFsBackend;
 use crate::backend::{
@@ -61,10 +61,12 @@ fn pick_index(rng: &mut SplitMix64, len: usize) -> usize {
 /// A `Backend` decorator over `LocalFsBackend` that records each object's unsynced
 /// boundary so a simulated crash can materialize a persistence-model crash state.
 /// Test / `fault-injection`-only.
-#[derive(Debug)]
+// BS4.4h: `state` is `Arc`-shared so the backend is `Clone` and can produce an owned handle;
+// a clone shares the same reorder state (runtime's owned clone + the test's retained handle).
+#[derive(Clone, Debug)]
 pub struct ReorderingBackend {
     inner: LocalFsBackend,
-    state: Mutex<ReorderState>,
+    state: Arc<Mutex<ReorderState>>,
 }
 
 impl ReorderingBackend {
@@ -72,7 +74,7 @@ impl ReorderingBackend {
     pub fn local_fs(root: impl Into<std::path::PathBuf>) -> Self {
         Self {
             inner: LocalFsBackend::new(root),
-            state: Mutex::new(ReorderState::default()),
+            state: Arc::new(Mutex::new(ReorderState::default())),
         }
     }
 

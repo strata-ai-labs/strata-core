@@ -1,13 +1,13 @@
 //! Immutable table builder.
 
 use super::{
-    FrozenTable, MutableTable, TableBuilderConfig, TableCommitRange, TableIdentity,
-    TableInternalKeyBytes, TableKeyRange, TableRow, TableRuntimeConfig, TableRuntimeError,
-    TableRuntimeFacts, TableRuntimeResult,
+    FrozenTable, MutableTable, TableBloomFilter, TableBuilderConfig, TableCommitRange,
+    TableIdentity, TableInternalKeyBytes, TableKeyRange, TableRow, TableRuntimeConfig,
+    TableRuntimeError, TableRuntimeFacts, TableRuntimeResult, TableSummaryExtras,
 };
 use crate::format::{
     ImmutableTableStreamingEncoder, ImmutableTableStreamingOutput, StreamingTableRow,
-    MAX_TABLE_BLOCK_DECODED_BYTES, MAX_TABLE_BLOCK_ENTRIES, MAX_TABLE_KEY_BYTES,
+    TableFilterFrame, MAX_TABLE_BLOCK_DECODED_BYTES, MAX_TABLE_BLOCK_ENTRIES, MAX_TABLE_KEY_BYTES,
     MAX_TABLE_ROW_BYTES,
 };
 use crate::observability::perf_trace;
@@ -17,12 +17,33 @@ use crate::row::StorageRow;
 pub(crate) struct BuiltTableArtifact {
     bytes: Vec<u8>,
     facts: TableRuntimeFacts,
+    // BS4.4f: the sealed table's summary (timestamp + physical-key bounds, put/tombstone split), computed
+    // once here from the rows so build-time installs thread it into `BranchOwnedTable::new` instead of the
+    // constructor re-scanning. `finish()` rejects empty tables, so `from_rows` never sees an empty slice.
+    extras: TableSummaryExtras,
+    // BS4.5a: the lazy reader's metadata-resident footprint (index + properties + filter frame), computed
+    // once at build from the encoder's index entries (same free fn the reader uses) and charged against
+    // the table-reader budget in place of the full encoded object — a durable dataset is no longer bounded
+    // by RAM. Matches a reopened reader's `resident_size_bytes()` exactly.
+    resident_metadata_bytes: u64,
     rows: Vec<TableRow>,
 }
 
 impl BuiltTableArtifact {
-    fn new(bytes: Vec<u8>, facts: TableRuntimeFacts, rows: Vec<TableRow>) -> Self {
-        Self { bytes, facts, rows }
+    fn new(
+        bytes: Vec<u8>,
+        facts: TableRuntimeFacts,
+        extras: TableSummaryExtras,
+        resident_metadata_bytes: u64,
+        rows: Vec<TableRow>,
+    ) -> Self {
+        Self {
+            bytes,
+            facts,
+            extras,
+            resident_metadata_bytes,
+            rows,
+        }
     }
 
     pub(crate) fn bytes(&self) -> &[u8] {
@@ -33,8 +54,22 @@ impl BuiltTableArtifact {
         &self.facts
     }
 
+    pub(crate) const fn extras(&self) -> &TableSummaryExtras {
+        &self.extras
+    }
+
     pub(crate) fn byte_count(&self) -> u64 {
         self.facts.byte_count()
+    }
+
+    /// BS4.5a: the lazy reader's metadata-resident footprint (index + properties + filter frame) —
+    /// what actually stays in RAM once this table installs a disk-resident reader, as opposed to
+    /// `byte_count()` (the whole encoded object). Charged against the table-reader budget in place of
+    /// the full object so a durable dataset is no longer bounded by RAM. Computed once at build from
+    /// the encoder's index entries via the same free fn a reopened reader uses, so admission and
+    /// steady-state accounting can never drift.
+    pub(crate) const fn resident_metadata_bytes(&self) -> u64 {
+        self.resident_metadata_bytes
     }
 
     pub(crate) fn into_bytes(self) -> Vec<u8> {
@@ -178,9 +213,15 @@ impl ImmutableTableStreamingBuilder {
             return Err(TableRuntimeError::InvalidRange { field: "row_count" });
         }
         let materialized_rows = self.materialized_rows;
+        // BS4.3: compute + emit a persisted bloom filter over the rows' physical keys when the config
+        // enables it (`filter_bits_per_key`); otherwise write an unfiltered (zero-slot) table.
+        let filter = match self.config.filter_bits_per_key() {
+            Some(bits_per_key) => Some(build_filter_frame(&materialized_rows, bits_per_key)?),
+            None => None,
+        };
         let output = self
             .encoder
-            .finish_with_metadata()
+            .finish_with_metadata(filter.as_ref())
             .map_err(|source| TableRuntimeError::BuildFormat { source })?;
         build_table_artifact_from_streaming_output(self.identity, output, materialized_rows)
     }
@@ -217,6 +258,33 @@ impl ImmutableTableStreamingBuilder {
     }
 }
 
+/// BS4.3: build the persisted filter frame from a bloom over the rows' physical keys — the exact key
+/// bytes the reader probes with (`TablePhysicalKeyBytes::from_physical_key`), so a live key never
+/// probes `DefinitelyAbsent`. The format layer stays bloom-agnostic: it receives these parts.
+fn build_filter_frame(
+    rows: &[TableRow],
+    bits_per_key: usize,
+) -> TableRuntimeResult<TableFilterFrame> {
+    let bloom = TableBloomFilter::build(
+        rows.iter().map(|row| row.key().physical_key_bytes()),
+        bits_per_key,
+    )?;
+    Ok(TableFilterFrame {
+        probes: bloom.probes(),
+        key_count: u64::try_from(bloom.key_count()).map_err(|_| {
+            TableRuntimeError::InvalidRange {
+                field: "filter_key_count",
+            }
+        })?,
+        bit_count: u64::try_from(bloom.bit_count()).map_err(|_| {
+            TableRuntimeError::InvalidRange {
+                field: "filter_bit_count",
+            }
+        })?,
+        bits: bloom.bits().to_vec(),
+    })
+}
+
 fn build_table_artifact_from_streaming_output(
     identity: TableIdentity,
     output: ImmutableTableStreamingOutput,
@@ -238,7 +306,15 @@ fn build_table_artifact_from_streaming_output(
         byte_count,
     )?;
     perf_trace::record_table_build_facts_from_streaming_metadata();
-    Ok(BuiltTableArtifact::new(output.into_bytes(), facts, rows))
+    let extras = TableSummaryExtras::from_rows(&rows)?;
+    let resident_metadata_bytes = output.resident_metadata_bytes();
+    Ok(BuiltTableArtifact::new(
+        output.into_bytes(),
+        facts,
+        extras,
+        resident_metadata_bytes,
+        rows,
+    ))
 }
 
 fn validate_builder_row_shape(row: &TableRow) -> TableRuntimeResult<()> {

@@ -233,6 +233,39 @@ fn orphaned_table_object_becomes_quarantine_candidate_with_fresh_token() {
     ));
 }
 
+/// COW invariant: an object reachable only from IN-MEMORY branch state (e.g. a fork child in
+/// its manifest-publish crash window) is durably invisible to the manifest walk — the pinned
+/// set must keep it live, flipping the would-be quarantine candidate to Retain.
+#[test]
+fn pinned_in_memory_object_is_retained_not_quarantined() {
+    let branch = branch_id(0x1a);
+    let orphan = table_object(branch, 0, "pinned0001");
+    let unpinned = request(
+        branch,
+        vec![manifest(branch, vec![], vec![])],
+        vec![entry(orphan.clone(), 100)],
+        vec![],
+        RecoveryHealth::Healthy,
+    );
+    assert_eq!(
+        table_object_retention_outcome(&unpinned)
+            .expect("outcome")
+            .decisions()[0]
+            .decision(),
+        RetentionDecision::QuarantineCandidate,
+        "without the pin the object is unreachable and becomes a candidate",
+    );
+
+    let pinned = unpinned.with_pinned_objects(vec![orphan.clone()]);
+    let outcome = table_object_retention_outcome(&pinned).expect("outcome");
+
+    assert_eq!(outcome.decisions()[0].decision(), RetentionDecision::Retain);
+    assert!(
+        outcome.quarantine_tokens().is_empty(),
+        "a pinned object must not mint a quarantine token",
+    );
+}
+
 #[test]
 fn stale_quarantine_token_rejects_changed_inventory_epoch() {
     let branch = branch_id(0x19);

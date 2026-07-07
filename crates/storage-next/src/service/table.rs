@@ -681,26 +681,6 @@ impl<'a> TableObjectService<'a> {
             .map(TableObjectReaderOpen::into_reader)
     }
 
-    pub(crate) fn open_reader_from_validated_rows(
-        &self,
-        object_facts: &TableObjectFacts,
-        table_facts: crate::table::TableRuntimeFacts,
-        bytes: &[u8],
-        rows: Vec<crate::table::TableRow>,
-        config: TableReaderConfig,
-    ) -> Result<ImmutableTableReader<'static>, TableObjectReadError> {
-        let mut reader =
-            ImmutableTableReader::from_validated_rows(table_facts, bytes, rows, config)
-                .map_err(|source| table_object_open_error(object_facts.object(), source))?;
-        if let Some(cache) = &self.block_cache {
-            reader = reader
-                .with_block_cache(Arc::clone(cache))
-                .map_err(|source| table_object_open_error(object_facts.object(), source))?;
-        }
-        validate_reader_facts(object_facts, &reader)?;
-        Ok(reader)
-    }
-
     #[cfg_attr(
         not(test),
         allow(

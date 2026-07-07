@@ -36,7 +36,10 @@ mod bootstrap;
 mod close;
 mod maintenance;
 
-pub(crate) use bootstrap::{LifecycleDurableLocalRuntime, LifecycleRecoveryBootstrapReport};
+pub(crate) use bootstrap::{
+    DurableGroupApplyDone, DurableGroupApplyWork, DurableGroupInFlight, DurableGroupMemberResult,
+    LifecycleDurableLocalRuntime, LifecycleRecoveryBootstrapReport,
+};
 pub(crate) use maintenance::{
     DurableBackgroundMaintenanceBuild, DurableBackgroundMaintenanceBuilt,
     DurableBackgroundMaintenanceStep, PreparedPublishStep,
@@ -76,7 +79,7 @@ pub(crate) struct LifecycleDurableLocalServices<'a> {
     wal: WalService<'a>,
     wal_sidecar: WalSegmentMetadataSidecarService<'a>,
     snapshot: SnapshotService<'a>,
-    table_object: TableObjectService<'a>,
+    table_object: TableObjectService<'static>,
     checkpoint: CheckpointService<'a>,
     quarantine: QuarantineService<'a>,
     assembly_facts: LifecycleDurableAssemblyFacts,
@@ -276,11 +279,11 @@ impl<'a> LifecycleDurableLocalServices<'a> {
         &self.snapshot
     }
 
-    pub(crate) const fn table_object(&self) -> &TableObjectService<'a> {
+    pub(crate) const fn table_object(&self) -> &TableObjectService<'static> {
         &self.table_object
     }
 
-    pub(crate) const fn table_reader(&self) -> &TableObjectReaderService<'a> {
+    pub(crate) const fn table_reader(&self) -> &TableObjectReaderService<'static> {
         &self.table_object
     }
 
@@ -296,7 +299,7 @@ impl<'a> LifecycleDurableLocalServices<'a> {
 impl<'a, S> LifecycleDurableLocalShell<'a, S> {
     pub(crate) fn assemble(
         request: LifecycleDurableLocalOpenRequest,
-        backend: impl Into<BackendHandle<'a>>,
+        backend: impl Into<BackendHandle<'static>>,
         timestamp_source: S,
     ) -> LifecycleResult<Self> {
         request.validate()?;

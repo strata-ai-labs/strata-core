@@ -59,7 +59,7 @@ impl MaintenanceInstant {
     }
 }
 
-pub(crate) trait MaintenanceClock: Send + Sync {
+pub(crate) trait MaintenanceClock: Send + Sync + std::fmt::Debug {
     fn now(&self) -> MaintenanceInstant;
 
     fn sleep(&self, duration: Duration);

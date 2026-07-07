@@ -437,8 +437,80 @@ fn fork_at_history_child_excludes_rows_after_requested_version() {
         .expect("fork at retained version");
 
     assert_eq!(outcome.fork_version(), CommitVersion::new(2));
+    // fork-cow.2: the source's rows are sealed in owned tables and V (= 2) is fully durable, so this
+    // fork is copy-on-write — the child references the source's owned tables through one inherited layer
+    // instead of materializing the `<= V` rows into its own tables.
+    assert_eq!(outcome.inherited_layer_count(), 1);
+    assert!(outcome.inherited_table_count() >= 1);
+    assert_eq!(
+        catalog
+            .branch_state(child)
+            .expect("child state")
+            .owned_table_count(),
+        0,
+        "a copy-on-write fork child materializes no tables of its own",
+    );
+    let child_key = physical_key(child, b"history-key");
+    let child_view = catalog.capture_read_view(child).expect("child view");
+    assert_eq!(
+        child_view
+            .latest(&child_key)
+            .expect("child read")
+            .expect("old visible")
+            .row()
+            .value(),
+        b"old"
+    );
+    let child_history = child_view
+        .history(&child_key, BranchHistoryOptions::all())
+        .expect("child history");
+    assert_eq!(child_history.len(), 1);
+    assert_eq!(
+        child_history[0].row().commit_version(),
+        CommitVersion::new(2)
+    );
+}
+
+#[test]
+fn fork_at_history_falls_back_to_materialization_for_unsealed_in_fork_rows() {
+    // Gate: when a `<= V` row is still in the source's active memtable (not yet sealed into an owned
+    // table), an inherited layer cannot reference it — so the fork must materialize instead of COW.
+    let source = branch_id(12);
+    let child = branch_id(13);
+    let mut catalog = catalog_with_branch(source, generation(1));
+    {
+        let src = catalog
+            .branch_state_mut(source, CommitBranchGenerationGuard::exact(generation(1)))
+            .expect("source state");
+        src.append_committed_row(put_row(source, 2, b"history-key", b"old"))
+            .expect("append v2");
+        src.append_committed_row(put_row(source, 5, b"history-key", b"new"))
+            .expect("append v5");
+    }
+
+    let outcome = catalog
+        .fork_at_retained_version(
+            source,
+            child,
+            generation(1),
+            CommitVersion::new(2),
+            CommitVersion::new(1),
+        )
+        .expect("fork at retained version");
+
+    // The in-fork row (v2) is unsealed, so the fork materializes: no inherited layer, and the child
+    // owns its own tables.
     assert_eq!(outcome.inherited_layer_count(), 0);
     assert_eq!(outcome.inherited_table_count(), 0);
+    assert!(
+        catalog
+            .branch_state(child)
+            .expect("child state")
+            .owned_table_count()
+            > 0,
+        "the materialization fallback gives the child its own tables",
+    );
+    // Read equivalence still holds on the fallback path: the child sees v2, not v5.
     let child_key = physical_key(child, b"history-key");
     let child_view = catalog.capture_read_view(child).expect("child view");
     assert_eq!(

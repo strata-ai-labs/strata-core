@@ -29,6 +29,8 @@ use crate::service::{
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use strata_core_next::CommitVersion;
 
 const DEFAULT_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
@@ -438,6 +440,54 @@ pub(crate) struct WalAppend {
     forced_durable: bool,
 }
 
+/// Who owns the fsync for an append (BS5.1): the service's configured policy (today's per-append
+/// behavior), or a write-group caller that runs one covering `force_durable` after N appends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WalAppendDurability {
+    PolicyDriven,
+    DeferredToGroup,
+}
+
+/// One off-lock covering fsync (BS5.2): captured under the runtime lock after a group's
+/// appends ([`WalService::begin_group_sync`]), synced WITHOUT the lock ([`sync`]), redeemed
+/// back under it ([`WalService::complete_group_sync`]).
+///
+/// Sound because the backend fsyncs the FILE, not a writing descriptor: `LocalFs`
+/// `sync_object` opens a fresh descriptor and `sync_all`s it, and the persistent append
+/// handle is an unbuffered `File`, so a completed ticket covers every append that preceded
+/// its capture — including appends made by OTHER groups before this ticket's capture, and
+/// regardless of interleaved appends after it.
+pub(crate) struct WalGroupSyncTicket<'a> {
+    backend: BackendHandle<'a>,
+    object: ObjectName,
+    segment_id: u64,
+    dirty_bytes: u64,
+    dirty_records: u64,
+    captured_seq: u64,
+}
+
+impl WalGroupSyncTicket<'_> {
+    /// The covering fsync — call WITHOUT the runtime lock.
+    pub(crate) fn sync(&self) -> WalServiceResult<()> {
+        self.backend
+            .sync_object(&self.object)
+            .map_err(|source| WalServiceError::Backend {
+                operation: WalOperation::Sync,
+                object: self.object.clone(),
+                source,
+            })
+    }
+
+    pub(crate) const fn segment_id(&self) -> u64 {
+        self.segment_id
+    }
+
+    /// The append sequence this ticket's completed sync proves durable.
+    pub(crate) const fn captured_seq(&self) -> u64 {
+        self.captured_seq
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WalGrowthFacts {
     retained_segments: usize,
@@ -822,6 +872,13 @@ pub(crate) struct WalService<'a> {
     // path). Never carried into `clone_for_background_retention` — the clone only
     // deletes sealed segments and must not hold the writer's descriptor.
     active_append: Option<Box<dyn BackendAppendHandle>>,
+    // BS5.2 group-flush bookkeeping: `append_seq` counts successful appends;
+    // `durable_seq` mirrors the highest append sequence proven durable (a
+    // completed sync covers every append that preceded its ticket's capture).
+    // The mirror is an atomic so the pipelined commit path can check coverage
+    // WITHOUT the runtime lock; it is only ever advanced under the lock.
+    append_seq: u64,
+    durable_seq: Arc<AtomicU64>,
 }
 
 // `WalService` is moved across threads for background retention (the clone never
@@ -862,6 +919,8 @@ impl<'a> WalService<'a> {
             repair_uncertain: false,
             sealed_retention: Cell::new(None),
             active_append: None,
+            append_seq: 0,
+            durable_seq: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -906,10 +965,35 @@ impl<'a> WalService<'a> {
             // Never duplicate the writer's append descriptor into the clone: it
             // only deletes sealed segments and must never append.
             active_append: None,
+            // The retention clone never appends or syncs; give it inert
+            // group-flush bookkeeping rather than sharing the writer's mirror.
+            append_seq: 0,
+            durable_seq: Arc::new(AtomicU64::new(0)),
         }
     }
 
     pub(crate) fn append(&mut self, record: &WalRecord) -> WalServiceResult<WalAppend> {
+        self.append_with_durability(record, WalAppendDurability::PolicyDriven)
+    }
+
+    /// Append without the `Always` policy's inline fsync (BS5.1 write groups): the record
+    /// accumulates dirty bytes exactly like `Standard`, and the CALLER owns durability — it must
+    /// run one [`force_durable`](Self::force_durable) covering every deferred append before any
+    /// covered commit is acked or made visible (WAL-before-visible). A group of one produces the
+    /// identical syscall sequence to [`append`](Self::append) in `Always` mode: one append, one
+    /// fsync — just sequenced by the caller.
+    pub(crate) fn append_deferring_durability(
+        &mut self,
+        record: &WalRecord,
+    ) -> WalServiceResult<WalAppend> {
+        self.append_with_durability(record, WalAppendDurability::DeferredToGroup)
+    }
+
+    fn append_with_durability(
+        &mut self,
+        record: &WalRecord,
+        durability: WalAppendDurability,
+    ) -> WalServiceResult<WalAppend> {
         if self.repair_uncertain {
             return Err(WalServiceError::RepairUncertain {
                 segment_id: self.active_segment_id,
@@ -1007,13 +1091,17 @@ impl<'a> WalService<'a> {
             self.active_segment_size = append.metadata().size_bytes();
             self.dirty_bytes = self.dirty_bytes.saturating_add(frame_len);
             self.dirty_records = self.dirty_records.saturating_add(1);
+            self.append_seq = self.append_seq.saturating_add(1);
             self.active_metadata
                 .track_record(record.commit_version(), record.commit_timestamp());
 
             // In always mode the append is already visible when sync runs. If sync
             // fails, dirty facts intentionally remain advanced so lifecycle can
-            // classify the durability-uncertain window.
-            let forced_durable = if self.durability_policy == DurabilityPolicy::Always {
+            // classify the durability-uncertain window. A group append defers the
+            // sync to the caller's single covering force_durable.
+            let forced_durable = if durability == WalAppendDurability::PolicyDriven
+                && self.durability_policy == DurabilityPolicy::Always
+            {
                 self.force_durable()?;
                 true
             } else {
@@ -1084,7 +1172,52 @@ impl<'a> WalService<'a> {
         })?;
         self.dirty_bytes = 0;
         self.dirty_records = 0;
+        // Everything appended so far is now durable.
+        self.durable_seq
+            .fetch_max(self.append_seq, Ordering::AcqRel);
         Ok(())
+    }
+
+    /// Off-lock handle to the durable-append watermark (BS5.2): the pipelined
+    /// commit path polls coverage through this atomic WITHOUT the runtime
+    /// lock; it is only advanced under the lock (`force_durable`,
+    /// `complete_group_sync`).
+    pub(crate) fn durable_seq_handle(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.durable_seq)
+    }
+
+    /// Capture a group-sync ticket (BS5.2): called under the runtime lock after a
+    /// group's appends. The ticket's [`WalGroupSyncTicket::sync`] then runs the
+    /// covering fsync WITHOUT the lock, and [`complete_group_sync`] redeems the
+    /// outcome back under it. Pure capture — no service mutation. The captured
+    /// sequence makes the completed sync cover every append before the capture,
+    /// so later captures cover earlier groups' appends too.
+    pub(crate) fn begin_group_sync(&self) -> WalGroupSyncTicket<'a> {
+        WalGroupSyncTicket {
+            backend: self.backend.clone(),
+            object: self.active_object.clone(),
+            segment_id: self.active_segment_id,
+            dirty_bytes: self.dirty_bytes,
+            dirty_records: self.dirty_records,
+            captured_seq: self.append_seq,
+        }
+    }
+
+    /// Redeem a successfully synced group ticket (BS5.2): advance the durable
+    /// watermark to the ticket's capture point and retire exactly the dirty
+    /// amounts the ticket covered — appends made while the fsync was in
+    /// flight stay dirty. Dirty retirement is skipped after a rotation
+    /// (rotation force-syncs the old segment and resets the counters itself);
+    /// the watermark still advances (the rotation sync covered the capture).
+    /// The caller maps a failed sync to its own durability handling; failure
+    /// leaves the dirty facts advanced, same as a failed `force_durable`.
+    pub(crate) fn complete_group_sync(&mut self, ticket: &WalGroupSyncTicket<'_>) {
+        if self.active_segment_id == ticket.segment_id {
+            self.dirty_bytes = self.dirty_bytes.saturating_sub(ticket.dirty_bytes);
+            self.dirty_records = self.dirty_records.saturating_sub(ticket.dirty_records);
+        }
+        self.durable_seq
+            .fetch_max(ticket.captured_seq, Ordering::AcqRel);
     }
 
     pub(crate) fn close(&mut self) -> WalServiceResult<()> {

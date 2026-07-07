@@ -198,9 +198,10 @@ fn retention_outcome_converts_incomplete_proof_to_deferred_maintenance() {
 
 #[test]
 fn snapshot_pruning_outcome_converts_delete_failure_to_health_debt() {
-    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
     backend.fail_delete_on_call(1);
-    let outcome = snapshot_pruning(&backend, 3, 1).maintenance_outcome();
+    let outcome = snapshot_pruning(backend, 3, 1).maintenance_outcome();
 
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
     assert!(outcome.recovery_health().is_some());
@@ -357,8 +358,9 @@ fn retention_proof_does_not_upgrade_runtime_reachability_to_durable_truth() {
 
 #[test]
 fn retention_proof_is_deterministic_for_shuffled_input_facts() {
-    let backend = RetentionBackend::with_snapshots([3, 1, 2]);
-    let snapshots = SnapshotService::new(&backend)
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([3, 1, 2])));
+    let snapshots = SnapshotService::new(backend)
         .list_snapshots()
         .expect("snapshots");
     let mut reversed = snapshots.clone();
@@ -396,14 +398,15 @@ fn snapshot_pruning_request_rejects_complete_proof_without_live_snapshot() {
 
 #[test]
 fn incomplete_snapshot_pruning_proof_defers_before_backend_access() {
-    let backend = RetentionBackend::with_snapshots([1]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1])));
     let request = LifecycleRetentionRequest::snapshot_pruning(2);
     let proof = build_retention_proof(&request, None, &RecoveryHealth::Healthy, 1);
     let pruning = LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())
         .expect("pruning request");
 
     let outcome =
-        prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect("outcome");
+        prune_snapshots_with_proof(&SnapshotService::new(backend), &pruning).expect("outcome");
 
     assert!(outcome.deferred_incomplete_proof());
     assert_eq!(backend.list_calls(), 0);
@@ -413,7 +416,8 @@ fn incomplete_snapshot_pruning_proof_defers_before_backend_access() {
 
 #[test]
 fn retention_proof_blocks_data_loss_before_backend_access() {
-    let backend = RetentionBackend::with_snapshots([1, 2]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2])));
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let health = RecoveryHealth::degraded(
         RecoveryDegradationClass::DataLoss,
@@ -427,7 +431,7 @@ fn retention_proof_blocks_data_loss_before_backend_access() {
         .expect("pruning request");
 
     let outcome =
-        prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect("outcome");
+        prune_snapshots_with_proof(&SnapshotService::new(backend), &pruning).expect("outcome");
 
     assert!(outcome.blocked_by_recovery_health());
     assert_eq!(backend.list_calls(), 0);
@@ -436,14 +440,15 @@ fn retention_proof_blocks_data_loss_before_backend_access() {
 
 #[test]
 fn snapshot_pruning_retains_live_snapshot_outside_newest_window() {
-    let backend = RetentionBackend::with_snapshots([1, 2, 3, 4]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3, 4])));
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(1, 7)), &RecoveryHealth::Healthy, 4);
     let pruning = LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())
         .expect("pruning request");
 
     let outcome =
-        prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect("outcome");
+        prune_snapshots_with_proof(&SnapshotService::new(backend), &pruning).expect("outcome");
 
     assert!(outcome.completed());
     assert_eq!(snapshot_ids(outcome.deleted()), [2, 3]);
@@ -453,8 +458,9 @@ fn snapshot_pruning_retains_live_snapshot_outside_newest_window() {
 
 #[test]
 fn snapshot_pruning_retains_live_manifest_snapshot() {
-    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
-    let outcome = snapshot_pruning(&backend, 2, 1);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+    let outcome = snapshot_pruning(backend, 2, 1);
 
     assert_eq!(snapshot_ids(outcome.deleted()), [1]);
     assert!(snapshot_ids(outcome.protected()).contains(&2));
@@ -463,8 +469,9 @@ fn snapshot_pruning_retains_live_manifest_snapshot() {
 
 #[test]
 fn snapshot_pruning_retains_configured_newest_snapshots() {
-    let backend = RetentionBackend::with_snapshots([1, 2, 3, 4]);
-    let outcome = snapshot_pruning(&backend, 4, 2);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3, 4])));
+    let outcome = snapshot_pruning(backend, 4, 2);
 
     assert_eq!(snapshot_ids(outcome.deleted()), [1, 2]);
     assert_eq!(snapshot_ids(outcome.protected()), [3, 4]);
@@ -472,8 +479,9 @@ fn snapshot_pruning_retains_configured_newest_snapshots() {
 
 #[test]
 fn snapshot_pruning_deletes_old_non_live_snapshots() {
-    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
-    let outcome = snapshot_pruning(&backend, 3, 1);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+    let outcome = snapshot_pruning(backend, 3, 1);
 
     assert!(outcome.completed());
     assert_eq!(snapshot_ids(outcome.deleted()), [1, 2]);
@@ -484,9 +492,10 @@ fn snapshot_pruning_deletes_old_non_live_snapshots() {
 #[test]
 fn snapshot_pruning_with_proof_records_counters_without_floor_advancement() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
 
-    let outcome = snapshot_pruning(&backend, 3, 1);
+    let outcome = snapshot_pruning(backend, 3, 1);
     let perf = crate::observability::perf_trace::snapshot();
 
     assert!(outcome.completed());
@@ -504,10 +513,11 @@ fn snapshot_pruning_with_proof_records_counters_without_floor_advancement() {
 #[test]
 fn snapshot_pruning_with_proof_records_failed_delete_counter() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
     backend.fail_delete_on_call(1);
 
-    let outcome = snapshot_pruning(&backend, 3, 1);
+    let outcome = snapshot_pruning(backend, 3, 1);
     let perf = crate::observability::perf_trace::snapshot();
 
     assert!(outcome.completed_with_health_debt());
@@ -533,7 +543,8 @@ fn generated_snapshot_pruning_proof_sweep_preserves_retained_snapshots() {
         ("future-watermark", 4, 99, 3, [1, 2, 3, 4, 5]),
     ] {
         crate::observability::perf_trace::reset();
-        let backend = RetentionBackend::with_snapshots(snapshots);
+        let backend: &'static RetentionBackend =
+            Box::leak(Box::new(RetentionBackend::with_snapshots(snapshots)));
         let request = LifecycleRetentionRequest::snapshot_pruning(retain_newest);
         let proof = build_retention_proof_from_facts(
             &request,
@@ -548,7 +559,7 @@ fn generated_snapshot_pruning_proof_sweep_preserves_retained_snapshots() {
                 .expect(case);
 
         let outcome =
-            prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect(case);
+            prune_snapshots_with_proof(&SnapshotService::new(backend), &pruning).expect(case);
         let protected = snapshot_ids(outcome.protected());
         let deleted = snapshot_ids(outcome.deleted());
         let perf = crate::observability::perf_trace::snapshot();
@@ -589,8 +600,9 @@ fn generated_snapshot_pruning_proof_sweep_preserves_retained_snapshots() {
 
 #[test]
 fn snapshot_pruning_noops_when_under_retain_count() {
-    let backend = RetentionBackend::with_snapshots([1, 2]);
-    let outcome = snapshot_pruning(&backend, 2, 3);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2])));
+    let outcome = snapshot_pruning(backend, 2, 3);
 
     assert!(outcome.completed_noop());
     assert_eq!(outcome.deleted(), []);
@@ -600,9 +612,10 @@ fn snapshot_pruning_noops_when_under_retain_count() {
 
 #[test]
 fn snapshot_pruning_is_idempotent_after_success() {
-    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
-    let first = snapshot_pruning(&backend, 3, 1);
-    let second = snapshot_pruning(&backend, 3, 1);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+    let first = snapshot_pruning(backend, 3, 1);
+    let second = snapshot_pruning(backend, 3, 1);
 
     assert_eq!(snapshot_ids(first.deleted()), [1, 2]);
     assert!(second.completed_noop());
@@ -612,14 +625,15 @@ fn snapshot_pruning_is_idempotent_after_success() {
 
 #[test]
 fn snapshot_pruning_clamps_zero_retain_count_to_one() {
-    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
     let request = LifecycleRetentionRequest::snapshot_pruning(0);
     let proof = build_retention_proof(&request, Some(&manifest(3, 7)), &RecoveryHealth::Healthy, 3);
     let pruning = LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())
         .expect("pruning request");
 
     let outcome =
-        prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect("outcome");
+        prune_snapshots_with_proof(&SnapshotService::new(backend), &pruning).expect("outcome");
 
     assert_eq!(snapshot_ids(outcome.deleted()), [1, 2]);
     assert_eq!(snapshot_ids(outcome.protected()), [3]);
@@ -628,7 +642,8 @@ fn snapshot_pruning_clamps_zero_retain_count_to_one() {
 
 #[test]
 fn snapshot_pruning_malformed_listed_snapshot_fails_closed() {
-    let backend = RetentionBackend::with_snapshots([1, 2]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2])));
     backend.insert_object(
         ObjectName::new("snapshots/not-a-valid-id").expect("malformed snapshot family object"),
         b"ambiguous".to_vec(),
@@ -638,7 +653,7 @@ fn snapshot_pruning_malformed_listed_snapshot_fails_closed() {
     let pruning = LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())
         .expect("pruning request");
 
-    let error = prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning)
+    let error = prune_snapshots_with_proof(&SnapshotService::new(backend), &pruning)
         .expect_err("malformed listed snapshot fails closed");
 
     assert_eq!(error.code(), "failed_precondition.lifecycle.service");
@@ -647,7 +662,8 @@ fn snapshot_pruning_malformed_listed_snapshot_fails_closed() {
 
 #[test]
 fn snapshot_pruning_does_not_mutate_manifest_snapshot_facts() {
-    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(3, 7)), &RecoveryHealth::Healthy, 3);
     let pruning =
@@ -655,7 +671,7 @@ fn snapshot_pruning_does_not_mutate_manifest_snapshot_facts() {
             .expect("pruning request");
 
     let outcome =
-        prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect("outcome");
+        prune_snapshots_with_proof(&SnapshotService::new(backend), &pruning).expect("outcome");
 
     assert!(outcome.completed());
     assert_eq!(pruning.proof(), &proof);
@@ -664,8 +680,9 @@ fn snapshot_pruning_does_not_mutate_manifest_snapshot_facts() {
 
 #[test]
 fn snapshot_pruning_does_not_create_wal_retention_proof() {
-    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
-    let outcome = snapshot_pruning(&backend, 3, 1).maintenance_outcome();
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+    let outcome = snapshot_pruning(backend, 3, 1).maintenance_outcome();
 
     assert_eq!(outcome.task_kind(), MaintenanceTaskKind::SnapshotPruning);
     assert!(outcome
@@ -676,14 +693,15 @@ fn snapshot_pruning_does_not_create_wal_retention_proof() {
 
 #[test]
 fn snapshot_pruning_object_candidate_mode_requires_declared_delete_capability() {
-    let backend = RetentionBackend::with_snapshots([1, 2]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2])));
     backend.omit_delete_capability();
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(2, 7)), &RecoveryHealth::Healthy, 2);
     let pruning = LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())
         .expect("pruning request");
 
-    let error = prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning)
+    let error = prune_snapshots_with_proof(&SnapshotService::new(backend), &pruning)
         .expect_err("delete capability required");
 
     assert_eq!(error.code(), "failed_precondition.lifecycle.service");
@@ -693,7 +711,8 @@ fn snapshot_pruning_object_candidate_mode_requires_declared_delete_capability() 
 
 #[test]
 fn snapshot_pruning_delete_failure_records_health_debt_and_continues() {
-    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
     backend.fail_delete_on_call(1);
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(3, 7)), &RecoveryHealth::Healthy, 3);
@@ -701,7 +720,7 @@ fn snapshot_pruning_delete_failure_records_health_debt_and_continues() {
         .expect("pruning request");
 
     let outcome =
-        prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect("outcome");
+        prune_snapshots_with_proof(&SnapshotService::new(backend), &pruning).expect("outcome");
 
     assert!(outcome.completed_with_health_debt());
     assert_eq!(snapshot_ids(outcome.deleted()), [2]);
@@ -719,7 +738,8 @@ fn snapshot_pruning_emits_one_fault_per_failed_deletion() {
     // The health debt must surface exactly TWO RecoveryFault entries —
     // one per failed deletion — so `fault_count` reflects the real
     // backlog rather than collapsing to a single aggregated fault.
-    let backend = RetentionBackend::with_snapshots([1, 2, 3, 5]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3, 5])));
     backend.fail_delete_calls([1, 2]);
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(5, 7)), &RecoveryHealth::Healthy, 4);
@@ -727,7 +747,7 @@ fn snapshot_pruning_emits_one_fault_per_failed_deletion() {
         .expect("pruning request");
 
     let outcome =
-        prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning).expect("outcome");
+        prune_snapshots_with_proof(&SnapshotService::new(backend), &pruning).expect("outcome");
 
     assert!(outcome.completed_with_health_debt());
     assert_eq!(snapshot_ids(outcome.deleted()), [3]);
@@ -743,14 +763,15 @@ fn snapshot_pruning_emits_one_fault_per_failed_deletion() {
 
 #[test]
 fn snapshot_pruning_list_failure_preserves_service_source_chain() {
-    let backend = RetentionBackend::with_snapshots([1, 2]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2])));
     backend.fail_listing();
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(2, 7)), &RecoveryHealth::Healthy, 2);
     let pruning = LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())
         .expect("pruning request");
 
-    let error = prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning)
+    let error = prune_snapshots_with_proof(&SnapshotService::new(backend), &pruning)
         .expect_err("list failure");
 
     assert_eq!(error.code(), "failed_precondition.lifecycle.service");
@@ -962,7 +983,7 @@ fn table_object_decision_lists_branch_and_table_identity() {
 
 #[test]
 fn table_object_retention_never_calls_backend_delete() {
-    let backend = RetentionBackend::default();
+    let backend: &'static RetentionBackend = Box::leak(Box::new(RetentionBackend::default()));
     let _decision =
         table_quarantine_candidate(ObjectName::new("tables/branch/table").expect("object"));
 
@@ -1033,8 +1054,9 @@ fn table_object_retention_ignores_product_branch_attribution() {
 
 #[test]
 fn retention_scope_snapshot_decisions_respect_live_and_newest_windows() {
-    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
-    let snapshots = SnapshotService::new(&backend)
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+    let snapshots = SnapshotService::new(backend)
         .list_snapshots()
         .expect("snapshots");
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
@@ -1064,8 +1086,9 @@ fn retention_scope_snapshot_decisions_respect_live_and_newest_windows() {
 
 #[test]
 fn global_retention_scope_includes_snapshot_and_delegated_decisions() {
-    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
-    let snapshots = SnapshotService::new(&backend)
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
+    let snapshots = SnapshotService::new(backend)
         .list_snapshots()
         .expect("snapshots");
     let request = LifecycleRetentionRequest::global(1);
@@ -1151,7 +1174,8 @@ fn wal_retention_without_checkpoint_or_flush_proof_is_incomplete() {
 
 #[test]
 fn wal_delegation_does_not_list_segments() {
-    let backend = RetentionBackend::with_snapshots([1]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1])));
     let _outcome =
         retention_outcome_for_delegated_families(complete_retention_proof(1, 7)).expect("outcome");
 
@@ -1160,7 +1184,8 @@ fn wal_delegation_does_not_list_segments() {
 
 #[test]
 fn wal_delegation_does_not_delete_segments() {
-    let backend = RetentionBackend::with_snapshots([1]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1])));
     let _outcome =
         retention_outcome_for_delegated_families(complete_retention_proof(1, 7)).expect("outcome");
 
@@ -1196,7 +1221,7 @@ fn purge_request_is_deferred_without_fresh_safe_proof() {
 
 #[test]
 fn purge_request_does_not_delete_inventory_objects() {
-    let backend = RetentionBackend::default();
+    let backend: &'static RetentionBackend = Box::leak(Box::new(RetentionBackend::default()));
     let _outcome =
         retention_outcome_for_delegated_families(complete_retention_proof(1, 7)).expect("outcome");
 
@@ -1218,9 +1243,9 @@ fn retention_delegation_does_not_create_phantom_health_debt() {
 
 #[test]
 fn global_retention_task_prunes_snapshots_through_durable_maintenance() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = durable_branch_id(0x9b);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
 
     for (snapshot_id, key) in [
         (1, b"retention-key-a" as &'static [u8]),
@@ -1260,9 +1285,9 @@ fn global_retention_task_prunes_snapshots_through_durable_maintenance() {
 
 #[test]
 fn branch_retention_task_classifies_table_objects_through_durable_maintenance() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = durable_branch_id(0x9d);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
 
     runtime
         .execute_durable_commit(
@@ -1317,9 +1342,9 @@ fn retention_flush_request(branch: BranchId) -> FlushFrozenRequest {
 
 #[test]
 fn prove_retention_respects_snapshot_scope_without_deleting() {
-    let backend = CheckpointTestBackend::new();
+    let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = durable_branch_id(0x9c);
-    let mut runtime = open_runtime(branch, &backend);
+    let mut runtime = open_runtime(branch, backend);
 
     for (snapshot_id, key) in [
         (1, b"proof-scope-key-a" as &'static [u8]),
@@ -1439,9 +1464,10 @@ fn retention_task_coalesces_by_scope() {
 
 #[test]
 fn snapshot_pruning_task_failure_adds_health_debt() {
-    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
     backend.fail_delete_on_call(1);
-    let outcome = snapshot_pruning(&backend, 3, 1).maintenance_outcome();
+    let outcome = snapshot_pruning(backend, 3, 1).maintenance_outcome();
 
     assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
     assert!(outcome.recovery_health().is_some());
@@ -1499,7 +1525,7 @@ fn retention_task_skips_unrelated_pending_tasks() {
 
 #[test]
 fn cache_runtime_rejects_durable_retention_tasks_before_backend_access() {
-    let backend = MemoryBackend::new();
+    let backend: &'static MemoryBackend = Box::leak(Box::new(MemoryBackend::new()));
     let mut runtime = LifecycleCacheRuntime::open(
         LifecycleCacheOpenRequest::new(
             StorageOpenPlan::new(
@@ -1513,7 +1539,7 @@ fn cache_runtime_rejects_durable_retention_tasks_before_backend_access() {
             crate::commit::CommitBranchGeneration::new(1).expect("generation"),
         )
         .expect("request"),
-        &backend,
+        backend,
         crate::branch::config::BranchRuntimeConfig::default(),
         crate::commit::CommitRuntimeConfig::default(),
         crate::commit::CommitManualTimestampSource::new(strata_core_next::Timestamp::from_micros(
@@ -1552,14 +1578,15 @@ fn retention_blocked_error_has_stable_code() {
 
 #[test]
 fn snapshot_pruning_service_error_preserves_source() {
-    let backend = RetentionBackend::with_snapshots([1, 2]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2])));
     backend.fail_listing();
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(2, 7)), &RecoveryHealth::Healthy, 2);
     let pruning = LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())
         .expect("pruning request");
 
-    let error = prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning)
+    let error = prune_snapshots_with_proof(&SnapshotService::new(backend), &pruning)
         .expect_err("list failure");
 
     assert_eq!(error.code(), "failed_precondition.lifecycle.service");
@@ -1568,9 +1595,10 @@ fn snapshot_pruning_service_error_preserves_source() {
 
 #[test]
 fn snapshot_pruning_delete_failure_preserves_backend_error() {
-    let backend = RetentionBackend::with_snapshots([1, 2, 3]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2, 3])));
     backend.fail_delete_on_call(1);
-    let outcome = snapshot_pruning(&backend, 3, 1);
+    let outcome = snapshot_pruning(backend, 3, 1);
 
     assert_eq!(outcome.failed().len(), 1);
     assert_eq!(
@@ -1581,7 +1609,7 @@ fn snapshot_pruning_delete_failure_preserves_backend_error() {
 
 #[test]
 fn cache_retention_unsupported_uses_storage_error_code() {
-    let backend = MemoryBackend::new();
+    let backend: &'static MemoryBackend = Box::leak(Box::new(MemoryBackend::new()));
     let mut runtime = LifecycleCacheRuntime::open(
         LifecycleCacheOpenRequest::new(
             StorageOpenPlan::new(
@@ -1595,7 +1623,7 @@ fn cache_retention_unsupported_uses_storage_error_code() {
             crate::commit::CommitBranchGeneration::new(1).expect("generation"),
         )
         .expect("request"),
-        &backend,
+        backend,
         crate::branch::config::BranchRuntimeConfig::default(),
         crate::commit::CommitRuntimeConfig::default(),
         crate::commit::CommitManualTimestampSource::new(strata_core_next::Timestamp::from_micros(
@@ -1616,14 +1644,15 @@ fn cache_retention_unsupported_uses_storage_error_code() {
 
 #[test]
 fn retention_error_display_does_not_include_object_payload_bytes() {
-    let backend = RetentionBackend::with_snapshots([1, 2]);
+    let backend: &'static RetentionBackend =
+        Box::leak(Box::new(RetentionBackend::with_snapshots([1, 2])));
     backend.fail_listing();
     let request = LifecycleRetentionRequest::snapshot_pruning(1);
     let proof = build_retention_proof(&request, Some(&manifest(2, 7)), &RecoveryHealth::Healthy, 2);
     let pruning = LifecycleSnapshotPruningRequest::new(proof, request.retain_newest_snapshots())
         .expect("pruning request");
 
-    let error = prune_snapshots_with_proof(&SnapshotService::new(&backend), &pruning)
+    let error = prune_snapshots_with_proof(&SnapshotService::new(backend), &pruning)
         .expect_err("list failure");
     let display = error.to_string();
 

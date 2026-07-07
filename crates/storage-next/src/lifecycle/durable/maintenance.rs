@@ -2,19 +2,21 @@
 
 use super::bootstrap::{BranchPublishGuard, LifecycleDurableLocalRuntime};
 use super::{branch_error, commit_error, require_admitted};
+use crate::branch::read::{BranchInheritedLayer, BranchLayout};
 use crate::branch::state::{BranchLocalState, BranchRotationOutcome};
 use crate::commit::{
     CommitBranchGenerationGuard, CommitBranchGuardSet, CommitBranchRegistry, VisibleVersionTracker,
 };
 use crate::format::TableManifest;
 use crate::lifecycle::checkpoint::{
-    branch_checkpoint_flush_boundary, checkpoint_durable_rows_with_budget,
-    checkpoint_durable_runtime_with_budget,
+    branch_checkpoint_flush_boundary, branch_has_unflushed_rows_at_or_below,
+    checkpoint_durable_rows_with_budget, checkpoint_durable_runtime_with_budget,
     checkpoint_request_from_maintenance_task_with_snapshot_id, non_seeded_branch_has_durable_base,
-    persist_flush_watermark, persist_flush_watermark_with_table_manifest_proof, truncate_wal,
-    wal_truncation_request_from_maintenance_task, LifecycleCheckpointOutcome,
-    LifecycleCheckpointRequest, LifecycleFlushWatermarkOutcome, LifecycleFlushWatermarkProof,
-    LifecycleTableManifestFlushCoverageProof, LifecycleWalTruncationOutcome,
+    persist_flush_watermark, persist_flush_watermark_with_table_manifest_proof,
+    recovery_health_epoch, truncate_wal, wal_truncation_request_from_maintenance_task,
+    LifecycleCheckpointOutcome, LifecycleCheckpointRequest, LifecycleFlushWatermarkOutcome,
+    LifecycleFlushWatermarkProof, LifecycleTableManifestFlushCoverageProof,
+    LifecycleWalTruncationOutcome,
 };
 use crate::lifecycle::compaction::{
     bind_materialization_task_for_enqueue, collect_storage_pressure_with_budget,
@@ -62,8 +64,7 @@ use crate::lifecycle::{
     materialize_durable_branch_manifest_backed, policy_admission_error,
     prepare_durable_compaction_publication, purge_proof_from_maintenance_task,
     purge_quarantine as purge_lifecycle_quarantine,
-    quarantine_object as quarantine_lifecycle_object, quarantine_task_without_request,
-    repair_branch_from_maintenance_task,
+    quarantine_object as quarantine_lifecycle_object, repair_branch_from_maintenance_task,
     repair_branch_quarantine as repair_branch_lifecycle_quarantine,
     repair_quarantine_family as repair_lifecycle_quarantine_family,
     require_maintenance_enqueue_budget, require_rotate_budget, telemetry_health_debt,
@@ -85,11 +86,17 @@ use crate::service::{
     QuarantineService, TableManifestService, TableManifestWrite, TableObjectReaderService,
     TableObjectService, WalGrowthFacts, WalRetentionProof, WalService,
 };
+use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 pub(crate) enum DurableBackgroundMaintenanceStep<'a> {
     Completed(Box<MaintenanceOutcome>),
     Build(Box<DurableBackgroundMaintenanceBuild<'a>>),
+    /// A pending flush-watermark coverage computation: the O(rows) coverage scan runs
+    /// off the runtime lock on the captured snapshot, then the result is applied under
+    /// the lock (D.2b-2). Inputs are fully owned so the value survives the
+    /// lock release.
+    FlushWatermarkCompute(Box<FlushWatermarkCoverageInputs>),
 }
 
 impl DurableBackgroundMaintenanceStep<'_> {
@@ -98,14 +105,34 @@ impl DurableBackgroundMaintenanceStep<'_> {
     }
 }
 
+/// Inputs captured under the runtime lock for an off-lock flush-watermark coverage
+/// scan (D.2b-2). The owned durable-layout snapshot (`owned_levels`) plus the
+/// inherited layers let the O(rows) coverage scan run with the lock released;
+/// `min_unflushed_commit` lets candidate selection match the under-lock behavior
+/// off-lock (the apply step re-checks the *current* memtable under the lock, which is
+/// the anti-corruption gate). Every field is owned so the value crosses the
+/// lock-release boundary.
+pub(crate) struct FlushWatermarkCoverageInputs {
+    task: MaintenanceTask,
+    branch_id: BranchId,
+    owned_levels: Arc<BranchLayout>,
+    inherited_layers: Vec<BranchInheritedLayer>,
+    table_manifest: TableManifest,
+    floor: CommitVersion,
+    recovery_health_epoch: u64,
+    task_candidate: Option<CommitVersion>,
+    candidates: Vec<CommitVersion>,
+    min_unflushed_commit: Option<CommitVersion>,
+}
+
 pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
     Flush {
         task: MaintenanceTask,
         branch_id: BranchId,
         request: crate::lifecycle::flush::FlushDrainRequest,
         branch_snapshot: BranchLocalState,
-        table_object: TableObjectService<'a>,
-        table_reader: TableObjectReaderService<'a>,
+        table_object: TableObjectService<'static>,
+        table_reader: TableObjectReaderService<'static>,
         budget: crate::lifecycle::StorageBudgetLedger,
         started_at: std::time::Instant,
     },
@@ -126,16 +153,16 @@ pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
         level: u8,
         request: LifecycleCompactionRequest,
         branch_snapshot: BranchLocalState,
-        table_object: TableObjectService<'a>,
-        table_reader: TableObjectReaderService<'a>,
+        table_object: TableObjectService<'static>,
+        table_reader: TableObjectReaderService<'static>,
         budget: crate::lifecycle::StorageBudgetLedger,
     },
     Materialization {
         task: MaintenanceTask,
         branch_id: BranchId,
         build: DurableMaterializationBuild,
-        table_object: TableObjectService<'a>,
-        table_reader: TableObjectReaderService<'a>,
+        table_object: TableObjectService<'static>,
+        table_reader: TableObjectReaderService<'static>,
         budget: crate::lifecycle::StorageBudgetLedger,
     },
 }
@@ -217,9 +244,11 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                 let mut flush_boundary: Option<CommitVersion> = None;
                 for branch in &branches {
                     has_durable_rows |= branch.owned_table_count() > 0;
-                    if let Some(boundary) =
-                        branch_checkpoint_flush_boundary(branch, visible_version)
-                    {
+                    if let Some(boundary) = branch_checkpoint_flush_boundary(
+                        branch.owned_levels(),
+                        branch.inherited_layers(),
+                        visible_version,
+                    ) {
                         flush_boundary = Some(flush_boundary.map_or(boundary, |f| f.max(boundary)));
                     }
                     let mut branch_rows = branch
@@ -386,6 +415,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
             branch.rotate_active()
         };
+        // BS2.3: rotation sealed active into a frozen table; republish the branch snapshot.
+        self.publish_branch_snapshot(branch_id);
         Ok(outcome)
     }
 
@@ -439,6 +470,9 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 self.record_recovery_health(Some(&health));
             }
         }
+        // BS2.3: flush installed an L0 table (rows stay visible even if the manifest publish is
+        // deferred); republish the branch snapshot.
+        self.publish_branch_snapshot(branch_id);
         Ok(outcome)
     }
 
@@ -474,6 +508,12 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         };
         if let Ok(compaction) = &outcome {
             record_lifecycle_compaction_outcome(compaction);
+            // Table-object GC: the foreground compaction dropped its input refs; enqueue the
+            // coalescing mark (best-effort — a rejected enqueue defers reclaim to the next cycle).
+            if !compaction.retained_input_objects().is_empty() {
+                let _ = self
+                    .enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch_id));
+            }
         }
         outcome
     }
@@ -526,6 +566,17 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 },
             )
         };
+        // BS2.3: compaction promoted/rewrote the branch's tables; republish the branch snapshot.
+        self.publish_branch_snapshot(branch_id);
+        // Table-object GC: a fixed-point drain that ran passes dropped input refs; enqueue the
+        // coalescing mark (best-effort — a rejected enqueue defers reclaim to the next cycle).
+        if outcome
+            .as_ref()
+            .is_ok_and(|drain| drain.input_tables_removed() > 0)
+        {
+            let _ =
+                self.enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch_id));
+        }
         outcome
     }
 
@@ -645,6 +696,34 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         let outcome = schedule_suggested_post_commit_maintenance(policy, pressure, |request| {
             self.enqueue_maintenance(request)
         });
+        // Compaction is orthogonal to the flush-first `suggested_task`: with frozen
+        // memtables essentially always present under load, a backed-up level would never
+        // be scheduled. Derive the eligible table-rewrites directly from the branch and
+        // enqueue every eligible level independently; per-(branch, level) coalescing bounds
+        // this to one task per level, and concurrent workers pick disjoint levels.
+        if matches!(
+            policy,
+            LifecycleMaintenanceSchedulingPolicy::EvaluateAndEnqueue
+                | LifecycleMaintenanceSchedulingPolicy::Background
+        ) {
+            let compactions = self
+                .branch_catalog
+                .branch_state(branch_id)
+                .ok()
+                .map(|branch| {
+                    crate::lifecycle::compaction::eligible_compaction_tasks(
+                        branch,
+                        Some(self.open_plan.lifecycle_config().storage_budget()),
+                        global_pressure,
+                    )
+                })
+                .unwrap_or_default();
+            for compaction in compactions {
+                // Best-effort: a full queue or coalesce is non-fatal — the next commit
+                // re-derives and re-enqueues.
+                let _ = self.enqueue_maintenance(compaction);
+            }
+        }
         let outcome = if policy == LifecycleMaintenanceSchedulingPolicy::DeterministicInline {
             self.run_inline_post_commit_maintenance(outcome)
         } else {
@@ -932,11 +1011,24 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             .branch_catalog
             .branch_state(branch_id)
             .expect("seeded branch is always present in the catalog");
-        let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest(
+        let current_manifest = self
+            .services
+            .manifest()
+            .load_required()
+            .map_err(manifest_error)?;
+        let floor = wal_retention_watermark(
+            current_manifest
+                .snapshot_watermark()
+                .map(CommitVersion::new),
+            current_manifest.flushed_through_commit_id(),
+        )
+        .unwrap_or(CommitVersion::ZERO);
+        let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest_with_floor(
             candidate,
             branch,
             &manifest,
             &self.current_recovery_health,
+            floor,
         )?;
         // Forward-compat guard. The current durable runtime opens exactly one
         // branch, so this check passes. If multi-branch runtimes land, the
@@ -962,6 +1054,44 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         Ok(outcome)
     }
 
+    /// Advance the flush watermark to the highest L0-covered commit and enqueue WAL
+    /// truncation, so retained WAL is reclaimed when a memtable reaches L0 rather than
+    /// waiting for a checkpoint. Reuses the table-manifest coverage path
+    /// (`highest_coverable_flush_watermark_candidate` + `persist_table_manifest_flush_watermark`),
+    /// which validates against the `wal_retention_watermark` floor independently of checkpoint.
+    ///
+    /// Best-effort by design: a flush must never fail because reclaim could not advance. The
+    /// watermark is monotone (the persist no-ops when the candidate is not above the persisted
+    /// value) and the periodic WAL-growth policy remains the backstop, so a transient error here
+    /// only defers reclaim to the next flush.
+    fn reclaim_wal_after_flush(&mut self) {
+        // BS5.3: this previously ran the coverage scan and the watermark
+        // persist INLINE — two durable-manifest loads, an O(rows) coverage
+        // proof, and a durable manifest replace (write + fsync) per flush,
+        // all inside the publish phase's runtime-lock hold (measured as the
+        // single largest writer-starvation source under sustained load:
+        // ~950 ms of a 3 s window). Route through the coalescing background
+        // flush-watermark task instead — its coverage scan runs with the lock
+        // RELEASED (D.2b-2) — exactly as the periodic WAL-growth policy
+        // already schedules reclaim. Both enqueues are best-effort: a full
+        // queue only defers reclaim to that periodic backstop.
+        let candidate = self.visible.visible_version();
+        if candidate == CommitVersion::ZERO {
+            // Nothing visible yet — no WAL below any watermark to reclaim.
+            return;
+        }
+        // Same gate as the previous inline path: multi-branch runtimes reclaim
+        // via checkpoint (a single branch's flush coverage cannot prove the
+        // other branches' rows durable).
+        if self.branch_catalog.registry().active_branch_ids() != vec![self.initial_branch_id] {
+            return;
+        }
+        let _ = self.enqueue_maintenance(MaintenanceTaskRequest::table_manifest_flush_watermark(
+            candidate,
+        ));
+        let _ = self.enqueue_maintenance(MaintenanceTaskRequest::wal_truncation());
+    }
+
     #[allow(
         dead_code,
         reason = "durable maintenance dispatch uses this concrete truncation hook"
@@ -985,10 +1115,19 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let health = self.current_recovery_health.clone();
         if let LifecycleRetentionScope::TableObjects { branch_id } = request.scope() {
-            let table_request = table_object_retention_request(&self.services, branch_id, &health)?;
-            return Ok(table_object_retention_outcome(&table_request)?
-                .retention()
-                .clone());
+            let pinned_objects =
+                in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
+            let table_request = table_object_retention_request(&self.services, branch_id, &health)?
+                .with_pinned_objects(pinned_objects);
+            let outcome = table_object_retention_outcome(&table_request)?;
+            // The public Reclaim verb performs reclaim, not just a report: chain the sweep
+            // (Quarantine → Purge) for the marked candidates. Best-effort, coalescing.
+            if outcome.decisions().iter().any(|decision| {
+                decision.decision() == crate::lifecycle::RetentionDecision::QuarantineCandidate
+            }) {
+                let _ = self.enqueue_maintenance(MaintenanceTaskRequest::quarantine());
+            }
+            return Ok(outcome.retention().clone());
         }
         if recovery_health_prevents_listing(request, &health) {
             let proof = retention_proof_from_assembly(request, &self.services, &health);
@@ -1258,6 +1397,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let outcome = self.maintenance.run_next(self.state, runner);
         self.record_optional_maintenance_health(&outcome);
+        // BS2.3: the runner may have rewritten any branch's tables; republish snapshots.
+        self.republish_all_branch_snapshots();
         outcome
     }
 
@@ -1271,7 +1412,16 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         else {
             return Ok(None);
         };
-        self.run_flush_maintenance_task(task.id())
+        let outcome = self.run_flush_maintenance_task(task.id())?;
+        // BS2.3: flush installed L0 tables (a global flush touches every active branch); republish.
+        self.republish_all_branch_snapshots();
+        // Flush-driven WAL reclaim for the inline scheduling path (the background path reclaims
+        // in `finish_publish_phase`). Best-effort; only when the flush actually completed.
+        if matches!(&outcome, Some(outcome) if outcome.status() == MaintenanceOutcomeStatus::Completed)
+        {
+            self.reclaim_wal_after_flush();
+        }
+        Ok(outcome)
     }
 
     fn run_flush_maintenance_task(
@@ -1373,6 +1523,26 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
             }
         };
+        // BS5.2: applied rows above the visible version mean a write-group
+        // pipeline is mid-flight on this branch (rows applied, covering fsync
+        // off-lock, publish pending). Freezing or snapshotting now would hand
+        // the off-lock build rows whose WAL records are not yet durable — an
+        // installed table could then survive a crash that tears those records,
+        // resurrecting an unacked half-group. Defer; the pipeline publishes
+        // within milliseconds and post-commit scheduling re-enqueues the flush.
+        if branch
+            .max_commit_version()
+            .is_some_and(|version| version > self.visible.visible_version())
+        {
+            let outcome = MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
+                .with_source_error(LifecycleError::InvalidLifecycleState {
+                    reason: "flush deferred: write-group publish in flight on this branch",
+                });
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+            return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+        }
+        let mut rotated = false;
         if branch.active_row_count() > 0 {
             if let Err(error) = require_rotate_budget(&self.budget, branch) {
                 let outcome =
@@ -1383,13 +1553,24 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
             }
             branch.rotate_active();
+            rotated = true;
+        }
+        let branch_snapshot = branch.clone();
+        // Model-2 V-before-S coverage: the rotation swapped in a fresh live active, but the
+        // published snapshot still holds (only) the pre-rotation one. Republish in the SAME lock
+        // hold — otherwise every commit landing in the new active during the off-lock build stays
+        // invisible to readers (reads at visible V missing rows ≤ V) until the finish-phase
+        // republish. Caught by the BS5.0 multi-writer stress: acked batches were unreadable for
+        // 15–140 ms whenever a flush build was in flight.
+        if rotated {
+            self.publish_branch_snapshot(branch_id);
         }
         Ok(Some(DurableBackgroundMaintenanceStep::Build(Box::new(
             DurableBackgroundMaintenanceBuild::Flush {
                 task,
                 branch_id,
                 request,
-                branch_snapshot: branch.clone(),
+                branch_snapshot,
                 table_object: self.services.table_object().clone(),
                 table_reader: self.services.table_reader().clone(),
                 budget: self.budget.clone(),
@@ -1540,15 +1721,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     pub(crate) fn run_next_wal_truncation_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-        if self
-            .maintenance
-            .has_pending_or_active_kind(MaintenanceTaskKind::Flush)
-            || self
-                .maintenance
-                .has_pending_or_active_kind(MaintenanceTaskKind::FlushWatermark)
-        {
-            return Ok(None);
-        }
+        // No pending-flush/flush-watermark gate: truncation reads the *current* persisted
+        // retention watermark and only deletes sealed segments fully below it, so running
+        // while a flush or watermark advance is in flight is safe — it reclaims what is
+        // already covered and the next pass reclaims the rest (truncation tasks coalesce).
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let manifest = self.services.manifest();
@@ -1563,15 +1739,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         &mut self,
     ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
-        if self
-            .maintenance
-            .has_pending_or_active_kind(MaintenanceTaskKind::Flush)
-            || self
-                .maintenance
-                .has_pending_or_active_kind(MaintenanceTaskKind::FlushWatermark)
-        {
-            return Ok(None);
-        }
+        // No pending-flush/flush-watermark gate: see `run_next_wal_truncation_maintenance`.
         let Some(task) = self
             .maintenance
             .next_matching_task(|task| task.kind() == MaintenanceTaskKind::WalTruncation)
@@ -1992,15 +2160,23 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             guard,
             post,
         } = prepared;
+        // Set when a flush actually installed new L0 table(s); gates the flush-driven WAL
+        // reclaim at the tail (after the task is finished and the publish guard released).
+        let mut flush_published = false;
+        // Rewrites (compaction/materialization) supersede input objects: trigger the table-object
+        // GC mark after the publish lands (flushes only add tables — no trigger).
+        let rewrite_branch = match &post {
+            PreparedPublishPost::Compaction { branch_id, .. }
+            | PreparedPublishPost::Materialization { branch_id, .. } => Some(*branch_id),
+            PreparedPublishPost::Flush => None,
+        };
         let outcome = match post {
             PreparedPublishPost::Flush => match write_result {
-                Ok(write) => match self
-                    .table_catalog
-                    .record_reserved_manifest(write.manifest())
-                {
-                    Ok(()) => base_outcome,
-                    Err(error) => table_manifest_debt_outcome(base_outcome, error),
-                },
+                Ok(_write) => {
+                    self.table_catalog.confirm_reserved_manifest_published();
+                    flush_published = true;
+                    base_outcome
+                }
                 Err(error) => table_manifest_debt_outcome(base_outcome, error),
             },
             PreparedPublishPost::Compaction {
@@ -2031,7 +2207,26 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         // publish for this branch can interleave between persist and record.
         drop(guard);
         let finished = self.maintenance.finish_started(task, outcome, false);
-        self.record_publish_phase_health(finished)
+        let result = self.record_publish_phase_health(finished);
+        // Flush-driven WAL reclaim: advance the flush watermark to the just-published L0
+        // coverage and enqueue truncation, decoupled from checkpoint. Runs after the guard is
+        // released and the task finished; best-effort, never disturbs the flush result.
+        if flush_published {
+            self.reclaim_wal_after_flush();
+        }
+        // Table-object GC: the published rewrite dropped its input refs from the branch manifest;
+        // enqueue the coalescing mark so the superseded objects are reclaimed. Best-effort — a
+        // rejected enqueue only defers reclaim to the next cycle.
+        if let Some(branch_id) = rewrite_branch {
+            let _ =
+                self.enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch_id));
+        }
+        // BS2.3: the background publish phase installed flushed/compacted/materialized tables;
+        // republish snapshots (a flush drain can touch several branches). BS3.4b's graded-admission
+        // rate recompute rides inside `republish_all_branch_snapshots`, the one point both the
+        // background and inline install paths converge on.
+        self.republish_all_branch_snapshots();
+        result
     }
 
     /// Fold an off-lock persist result into a rewrite outcome: record the persisted manifest's
@@ -2044,13 +2239,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         manifest_debt: impl FnOnce(T, LifecycleError) -> T,
     ) -> T {
         match write_result {
-            Ok(write) => match self
-                .table_catalog
-                .record_reserved_manifest(write.manifest())
-            {
-                Ok(()) => outcome,
-                Err(error) => manifest_debt(outcome, error),
-            },
+            Ok(_write) => {
+                self.table_catalog.confirm_reserved_manifest_published();
+                outcome
+            }
             Err(error) => manifest_debt(outcome, error),
         }
     }
@@ -2062,12 +2254,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     pub(crate) fn run_next_flush_watermark_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-        if self
-            .maintenance
-            .has_pending_or_active_kind(MaintenanceTaskKind::Flush)
-        {
-            return Ok(None);
-        }
+        // No pending-flush gate: see `run_next_background_flush_watermark_maintenance`.
         let state = self.state;
         let maintenance = &mut self.maintenance;
         let branch = self
@@ -2097,15 +2284,193 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         outcome
     }
 
+    /// D.2b-2 background flush-watermark entry: the checkpoint-covered fast path (no
+    /// coverage scan) persists synchronously under the lock; otherwise it captures an
+    /// owned snapshot and returns `FlushWatermarkCompute`, so the O(rows) coverage scan
+    /// runs off the lock. Returns `None` (fall through to the maintenance after
+    /// flush-watermark) when there is no task or no candidate to try.
+    pub(crate) fn start_next_background_flush_watermark_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
+        let Some(task) = self
+            .maintenance
+            .next_matching_task(|task| task.kind() == MaintenanceTaskKind::FlushWatermark)
+        else {
+            return Ok(None);
+        };
+        if let Some(outcome) = self.run_background_flush_watermark_if_checkpoint_covered(task)? {
+            return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+        }
+        match self.capture_flush_watermark_coverage_inputs(task)? {
+            Some(inputs) => Ok(Some(
+                DurableBackgroundMaintenanceStep::FlushWatermarkCompute(Box::new(inputs)),
+            )),
+            None => Ok(None),
+        }
+    }
+
+    /// Capture (under the runtime lock) the owned inputs the off-lock coverage scan
+    /// needs. Returns `None` when there is nothing to try (not a single-branch runtime,
+    /// no durable table manifest, or no candidate), so the drain falls through.
+    fn capture_flush_watermark_coverage_inputs(
+        &self,
+        task: MaintenanceTask,
+    ) -> LifecycleResult<Option<FlushWatermarkCoverageInputs>> {
+        let branch_id = self.initial_branch_id;
+        // Single-branch guard: matches the existing coverage checks. Multi-branch
+        // runtimes must capture every active branch before this relaxes.
+        if self.branch_catalog.registry().active_branch_ids() != vec![branch_id] {
+            return Ok(None);
+        }
+        let Some(table_manifest) = self
+            .services
+            .table_manifest()
+            .load_current(branch_id)
+            .map_err(manifest_error)?
+        else {
+            return Ok(None);
+        };
+        let current_manifest = self
+            .services
+            .manifest()
+            .load_required()
+            .map_err(manifest_error)?;
+        let floor = wal_retention_watermark(
+            current_manifest
+                .snapshot_watermark()
+                .map(CommitVersion::new),
+            current_manifest.flushed_through_commit_id(),
+        )
+        .unwrap_or(CommitVersion::ZERO);
+        let visible_version = self.visible.visible_version();
+        let candidates =
+            flush_watermark_candidates_from_manifest(&table_manifest, visible_version, floor);
+        let task_candidate = task.flush_watermark_candidate();
+        if candidates.is_empty() && task_candidate.is_none() {
+            return Ok(None);
+        }
+        let recovery_health_epoch = recovery_health_epoch(&self.current_recovery_health)?;
+        let branch = self
+            .branch_catalog
+            .branch_state(branch_id)
+            .expect("seeded branch is always present in the catalog");
+        let owned_levels = branch.layout_snapshot();
+        let inherited_layers = branch.inherited_layers().to_vec();
+        // The lowest commit still in the memtable: a candidate at or above it is not
+        // durably flushed. Bounds candidate selection off-lock; the apply step re-checks
+        // the current memtable under the lock.
+        let min_unflushed_commit = branch
+            .active()
+            .iter()
+            .map(|row| row.row().commit_version())
+            .chain(
+                branch
+                    .frozen()
+                    .iter()
+                    .flat_map(|table| table.iter().map(|row| row.row().commit_version())),
+            )
+            .min();
+        Ok(Some(FlushWatermarkCoverageInputs {
+            task,
+            branch_id,
+            owned_levels,
+            inherited_layers,
+            table_manifest,
+            floor,
+            recovery_health_epoch,
+            task_candidate,
+            candidates,
+            min_unflushed_commit,
+        }))
+    }
+
+    /// Apply (under the runtime lock) the result of the off-lock coverage scan. `None`
+    /// means nothing was coverable — the task stays pending and the drain falls through.
+    /// Otherwise it claims the task, persists with the pre-built proof (re-validating
+    /// epochs and the memtable against current state), and finishes the task.
+    pub(crate) fn apply_flush_watermark_coverage(
+        &mut self,
+        inputs: &FlushWatermarkCoverageInputs,
+        computed: Option<(CommitVersion, LifecycleTableManifestFlushCoverageProof)>,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        let Some((candidate, proof)) = computed else {
+            return Ok(None);
+        };
+        let state = self.state;
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == inputs.task.id())?
+        else {
+            return Ok(None);
+        };
+        let result = self.persist_off_lock_flush_watermark_coverage(candidate, proof);
+        let maintenance = match result {
+            Ok(outcome) => outcome.maintenance_outcome(),
+            Err(error) => MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                .with_source_error(error),
+        };
+        let outcome = self.maintenance.finish_started(task, maintenance, false)?;
+        self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+        Ok(Some(outcome))
+    }
+
+    /// Persist a flush watermark from a proof built off-lock. The proof carries its
+    /// build-time epochs; here we re-read the *current* table-manifest sequence and
+    /// recovery-health epoch and validate the proof against those, so a concurrent
+    /// flush/compaction that advanced the manifest rejects the stale proof. The current
+    /// memtable is re-checked as the anti-corruption gate.
+    fn persist_off_lock_flush_watermark_coverage(
+        &mut self,
+        candidate: CommitVersion,
+        proof: LifecycleTableManifestFlushCoverageProof,
+    ) -> LifecycleResult<LifecycleFlushWatermarkOutcome> {
+        require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
+        let branch_id = self.initial_branch_id;
+        let manifest = self
+            .services
+            .table_manifest()
+            .load_current(branch_id)
+            .map_err(manifest_error)?
+            .ok_or(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof requires durable table manifest",
+            })?;
+        let branch = self
+            .branch_catalog
+            .branch_state(branch_id)
+            .expect("seeded branch is always present in the catalog");
+        if branch_has_unflushed_rows_at_or_below(branch, candidate) {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason:
+                    "mutable rows at or below flush watermark are not covered by table manifest",
+            });
+        }
+        let active_branches = self.branch_catalog.registry().active_branch_ids();
+        if active_branches != vec![branch_id] {
+            return Err(LifecycleError::WalRetentionProofIncomplete {
+                reason: "table manifest flush proof requires all active branches to be loaded",
+            });
+        }
+        let recovery_health_epoch = recovery_health_epoch(&self.current_recovery_health)?;
+        let outcome = persist_flush_watermark_with_table_manifest_proof(
+            self.services.manifest(),
+            self.visible.visible_version(),
+            candidate,
+            &LifecycleFlushWatermarkProof::TableManifestCovered(proof),
+            manifest.manifest_sequence(),
+            recovery_health_epoch,
+            &[(branch_id, manifest.manifest_sequence())],
+        )?;
+        self.invalidate_retention_watermark_cache();
+        Ok(outcome)
+    }
+
     pub(crate) fn run_next_background_flush_watermark_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-        if self
-            .maintenance
-            .has_pending_or_active_kind(MaintenanceTaskKind::Flush)
-        {
-            return Ok(None);
-        }
+        // No pending-flush gate: the watermark advance (Path A/B below) is proven
+        // against the *current* published table manifest, so an unpublished in-flight
+        // flush is simply not counted — advancing to already-covered L0 while a flush
+        // is active is safe and is what lets WAL reclaim keep pace under write pressure.
         let Some(task) = self
             .maintenance
             .next_matching_task(|task| task.kind() == MaintenanceTaskKind::FlushWatermark)
@@ -2195,7 +2560,20 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             .branch_catalog
             .branch_state(branch_id)
             .expect("seeded branch is always present in the catalog");
-        match self.flush_watermark_candidate_has_table_coverage(candidate, branch, &manifest) {
+        let current_manifest = self
+            .services
+            .manifest()
+            .load_required()
+            .map_err(manifest_error)?;
+        let floor = wal_retention_watermark(
+            current_manifest
+                .snapshot_watermark()
+                .map(CommitVersion::new),
+            current_manifest.flushed_through_commit_id(),
+        )
+        .unwrap_or(CommitVersion::ZERO);
+        match self.flush_watermark_candidate_has_table_coverage(candidate, branch, &manifest, floor)
+        {
             Ok(()) => Ok(self.branch_catalog.registry().active_branch_ids() == vec![branch_id]),
             Err(LifecycleError::WalRetentionProofIncomplete { .. }) => Ok(false),
             Err(error) => Err(error),
@@ -2232,12 +2610,15 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             .branch_catalog
             .branch_state(branch_id)
             .expect("seeded branch is always present in the catalog");
+        let floor = retention_watermark.unwrap_or(CommitVersion::ZERO);
         for candidate in flush_watermark_candidates_from_manifest(
             &manifest,
             self.visible.visible_version(),
-            retention_watermark.unwrap_or(CommitVersion::ZERO),
+            floor,
         ) {
-            match self.flush_watermark_candidate_has_table_coverage(candidate, branch, &manifest) {
+            match self
+                .flush_watermark_candidate_has_table_coverage(candidate, branch, &manifest, floor)
+            {
                 Ok(()) => return Ok(Some(candidate)),
                 Err(LifecycleError::WalRetentionProofIncomplete { .. }) => {}
                 Err(error) => return Err(error),
@@ -2251,27 +2632,19 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         candidate: CommitVersion,
         branch: &BranchLocalState,
         manifest: &TableManifest,
+        floor: CommitVersion,
     ) -> LifecycleResult<()> {
-        let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest(
+        // `floor` is the current checkpoint watermark — the same value
+        // `validate_extends_checkpoint` proves the candidate extends — so it both
+        // bounds the coverage scan to the needed tail and validates the extension.
+        let proof = LifecycleTableManifestFlushCoverageProof::from_branch_manifest_with_floor(
             candidate,
             branch,
             manifest,
             &self.current_recovery_health,
+            floor,
         )?;
-        let current_manifest = self
-            .services
-            .manifest()
-            .load_required()
-            .map_err(manifest_error)?;
-        proof.validate_extends_checkpoint(
-            wal_retention_watermark(
-                current_manifest
-                    .snapshot_watermark()
-                    .map(CommitVersion::new),
-                current_manifest.flushed_through_commit_id(),
-            )
-            .unwrap_or(CommitVersion::ZERO),
-        )
+        proof.validate_extends_checkpoint(floor)
     }
 
     #[allow(
@@ -2331,6 +2704,11 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                     MaintenanceTaskKind::Compaction | MaintenanceTaskKind::Materialization
                 )
             })
+            // Skip candidates that would contend with an in-flight rewrite (same branch,
+            // equal/adjacent level) so concurrent workers pick disjoint levels. Correctness
+            // does not rely on this — a conflicting compaction that slips through is rejected
+            // at publish by candidate revalidation; this only avoids wasted build work.
+            .filter(|task| !self.maintenance.rewrite_conflicts_with_active(*task))
             .max_by_key(|task| {
                 (
                     self.table_rewrite_task_score_key(*task),
@@ -2423,6 +2801,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             };
             maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
         }?;
+        // BS2.3: compaction rewrote the branch's tables; republish the branch snapshot.
+        self.publish_branch_snapshot(branch_id);
         if outcome
             .as_ref()
             .is_some_and(table_rewrite_outcome_was_flush_preempted)
@@ -2433,6 +2813,15 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             .is_some_and(table_rewrite_outcome_allows_chain_resubmit)
         {
             self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
+        }
+        // Table-object GC: a completed foreground compaction dropped its input refs; enqueue the
+        // coalescing mark (best-effort — a rejected enqueue defers reclaim to the next cycle).
+        if outcome
+            .as_ref()
+            .is_some_and(|completed| completed.status() == MaintenanceOutcomeStatus::Completed)
+        {
+            let _ =
+                self.enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch_id));
         }
         Ok(outcome)
     }
@@ -2660,6 +3049,15 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         {
             self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
         }
+        // Table-object GC: a completed materialization replaced inherited-layer refs; enqueue the
+        // coalescing mark (best-effort — a rejected enqueue defers reclaim to the next cycle).
+        if outcome
+            .as_ref()
+            .is_some_and(|completed| completed.status() == MaintenanceOutcomeStatus::Completed)
+        {
+            let _ =
+                self.enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch_id));
+        }
         Ok(outcome)
     }
 
@@ -2728,10 +3126,44 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         dead_code,
         reason = "runtime maintenance entry point is consumed by dedicated tests"
     )]
+    /// Whether any build-producing task is currently in flight (executor passthrough). The
+    /// drain's interleave and the table-object mark/sweep all defer on this condition.
+    pub(crate) fn has_active_build_task(&self) -> bool {
+        self.maintenance.has_active_build_task()
+    }
+
+    /// Whether any low-tier maintenance (retention / pruning / quarantine / purge / repair /
+    /// health) is queued. The background drain's anti-starvation interleave consults this so a
+    /// sustained stream of upper-tier work cannot starve reclaim indefinitely.
+    pub(crate) fn has_pending_low_tier_maintenance(&self) -> bool {
+        self.maintenance.pending_tasks().iter().any(|task| {
+            matches!(
+                task.kind(),
+                MaintenanceTaskKind::Retention
+                    | MaintenanceTaskKind::SnapshotPruning
+                    | MaintenanceTaskKind::Quarantine
+                    | MaintenanceTaskKind::Purge
+                    | MaintenanceTaskKind::Repair
+                    | MaintenanceTaskKind::HealthCollection
+            )
+        })
+    }
+
     pub(crate) fn run_next_retention_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
+        // Defer the table-object mark outright while builds are in flight: the sweep would
+        // defer on the same condition anyway, so running the O(inventory + manifests) mark
+        // first only burns the drain slot (measured: enough wasted slots under a sustained
+        // load's 16 background workers to push compaction into the L0 admission wall). The
+        // deferral is cheap and the mark re-runs at the next lull, close, or reopen.
+        let builds_active = self.maintenance.has_active_build_task();
+        let pinned_objects = if builds_active {
+            Vec::new()
+        } else {
+            in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog)
+        };
         let maintenance = &mut self.maintenance;
         let services = &self.services;
         let health = self.current_recovery_health.clone();
@@ -2744,6 +3176,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             health,
             pending_releases,
             pending_releases_sequence,
+            pinned_objects,
+            builds_active,
         };
         let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             matches!(
@@ -2752,6 +3186,17 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             )
         });
         self.record_optional_maintenance_health(&outcome);
+        // A completed retention pass may have marked unreachable table objects; the sweep
+        // (Quarantine task) acts on a fresh mark of its own, so chaining is unconditional and
+        // idempotent — a sweep with no candidates completes trivially, and coalescing folds
+        // repeats. Best-effort: a rejected enqueue only delays reclaim to the next cycle.
+        if matches!(
+            &outcome,
+            Ok(Some(completed)) if completed.task_kind() == MaintenanceTaskKind::Retention
+                && completed.status() == MaintenanceOutcomeStatus::Completed
+        ) {
+            let _ = self.enqueue_maintenance(MaintenanceTaskRequest::quarantine());
+        }
         outcome
     }
 
@@ -2817,12 +3262,50 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         task_id: MaintenanceTaskId,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
+        let database_id = *self.services.assembly_facts().database_id();
+        let codec_id = LifecycleCodecId::new(self.services.assembly_facts().codec_id())?;
+        let staged_at = checkpoint_created_at(
+            self.allocator.timestamp_guard().last_allocated(),
+            self.recovered_checkpoint_timestamp_max,
+        );
+        let builds_active = self.maintenance.has_active_build_task();
+        let retired_readers_alive = self.snapshot_publisher.retired_views_alive();
+        let pinned_objects =
+            in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
+        let mut runner = DurableTableObjectSweepRunner {
+            services: &self.services,
+            branch_id: self.initial_branch_id,
+            health: self.current_recovery_health.clone(),
+            database_id,
+            codec_id,
+            staged_at,
+            builds_active,
+            retired_readers_alive,
+            pinned_objects,
+            quarantined_objects: 0,
+            remaining_candidates: 0,
+            sweep_health: None,
+        };
         let maintenance = &mut self.maintenance;
-        let mut runner = DurableQuarantineMaintenanceRunner;
         let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             task.id() == task_id && task.kind() == MaintenanceTaskKind::Quarantine
         });
+        let quarantined = runner.quarantined_objects;
+        let remaining = runner.remaining_candidates;
         self.record_optional_maintenance_health(&outcome);
+        if quarantined > 0 {
+            // Best-effort: the staged bytes are reclaimed by the purge; if the enqueue is
+            // rejected (budget/shutdown), the next sweep cycle re-stages idempotently.
+            let _ = self.enqueue_maintenance(MaintenanceTaskRequest::purge_quarantine(
+                self.initial_branch_id,
+            ));
+        }
+        if remaining > 0 {
+            // Best-effort: capped/deferred candidates re-mark on the next retention cycle.
+            let _ = self.enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(
+                self.initial_branch_id,
+            ));
+        }
         outcome
     }
 
@@ -2921,8 +3404,8 @@ const fn health_rank(health: &RecoveryHealth) -> u8 {
 
 struct DurableFlushMaintenanceRunner<'a, 'b> {
     branch_catalog: &'a mut crate::lifecycle::LifecycleBranchCatalog,
-    table_object: &'a TableObjectService<'b>,
-    table_reader: &'a TableObjectReaderService<'b>,
+    table_object: &'a TableObjectService<'static>,
+    table_reader: &'a TableObjectReaderService<'static>,
     table_manifest: &'a TableManifestService<'b>,
     table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
     budget: &'a crate::lifecycle::StorageBudgetLedger,
@@ -3134,11 +3617,20 @@ impl MaintenanceTaskRunner for DurableFlushWatermarkMaintenanceRunner<'_, '_> {
             )
             .with_reason("table manifest coverage is missing"));
         };
-        let proof = match LifecycleTableManifestFlushCoverageProof::from_branch_manifest(
+        let current_manifest = self.manifest.load_required().map_err(manifest_error)?;
+        let floor = wal_retention_watermark(
+            current_manifest
+                .snapshot_watermark()
+                .map(CommitVersion::new),
+            current_manifest.flushed_through_commit_id(),
+        )
+        .unwrap_or(CommitVersion::ZERO);
+        let proof = match LifecycleTableManifestFlushCoverageProof::from_branch_manifest_with_floor(
             candidate,
             self.branch,
             &table_manifest,
             self.health,
+            floor,
         ) {
             Ok(proof) => proof,
             Err(error @ LifecycleError::WalRetentionProofIncomplete { .. }) => {
@@ -3171,8 +3663,8 @@ impl MaintenanceTaskRunner for DurableFlushWatermarkMaintenanceRunner<'_, '_> {
 
 struct DurableCompactionMaintenanceRunner<'a, 'b> {
     branch: &'a mut BranchLocalState,
-    table_object: &'a TableObjectService<'b>,
-    table_reader: &'a TableObjectReaderService<'b>,
+    table_object: &'a TableObjectService<'static>,
+    table_reader: &'a TableObjectReaderService<'static>,
     table_manifest: &'a TableManifestService<'b>,
     table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
     budget: &'a crate::lifecycle::StorageBudgetLedger,
@@ -3210,8 +3702,8 @@ impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
 
 struct DurableMaterializationMaintenanceRunner<'a, 'b> {
     branch: &'a mut BranchLocalState,
-    table_object: &'a TableObjectService<'b>,
-    table_reader: &'a TableObjectReaderService<'b>,
+    table_object: &'a TableObjectService<'static>,
+    table_reader: &'a TableObjectReaderService<'static>,
     table_manifest: &'a TableManifestService<'b>,
     table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
     budget: &'a crate::lifecycle::StorageBudgetLedger,
@@ -3239,6 +3731,12 @@ struct DurableRetentionMaintenanceRunner<'a, 'b> {
     health: crate::lifecycle::RecoveryHealth,
     pending_releases: &'a mut Vec<crate::branch::facts::BranchReleasePlan>,
     pending_releases_sequence: &'a mut u64,
+    /// In-memory-reachable table objects, pinned live in the mark (COW crash windows) so the
+    /// report matches what the sweep will actually reclaim.
+    pinned_objects: Vec<crate::object::ObjectName>,
+    /// When a build is in flight the table-object mark defers before the O(inventory) listing —
+    /// the sweep would defer on the same condition, so the scan would be pure wasted slot time.
+    builds_active: bool,
 }
 
 impl DurableRetentionMaintenanceRunner<'_, '_> {
@@ -3347,8 +3845,20 @@ impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
             self.publish_pending_releases()?;
         }
         if let LifecycleRetentionScope::TableObjects { branch_id } = request.scope() {
+            if self.builds_active {
+                return Ok(append_released_table_names(
+                    MaintenanceOutcome::new(
+                        MaintenanceTaskKind::Retention,
+                        MaintenanceOutcomeStatus::Deferred,
+                    )
+                    .with_reason("table-object mark deferred: build task in flight")
+                    .with_stats(LifecycleStats::new(0, 0, 1, 1, 0)),
+                    &drained,
+                ));
+            }
             let table_retention =
                 table_object_retention_request(self.services, branch_id, &self.health)
+                    .map(|request| request.with_pinned_objects(self.pinned_objects.clone()))
                     .and_then(|request| table_object_retention_outcome(&request))?;
             return Ok(append_released_table_names(
                 table_retention.retention().maintenance_outcome(),
@@ -3406,6 +3916,7 @@ impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
                 let retention_outcome = retention_outcome_for_delegated_families(proof)?;
                 let table_retention =
                     table_object_retention_request(self.services, self.branch_id, &self.health)
+                        .map(|request| request.with_pinned_objects(self.pinned_objects.clone()))
                         .and_then(|request| table_object_retention_outcome(&request))?;
                 Ok(append_released_table_names(
                     global_retention_maintenance_outcome(
@@ -3493,17 +4004,166 @@ pub(super) fn durable_quarantine_service_error(
     )
 }
 
-struct DurableQuarantineMaintenanceRunner;
+/// Per-pass cap on quarantined objects. Quarantine staging copies the object's bytes into
+/// `quarantine/` before deleting the source, so this bounds the copy I/O held under the runtime
+/// lock; a larger backlog converges over successive retention → quarantine → purge cycles (each
+/// cycle's purge reclaims the previous cycle's staged bytes, bounding transient disk growth).
+const TABLE_OBJECT_SWEEP_MAX_OBJECTS: usize = 32;
 
-impl MaintenanceTaskRunner for DurableQuarantineMaintenanceRunner {
+/// The table-object sweep (the reclaim half of GC). Recomputes the reachability mark fresh under
+/// the same runtime-lock hold it acts in — there is no decision-to-action gap for a fork, publish,
+/// or manifest advance to invalidate — then stages each unreachable object into quarantine (the
+/// existing two-phase copy-then-delete-source safety net; physical bytes are reclaimed by the
+/// follow-up Purge task). Never deletes an object that any branch can reach: the mark unions
+/// durable-manifest reachability with in-memory pins (COW crash windows), and the sweep defers
+/// outright while an off-lock build is in flight (its unpublished outputs are durably unreachable
+/// by construction) or while a retired read view is still held (durable readers are name-addressed
+/// with no held fd, so a source delete would break their block fetches).
+struct DurableTableObjectSweepRunner<'a, 'b> {
+    services: &'a crate::lifecycle::LifecycleDurableLocalServices<'b>,
+    branch_id: strata_core_next::BranchId,
+    health: RecoveryHealth,
+    database_id: [u8; 16],
+    codec_id: LifecycleCodecId,
+    staged_at: Timestamp,
+    builds_active: bool,
+    retired_readers_alive: bool,
+    pinned_objects: Vec<crate::object::ObjectName>,
+    /// Out: objects staged into quarantine this pass (drives the follow-up Purge enqueue).
+    quarantined_objects: usize,
+    /// Out: candidates left unprocessed (cap) or deferred (interlocks) — drives re-enqueue.
+    remaining_candidates: usize,
+    /// Out: worst recovery health reported by the quarantine service this pass.
+    sweep_health: Option<RecoveryHealth>,
+}
+
+impl MaintenanceTaskRunner for DurableTableObjectSweepRunner<'_, '_> {
     fn run_task(&mut self, task: &MaintenanceTask) -> LifecycleResult<MaintenanceOutcome> {
         if task.kind() != MaintenanceTaskKind::Quarantine {
             return Err(LifecycleError::MaintenanceTaskFailed {
                 reason: "quarantine runner requires quarantine task",
             });
         }
-        Ok(quarantine_task_without_request())
+        // Fresh mark under this lock hold (metadata-only: inventory listing + manifest decode,
+        // never table data).
+        let request = table_object_retention_request(self.services, self.branch_id, &self.health)?
+            .with_pinned_objects(self.pinned_objects.clone());
+        let outcome = table_object_retention_outcome(&request)?;
+        let candidates: Vec<crate::object::ObjectName> = outcome
+            .decisions()
+            .iter()
+            .filter(|decision| {
+                decision.decision() == crate::lifecycle::RetentionDecision::QuarantineCandidate
+            })
+            .filter_map(|decision| decision.object().cloned())
+            .collect();
+        if candidates.is_empty() {
+            return Ok(MaintenanceOutcome::new(MaintenanceTaskKind::Quarantine, {
+                MaintenanceOutcomeStatus::Completed
+            })
+            .with_reason("no unreachable table objects")
+            .with_stats(LifecycleStats::new(0, 0, 1, 0, 0)));
+        }
+        if self.builds_active || self.retired_readers_alive {
+            // Interlock deferral does NOT self-requeue (that would spin the retention →
+            // quarantine chain against a long-held reader); the next rewrite publish, reopen,
+            // or explicit Reclaim re-triggers the cycle.
+            let reason = if self.builds_active {
+                "table-object sweep deferred: build task in flight"
+            } else {
+                "table-object sweep deferred: retired read view still held"
+            };
+            return Ok(MaintenanceOutcome::new(
+                MaintenanceTaskKind::Quarantine,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason(reason)
+            .with_stats(LifecycleStats::new(0, 0, 1, 1, 0)));
+        }
+
+        let mut staged_names = Vec::new();
+        let mut faults = 0usize;
+        for object in candidates.iter().take(TABLE_OBJECT_SWEEP_MAX_OBJECTS) {
+            let proof = crate::lifecycle::LifecycleQuarantineProof::from_retention_decision(
+                crate::lifecycle::RetentionDecision::QuarantineCandidate,
+                self.health.clone(),
+            );
+            let quarantine_request = LifecycleQuarantineRequest::from_source_object(
+                self.branch_id,
+                self.database_id,
+                self.codec_id.clone(),
+                object.clone(),
+                self.staged_at,
+                proof,
+            )?;
+            let quarantine_outcome =
+                quarantine_lifecycle_object(self.services.quarantine(), &quarantine_request);
+            if let Some(health) = quarantine_outcome.recovery_health() {
+                self.sweep_health = Some(health.clone());
+            }
+            match quarantine_outcome.status() {
+                crate::lifecycle::LifecycleQuarantineStatus::QuarantinedSourceDeleted
+                | crate::lifecycle::LifecycleQuarantineStatus::SourceDeleteRetried => {
+                    self.quarantined_objects += 1;
+                    staged_names.push(object.to_string());
+                }
+                // Idempotent replays after a partial earlier pass: the object is already staged
+                // (or its source already gone) — the purge will reclaim it.
+                crate::lifecycle::LifecycleQuarantineStatus::AlreadyQuarantined
+                | crate::lifecycle::LifecycleQuarantineStatus::SourceAlreadyMissingAfterPublish => {
+                    self.quarantined_objects += 1;
+                }
+                // Every other status (publish failures, health blocks, service rejections) leaves
+                // the object on disk for a later pass; the recorded health debt surfaces it.
+                _ => {
+                    faults += 1;
+                }
+            }
+        }
+        self.remaining_candidates = candidates
+            .len()
+            .saturating_sub(TABLE_OBJECT_SWEEP_MAX_OBJECTS.min(candidates.len()));
+
+        let mut outcome = MaintenanceOutcome::new(
+            MaintenanceTaskKind::Quarantine,
+            MaintenanceOutcomeStatus::Completed,
+        )
+        .with_affected_object_names(staged_names)
+        .with_state_changes(self.quarantined_objects)
+        .with_stats(LifecycleStats::new(0, faults, 1, 0, 0));
+        if let Some(health) = self.sweep_health.clone() {
+            outcome = outcome.with_recovery_health(health);
+        }
+        Ok(outcome)
     }
+}
+
+/// Table objects reachable from any branch's IN-MEMORY state (owned levels + inherited layers,
+/// every live catalog branch), mapped to inventory object names via the durable table catalog.
+/// The sweep pins these as live even when no durable manifest references them — the COW crash
+/// windows (a fork child whose fork-time manifest publish failed and records only health debt)
+/// must never lose shared parent objects to reclaim.
+fn in_memory_pinned_table_objects(
+    branch_catalog: &crate::lifecycle::LifecycleBranchCatalog,
+    table_catalog: &crate::lifecycle::LifecycleDurableTableCatalog,
+) -> Vec<crate::object::ObjectName> {
+    let mut pinned = std::collections::BTreeSet::new();
+    for descriptor in branch_catalog.list_branches(false) {
+        let Ok(state) = branch_catalog.branch_state(descriptor.branch_id()) else {
+            continue;
+        };
+        let owned = state.owned_levels().iter().flatten();
+        let inherited = state
+            .inherited_layers()
+            .iter()
+            .flat_map(|layer| layer.owned_levels().iter().flatten());
+        for table in owned.chain(inherited) {
+            if let Some(object) = table_catalog.object_for_identity(table.descriptor().identity()) {
+                pinned.insert(object.clone());
+            }
+        }
+    }
+    pinned.into_iter().collect()
 }
 
 struct DurableQuarantineRepairMaintenanceRunner<'a, 'b> {
@@ -3801,6 +4461,49 @@ fn append_released_table_names(
         }
     }
     outcome.with_affected_object_names(names)
+}
+
+/// Off-lock flush-watermark coverage scan (D.2b-2): runs the O(rows) durable
+/// coverage scan on the captured snapshot with the runtime lock released, returning the
+/// coverable candidate and its proof, or `None`. Matches the under-lock selection order
+/// — the task's own candidate first, then the highest coverable manifest candidate. The
+/// memtable filter mirrors the under-lock behavior; the apply step re-checks the current
+/// memtable under the lock (the anti-corruption gate).
+impl FlushWatermarkCoverageInputs {
+    pub(crate) fn compute_coverage(
+        &self,
+    ) -> Option<(CommitVersion, LifecycleTableManifestFlushCoverageProof)> {
+        let build = |candidate: CommitVersion| -> Option<LifecycleTableManifestFlushCoverageProof> {
+            if let Some(min_unflushed) = self.min_unflushed_commit {
+                if min_unflushed <= candidate {
+                    return None;
+                }
+            }
+            let proof = LifecycleTableManifestFlushCoverageProof::from_durable_snapshot(
+                candidate,
+                self.branch_id,
+                self.owned_levels.levels(),
+                &self.inherited_layers,
+                &self.table_manifest,
+                self.recovery_health_epoch,
+                self.floor,
+            )
+            .ok()?;
+            proof.validate_extends_checkpoint(self.floor).ok()?;
+            Some(proof)
+        };
+        if let Some(candidate) = self.task_candidate {
+            if let Some(proof) = build(candidate) {
+                return Some((candidate, proof));
+            }
+        }
+        for &candidate in &self.candidates {
+            if let Some(proof) = build(candidate) {
+                return Some((candidate, proof));
+            }
+        }
+        None
+    }
 }
 
 fn flush_watermark_candidates_from_manifest(

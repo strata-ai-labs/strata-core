@@ -68,6 +68,7 @@ mod row_pruning;
 #[cfg(feature = "perf-trace")]
 mod scan_pruning;
 mod scan_runtime;
+mod shape_aggregates;
 mod snapshot_install;
 mod source_layout;
 
@@ -110,6 +111,11 @@ fn table_facts(identity: &str) -> TableRuntimeFacts {
     .expect("table facts")
 }
 
+// BS4.4f: the constructor takes extras as an argument; tests derive it from the (eager) reader's rows.
+fn table_summary_extras(reader: &ImmutableTableReader<'_>) -> crate::table::TableSummaryExtras {
+    crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras")
+}
+
 fn branch_owned_table(
     branch: BranchId,
     level: BranchLevel,
@@ -118,7 +124,8 @@ fn branch_owned_table(
 ) -> BranchOwnedTable {
     let reader = immutable_reader(identity, rows);
     let descriptor = branch_table_descriptor(level, &reader);
-    BranchOwnedTable::new(branch, descriptor, reader).expect("branch-owned table")
+    let extras = table_summary_extras(&reader);
+    BranchOwnedTable::new(branch, descriptor, reader, extras).expect("branch-owned table")
 }
 
 fn branch_inherited_layer(

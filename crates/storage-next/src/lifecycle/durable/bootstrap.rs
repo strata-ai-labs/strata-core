@@ -6,35 +6,43 @@ use super::{
 };
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::read::{BranchHistoryRow, BranchReadBound, BranchReadView, BranchScanBounds};
+use crate::branch::snapshot::{BranchSnapshotPublisher, BranchSnapshotRegistry};
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
-    CommitBatch, CommitBatchKind, CommitBranchGeneration, CommitBranchGenerationGuard,
-    CommitBranchGuardSet, CommitDurabilityClass, CommitDurabilityMode, CommitDurableRuntime,
-    CommitFactAllocator, CommitManualTimestampSource, CommitOutcome, CommitReplayAction,
-    CommitReplayRequest, CommitReplayRuntime, CommitRuntimeError, CommitTimestampSource,
-    CommitUnresolvedDurable, CommitUnresolvedDurableGate, VisibleVersionPublish,
-    VisibleVersionTracker,
+    publish_commit_group, CommitBatch, CommitBatchKind, CommitBranchApplyTarget,
+    CommitBranchGeneration, CommitBranchGenerationGuard, CommitBranchGuardSet,
+    CommitDurabilityClass, CommitDurabilityMode, CommitDurableRuntime, CommitFactAllocator,
+    CommitGroupState, CommitManualTimestampSource, CommitOutcome, CommitReplayAction,
+    CommitReplayRequest, CommitReplayRuntime, CommitRuntimeError, CommitStamp,
+    CommitTimestampSource, CommitUnresolvedDurable, CommitUnresolvedDurableGate,
+    VisibleVersionPublish, VisibleVersionTracker,
 };
+use crate::config::mode::DurabilityPolicy;
 use crate::format::WalRecord;
+use crate::lifecycle::admission_ramp::{
+    admission_mode_from_env, LifecycleAdmissionMode, WriteRateBucket,
+};
+use crate::lifecycle::background::{MaintenanceClock, RealMaintenanceClock};
 use crate::lifecycle::{
-    branch_resident_bytes, estimate_commit_batch_active_bytes,
+    branch_resident_bytes, compaction_lane_cap, estimate_commit_batch_active_bytes,
     maintenance_ready_for_recovery_health, projected_commit_rotation_would_exceed_frozen_budget,
     BudgetedCommitBranch, LifecycleBranchCatalog, LifecycleDurableTableCatalog, LifecycleError,
     LifecycleMaintenanceExecutor, LifecycleOperationKind, LifecycleRecoveryOutcome,
     LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
     LifecycleStoragePressureReason, LifecycleStoragePressureSeverity, LifecycleTransitionTrigger,
     LifecycleWalGrowthOutcome, LifecycleWalGrowthTrigger, LifecycleWriteAdmissionOutcome,
-    RecoveryExclusivityToken, RecoveryHealth, StorageBudgetLedger, StorageBudgetPool,
+    RecoveryExclusivityToken, RecoveryHealth, RuntimeReadHandles, StorageBudgetLedger,
     StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageMode, StorageOpenOutcome,
     StorageOpenPlan,
 };
 use crate::observability::perf_trace;
 use crate::row::PhysicalKey;
 use crate::service::WalGrowthFacts;
+use crate::service::{WalGroupSyncTicket, WalServiceError};
 use crate::table::TableRuntimeError;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -61,6 +69,13 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) guard_set: CommitBranchGuardSet,
     pub(super) allocator: CommitFactAllocator<S>,
     pub(super) visible: VisibleVersionTracker,
+    /// BS2.2: release-published mirror of `visible.visible_version()` so a future off-lock reader
+    /// (BS2.4) observes the visibility bound without the runtime lock. Stored under the lock on
+    /// commit success; initial value tracks the recovered visible version (`0` == `CommitVersion::ZERO`).
+    pub(super) visible_commit_version: Arc<AtomicU64>,
+    /// BS2.3: per-branch published `Arc<BranchReadView>` snapshots. Published under the lock at the
+    /// mutation sites; in BS2.3 read only by the debug equivalence oracle (reads still lock).
+    pub(super) snapshot_publisher: BranchSnapshotPublisher,
     pub(super) durable_gate: CommitUnresolvedDurableGate,
     pub(super) commit_config: crate::commit::CommitRuntimeConfig,
     pub(super) table_catalog: LifecycleDurableTableCatalog,
@@ -71,6 +86,23 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     pub(super) last_wal_growth_outcome: Option<LifecycleWalGrowthOutcome>,
     pub(super) pressure_rejected_commit_branches: HashSet<BranchId>,
     pub(super) last_write_admission: Option<LifecycleWriteAdmissionOutcome>,
+    /// BS5.2 pipeline frontier: the highest commit version APPLIED by an
+    /// in-flight write group (its covering fsync may still be off-lock, its
+    /// publish pending). Later admissions bound their conflict validation and
+    /// branch-not-ahead checks at `max(visible, frontier)` — serial-equivalent
+    /// semantics across the pipeline. Monotone; equals the visible version
+    /// whenever no group is in flight.
+    pub(super) pipeline_frontier: CommitVersion,
+    // BS3.4b graded write-admission (dark behind STRATA_ADMISSION). The debt-adaptive write rate is
+    // recomputed at structural-change events (`republish_all_branch_snapshots`, which both the inline
+    // and background install paths converge on) and enforced per-commit by the token bucket;
+    // `admission_clock` times both. `Cell` interior mutability keeps the commit/read paths `&self`,
+    // exactly like `retention_watermark` — the runtime is `!Sync` behind the runtime mutex.
+    pub(super) admission_mode: LifecycleAdmissionMode,
+    pub(super) admission_clock: Arc<dyn MaintenanceClock>,
+    pub(super) admission_current_rate: Cell<u64>,
+    pub(super) admission_last_debt: Cell<u64>,
+    pub(super) admission_bucket: Cell<WriteRateBucket>,
     // Cached manifest retention watermark for the per-commit growth/backpressure
     // checks. `Cell` keeps the read paths `&self` (no `&mut` cascade); invalidated
     // at checkpoint/flush completion and refreshed lazily. Interior mutability
@@ -141,6 +173,10 @@ pub(crate) struct LifecycleRecoveryBootstrapReport {
 }
 
 impl<'a, S> LifecycleDurableLocalShell<'a, S> {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "recovery assembly: replay report, open outcome, and runtime construction in one flow"
+    )]
     pub(crate) fn complete_recovery(
         mut self,
         recovery: &LifecycleRecoveryOutcome,
@@ -214,7 +250,17 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
                 .map(CommitVersion::new),
             self.assembly_facts().manifest_flush_watermark(),
         );
-        Ok(LifecycleDurableLocalRuntime {
+        // BS3.4b: seed the graded-admission rate at the un-throttled ceiling and the token bucket at
+        // the current clock. Production uses the real clock; tests swap in a manual clock via
+        // `with_admission_clock_for_test`. `admission_mode` defaults to `Legacy` unless STRATA_ADMISSION.
+        let admission_clock: Arc<dyn MaintenanceClock> = Arc::new(RealMaintenanceClock::new());
+        let admission_initial_rate = self
+            .open_plan
+            .lifecycle_config()
+            .write_throttle_policy()
+            .max_rate_bytes_per_sec();
+        let admission_now = admission_clock.now();
+        let mut runtime = LifecycleDurableLocalRuntime {
             state: self.state,
             open_plan: self.open_plan,
             open_outcome,
@@ -225,6 +271,8 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             guard_set: self.guard_set,
             allocator: self.allocator,
             visible: self.visible,
+            visible_commit_version: visible_version_mirror(self.visible),
+            snapshot_publisher: BranchSnapshotPublisher::new(),
             durable_gate: self.durable_gate,
             commit_config: self.commit_config,
             table_catalog: self.table_catalog,
@@ -235,6 +283,14 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             last_wal_growth_outcome: None,
             pressure_rejected_commit_branches: HashSet::new(),
             last_write_admission: None,
+            // Recovered state has no in-flight groups; the floor starts at the
+            // recovered visible version via the max() in the floor read.
+            pipeline_frontier: CommitVersion::ZERO,
+            admission_mode: admission_mode_from_env(),
+            admission_clock,
+            admission_current_rate: Cell::new(admission_initial_rate),
+            admission_last_debt: Cell::new(0),
+            admission_bucket: Cell::new(WriteRateBucket::new(admission_now)),
             retention_watermark: Cell::new(CachedRetentionWatermark::Known(
                 retention_watermark_seed,
             )),
@@ -242,10 +298,37 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             branch_catalog_sequence,
             pending_releases_sequence,
             branch_publish_locks: HashMap::new(),
-            maintenance: LifecycleMaintenanceExecutor::new(max_maintenance_queue_depth)?,
+            maintenance: Self::build_maintenance_executor(max_maintenance_queue_depth)?,
             maintenance_coverage_idle_rounds: 0,
             close_retry_state: None,
-        })
+        };
+        // BS2.3: seed a published snapshot for every recovered branch before any read observes it.
+        runtime.republish_all_branch_snapshots();
+        // Table-object GC reconcile on REOPEN only: one coalescing mark covers the whole prior
+        // session's backlog (the mark lists the global inventory against every current manifest),
+        // so stale objects from crashes or pre-GC sessions are reclaimed instead of persisting
+        // forever. A freshly created database has no prior backlog to reconcile. Best-effort: a
+        // rejected enqueue only defers reclaim to the next publish-driven cycle.
+        if runtime.open_outcome.disposition()
+            == crate::lifecycle::StorageOpenDisposition::OpenedExisting
+        {
+            let _ = runtime.enqueue_maintenance(
+                crate::lifecycle::MaintenanceTaskRequest::table_object_retention(
+                    runtime.initial_branch_id,
+                ),
+            );
+        }
+        Ok(runtime)
+    }
+
+    /// Build the maintenance executor with the durable runtime's Rewrite-lane concurrency cap
+    /// (env-tunable during the perf sweep; see [`compaction_lane_cap`]).
+    fn build_maintenance_executor(
+        max_queue_depth: usize,
+    ) -> LifecycleResult<LifecycleMaintenanceExecutor> {
+        let mut maintenance = LifecycleMaintenanceExecutor::new(max_queue_depth)?;
+        maintenance.set_rewrite_lane_cap(compaction_lane_cap());
+        Ok(maintenance)
     }
 
     /// Build the runtime catalog, replay durable manifests, and dispatch
@@ -460,6 +543,16 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
     }
 }
 
+impl<S> RuntimeReadHandles for LifecycleDurableLocalRuntime<'_, S> {
+    fn visible_handle(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.visible_commit_version)
+    }
+
+    fn snapshot_registry(&self) -> Arc<BranchSnapshotRegistry> {
+        self.snapshot_publisher.registry_handle()
+    }
+}
+
 impl<S> LifecycleDurableLocalRuntime<'_, S> {
     /// Try to claim the per-branch publish slot for the off-lock publish phase. Returns the guard
     /// when no other publish is in flight for this branch; `None` (the caller should defer the
@@ -514,6 +607,15 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 
     pub(crate) fn budget_total_used_bytes(&self) -> u64 {
         self.budget.total_used_bytes()
+    }
+
+    /// The isolated database-wide runtime memory total (branch resident bytes + block cache),
+    /// without the in-flight ledger pool reservations that `budget_total_used_bytes` adds.
+    /// Test-only: lets the budget drift test assert the published total against an independent
+    /// full fold.
+    #[cfg(test)]
+    pub(crate) fn runtime_total_bytes(&self) -> u64 {
+        self.budget.runtime_total_bytes()
     }
 
     pub(crate) fn budget_global_pressure(&self) -> StorageBudgetPressureSeverity {
@@ -588,8 +690,113 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         Ok((facts, commits_since_checkpoint, trigger))
     }
 
+    /// Whether retained WAL has exceeded the hard disk-safety cap (`max_total_wal_bytes`).
+    /// When true the foreground WAL pacing must not give up — the WAL must never keep growing
+    /// past this ceiling — so the writer waits on background reclaim until it drops back below.
+    pub(crate) fn current_wal_growth_exceeds_hard_cap(&self) -> LifecycleResult<bool> {
+        let policy = self.open_plan.lifecycle_config().wal_growth_policy();
+        Ok(policy.hard_cap_exceeded(self.current_wal_growth_facts()?))
+    }
+
     pub(crate) const fn last_write_admission(&self) -> Option<LifecycleWriteAdmissionOutcome> {
         self.last_write_admission
+    }
+
+    /// BS3.4b: whether the durable runtime is on the graded (debt-adaptive rate) admission path.
+    /// The commit path branches on this to pick the token-bucket delay vs. the legacy quadratic.
+    pub(crate) fn is_graded_admission(&self) -> bool {
+        self.admission_mode == LifecycleAdmissionMode::Graded
+    }
+
+    /// BS3.4b (graded): recompute the debt-adaptive write rate at an install event. The rate is
+    /// updated *only* here (event cadence — the `RocksDB` `InstallSuperVersion` analog); the commit
+    /// path just reads it. The single global rate paces the writer to the most-behind branch (max
+    /// compaction debt). No-op on the legacy path.
+    pub(crate) fn recompute_admission_rate(&self) {
+        if self.admission_mode != LifecycleAdmissionMode::Graded {
+            return;
+        }
+        let mut worst_debt = 0u64;
+        let mut worst_l0 = 0usize;
+        for descriptor in self.branch_catalog.list_branches(false) {
+            let Ok(branch) = self.branch_catalog.branch_state(descriptor.branch_id()) else {
+                continue;
+            };
+            let per_level = branch.per_level_bytes();
+            let targets =
+                crate::lifecycle::compaction::nonzero_level_targets_from_level_bytes(per_level);
+            let debt = crate::lifecycle::admission_ramp::compaction_debt(per_level, &targets);
+            let l0 = branch.owned_levels().first().map_or(0, Vec::len);
+            if debt > worst_debt || (debt == worst_debt && l0 > worst_l0) {
+                worst_debt = debt;
+                worst_l0 = l0;
+            }
+        }
+        // The rate ramps *only* inside the L0 delay band (>= the slowdown/urgent grade). Below it,
+        // feed the ramp zero debt so it recovers (×1.4) back toward the un-throttled ceiling; the
+        // commit path then applies no pacing (rate == max). Within the band the debt direction
+        // (growing/shrinking as L0 fills/drains) drives ×0.8 vs ×1.25.
+        let grade_active = worst_l0 >= crate::lifecycle::compaction::level_zero_urgent_threshold();
+        let effective_debt = if grade_active { worst_debt } else { 0 };
+        let policy = self.open_plan.lifecycle_config().write_throttle_policy();
+        let new_rate = crate::lifecycle::admission_ramp::next_write_rate(
+            self.admission_current_rate.get(),
+            effective_debt,
+            self.admission_last_debt.get(),
+            worst_l0,
+            crate::lifecycle::compaction::level_zero_blocking_threshold(),
+            policy.max_rate_bytes_per_sec(),
+            policy.min_rate_bytes_per_sec(),
+        );
+        self.admission_current_rate.set(new_rate);
+        self.admission_last_debt.set(effective_debt);
+    }
+
+    /// BS3.4b (graded): the per-commit token-bucket delay in millis. `0` on the legacy path, and `0`
+    /// while the rate sits at the un-throttled ceiling (outside the delay band); otherwise the token
+    /// bucket paces this commit to the current rate.
+    pub(crate) fn graded_write_throttle_delay_millis(&self, batch_bytes: u64) -> u64 {
+        if self.admission_mode != LifecycleAdmissionMode::Graded {
+            return 0;
+        }
+        let policy = self.open_plan.lifecycle_config().write_throttle_policy();
+        let rate = self.admission_current_rate.get();
+        if rate >= policy.max_rate_bytes_per_sec() {
+            return 0;
+        }
+        let mut bucket = self.admission_bucket.get();
+        let delay = bucket.charge(batch_bytes, rate, self.admission_clock.now());
+        self.admission_bucket.set(bucket);
+        // Cap a single commit's sleep: at the near-stop floor rate a large batch would otherwise pace
+        // for seconds (batch_bytes / 16 KiB/s). Beyond the cap, admit the write — it grows L0 toward
+        // the hard stop, which then rejects with a bounded retry-wait instead of a multi-second sleep.
+        u64::try_from(delay.as_millis())
+            .unwrap_or(u64::MAX)
+            .min(policy.max_graded_delay_millis())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_admission_mode_for_test(&mut self, mode: LifecycleAdmissionMode) {
+        self.admission_mode = mode;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn admission_current_rate_for_test(&self) -> u64 {
+        self.admission_current_rate.get()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_admission_clock_for_test(&mut self, clock: Arc<dyn MaintenanceClock>) {
+        let now = clock.now();
+        self.admission_clock = clock;
+        self.admission_bucket.set(WriteRateBucket::new(now));
+        self.admission_current_rate.set(
+            self.open_plan
+                .lifecycle_config()
+                .write_throttle_policy()
+                .max_rate_bytes_per_sec(),
+        );
+        self.admission_last_debt.set(0);
     }
 
     fn require_generation_guard(
@@ -652,22 +859,17 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         batch: &CommitBatch,
     ) -> LifecycleResult<()> {
         let incoming_active_bytes = estimate_commit_batch_active_bytes(batch)?;
-        // Database-wide memory budget. Whole-object readers materialize resident tables in memory,
-        // so refresh the global total and refuse the commit before any visible mutation when it
-        // would push the database over its memory budget. The dataset cannot exceed the memory
-        // envelope until lazy block reads make reads incremental.
+        // BS4.5a: database-wide memory budget as an *observability gauge*, not an admission failure.
+        // After the disk-resident flip (BS4.4j/4.4l), durable tables hold lazy readers whose residency
+        // is metadata-only, so a durable dataset is no longer bounded by RAM — the old hard reject
+        // predated lazy block reads and only made sense while whole-object readers materialized every
+        // table. `refresh_runtime_memory_total` records the measured residency (readable via
+        // diagnostics); when it exceeds the budget we count the over-budget admission so health
+        // monitoring can WARN, then admit. Cache mode keeps its hard reject (constraint C2), and
+        // memtable/frozen pressure is still enforced by the rotation check below.
         self.refresh_runtime_memory_total();
         if self.budget.would_exceed_total(incoming_active_bytes) {
-            return Err(LifecycleError::StorageBudgetExceeded {
-                pool: StorageBudgetPool::ActiveMutable,
-                requested_bytes: incoming_active_bytes,
-                used_bytes: self.budget.total_used_bytes(),
-                limit_bytes: self.budget.budget().total_bytes(),
-                requested_count: 0,
-                used_count: 0,
-                limit_count: None,
-                reason: "commit would exceed the database memory budget",
-            });
+            perf_trace::record_durable_commit_admitted_over_budget();
         }
         let branch = self
             .branch_catalog
@@ -797,6 +999,10 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.visible
             .catch_up_visible_after_replay(version)
             .expect("test commit frontier must not regress");
+        // Keep the release-published mirror in lockstep with the tracker (BS2.2): bounded
+        // Latest reads load the atomic, so a tracker-only advance would strand them.
+        self.visible_commit_version
+            .store(self.visible.visible_version().as_u64(), Ordering::Release);
     }
 
     pub(crate) const fn allocator(&self) -> &CommitFactAllocator<S> {
@@ -805,6 +1011,54 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
 
     pub(crate) fn unresolved_durable(&self) -> LifecycleResult<Option<CommitUnresolvedDurable>> {
         self.durable_gate.unresolved().map_err(commit_error)
+    }
+
+    /// BS2.3: capture and publish a fresh snapshot for `branch_id` (under the runtime lock). The
+    /// capture is O(#tables) refcount-bumps (BS2.1); on capture error — infallible on a well-formed
+    /// post-mutation state — the prior snapshot is kept. Called at every branch mutation site.
+    pub(super) fn publish_branch_snapshot(&mut self, branch_id: BranchId) {
+        let view = match self.branch_catalog.branch_state(branch_id) {
+            Ok(state) => match state.capture_snapshot() {
+                Ok(view) => Arc::new(view),
+                Err(_error) => {
+                    debug_assert!(
+                        false,
+                        "snapshot capture failed post-mutation for {branch_id:?}"
+                    );
+                    return;
+                }
+            },
+            // Branch is gone (deleted / not yet installed); nothing to publish.
+            Err(_) => return,
+        };
+        self.snapshot_publisher.publish_view(branch_id, view);
+    }
+
+    /// BS2.3: (re)publish a snapshot for every active branch. Used at construction (so a read
+    /// before any mutation finds a snapshot) and after multi-branch or hard-to-attribute mutations
+    /// (maintenance rewrites, fork's new child) — idempotent, and branch count is small.
+    pub(super) fn republish_all_branch_snapshots(&mut self) {
+        for descriptor in self.branch_catalog.list_branches(false) {
+            self.publish_branch_snapshot(descriptor.branch_id());
+        }
+        // BS3.4b: every structural change (rotation / flush install / compaction install) republishes
+        // here — the RocksDB `InstallSuperVersion` analog and the event-cadence point where the
+        // graded-admission write rate is recomputed from the settled branch shapes. A flush that grew
+        // L0 raises debt (rate down); a compaction that drained it lowers debt (rate recovers). No-op
+        // on the legacy path.
+        self.recompute_admission_rate();
+    }
+
+    /// BS2.3: drop a branch's slot on delete. A racing reader completes on the snapshot it holds.
+    fn remove_branch_snapshot(&mut self, branch_id: BranchId) {
+        self.snapshot_publisher.remove(branch_id);
+    }
+
+    /// BS2.3 test seam: republish after a direct `branch_state_mut` manipulation that bypasses the
+    /// commit/maintenance publish sites (used by tests that synthesize a branch state).
+    #[cfg(test)]
+    pub(crate) fn publish_branch_snapshot_for_test(&mut self, branch_id: BranchId) {
+        self.publish_branch_snapshot(branch_id);
     }
 
     pub(crate) fn read_view(&self) -> LifecycleResult<BranchReadView> {
@@ -820,6 +1074,23 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         branch.capture_read_view().map_err(branch_error)
     }
 
+    /// BS2.2: the visibility bound for a Latest read — `visible` loaded from the release-published
+    /// atomic — with a debug check that bounding by it drops nothing under the lock (a no-op except
+    /// in the deliberate `applied_not_visible` state, where the durable gate is tripped).
+    fn latest_visibility_bound(&self, branch: &BranchLocalState) -> BranchReadBound {
+        let visible = CommitVersion::new(self.visible_commit_version.load(Ordering::Acquire));
+        debug_assert!(
+            !self.durable_gate.is_clean()
+                || branch
+                    .max_commit_version()
+                    .is_none_or(|max| max.as_u64() <= visible.as_u64()),
+            "BS2.2 visibility bound must be a no-op under the lock: branch max {:?} > visible {:?} with a clean gate",
+            branch.max_commit_version(),
+            visible,
+        );
+        BranchReadBound::at_version(visible)
+    }
+
     pub(crate) fn read_latest_point_or_tombstone_for_branch(
         &self,
         branch_id: strata_core_next::BranchId,
@@ -827,8 +1098,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<Option<BranchHistoryRow>> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
         let branch = self.branch_catalog.branch_state(branch_id)?;
+        let bound = self.latest_visibility_bound(branch);
         branch
-            .read_point_or_tombstone_borrowed(key, BranchReadBound::Latest)
+            .read_point_or_tombstone_borrowed(key, bound)
             .map_err(branch_error)
     }
 
@@ -840,13 +1112,9 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<Vec<BranchHistoryRow>> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryRead)?;
         let branch = self.branch_catalog.branch_state(branch_id)?;
+        let bound = self.latest_visibility_bound(branch);
         branch
-            .scan_including_tombstones_borrowed(
-                bounds,
-                BranchReadBound::Latest,
-                visible_limit,
-                None,
-            )
+            .scan_including_tombstones_borrowed(bounds, bound, visible_limit, None)
             .map_err(branch_error)
     }
 
@@ -866,6 +1134,7 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             .branch_catalog
             .create_branch(branch_id, generation, created_at)?;
         self.publish_branch_catalog()?;
+        self.republish_all_branch_snapshots(); // BS2.3: publish the new/forked branch snapshot.
         Ok(outcome)
     }
 
@@ -880,6 +1149,47 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         dead_code,
         reason = "fork-at-history surface exposed for durable callers"
     )]
+    /// Publish the forked child's table manifest at fork time, durably recording its COW
+    /// inherited-layer references. This is what makes the fork's parent-table references visible
+    /// to manifest-based recovery (O(tables) reopen instead of the O(parent dataset)
+    /// `rebuild_fork_snapshot_rows` re-materialization) and to table-object reachability (the
+    /// child's references pin shared parent objects against GC across reopen — the COW invariant:
+    /// an object is deletable only when unreachable from *every* branch's durable manifest).
+    ///
+    /// Skipped for eager (layer-less) children: their fork rows live only in the child memtable,
+    /// so an empty manifest would make recovery treat the child as durably covered and skip the
+    /// rebuild fallback — data loss on crash. Publish failure does not fail the fork (the catalog
+    /// is already durable); it records health debt, and the child recovers through the gated
+    /// rebuild fallback instead.
+    fn publish_fork_child_table_manifest(
+        &mut self,
+        outcome: &crate::lifecycle::LifecycleBranchForkOutcome,
+    ) {
+        if outcome.inherited_layer_count() == 0 {
+            return;
+        }
+        let publish_result = self
+            .branch_catalog
+            .branch_state(outcome.descriptor().branch_id())
+            .map_err(branch_error)
+            .and_then(|child| {
+                crate::lifecycle::table_manifest::publish_table_manifest_for_branch_with_budget(
+                    child,
+                    self.services.table_manifest(),
+                    &mut self.table_catalog,
+                    Some(&self.budget),
+                )
+                .map(|_| ())
+            });
+        if publish_result.is_err() {
+            if let Ok(health) = crate::lifecycle::telemetry_health_debt(
+                "fork child table manifest publish failed; recovery falls back to fork rebuild",
+            ) {
+                self.record_recovery_health(Some(&health));
+            }
+        }
+    }
+
     pub(crate) fn fork_current(
         &mut self,
         source: BranchId,
@@ -892,6 +1202,8 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             self.branch_catalog
                 .fork_current(source, destination, destination_generation)?;
         self.publish_branch_catalog()?;
+        self.publish_fork_child_table_manifest(&outcome);
+        self.republish_all_branch_snapshots(); // BS2.3: publish the new/forked branch snapshot.
         Ok(outcome)
     }
 
@@ -917,6 +1229,8 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             retained_floor,
         )?;
         self.publish_branch_catalog()?;
+        self.publish_fork_child_table_manifest(&outcome);
+        self.republish_all_branch_snapshots(); // BS2.3: publish the new/forked branch snapshot.
         Ok(outcome)
     }
 
@@ -938,6 +1252,8 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             retained_floor,
         )?;
         self.publish_branch_catalog()?;
+        self.publish_fork_child_table_manifest(&outcome);
+        self.republish_all_branch_snapshots(); // BS2.3: publish the new/forked branch snapshot.
         Ok(outcome)
     }
 
@@ -962,6 +1278,13 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.pending_releases.push(plan);
         self.publish_branch_catalog()?;
         self.publish_pending_releases()?;
+        // Table-object GC: the buffered release plan (and the refs the clear dropped) are
+        // reclaimed by the retention → quarantine → purge cycle. Best-effort, coalescing.
+        let _ = self.enqueue_maintenance(
+            crate::lifecycle::MaintenanceTaskRequest::table_object_retention(branch_id),
+        );
+        // BS2.3: clear reset the branch to an empty state; republish the (now empty) snapshot.
+        self.publish_branch_snapshot(branch_id);
         Ok(outcome)
     }
 
@@ -987,6 +1310,13 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.pending_releases.push(plan);
         self.publish_branch_catalog()?;
         self.publish_pending_releases()?;
+        // Table-object GC: the deleted branch's now-unreachable objects are reclaimed by the
+        // retention → quarantine → purge cycle. Best-effort, coalescing.
+        let _ = self.enqueue_maintenance(
+            crate::lifecycle::MaintenanceTaskRequest::table_object_retention(branch_id),
+        );
+        // BS2.3: the branch is tombstoned; drop its snapshot slot.
+        self.remove_branch_snapshot(branch_id);
         Ok(outcome)
     }
 
@@ -1193,7 +1523,147 @@ fn branch_catalog_manifest_service_error(
     )
 }
 
-impl<S> LifecycleDurableLocalRuntime<'_, S>
+/// Per-member result of a write group (BS5.1): the commit outcome plus the member's write
+/// admission snapshot, captured immediately after the member executed so the API layer can
+/// apply the same per-caller post-commit handling as a solo commit.
+#[derive(Debug)]
+pub(crate) struct DurableGroupMemberResult {
+    pub(crate) outcome: LifecycleResult<CommitOutcome>,
+    pub(crate) admission: Option<LifecycleWriteAdmissionOutcome>,
+}
+
+/// Which durable-gate check commit admission runs (BS5.1): a solo commit requires the gate
+/// admission span to be available; a group member runs inside the leader's active span.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DurableGateAdmission {
+    Solo,
+    Member,
+}
+
+/// A write group between its two under-lock phases (BS5.2): phase 1 appended
+/// and applied the members and captured the covering-sync ticket; the caller
+/// runs the fsync WITHOUT the runtime lock (or proves coverage by a later
+/// completed sync via the ticket's captured sequence against the WAL's
+/// durable watermark), then redeems phase 2. Member outcomes inside must not
+/// be released to callers until phase 2 settles them.
+pub(crate) struct DurableGroupInFlight<'a> {
+    results: Vec<DurableGroupMemberResult>,
+    group: CommitGroupState,
+    fatal: bool,
+    /// Whether the whole-group admission span was opened (phase 2 must
+    /// release it exactly when it was).
+    admitted: bool,
+    touched_branches: Vec<BranchId>,
+    ticket: Option<WalGroupSyncTicket<'a>>,
+    /// Open gate spans at phase-1 end: >1 means other commits are
+    /// mid-pipeline and a sync-chain batching beat is worth waiting.
+    concurrent_spans: usize,
+    /// Per-branch deferred applies (BS5.4): each entry is the committed rows
+    /// of that branch's single deferred member, applied before the group
+    /// publishes. A branch defers only while it has ONE member in the group;
+    /// a second same-branch member flushes the pending apply and the branch
+    /// goes eager for the rest of the group (a later member's conflict source
+    /// must see the earlier rows applied), so shared-branch groups keep
+    /// today's path exactly.
+    deferred_applies: Vec<DeferredBranchApply>,
+}
+
+/// One branch's deferred group apply (BS5.4): the rows are WAL-durable
+/// (appended in phase 1) and invisible until the group publishes; an apply
+/// failure records the group's widened durable-not-applied fact, exactly as
+/// an eager member apply failure would.
+#[derive(Debug)]
+pub(crate) struct DeferredBranchApply {
+    branch_id: BranchId,
+    generation: CommitBranchGeneration,
+    stamp: CommitStamp,
+    durability: CommitDurabilityClass,
+    rows: Vec<crate::row::StorageRow>,
+}
+
+/// A deferred branch apply packaged with its checked-out state (BS5.4c): a
+/// self-contained unit an applier THREAD can run with no locks and no runtime
+/// access — the state is owned, the budget handle is shared-safe. Produced by
+/// [`LifecycleDurableLocalRuntime::take_deferred_apply_work`] under the
+/// runtime mutex; the outcome (state included) must return to
+/// [`LifecycleDurableLocalRuntime::finish_deferred_apply_work`] under it.
+#[derive(Debug)]
+pub(crate) struct DurableGroupApplyWork {
+    state: BranchLocalState,
+    pending: DeferredBranchApply,
+    budget: StorageBudgetLedger,
+    frozen_before: usize,
+}
+
+/// The result of one [`DurableGroupApplyWork::apply`], carrying the owned
+/// branch state back for restoration.
+#[derive(Debug)]
+pub(crate) struct DurableGroupApplyDone {
+    state: BranchLocalState,
+    branch_id: BranchId,
+    stamp: CommitStamp,
+    durability: CommitDurabilityClass,
+    frozen_before: usize,
+    result: Result<(), CommitRuntimeError>,
+}
+
+impl DurableGroupApplyWork {
+    /// The branch this work applies to (for member-thread routing).
+    pub(crate) fn branch_id(&self) -> BranchId {
+        self.pending.branch_id
+    }
+
+    /// Run the apply against the owned state — callable from ANY thread, no
+    /// locks (the same budget wrapper as an eager member apply).
+    pub(crate) fn apply(self) -> DurableGroupApplyDone {
+        let DurableGroupApplyWork {
+            mut state,
+            pending,
+            budget,
+            frozen_before,
+        } = self;
+        let DeferredBranchApply {
+            branch_id,
+            generation: _,
+            stamp,
+            durability,
+            rows,
+        } = pending;
+        let result = {
+            let mut budgeted = BudgetedCommitBranch::new(&mut state, &budget);
+            CommitBranchApplyTarget::append_committed_rows_atomically(&mut budgeted, rows)
+        };
+        DurableGroupApplyDone {
+            state,
+            branch_id,
+            stamp,
+            durability,
+            frozen_before,
+            result,
+        }
+    }
+}
+
+impl DurableGroupInFlight<'_> {
+    /// The covering-sync ticket, when this group requires one (`Always` mode
+    /// with at least one member past the WAL).
+    pub(crate) const fn ticket(&self) -> Option<&WalGroupSyncTicket<'_>> {
+        self.ticket.as_ref()
+    }
+
+    /// The group's commit-state view, for the parallel-apply finish
+    /// (BS5.4c fact widening).
+    pub(crate) const fn group_state(&self) -> &CommitGroupState {
+        &self.group
+    }
+
+    /// Open gate spans at phase-1 end (see the field doc).
+    pub(crate) const fn concurrent_spans(&self) -> usize {
+        self.concurrent_spans
+    }
+}
+
+impl<'a, S> LifecycleDurableLocalRuntime<'a, S>
 where
     S: CommitTimestampSource,
 {
@@ -1202,28 +1672,543 @@ where
         batch: CommitBatch,
         generation_guard: CommitBranchGenerationGuard,
     ) -> LifecycleResult<CommitOutcome> {
-        let admit_timer = perf_trace::start_timer();
-        self.last_write_admission = None;
-        require_admitted(self.state, LifecycleOperationKind::Commit)?;
         let branch_id = batch.branch_id();
-        // Pre-sync shadow into catalog so the commit runtime sees any direct
-        // shadow mutations (test-only) before fetching from the catalog.
-        let generation = self
+        let generation =
+            self.admit_durable_commit(&batch, generation_guard, DurableGateAdmission::Solo)?;
+        let frozen_before = self
             .branch_catalog
-            .registry()
-            .lookup(branch_id)
-            .map_err(commit_error)?
-            .generation();
-        Self::require_generation_guard(branch_id, generation, generation_guard)?;
-        Self::require_durable_commit_mode(&batch)?;
-        if batch.kind() == CommitBatchKind::Mutating {
-            self.require_no_unresolved_durable_commit()?;
-            self.require_branch_commit_guard_available(branch_id)?;
-            self.require_write_admission_recovery_health(branch_id)?;
-            self.evaluate_mutating_write_admission_for_branch(branch_id)?;
-            self.require_projected_mutating_commit_budget(branch_id, &batch)?;
+            .branch_state(branch_id)?
+            .frozen_table_count();
+        let floor = self.pipeline_visibility_floor();
+        let outcome = {
+            let setup_timer = perf_trace::start_timer();
+            let (branch, registry) = self.branch_catalog.branch_state_mut_with_registry(
+                branch_id,
+                CommitBranchGenerationGuard::exact(generation),
+            )?;
+            let mut budgeted_branch = BudgetedCommitBranch::new(branch, &self.budget);
+            let mut runtime = CommitDurableRuntime::new(
+                &self.commit_config,
+                registry,
+                &self.guard_set,
+                &mut self.allocator,
+                &mut budgeted_branch,
+                &mut self.visible,
+                &mut self.services.wal,
+                &self.durable_gate,
+            );
+            perf_trace::record_commit_setup_elapsed(setup_timer);
+            // BS5.2: solo commits validate at the pipeline floor so a commit
+            // admitted while a group's fsync is off-lock keeps serial
+            // semantics; with an empty pipeline the floor equals the visible
+            // version and this is byte-identical to plain `execute`.
+            runtime
+                .execute_with_visibility_floor(batch, generation_guard, floor)
+                .map_err(commit_error)
+        };
+        // Commit-triggered auto-rotation is a STRUCTURAL change: per the Model-2 contract
+        // below, it must republish the snapshot in the same lock hold — the published view's
+        // live-active handle now points at the rotated-out (frozen) table, so later commits'
+        // rows in the fresh active would otherwise be invisible until the next background
+        // publish. Republish BEFORE advancing the atomic mirror so any reader observing the
+        // new visible version finds a covering snapshot (V-before-S).
+        if outcome.is_ok() {
+            self.republish_branch_snapshot_after_rotation(branch_id, frozen_before)?;
+            // BS2.2: mirror the just-advanced visible version to the atomic (release) so off-lock
+            // readers (BS2.4) observe it without the runtime lock. On the `applied_not_visible`
+            // error path `outcome` is `Err`, so the atomic correctly does not advance.
+            self.finish_durable_commit_post_publish(branch_id);
         }
-        perf_trace::record_commit_admit_elapsed(admit_timer);
+        // BS2.4 Model 2: commits do NOT republish the snapshot (except the rotation case above).
+        // The published snapshot holds the live (unpinned) active handle, so it already sees this
+        // commit's appends; each off-lock read pins the active at read time and bounds by the
+        // visible version. Only structural changes (rotation/flush/compaction/materialization/
+        // fork/lifecycle) republish.
+        outcome
+    }
+
+    /// Execute a write group (BS5.1): the caller is the group leader holding the runtime lock.
+    /// Members execute sequentially in member order — WAL order equals version order equals
+    /// member order — under one durable-gate admission span, deferring fsync and visible
+    /// publish to one finalize. Pre-WAL failures are clean per-member rejections; a post-WAL
+    /// failure is group-fatal: every member that reached the WAL reports durability-uncertain
+    /// and recovery reconciles the group's version range through the widened gate fact.
+    pub(crate) fn execute_durable_commit_group(
+        &mut self,
+        members: Vec<(CommitBatch, CommitBranchGenerationGuard)>,
+    ) -> Vec<DurableGroupMemberResult> {
+        let in_flight = self.execute_durable_commit_group_begin(members);
+        let sync_result = in_flight.ticket.as_ref().map(WalGroupSyncTicket::sync);
+        self.execute_durable_commit_group_finish(in_flight, sync_result)
+    }
+
+    /// Phase 1 of a write group (BS5.2): everything that must run under the
+    /// runtime lock BEFORE the covering fsync — the whole-group admission
+    /// span, per-member admission + WAL append + memtable apply, and the sync
+    /// ticket capture (`Always` runtimes only; `Standard` needs no covering
+    /// fsync). The caller then runs the fsync WITHOUT the lock and redeems
+    /// [`execute_durable_commit_group_finish`] back under it. Between the
+    /// phases the group's rows are applied but unpublished: reads stay bounded
+    /// by the visible version, flush maintenance defers on this branch state,
+    /// and the pipeline frontier keeps later admissions serial-equivalent.
+    pub(crate) fn execute_durable_commit_group_begin(
+        &mut self,
+        members: Vec<(CommitBatch, CommitBranchGenerationGuard)>,
+    ) -> DurableGroupInFlight<'a> {
+        let mut results: Vec<DurableGroupMemberResult> = Vec::with_capacity(members.len());
+        // The leader's whole-group admission span. Failure (an unresolved fact) rejects every
+        // member with the same typed error a solo commit would get from the gate.
+        if self.durable_gate.begin_group_admission().is_err() {
+            for _ in &members {
+                results.push(DurableGroupMemberResult {
+                    outcome: Err(self.group_admission_unavailable_error()),
+                    admission: None,
+                });
+            }
+            return DurableGroupInFlight {
+                results,
+                group: CommitGroupState::new(self.visible.visible_version()),
+                fatal: false,
+                admitted: false,
+                touched_branches: Vec::new(),
+                ticket: None,
+                concurrent_spans: 0,
+                deferred_applies: Vec::new(),
+            };
+        }
+        // The group frontier starts at the pipeline floor: later members (and
+        // later groups) validate against everything already APPLIED by
+        // in-flight groups, not just what is published — serial-equivalent
+        // same-branch semantics across the pipeline.
+        let mut group = CommitGroupState::new(self.pipeline_visibility_floor());
+        let mut fatal = false;
+        let mut touched_branches: Vec<BranchId> = Vec::new();
+        let mut deferred_applies: Vec<DeferredBranchApply> = Vec::new();
+        let mut eager_branches: Vec<BranchId> = Vec::new();
+        for (batch, generation_guard) in members {
+            if fatal {
+                results.push(DurableGroupMemberResult {
+                    outcome: Err(commit_error(CommitRuntimeError::DurabilityUnavailable {
+                        reason: "write group aborted before this member's WAL append",
+                    })),
+                    admission: None,
+                });
+                continue;
+            }
+            let branch_id = batch.branch_id();
+            // Deferral rule (BS5.4): a branch defers its (single) apply while
+            // it has one member in the group. A repeat same-branch member
+            // flushes the pending apply NOW — its conflict validation must
+            // see those rows — and the branch goes eager for the rest of the
+            // group, preserving today's shared-branch semantics exactly.
+            if let Some(position) = deferred_applies
+                .iter()
+                .position(|pending| pending.branch_id == branch_id)
+            {
+                let pending = deferred_applies.swap_remove(position);
+                if let Err(error) = self.apply_deferred_branch(&group, pending) {
+                    results.push(DurableGroupMemberResult {
+                        outcome: Err(error),
+                        admission: self.last_write_admission,
+                    });
+                    fatal = true;
+                    continue;
+                }
+                eager_branches.push(branch_id);
+            }
+            let defer = !eager_branches.contains(&branch_id);
+            let outcome = if defer {
+                self.execute_group_member_commit_deferring_apply(
+                    batch,
+                    generation_guard,
+                    &mut group,
+                    &mut deferred_applies,
+                )
+            } else {
+                self.execute_group_member_commit(batch, generation_guard, &mut group)
+            };
+            if outcome.is_ok() && !touched_branches.contains(&branch_id) {
+                touched_branches.push(branch_id);
+            }
+            if outcome.is_err() {
+                // A recorded fact means the failure happened after a WAL append
+                // (durable-not-applied) — group-fatal. Pre-WAL rejections leave
+                // the gate clean and the group continues.
+                fatal = matches!(self.durable_gate.unresolved(), Ok(Some(_)) | Err(_));
+            }
+            results.push(DurableGroupMemberResult {
+                outcome,
+                admission: self.last_write_admission,
+            });
+        }
+        let ticket = if !fatal && group.last_stamp().is_some() {
+            if let Some(last) = group.last_stamp() {
+                self.pipeline_frontier = self.pipeline_frontier.max(last.commit_version());
+            }
+            // Standard mode publishes without a covering fsync (same durability
+            // class as its solo path); only Always captures a sync ticket.
+            (self.services.wal.durability_policy() == DurabilityPolicy::Always)
+                .then(|| self.services.wal.begin_group_sync())
+        } else {
+            None
+        };
+        DurableGroupInFlight {
+            results,
+            group,
+            fatal,
+            admitted: true,
+            touched_branches,
+            ticket,
+            concurrent_spans: self.durable_gate.open_admission_spans(),
+            deferred_applies,
+        }
+    }
+
+    /// Phase 2 of a write group (BS5.2): everything after the covering fsync,
+    /// back under the runtime lock — redeem the sync outcome, publish the
+    /// group's visibility, release the admission span, and run post-commit
+    /// bookkeeping. `sync_result` is `None` when phase 1 captured no ticket
+    /// (Standard mode, rejected-only groups) or when the caller proved the
+    /// group's appends were already covered by a later completed sync.
+    pub(crate) fn execute_durable_commit_group_finish(
+        &mut self,
+        in_flight: DurableGroupInFlight<'a>,
+        sync_result: Option<Result<(), WalServiceError>>,
+    ) -> Vec<DurableGroupMemberResult> {
+        self.execute_durable_commit_group_finish_with_apply_outcome(in_flight, sync_result, false)
+    }
+
+    /// [`execute_durable_commit_group_finish`] for callers that ran the
+    /// group's deferred applies in parallel (BS5.4c): `parallel_apply_fatal`
+    /// carries [`finish_deferred_apply_work`]'s verdict into the group-fatal
+    /// path.
+    pub(crate) fn execute_durable_commit_group_finish_with_apply_outcome(
+        &mut self,
+        in_flight: DurableGroupInFlight<'a>,
+        sync_result: Option<Result<(), WalServiceError>>,
+        parallel_apply_fatal: bool,
+    ) -> Vec<DurableGroupMemberResult> {
+        let DurableGroupInFlight {
+            mut results,
+            group,
+            mut fatal,
+            admitted,
+            touched_branches,
+            ticket,
+            concurrent_spans: _,
+            deferred_applies,
+        } = in_flight;
+        if !admitted {
+            return results;
+        }
+        fatal |= parallel_apply_fatal;
+        // BS5.4: land the deferred per-branch applies BEFORE durability
+        // settles and visibility publishes. The rows are WAL-durable from
+        // phase 1; an apply failure here records the group's widened
+        // durable-not-applied fact — the same failure class as an eager
+        // member apply — and the group goes fatal without publishing.
+        if !fatal {
+            for pending in deferred_applies {
+                if let Err(_error) = self.apply_deferred_branch(&group, pending) {
+                    fatal = true;
+                    break;
+                }
+            }
+        }
+        if !fatal {
+            match (&ticket, sync_result) {
+                (Some(ticket), Some(Ok(()))) => {
+                    self.services.wal.complete_group_sync(ticket);
+                }
+                (Some(ticket), Some(Err(error))) => {
+                    fatal = self.record_group_sync_failure(&group, ticket, &error);
+                }
+                // `(Some(_), None)`: the caller proved coverage by a later
+                // completed sync (the durable watermark passed this group's
+                // appends) — nothing to redeem. `(None, _)`: no ticket was
+                // captured (Standard mode or rejected-only group).
+                (Some(_) | None, _) => {}
+            }
+        }
+        // A fact recorded by ANOTHER in-flight group at or below our range end
+        // makes publishing unsafe (it would expose that group's unresolved
+        // versions beneath ours); a fact strictly above our range does not.
+        if !fatal {
+            if let Ok(Some(unresolved)) = self.durable_gate.unresolved() {
+                if let Some(last) = group.last_stamp() {
+                    fatal = unresolved.first_commit_version() <= last.commit_version();
+                }
+            }
+        }
+        if !fatal {
+            let publish = publish_commit_group(&group, &mut self.visible, &self.durable_gate);
+            fatal = publish.is_err();
+        }
+        self.durable_gate.end_group_admission();
+        if fatal {
+            // Group-fatal: nothing was published. Members that reached the WAL are covered by
+            // the widened gate fact (or a halted writer) and must not be acked — replay
+            // reconciles them idempotently after reopen.
+            for result in &mut results {
+                if let Ok(outcome) = &result.outcome {
+                    // A successful group member is always a mutating visible outcome
+                    // with an allocated version; ZERO is unreachable and only
+                    // satisfies the type.
+                    let commit_version = outcome.commit_version().unwrap_or(CommitVersion::ZERO);
+                    result.outcome = Err(commit_error(CommitRuntimeError::DurabilityUncertain {
+                        branch_id: outcome.branch_id(),
+                        commit_version,
+                        reason: "write group failed after this member's WAL append; \
+                                 replay must reconcile",
+                        source: None,
+                    }));
+                }
+            }
+            return results;
+        }
+        if group.last_stamp().is_some() {
+            self.mirror_visible_and_evaluate_wal_growth();
+            for branch_id in touched_branches {
+                self.schedule_post_commit_maintenance_best_effort(branch_id);
+            }
+        }
+        results
+    }
+
+    /// Record the gate fact for a failed covering fsync (BS5.2), unless a
+    /// later completed sync already proved this group's appends durable (the
+    /// watermark rescue) or another group's fact already covers the range.
+    /// Returns whether the group is fatal.
+    fn record_group_sync_failure(
+        &mut self,
+        group: &CommitGroupState,
+        ticket: &WalGroupSyncTicket<'_>,
+        error: &WalServiceError,
+    ) -> bool {
+        // Watermark rescue: a later group's completed sync covered every
+        // append before its capture — including ours — so our records are
+        // durable despite our own sync failing.
+        if self
+            .services
+            .wal
+            .durable_seq_handle()
+            .load(Ordering::Acquire)
+            >= ticket.captured_seq()
+        {
+            return false;
+        }
+        let Some(stamp) = group.last_stamp() else {
+            return true;
+        };
+        // Fail closed: members are applied but the covering fsync did not
+        // complete (`error` says why), so the fact claims no durable progress
+        // for the range. If another in-flight group already recorded a fact,
+        // ours stays unrecorded — recovery replays the WAL contents
+        // idempotently and these members report durability-uncertain either
+        // way.
+        let _ = error;
+        let reason = "write group covering fsync failed after members applied";
+        let fact = CommitUnresolvedDurable::applied_not_visible(
+            stamp,
+            CommitDurabilityClass::NotDurable,
+            reason,
+        )
+        .and_then(|fact| group.widen_fact(fact));
+        if let Ok(fact) = fact {
+            // Rationale: recording can only fail when a DIFFERENT fact is
+            // already present; that fact already gates commits, and replay
+            // reconciles our range from the WAL contents.
+            let _ = self.durable_gate.record_unresolved(fact);
+        }
+        true
+    }
+
+    /// The pipeline visibility floor (BS5.2): what a newly admitted commit
+    /// must validate against — everything published PLUS everything applied
+    /// by in-flight groups whose covering fsync is still off-lock.
+    fn pipeline_visibility_floor(&self) -> CommitVersion {
+        self.visible.visible_version().max(self.pipeline_frontier)
+    }
+
+    /// Off-lock handle to the WAL's durable-append watermark (BS5.2): the
+    /// pipelined caller polls coverage through this atomic without the
+    /// runtime lock.
+    pub(crate) fn wal_durable_seq_handle(&self) -> Arc<AtomicU64> {
+        self.services.wal.durable_seq_handle()
+    }
+
+    /// A fresh covering-sync ticket at the CURRENT append frontier (BS5.2):
+    /// the sync-chain token holder re-captures right before syncing so one
+    /// fsync covers every group that appended while the previous sync ran.
+    pub(crate) fn wal_group_sync_ticket(&self) -> WalGroupSyncTicket<'a> {
+        self.services.wal.begin_group_sync()
+    }
+
+    /// Execute one group member: solo-equivalent bootstrap admission (with the gate check in
+    /// member mode), the member commit protocol, and the same-lock-hold rotation republish.
+    /// Apply one branch's deferred group rows (BS5.4), with the same budget
+    /// wrapper, rotation republish, and failure fact as an eager member apply.
+    fn apply_deferred_branch(
+        &mut self,
+        group: &CommitGroupState,
+        pending: DeferredBranchApply,
+    ) -> LifecycleResult<()> {
+        let DeferredBranchApply {
+            branch_id,
+            generation,
+            stamp,
+            durability,
+            rows,
+        } = pending;
+        let frozen_before = self
+            .branch_catalog
+            .branch_state(branch_id)?
+            .frozen_table_count();
+        let apply_result = {
+            let branch = self
+                .branch_catalog
+                .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
+            let mut budgeted = BudgetedCommitBranch::new(branch, &self.budget);
+            CommitBranchApplyTarget::append_committed_rows_atomically(&mut budgeted, rows)
+        };
+        if let Err(source) = apply_result {
+            let reason = "branch state rejected durable commit rows after WAL append";
+            let fact =
+                CommitUnresolvedDurable::durable_not_applied_with_facts(stamp, durability, reason)
+                    .and_then(|fact| group.widen_fact(fact))
+                    .map_err(commit_error)?;
+            // Rationale: recording can only fail when a DIFFERENT fact is
+            // already present; that fact already gates commits, and replay
+            // reconciles this range from the WAL contents.
+            let _ = self.durable_gate.record_unresolved(fact);
+            return Err(commit_error(
+                CommitRuntimeError::durable_but_not_visible_with(
+                    branch_id,
+                    stamp.commit_version(),
+                    reason,
+                    source,
+                ),
+            ));
+        }
+        self.republish_branch_snapshot_after_rotation(branch_id, frozen_before)?;
+        Ok(())
+    }
+
+    /// BS5.4c: drain the in-flight group's deferred applies as owned,
+    /// thread-portable work units (states checked OUT of the catalog).
+    /// Caller contract: runs under the runtime mutex; every unit's outcome
+    /// must come back through [`finish_deferred_apply_work`] before the
+    /// group publishes (also under the mutex). Units left undrained fall
+    /// back to the leader-applied path in
+    /// [`execute_durable_commit_group_finish`].
+    pub(crate) fn take_deferred_apply_work(
+        &mut self,
+        in_flight: &mut DurableGroupInFlight<'a>,
+    ) -> Vec<DurableGroupApplyWork> {
+        if in_flight.fatal {
+            return Vec::new();
+        }
+        let mut work = Vec::with_capacity(in_flight.deferred_applies.len());
+        // Drain back-to-front so a checkout failure leaves the remainder for
+        // the leader-applied fallback in finish.
+        while let Some(pending) = in_flight.deferred_applies.pop() {
+            let Ok(current) = self.branch_catalog.branch_state(pending.branch_id) else {
+                in_flight.deferred_applies.push(pending);
+                break;
+            };
+            let frozen_before = current.frozen_table_count();
+            let Ok(state) = self.branch_catalog.take_branch_state(
+                pending.branch_id,
+                CommitBranchGenerationGuard::exact(pending.generation),
+            ) else {
+                in_flight.deferred_applies.push(pending);
+                break;
+            };
+            work.push(DurableGroupApplyWork {
+                state,
+                pending,
+                budget: self.budget.clone(),
+                frozen_before,
+            });
+        }
+        work
+    }
+
+    /// BS5.4c: restore the checked-out states and fold the apply outcomes.
+    /// Returns whether the group is fatal (any apply failed; the widened
+    /// durable-not-applied fact is recorded). Must run under the runtime
+    /// mutex, before the group publishes.
+    pub(crate) fn finish_deferred_apply_work(
+        &mut self,
+        done: Vec<DurableGroupApplyDone>,
+        group: &CommitGroupState,
+    ) -> bool {
+        let mut fatal = false;
+        for outcome in done {
+            let DurableGroupApplyDone {
+                state,
+                branch_id,
+                stamp,
+                durability,
+                frozen_before,
+                result,
+            } = outcome;
+            // Restore FIRST: even a failed apply returns the state (fail-
+            // closed absence would wedge the branch until reopen).
+            if self.branch_catalog.restore_branch_state(state).is_err() {
+                fatal = true;
+                continue;
+            }
+            match result {
+                Ok(()) => {
+                    // Rationale: republish failure here means the branch
+                    // vanished mid-group (structurally impossible under the
+                    // held mutex); the group-fatal path fails closed.
+                    if self
+                        .republish_branch_snapshot_after_rotation(branch_id, frozen_before)
+                        .is_err()
+                    {
+                        fatal = true;
+                    }
+                }
+                Err(_source) => {
+                    let reason = "branch state rejected durable commit rows after WAL append";
+                    if let Ok(fact) = CommitUnresolvedDurable::durable_not_applied_with_facts(
+                        stamp, durability, reason,
+                    )
+                    .and_then(|fact| group.widen_fact(fact))
+                    {
+                        // Rationale: recording can only fail when a DIFFERENT
+                        // fact is already present; that fact already gates
+                        // commits, and replay reconciles from the WAL.
+                        let _ = self.durable_gate.record_unresolved(fact);
+                    }
+                    fatal = true;
+                }
+            }
+        }
+        fatal
+    }
+
+    /// [`execute_group_member_commit`] with the memtable apply deferred
+    /// (BS5.4): the committed rows are queued per branch and applied before
+    /// the group publishes. Only the branch's FIRST member in the group may
+    /// defer; the caller owns that rule.
+    fn execute_group_member_commit_deferring_apply(
+        &mut self,
+        batch: CommitBatch,
+        generation_guard: CommitBranchGenerationGuard,
+        group: &mut CommitGroupState,
+        deferred_applies: &mut Vec<DeferredBranchApply>,
+    ) -> LifecycleResult<CommitOutcome> {
+        let branch_id = batch.branch_id();
+        let generation =
+            self.admit_durable_commit(&batch, generation_guard, DurableGateAdmission::Member)?;
+        let frozen_before = self
+            .branch_catalog
+            .branch_state(branch_id)?
+            .frozen_table_count();
+        let mut deferred_rows: Option<Vec<crate::row::StorageRow>> = None;
         let outcome = {
             let setup_timer = perf_trace::start_timer();
             let (branch, registry) = self.branch_catalog.branch_state_mut_with_registry(
@@ -1243,18 +2228,173 @@ where
             );
             perf_trace::record_commit_setup_elapsed(setup_timer);
             runtime
-                .execute(batch, generation_guard)
+                .execute_group_member_deferring_apply(
+                    batch,
+                    generation_guard,
+                    group,
+                    &mut deferred_rows,
+                )
+                .map_err(commit_error)
+        };
+        if let Ok(committed) = &outcome {
+            let rows = deferred_rows
+                .take()
+                .ok_or(LifecycleError::InvalidLifecycleState {
+                    reason: "deferred group member produced no rows to apply",
+                })?;
+            // The member's own stamp for failure-fact context at apply time.
+            let stamp = group
+                .last_stamp()
+                .ok_or(LifecycleError::InvalidLifecycleState {
+                    reason: "deferred group member recorded no stamp",
+                })?;
+            deferred_applies.push(DeferredBranchApply {
+                branch_id,
+                generation,
+                stamp,
+                durability: committed.durability(),
+                rows,
+            });
+            // Rotation cannot have happened (the apply was deferred), but the
+            // check is cheap and keeps this wrapper shape-identical to the
+            // eager one.
+            self.republish_branch_snapshot_after_rotation(branch_id, frozen_before)?;
+        }
+        outcome
+    }
+
+    fn execute_group_member_commit(
+        &mut self,
+        batch: CommitBatch,
+        generation_guard: CommitBranchGenerationGuard,
+        group: &mut CommitGroupState,
+    ) -> LifecycleResult<CommitOutcome> {
+        let branch_id = batch.branch_id();
+        let generation =
+            self.admit_durable_commit(&batch, generation_guard, DurableGateAdmission::Member)?;
+        let frozen_before = self
+            .branch_catalog
+            .branch_state(branch_id)?
+            .frozen_table_count();
+        let outcome = {
+            let setup_timer = perf_trace::start_timer();
+            let (branch, registry) = self.branch_catalog.branch_state_mut_with_registry(
+                branch_id,
+                CommitBranchGenerationGuard::exact(generation),
+            )?;
+            let mut budgeted_branch = BudgetedCommitBranch::new(branch, &self.budget);
+            let mut runtime = CommitDurableRuntime::new(
+                &self.commit_config,
+                registry,
+                &self.guard_set,
+                &mut self.allocator,
+                &mut budgeted_branch,
+                &mut self.visible,
+                &mut self.services.wal,
+                &self.durable_gate,
+            );
+            perf_trace::record_commit_setup_elapsed(setup_timer);
+            runtime
+                .execute_group_member(batch, generation_guard, group)
                 .map_err(commit_error)
         };
         if outcome.is_ok() {
-            let wal_growth_start = perf_trace::start_timer();
-            self.evaluate_and_record_wal_growth_policy();
-            perf_trace::record_commit_post_wal_growth_elapsed(wal_growth_start);
-            let maintenance_start = perf_trace::start_timer();
-            let _ = self.schedule_post_commit_maintenance_for_branch(branch_id);
-            perf_trace::record_commit_post_maintenance_elapsed(maintenance_start);
+            // Republishing the snapshot before the group's visible publish is the safe
+            // direction of V-before-S: the snapshot covers more than the visible bound.
+            self.republish_branch_snapshot_after_rotation(branch_id, frozen_before)?;
         }
         outcome
+    }
+
+    /// Solo-equivalent commit admission (the phase before the commit protocol runs). In member
+    /// mode the gate check verifies only that no unresolved fact exists: the leader's admission
+    /// span is active by construction, which the solo check would reject.
+    fn admit_durable_commit(
+        &mut self,
+        batch: &CommitBatch,
+        generation_guard: CommitBranchGenerationGuard,
+        gate_admission: DurableGateAdmission,
+    ) -> LifecycleResult<CommitBranchGeneration> {
+        let admit_timer = perf_trace::start_timer();
+        self.last_write_admission = None;
+        require_admitted(self.state, LifecycleOperationKind::Commit)?;
+        let branch_id = batch.branch_id();
+        // Pre-sync shadow into catalog so the commit runtime sees any direct
+        // shadow mutations (test-only) before fetching from the catalog.
+        let generation = self
+            .branch_catalog
+            .registry()
+            .lookup(branch_id)
+            .map_err(commit_error)?
+            .generation();
+        Self::require_generation_guard(branch_id, generation, generation_guard)?;
+        Self::require_durable_commit_mode(batch)?;
+        if batch.kind() == CommitBatchKind::Mutating {
+            match gate_admission {
+                DurableGateAdmission::Solo => self.require_no_unresolved_durable_commit()?,
+                DurableGateAdmission::Member => self
+                    .durable_gate
+                    .require_no_unresolved_fact()
+                    .map_err(commit_error)?,
+            }
+            self.require_branch_commit_guard_available(branch_id)?;
+            self.require_write_admission_recovery_health(branch_id)?;
+            self.evaluate_mutating_write_admission_for_branch(branch_id)?;
+            self.require_projected_mutating_commit_budget(branch_id, batch)?;
+        }
+        perf_trace::record_commit_admit_elapsed(admit_timer);
+        Ok(generation)
+    }
+
+    /// Same-lock-hold snapshot republish when a commit's auto-rotation changed the branch's
+    /// frozen-table count (see the Model-2 contract note in `execute_durable_commit`).
+    fn republish_branch_snapshot_after_rotation(
+        &mut self,
+        branch_id: BranchId,
+        frozen_before: usize,
+    ) -> LifecycleResult<()> {
+        let frozen_after = self
+            .branch_catalog
+            .branch_state(branch_id)?
+            .frozen_table_count();
+        if frozen_after != frozen_before {
+            self.publish_branch_snapshot(branch_id);
+        }
+        Ok(())
+    }
+
+    /// Post-publish bookkeeping shared by solo commits and group finalize: mirror the visible
+    /// version to the off-lock atomic, evaluate WAL growth, and schedule post-commit maintenance.
+    fn finish_durable_commit_post_publish(&mut self, branch_id: BranchId) {
+        self.mirror_visible_and_evaluate_wal_growth();
+        self.schedule_post_commit_maintenance_best_effort(branch_id);
+    }
+
+    fn mirror_visible_and_evaluate_wal_growth(&mut self) {
+        self.visible_commit_version
+            .store(self.visible.visible_version().as_u64(), Ordering::Release);
+        let wal_growth_start = perf_trace::start_timer();
+        self.evaluate_and_record_wal_growth_policy();
+        perf_trace::record_commit_post_wal_growth_elapsed(wal_growth_start);
+    }
+
+    fn schedule_post_commit_maintenance_best_effort(&mut self, branch_id: BranchId) {
+        let maintenance_start = perf_trace::start_timer();
+        // Rationale: maintenance scheduling is best-effort after a successful commit; a
+        // scheduling refusal must not fail the already-durable commit (same as solo).
+        let _ = self.schedule_post_commit_maintenance_for_branch(branch_id);
+        perf_trace::record_commit_post_maintenance_elapsed(maintenance_start);
+    }
+
+    /// Reproduce the per-member gate-admission error after the leader's group admission failed.
+    /// Deterministic under the runtime lock: the gate cannot change concurrently.
+    fn group_admission_unavailable_error(&self) -> LifecycleError {
+        match self.durable_gate.require_admission_available() {
+            Err(error) => commit_error(error),
+            Ok(()) => commit_error(CommitRuntimeError::InvalidCommitState {
+                reason: "write group admission unavailable",
+            }),
+        }
     }
 
     pub(crate) fn evaluate_and_record_wal_growth_policy(&mut self) {
@@ -1586,6 +2726,20 @@ fn rebuild_fork_snapshot_rows(branch_catalog: &mut LifecycleBranchCatalog) -> Li
             let Some(parent) = descriptor.parent() else {
                 continue;
             };
+            // A child whose recovered state carries inherited layers is durably COW-covered:
+            // layers only enter recovered state through the child's own table manifest, which the
+            // fork now publishes at fork time. Re-materializing the parent's rows for such a child
+            // is pure redundancy — and O(parent dataset) per child (the reopen OOM). The rebuild
+            // below remains only for layer-less children: eager/historical forks whose materialized
+            // rows are not WAL'd, and the crash window where the fork's catalog publish landed but
+            // its child-manifest publish did not.
+            if !branch_catalog
+                .branch_state(descriptor.branch_id())?
+                .inherited_layers()
+                .is_empty()
+            {
+                continue;
+            }
             let rows = branch_catalog
                 .branch_state(parent.source_branch_id())?
                 .fork_snapshot_rows(parent.fork_version(), descriptor.branch_id())
@@ -1617,6 +2771,12 @@ fn rebuild_fork_snapshot_rows(branch_catalog: &mut LifecycleBranchCatalog) -> Li
         }
     }
     Ok(())
+}
+
+/// Fresh release-published mirror cell seeded from the tracker's current visible version
+/// (BS2.2; constructed after recovery so the seed covers the recovered frontier).
+fn visible_version_mirror(visible: VisibleVersionTracker) -> Arc<AtomicU64> {
+    Arc::new(AtomicU64::new(visible.visible_version().as_u64()))
 }
 
 /// Replay WAL records against the rebuilt catalog. Each record is routed
@@ -1661,7 +2821,28 @@ fn replay_wal_into_catalog<S>(
         .map_err(commit_error)?;
         report.record_replay(&replay_report);
     }
-    let recovered_visible_version = checkpoint_watermark.max(replayed_max);
+    // Fold in the highest committed version present in the restored branch states. Flushed
+    // tables can be ahead of both the checkpoint watermark and the surviving WAL (e.g. a
+    // checkpoint publish fault after a successful flush pruned the covering WAL segments);
+    // without this term those durable, acknowledged rows would sit above `visible` — the
+    // branch would reject all mutating commits (`require_branch_not_ahead_of_visible` fails
+    // closed) and the allocator would re-issue their commit versions.
+    let restored_catalog_max = branch_catalog
+        .list_branches(false)
+        .into_iter()
+        .map(|descriptor| {
+            Ok(branch_catalog
+                .branch_state(descriptor.branch_id())?
+                .max_commit_version()
+                .unwrap_or(CommitVersion::ZERO))
+        })
+        .try_fold(
+            CommitVersion::ZERO,
+            |max, version: LifecycleResult<CommitVersion>| version.map(|version| max.max(version)),
+        )?;
+    let recovered_visible_version = checkpoint_watermark
+        .max(replayed_max)
+        .max(restored_catalog_max);
     allocator.catch_up_to_recovered_version(recovered_visible_version);
     if let Some(timestamp) = recovery.checkpoint().timestamp_max() {
         allocator.catch_up_to_recovered_timestamp(timestamp);

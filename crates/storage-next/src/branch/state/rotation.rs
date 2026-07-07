@@ -38,6 +38,15 @@ impl BranchLocalState {
         let active = std::mem::replace(&mut self.active, MutableTable::new());
         let frozen_rows = active.len();
         self.frozen.insert(0, active.freeze());
+        // Rotation seals the active memtable into a frozen table without changing the
+        // row set, so it skips the observed-row-facts rescan; only the frozen resident
+        // byte total shifts. Read the sealed size back from `frozen[0]` so the delta
+        // uses the exact accessor the shape recompute folds.
+        self.shape.frozen_bytes = self.shape.frozen_bytes.saturating_add(
+            u64::try_from(self.frozen[0].approximate_size_bytes()).unwrap_or(u64::MAX),
+        );
+        #[cfg(debug_assertions)]
+        self.debug_assert_shape_consistent();
         BranchRotationOutcome::Rotated {
             frozen_index: 0,
             frozen_rows,

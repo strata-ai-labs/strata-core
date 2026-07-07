@@ -44,7 +44,15 @@ const fn tib(value: u64) -> u64 {
 
 #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
 fn target_bytes_for_state(state: &BranchLocalState) -> Vec<u64> {
-    let level_bytes = state
+    nonzero_level_targets_from_level_bytes(&independent_level_bytes(state))
+}
+
+/// Independent per-level byte fold, reimplementing `level_byte_count` via `facts().byte_count()`.
+/// BS1.3 makes the compaction scoring/eligibility path read BS1.1's cached `per_level_bytes()`
+/// instead of folding; this is the reference that cached vector must equal, including in release
+/// where the debug shape oracle is compiled out.
+fn independent_level_bytes(state: &BranchLocalState) -> Vec<u64> {
+    state
         .owned_levels()
         .iter()
         .map(|tables| {
@@ -52,8 +60,178 @@ fn target_bytes_for_state(state: &BranchLocalState) -> Vec<u64> {
                 total.saturating_add(table.facts().byte_count())
             })
         })
-        .collect::<Vec<_>>();
-    nonzero_level_targets_from_level_bytes(&level_bytes)
+        .collect()
+}
+
+#[test]
+fn per_level_bytes_matches_independent_fold_across_shapes() {
+    // BS1.3: compaction scoring/eligibility read `branch.per_level_bytes()` instead of folding
+    // level bytes. The rewrite is byte-identical only if the cached vector equals the fold, so
+    // assert that across a matrix of owned-table shapes (L0 at the 4/8/16 scoring thresholds and a
+    // multi-level shape) and drive the rewired scoring path per shape. Meaningful in release, where
+    // the per-branch debug oracle is off and the scoring depends on the cache being correct.
+    let mut shapes: Vec<(String, BranchLocalState)> = vec![(
+        "empty".to_string(),
+        BranchLocalState::empty(branch_id(0x60)),
+    )];
+
+    for (label, count, seed) in [
+        ("l0-4", 4u8, 0x61u8),
+        ("l0-8", 8, 0x62),
+        ("l0-16", 16, 0x63),
+    ] {
+        let branch = branch_id(seed);
+        let mut state = BranchLocalState::empty(branch);
+        for i in 0..count {
+            install_l0_table(
+                &mut state,
+                branch,
+                &format!("{label}-{i}"),
+                vec![put_row(
+                    branch,
+                    format!("k{i}").as_bytes(),
+                    u64::from(i) + 1,
+                    (u64::from(i) + 1) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+        shapes.push((label.to_string(), state));
+    }
+
+    // Multi-level with asymmetric per-level byte totals (exercises the non-zero-level scoring that
+    // reads `per_level_bytes()[level_index]`).
+    let branch = branch_id(0x64);
+    let mut multi = BranchLocalState::empty(branch);
+    install_owned_table(
+        &mut multi,
+        branch,
+        BranchLevel::ZERO,
+        "ml-l0",
+        vec![put_row(branch, b"a", 1, 1_000, b"x")],
+    );
+    install_owned_table(
+        &mut multi,
+        branch,
+        BranchLevel::new(1),
+        "ml-l1",
+        vec![put_row(branch, b"b", 2, 2_000, b"xxxxxxxx")],
+    );
+    install_owned_table(
+        &mut multi,
+        branch,
+        BranchLevel::new(2),
+        "ml-l2",
+        vec![put_row(branch, b"c", 3, 3_000, b"xxxxxxxxxxxxxxxx")],
+    );
+    shapes.push(("multi-level".to_string(), multi));
+
+    // Flush-install path: `per_level_bytes[0]` is maintained by the incremental delta rather than
+    // the hook recompute (as the other shapes use), so this covers the delta in release too.
+    let flush_branch = branch_id(0x68);
+    shapes.push((
+        "flush-install".to_string(),
+        flush_install_state(
+            flush_branch,
+            "flush-shape",
+            vec![
+                put_row(flush_branch, b"fa", 1, 1_000, b"payload"),
+                put_row(flush_branch, b"fb", 2, 2_000, b"payload"),
+            ],
+        ),
+    ));
+
+    for (label, state) in &shapes {
+        assert_eq!(
+            state.per_level_bytes(),
+            independent_level_bytes(state).as_slice(),
+            "per_level_bytes drifted from the fold for shape {label}"
+        );
+        // Drive the rewired scoring path and tie its L0 counter back to the shape.
+        let pressure = collect_storage_pressure(state, empty_maintenance_status());
+        let expected_l0 = state.owned_levels().first().map_or(0, Vec::len);
+        assert_eq!(
+            pressure.level_zero_tables(),
+            expected_l0,
+            "level_zero_tables mismatch for shape {label}"
+        );
+    }
+}
+
+#[test]
+fn compaction_score_bytes_track_the_independent_fold() {
+    // BS1.3: the compaction score's reported bytes come from the rewired `per_level_bytes()` read.
+    // For a *triggered* level, tie the scoring OUTPUT (`table_rewrite_bytes`) back to the
+    // independent fold — so a wrong byte consumption in the scoring (reading the wrong level or a
+    // stale value), not just a cache drift, is caught. The `per_level_bytes == fold` matrix alone
+    // cannot catch this: its shapes never cross a compaction trigger, so the byte value never
+    // affects the outcome.
+
+    // L0 triggered (>= LEVEL_ZERO_COMPACTION_THRESHOLD tables): the L0 score is the winner, and its
+    // reported bytes must equal the independent L0 fold.
+    let branch = branch_id(0x66);
+    let mut l0 = BranchLocalState::empty(branch);
+    for i in 0..8u8 {
+        install_l0_table(
+            &mut l0,
+            branch,
+            &format!("scb-l0-{i}"),
+            vec![put_row(
+                branch,
+                format!("z{i}").as_bytes(),
+                u64::from(i) + 1,
+                (u64::from(i) + 1) * 1_000,
+                b"payload",
+            )],
+        );
+    }
+    let l0_pressure = collect_storage_pressure(&l0, empty_maintenance_status());
+    assert!(
+        l0_pressure.table_rewrite_bytes() > 0,
+        "L0 compaction is triggered"
+    );
+    assert_eq!(
+        l0_pressure.table_rewrite_bytes(),
+        independent_level_bytes(&l0)[0],
+        "L0 compaction score bytes must equal the independent L0 fold"
+    );
+
+    // Non-zero level triggered (>= NONZERO_LEVEL_COMPACTION_THRESHOLD tables at L1, with a deeper L2
+    // so L1 is not the final level): L1 is the winner, its bytes must equal the independent L1 fold.
+    let branch = branch_id(0x67);
+    let mut ml = BranchLocalState::empty(branch);
+    for i in 0..4u8 {
+        install_owned_table(
+            &mut ml,
+            branch,
+            BranchLevel::new(1),
+            &format!("scb-l1-{i}"),
+            vec![put_row(
+                branch,
+                format!("l1k{i}").as_bytes(),
+                u64::from(i) + 1,
+                (u64::from(i) + 1) * 1_000,
+                b"payload",
+            )],
+        );
+    }
+    install_owned_table(
+        &mut ml,
+        branch,
+        BranchLevel::new(2),
+        "scb-l2",
+        vec![put_row(branch, b"l2k", 99, 99_000, b"payload")],
+    );
+    let ml_pressure = collect_storage_pressure(&ml, empty_maintenance_status());
+    assert!(
+        ml_pressure.table_rewrite_bytes() > 0,
+        "L1 compaction is triggered"
+    );
+    assert_eq!(
+        ml_pressure.table_rewrite_bytes(),
+        independent_level_bytes(&ml)[1],
+        "L1 compaction score bytes must equal the independent L1 fold"
+    );
 }
 
 fn table_last_physical_key(table: &crate::branch::read::BranchOwnedTable) -> TablePhysicalKeyBytes {
@@ -1599,24 +1777,18 @@ fn storage_pressure_suggests_the_next_table_rewrite_or_flush() {
         Some(MaintenanceTaskKind::Compaction)
     ));
 
-    let parent = branch_id(0x4c);
+    // fork-cow.3: a lone inherited layer is a healthy COW fork and stays lazy, so materialization
+    // pressure requires a >=2-layer chain (a lone layer produces no materialization suggestion).
+    let far = branch_id(0x4c);
+    let near = branch_id(0x4e);
     let child = branch_id(0x4d);
-    let mut parent_state = BranchLocalState::empty(parent);
-    install_l0_table(
-        &mut parent_state,
-        parent,
-        "pressure-parent",
-        vec![put_row(parent, b"inherited", 4, 4_000, b"value")],
-    );
-    let (child_state, _) = parent_state
-        .fork_into_empty_child(child)
-        .expect("fork child");
+    let child_state = inherited_chain_state(far, near, child);
     let inherited_pressure = collect_storage_pressure(&child_state, empty_maintenance_status());
     assert_eq!(
         inherited_pressure.reason(),
         LifecycleStoragePressureReason::InheritedLayerBacklog
     );
-    assert_eq!(inherited_pressure.inherited_layers(), 1);
+    assert_eq!(inherited_pressure.inherited_layers(), 2);
     assert!(matches!(
         inherited_pressure
             .suggested_task()
@@ -1699,6 +1871,148 @@ fn optional_maintenance_is_deferred_under_global_memory_pressure() {
         )
         .suggested_task()
         .is_some());
+}
+
+#[test]
+fn compaction_is_surfaced_independently_of_the_flush_first_task() {
+    let branch = branch_id(0x5a);
+    // A backed-up L0 (four tables) alongside a frozen memtable. The single
+    // `suggested_task` is the flush (frozen wins the priority cascade), but the
+    // decoupled `compaction_task` still surfaces the eligible compaction so the
+    // backlog is scheduled rather than starved behind flush.
+    let mut state = BranchLocalState::empty(branch);
+    for index in 0_u64..4 {
+        install_l0_table(
+            &mut state,
+            branch,
+            &format!("decoupled-{index}"),
+            vec![put_row(
+                branch,
+                format!("decoupled-{index}").as_bytes(),
+                index + 2,
+                (index + 2) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    state
+        .append_committed_row(put_row(branch, b"frozen", 9, 9_000, b"value"))
+        .expect("append");
+    state.rotate_active();
+
+    let pressure = collect_storage_pressure(&state, empty_maintenance_status());
+    assert_eq!(pressure.frozen_tables(), 1);
+    assert_eq!(pressure.level_zero_tables(), 4);
+    // Flush still wins the single suggestion...
+    assert_eq!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Flush)
+    );
+    // ...but the compaction is surfaced independently.
+    assert_eq!(
+        crate::lifecycle::compaction::eligible_compaction_task(
+            &state,
+            None,
+            StorageBudgetPressureSeverity::Normal,
+        )
+        .map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Compaction)
+    );
+}
+
+#[test]
+fn compaction_task_is_none_below_the_rewrite_trigger() {
+    let branch = branch_id(0x5b);
+    // Three L0 tables are below the compaction trigger, with a frozen memtable
+    // present: no compaction task is surfaced, so the post-commit enqueue cannot
+    // flood the queue with sub-threshold work.
+    let mut state = BranchLocalState::empty(branch);
+    for index in 0_u64..3 {
+        install_l0_table(
+            &mut state,
+            branch,
+            &format!("below-trigger-{index}"),
+            vec![put_row(
+                branch,
+                format!("below-trigger-{index}").as_bytes(),
+                index + 2,
+                (index + 2) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    state
+        .append_committed_row(put_row(branch, b"frozen", 9, 9_000, b"value"))
+        .expect("append");
+    state.rotate_active();
+
+    let pressure = collect_storage_pressure(&state, empty_maintenance_status());
+    assert_eq!(pressure.level_zero_tables(), 3);
+    assert_eq!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Flush)
+    );
+    assert!(crate::lifecycle::compaction::eligible_compaction_task(
+        &state,
+        None,
+        StorageBudgetPressureSeverity::Normal,
+    )
+    .is_none());
+}
+
+#[test]
+fn optional_compaction_is_deferred_under_memory_pressure_even_when_frozen() {
+    let branch = branch_id(0x5c);
+    // An optional (Background) L0 compaction plus a frozen memtable: the overall
+    // severity is Urgent (frozen), so the whole-pressure neutralization does not fire,
+    // but the decoupled optional compaction must still be held back under memory
+    // pressure while the required flush is kept.
+    let mut state = BranchLocalState::empty(branch);
+    for index in 0_u64..4 {
+        install_l0_table(
+            &mut state,
+            branch,
+            &format!("defer-frozen-{index}"),
+            vec![put_row(
+                branch,
+                format!("defer-frozen-{index}").as_bytes(),
+                index + 2,
+                (index + 2) * 1_000,
+                b"value",
+            )],
+        );
+    }
+    state
+        .append_committed_row(put_row(branch, b"frozen", 9, 9_000, b"value"))
+        .expect("append");
+    state.rotate_active();
+
+    let pressure = collect_storage_pressure(&state, empty_maintenance_status());
+    assert_eq!(
+        pressure.severity(),
+        LifecycleStoragePressureSeverity::Urgent
+    );
+    assert_eq!(
+        pressure.suggested_task().map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Flush)
+    );
+
+    // No memory pressure: the compaction is surfaced.
+    assert!(crate::lifecycle::compaction::eligible_compaction_task(
+        &state,
+        None,
+        StorageBudgetPressureSeverity::Normal,
+    )
+    .is_some());
+
+    // Under memory pressure: the optional compaction is deferred (the required flush,
+    // surfaced via `suggested_task`, is unaffected).
+    assert!(crate::lifecycle::compaction::eligible_compaction_task(
+        &state,
+        None,
+        StorageBudgetPressureSeverity::DeferOptionalMaintenance,
+    )
+    .is_none());
 }
 
 #[test]
@@ -1970,7 +2284,7 @@ fn storage_pressure_prefers_clearable_table_rewrite_when_active_block_has_no_flu
     );
     assert!(active_only_pressure.suggested_task().is_none());
 
-    for index in 0..16 {
+    for index in 0..36 {
         install_l0_table(
             &mut state,
             branch,
@@ -2017,7 +2331,7 @@ fn storage_pressure_reports_none_urgent_and_deterministic_facts() {
     assert!(empty_pressure.suggested_task().is_none());
 
     let mut urgent = BranchLocalState::empty(branch);
-    for index in 0_u64..8 {
+    for index in 0_u64..20 {
         install_l0_table(
             &mut urgent,
             branch,
@@ -2039,7 +2353,7 @@ fn storage_pressure_reports_none_urgent_and_deterministic_facts() {
         first.reason(),
         LifecycleStoragePressureReason::LevelZeroTableBacklog
     );
-    assert_eq!(first.level_zero_tables(), 8);
+    assert_eq!(first.level_zero_tables(), 20);
     assert!(matches!(
         first.suggested_task().map(MaintenanceTaskRequest::kind),
         Some(MaintenanceTaskKind::Compaction)
@@ -2071,10 +2385,10 @@ fn storage_pressure_reports_l0_table_backlog_boundaries() {
     for (table_count, expected_severity) in [
         (3, LifecycleStoragePressureSeverity::None),
         (4, LifecycleStoragePressureSeverity::Background),
-        (7, LifecycleStoragePressureSeverity::Background),
-        (8, LifecycleStoragePressureSeverity::Urgent),
-        (15, LifecycleStoragePressureSeverity::Urgent),
-        (16, LifecycleStoragePressureSeverity::BlockMutatingAdmission),
+        (19, LifecycleStoragePressureSeverity::Background),
+        (20, LifecycleStoragePressureSeverity::Urgent),
+        (35, LifecycleStoragePressureSeverity::Urgent),
+        (36, LifecycleStoragePressureSeverity::BlockMutatingAdmission),
     ] {
         let pressure = pressure_for_l0_table_count(table_count);
 
@@ -2098,10 +2412,69 @@ fn storage_pressure_reports_l0_table_backlog_boundaries() {
 }
 
 #[test]
+fn storage_pressure_throttle_ratio_tracks_l0_backlog() {
+    fn ratio_for_l0(count: u64) -> u16 {
+        let branch = branch_id(0x68);
+        let mut state = BranchLocalState::empty(branch);
+        for index in 0..count {
+            install_l0_table(
+                &mut state,
+                branch,
+                &format!("throttle-{count}-{index}"),
+                vec![put_row(
+                    branch,
+                    format!("throttle-{count}-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    b"value",
+                )],
+            );
+        }
+        collect_storage_pressure(&state, empty_maintenance_status()).throttle_ratio_permille()
+    }
+
+    // With no active/frozen bytes, the throttle ratio is the L0 fullness against the blocking
+    // threshold (36): count/36 in permille, clamped to 1000 when over-full.
+    assert_eq!(ratio_for_l0(0), 0);
+    assert_eq!(ratio_for_l0(9), 250);
+    assert_eq!(ratio_for_l0(18), 500);
+    assert_eq!(ratio_for_l0(36), 1000);
+    assert_eq!(ratio_for_l0(40), 1000);
+}
+
+#[test]
+fn storage_pressure_throttle_ratio_tracks_frozen_table_backlog() {
+    fn ratio_for_frozen(count: u64) -> u16 {
+        let branch = branch_id(0x69);
+        let mut state = BranchLocalState::empty(branch);
+        for index in 0..count {
+            state
+                .append_committed_row(put_row(
+                    branch,
+                    format!("frozen-{index}").as_bytes(),
+                    index + 1,
+                    (index + 1) * 1_000,
+                    b"value",
+                ))
+                .expect("append active row");
+            state.rotate_active();
+        }
+        collect_storage_pressure(&state, empty_maintenance_status()).throttle_ratio_permille()
+    }
+
+    // Without a budget the frozen-BYTE dimension is skipped, so the ratio reflects frozen-table
+    // COUNT fullness against FROZEN_BLOCKING_FLUSH_THRESHOLD (4) — the dimension fix #2 added so
+    // the throttle ramps before the frozen-count cliff (the in-budget collapse driver).
+    assert_eq!(ratio_for_frozen(0), 0);
+    assert_eq!(ratio_for_frozen(2), 500);
+    assert_eq!(ratio_for_frozen(4), 1000);
+}
+
+#[test]
 fn storage_pressure_suggests_flush_before_blocking_l0_compaction() {
     let branch = branch_id(0x6c);
     let mut state = BranchLocalState::empty(branch);
-    for index in 0..16 {
+    for index in 0..36 {
         install_l0_table(
             &mut state,
             branch,
@@ -2126,7 +2499,7 @@ fn storage_pressure_suggests_flush_before_blocking_l0_compaction() {
         pressure.reason(),
         LifecycleStoragePressureReason::FrozenBacklog
     );
-    assert_eq!(pressure.level_zero_tables(), 16);
+    assert_eq!(pressure.level_zero_tables(), 36);
     assert_eq!(pressure.frozen_tables(), 1);
     assert!(matches!(
         pressure.suggested_task().map(MaintenanceTaskRequest::kind),
@@ -2849,7 +3222,9 @@ fn completed_compaction_resubmits_chain_until_branch_is_healthy() {
 
 #[test]
 fn completed_compaction_resubmits_materialization_when_inheritance_remains() {
-    let parent = branch_id(0xa8);
+    // fork-cow.3: use a 2-layer chain so materialization is proactively scheduled (a lone layer stays lazy).
+    let far = branch_id(0xa8);
+    let near = branch_id(0xaa);
     let child = branch_id(0xa9);
     let mut runtime = cache_runtime(child);
     *runtime
@@ -2860,7 +3235,7 @@ fn completed_compaction_resubmits_materialization_when_inheritance_remains() {
                 crate::commit::CommitBranchGeneration::new(1).expect("generation"),
             ),
         )
-        .expect("branch state") = single_inherited_state(parent, child);
+        .expect("branch state") = inherited_chain_state(far, near, child);
     {
         let state = runtime
             .branch_catalog_mut_for_test()
@@ -2895,7 +3270,8 @@ fn completed_compaction_resubmits_materialization_when_inheritance_remains() {
         .expect("run compaction")
         .expect("compaction outcome");
     assert_eq!(compaction.status(), MaintenanceOutcomeStatus::Completed);
-    assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
+    // Compaction leaves the 2 inherited layers untouched; materialization is resubmitted (2 >= the gate).
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 2);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
     assert!(
         runtime
@@ -2917,7 +3293,9 @@ fn completed_compaction_resubmits_materialization_when_inheritance_remains() {
         materialization.task_kind(),
         MaintenanceTaskKind::Materialization
     );
-    assert_eq!(runtime.branch_state().inherited_layer_count(), 0);
+    // Materialization flattens one layer; the remaining lone layer is a healthy COW fork and stays lazy
+    // (no resubmit), so the branch settles at 1 inherited layer with no pending work.
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
 }
 
@@ -3139,9 +3517,12 @@ fn queued_table_rewrite_runs_compaction_when_it_has_higher_score() {
 
 #[test]
 fn completed_materialization_resubmits_chain_until_branch_is_healthy() {
+    // fork-cow.3: a 3-layer chain flattens by resubmitting materialization until only a healthy lone COW
+    // layer remains (the lazy floor). Two materializations run: 3->2 resubmits (2 >= gate), 2->1 does not.
     let far = branch_id(0xa3);
     let near = branch_id(0xa4);
-    let child = branch_id(0xa5);
+    let mid = branch_id(0xa5);
+    let child = branch_id(0xac);
     let mut runtime = cache_runtime(child);
     *runtime
         .branch_catalog_mut_for_test()
@@ -3151,7 +3532,7 @@ fn completed_materialization_resubmits_chain_until_branch_is_healthy() {
                 crate::commit::CommitBranchGeneration::new(1).expect("generation"),
             ),
         )
-        .expect("branch state") = inherited_chain_state(far, near, child);
+        .expect("branch state") = inherited_chain_state_depth_three(far, near, mid, child);
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::materialization_layer(child, 0))
         .expect("enqueue materialization");
@@ -3161,7 +3542,7 @@ fn completed_materialization_resubmits_chain_until_branch_is_healthy() {
         .expect("run first materialization")
         .expect("first materialization outcome");
     assert_eq!(first.status(), MaintenanceOutcomeStatus::Completed);
-    assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 2);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 1);
 
     let second = runtime
@@ -3169,12 +3550,147 @@ fn completed_materialization_resubmits_chain_until_branch_is_healthy() {
         .expect("run second materialization")
         .expect("second materialization outcome");
     assert_eq!(second.status(), MaintenanceOutcomeStatus::Completed);
-    assert_eq!(runtime.branch_state().inherited_layer_count(), 0);
+    // The remaining lone layer is a healthy COW fork and stays lazy: no third resubmit.
+    assert_eq!(runtime.branch_state().inherited_layer_count(), 1);
     assert_eq!(runtime.maintenance_status().pending_tasks(), 0);
+}
+
+#[test]
+fn lone_inherited_layer_is_below_the_proactive_materialization_gate() {
+    // fork-cow.3: a single Active inherited layer is a healthy COW fork and must not be proactively
+    // materialized; a >=2-layer chain is. This pins the onset gate directly.
+    let one = single_inherited_state(branch_id(0xb8), branch_id(0xb9));
+    let pressure_one = collect_storage_pressure(&one, empty_maintenance_status());
+    assert_eq!(one.inherited_layer_count(), 1);
+    assert_eq!(pressure_one.reason(), LifecycleStoragePressureReason::None);
+    assert!(pressure_one.suggested_task().is_none());
+
+    let two = inherited_chain_state(branch_id(0xba), branch_id(0xbb), branch_id(0xbc));
+    let pressure_two = collect_storage_pressure(&two, empty_maintenance_status());
+    assert_eq!(two.inherited_layer_count(), 2);
+    assert_eq!(
+        pressure_two.reason(),
+        LifecycleStoragePressureReason::InheritedLayerBacklog
+    );
+    assert_eq!(
+        pressure_two
+            .suggested_task()
+            .map(MaintenanceTaskRequest::kind),
+        Some(MaintenanceTaskKind::Materialization)
+    );
+}
+
+#[test]
+fn lone_cow_layer_stays_lazy_across_maintenance_rounds() {
+    // fork-cow.3 soak: across many maintenance rounds, and even while the child churns and compacts its
+    // own L0 tables, a single COW inherited layer is never proactively materialized — it stays Active
+    // (count 1) and its inherited reads stay correct throughout.
+    let parent = branch_id(0xd0);
+    let child = branch_id(0xd1);
+    let mut runtime = cache_runtime(child);
+    *runtime
+        .branch_catalog_mut_for_test()
+        .branch_state_mut(
+            child,
+            crate::commit::CommitBranchGenerationGuard::exact(
+                crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+            ),
+        )
+        .expect("branch state") = single_inherited_state(parent, child);
+    let inherited_key = physical_key(child, b"parent");
+
+    for round in 0..8_u64 {
+        install_l0_table(
+            runtime
+                .branch_catalog_mut_for_test()
+                .branch_state_mut(
+                    child,
+                    crate::commit::CommitBranchGenerationGuard::exact(
+                        crate::commit::CommitBranchGeneration::new(1).expect("generation"),
+                    ),
+                )
+                .expect("child state"),
+            child,
+            &format!("soak-l0-{round}"),
+            vec![put_row(
+                child,
+                format!("soak-{round}").as_bytes(),
+                100 + round,
+                (100 + round) * 1_000,
+                b"soak",
+            )],
+        );
+        let _ = runtime.schedule_post_commit_maintenance_for_test(child);
+        let mut drained = 0;
+        while runtime
+            .run_next_compaction_maintenance()
+            .expect("run compaction")
+            .is_some()
+        {
+            drained += 1;
+            assert!(drained < 64, "compaction did not settle in round {round}");
+        }
+        assert!(
+            runtime
+                .run_next_materialization_maintenance()
+                .expect("poll materialization")
+                .is_none(),
+            "a lone COW inherited layer was scheduled for materialization in round {round}"
+        );
+        assert_eq!(
+            runtime.branch_state().inherited_layer_count(),
+            1,
+            "lone COW layer must stay lazy in round {round}"
+        );
+        assert_eq!(
+            runtime
+                .branch_state()
+                .capture_read_view()
+                .expect("view")
+                .latest(&inherited_key)
+                .expect("read")
+                .expect("inherited row visible")
+                .row()
+                .value(),
+            b"parent"
+        );
+    }
 }
 
 fn inherited_chain_state(far: BranchId, near: BranchId, child: BranchId) -> BranchLocalState {
     inherited_chain_state_with_far_backlog(far, near, child, 1)
+}
+
+fn inherited_chain_state_depth_three(
+    far: BranchId,
+    near: BranchId,
+    mid: BranchId,
+    child: BranchId,
+) -> BranchLocalState {
+    let mut far_state = BranchLocalState::empty(far);
+    install_l0_table(
+        &mut far_state,
+        far,
+        "scored-materialization-far",
+        vec![put_row(far, b"far", 1, 1_000, b"far")],
+    );
+    let (mut near_state, _) = far_state.fork_into_empty_child(near).expect("fork near");
+    install_l0_table(
+        &mut near_state,
+        near,
+        "scored-materialization-near",
+        vec![put_row(near, b"near", 100, 100_000, b"near")],
+    );
+    let (mut mid_state, _) = near_state.fork_into_empty_child(mid).expect("fork mid");
+    install_l0_table(
+        &mut mid_state,
+        mid,
+        "scored-materialization-mid",
+        vec![put_row(mid, b"mid", 200, 200_000, b"mid")],
+    );
+    let (child_state, outcome) = mid_state.fork_into_empty_child(child).expect("fork child");
+    assert_eq!(outcome.inherited_layer_count(), 3);
+    child_state
 }
 
 fn inherited_chain_state_with_far_backlog(
@@ -3357,7 +3873,10 @@ fn storage_pressure_counts_active_byte_signal_when_table_rewrite_wins() {
             &value,
         ))
         .expect("append active pressure row");
-    for index in 0..8 {
+    // The L0 backlog must reach Urgent severity (>= LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD) to win the
+    // pressure reason over the (also Urgent) active-byte signal.
+    for index in 0..(crate::lifecycle::compaction::LEVEL_ZERO_URGENT_COMPACTION_THRESHOLD + 4) {
+        let version = index as u64 + 2;
         install_l0_table(
             &mut state,
             branch,
@@ -3365,8 +3884,8 @@ fn storage_pressure_counts_active_byte_signal_when_table_rewrite_wins() {
             vec![put_row(
                 branch,
                 format!("active-byte-counter-{index}").as_bytes(),
-                index + 2,
-                (index + 2) * 1_000,
+                version,
+                version * 1_000,
                 b"value",
             )],
         );
@@ -3825,7 +4344,10 @@ fn generated_flush_and_compaction_pressure_overlap_preempts_rewrites() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
     crate::observability::perf_trace::reset();
 
-    for frozen_tables in 1_usize..=3 {
+    // Preemption fires only at the blocking frozen backlog (>= FROZEN_BLOCKING_FLUSH_THRESHOLD);
+    // below it, compaction runs concurrently with flush rather than churning on preempt/requeue.
+    let flush_block = crate::lifecycle::compaction::FROZEN_BLOCKING_FLUSH_THRESHOLD;
+    for frozen_tables in flush_block..=(flush_block + 2) {
         let branch = branch_id(0x88 + u8::try_from(frozen_tables).expect("case fits"));
         let mut state = BranchLocalState::new(
             branch,

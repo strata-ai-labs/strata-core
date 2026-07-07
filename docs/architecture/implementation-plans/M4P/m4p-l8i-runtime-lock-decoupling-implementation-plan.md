@@ -28,6 +28,36 @@ preserved exactly.
 
 This is a coupling/architecture fix, not a storage-format or semantics change.
 
+## Update — 2026-06-30 (convoy root-cause + reconciliation)
+
+A later investigation (`docs/design/performance/durable-background-lock-convoy.md`)
+re-confirmed this plan's diagnosis at 10M **from the worker side** (the convoy collapses
+to ~1 core with the workers parked on the runtime mutex) and added two things:
+
+- **A fifth under-lock cost not in the original four:** the flush-watermark coverage
+  proof runs an O(total-rows) scan + sort **under the runtime lock** on every drain
+  round (`run_next_background_flush_watermark_maintenance` →
+  `branch_durable_commit_versions_at_or_below`). A tactical fix has **landed** (bound
+  the scan to the `[checkpoint_watermark, candidate]` tail via per-table
+  `commit_range()` — `lifecycle/checkpoint.rs`, tests in `flush_watermark.rs`); it is
+  complementary to **Group D**, which removes it structurally by making layout reads
+  lock-free.
+- **A sharper validation signal than load-phase throughput:** under sustained
+  read-modify-write (YCSB **F**) at 10M the convoy collapses to **~81 ops/s with 90 s+
+  stalls** (vs ~145K ops/s at 100K and ~75K read ops/s). Add **workload-F run-phase
+  throughput** (target ≥ ~100K ops/s / ≤ 2× old) and the interleaved control-vs-fixed
+  **crawl-rate A/B** to **Group F** — F is a far sharper convoy signal than the load
+  phase.
+
+Reconciliation of a 2026-06-30 session that partly re-derived this plan:
+- A "remove `schedule_post_commit` from the backpressure path" change was tried and
+  **reverted** — it is a fragment of the **abandoned Group A** (wait-loop area), and a
+  crawl-rate A/B re-confirmed it is not a throughput lever (matching Group A's note).
+- A separate `docs/architecture/storage-next/lock-decoupling-roadmap.md` draft was
+  **retired** in favor of this plan; its only non-overlapping idea — *concurrent
+  (disjoint-level) compaction* — is a **drain-rate** lever, complementary to and out of
+  scope for this lock-decoupling plan (track with the M12C-style compaction work).
+
 ## Diagnosis (from the L8H contention investigation)
 
 At 10M, the foreground writer's ~263s `api_runtime` is **~16s real commit/WAL work +

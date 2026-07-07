@@ -82,7 +82,7 @@ fn read_value(runtime: &StorageRuntime<'_>, branch_id: BranchId, key: &[u8]) -> 
 
 #[test]
 fn branch_create_returns_generation() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let new_branch = branch_with(0x20);
 
     let outcome = runtime
@@ -99,7 +99,7 @@ fn branch_create_returns_generation() {
 
 #[test]
 fn branch_create_duplicate_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .branch(&create_request(branch()))
@@ -110,7 +110,7 @@ fn branch_create_duplicate_rejects() {
 
 #[test]
 fn branch_create_invalid_identifier_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let zero = BranchId::from_bytes([0; BranchId::BYTE_LEN]);
 
     let error = runtime
@@ -123,7 +123,7 @@ fn branch_create_invalid_identifier_rejects() {
 
 #[test]
 fn branch_list_is_deterministic() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     runtime
         .branch(&create_request(branch_with(0x33)))
         .expect("create third");
@@ -144,7 +144,7 @@ fn branch_list_is_deterministic() {
 
 #[test]
 fn branch_describe_reports_generation() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let outcome = runtime
         .branch(&describe_request(branch()))
@@ -159,7 +159,7 @@ fn branch_describe_reports_generation() {
 
 #[test]
 fn branch_describe_unknown_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .branch(&describe_request(branch_with(0x41)))
@@ -286,7 +286,7 @@ fn branch_fork_at_unretained_version_rejects() {
 
 #[test]
 fn branch_fork_from_empty_source_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .branch(&branch_request(
@@ -300,7 +300,7 @@ fn branch_fork_from_empty_source_rejects() {
 
 #[test]
 fn branch_fork_invalid_source_identifier_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let zero = BranchId::from_bytes([0; BranchId::BYTE_LEN]);
 
     let error = runtime
@@ -428,7 +428,7 @@ fn branch_clear_preserves_branch_identity() {
 
 #[test]
 fn branch_clear_generation_mismatch_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .branch(&BranchRequest::new(
@@ -471,7 +471,7 @@ fn branch_clear_with_pinned_view_reports_protected_release() {
 
 #[test]
 fn branch_delete_removes_from_list() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let child = branch_with(0x4a);
     runtime.branch(&create_request(child)).expect("create");
 
@@ -488,7 +488,7 @@ fn branch_delete_removes_from_list() {
 
 #[test]
 fn branch_delete_generation_mismatch_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let child = branch_with(0x4b);
     runtime.branch(&create_request(child)).expect("create");
 
@@ -535,7 +535,7 @@ fn branch_delete_with_pinned_view_reports_protected_release() {
 
 #[test]
 fn branch_recreate_deleted_reports_generation_transition() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let child = branch_with(0x58);
     runtime.branch(&create_request(child)).expect("create");
     runtime
@@ -581,7 +581,7 @@ fn durable_branch_catalog_round_trips_after_reopen() {
     drop(runtime);
 
     let backend = StorageBackend::local_fs(root);
-    let mut runtime = StorageRuntime::open_with_backend(
+    let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
         &backend,
     )
@@ -603,6 +603,180 @@ fn durable_branch_catalog_round_trips_after_reopen() {
     assert_eq!(
         read_value(&runtime, child, b"durable-branch"),
         Some(b"parent".to_vec())
+    );
+}
+
+/// Fork-manifest fix: a `ForkCurrent` child of a FLUSHED parent is a COW fork (inherited layers,
+/// no row copies), and the fork now publishes the child's table manifest at fork time — so after
+/// reopen the child reads the parent's rows through manifest-recovered layers, not through the
+/// O(parent dataset) `rebuild_fork_snapshot_rows` fallback. Complements the unflushed variant
+/// above (whose eager child still recovers through the gated fallback).
+#[cfg(feature = "localfs")]
+#[test]
+fn durable_flushed_parent_cow_fork_round_trips_after_reopen() {
+    let root = temp_dir_for_api_test("branch-durable-cow-fork-roundtrip");
+    let child = branch_with(0x5a);
+    {
+        let backend = StorageBackend::local_fs(root.clone());
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"cow-fork", b"parent", 10);
+        runtime
+            .flush_default_branch_for_test()
+            .expect("flush the parent so the fork is COW");
+        runtime
+            .branch(&branch_request(
+                child,
+                BranchAction::ForkCurrent { source: branch() },
+            ))
+            .expect("fork the flushed parent");
+        runtime.close().expect("close durable runtime");
+    }
+
+    let backend = StorageBackend::local_fs(root);
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable reopen")
+    .into_runtime();
+    let described = runtime
+        .branch(&describe_request(child))
+        .expect("describe recovered branch")
+        .branch()
+        .expect("branch summary");
+    assert_eq!(described.status(), BranchStatus::Active);
+    assert_eq!(
+        described
+            .parent()
+            .map(BranchParentSummary::source_branch_id),
+        Some(branch())
+    );
+    assert_eq!(
+        read_value(&runtime, child, b"cow-fork"),
+        Some(b"parent".to_vec()),
+        "the child must read the parent's row through its manifest-recovered inherited layer",
+    );
+}
+
+/// Fork-manifest fix enabler: fork-time child manifests interleave manifest sequences across
+/// branches (parent seq → child seq → parent seq), while recovery applies manifests in branch-id
+/// order — `record_recovered_manifest` must tolerate the reordering (the strict runtime
+/// regression check would fail recovery here).
+#[cfg(feature = "localfs")]
+#[test]
+fn durable_interleaved_branch_manifest_sequences_recover() {
+    let root = temp_dir_for_api_test("branch-durable-interleaved-manifests");
+    let child = branch_with(0x5c);
+    {
+        let backend = StorageBackend::local_fs(root.clone());
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        // Parent manifest (seq A) → child manifest at fork (seq B > A) → parent manifest again
+        // (seq C > B). Recovery loads them in branch-id order, so a strict sequence check would
+        // see C then B and refuse.
+        put_at(&mut runtime, branch(), b"interleaved-a", b"first", 10);
+        runtime
+            .flush_default_branch_for_test()
+            .expect("first parent flush publishes the parent manifest");
+        runtime
+            .branch(&branch_request(
+                child,
+                BranchAction::ForkCurrent { source: branch() },
+            ))
+            .expect("fork publishes the child manifest");
+        put_at(&mut runtime, branch(), b"interleaved-b", b"second", 20);
+        runtime
+            .flush_default_branch_for_test()
+            .expect("second parent flush republishes the parent manifest");
+        runtime.close().expect("close durable runtime");
+    }
+
+    let backend = StorageBackend::local_fs(root);
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable reopen with interleaved manifest sequences")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, branch(), b"interleaved-b"),
+        Some(b"second".to_vec())
+    );
+    assert_eq!(
+        read_value(&runtime, child, b"interleaved-a"),
+        Some(b"first".to_vec()),
+        "the child sees pre-fork parent rows, not post-fork ones",
+    );
+    assert_eq!(
+        read_value(&runtime, child, b"interleaved-b"),
+        None,
+        "post-fork parent writes must not leak into the child",
+    );
+}
+
+/// Fork-manifest fix crash window: the fork's catalog publish landed but its child-manifest
+/// publish did not (simulated by deleting the child's manifest object). Reopen must still succeed
+/// and the child must read the parent's rows — via the narrowly-kept `rebuild_fork_snapshot_rows`
+/// fallback for layer-less children.
+#[cfg(feature = "localfs")]
+#[test]
+fn durable_fork_child_manifest_crash_window_recovers_via_rebuild() {
+    let root = temp_dir_for_api_test("branch-durable-fork-crash-window");
+    let child = branch_with(0x5d);
+    {
+        let backend = StorageBackend::local_fs(root.clone());
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            &backend,
+        )
+        .expect("durable open")
+        .into_runtime();
+        put_at(&mut runtime, branch(), b"crash-window", b"parent", 10);
+        runtime
+            .flush_default_branch_for_test()
+            .expect("flush the parent so the fork is COW");
+        runtime
+            .branch(&branch_request(
+                child,
+                BranchAction::ForkCurrent { source: branch() },
+            ))
+            .expect("fork the flushed parent");
+        runtime.close().expect("close durable runtime");
+    }
+
+    // Simulate the crash window: the child's fork-time table manifest never became durable.
+    // (`.object@` is the localfs backend's on-disk object-file suffix.)
+    let child_manifest = root
+        .join("tables")
+        .join(child.to_string())
+        .join("manifest.object@");
+    assert!(
+        child_manifest.is_file(),
+        "the fork must have published the child's table manifest at {}",
+        child_manifest.display()
+    );
+    std::fs::remove_file(&child_manifest).expect("delete the child's table manifest");
+
+    let backend = StorageBackend::local_fs(root);
+    let runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        &backend,
+    )
+    .expect("durable reopen without the child manifest")
+    .into_runtime();
+    assert_eq!(
+        read_value(&runtime, child, b"crash-window"),
+        Some(b"parent".to_vec()),
+        "a layer-less child must recover its fork view through the rebuild fallback",
     );
 }
 
@@ -628,7 +802,7 @@ fn durable_branch_delete_allows_reopen_after_process_drop() {
     drop(runtime);
 
     let backend = StorageBackend::local_fs(root);
-    let mut runtime = StorageRuntime::open_with_backend(
+    let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
         &backend,
     )
@@ -645,7 +819,7 @@ fn durable_branch_delete_allows_reopen_after_process_drop() {
 
 #[test]
 fn branch_delete_unknown_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .branch(&branch_request(branch_with(0x4d), BranchAction::Delete))
@@ -656,7 +830,7 @@ fn branch_delete_unknown_rejects() {
 
 #[test]
 fn branch_delete_already_deleted_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let child = branch_with(0x5b);
     runtime.branch(&create_request(child)).expect("create");
     runtime
@@ -673,7 +847,7 @@ fn branch_delete_already_deleted_rejects() {
 
 #[test]
 fn branch_delete_reports_cleanup_facts() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let child = branch_with(0x4e);
     runtime.branch(&create_request(child)).expect("create");
 
@@ -690,7 +864,7 @@ fn branch_delete_reports_cleanup_facts() {
 
 #[test]
 fn branch_delete_last_required_branch_rejects() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
 
     let error = runtime
         .branch(&branch_request(branch(), BranchAction::Delete))

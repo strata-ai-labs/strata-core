@@ -18,7 +18,12 @@ mod cache;
 mod checkpoint;
 mod commit;
 mod diagnostics;
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+mod disk_resident_reads;
 mod maintenance;
+mod off_lock_concurrency;
+mod off_lock_interleaving;
+mod off_lock_perf;
 mod open_close;
 mod open_options;
 mod read;

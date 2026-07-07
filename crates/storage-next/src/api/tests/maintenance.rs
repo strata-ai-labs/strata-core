@@ -676,7 +676,7 @@ fn api_wal_growth_trigger_runs_supported_path() {
 
 #[test]
 fn api_wal_growth_enqueue_rejects_direct_queueing() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let request = MaintenanceRequest::new(MaintenanceTask::WalGrowth, MaintenanceScope::Global);
 
     let error = runtime
@@ -711,7 +711,7 @@ fn api_maintenance_enqueue_and_drain_are_deterministic() {
 
 #[test]
 fn api_maintenance_queue_status_reports_pending_only() {
-    let mut runtime = open_manual_runtime();
+    let runtime = open_manual_runtime();
     runtime
         .commit(&put_batch(b"status", b"value"))
         .expect("commit");
@@ -732,7 +732,7 @@ fn api_maintenance_queue_status_reports_pending_only() {
 
 #[test]
 fn api_cache_durable_only_enqueue_rejects_without_stranding_tasks() {
-    let mut runtime = open_runtime();
+    let runtime = open_runtime();
     let cases = [
         MaintenanceRequest::new(MaintenanceTask::Checkpoint, MaintenanceScope::Global),
         MaintenanceRequest::new(MaintenanceTask::Retain, MaintenanceScope::Global),
@@ -1144,4 +1144,314 @@ fn api_rewrite_unknown_branch_rejects() {
         .expect_err("unknown branch rejects rewrite maintenance");
 
     assert_eq!(error.class(), StorageApiErrorClass::NotFound);
+}
+
+// ---- Table-object GC (mark → sweep → purge) ----
+
+/// Table DATA object files on disk under `tables/<branch>/l*/` — the physical footprint the GC
+/// reclaims. Manifests (`tables/<branch>/manifest.object@`) are excluded: they are not data
+/// objects and are never quarantine candidates.
+#[cfg(feature = "localfs")]
+fn table_data_object_files(root: &std::path::Path) -> std::collections::BTreeSet<String> {
+    let mut files = std::collections::BTreeSet::new();
+    let tables = root.join("tables");
+    let Ok(branches) = std::fs::read_dir(&tables) else {
+        return files;
+    };
+    for branch_dir in branches.flatten() {
+        let Ok(levels) = std::fs::read_dir(branch_dir.path()) else {
+            continue;
+        };
+        for level_dir in levels.flatten() {
+            if !level_dir.path().is_dir() {
+                continue;
+            }
+            let Ok(objects) = std::fs::read_dir(level_dir.path()) else {
+                continue;
+            };
+            for object in objects.flatten() {
+                if object.path().is_file() {
+                    files.insert(object.path().display().to_string());
+                }
+            }
+        }
+    }
+    files
+}
+
+/// Drain the maintenance queue to a fixed point: each drain runs the queued tasks (including the
+/// GC chain's self-enqueued follow-ups); repeat until a drain finds nothing.
+fn drain_maintenance_to_idle(runtime: &mut StorageRuntime<'static>) {
+    for _ in 0..8 {
+        let drain = runtime.drain_maintenance().expect("drain maintenance");
+        if drain.drained_tasks() == 0 {
+            return;
+        }
+    }
+    panic!("maintenance queue did not reach idle within the drain budget");
+}
+
+/// End-to-end table-object GC: a compaction supersedes L0 objects; the auto-enqueued
+/// retention (mark) → quarantine (sweep) → purge chain physically deletes them; reads stay
+/// correct. This is the regression test for the unbounded space amplification (4,819 objects /
+/// 92 GB vs ~577 live at 10M) where superseded objects were never reclaimed.
+#[cfg(feature = "localfs")]
+#[test]
+fn api_compaction_gc_reclaims_superseded_table_objects() {
+    let root = temp_dir_for_api_test("maintenance-gc-end-to-end");
+    let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        backend,
+    )
+    .expect("open durable runtime")
+    .into_runtime();
+
+    runtime.commit(&put_batch(b"gc-a", b"one")).expect("commit");
+    runtime
+        .flush_default_branch_for_test()
+        .expect("flush first L0 table");
+    runtime.commit(&put_batch(b"gc-a", b"two")).expect("commit");
+    runtime.commit(&put_batch(b"gc-b", b"x")).expect("commit");
+    runtime
+        .flush_default_branch_for_test()
+        .expect("flush second L0 table");
+    let before = table_data_object_files(&root);
+    assert!(
+        before.len() >= 2,
+        "two flushes must produce at least two data objects, got {}",
+        before.len()
+    );
+
+    let compact =
+        MaintenanceRequest::new(MaintenanceTask::Compact, MaintenanceScope::Branch(branch()));
+    runtime.maintenance(&compact).expect("compact");
+    drain_maintenance_to_idle(&mut runtime);
+
+    let after = table_data_object_files(&root);
+    for superseded in &before {
+        assert!(
+            !after.contains(superseded),
+            "superseded object {superseded} must be reclaimed",
+        );
+    }
+    assert!(
+        !after.is_empty(),
+        "the compaction output object must survive the sweep",
+    );
+    let value = runtime
+        .read_point(&PointReadRequest::new(
+            branch(),
+            engine_space(),
+            api_key(b"gc-a"),
+            ReadBound::Latest,
+        ))
+        .expect("read after gc")
+        .row()
+        .expect("row present")
+        .value()
+        .expect("put row")
+        .as_bytes()
+        .to_vec();
+    assert_eq!(value, b"two");
+}
+
+/// COW invariant: a fork child's inherited references keep shared parent objects alive through
+/// the parent's compaction AND a full GC cycle — an object is deletable only when unreachable
+/// from EVERY branch. The child's fork-time manifest (slice 1) is what makes its references
+/// durably visible to the mark.
+#[cfg(feature = "localfs")]
+#[test]
+fn api_cow_fork_child_pins_shared_objects_against_gc() {
+    let root = temp_dir_for_api_test("maintenance-gc-cow-pin");
+    let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        backend,
+    )
+    .expect("open durable runtime")
+    .into_runtime();
+
+    // Parent data in two flushed tables, then a COW fork referencing them.
+    runtime
+        .commit(&put_batch(b"cow-pin-a", b"pre-fork"))
+        .expect("commit");
+    runtime
+        .flush_default_branch_for_test()
+        .expect("flush first parent table");
+    runtime
+        .commit(&put_batch(b"cow-pin-b", b"pre-fork"))
+        .expect("commit");
+    runtime
+        .flush_default_branch_for_test()
+        .expect("flush second parent table");
+    let fork_time_objects = table_data_object_files(&root);
+    let child = branch_with(0x77);
+    fork_branch(&mut runtime, child);
+
+    // Post-fork parent churn + compaction: the fork-time tables leave the PARENT's manifest,
+    // but the child's manifest still references them.
+    runtime
+        .commit(&put_batch(b"cow-pin-a", b"post-fork"))
+        .expect("commit");
+    runtime
+        .flush_default_branch_for_test()
+        .expect("flush post-fork parent table");
+    let compact =
+        MaintenanceRequest::new(MaintenanceTask::Compact, MaintenanceScope::Branch(branch()));
+    runtime.maintenance(&compact).expect("compact parent");
+    drain_maintenance_to_idle(&mut runtime);
+
+    let after = table_data_object_files(&root);
+    for shared in &fork_time_objects {
+        assert!(
+            after.contains(shared),
+            "object {shared} is reachable from the fork child and must survive the parent's \
+             compaction + GC",
+        );
+    }
+    // The child reads pre-fork values through the retained shared objects.
+    let child_value = runtime
+        .read_point(&PointReadRequest::new(
+            child,
+            engine_space(),
+            api_key(b"cow-pin-a"),
+            ReadBound::Latest,
+        ))
+        .expect("child read after gc")
+        .row()
+        .expect("child row present")
+        .value()
+        .expect("put row")
+        .as_bytes()
+        .to_vec();
+    assert_eq!(child_value, b"pre-fork");
+}
+
+/// Reader interlock: the sweep defers while a retired read view is still held (durable readers
+/// are name-addressed with no held fd — deleting a superseded source object would break their
+/// block fetches), and proceeds once the reader drops it.
+#[cfg(feature = "localfs")]
+#[test]
+fn api_gc_sweep_defers_while_retired_read_view_is_held() {
+    let root = temp_dir_for_api_test("maintenance-gc-reader-interlock");
+    let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        backend,
+    )
+    .expect("open durable runtime")
+    .into_runtime();
+
+    runtime
+        .commit(&put_batch(b"pin-read-a", b"one"))
+        .expect("commit");
+    runtime
+        .flush_default_branch_for_test()
+        .expect("flush first L0 table");
+    runtime
+        .commit(&put_batch(b"pin-read-a", b"two"))
+        .expect("commit");
+    runtime
+        .flush_default_branch_for_test()
+        .expect("flush second L0 table");
+    let before = table_data_object_files(&root);
+
+    // An off-lock reader holds the pre-compaction view across the whole GC cycle.
+    let held_view = runtime
+        .load_snapshot_for_test(branch())
+        .expect("published snapshot");
+    let compact =
+        MaintenanceRequest::new(MaintenanceTask::Compact, MaintenanceScope::Branch(branch()));
+    runtime.maintenance(&compact).expect("compact");
+    drain_maintenance_to_idle(&mut runtime);
+    let with_reader = table_data_object_files(&root);
+    for superseded in &before {
+        assert!(
+            with_reader.contains(superseded),
+            "object {superseded} may still be read through the retired view and must survive \
+             the sweep",
+        );
+    }
+
+    // Reader done: the next cycle reclaims.
+    drop(held_view);
+    let reclaim =
+        MaintenanceRequest::new(MaintenanceTask::Reclaim, MaintenanceScope::Branch(branch()));
+    runtime.maintenance(&reclaim).expect("reclaim");
+    drain_maintenance_to_idle(&mut runtime);
+    let after = table_data_object_files(&root);
+    for superseded in &before {
+        assert!(
+            !after.contains(superseded),
+            "superseded object {superseded} must be reclaimed once the retired view is dropped",
+        );
+    }
+}
+
+/// Reopen reconcile: stale objects left by a prior session (here: a planted orphan simulating a
+/// crash between object write and manifest publish, or a pre-GC session's leak) are reclaimed by
+/// the post-recovery mark without any explicit API call.
+#[cfg(feature = "localfs")]
+#[test]
+fn api_reopen_reconciles_stale_table_objects() {
+    let root = temp_dir_for_api_test("maintenance-gc-reopen-reconcile");
+    let orphan_path;
+    {
+        let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+        let mut runtime = StorageRuntime::open_with_backend(
+            StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+            backend,
+        )
+        .expect("open durable runtime")
+        .into_runtime();
+        runtime
+            .commit(&put_batch(b"reconcile-a", b"live"))
+            .expect("commit");
+        runtime
+            .flush_default_branch_for_test()
+            .expect("flush live table");
+        runtime.close().expect("close");
+
+        // Plant an orphan data object: a byte-copy of the live table under a fresh identity —
+        // inventory-listed, valid shape, referenced by no manifest.
+        let live = table_data_object_files(&root);
+        let source = live.iter().next().expect("one live object").clone();
+        let source_path = std::path::PathBuf::from(&source);
+        orphan_path = source_path
+            .with_file_name("00000000000000000000000000009999.object@")
+            .display()
+            .to_string();
+        std::fs::copy(&source_path, &orphan_path).expect("plant orphan object");
+    }
+
+    let backend = Box::leak(Box::new(StorageBackend::local_fs(root.clone())));
+    let mut runtime = StorageRuntime::open_with_backend(
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
+        backend,
+    )
+    .expect("reopen durable runtime")
+    .into_runtime();
+    drain_maintenance_to_idle(&mut runtime);
+
+    let after = table_data_object_files(&root);
+    assert!(
+        !after.contains(&orphan_path),
+        "the planted orphan must be reclaimed by the post-recovery reconcile",
+    );
+    let value = runtime
+        .read_point(&PointReadRequest::new(
+            branch(),
+            engine_space(),
+            api_key(b"reconcile-a"),
+            ReadBound::Latest,
+        ))
+        .expect("read after reconcile")
+        .row()
+        .expect("live row present")
+        .value()
+        .expect("put row")
+        .as_bytes()
+        .to_vec();
+    assert_eq!(value, b"live");
 }

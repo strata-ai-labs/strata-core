@@ -119,6 +119,12 @@ pub(crate) struct LifecycleBranchCatalog {
     registry: CommitBranchRegistry,
     pinned_snapshots: Vec<LifecyclePinnedBranchReachabilityRecord>,
     next_pin_id: u64,
+    /// Branches whose state is temporarily checked OUT by ownership transfer
+    /// (BS5.4 parallel cross-branch apply). The group leader holds the runtime
+    /// mutex for the whole checkout window, so nothing else can observe the
+    /// absence; this list turns any accidental same-thread access into a
+    /// fail-closed "checked out" rejection instead of a misleading "deleted".
+    checked_out: Vec<BranchId>,
 }
 
 impl LifecycleBranchParent {
@@ -275,6 +281,7 @@ impl LifecycleBranchCatalog {
             registry: CommitBranchRegistry::new(),
             pinned_snapshots: Vec::new(),
             next_pin_id: 1,
+            checked_out: Vec::new(),
         })
     }
 
@@ -478,8 +485,64 @@ impl LifecycleBranchCatalog {
             .as_ref()
             .ok_or(LifecycleError::BranchNotWritable {
                 branch_id,
-                state: "deleted",
+                state: self.absent_state_reason(branch_id),
             })
+    }
+
+    /// Why a live entry's state slot is empty: checked out for the write
+    /// group's parallel apply (BS5.4), or deleted.
+    fn absent_state_reason(&self, branch_id: BranchId) -> &'static str {
+        if self.checked_out.contains(&branch_id) {
+            "checked out"
+        } else {
+            "deleted"
+        }
+    }
+
+    /// BS5.4: check a branch's state OUT of the catalog by ownership transfer
+    /// for the write group's parallel cross-branch apply. The caller (the
+    /// group leader) holds the runtime mutex for the entire checkout window
+    /// and MUST restore with [`restore_branch_state`](Self::restore_branch_state)
+    /// before releasing it; while checked out, every accessor fails closed.
+    pub(crate) fn take_branch_state(
+        &mut self,
+        branch_id: BranchId,
+        generation_guard: CommitBranchGenerationGuard,
+    ) -> LifecycleResult<BranchLocalState> {
+        let index = self.active_entry_index(branch_id)?;
+        let descriptor = self.entries[index].descriptor;
+        require_generation(descriptor, generation_guard)?;
+        self.advance_state_revision(index);
+        let state =
+            self.entries[index]
+                .state
+                .take()
+                .ok_or_else(|| LifecycleError::BranchNotWritable {
+                    branch_id,
+                    state: self.absent_state_reason(branch_id),
+                })?;
+        self.checked_out.push(branch_id);
+        Ok(state)
+    }
+
+    /// BS5.4: return a checked-out branch state (see
+    /// [`take_branch_state`](Self::take_branch_state)).
+    pub(crate) fn restore_branch_state(&mut self, state: BranchLocalState) -> LifecycleResult<()> {
+        let branch_id = state.branch_id();
+        let Some(position) = self.checked_out.iter().position(|id| *id == branch_id) else {
+            return Err(LifecycleError::InvalidLifecycleState {
+                reason: "restored branch state was not checked out",
+            });
+        };
+        let index = self.active_entry_index(branch_id)?;
+        if self.entries[index].state.is_some() {
+            return Err(LifecycleError::InvalidLifecycleState {
+                reason: "checked-out branch state slot is unexpectedly occupied",
+            });
+        }
+        self.entries[index].state = Some(state);
+        self.checked_out.swap_remove(position);
+        Ok(())
     }
 
     pub(crate) fn branch_state_mut(
@@ -491,12 +554,13 @@ impl LifecycleBranchCatalog {
         let descriptor = self.entries[index].descriptor;
         require_generation(descriptor, generation_guard)?;
         self.advance_state_revision(index);
+        let absent = self.absent_state_reason(branch_id);
         self.entries[index]
             .state
             .as_mut()
             .ok_or(LifecycleError::BranchNotWritable {
                 branch_id,
-                state: "deleted",
+                state: absent,
             })
     }
 
@@ -525,7 +589,7 @@ impl LifecycleBranchCatalog {
             .as_mut()
             .ok_or(LifecycleError::BranchNotWritable {
                 branch_id,
-                state: "deleted",
+                state: "checked out or deleted",
             })?;
         Ok((branch, registry))
     }
@@ -749,30 +813,49 @@ impl LifecycleBranchCatalog {
             });
         }
 
-        let rows = source
-            .fork_snapshot_rows(fork_version, destination_branch_id)
-            .map_err(branch_error)?;
-        let mut states = vec![
-            BranchLocalState::new(destination_branch_id, self.branch_config)
-                .map_err(branch_error)?,
-        ];
-        if !rows.is_empty() {
-            let request = BranchSnapshotInstallRequest::from_rows(
-                format!(
-                    "branch-lifecycle-fork-at-{}-{}-{}",
-                    destination_branch_id,
-                    destination_generation.get(),
-                    fork_version.as_u64()
-                ),
-                rows,
+        // Historical-fork COW (Option A): when every `<= V` row is already sealed in an owned table
+        // (nothing at/below V left in active/frozen) and the source owns no inherited layers, build a
+        // copy-on-write child that references the source's owned tables at `fork_version = V` — instead
+        // of materializing the whole `<= V` state into fresh eager L0 tables. Otherwise fall back to the
+        // eager snapshot install (unflushed `<= V` rows, or a source that is itself a fork).
+        let cow_eligible =
+            source.inherited_layers().is_empty() && !source.has_in_fork_unsealed_rows(fork_version);
+        let (child, inherited_layer_count, inherited_table_count) = if cow_eligible {
+            let (child, outcome) = source
+                .fork_into_empty_child_at_version(destination_branch_id, fork_version)
+                .map_err(branch_error)?;
+            (
+                child,
+                outcome.inherited_layer_count(),
+                outcome.inherited_table_count(),
             )
-            .map_err(branch_error)?;
-            install_snapshot_rows_into_branches(&mut states, &request).map_err(branch_error)?;
-        }
-        let child = states
-            .into_iter()
-            .next()
-            .expect("destination state is always present");
+        } else {
+            let rows = source
+                .fork_snapshot_rows(fork_version, destination_branch_id)
+                .map_err(branch_error)?;
+            let mut states = vec![
+                BranchLocalState::new(destination_branch_id, self.branch_config)
+                    .map_err(branch_error)?,
+            ];
+            if !rows.is_empty() {
+                let request = BranchSnapshotInstallRequest::from_rows(
+                    format!(
+                        "branch-lifecycle-fork-at-{}-{}-{}",
+                        destination_branch_id,
+                        destination_generation.get(),
+                        fork_version.as_u64()
+                    ),
+                    rows,
+                )
+                .map_err(branch_error)?;
+                install_snapshot_rows_into_branches(&mut states, &request).map_err(branch_error)?;
+            }
+            let child = states
+                .into_iter()
+                .next()
+                .expect("destination state is always present");
+            (child, 0, 0)
+        };
         let parent = LifecycleBranchParent::new(source_branch_id, fork_version);
         let descriptor = LifecycleBranchDescriptor::active(
             destination_branch_id,
@@ -785,8 +868,8 @@ impl LifecycleBranchCatalog {
             descriptor,
             source_branch_id,
             fork_version,
-            inherited_layer_count: 0,
-            inherited_table_count: 0,
+            inherited_layer_count,
+            inherited_table_count,
         })
     }
 
@@ -819,6 +902,7 @@ impl LifecycleBranchCatalog {
         }
         let resolved = source
             .resolve_timestamp_to_commit_version(timestamp)
+            .map_err(branch_error)?
             .ok_or(LifecycleError::InsufficientTimestampHistory {
                 branch_id: source_branch_id,
                 reason: "branch has no rows at or before requested timestamp",

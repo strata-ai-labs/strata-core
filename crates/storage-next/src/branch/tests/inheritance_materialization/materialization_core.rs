@@ -1201,10 +1201,13 @@ fn branch_materialization_rejects_prepared_output_with_wrong_replacement_source(
     .expect("replacement reader");
     let descriptor = BranchTableDescriptor::new(identity, reader.facts().clone(), BranchLevel::ZERO)
         .expect("replacement descriptor");
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras");
     let wrong_replacement = BranchOwnedTable::new_materialization_replacement(
         child,
         descriptor,
         reader,
+        extras,
         BranchMaterializationSource::new(wrong_source, CommitVersion::new(3)),
     )
     .expect("replacement with wrong source");

@@ -116,6 +116,13 @@ impl TablePhysicalKeyBytes {
         }
     }
 
+    /// The empty physical key, used as a match-everything prefix for a
+    /// `TableKeyBounds::physical_range` whose selectivity comes entirely from its lower/upper
+    /// physical-key bounds (subcompaction key-range splitting).
+    pub(crate) fn empty() -> Self {
+        Self { bytes: Vec::new() }
+    }
+
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.bytes
     }

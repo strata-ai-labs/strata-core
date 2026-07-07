@@ -3,7 +3,7 @@
 use super::BranchLocalState;
 use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::branch::facts::{InheritedLayerDescriptor, InheritedLayerStatus};
-use crate::branch::read::{inherited_table_count, BranchInheritedLayer};
+use crate::branch::read::{inherited_table_count, BranchInheritedLayer, BranchOwnedTable};
 use std::collections::BTreeSet;
 use strata_core_next::{BranchId, CommitVersion};
 
@@ -95,7 +95,7 @@ impl BranchLocalState {
                 InheritedLayerStatus::Active,
                 self.owned_table_count(),
             ),
-            self.owned_levels.clone(),
+            self.owned_levels().to_vec(),
         )?);
         for layer in &self.inherited_layers {
             if let Some(layer) = layer.clone_active_for_fork()? {
@@ -105,6 +105,70 @@ impl BranchLocalState {
 
         let mut child = Self::new(destination_branch_id, self.config)?;
         let attach_outcome = child.attach_inherited_layers(layers)?;
+        let outcome = BranchForkOutcome {
+            source_branch_id: self.branch_id,
+            destination_branch_id,
+            fork_version,
+            inherited_layer_count: attach_outcome.inherited_layer_count(),
+            inherited_table_count: attach_outcome.inherited_table_count(),
+        };
+        Ok((child, outcome))
+    }
+
+    /// Copy-on-write historical fork: build a child that references the source's owned tables at
+    /// `fork_version = V` via a single straddle inherited layer, instead of materializing the source's
+    /// `<= V` rows. The caller (`fork_at_retained_version`) gates this on the source having no `<= V`
+    /// rows in active/frozen and no inherited layers of its own, so every `<= V` row is durable in an
+    /// owned table and the layer's version-capped reads reproduce `source as_of V`. Unlike
+    /// `fork_into_empty_child`, the source may hold `> V` active/frozen rows — they are outside the fork.
+    pub(crate) fn fork_into_empty_child_at_version(
+        &self,
+        destination_branch_id: BranchId,
+        fork_version: CommitVersion,
+    ) -> BranchRuntimeResult<(Self, BranchForkOutcome)> {
+        if destination_branch_id == self.branch_id {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "fork source and destination branches must differ",
+            });
+        }
+        if !self.inherited_layers.is_empty() {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "copy-on-write historical fork requires a source with no inherited layers",
+            });
+        }
+        // Reference only the owned tables that hold at least one `<= V` row. A table entirely above V
+        // (`min > V`) has no in-fork rows — the child does not need it, and Slice 1's constructor would
+        // reject it. Boundary (straddle) tables are admitted and version-capped at read time.
+        let owned_levels: Vec<Vec<BranchOwnedTable>> = self
+            .owned_levels()
+            .iter()
+            .map(|level| {
+                level
+                    .iter()
+                    .filter(|table| {
+                        table.facts().commit_range().min().as_u64() <= fork_version.as_u64()
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .collect();
+        let owned_table_count: usize = owned_levels.iter().map(Vec::len).sum();
+        if owned_table_count == 0 {
+            return Err(BranchRuntimeError::InvalidInheritedLayer {
+                reason: "fork source must contain at least one retained row at or before the fork version",
+            });
+        }
+        let layer = BranchInheritedLayer::new(
+            InheritedLayerDescriptor::new(
+                self.branch_id,
+                fork_version,
+                InheritedLayerStatus::Active,
+                owned_table_count,
+            ),
+            owned_levels,
+        )?;
+        let mut child = Self::new(destination_branch_id, self.config)?;
+        let attach_outcome = child.attach_inherited_layers(vec![layer])?;
         let outcome = BranchForkOutcome {
             source_branch_id: self.branch_id,
             destination_branch_id,

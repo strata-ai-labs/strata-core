@@ -15,21 +15,23 @@ use crate::branch::state::manifest_recovery::{
 };
 use crate::branch::state::BranchLocalState;
 use crate::format::{
-    encode_table_manifest, FormatError, TableManifest, TableManifestInheritedLayer,
+    decode_table_row_split_extension_section, encode_table_manifest,
+    table_row_split_extension_section, FormatError, TableManifest, TableManifestInheritedLayer,
     TableManifestInheritedLayerStatus, TableManifestLevel, TableManifestTableBounds,
-    TableManifestTableFacts, TableManifestTableProvenance, TableManifestTableRef,
+    TableManifestTableFacts, TableManifestTableProvenance, TableManifestTableRef, TableRowSplit,
 };
 use crate::object::ObjectName;
+use crate::row::StorageRow;
 use crate::service::{
     ManifestRole, ManifestServiceError, TableManifestService, TableManifestWrite, TableObjectFacts,
     TableObjectReadError, TableObjectReaderService,
 };
 use crate::table::{
-    ImmutableTableReader, TableIdentity, TablePhysicalKeyBytes, TableReaderConfig, TableRow,
-    TableRuntimeFacts,
+    ImmutableTableReader, TableCursor, TableIdentity, TableReaderConfig, TableRow,
+    TableRuntimeFacts, TableSummaryExtras,
 };
 use std::collections::BTreeMap;
-use strata_core_next::{BranchId, Timestamp};
+use strata_core_next::BranchId;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LifecycleDurableTableCatalog {
@@ -157,16 +159,39 @@ impl LifecycleDurableTableCatalog {
         Ok(())
     }
 
-    /// Records a manifest whose sequence was already reserved under the runtime lock via
-    /// [`reserve_manifest_sequence`](Self::reserve_manifest_sequence) (the off-lock publish
-    /// path). Only the manifest's tables are folded into the catalog; the sequence marker was
-    /// advanced at reservation time, so it is not advanced again here.
-    pub(crate) fn record_reserved_manifest(
+    /// Confirms a reserved-sequence manifest's off-lock publish as durable and clears the
+    /// pending-manifest debt (the sequence marker was advanced at reservation time). O(1) by
+    /// design (BS5.3): the reserved manifest was serialized FROM this catalog under the lock at
+    /// reserve time, and the publish's phase one recorded every newly installed table before the
+    /// manifest was built — re-recording all entries here was O(catalog) of clones and compares
+    /// per publish under the runtime lock (measured: 944 ms of a 3 s sustained-write window,
+    /// ~17 ms per flush at steady state, starving writers), and could silently resurrect entries
+    /// removed between the publish phases. Recovery-side manifests still validate entry-by-entry
+    /// via [`record_recovered_manifest`](Self::record_recovered_manifest).
+    pub(crate) fn confirm_reserved_manifest_published(&mut self) {
+        self.manifest_publish_pending = false;
+    }
+
+    /// Records a manifest loaded during recovery. Recovery applies per-branch manifests in
+    /// branch-id order, not sequence order, so interleaved cross-branch sequences (parent seq 1 →
+    /// fork child seq 2 → parent seq 3, with the parent's manifest applied first) are the normal
+    /// shape once forks publish child manifests — a lower sequence here is reordering, not
+    /// regression. The sequence marker advances to `max(next, seq + 1)` so post-recovery runtime
+    /// publishes stay strictly monotonic; [`record_manifest`](Self::record_manifest) keeps the
+    /// strict regression check for those runtime publishes.
+    pub(crate) fn record_recovered_manifest(
         &mut self,
         manifest: &TableManifest,
     ) -> LifecycleResult<()> {
         self.record_manifest_tables(manifest)?;
-        // The off-lock publish is confirmed durable: clear the pending-manifest debt.
+        let advanced = manifest.manifest_sequence().checked_add(1).ok_or(
+            LifecycleError::TableManifestPublicationFailed {
+                reason: "table manifest sequence overflow",
+                source: None,
+            },
+        )?;
+        self.next_manifest_sequence = self.next_manifest_sequence.max(advanced);
+        // The loaded manifest is durable by definition: catalog and durable manifest agree.
         self.manifest_publish_pending = false;
         Ok(())
     }
@@ -210,8 +235,13 @@ impl LifecycleDurableTableCatalog {
         branch: &BranchLocalState,
         manifest_sequence: u64,
     ) -> LifecycleResult<TableManifest> {
-        let levels = manifest_levels_from_owned(branch.owned_levels(), self)?;
-        let inherited_layers = manifest_inherited_layers(branch.inherited_layers(), self)?;
+        // BS4.4g: collect the per-table put/tombstone split in the same walk that builds the
+        // manifest's table records, so `row_splits` is positionally aligned with the tables
+        // recovery decodes (top-level levels, then each inherited layer's levels).
+        let mut row_splits = Vec::<TableRowSplit>::new();
+        let levels = manifest_levels_from_owned(branch.owned_levels(), self, &mut row_splits)?;
+        let inherited_layers =
+            manifest_inherited_layers(branch.inherited_layers(), self, &mut row_splits)?;
         let mut extensions = Vec::new();
         if let Some(facts) =
             super::retained_history_extension::RetainedHistoryFacts::from_timestamp_coverage(
@@ -222,6 +252,10 @@ impl LifecycleDurableTableCatalog {
             )
         {
             extensions.push(facts.to_extension_section().map_err(format_error)?);
+        }
+        // Sorted-by-kind order: "storage.retained_history" precedes "storage.table_row_split".
+        if !row_splits.is_empty() {
+            extensions.push(table_row_split_extension_section(&row_splits).map_err(format_error)?);
         }
         TableManifest::new(
             branch.branch_id(),
@@ -256,6 +290,15 @@ impl LifecycleDurableTableCatalog {
 
     pub(crate) fn object_count(&self) -> usize {
         self.objects.len()
+    }
+
+    /// The durable object backing `identity`, if the catalog knows it. Used by the table-object
+    /// sweep to map in-memory branch state (owned + inherited tables) onto inventory object names
+    /// so in-memory-reachable objects are pinned against reclaim.
+    pub(crate) fn object_for_identity(&self, identity: &TableIdentity) -> Option<&ObjectName> {
+        self.entries
+            .get(identity.as_str())
+            .map(|entry| entry.object_facts.object())
     }
 
     fn entry_for(
@@ -370,26 +413,61 @@ pub(crate) fn preflight_table_manifest_with_checkpoint(
     checkpoint_branch: &BranchLocalState,
     staged_branch: &BranchLocalState,
 ) -> LifecycleResult<bool> {
-    let mut checkpoint_rows = BTreeMap::<&[u8], &TableRow>::new();
+    // BS4.5b: with no checkpoint delta rows there is no overlap to check, so skip the O(dataset) manifest
+    // scan — close writes a (usually empty) delta checkpoint on every reopen, so this guard is what keeps
+    // the common combine path O(metadata). A non-empty delta still runs the full byte-divergence check.
+    if checkpoint_branch
+        .owned_levels()
+        .iter()
+        .flatten()
+        .next()
+        .is_none()
+    {
+        return Ok(false);
+    }
+    // BS4.4c: stream owned tables through the cursor; the checkpoint map is now keyed + valued by owned
+    // bytes (cursor rows are transient) rather than borrowing into a materialized row slice.
+    let mut checkpoint_rows = BTreeMap::<Vec<u8>, StorageRow>::new();
     for table in checkpoint_branch.owned_levels().iter().flatten() {
-        for row in table.rows() {
-            checkpoint_rows.insert(row.key().as_slice(), row);
-        }
+        try_for_each_reader_row(table.reader(), |row| {
+            checkpoint_rows.insert(row.key().as_slice().to_vec(), row.row().clone());
+            Ok(())
+        })?;
     }
     let mut any_overlap = false;
     for table in staged_branch.owned_levels().iter().flatten() {
-        for row in table.rows() {
+        try_for_each_reader_row(table.reader(), |row| {
             if let Some(checkpoint_row) = checkpoint_rows.get(row.key().as_slice()) {
-                if checkpoint_row.row() != row.row() {
+                if checkpoint_row != row.row() {
                     return Err(LifecycleError::table_manifest_checkpoint_conflict(
                         "manifest row bytes diverge from checkpoint at internal key",
                     ));
                 }
                 any_overlap = true;
             }
-        }
+            Ok(())
+        })?;
     }
     Ok(any_overlap)
+}
+
+/// BS4.4c: walk a durable table's rows through its cursor (ascending internal-key order), applying the
+/// fallible `f` per row without materializing the whole table. Cursor failures map to a manifest error.
+fn try_for_each_reader_row(
+    reader: &ImmutableTableReader<'_>,
+    mut f: impl FnMut(&TableRow) -> LifecycleResult<()>,
+) -> LifecycleResult<()> {
+    let mut cursor = reader.cursor();
+    cursor
+        .seek_to_first()
+        .map_err(|_| manifest_reader_scan_failed())?;
+    while let Some(row) = cursor.current() {
+        f(row)?;
+        cursor
+            .advance()
+            .map_err(|_| manifest_reader_scan_failed())?;
+    }
+    Ok(())
 }
 
 #[allow(
@@ -446,7 +524,7 @@ pub(crate) fn persist_reserved_manifest(
 pub(crate) fn stage_table_manifest_for_branch(
     branch: &BranchLocalState,
     service: &TableManifestService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     catalog: &LifecycleDurableTableCatalog,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleTableManifestRecoveryStage> {
@@ -483,7 +561,7 @@ pub(crate) fn table_manifest_debt_outcome(
 pub(crate) fn recover_table_manifest_for_branch(
     branch: &mut BranchLocalState,
     service: &TableManifestService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     catalog: &mut LifecycleDurableTableCatalog,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleTableManifestRecoveryOutcome> {
@@ -499,7 +577,7 @@ pub(crate) fn recover_table_manifest_for_branch(
 pub(crate) fn apply_loaded_table_manifest_to_branch(
     branch: &mut BranchLocalState,
     manifest: &TableManifest,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     catalog: &mut LifecycleDurableTableCatalog,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<LifecycleTableManifestRecoveryOutcome> {
@@ -521,7 +599,7 @@ pub(crate) fn apply_loaded_table_manifest_to_branch(
     let install_outcome = branch
         .install_table_manifest_recovery(request)
         .map_err(branch_error)?;
-    catalog.record_manifest(manifest)?;
+    catalog.record_recovered_manifest(manifest)?;
     Ok(LifecycleTableManifestRecoveryOutcome::installed(
         manifest_object,
         manifest,
@@ -531,22 +609,44 @@ pub(crate) fn apply_loaded_table_manifest_to_branch(
 
 fn recovery_request_from_manifest(
     manifest: &TableManifest,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     catalog: &mut LifecycleDurableTableCatalog,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<BranchTableManifestRecoveryRequest> {
+    // BS4.4j: rebuild each table's summary from the manifest record + the BS4.4g row-split section
+    // rather than scanning its (now lazy) rows. The split Vec is flat/global in write order — top-level
+    // levels, then each inherited layer, level-order/table-order — so one running cursor threads the
+    // recovery walk in lockstep with the writer's push order.
+    let splits = decode_table_row_split_extension_section(manifest.extension_sections())
+        .map_err(format_error)?
+        .unwrap_or_default();
+    let mut split_cursor = 0usize;
     let owned_levels = recover_manifest_levels(
         manifest.branch_id(),
         manifest.levels(),
         reader_service,
         catalog,
         budget,
+        &splits,
+        &mut split_cursor,
     )?;
-    let inherited_layers = manifest
-        .inherited_layers()
-        .iter()
-        .map(|layer| recover_manifest_inherited_layer(layer, reader_service, catalog, budget))
-        .collect::<LifecycleResult<Vec<_>>>()?;
+    let mut inherited_layers = Vec::with_capacity(manifest.inherited_layers().len());
+    for layer in manifest.inherited_layers() {
+        inherited_layers.push(recover_manifest_inherited_layer(
+            layer,
+            reader_service,
+            catalog,
+            budget,
+            &splits,
+            &mut split_cursor,
+        )?);
+    }
+    if split_cursor != splits.len() {
+        return Err(LifecycleError::TableManifestRecoveryMismatch {
+            reason: "row-split extension count does not match recovered table count",
+            source: None,
+        });
+    }
     let request = BranchTableManifestRecoveryRequest::new(
         manifest.branch_id(),
         owned_levels,
@@ -566,9 +666,11 @@ fn recovery_request_from_manifest(
 
 fn recover_manifest_inherited_layer(
     layer: &TableManifestInheritedLayer,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     catalog: &mut LifecycleDurableTableCatalog,
     budget: Option<&StorageBudgetLedger>,
+    splits: &[TableRowSplit],
+    split_cursor: &mut usize,
 ) -> LifecycleResult<BranchInheritedLayer> {
     let owned_levels = recover_manifest_levels(
         layer.source_branch_id(),
@@ -576,6 +678,8 @@ fn recover_manifest_inherited_layer(
         reader_service,
         catalog,
         budget,
+        splits,
+        split_cursor,
     )?;
     let table_count = owned_levels.iter().map(Vec::len).sum();
     BranchInheritedLayer::new(
@@ -593,9 +697,11 @@ fn recover_manifest_inherited_layer(
 fn recover_manifest_levels(
     branch_id: BranchId,
     levels: &[TableManifestLevel],
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     catalog: &mut LifecycleDurableTableCatalog,
     budget: Option<&StorageBudgetLedger>,
+    splits: &[TableRowSplit],
+    split_cursor: &mut usize,
 ) -> LifecycleResult<Vec<Vec<BranchOwnedTable>>> {
     let mut owned_levels = Vec::<Vec<BranchOwnedTable>>::new();
     for level in levels {
@@ -603,20 +709,21 @@ fn recover_manifest_levels(
         if owned_levels.len() <= level_index {
             owned_levels.resize_with(level_index + 1, Vec::new);
         }
-        let tables = level
-            .tables()
-            .iter()
-            .map(|table| {
-                recover_manifest_table(
-                    branch_id,
-                    level.level(),
-                    table,
-                    reader_service,
-                    catalog,
-                    budget,
-                )
-            })
-            .collect::<LifecycleResult<Vec<_>>>()?;
+        // BS4.4j: consume one row-split per table in `level.tables()` order — the exact order the writer
+        // pushed them (`manifest_levels_from_owned`) — via the running cursor.
+        let mut tables = Vec::with_capacity(level.tables().len());
+        for table in level.tables() {
+            tables.push(recover_manifest_table(
+                branch_id,
+                level.level(),
+                table,
+                reader_service,
+                catalog,
+                budget,
+                splits,
+                split_cursor,
+            )?);
+        }
         owned_levels[level_index] = tables;
     }
     Ok(owned_levels)
@@ -626,43 +733,66 @@ fn recover_manifest_table(
     branch_id: BranchId,
     level: BranchLevel,
     table: &TableManifestTableRef,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     catalog: &mut LifecycleDurableTableCatalog,
     budget: Option<&StorageBudgetLedger>,
+    splits: &[TableRowSplit],
+    split_cursor: &mut usize,
 ) -> LifecycleResult<BranchOwnedTable> {
     let object_facts = TableObjectFacts::from_table_manifest_ref(table);
-    if let Some(budget) = budget {
-        require_table_reader_budget(
-            budget,
-            manifest_reader_materialized_budget_bytes(&object_facts),
-            "table manifest recovery reader exceeds storage budget",
-        )?;
-    }
     let reader = reader_service
         .open_reader(
             table.table_identity().clone(),
             &object_facts,
-            TableReaderConfig::default(),
+            TableReaderConfig::default().deny_runtime_materialization(),
         )
         .map_err(table_read_error)?;
-    validate_manifest_reader_facts(table, &reader)?;
+    // BS4.5a: charge the lazy reader's *metadata-resident* footprint (index + properties + filter
+    // frame), not the full encoded object. A durable dataset is no longer bounded by RAM — only
+    // reader metadata + caches + memtables are. Charged after the O(metadata) open so admission
+    // uses the same `resident_size_bytes()` seam as the DB-wide runtime total.
+    if let Some(budget) = budget {
+        require_table_reader_budget(
+            budget,
+            reader.resident_size_bytes(),
+            "table manifest recovery reader exceeds storage budget",
+        )?;
+    }
+    // BS4.4j: consume this table's row-split (in walk order — the writer's push order) BEFORE
+    // validation, so the single verification scan can release-check the put/tombstone counts alongside
+    // the timestamp/physical bounds. Without this the counts would be trusted from the persisted split
+    // on release builds (only the install-time debug oracle cross-checks them).
+    let split = splits
+        .get(*split_cursor)
+        .ok_or(LifecycleError::TableManifestRecoveryMismatch {
+            reason: "row-split extension is shorter than the recovered table count",
+            source: None,
+        })?;
+    *split_cursor += 1;
+    validate_manifest_reader_facts(table, split, &reader)?;
     catalog.record_table_with_provenance(
         table.table_identity().clone(),
         object_facts,
         table.provenance().clone(),
     )?;
-    branch_table_from_reader(branch_id, level, table.provenance(), reader)
-}
-
-fn manifest_reader_materialized_budget_bytes(object_facts: &TableObjectFacts) -> u64 {
-    object_facts.byte_count()
+    // Build the summary from the manifest record + the (now count-validated) positional row-split.
+    let extras = TableSummaryExtras::from_parts(
+        table.facts().timestamp_min(),
+        table.facts().timestamp_max(),
+        table.bounds().physical_first().to_vec(),
+        table.bounds().physical_last().to_vec(),
+        split.put_rows(),
+        split.tombstone_rows(),
+    );
+    branch_table_from_reader(branch_id, level, table.provenance(), reader, extras)
 }
 
 fn branch_table_from_reader(
     branch_id: BranchId,
     level: BranchLevel,
     provenance: &TableManifestTableProvenance,
-    reader: ImmutableTableReader<'_>,
+    reader: ImmutableTableReader<'static>,
+    extras: TableSummaryExtras,
 ) -> LifecycleResult<BranchOwnedTable> {
     let identity = reader.facts().identity().clone();
     let descriptor = BranchTableDescriptor::new(identity, reader.facts().clone(), level)
@@ -675,6 +805,7 @@ fn branch_table_from_reader(
             branch_id,
             descriptor,
             reader,
+            extras,
             BranchMaterializationSource::new(*source_branch_id, *fork_version),
         )
         .map_err(branch_error),
@@ -682,7 +813,7 @@ fn branch_table_from_reader(
         | TableManifestTableProvenance::SnapshotInstall
         | TableManifestTableProvenance::Compaction
         | TableManifestTableProvenance::Recovered => {
-            BranchOwnedTable::new(branch_id, descriptor, reader).map_err(branch_error)
+            BranchOwnedTable::new(branch_id, descriptor, reader, extras).map_err(branch_error)
         }
     }
 }
@@ -690,6 +821,7 @@ fn branch_table_from_reader(
 fn manifest_levels_from_owned(
     owned_levels: &[Vec<BranchOwnedTable>],
     catalog: &LifecycleDurableTableCatalog,
+    row_splits: &mut Vec<TableRowSplit>,
 ) -> LifecycleResult<Vec<TableManifestLevel>> {
     let mut levels = Vec::new();
     for (level_index, tables) in owned_levels.iter().enumerate() {
@@ -702,11 +834,22 @@ fn manifest_levels_from_owned(
                 source: None,
             }
         })?);
-        let manifest_tables = tables
-            .iter()
-            .enumerate()
-            .map(|(order, table)| table_ref_from_branch_table(table, order, catalog))
-            .collect::<LifecycleResult<Vec<_>>>()?;
+        // Push each table's split and its manifest record in lockstep, so `row_splits` stays
+        // positionally aligned with the manifest tables (the BS4.4g extension is keyed by order).
+        // Coupling: these `row_splits` are collected in this pre-canonicalization loop order, while
+        // `TableManifestLevel::new` re-sorts `manifest_tables` (`canonicalize_level_tables`). Alignment
+        // therefore relies on that sort being a no-op — which is enforced: `validate_level_tables`
+        // requires `table.order() == index` afterward, and `order` is this loop index, so any reorder
+        // fails the build rather than silently desyncing the split array from the table array.
+        let mut manifest_tables = Vec::with_capacity(tables.len());
+        for (order, table) in tables.iter().enumerate() {
+            let extras = table.extras();
+            row_splits.push(TableRowSplit::new(
+                extras.put_rows(),
+                extras.tombstone_rows(),
+            ));
+            manifest_tables.push(table_ref_from_branch_table(table, order, catalog)?);
+        }
         levels.push(TableManifestLevel::new(level, manifest_tables).map_err(format_error)?);
     }
     Ok(levels)
@@ -715,12 +858,12 @@ fn manifest_levels_from_owned(
 fn manifest_inherited_layers(
     inherited_layers: &[BranchInheritedLayer],
     catalog: &LifecycleDurableTableCatalog,
+    row_splits: &mut Vec<TableRowSplit>,
 ) -> LifecycleResult<Vec<TableManifestInheritedLayer>> {
-    inherited_layers
-        .iter()
-        .enumerate()
-        .map(|(order, layer)| {
-            let levels = manifest_levels_from_owned(layer.owned_levels(), catalog)?;
+    let mut result = Vec::with_capacity(inherited_layers.len());
+    for (order, layer) in inherited_layers.iter().enumerate() {
+        let levels = manifest_levels_from_owned(layer.owned_levels(), catalog, row_splits)?;
+        result.push(
             TableManifestInheritedLayer::new(
                 u32::try_from(order).map_err(|_| {
                     LifecycleError::TableManifestPublicationFailed {
@@ -734,9 +877,10 @@ fn manifest_inherited_layers(
                 manifest_status_from_inherited(layer.status()),
                 levels,
             )
-            .map_err(format_error)
-        })
-        .collect()
+            .map_err(format_error)?,
+        );
+    }
+    Ok(result)
 }
 
 fn table_ref_from_branch_table(
@@ -803,58 +947,6 @@ fn validate_catalog_entry_matches_table(
     Ok(())
 }
 
-fn manifest_table_facts(
-    facts: &TableRuntimeFacts,
-    rows: &[TableRow],
-) -> LifecycleResult<TableManifestTableFacts> {
-    let (timestamp_min, timestamp_max) = timestamp_bounds(rows);
-    TableManifestTableFacts::new(
-        facts.byte_count(),
-        facts.row_count(),
-        facts.data_block_count(),
-        facts.commit_range().min(),
-        facts.commit_range().max(),
-        timestamp_min,
-        timestamp_max,
-    )
-    .map_err(format_error)
-}
-
-fn manifest_table_bounds(rows: &[TableRow]) -> LifecycleResult<TableManifestTableBounds> {
-    let Some(first_row) = rows.first() else {
-        return Err(LifecycleError::TableManifestPublicationFailed {
-            reason: "reachable table must not be empty",
-            source: None,
-        });
-    };
-    let mut physical_first = TablePhysicalKeyBytes::from_row(first_row.row());
-    let mut physical_last = physical_first.clone();
-    let mut internal_first = first_row.key().clone();
-    let mut internal_last = internal_first.clone();
-    for row in rows.iter().skip(1) {
-        let physical = TablePhysicalKeyBytes::from_row(row.row());
-        if physical < physical_first {
-            physical_first = physical.clone();
-        }
-        if physical > physical_last {
-            physical_last = physical;
-        }
-        if row.key() < &internal_first {
-            internal_first = row.key().clone();
-        }
-        if row.key() > &internal_last {
-            internal_last = row.key().clone();
-        }
-    }
-    TableManifestTableBounds::new(
-        physical_first.as_slice().to_vec(),
-        physical_last.as_slice().to_vec(),
-        internal_first.as_slice().to_vec(),
-        internal_last.as_slice().to_vec(),
-    )
-    .map_err(format_error)
-}
-
 fn manifest_table_provenance(
     table: &BranchOwnedTable,
     entry: &LifecycleDurableTableCatalogEntry,
@@ -872,34 +964,95 @@ fn manifest_table_provenance(
 
 fn validate_manifest_reader_facts(
     table: &TableManifestTableRef,
+    split: &TableRowSplit,
     reader: &ImmutableTableReader,
 ) -> LifecycleResult<()> {
-    let facts = manifest_table_facts(reader.facts(), reader.rows())?;
+    // BS4.5b: fast open is O(tables), not O(rows). Verify the manifest record against the table
+    // *footer* — byte/row/block counts, commit range, and internal-key bounds are all metadata, so this
+    // reads no data block. The row-derived fields the footer lacks (timestamp bounds, physical-key
+    // bounds, and the exact put/tombstone breakdown) are trusted from the CRC-protected manifest record
+    // here — they feed `TableSummaryExtras::from_parts` at recovery — and cross-checked against the
+    // actual rows only under the debug oracle below. The one release guard the footer still gives the
+    // split is that its counts sum to the object's row count. Before BS4.5b this did a full O(rows)
+    // cursor pass per table, making open O(dataset).
+
+    // Footer counts + commit range vs the manifest record. The timestamp bounds are taken from the
+    // manifest itself (trusted; verified against rows only in debug), so the comparison exercises only
+    // the footer-backed fields.
+    let facts = TableManifestTableFacts::new(
+        reader.facts().byte_count(),
+        reader.facts().row_count(),
+        reader.facts().data_block_count(),
+        reader.facts().commit_range().min(),
+        reader.facts().commit_range().max(),
+        table.facts().timestamp_min(),
+        table.facts().timestamp_max(),
+    )
+    .map_err(format_error)?;
     if &facts != table.facts() {
         return Err(LifecycleError::TableManifestRecoveryMismatch {
             reason: "table manifest facts do not match table object",
             source: None,
         });
     }
-    let bounds = manifest_table_bounds(reader.rows())?;
+
+    // The row-split counts must sum to the object's row count (footer). The exact put/tombstone
+    // breakdown is verified against rows only in debug.
+    if split.put_rows().saturating_add(split.tombstone_rows()) != reader.facts().row_count() {
+        return Err(LifecycleError::TableManifestRecoveryMismatch {
+            reason: "table row-split counts do not match table object",
+            source: None,
+        });
+    }
+
+    // Footer internal-key bounds vs the manifest record. The physical-key bounds are taken from the
+    // manifest itself (trusted; verified against rows only in debug).
+    let bounds = TableManifestTableBounds::new(
+        table.bounds().physical_first().to_vec(),
+        table.bounds().physical_last().to_vec(),
+        reader.facts().key_range().first_key().to_vec(),
+        reader.facts().key_range().last_key().to_vec(),
+    )
+    .map_err(format_error)?;
     if &bounds != table.bounds() {
         return Err(LifecycleError::TableManifestRecoveryMismatch {
             reason: "table manifest bounds do not match table object",
             source: None,
         });
     }
+    #[cfg(debug_assertions)]
+    {
+        // BS4.5b oracle: verify the trusted manifest fields (timestamp bounds, physical-key bounds, and
+        // the exact put/tombstone split) against a full scan. The manifest-derived summary is exactly
+        // what recovery installs via `from_parts`; a `from_rows` scan of the same sealed table must
+        // yield a byte-identical summary. Reads via the oracle hatch (bypasses the BS4.4d guard);
+        // release open never does this.
+        let scanned_rows = reader
+            .materialize_rows_for_oracle()
+            .map_err(|_| manifest_reader_scan_failed())?;
+        let manifest_extras = TableSummaryExtras::from_parts(
+            table.facts().timestamp_min(),
+            table.facts().timestamp_max(),
+            table.bounds().physical_first().to_vec(),
+            table.bounds().physical_last().to_vec(),
+            split.put_rows(),
+            split.tombstone_rows(),
+        );
+        let scanned_extras = TableSummaryExtras::from_rows(&scanned_rows)
+            .map_err(|_| manifest_reader_scan_failed())?;
+        debug_assert_eq!(
+            manifest_extras, scanned_extras,
+            "manifest-trusted summary (timestamp/physical bounds, put/tombstone split) diverged from a full scan",
+        );
+    }
     Ok(())
 }
 
-fn timestamp_bounds(rows: &[TableRow]) -> (Option<Timestamp>, Option<Timestamp>) {
-    let mut timestamps = rows.iter().map(TableRow::commit_timestamp);
-    let Some(first) = timestamps.next() else {
-        return (None, None);
-    };
-    let (min, max) = timestamps.fold((first, first), |(min, max), timestamp| {
-        (min.min(timestamp), max.max(timestamp))
-    });
-    (Some(min), Some(max))
+fn manifest_reader_scan_failed() -> LifecycleError {
+    LifecycleError::TableManifestRecoveryMismatch {
+        reason: "table manifest verify cursor scan failed",
+        source: None,
+    }
 }
 
 fn manifest_table_refs(manifest: &TableManifest) -> impl Iterator<Item = &TableManifestTableRef> {

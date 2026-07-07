@@ -1,17 +1,20 @@
 //! Branch-local state and descriptor shells.
 
+use std::sync::Arc;
+
 use super::config::BranchRuntimeConfig;
 use super::error::{BranchRuntimeError, BranchRuntimeResult};
 use super::facts::{BranchLevel, BranchReachabilitySnapshot, BranchTableRef, InheritedLayerStatus};
 use super::read::{
-    require_table_physical_first_key, table_physical_ranges_overlap, BranchInheritedLayer,
-    BranchOwnedTable, BranchTimestampCoverage,
+    for_each_reader_row, require_table_physical_first_key, table_physical_ranges_overlap,
+    try_for_each_reader_row, BranchInheritedLayer, BranchLayout, BranchOwnedTable,
+    BranchTimestampCoverage,
 };
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
 use crate::table::{
-    FrozenTable, MutableTable, TableIdentity, TableInternalKeyBytes, TablePhysicalKeyBytes,
-    TableRuntimeError,
+    FrozenTable, MutableTable, TableCursor, TableIdentity, TableInternalKeyBytes,
+    TablePhysicalKeyBytes, TableRuntimeError,
 };
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -68,7 +71,7 @@ pub(crate) struct BranchLocalState {
     config: BranchRuntimeConfig,
     active: MutableTable,
     frozen: Vec<FrozenTable>,
-    owned_levels: Vec<Vec<BranchOwnedTable>>,
+    layout: Arc<BranchLayout>,
     compact_pointers: Vec<Option<TablePhysicalKeyBytes>>,
     inherited_layers: Vec<BranchInheritedLayer>,
     max_commit_version: Option<CommitVersion>,
@@ -77,6 +80,7 @@ pub(crate) struct BranchLocalState {
     timestamp_coverage: BranchTimestampCoverage,
     put_rows: u64,
     tombstone_rows: u64,
+    shape: BranchShapeAggregates,
 }
 
 impl BranchLocalState {
@@ -90,7 +94,7 @@ impl BranchLocalState {
             config,
             active: MutableTable::new(),
             frozen: Vec::new(),
-            owned_levels: vec![Vec::new(); config.max_level_count()],
+            layout: Arc::new(BranchLayout::with_level_count(config.max_level_count())),
             compact_pointers: vec![None; config.max_level_count()],
             inherited_layers: Vec::new(),
             max_commit_version: None,
@@ -99,12 +103,23 @@ impl BranchLocalState {
             timestamp_coverage: BranchTimestampCoverage::unknown(),
             put_rows: 0,
             tombstone_rows: 0,
+            shape: BranchShapeAggregates::empty(config.max_level_count()),
         })
     }
 
     pub(crate) fn empty(branch_id: BranchId) -> Self {
         Self::new(branch_id, BranchRuntimeConfig::default())
             .expect("default branch-local state configuration is valid")
+    }
+
+    /// Cheap O(1) clone of the branch's immutable durable layout snapshot. The
+    /// flush-watermark coverage scan captures this under a brief runtime lock, then
+    /// runs the O(rows) scan on the owned `Arc` off-lock, so the lock hold stops
+    /// scaling with dataset size (D.2b). The snapshot is immutable: a
+    /// concurrent install under the lock reassigns the branch's `Arc` (via
+    /// `Arc::make_mut`), leaving this clone untouched.
+    pub(crate) fn layout_snapshot(&self) -> Arc<BranchLayout> {
+        Arc::clone(&self.layout)
     }
 
     pub(crate) fn compact_pointer(&self, level: BranchLevel) -> Option<&TablePhysicalKeyBytes> {
@@ -126,7 +141,7 @@ impl BranchLocalState {
 
     pub(crate) fn reachability_snapshot(&self) -> BranchRuntimeResult<BranchReachabilitySnapshot> {
         let mut table_refs = Vec::new();
-        for tables in &self.owned_levels {
+        for tables in self.owned_levels() {
             for (table_index, table) in tables.iter().enumerate() {
                 let table_ref = if let Some(materialization_source) = table.materialization_source()
                 {
@@ -205,10 +220,13 @@ impl BranchLocalState {
     ) -> BranchRuntimeResult<BranchImmutableInstallOutcome> {
         let level_index = self.validate_install(level, &table)?;
         let table_index = if level == BranchLevel::ZERO {
-            self.owned_levels[level_index].insert(0, table);
+            Arc::make_mut(&mut self.layout).levels_mut()[level_index].insert(0, table);
             0
         } else {
-            insert_sorted_by_range(&mut self.owned_levels[level_index], table)?
+            insert_sorted_by_range(
+                &mut Arc::make_mut(&mut self.layout).levels_mut()[level_index],
+                table,
+            )?
         };
         self.refresh_observed_row_facts();
         Ok(self.install_outcome(level, table_index, None))
@@ -233,14 +251,66 @@ impl BranchLocalState {
                 reason: "frozen replacement table rows must match a frozen table",
             });
         };
+        self.install_level_zero_replacement(replacement_index, table)
+    }
+
+    /// O(1)-identity flush install (BS5.3b): the prepared durable flush captured the `Arc`
+    /// identity of the sealed memtable its build consumed, so matching by identity proves
+    /// "the same frozen table" strictly more precisely than the row-by-row walk in
+    /// [`replace_frozen_with_level_zero_table`] — which ran under the runtime lock at
+    /// ~7.5 ms per install (measured), the dominant remaining flush publish-lock cost
+    /// after BS5.3a. Row equality of the BUILT table against that same sealed input is
+    /// verified off-lock in the prepare phase; a cheap row-count cross-check stays here.
+    pub(crate) fn replace_frozen_with_level_zero_table_by_identity(
+        &mut self,
+        frozen_identity: usize,
+        table: BranchOwnedTable,
+    ) -> BranchRuntimeResult<BranchImmutableInstallOutcome> {
+        let Some(replacement_index) = self
+            .frozen
+            .iter()
+            .position(|frozen| frozen.memory_state_identity() == frozen_identity)
+        else {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "frozen replacement identity must match a frozen table",
+            });
+        };
+        if self.frozen[replacement_index].len() as u64 != table.facts().row_count() {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "frozen replacement table rows must match a frozen table",
+            });
+        }
+        self.install_level_zero_replacement(replacement_index, table)
+    }
+
+    fn install_level_zero_replacement(
+        &mut self,
+        replacement_index: usize,
+        table: BranchOwnedTable,
+    ) -> BranchRuntimeResult<BranchImmutableInstallOutcome> {
         let level_index = self.validate_install_identity_and_range(BranchLevel::ZERO, &table)?;
 
-        self.owned_levels[level_index].insert(0, table);
+        // A flush moves the same rows from a frozen table into a new L0 table, so the
+        // observed-row facts are unchanged and need no full rescan. This is the hot
+        // flush-install path; the rescan here was the dominant publish-lock cost (a
+        // full resident-dataset scan) before per-table summaries. Only the table-shape
+        // aggregates shift (frozen -1 table, L0 +1 table), applied as an incremental
+        // delta below. Capture the sizes before `table` is moved into the layout and
+        // the frozen table is removed.
+        let new_l0_resident = table.approximate_size_bytes();
+        let new_l0_logical = table.facts().byte_count();
+        let removed_frozen_resident =
+            u64::try_from(self.frozen[replacement_index].approximate_size_bytes())
+                .unwrap_or(u64::MAX);
+
+        Arc::make_mut(&mut self.layout).levels_mut()[level_index].insert(0, table);
         self.frozen.remove(replacement_index);
-        // A flush moves the same rows from a frozen table into a new L0 table, so
-        // the observed-row facts are unchanged and need no refresh. This is the
-        // hot flush-install path; the refresh here was the dominant publish-lock
-        // cost (a full resident-dataset rescan) before per-table summaries.
+        self.apply_flush_install_shape_delta(
+            level_index,
+            new_l0_resident,
+            new_l0_logical,
+            removed_frozen_resident,
+        );
         Ok(self.install_outcome(BranchLevel::ZERO, 0, Some(replacement_index)))
     }
 
@@ -265,14 +335,24 @@ impl BranchLocalState {
 
     fn require_absent_internal_key(&self, key: &TableInternalKeyBytes) -> BranchRuntimeResult<()> {
         perf_trace::record_append_absent_internal_key_check();
-        if self.active.get(key).is_some()
-            || self.frozen.iter().any(|table| table.get(key).is_some())
-            || self
-                .owned_levels
-                .iter()
-                .flatten()
-                .any(|table| table.reader().get_exact(key).is_some())
-        {
+        let mut present = self.active.get(key).is_some()
+            || self.frozen.iter().any(|table| table.get(key).is_some());
+        // BS4.4d: the owned-side probe is fallible (a lazy reader can fail its targeted read), so thread
+        // the error out of the `.any()` via an explicit loop.
+        if !present {
+            for table in self.owned_levels().iter().flatten() {
+                if table
+                    .reader()
+                    .try_get_exact(key)
+                    .map_err(|source| BranchRuntimeError::TableRuntime { source })?
+                    .is_some()
+                {
+                    present = true;
+                    break;
+                }
+            }
+        }
+        if present {
             return Err(BranchRuntimeError::TableRuntime {
                 source: TableRuntimeError::DuplicateInternalKey {
                     key: key.as_slice().to_vec(),
@@ -288,9 +368,9 @@ impl BranchLocalState {
         table: &BranchOwnedTable,
     ) -> BranchRuntimeResult<usize> {
         let level_index = self.validate_install_identity_and_range(level, table)?;
-        for row in table.rows() {
-            self.require_absent_internal_key(row.key())?;
-        }
+        try_for_each_reader_row(table.reader(), |row| {
+            self.require_absent_internal_key(row.key())
+        })?;
         Ok(level_index)
     }
 
@@ -310,14 +390,14 @@ impl BranchLocalState {
             });
         }
         let level_index = usize::from(level.raw());
-        if level_index >= self.owned_levels.len() {
+        if level_index >= self.owned_levels().len() {
             return Err(BranchRuntimeError::InvalidBranchState {
                 reason: "branch-owned table level is outside configured level count",
             });
         }
         if branch_reachable_table_identity_exists(
             table.descriptor().identity(),
-            &self.owned_levels,
+            self.owned_levels(),
             &self.inherited_layers,
         ) {
             return Err(BranchRuntimeError::InvalidBranchState {
@@ -335,7 +415,7 @@ impl BranchLocalState {
         level_index: usize,
         table: &BranchOwnedTable,
     ) -> BranchRuntimeResult<()> {
-        if self.owned_levels[level_index]
+        if self.owned_levels()[level_index]
             .iter()
             .any(|existing| table_physical_ranges_overlap(existing, table))
         {
@@ -357,7 +437,7 @@ impl BranchLocalState {
             branch_id: self.branch_id,
             level,
             table_index,
-            level_table_count: self.owned_levels[level_index].len(),
+            level_table_count: self.owned_levels()[level_index].len(),
             owned_table_count: self.owned_table_count(),
             replaced_frozen_index,
         }
@@ -404,6 +484,11 @@ impl BranchLocalState {
         self.timestamp_max = observed.timestamp_max;
         self.put_rows = observed.put_rows;
         self.tombstone_rows = observed.tombstone_rows;
+        // Structural mutations route through this hook, so recomputing the table-shape
+        // aggregates here (O(tables), at event cadence) keeps them correct without a
+        // per-commit fold. The two hot-path mutators that skip this hook (rotation,
+        // flush install) apply incremental deltas instead.
+        self.shape = self.recompute_shape_aggregates();
     }
 
     /// Aggregate observed-row facts from cached per-table summaries instead of a
@@ -421,7 +506,7 @@ impl BranchLocalState {
                 observed.record(row.row());
             }
         }
-        for table in self.owned_levels.iter().flatten() {
+        for table in self.owned_levels().iter().flatten() {
             observed.record_owned_table(table);
         }
         for layer in &self.inherited_layers {
@@ -440,10 +525,8 @@ impl BranchLocalState {
                 observed.record(row.row());
             }
         }
-        for table in self.owned_levels.iter().flatten() {
-            for row in table.rows() {
-                observed.record(row.row());
-            }
+        for table in self.owned_levels().iter().flatten() {
+            for_each_reader_row(table.reader(), |row| observed.record(row.row()));
         }
         observed
     }
@@ -455,12 +538,132 @@ impl BranchLocalState {
         }
         observed
     }
+
+    /// Historical-fork COW gate: does any not-yet-sealed row (in the active memtable or a frozen table)
+    /// carry a commit version at or below `fork_version`? When `false`, every `<= fork_version` row is
+    /// already in a sealed owned table, so a copy-on-write inherited layer over the owned tables alone
+    /// represents the as-of-`fork_version` view; when `true`, the fork must fall back to materialization
+    /// (an inherited layer cannot reference unsealed rows). The scan is bounded — active + frozen are
+    /// capped by the rotation threshold, not O(dataset).
+    pub(crate) fn has_in_fork_unsealed_rows(&self, fork_version: CommitVersion) -> bool {
+        let in_fork = |version: CommitVersion| version.as_u64() <= fork_version.as_u64();
+        self.active
+            .iter()
+            .any(|row| in_fork(row.row().commit_version()))
+            || self
+                .frozen
+                .iter()
+                .any(|table| table.iter().any(|row| in_fork(row.row().commit_version())))
+    }
+
+    /// Recompute the cached table-shape aggregates from the branch's tables. Called
+    /// at the `refresh_observed_row_facts` hook (every structural mutation) and by the
+    /// debug oracle. Reads raw fields directly — never the cached accessors — so it is
+    /// the independent reference the oracle checks against.
+    fn recompute_shape_aggregates(&self) -> BranchShapeAggregates {
+        let levels = self.owned_levels();
+        let mut per_level_bytes = vec![0u64; levels.len()];
+        let mut owned_bytes = 0u64;
+        let mut owned_tables = 0usize;
+        for (level_index, tables) in levels.iter().enumerate() {
+            let mut level_logical = 0u64;
+            for table in tables {
+                level_logical = level_logical.saturating_add(table.facts().byte_count());
+                owned_bytes = owned_bytes.saturating_add(table.approximate_size_bytes());
+                owned_tables += 1;
+            }
+            per_level_bytes[level_index] = level_logical;
+        }
+        let frozen_bytes = self.frozen.iter().fold(0u64, |total, table| {
+            total.saturating_add(u64::try_from(table.approximate_size_bytes()).unwrap_or(u64::MAX))
+        });
+        let inherited_tables = self
+            .inherited_layers
+            .iter()
+            .map(BranchInheritedLayer::table_count)
+            .sum();
+        BranchShapeAggregates {
+            per_level_bytes,
+            owned_bytes,
+            owned_tables,
+            frozen_bytes,
+            inherited_tables,
+        }
+    }
+
+    /// Incremental shape update for the hot flush-install path (frozen table -> new L0
+    /// table). Uses resident bytes for `owned_bytes`/`frozen_bytes` and logical bytes
+    /// for `per_level_bytes`, matching `recompute_shape_aggregates` field-for-field.
+    fn apply_flush_install_shape_delta(
+        &mut self,
+        level_index: usize,
+        new_l0_resident: u64,
+        new_l0_logical: u64,
+        removed_frozen_resident: u64,
+    ) {
+        self.shape.owned_bytes = self.shape.owned_bytes.saturating_add(new_l0_resident);
+        if let Some(level) = self.shape.per_level_bytes.get_mut(level_index) {
+            *level = level.saturating_add(new_l0_logical);
+        }
+        self.shape.owned_tables = self.shape.owned_tables.saturating_add(1);
+        self.shape.frozen_bytes = self
+            .shape
+            .frozen_bytes
+            .saturating_sub(removed_frozen_resident);
+        #[cfg(debug_assertions)]
+        self.debug_assert_shape_consistent();
+    }
+
+    /// Debug oracle: the cached shape aggregates must equal a fresh fold. Called from
+    /// every cached-shape accessor and after each incremental delta, so the whole test
+    /// suite (which exercises every structural mutation) detects a stale cache. Compiled
+    /// out of release builds.
+    #[cfg(debug_assertions)]
+    fn debug_assert_shape_consistent(&self) {
+        debug_assert_eq!(
+            self.shape,
+            self.recompute_shape_aggregates(),
+            "branch shape aggregate cache diverged from a fresh fold"
+        );
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum InheritedReferenceKind {
     Active,
     Materializing,
+}
+
+/// Cached table-shape aggregates for `BranchLocalState`, maintained at structural
+/// mutation cadence (the `refresh_observed_row_facts` hook plus the rotation and
+/// flush-install deltas) so per-commit pressure / budget / scoring reads are O(1)
+/// instead of folding over every owned table. A pure function of the branch's tables;
+/// the debug oracle `debug_assert_shape_consistent` proves it against a fresh fold.
+///
+/// Two distinct byte sources are cached and must not be crossed: `owned_bytes` and
+/// `frozen_bytes` are *resident* bytes (`approximate_size_bytes`, the in-RAM footprint
+/// for the memory budget), while `per_level_bytes` is *logical* bytes
+/// (`facts().byte_count()`, what compaction scoring sums). `sum(per_level_bytes)` does
+/// not equal `owned_bytes` in general.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BranchShapeAggregates {
+    per_level_bytes: Vec<u64>,
+    owned_bytes: u64,
+    owned_tables: usize,
+    frozen_bytes: u64,
+    inherited_tables: usize,
+}
+
+impl BranchShapeAggregates {
+    fn empty(level_count: usize) -> Self {
+        Self {
+            per_level_bytes: vec![0u64; level_count],
+            owned_bytes: 0,
+            owned_tables: 0,
+            frozen_bytes: 0,
+            inherited_tables: 0,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -487,13 +690,14 @@ impl ObservedBranchRows {
         if layer.status() == InheritedLayerStatus::Materialized {
             return;
         }
+        let fork_version = layer.fork_version();
         for table in layer.owned_levels().iter().flatten() {
-            for row in table.rows() {
-                if row.commit_version().as_u64() <= layer.fork_version().as_u64() {
+            for_each_reader_row(table.reader(), |row| {
+                if row.commit_version().as_u64() <= fork_version.as_u64() {
                     self.record_commit_version(row.commit_version());
                     self.record_timestamp(row.commit_timestamp());
                 }
-            }
+            });
         }
     }
 
@@ -544,24 +748,31 @@ impl ObservedBranchRows {
         if layer.status() == InheritedLayerStatus::Materialized {
             return;
         }
-        let fork_version = layer.fork_version();
+        // Historical-fork COW: a straddle layer folds its cached `<= fork_version` extremes in O(1)
+        // instead of re-scanning the straddle tables on every recompute. The cached values equal
+        // `record_inherited_layer`'s full scan, which the observed-facts debug oracle re-checks on
+        // every structural mutation.
+        if let Some(summary) = layer.straddle_read_view_summary() {
+            if let Some(version) = summary.max_commit_version() {
+                self.record_commit_version(version);
+            }
+            if let Some(timestamp) = summary.timestamp_min() {
+                self.record_timestamp(timestamp);
+            }
+            if let Some(timestamp) = summary.timestamp_max() {
+                self.record_timestamp(timestamp);
+            }
+            return;
+        }
+        // Non-straddle layer: every table sits entirely at/below the fork, fold from cached facts.
         for table in layer.owned_levels().iter().flatten() {
-            if table.facts().commit_range().max().as_u64() <= fork_version.as_u64() {
-                self.record_commit_version(table.facts().commit_range().max());
-                let extras = table.extras();
-                if let Some(timestamp) = extras.timestamp_min() {
-                    self.record_timestamp(timestamp);
-                }
-                if let Some(timestamp) = extras.timestamp_max() {
-                    self.record_timestamp(timestamp);
-                }
-            } else {
-                for row in table.rows() {
-                    if row.commit_version().as_u64() <= fork_version.as_u64() {
-                        self.record_commit_version(row.commit_version());
-                        self.record_timestamp(row.commit_timestamp());
-                    }
-                }
+            self.record_commit_version(table.facts().commit_range().max());
+            let extras = table.extras();
+            if let Some(timestamp) = extras.timestamp_min() {
+                self.record_timestamp(timestamp);
+            }
+            if let Some(timestamp) = extras.timestamp_max() {
+                self.record_timestamp(timestamp);
             }
         }
     }
@@ -596,11 +807,28 @@ fn insert_sorted_by_range(
     Ok(index)
 }
 
-fn frozen_rows_match_table(table: &BranchOwnedTable, frozen: &FrozenTable) -> bool {
-    table.rows().len() == frozen.len()
-        && table
-            .rows()
-            .iter()
-            .zip(frozen.iter())
-            .all(|(left, right)| left.row() == right.row())
+/// Row-for-row equality of a built table (read back through its reader) against a sealed
+/// memtable. BS5.3b moved the hot durable-flush call OFF the runtime lock into the prepare
+/// phase; the install matches by memtable identity instead.
+pub(crate) fn frozen_rows_match_table(table: &BranchOwnedTable, frozen: &FrozenTable) -> bool {
+    if table.facts().row_count() != frozen.len() as u64 {
+        return false;
+    }
+    // BS4.4a-ii-a: row counts match, so walk the owned table's cursor (ascending internal-key order,
+    // same as the frozen rows) in lockstep rather than materializing the whole table. A cursor error
+    // (unreachable on today's eager readers) is treated as a mismatch.
+    let mut cursor = table.reader().cursor();
+    if cursor.seek_to_first().is_err() {
+        return false;
+    }
+    for right in frozen.iter() {
+        match cursor.current() {
+            Some(left) if left.row() == right.row() => {}
+            _ => return false,
+        }
+        if cursor.advance().is_err() {
+            return false;
+        }
+    }
+    cursor.current().is_none()
 }

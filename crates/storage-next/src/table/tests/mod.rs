@@ -277,4 +277,17 @@ fn table_summary_extras_from_rows_folds_bounds_and_counts() {
         TableSummaryExtras::from_rows(&[]),
         Err(TableRuntimeError::InvalidRange { field: "rows" })
     ));
+
+    // BS4.4g: `from_parts` must reconstruct the exact summary a `from_rows` scan would
+    // compute — this is the equivalence recovery relies on once it sources extras from
+    // the manifest (bounds) + row-split extension (put/tombstone) instead of scanning.
+    let reassembled = TableSummaryExtras::from_parts(
+        extras.timestamp_min(),
+        extras.timestamp_max(),
+        extras.physical_key_min().to_vec(),
+        extras.physical_key_max().to_vec(),
+        extras.put_rows(),
+        extras.tombstone_rows(),
+    );
+    assert_eq!(reassembled, extras);
 }

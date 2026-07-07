@@ -114,7 +114,6 @@ pub struct StoragePerfSnapshot {
     commit_unresolved_gate_admission_attempts: u64,
     commit_unresolved_gate_admission_acquired: u64,
     commit_unresolved_gate_rejected_unresolved: u64,
-    commit_unresolved_gate_rejected_active: u64,
     commit_unresolved_records: u64,
     commit_unresolved_durable_not_applied_records: u64,
     commit_unresolved_applied_not_visible_records: u64,
@@ -304,6 +303,7 @@ pub struct StoragePerfSnapshot {
     append_rows_applied: u64,
     branch_facts_rows_observed: u64,
     read_view_captures: u64,
+    read_pins: u64,
     read_view_source_handles_cloned: u64,
     read_view_rows_cloned: u64,
     read_view_row_clone_bytes: u64,
@@ -329,8 +329,7 @@ pub struct StoragePerfSnapshot {
     table_compaction_output_tables_built: u64,
     table_build_facts_from_streaming_metadata: u64,
     table_rewrite_redundant_fact_decodes_avoided: u64,
-    table_rewrite_reader_reopens_avoided: u64,
-    table_rewrite_reader_row_vectors_reused: u64,
+    table_rewrite_reader_reopens_performed: u64,
     table_compaction_boundary_key_buffer_allocations: u64,
     table_compaction_boundary_key_buffer_reuses: u64,
     table_compaction_previous_key_buffer_allocations: u64,
@@ -414,6 +413,8 @@ pub struct StoragePerfSnapshot {
     scan_candidate_row_clones: u64,
     scan_candidate_row_clone_bytes: u64,
     table_reader_opens: u64,
+    table_lazy_full_materializations: u64,
+    durable_commit_admitted_over_budget: u64,
     table_metadata_read_bytes: u64,
     table_index_read_bytes: u64,
     table_properties_read_bytes: u64,
@@ -711,10 +712,6 @@ impl StoragePerfSnapshot {
     }
 
     /// Admission attempts rejected because another mutation is active.
-    pub const fn commit_unresolved_gate_rejected_active(self) -> u64 {
-        self.commit_unresolved_gate_rejected_active
-    }
-
     /// Unresolved durable commit records installed in the gate.
     pub const fn commit_unresolved_records(self) -> u64 {
         self.commit_unresolved_records
@@ -1662,6 +1659,11 @@ impl StoragePerfSnapshot {
         self.read_view_captures
     }
 
+    /// Number of per-read active-memtable pins (`clone_for_read_view`) taken on the read path.
+    pub const fn read_pins(self) -> u64 {
+        self.read_pins
+    }
+
     /// Number of branch source handles copied into captured read views.
     pub const fn read_view_source_handles_cloned(self) -> u64 {
         self.read_view_source_handles_cloned
@@ -1787,14 +1789,10 @@ impl StoragePerfSnapshot {
         self.table_rewrite_redundant_fact_decodes_avoided
     }
 
-    /// Durable rewrite-output reader reopens avoided by in-memory reader handoff.
-    pub const fn table_rewrite_reader_reopens_avoided(self) -> u64 {
-        self.table_rewrite_reader_reopens_avoided
-    }
-
-    /// Build-time row vectors handed to installed rewrite readers without table reparse.
-    pub const fn table_rewrite_reader_row_vectors_reused(self) -> u64 {
-        self.table_rewrite_reader_row_vectors_reused
+    /// Durable rewrite/compaction/materialization output reader lazy reopens performed —
+    /// metadata-only, disk-resident install over the just-published object (BS4.4l).
+    pub const fn table_rewrite_reader_reopens_performed(self) -> u64 {
+        self.table_rewrite_reader_reopens_performed
     }
 
     /// Boundary-key buffers that needed allocation or capacity growth.
@@ -2217,6 +2215,19 @@ impl StoragePerfSnapshot {
         self.table_reader_opens
     }
 
+    /// BS4.4d: number of lazy (disk-backed) readers that materialized all their rows. Asserted zero on
+    /// the durable read paths — a nonzero count means a consumer forced a full-table read.
+    pub const fn table_lazy_full_materializations(self) -> u64 {
+        self.table_lazy_full_materializations
+    }
+
+    /// BS4.5a: durable mutating commits admitted while measured residency exceeded the memory budget.
+    /// After the disk-resident flip a durable dataset is no longer RAM-bounded, so this is an
+    /// observability gauge (health WARN signal), not an admission failure — cache mode still hard-rejects.
+    pub const fn durable_commit_admitted_over_budget(self) -> u64 {
+        self.durable_commit_admitted_over_budget
+    }
+
     /// Bytes read for table header/footer metadata.
     pub const fn table_metadata_read_bytes(self) -> u64 {
         self.table_metadata_read_bytes
@@ -2469,7 +2480,6 @@ static COMMIT_UNRESOLVED_GATE_ADMISSION_ACQUIRED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_UNRESOLVED_GATE_REJECTED_UNRESOLVED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
-static COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_UNRESOLVED_RECORDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -2847,6 +2857,8 @@ static BRANCH_FACTS_ROWS_OBSERVED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static READ_VIEW_CAPTURES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static READ_PINS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static READ_VIEW_SOURCE_HANDLES_CLONED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static READ_VIEW_ROWS_CLONED: AtomicU64 = AtomicU64::new(0);
@@ -2897,9 +2909,7 @@ static TABLE_BUILD_FACTS_FROM_STREAMING_METADATA: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_REWRITE_REDUNDANT_FACT_DECODES_AVOIDED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
-static TABLE_REWRITE_READER_REOPENS_AVOIDED: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "perf-trace")]
-static TABLE_REWRITE_READER_ROW_VECTORS_REUSED: AtomicU64 = AtomicU64::new(0);
+static TABLE_REWRITE_READER_REOPENS_PERFORMED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -3064,6 +3074,10 @@ static SCAN_CANDIDATE_ROW_CLONES: AtomicU64 = AtomicU64::new(0);
 static SCAN_CANDIDATE_ROW_CLONE_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_READER_OPENS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_LAZY_FULL_MATERIALIZATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static DURABLE_COMMIT_ADMITTED_OVER_BUDGET: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_METADATA_READ_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
@@ -3253,7 +3267,6 @@ pub fn reset() {
     COMMIT_UNRESOLVED_GATE_ADMISSION_ATTEMPTS.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_GATE_ADMISSION_ACQUIRED.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_GATE_REJECTED_UNRESOLVED.store(0, Ordering::Relaxed);
-    COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_RECORDS.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_DURABLE_NOT_APPLIED_RECORDS.store(0, Ordering::Relaxed);
     COMMIT_UNRESOLVED_APPLIED_NOT_VISIBLE_RECORDS.store(0, Ordering::Relaxed);
@@ -3442,6 +3455,7 @@ pub fn reset() {
     APPEND_ROWS_APPLIED.store(0, Ordering::Relaxed);
     BRANCH_FACTS_ROWS_OBSERVED.store(0, Ordering::Relaxed);
     READ_VIEW_CAPTURES.store(0, Ordering::Relaxed);
+    READ_PINS.store(0, Ordering::Relaxed);
     READ_VIEW_SOURCE_HANDLES_CLONED.store(0, Ordering::Relaxed);
     READ_VIEW_ROWS_CLONED.store(0, Ordering::Relaxed);
     READ_VIEW_ROW_CLONE_BYTES.store(0, Ordering::Relaxed);
@@ -3467,8 +3481,7 @@ pub fn reset() {
     TABLE_COMPACTION_OUTPUT_TABLES_BUILT.store(0, Ordering::Relaxed);
     TABLE_BUILD_FACTS_FROM_STREAMING_METADATA.store(0, Ordering::Relaxed);
     TABLE_REWRITE_REDUNDANT_FACT_DECODES_AVOIDED.store(0, Ordering::Relaxed);
-    TABLE_REWRITE_READER_REOPENS_AVOIDED.store(0, Ordering::Relaxed);
-    TABLE_REWRITE_READER_ROW_VECTORS_REUSED.store(0, Ordering::Relaxed);
+    TABLE_REWRITE_READER_REOPENS_PERFORMED.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_ALLOCATIONS.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_REUSES.store(0, Ordering::Relaxed);
     TABLE_COMPACTION_PREVIOUS_KEY_BUFFER_ALLOCATIONS.store(0, Ordering::Relaxed);
@@ -3551,6 +3564,8 @@ pub fn reset() {
     SCAN_CANDIDATE_ROW_CLONES.store(0, Ordering::Relaxed);
     SCAN_CANDIDATE_ROW_CLONE_BYTES.store(0, Ordering::Relaxed);
     TABLE_READER_OPENS.store(0, Ordering::Relaxed);
+    TABLE_LAZY_FULL_MATERIALIZATIONS.store(0, Ordering::Relaxed);
+    DURABLE_COMMIT_ADMITTED_OVER_BUDGET.store(0, Ordering::Relaxed);
     TABLE_METADATA_READ_BYTES.store(0, Ordering::Relaxed);
     TABLE_INDEX_READ_BYTES.store(0, Ordering::Relaxed);
     TABLE_PROPERTIES_READ_BYTES.store(0, Ordering::Relaxed);
@@ -3661,8 +3676,6 @@ pub fn snapshot() -> StoragePerfSnapshot {
         commit_unresolved_gate_admission_acquired: COMMIT_UNRESOLVED_GATE_ADMISSION_ACQUIRED
             .load(Ordering::Relaxed),
         commit_unresolved_gate_rejected_unresolved: COMMIT_UNRESOLVED_GATE_REJECTED_UNRESOLVED
-            .load(Ordering::Relaxed),
-        commit_unresolved_gate_rejected_active: COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE
             .load(Ordering::Relaxed),
         commit_unresolved_records: COMMIT_UNRESOLVED_RECORDS.load(Ordering::Relaxed),
         commit_unresolved_durable_not_applied_records:
@@ -4007,6 +4020,7 @@ pub fn snapshot() -> StoragePerfSnapshot {
         append_rows_applied: APPEND_ROWS_APPLIED.load(Ordering::Relaxed),
         branch_facts_rows_observed: BRANCH_FACTS_ROWS_OBSERVED.load(Ordering::Relaxed),
         read_view_captures: READ_VIEW_CAPTURES.load(Ordering::Relaxed),
+        read_pins: READ_PINS.load(Ordering::Relaxed),
         read_view_source_handles_cloned: READ_VIEW_SOURCE_HANDLES_CLONED.load(Ordering::Relaxed),
         read_view_rows_cloned: READ_VIEW_ROWS_CLONED.load(Ordering::Relaxed),
         read_view_row_clone_bytes: READ_VIEW_ROW_CLONE_BYTES.load(Ordering::Relaxed),
@@ -4048,9 +4062,7 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         table_rewrite_redundant_fact_decodes_avoided: TABLE_REWRITE_REDUNDANT_FACT_DECODES_AVOIDED
             .load(Ordering::Relaxed),
-        table_rewrite_reader_reopens_avoided: TABLE_REWRITE_READER_REOPENS_AVOIDED
-            .load(Ordering::Relaxed),
-        table_rewrite_reader_row_vectors_reused: TABLE_REWRITE_READER_ROW_VECTORS_REUSED
+        table_rewrite_reader_reopens_performed: TABLE_REWRITE_READER_REOPENS_PERFORMED
             .load(Ordering::Relaxed),
         table_compaction_boundary_key_buffer_allocations:
             TABLE_COMPACTION_BOUNDARY_KEY_BUFFER_ALLOCATIONS.load(Ordering::Relaxed),
@@ -4157,6 +4169,9 @@ pub fn snapshot() -> StoragePerfSnapshot {
         scan_candidate_row_clones: SCAN_CANDIDATE_ROW_CLONES.load(Ordering::Relaxed),
         scan_candidate_row_clone_bytes: SCAN_CANDIDATE_ROW_CLONE_BYTES.load(Ordering::Relaxed),
         table_reader_opens: TABLE_READER_OPENS.load(Ordering::Relaxed),
+        table_lazy_full_materializations: TABLE_LAZY_FULL_MATERIALIZATIONS.load(Ordering::Relaxed),
+        durable_commit_admitted_over_budget: DURABLE_COMMIT_ADMITTED_OVER_BUDGET
+            .load(Ordering::Relaxed),
         table_metadata_read_bytes: TABLE_METADATA_READ_BYTES.load(Ordering::Relaxed),
         table_index_read_bytes: TABLE_INDEX_READ_BYTES.load(Ordering::Relaxed),
         table_properties_read_bytes: TABLE_PROPERTIES_READ_BYTES.load(Ordering::Relaxed),
@@ -4600,17 +4615,6 @@ pub(crate) fn record_commit_unresolved_gate_rejected_unresolved() {
         return;
     }
     COMMIT_UNRESOLVED_GATE_REJECTED_UNRESOLVED.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_commit_unresolved_gate_rejected_active() {}
-
-#[cfg(feature = "perf-trace")]
-pub(crate) fn record_commit_unresolved_gate_rejected_active() {
-    if !recording_enabled() {
-        return;
-    }
-    COMMIT_UNRESOLVED_GATE_REJECTED_ACTIVE.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]
@@ -6096,6 +6100,18 @@ pub(crate) fn record_read_view_capture(
 }
 
 #[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_read_pin() {}
+
+/// Count one per-read active-memtable pin (`clone_for_read_view` on the read path).
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_read_pin() {
+    if !recording_enabled() {
+        return;
+    }
+    READ_PINS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
 pub(crate) fn record_read_view_validation_scan(_rows_scanned: usize) {}
 
 #[cfg(feature = "perf-trace")]
@@ -6316,25 +6332,14 @@ pub(crate) fn record_table_rewrite_redundant_fact_decode_avoided() {
 }
 
 #[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_table_rewrite_reader_reopen_avoided() {}
+pub(crate) fn record_table_rewrite_reader_reopen_performed() {}
 
 #[cfg(feature = "perf-trace")]
-pub(crate) fn record_table_rewrite_reader_reopen_avoided() {
+pub(crate) fn record_table_rewrite_reader_reopen_performed() {
     if !recording_enabled() {
         return;
     }
-    TABLE_REWRITE_READER_REOPENS_AVOIDED.fetch_add(1, Ordering::Relaxed);
-}
-
-#[cfg(not(feature = "perf-trace"))]
-pub(crate) fn record_table_rewrite_reader_rows_reused() {}
-
-#[cfg(feature = "perf-trace")]
-pub(crate) fn record_table_rewrite_reader_rows_reused() {
-    if !recording_enabled() {
-        return;
-    }
-    TABLE_REWRITE_READER_ROW_VECTORS_REUSED.fetch_add(1, Ordering::Relaxed);
+    TABLE_REWRITE_READER_REOPENS_PERFORMED.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]
@@ -6783,6 +6788,28 @@ pub(crate) fn record_table_reader_open() {
         return;
     }
     TABLE_READER_OPENS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lazy_full_materialization() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lazy_full_materialization() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_LAZY_FULL_MATERIALIZATIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_durable_commit_admitted_over_budget() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_durable_commit_admitted_over_budget() {
+    if !recording_enabled() {
+        return;
+    }
+    DURABLE_COMMIT_ADMITTED_OVER_BUDGET.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

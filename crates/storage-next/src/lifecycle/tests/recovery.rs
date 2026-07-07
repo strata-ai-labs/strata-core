@@ -33,9 +33,9 @@ const DATABASE_ID: [u8; 16] = [0x9a; 16];
 
 #[test]
 fn recovery_empty_database_returns_healthy_package_without_replay() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x31);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -68,9 +68,9 @@ fn recovery_empty_database_returns_healthy_package_without_replay() {
 
 #[test]
 fn bootstrap_empty_recovery_opens_durable_runtime_with_zero_visibility() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x44);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -124,9 +124,9 @@ fn bootstrap_empty_recovery_opens_durable_runtime_with_zero_visibility() {
 
 #[test]
 fn bootstrap_runtime_can_enqueue_and_run_health_collection_maintenance() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x5f);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -161,23 +161,23 @@ fn bootstrap_runtime_can_enqueue_and_run_health_collection_maintenance() {
 
 #[test]
 fn bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x45);
     let checkpoint_row = put_row(branch, 2, b"checkpoint-bootstrap", b"checkpoint-value");
     publish_snapshot(
-        &backend,
+        backend,
         8,
         CommitVersion::new(3),
         std::slice::from_ref(&checkpoint_row),
     );
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, Some(3), Some(8), None)
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -227,17 +227,17 @@ fn bootstrap_checkpoint_only_recovery_publishes_visible_and_catches_allocator() 
 
 #[test]
 fn recovery_ignores_orphan_snapshot_when_manifest_has_no_checkpoint_fact() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x63);
     let orphan_row = put_row(branch, 4, b"orphan-snapshot", b"ignored");
     publish_snapshot(
-        &backend,
+        backend,
         13,
         CommitVersion::new(4),
         std::slice::from_ref(&orphan_row),
     );
     let orphan_object = ObjectLayout::snapshot(13).expect("orphan snapshot object");
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -264,9 +264,9 @@ fn recovery_ignores_orphan_snapshot_when_manifest_has_no_checkpoint_fact() {
 
 #[test]
 fn bootstrap_replays_wal_tail_through_commit_runtime() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x46);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let record = wal_record(branch, 4, b"bootstrap-tail", b"tail-value");
     shell
@@ -307,9 +307,9 @@ fn bootstrap_replays_wal_tail_through_commit_runtime() {
 
 #[test]
 fn bootstrap_rejects_timeline_only_wal_payload_before_open() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x47);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let record = timeline_only_wal_record(branch, 5);
     shell
@@ -337,9 +337,9 @@ fn bootstrap_rejects_timeline_only_wal_payload_before_open() {
 
 #[test]
 fn bootstrap_rejects_log_record_without_timeline_rows_before_open() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x48);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let record = user_only_wal_record(branch, 5, b"missing-timeline", b"value");
     shell
@@ -367,9 +367,9 @@ fn bootstrap_rejects_log_record_without_timeline_rows_before_open() {
 
 #[test]
 fn bootstrap_rejects_recovered_log_record_for_unopened_branch() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x49);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let record = wal_record(branch_id(0x4a), 3, b"foreign-branch", b"value");
     shell
@@ -396,9 +396,9 @@ fn bootstrap_rejects_recovered_log_record_for_unopened_branch() {
 
 #[test]
 fn bootstrap_rejects_recovered_log_records_not_strictly_ordered() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x4b);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let newer = wal_record(branch, 5, b"newer", b"value");
     let older = wal_record(branch, 4, b"older", b"value");
@@ -431,9 +431,9 @@ fn bootstrap_rejects_recovered_log_records_not_strictly_ordered() {
 
 #[test]
 fn bootstrap_rejects_recovered_log_records_with_duplicate_commit_versions() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x60);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let first = wal_record(branch, 5, b"duplicate-first", b"value");
     let second = wal_record(branch, 5, b"duplicate-second", b"value");
@@ -466,16 +466,16 @@ fn bootstrap_rejects_recovered_log_records_with_duplicate_commit_versions() {
 
 #[test]
 fn bootstrap_preserves_degraded_recovery_health_while_replaying_tail() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x4c);
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, Some(9), Some(7), None)
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend).expect("durable shell");
+    let mut shell = assemble_shell(lossy_open_plan(), branch, backend).expect("durable shell");
     let replayed = wal_record(branch, 5, b"degraded-tail", b"tail-value");
     shell
         .services_mut()
@@ -518,9 +518,9 @@ fn bootstrap_preserves_degraded_recovery_health_while_replaying_tail() {
 
 #[test]
 fn bootstrap_replay_is_idempotent_for_exactly_installed_rows() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x4d);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let record = wal_record(branch, 4, b"already-installed", b"value");
     shell
@@ -552,9 +552,9 @@ fn bootstrap_replay_is_idempotent_for_exactly_installed_rows() {
 
 #[test]
 fn bootstrap_replay_clears_matching_unresolved_durable_gate() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x4e);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let record = wal_record(branch, 6, b"gate-cleared", b"value");
     shell
@@ -591,12 +591,12 @@ fn bootstrap_replay_clears_matching_unresolved_durable_gate() {
 
 #[test]
 fn bootstrap_replay_uses_always_durability_for_always_mode() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x50);
     let mut shell = assemble_shell(
         open_plan_for_mode(StorageMode::DurableLocalAlways, RecoveryStrictness::Strict),
         branch,
-        &backend,
+        backend,
     )
     .expect("durable shell");
     let record = wal_record(branch, 6, b"always-gate-cleared", b"value");
@@ -638,9 +638,9 @@ fn bootstrap_replay_uses_always_durability_for_always_mode() {
 
 #[test]
 fn bootstrap_replay_rejects_mismatched_unresolved_durable_gate() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x4f);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let record = wal_record(branch, 6, b"blocked-by-gate", b"value");
     shell
@@ -692,17 +692,17 @@ fn bootstrap_replay_rejects_mismatched_unresolved_durable_gate() {
 
 #[test]
 fn recovery_loads_checkpoint_installs_rows_and_packages_only_wal_tail() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x32);
     let checkpoint_row = put_row(branch, 3, b"checkpoint", b"checkpoint-value");
     publish_snapshot(
-        &backend,
+        backend,
         5,
         CommitVersion::new(3),
         std::slice::from_ref(&checkpoint_row),
     );
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             // Full self-contained snapshot at watermark 3 (no flush base): `flushed_through`
@@ -714,7 +714,7 @@ fn recovery_loads_checkpoint_installs_rows_and_packages_only_wal_tail() {
             .with_recovery_facts(1, Some(3), Some(5), None)
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let skipped = wal_record(branch, 2, b"skipped", b"old");
     let replayed = wal_record(branch, 4, b"tail", b"tail-value");
@@ -760,17 +760,17 @@ fn recovery_loads_checkpoint_installs_rows_and_packages_only_wal_tail() {
 
 #[test]
 fn recovery_keeps_checkpoint_covered_wal_segment_without_replay_or_cleanup() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x61);
     let checkpoint_row = put_row(branch, 3, b"checkpointed", b"checkpoint-value");
     publish_snapshot(
-        &backend,
+        backend,
         12,
         CommitVersion::new(3),
         std::slice::from_ref(&checkpoint_row),
     );
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(2, Some(3), Some(12), None)
@@ -785,7 +785,7 @@ fn recovery_keeps_checkpoint_covered_wal_segment_without_replay_or_cleanup() {
         active_object,
         wal_segment_bytes(2, std::slice::from_ref(&replayed)),
     );
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -807,23 +807,23 @@ fn recovery_keeps_checkpoint_covered_wal_segment_without_replay_or_cleanup() {
 
 #[test]
 fn recovery_does_not_install_checkpoint_when_later_wal_read_fails() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x37);
     let checkpoint_row = put_row(branch, 3, b"checkpoint", b"checkpoint-value");
     publish_snapshot(
-        &backend,
+        backend,
         5,
         CommitVersion::new(3),
         std::slice::from_ref(&checkpoint_row),
     );
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, Some(3), Some(5), None)
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     backend.fail_read_object(ObjectLayout::wal_segment(1).expect("active log object"));
     let request =
@@ -847,9 +847,9 @@ fn recovery_does_not_install_checkpoint_when_later_wal_read_fails() {
 
 #[test]
 fn recovery_repairs_latest_partial_log_tail_only_when_explicitly_lossy() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x40);
-    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend).expect("durable shell");
+    let mut shell = assemble_shell(lossy_open_plan(), branch, backend).expect("durable shell");
     let record = wal_record(branch, 2, b"valid", b"value");
     shell
         .services_mut()
@@ -898,9 +898,9 @@ fn recovery_repairs_latest_partial_log_tail_only_when_explicitly_lossy() {
 
 #[test]
 fn recovery_rejects_latest_partial_log_tail_in_strict_mode() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x41);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let record = wal_record(branch, 2, b"valid", b"value");
     shell
@@ -932,10 +932,10 @@ fn recovery_rejects_latest_partial_log_tail_in_strict_mode() {
 
 #[test]
 fn recovery_rejects_non_latest_partial_wal_tail_as_corruption() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x62);
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(2, None, None, None)
@@ -948,7 +948,7 @@ fn recovery_rejects_non_latest_partial_wal_tail_as_corruption() {
     partial_first.extend_from_slice(b"partial");
     backend.write_raw(first_object.clone(), partial_first.clone());
     backend.write_raw(second_object, wal_segment_bytes(2, &[]));
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -977,23 +977,23 @@ fn recovery_rejects_non_latest_partial_wal_tail_as_corruption() {
 
 #[test]
 fn recovery_rejects_checkpoint_row_newer_than_snapshot_watermark() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x38);
     let checkpoint_row = put_row(branch, 4, b"too-new", b"value");
     publish_snapshot(
-        &backend,
+        backend,
         6,
         CommitVersion::new(3),
         std::slice::from_ref(&checkpoint_row),
     );
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, Some(3), Some(6), None)
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1020,11 +1020,11 @@ fn database_manifest_rejects_zero_snapshot_id_before_recovery() {
 
 #[test]
 fn recovery_rejects_snapshot_section_count_above_request_limit() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x4a);
     let first = put_row(branch, 2, b"first-section", b"value");
     let second = put_row(branch, 3, b"second-section", b"value");
-    SnapshotService::new(&backend)
+    SnapshotService::new(backend)
         .publish_create(SnapshotPublishRequest::new(
             10,
             CommitVersion::new(3),
@@ -1040,13 +1040,13 @@ fn recovery_rejects_snapshot_section_count_above_request_limit() {
         ))
         .expect("publish multi-section snapshot");
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, Some(3), Some(10), None)
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request = LifecycleRecoveryRequest::new(
         RecoveryStrictness::Strict,
@@ -1068,12 +1068,12 @@ fn recovery_rejects_snapshot_section_count_above_request_limit() {
 
 #[test]
 fn manifest_decode_rejects_large_section_count_before_allocation() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x4b);
     let alpha = put_row(branch, 4, b"section-alpha", b"value");
     let beta = put_row(branch, 5, b"section-beta", b"value");
     let gamma = put_row(branch, 6, b"section-gamma", b"value");
-    SnapshotService::new(&backend)
+    SnapshotService::new(backend)
         .publish_create(SnapshotPublishRequest::new(
             11,
             CommitVersion::new(6),
@@ -1088,13 +1088,13 @@ fn manifest_decode_rejects_large_section_count_before_allocation() {
         ))
         .expect("publish multi-section snapshot");
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, Some(6), Some(11), None)
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request = LifecycleRecoveryRequest::new(
         RecoveryStrictness::Strict,
@@ -1126,23 +1126,23 @@ fn recovery_rejects_checkpoint_rows_for_unknown_branch() {
     // the rebuilt catalog. Decode partitions the row out as a non-seeded
     // row; `complete_recovery` rejects it post-catalog-build because no
     // catalog entry exists for the referenced branch.
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x39);
     let other_branch_row = put_row(branch_id(0x3a), 3, b"other", b"value");
     publish_snapshot(
-        &backend,
+        backend,
         7,
         CommitVersion::new(3),
         std::slice::from_ref(&other_branch_row),
     );
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, Some(3), Some(7), None)
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1163,16 +1163,16 @@ fn recovery_rejects_checkpoint_rows_for_unknown_branch() {
 
 #[test]
 fn recovery_rejects_flush_watermark_without_recovered_table_state() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x3b);
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, None, None, Some(CommitVersion::new(4)))
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1188,9 +1188,9 @@ fn recovery_rejects_flush_watermark_without_recovered_table_state() {
 
 #[test]
 fn recovery_rejects_ad_hoc_table_object_references() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x42);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .expect("recovery request")
@@ -1207,9 +1207,9 @@ fn recovery_rejects_ad_hoc_table_object_references() {
 
 #[test]
 fn recovery_rejects_table_object_references_without_manifest() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x3d);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request = LifecycleRecoveryRequest::from_open_plan(shell.open_plan())
         .expect("recovery request")
@@ -1230,9 +1230,9 @@ fn recovery_rejects_table_object_references_without_manifest() {
 
 #[test]
 fn recovery_rejects_table_references_before_wal_tail_repair() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x43);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let record = wal_record(branch, 3, b"valid", b"value");
     shell
@@ -1266,9 +1266,9 @@ fn recovery_rejects_table_references_before_wal_tail_repair() {
 
 #[test]
 fn recovery_validates_quarantine_before_wal_tail_repair() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x49);
-    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend).expect("durable shell");
+    let mut shell = assemble_shell(lossy_open_plan(), branch, backend).expect("durable shell");
     let record = wal_record(branch, 3, b"valid-before-quarantine", b"value");
     shell
         .services_mut()
@@ -1305,13 +1305,13 @@ fn recovery_validates_quarantine_before_wal_tail_repair() {
 
 #[test]
 fn recovery_degrades_quarantine_inventory_mismatch_only_when_explicitly_lossy() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x3e);
     backend.write_raw(
         ObjectLayout::quarantine_manifest(&branch.to_string()).expect("inventory object"),
         b"not inventory".to_vec(),
     );
-    let mut strict_shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut strict_shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("strict shell");
     let strict_request =
         LifecycleRecoveryRequest::from_open_plan(strict_shell.open_plan()).expect("strict request");
@@ -1328,7 +1328,7 @@ fn recovery_degrades_quarantine_inventory_mismatch_only_when_explicitly_lossy() 
     ));
     drop(strict_shell);
 
-    let mut lossy_shell = assemble_shell(lossy_open_plan(), branch, &backend).expect("lossy shell");
+    let mut lossy_shell = assemble_shell(lossy_open_plan(), branch, backend).expect("lossy shell");
     let lossy_request =
         LifecycleRecoveryRequest::from_open_plan(lossy_shell.open_plan()).expect("lossy request");
     let outcome = LifecycleRecoveryRuntime::new(&mut lossy_shell)
@@ -1355,16 +1355,16 @@ fn recovery_degrades_quarantine_inventory_mismatch_only_when_explicitly_lossy() 
 
 #[test]
 fn recovery_rejects_missing_snapshot_in_strict_mode() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x33);
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, Some(9), Some(6), None)
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1387,18 +1387,18 @@ fn recovery_rejects_missing_snapshot_in_strict_mode() {
 
 #[test]
 fn recovery_rejects_corrupt_manifest_listed_snapshot_without_installing_rows() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x64);
     let snapshot_object = ObjectLayout::snapshot(14).expect("snapshot object");
     backend.write_raw(snapshot_object.clone(), b"not a snapshot".to_vec());
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, Some(4), Some(14), None)
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1428,16 +1428,16 @@ fn recovery_rejects_corrupt_manifest_listed_snapshot_without_installing_rows() {
 
 #[test]
 fn recovery_allows_explicit_lossy_missing_snapshot_without_trusting_watermark() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x34);
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, Some(9), Some(7), None)
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend).expect("durable shell");
+    let mut shell = assemble_shell(lossy_open_plan(), branch, backend).expect("durable shell");
     let replayed = wal_record(branch, 5, b"lossy-tail", b"tail-value");
     shell
         .services_mut()
@@ -1472,16 +1472,16 @@ fn recovery_allows_explicit_lossy_missing_snapshot_without_trusting_watermark() 
 
 #[test]
 fn lossy_missing_snapshot_allows_uncertain_flush_watermark_as_degraded_data_loss() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x36);
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, Some(9), Some(7), Some(CommitVersion::new(6)))
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(lossy_open_plan(), branch, &backend).expect("durable shell");
+    let mut shell = assemble_shell(lossy_open_plan(), branch, backend).expect("durable shell");
     let replayed = wal_record(branch, 5, b"lossy-flush-tail", b"tail-value");
     shell
         .services_mut()
@@ -1510,9 +1510,9 @@ fn lossy_missing_snapshot_allows_uncertain_flush_watermark_as_degraded_data_loss
 
 #[test]
 fn recovery_request_rejects_lossy_when_open_plan_is_strict() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x35);
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request = LifecycleRecoveryRequest::new(
         RecoveryStrictness::AllowExplicitLossyFallback,
@@ -1579,7 +1579,7 @@ fn checkpoint_row_section_round_trips_and_rejects_trailing_bytes() {
     trailing.push(0);
     let invalid = crate::format::SnapshotSection::new(SNAPSHOT_ROW_SECTION_KIND, trailing)
         .expect("invalid row section shape");
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x36);
     let snapshot = crate::format::SnapshotContainer::new(
         crate::format::SnapshotHeader::new(
@@ -1595,13 +1595,13 @@ fn checkpoint_row_section_round_trips_and_rejects_trailing_bytes() {
     let snapshot_bytes = crate::format::encode_snapshot_container(&snapshot).expect("snapshot");
     backend.write_raw(ObjectLayout::snapshot(8).expect("snapshot"), snapshot_bytes);
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, Some(11), Some(8), None)
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1627,7 +1627,7 @@ fn checkpoint_row_section_rejects_declared_rows_without_length_prefixes() {
     payload.extend_from_slice(&u32::MAX.to_le_bytes());
     let invalid = crate::format::SnapshotSection::new(SNAPSHOT_ROW_SECTION_KIND, payload)
         .expect("invalid row section shape");
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x3c);
     let snapshot = crate::format::SnapshotContainer::new(
         crate::format::SnapshotHeader::new(
@@ -1646,13 +1646,13 @@ fn checkpoint_row_section_rejects_declared_rows_without_length_prefixes() {
         snapshot_bytes,
     );
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, Some(11), Some(9), None)
             .expect("database root facts"),
     );
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1675,17 +1675,17 @@ fn checkpoint_row_section_rejects_declared_rows_without_length_prefixes() {
 
 #[test]
 fn recovery_decode_over_budget_fails_closed() {
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x8d);
     let checkpoint_row = put_row(branch, 3, b"budgeted-checkpoint", b"checkpoint-value");
     publish_snapshot(
-        &backend,
+        backend,
         10,
         CommitVersion::new(3),
         std::slice::from_ref(&checkpoint_row),
     );
     write_manifest(
-        &backend,
+        backend,
         &DatabaseManifest::new(DATABASE_ID, "identity")
             .expect("database root")
             .with_recovery_facts(1, Some(3), Some(10), None)
@@ -1715,7 +1715,7 @@ fn recovery_decode_over_budget_fails_closed() {
     let mut shell = assemble_shell(
         open_plan_with_budget(RecoveryStrictness::Strict, budget),
         branch,
-        &backend,
+        backend,
     )
     .expect("durable shell");
     let request =
@@ -1743,14 +1743,14 @@ fn recovery_rebuilds_multiple_branch_descriptors() {
     // Open a durable runtime, create two additional branches, drop the
     // runtime, reopen on the same backend and verify all three branches
     // (initial + two created) survive in the catalog after recovery.
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let initial = branch_id(0x31);
     let new_a = branch_id(0x41);
     let new_b = branch_id(0x42);
 
     // First open: seed initial branch, create two additional branches.
     {
-        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
             .expect("durable shell");
         let request =
             LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1777,7 +1777,7 @@ fn recovery_rebuilds_multiple_branch_descriptors() {
     }
 
     // Second open: recovery should rebuild catalog from manifest.
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1799,12 +1799,12 @@ fn recovery_rebuilds_multiple_branch_descriptors() {
 fn recovery_deleted_marker_outranks_older_table_manifest() {
     // Open, create a branch, delete it, drop runtime. Reopen and verify
     // the branch is in Deleted status (not resurrected as Active).
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let initial = branch_id(0x32);
     let deleted = branch_id(0x53);
 
     {
-        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
             .expect("durable shell");
         let request =
             LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1830,7 +1830,7 @@ fn recovery_deleted_marker_outranks_older_table_manifest() {
             .expect("delete");
     }
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1859,12 +1859,12 @@ fn recovery_deleted_marker_outranks_older_table_manifest() {
 fn recovery_newer_generation_outranks_older_deleted_marker() {
     // Open, create-then-delete a branch at gen 1, recreate at gen 2,
     // drop runtime. Reopen and verify the branch is Active at gen 2.
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let initial = branch_id(0x33);
     let target = branch_id(0x60);
 
     {
-        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
             .expect("durable shell");
         let request =
             LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1897,7 +1897,7 @@ fn recovery_newer_generation_outranks_older_deleted_marker() {
             .expect("recreate gen 2");
     }
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1927,12 +1927,12 @@ fn recovery_rebuilds_active_branch_states() {
     // Open a durable runtime, create a non-seeded branch, commit a row to
     // it (durable WAL append), drop the runtime, reopen on the same
     // backend, and verify the row survives via per-branch WAL replay.
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let initial = branch_id(0x34);
     let new_branch = branch_id(0x44);
 
     {
-        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
             .expect("durable shell");
         let request =
             LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1958,7 +1958,7 @@ fn recovery_rebuilds_active_branch_states() {
             .expect("commit to new branch");
     }
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -1987,12 +1987,12 @@ fn recovery_rejects_wal_row_for_deleted_generation() {
     // Open, create a branch, delete it (durable tombstone), drop. Inject a
     // WAL record stamped for the deleted branch_id into the backend and
     // reopen — recovery must refuse to resurrect the deleted branch.
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let initial = branch_id(0x35);
     let deleted = branch_id(0x45);
 
     {
-        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
             .expect("durable shell");
         let request =
             LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -2019,7 +2019,7 @@ fn recovery_rejects_wal_row_for_deleted_generation() {
     }
 
     // Inject a WAL record stamped for the deleted branch.
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
         .expect("durable shell");
     let resurrected = wal_record(deleted, 5, b"resurrect-attempt", b"value");
     shell
@@ -2048,12 +2048,12 @@ fn recovery_rebuilds_fork_at_history_version() {
     // Open, commit a row to the seeded branch, fork a child at the visible
     // history version, drop. Reopen and verify the child descriptor's
     // parent metadata (source branch + fork version) survives recovery.
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let initial = branch_id(0x36);
     let child = branch_id(0x46);
 
     {
-        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
             .expect("durable shell");
         let request =
             LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -2080,7 +2080,7 @@ fn recovery_rebuilds_fork_at_history_version() {
             .expect("fork child at history version");
     }
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -2107,31 +2107,33 @@ fn recovery_rebuilds_fork_at_history_version() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn recovery_table_manifest_multi_branch_rows_round_trip() {
     // Inject a BranchCatalogManifest with two active branches plus a
     // TableManifest per branch carrying owned rows. Open the database
     // afresh and verify both branches' row state is rebuilt from their
     // per-branch TableManifests.
     use crate::format::{
-        encode_table_manifest, BranchCatalogEntry, BranchCatalogManifest, BranchCatalogStatus,
-        TableManifest, TableManifestLevel,
+        encode_table_manifest, table_row_split_extension_section, BranchCatalogEntry,
+        BranchCatalogManifest, BranchCatalogStatus, TableManifest, TableManifestLevel,
+        TableRowSplit,
     };
     use crate::layout::ObjectLayout;
 
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let initial = branch_id(0x37);
     let extra = branch_id(0x47);
 
     // Publish two table objects (one per branch).
     let initial_table = publish_table_for_recovery(
-        &backend,
+        backend,
         initial,
         0,
         "initial-table",
         &[put_row(initial, 1, b"initial-row", b"initial-value")],
     );
     let extra_table = publish_table_for_recovery(
-        &backend,
+        backend,
         extra,
         0,
         "extra-table",
@@ -2149,7 +2151,10 @@ fn recovery_table_manifest_multi_branch_rows_round_trip() {
         )
         .expect("initial level")],
         Vec::new(),
-        Vec::new(),
+        vec![
+            table_row_split_extension_section(&[TableRowSplit::new(1, 0)])
+                .expect("row-split section"),
+        ],
     )
     .expect("initial table manifest");
     let extra_manifest = TableManifest::new(
@@ -2162,7 +2167,10 @@ fn recovery_table_manifest_multi_branch_rows_round_trip() {
         )
         .expect("extra level")],
         Vec::new(),
-        Vec::new(),
+        vec![
+            table_row_split_extension_section(&[TableRowSplit::new(1, 0)])
+                .expect("row-split section"),
+        ],
     )
     .expect("extra table manifest");
     backend.write_raw(
@@ -2195,7 +2203,7 @@ fn recovery_table_manifest_multi_branch_rows_round_trip() {
     // Open and recover; the catalog manifest replay attaches the extra
     // branch and `recover_per_branch_table_manifests` installs both
     // branches' rows from the per-branch TableManifests.
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -2233,12 +2241,12 @@ fn recovery_checkpoint_multi_branch_rows_round_trip() {
     // each branch, trigger a checkpoint, drop the runtime, reopen, and
     // verify both rows survive via per-branch checkpoint row dispatch.
     use crate::lifecycle::LifecycleCheckpointRequest;
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let initial = branch_id(0x38);
     let extra = branch_id(0x48);
 
     {
-        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
             .expect("durable shell");
         let request =
             LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -2287,7 +2295,7 @@ fn recovery_checkpoint_multi_branch_rows_round_trip() {
         );
     }
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -2343,7 +2351,7 @@ fn multi_branch_checkpoint_defers_so_lost_non_seeded_manifest_recovers_cleanly()
     use crate::lifecycle::{
         FlushTableIdentitySeed, FlushTableObjectId, LifecycleCheckpointRequest,
     };
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let initial = branch_id(0x39);
     let extra = branch_id(0x49);
     let guard =
@@ -2359,8 +2367,7 @@ fn multi_branch_checkpoint_defers_so_lost_non_seeded_manifest_recovers_cleanly()
     };
 
     {
-        let mut shell =
-            assemble_shell(lossy_open_plan(), initial, &backend).expect("durable shell");
+        let mut shell = assemble_shell(lossy_open_plan(), initial, backend).expect("durable shell");
         let request =
             LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
         let outcome = LifecycleRecoveryRuntime::new(&mut shell)
@@ -2438,7 +2445,7 @@ fn multi_branch_checkpoint_defers_so_lost_non_seeded_manifest_recovers_cleanly()
         .delete_object(&extra_manifest)
         .expect("drop extra manifest");
 
-    let mut shell = assemble_shell(lossy_open_plan(), initial, &backend).expect("durable shell");
+    let mut shell = assemble_shell(lossy_open_plan(), initial, backend).expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
     let outcome = LifecycleRecoveryRuntime::new(&mut shell)
@@ -2478,12 +2485,12 @@ fn recovery_rebuilds_inherited_layers() {
     // the parent. Drop, reopen, and verify the child's inherited layer
     // facts survive.
     use crate::lifecycle::{FlushTableIdentitySeed, FlushTableObjectId};
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let parent = branch_id(0x3a);
     let child = branch_id(0x4a);
 
     {
-        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), parent, &backend)
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), parent, backend)
             .expect("durable shell");
         let request =
             LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -2562,7 +2569,7 @@ fn recovery_rebuilds_inherited_layers() {
         );
     }
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), parent, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), parent, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -2586,17 +2593,141 @@ fn recovery_rebuilds_inherited_layers() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
+fn recovery_rebuilds_cow_historical_fork() {
+    // fork-cow.2: commit two versions to the seeded branch, rotate + flush so both are sealed in an
+    // owned table, then fork a child at the OLD version (V = 1 < current = 2). With every `<= V` row
+    // durable and the source carrying no inherited layers, the fork is copy-on-write — the child
+    // references the parent's straddle owned table via one inherited layer and materializes nothing.
+    // Drop, reopen, and verify the straddle inherited layer survives recovery with no child-owned tables.
+    use crate::lifecycle::{FlushTableIdentitySeed, FlushTableObjectId};
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
+    let parent = branch_id(0x3b);
+    let child = branch_id(0x4b);
+
+    {
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), parent, backend)
+            .expect("durable shell");
+        let request =
+            LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+        let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+            .recover(&request)
+            .expect("recovery outcome");
+        let mut runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+        for value in [b"v1".as_slice(), b"v2".as_slice()] {
+            runtime
+                .execute_durable_commit(
+                    durable_standard_batch(parent, b"history-key", value),
+                    CommitBranchGenerationGuard::exact(
+                        CommitBranchGeneration::new(1).expect("generation"),
+                    ),
+                )
+                .expect("commit to parent");
+        }
+        runtime
+            .rotate_active_for_maintenance()
+            .expect("rotate parent active");
+        let parent_flush = FlushFrozenRequest::new(
+            parent,
+            None,
+            FlushTableIdentitySeed::new("cow-parent-flush-seed").expect("seed"),
+            FlushTableObjectId::new("cow-parent-flush-object").expect("object id"),
+        )
+        .expect("parent flush request");
+        assert!(
+            runtime
+                .flush_frozen(&parent_flush)
+                .expect("parent flush succeeds")
+                .completed(),
+            "parent flush must publish the manifest",
+        );
+
+        // Fork at the OLD version (V = 1 < visible 2): the `<= 1` row is durable and the parent has no
+        // inherited layers, so this is a copy-on-write historical fork over a straddle owned table.
+        let fork_outcome = runtime
+            .fork_at_retained_version(
+                parent,
+                child,
+                CommitBranchGeneration::new(1).expect("generation"),
+                CommitVersion::new(1),
+                CommitVersion::ZERO,
+            )
+            .expect("fork child at history version");
+        assert!(
+            fork_outcome.inherited_layer_count() > 0,
+            "COW historical fork must create a straddle inherited layer",
+        );
+        assert!(
+            runtime
+                .branch_catalog()
+                .branch_state(child)
+                .expect("child branch state")
+                .owned_table_count()
+                == 0,
+            "the COW fork child owns no materialized tables at fork time",
+        );
+
+        // Commit + rotate + flush the child so its table manifest publishes with the straddle inherited
+        // layer (a child persists its inherited layers only when its own manifest is written).
+        runtime
+            .execute_durable_commit(
+                durable_standard_batch(child, b"child-row", b"child-value"),
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("commit to child");
+        runtime
+            .rotate_active_for_branch_for_maintenance(child)
+            .expect("rotate child active");
+        let child_flush = FlushFrozenRequest::new(
+            child,
+            None,
+            FlushTableIdentitySeed::new("cow-child-flush-seed").expect("seed"),
+            FlushTableObjectId::new("cow-child-flush-object").expect("object id"),
+        )
+        .expect("child flush request");
+        assert!(
+            runtime
+                .flush_frozen(&child_flush)
+                .expect("child flush succeeds")
+                .completed(),
+            "child flush must publish the manifest",
+        );
+    }
+
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), parent, backend)
+        .expect("durable shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let outcome = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery outcome");
+    let runtime = shell.complete_recovery(&outcome).expect("bootstrap");
+
+    let child_state = runtime
+        .branch_catalog()
+        .branch_state(child)
+        .expect("child branch state");
+    assert!(
+        child_state.inherited_layer_count() > 0,
+        "COW child must recover its straddle inherited layer",
+    );
+}
+
+#[test]
 fn recovery_preserves_branch_release_facts() {
     // Open, create a branch, delete it (pushes a release plan into the
     // in-memory buffer and publishes the pending-releases manifest),
     // drop the runtime *without* running retention. Reopen and verify
     // the buffer comes back with the same released branch_id.
-    let backend = RecoveryTestBackend::new();
+    let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let initial = branch_id(0x3b);
     let released = branch_id(0x4b);
 
     {
-        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+        let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
             .expect("durable shell");
         let request =
             LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -2625,7 +2756,7 @@ fn recovery_preserves_branch_release_facts() {
         assert_eq!(runtime.pending_releases()[0].released_branch_id(), released,);
     }
 
-    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, &backend)
+    let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), initial, backend)
         .expect("durable shell");
     let request =
         LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
@@ -2644,7 +2775,7 @@ fn recovery_preserves_branch_release_facts() {
 }
 
 fn publish_table_for_recovery(
-    backend: &RecoveryTestBackend,
+    backend: &'static RecoveryTestBackend,
     branch: BranchId,
     level: u8,
     identity: &str,
@@ -2733,8 +2864,8 @@ fn publish_table_for_recovery(
 fn assemble_shell(
     plan: StorageOpenPlan,
     branch: BranchId,
-    backend: &RecoveryTestBackend,
-) -> LifecycleResult<LifecycleDurableLocalShell<'_>> {
+    backend: &'static RecoveryTestBackend,
+) -> LifecycleResult<LifecycleDurableLocalShell<'static>> {
     LifecycleDurableLocalShell::assemble(
         LifecycleDurableLocalOpenRequest::new(
             plan,
@@ -2798,7 +2929,7 @@ fn lossy_open_plan() -> StorageOpenPlan {
 }
 
 fn publish_snapshot(
-    backend: &RecoveryTestBackend,
+    backend: &'static RecoveryTestBackend,
     snapshot_id: u64,
     watermark: CommitVersion,
     rows: &[StorageRow],
@@ -2815,7 +2946,7 @@ fn publish_snapshot(
         .expect("publish snapshot");
 }
 
-fn write_manifest(backend: &RecoveryTestBackend, manifest: &DatabaseManifest) {
+fn write_manifest(backend: &'static RecoveryTestBackend, manifest: &DatabaseManifest) {
     backend.write_raw(
         ObjectLayout::database_manifest().expect("database root object"),
         encode_manifest(manifest).expect("database root bytes"),

@@ -20,6 +20,7 @@ pub(crate) const MAX_TABLE_FOOTER_SIZE: usize = TABLE_FOOTER_SIZE;
 const TABLE_HEADER_FORMAT: &str = "table_header";
 const TABLE_FOOTER_FORMAT: &str = "table_footer";
 const TABLE_BLOCK_FRAME_FORMAT: &str = "table_block_frame";
+const TABLE_FILTER_FRAME_FORMAT: &str = "table_filter_frame";
 const TABLE_MAGIC: [u8; 4] = *b"STTB";
 const TABLE_FOOTER_MAGIC: [u8; 4] = *b"STTF";
 const TABLE_FORMAT_VERSION: u32 = 1;
@@ -164,6 +165,10 @@ pub(crate) fn decode_table_header(bytes: &[u8]) -> Result<(TableHeader, usize), 
 pub(crate) struct TableFooter {
     index_block_offset: u64,
     index_block_frame_len: u32,
+    // BS4.2: 0 = absent (the historical layout); nonzero locates the filter frame between the data
+    // region and the index. Validity of a nonzero slot is enforced by `validate_footer_layout`.
+    filter_block_offset: u64,
+    filter_block_frame_len: u32,
     properties_block_offset: u64,
     properties_block_frame_len: u32,
 }
@@ -172,6 +177,25 @@ impl TableFooter {
     pub(crate) fn new(
         index_block_offset: u64,
         index_block_frame_len: u32,
+        properties_block_offset: u64,
+        properties_block_frame_len: u32,
+    ) -> Result<Self, FormatError> {
+        Self::new_with_filter(
+            index_block_offset,
+            index_block_frame_len,
+            0,
+            0,
+            properties_block_offset,
+            properties_block_frame_len,
+        )
+    }
+
+    /// BS4.2: construct a footer that may carry a nonzero filter slot (`0` = absent).
+    pub(crate) fn new_with_filter(
+        index_block_offset: u64,
+        index_block_frame_len: u32,
+        filter_block_offset: u64,
+        filter_block_frame_len: u32,
         properties_block_offset: u64,
         properties_block_frame_len: u32,
     ) -> Result<Self, FormatError> {
@@ -188,6 +212,8 @@ impl TableFooter {
         Ok(Self {
             index_block_offset,
             index_block_frame_len,
+            filter_block_offset,
+            filter_block_frame_len,
             properties_block_offset,
             properties_block_frame_len,
         })
@@ -199,6 +225,19 @@ impl TableFooter {
 
     pub(crate) const fn index_block_frame_len(self) -> u32 {
         self.index_block_frame_len
+    }
+
+    pub(crate) const fn filter_block_offset(self) -> u64 {
+        self.filter_block_offset
+    }
+
+    pub(crate) const fn filter_block_frame_len(self) -> u32 {
+        self.filter_block_frame_len
+    }
+
+    /// BS4.2: whether a persisted filter frame is present (nonzero slot).
+    pub(crate) const fn has_filter(self) -> bool {
+        self.filter_block_frame_len != 0
     }
 
     pub(crate) const fn properties_block_offset(self) -> u64 {
@@ -219,8 +258,8 @@ pub(crate) fn encode_table_footer(
     let mut bytes = Vec::with_capacity(TABLE_FOOTER_SIZE);
     bytes.extend_from_slice(&footer.index_block_offset().to_le_bytes());
     bytes.extend_from_slice(&footer.index_block_frame_len().to_le_bytes());
-    bytes.extend_from_slice(&0u64.to_le_bytes());
-    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&footer.filter_block_offset().to_le_bytes());
+    bytes.extend_from_slice(&footer.filter_block_frame_len().to_le_bytes());
     bytes.extend_from_slice(&footer.properties_block_offset().to_le_bytes());
     bytes.extend_from_slice(&footer.properties_block_frame_len().to_le_bytes());
     bytes.extend_from_slice(&TABLE_FOOTER_MAGIC);
@@ -261,13 +300,10 @@ pub(crate) fn decode_table_footer(table_bytes: &[u8]) -> Result<TableFooter, For
     let mut reader = ByteReader::new(TABLE_FOOTER_FORMAT, footer_bytes);
     let index_block_offset = reader.read_u64_le()?;
     let index_block_frame_len = reader.read_u32_le()?;
+    // BS4.2: the filter slot is accepted (0 = absent, nonzero = present); a nonzero slot is
+    // range-validated by `validate_footer_layout`, not rejected outright.
     let filter_block_offset = reader.read_u64_le()?;
     let filter_block_frame_len = reader.read_u32_le()?;
-    if filter_block_offset != 0 || filter_block_frame_len != 0 {
-        return Err(FormatError::InvalidValue {
-            field: "filter_block",
-        });
-    }
     let properties_block_offset = reader.read_u64_le()?;
     let properties_block_frame_len = reader.read_u32_le()?;
     if reader.read_exact(4)? != TABLE_FOOTER_MAGIC {
@@ -281,9 +317,11 @@ pub(crate) fn decode_table_footer(table_bytes: &[u8]) -> Result<TableFooter, For
     }
     reader.finish()?;
 
-    let footer = TableFooter::new(
+    let footer = TableFooter::new_with_filter(
         index_block_offset,
         index_block_frame_len,
+        filter_block_offset,
+        filter_block_frame_len,
         properties_block_offset,
         properties_block_frame_len,
     )?;
@@ -306,13 +344,10 @@ pub(crate) fn decode_table_footer_metadata(
     let mut reader = ByteReader::new(TABLE_FOOTER_FORMAT, &footer_bytes[..TABLE_FOOTER_SIZE - 4]);
     let index_block_offset = reader.read_u64_le()?;
     let index_block_frame_len = reader.read_u32_le()?;
+    // BS4.2: the filter slot is accepted (0 = absent, nonzero = present); a nonzero slot is
+    // range-validated by `validate_footer_layout`, not rejected outright.
     let filter_block_offset = reader.read_u64_le()?;
     let filter_block_frame_len = reader.read_u32_le()?;
-    if filter_block_offset != 0 || filter_block_frame_len != 0 {
-        return Err(FormatError::InvalidValue {
-            field: "filter_block",
-        });
-    }
     let properties_block_offset = reader.read_u64_le()?;
     let properties_block_frame_len = reader.read_u32_le()?;
     if reader.read_exact(4)? != TABLE_FOOTER_MAGIC {
@@ -326,9 +361,11 @@ pub(crate) fn decode_table_footer_metadata(
     }
     reader.finish()?;
 
-    let footer = TableFooter::new(
+    let footer = TableFooter::new_with_filter(
         index_block_offset,
         index_block_frame_len,
+        filter_block_offset,
+        filter_block_frame_len,
         properties_block_offset,
         properties_block_frame_len,
     )?;
@@ -340,6 +377,9 @@ pub(crate) fn decode_table_footer_metadata(
 pub(crate) enum TableBlockKind {
     Data,
     Index,
+    // BS4.2: byte 3, the reserved gap between Index (2) and Properties (4). Holds the persisted
+    // bloom-filter frame; sits physically between the data region and the index.
+    Filter,
     Properties,
 }
 
@@ -348,6 +388,7 @@ impl TableBlockKind {
         match self {
             Self::Data => 1,
             Self::Index => 2,
+            Self::Filter => 3,
             Self::Properties => 4,
         }
     }
@@ -356,10 +397,8 @@ impl TableBlockKind {
         match value {
             1 => Ok(Self::Data),
             2 => Ok(Self::Index),
+            3 => Ok(Self::Filter),
             4 => Ok(Self::Properties),
-            // Filter blocks are deliberately reserved until the table-format
-            // layer assigns filter semantics; accepting them at this stage
-            // would create a silent compatibility shim.
             _ => Err(invalid_block_type()),
         }
     }
@@ -473,6 +512,118 @@ pub(crate) fn decode_table_block_frame_as(
     expected_kind: TableBlockKind,
 ) -> Result<(TableBlockFrame, usize), FormatError> {
     decode_table_block_frame_inner(bytes, Some(expected_kind))
+}
+
+/// BS4.2: the filter-frame payload, serialized inside a `TableBlockKind::Filter` block frame. The
+/// format layer stays bloom-agnostic — it moves these raw parts; the `table` layer converts to
+/// and from a `TableBloomFilter`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TableFilterFrame {
+    pub(crate) probes: u8,
+    pub(crate) key_count: u64,
+    pub(crate) bit_count: u64,
+    pub(crate) bits: Vec<u8>,
+}
+
+/// The only filter subformat assigned in V1 (spec §17).
+const FILTER_FORMAT_VERSION: u32 = 1;
+/// Payload header before the bit array: version(4) + probes(1) + `key_count`(8) + `bit_count`(8).
+const FILTER_FRAME_HEADER_SIZE: usize = 4 + 1 + 8 + 8;
+/// Format-validity ceilings, mirroring the runtime bloom bounds (`table/cache.rs`): ≤30 probes, and a
+/// bit array ≤16 MiB (the frame codec independently bounds the whole payload).
+const MAX_FILTER_PROBES: u8 = 30;
+const MAX_FILTER_BITS_BYTES: usize = 16 * 1024 * 1024;
+
+/// Serialize a filter frame: the LE payload wrapped (uncompressed — bloom bits are ~random) in the
+/// shared CRC'd block frame.
+pub(crate) fn encode_filter_frame(frame: &TableFilterFrame) -> Result<Vec<u8>, FormatError> {
+    // BS4.2: encode is the exact inverse gate of decode — an out-of-bounds frame must never be
+    // persisted in this frozen format, or the written table would be permanently undecodable.
+    if frame.probes > MAX_FILTER_PROBES {
+        return Err(FormatError::InvalidValue {
+            field: "filter_probes",
+        });
+    }
+    if frame.bits.len() > MAX_FILTER_BITS_BYTES {
+        return Err(FormatError::InvalidLength {
+            field: "filter_bits",
+        });
+    }
+    let expected_bits_len = usize::try_from(frame.bit_count)
+        .map_err(|_| FormatError::InvalidLength {
+            field: "filter_bit_count",
+        })?
+        .div_ceil(8);
+    if frame.bits.len() != expected_bits_len {
+        return Err(FormatError::InvalidLength {
+            field: "filter_bits",
+        });
+    }
+
+    let mut payload = Vec::with_capacity(FILTER_FRAME_HEADER_SIZE + frame.bits.len());
+    payload.extend_from_slice(&FILTER_FORMAT_VERSION.to_le_bytes());
+    payload.push(frame.probes);
+    payload.extend_from_slice(&frame.key_count.to_le_bytes());
+    payload.extend_from_slice(&frame.bit_count.to_le_bytes());
+    payload.extend_from_slice(&frame.bits);
+    let block = TableBlockFrame::new(
+        TableBlockKind::Filter,
+        TableCompression::Uncompressed,
+        payload,
+    )?;
+    encode_table_block_frame(&block)
+}
+
+/// Decode + validate a filter frame. The block frame's CRC guards the bytes; this additionally
+/// rejects an unknown subformat version (forward-compat gate) and any probe/bit-array shape outside
+/// the runtime bounds — the integrity gate that keeps a corrupt filter from later answering a false
+/// `DefinitelyAbsent`.
+pub(crate) fn decode_filter_frame(bytes: &[u8]) -> Result<(TableFilterFrame, usize), FormatError> {
+    let (block, consumed) = decode_table_block_frame_as(bytes, TableBlockKind::Filter)?;
+    let mut reader = ByteReader::new(TABLE_FILTER_FRAME_FORMAT, block.decoded_payload());
+    let version = reader.read_u32_le()?;
+    if version != FILTER_FORMAT_VERSION {
+        return Err(FormatError::FutureFormat {
+            format: TABLE_FILTER_FRAME_FORMAT,
+            version,
+            max_supported: FILTER_FORMAT_VERSION,
+        });
+    }
+    let probes = reader.read_u8()?;
+    let key_count = reader.read_u64_le()?;
+    let bit_count = reader.read_u64_le()?;
+    let remaining = reader.remaining();
+    let bits = reader.read_exact(remaining)?.to_vec();
+
+    if probes > MAX_FILTER_PROBES {
+        return Err(FormatError::InvalidValue {
+            field: "filter_probes",
+        });
+    }
+    if bits.len() > MAX_FILTER_BITS_BYTES {
+        return Err(FormatError::InvalidLength {
+            field: "filter_bits",
+        });
+    }
+    let expected_bits_len = usize::try_from(bit_count)
+        .map_err(|_| FormatError::InvalidLength {
+            field: "filter_bit_count",
+        })?
+        .div_ceil(8);
+    if bits.len() != expected_bits_len {
+        return Err(FormatError::InvalidLength {
+            field: "filter_bits",
+        });
+    }
+    Ok((
+        TableFilterFrame {
+            probes,
+            key_count,
+            bit_count,
+            bits,
+        },
+        consumed,
+    ))
 }
 
 fn decode_table_block_frame_inner(
@@ -636,6 +787,31 @@ fn validate_footer_layout(footer: &TableFooter, footer_start: usize) -> Result<(
         });
     }
 
+    // BS4.2: a present filter frame sits between the data region and the index — `filter_end` must
+    // equal `index_start`, and `filter_start` must be within the object (data may be empty). An
+    // absent filter requires both slot fields zero (a lone nonzero offset is malformed).
+    if footer.has_filter() {
+        let (filter_start, filter_end) = checked_footer_range(
+            footer.filter_block_offset(),
+            footer.filter_block_frame_len(),
+            "filter_block",
+        )?;
+        if filter_start < TABLE_HEADER_SIZE {
+            return Err(FormatError::InvalidLength {
+                field: "filter_block_offset",
+            });
+        }
+        if filter_end != index_start {
+            return Err(FormatError::InvalidLength {
+                field: "filter_block_range",
+            });
+        }
+    } else if footer.filter_block_offset() != 0 {
+        return Err(FormatError::InvalidLength {
+            field: "filter_block_offset",
+        });
+    }
+
     let (properties_start, properties_end) = checked_footer_range(
         footer.properties_block_offset(),
         footer.properties_block_frame_len(),
@@ -753,6 +929,9 @@ const fn invalid_block_type() -> FormatError {
 mod artifact_tests;
 #[cfg(test)]
 mod data_tests;
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod filter_tests;
 #[cfg(test)]
 mod golden_tests;
 #[cfg(test)]

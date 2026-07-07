@@ -15,8 +15,10 @@ fn branch_owned_table_constructor_rejects_descriptor_and_branch_mismatches() {
     );
     let reader = immutable_reader("owned-constructor", vec![row]);
     let descriptor = branch_table_descriptor(BranchLevel::ZERO, &reader);
-    let owned =
-        BranchOwnedTable::new(branch, descriptor.clone(), reader.clone()).expect("owned table");
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras");
+    let owned = BranchOwnedTable::new(branch, descriptor.clone(), reader.clone(), extras)
+        .expect("owned table");
     assert_eq!(owned.branch_id(), branch);
     assert_eq!(owned.descriptor(), &descriptor);
     assert_eq!(owned.facts(), reader.facts());
@@ -34,8 +36,10 @@ fn branch_owned_table_constructor_rejects_descriptor_and_branch_mismatches() {
             b"other".to_vec(),
         )],
     );
+    let extras = crate::table::TableSummaryExtras::from_rows(other_reader.rows())
+        .expect("table summary extras");
     assert!(matches!(
-        BranchOwnedTable::new(branch, descriptor, other_reader),
+        BranchOwnedTable::new(branch, descriptor, other_reader, extras),
         Err(BranchRuntimeError::InvalidBranchState { .. })
     ));
 
@@ -51,7 +55,9 @@ fn branch_owned_table_constructor_rejects_descriptor_and_branch_mismatches() {
         )],
     );
     let wrong_branch_descriptor = branch_table_descriptor(BranchLevel::ZERO, &wrong_branch_reader);
-    let error = BranchOwnedTable::new(branch, wrong_branch_descriptor, wrong_branch_reader)
+    let extras = crate::table::TableSummaryExtras::from_rows(wrong_branch_reader.rows())
+        .expect("table summary extras");
+    let error = BranchOwnedTable::new(branch, wrong_branch_descriptor, wrong_branch_reader, extras)
         .expect_err("wrong branch table rejected");
     assert!(matches!(error, BranchRuntimeError::InvalidBranchRow { .. }));
     assert!(!error.to_string().contains("secret-payload"));
@@ -936,6 +942,127 @@ fn branch_compaction_streams_candidate_sources_with_bounded_output_buffer() {
         u64::try_from(report.peak_buffered_rows()).expect("peak fits in u64")
     );
     assert!(perf.branch_compaction_peak_buffered_rows() < candidate.input_row_count());
+}
+
+/// BS3.1 reunion test (owed from Slice 4): the parallel subcompaction split must be byte-equivalent
+/// to the serial (whole-range) compaction. Build distinct-key L0 sources, force a >1-way split, and
+/// assert the per-range bounded builds — concatenated in range order — reproduce the serial output
+/// row-for-row. One key is written twice (across two L0 tables) so the test also proves the split
+/// keeps every version of a physical key on one side of a boundary — boundaries fall on physical
+/// keys, so a bound off-by-one that tore a key's versions apart would break the reunion. This is the
+/// correctness contract that lets the fan-out ship (default-off after BS3.1) without diverging.
+#[test]
+fn subcompaction_ranges_reunite_into_the_serial_compaction_output() {
+    const SUBCOMPACTIONS: usize = 4;
+    let branch = branch_id(0x3B);
+    let mut state = BranchLocalState::empty(branch);
+    // Six distinct-key L0 tables — distinct keys are required or the subcompaction boundaries (which
+    // fall on table last-keys) collapse to a single serial range.
+    let keys: [&[u8]; 6] = [
+        b"reunion-a",
+        b"reunion-b",
+        b"reunion-c",
+        b"reunion-d",
+        b"reunion-e",
+        b"reunion-f",
+    ];
+    for (index, user_key) in keys.into_iter().enumerate() {
+        let version = u64::try_from(index)
+            .expect("index fits in u64")
+            .saturating_add(1);
+        let identity = format!("reunion-source-{index}");
+        state
+            .install_l0_table(branch_owned_table(
+                branch,
+                BranchLevel::ZERO,
+                identity.as_str(),
+                vec![storage_row_with(
+                    branch,
+                    user_key.to_vec(),
+                    version,
+                    version.saturating_mul(10),
+                    Timestamp::EPOCH,
+                    user_key.to_vec(),
+                )],
+            ))
+            .expect("install source table");
+    }
+    // A repeated physical key across two L0 tables (a second version of `reunion-c`). Both versions
+    // share one physical key, so every range boundary — placed on a physical key — must keep them
+    // together; the reunion tears if a bounded cursor leaks one version into the neighbouring range.
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "reunion-source-dup",
+            vec![storage_row_with(
+                branch,
+                b"reunion-c".to_vec(),
+                7,
+                70,
+                Timestamp::EPOCH,
+                b"reunion-c-v7".to_vec(),
+            )],
+        ))
+        .expect("install duplicate-key source table");
+
+    // target_output_bytes = 1 forces the split; max_output_tables (16) is high enough not to bind.
+    let request =
+        BranchCompactionRequest::new(branch, BranchCompactionKind::CompactL0, "reunion-output")
+            .expect("request")
+            .with_table_compaction_config(TableCompactionConfig::new(1, 16).expect("split config"));
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    // Anti-vacuous: a real merge (not a metadata promotion), and the split must actually fan out.
+    assert!(
+        !candidate.is_metadata_promotion(),
+        "reunion needs a real merge, not a metadata promotion"
+    );
+    let ranges = state
+        .subcompaction_ranges_for_candidate(
+            candidate,
+            SUBCOMPACTIONS,
+            request.table_compaction_config().target_output_bytes(),
+        )
+        .expect("subcompaction ranges");
+    assert!(
+        ranges.len() > 1,
+        "the split must fan out to more than one range (got {})",
+        ranges.len()
+    );
+
+    // Serial (whole-range) build.
+    let (serial_artifacts, _serial_report) = state
+        .prepare_branch_compaction_plan(&request, &plan)
+        .expect("serial prepare succeeds")
+        .expect("serial produces output");
+    let serial_rows: Vec<StorageRow> = serial_artifacts
+        .into_iter()
+        .flat_map(|artifact| artifact.into_parts_with_rows().2)
+        .map(TableRow::into_row)
+        .collect();
+
+    // Bounded (per-range) builds, concatenated in range order.
+    let mut bounded_rows: Vec<StorageRow> = Vec::new();
+    for (index, bounds) in ranges.iter().enumerate() {
+        let (artifacts, _report) = state
+            .prepare_branch_compaction_plan_bounded(&request, &plan, bounds.as_ref(), index)
+            .expect("bounded prepare succeeds")
+            .expect("bounded prepare returns a build");
+        bounded_rows.extend(
+            artifacts
+                .into_iter()
+                .flat_map(|artifact| artifact.into_parts_with_rows().2)
+                .map(TableRow::into_row),
+        );
+    }
+
+    // Complete row-for-row equality: StorageRow: Eq covers key + value + version + timestamp +
+    // expiry + tombstone, unlike the key-only TableRow PartialEq.
+    assert_eq!(
+        bounded_rows, serial_rows,
+        "subcompaction ranges did not reunite into the serial compaction output"
+    );
 }
 
 #[cfg(feature = "perf-trace")]
@@ -3404,6 +3531,8 @@ fn branch_compaction_nonzero_promotion_preserves_materialization_source() {
     );
     let reader = immutable_reader("promote-replacement", vec![row.clone()]);
     let descriptor = branch_table_descriptor(BranchLevel::new(1), &reader);
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras");
     state
         .install_owned_table_at_level(
             BranchLevel::new(1),
@@ -3411,6 +3540,7 @@ fn branch_compaction_nonzero_promotion_preserves_materialization_source() {
                 child,
                 descriptor,
                 reader,
+                extras,
                 materialization_source,
             )
             .expect("replacement table"),
@@ -4573,12 +4703,15 @@ fn branch_compaction_preserves_replacement_refs_for_single_materialization_sourc
             )],
         );
         let descriptor = branch_table_descriptor(BranchLevel::ZERO, &reader);
+        let extras = crate::table::TableSummaryExtras::from_rows(reader.rows())
+            .expect("table summary extras");
         state
             .install_l0_table(
                 BranchOwnedTable::new_materialization_replacement(
                     child,
                     descriptor,
                     reader,
+                    extras,
                     materialization_source,
                 )
                 .expect("replacement table"),

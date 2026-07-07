@@ -218,6 +218,10 @@ fn branch_inherited_layer_constructor_rejects_count_and_source_mismatches() {
     ));
 }
 
+// BS4.4e demoted cross-table internal-key uniqueness to a debug-only invariant check: sealed inherited
+// tables are compaction-deduped, and a full scan per fork/reopen would defeat O(1) fork at billion scale.
+// The rejection is therefore only guaranteed under `debug_assertions`.
+#[cfg(debug_assertions)]
 #[test]
 fn branch_inherited_layer_rejects_duplicate_internal_keys_across_tables() {
     let source = branch_id(71);

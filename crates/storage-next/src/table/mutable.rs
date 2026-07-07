@@ -107,6 +107,7 @@ impl MutableTable {
     }
 
     pub(crate) fn clone_for_read_view(&self) -> Self {
+        crate::observability::perf_trace::record_read_pin();
         let (sequence_upper_bound, facts) = self.capture_view_state();
         Self {
             inner: Arc::clone(&self.inner),
@@ -343,6 +344,22 @@ impl Eq for FrozenTable {}
 impl FrozenTable {
     pub(crate) fn len(&self) -> usize {
         self.facts.row_count()
+    }
+
+    /// Strong-count of the backing memtable `Arc`, for the BS2.4b reference-lifetime check: a held
+    /// reference keeps a frozen table alive after the runtime retires it (flush), and it dies by
+    /// `Arc` drop once the last reference is dropped (`RocksDB` `Version::Unref`).
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn memory_state_strong_count(&self) -> usize {
+        Arc::strong_count(&self.inner)
+    }
+
+    /// Stable identity of the sealed backing memtable across `FrozenTable` clones (BS5.3b):
+    /// snapshot clones share the `Arc`, so pointer identity proves "the same frozen table"
+    /// strictly more precisely than row-by-row comparison — and in O(1). Valid only while the
+    /// identified table is alive (the prepared flush that captures it keeps its snapshot alive).
+    pub(crate) fn memory_state_identity(&self) -> usize {
+        Arc::as_ptr(&self.inner) as usize
     }
 
     pub(crate) fn is_empty(&self) -> bool {

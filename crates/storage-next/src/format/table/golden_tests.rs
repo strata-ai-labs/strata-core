@@ -1,11 +1,13 @@
-use super::artifact::{decode_immutable_table, encode_immutable_table};
+use super::artifact::{
+    decode_immutable_table, encode_immutable_table, encode_immutable_table_with_block_compressions,
+};
 use super::data::{decode_table_data_block, encode_table_data_block, TableDataBlock};
 use super::index::{decode_table_index_block, encode_table_index_block, TableIndexBlock};
 use super::properties::{decode_table_properties, encode_table_properties, TableProperties};
 use super::test_support::{put, tombstone};
 use super::{
-    decode_table_block_frame, encode_table_block_frame, TableBlockFrame, TableBlockKind,
-    TableCompression,
+    decode_filter_frame, decode_table_block_frame, encode_filter_frame, encode_table_block_frame,
+    TableBlockFrame, TableBlockKind, TableCompression, TableFilterFrame,
 };
 
 const TABLE_DATA_BLOCK_ONE_PUT_UNCOMPRESSED_FRAME: &str = include_str!(
@@ -24,6 +26,80 @@ const IMMUTABLE_TABLE_ONE_BLOCK: &str =
     include_str!("../../../testdata/goldens/storage-format-v1/immutable-table-one-block.hex");
 const IMMUTABLE_TABLE_TWO_BLOCK: &str =
     include_str!("../../../testdata/goldens/storage-format-v1/immutable-table-two-block.hex");
+const TABLE_FILTER_FRAME: &str =
+    include_str!("../../../testdata/goldens/storage-format-v1/table-filter-frame.hex");
+const IMMUTABLE_TABLE_FILTERED: &str =
+    include_str!("../../../testdata/goldens/storage-format-v1/immutable-table-filtered.hex");
+const IMMUTABLE_TABLE_FILTERED_MULTI_BLOCK: &str = include_str!(
+    "../../../testdata/goldens/storage-format-v1/immutable-table-filtered-multi-block.hex"
+);
+
+fn golden_filter_frame() -> TableFilterFrame {
+    TableFilterFrame {
+        probes: 7,
+        key_count: 3,
+        bit_count: 64,
+        bits: vec![0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef],
+    }
+}
+
+#[test]
+fn table_filter_frame_matches_golden_vector() {
+    let frame = golden_filter_frame();
+    let golden = parse_hex(TABLE_FILTER_FRAME);
+    assert_eq!(
+        encode_filter_frame(&frame).expect("encode filter frame"),
+        golden
+    );
+    let (decoded, consumed) = decode_filter_frame(&golden).expect("decode filter frame");
+    assert_eq!(consumed, golden.len());
+    assert_eq!(decoded, frame);
+}
+
+#[test]
+fn immutable_table_filtered_matches_golden_vector() {
+    let rows = vec![put(b"alpha".to_vec(), 7), put(b"beta".to_vec(), 6)];
+    let frame = golden_filter_frame();
+    let golden = parse_hex(IMMUTABLE_TABLE_FILTERED);
+    assert_eq!(
+        encode_immutable_table_with_block_compressions(
+            &rows,
+            4096,
+            2,
+            &[TableCompression::Uncompressed],
+            Some(&frame),
+        )
+        .expect("encode filtered table"),
+        golden
+    );
+    let decoded = decode_immutable_table(&golden).expect("decode filtered table");
+    assert_eq!(decoded.rows(), rows.as_slice());
+    assert_eq!(decoded.filter(), Some(&frame));
+}
+
+#[test]
+fn immutable_table_filtered_multi_block_matches_golden_vector() {
+    let rows = two_block_rows();
+    let frame = golden_filter_frame();
+    let golden = parse_hex(IMMUTABLE_TABLE_FILTERED_MULTI_BLOCK);
+    assert_eq!(
+        encode_immutable_table_with_block_compressions(
+            &rows,
+            1024,
+            2,
+            &[TableCompression::Uncompressed; 2],
+            Some(&frame),
+        )
+        .expect("encode multi-block filtered table"),
+        golden
+    );
+    let decoded = decode_immutable_table(&golden).expect("decode multi-block filtered table");
+    assert_eq!(decoded.rows(), rows.as_slice());
+    assert_eq!(decoded.filter(), Some(&frame));
+    // The filter must sit after BOTH data blocks — this is the multi-block layout the single-block
+    // golden does not exercise.
+    assert_eq!(decoded.data_blocks().len(), 2);
+}
 
 #[test]
 fn table_data_block_one_put_frame_matches_golden_vector() {

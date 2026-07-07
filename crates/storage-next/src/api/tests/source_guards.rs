@@ -308,6 +308,96 @@ fn source_guard_publish_reads_cached_table_summary_not_row_scan() {
 }
 
 #[test]
+fn source_guard_lazy_reachable_scans_stream_via_cursor() {
+    // BS4.4g: these prod folds can observe a lazy/disk-resident durable table (via fork or the
+    // checkpoint boundary), so each must stream rows through a cursor (`for_each_reader_row`) — never
+    // a full materialization via `rows()` or the debug-only `materialize_rows_for_oracle` hatch. A
+    // plain `rows()` would trip the BS4.4d guard; the hatch would silently materialize every row off a
+    // hot path. This locks the BS4.4g cursor conversion against regression.
+    fn assert_streams_rows(source: &str, start: &str, end: &str, label: &str) {
+        let body = source
+            .split(start)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{label}: {start} is present"))
+            .split(end)
+            .next()
+            .unwrap_or_else(|| panic!("{label}: {start} precedes {end}"));
+        for forbidden in [".rows()", "materialize_rows_for_oracle"] {
+            assert!(
+                !body.contains(forbidden),
+                "{label} must stream rows via a cursor, not a full materialization ({forbidden})"
+            );
+        }
+        assert!(
+            body.contains("for_each_reader_row"),
+            "{label} must fold rows through the `for_each_reader_row` cursor helper"
+        );
+    }
+
+    // Historical-fork COW: `record_inherited_layer_summary` (and the read-view fold) no longer scan a
+    // straddle table on every recompute — they fold a cached `<= fork_version` summary computed once by
+    // `compute_straddle_read_view_summary`, which is where the cursor scan now lives. So the summary
+    // fold need only avoid full materialization; the streaming guarantee moves to the helper below.
+    fn assert_no_full_materialization(source: &str, start: &str, end: &str, label: &str) {
+        let body = source
+            .split(start)
+            .nth(1)
+            .unwrap_or_else(|| panic!("{label}: {start} is present"))
+            .split(end)
+            .next()
+            .unwrap_or_else(|| panic!("{label}: {start} precedes {end}"));
+        for forbidden in [".rows()", "materialize_rows_for_oracle"] {
+            assert!(
+                !body.contains(forbidden),
+                "{label} must not fully materialize a lazy table ({forbidden})"
+            );
+        }
+    }
+
+    let state = include_str!("../../branch/state.rs");
+    assert_streams_rows(
+        state,
+        "fn observe_own_rows",
+        "fn observe_rows",
+        "observe_own_rows",
+    );
+    assert_streams_rows(
+        state,
+        "fn record_inherited_layer(",
+        "fn record_commit_version",
+        "record_inherited_layer",
+    );
+    assert_no_full_materialization(
+        state,
+        "fn record_inherited_layer_summary",
+        "fn branch_reachable_table_identity_exists",
+        "record_inherited_layer_summary",
+    );
+
+    let read = include_str!("../../branch/read.rs");
+    assert_streams_rows(
+        read,
+        "fn compute_straddle_read_view_summary",
+        "struct BranchInheritedLayer",
+        "compute_straddle_read_view_summary",
+    );
+
+    let checkpoint = include_str!("../../lifecycle/checkpoint.rs");
+    assert_streams_rows(
+        checkpoint,
+        "fn branch_durable_commit_versions_in_interval",
+        "fn branch_checkpoint_flush_boundary",
+        "branch_durable_commit_versions_in_interval",
+    );
+    assert_streams_rows(
+        checkpoint,
+        "fn branch_checkpoint_flush_boundary",
+        "fn branch_durable_rows_cover_interval",
+        "branch_checkpoint_flush_boundary",
+    );
+}
+
+#[test]
 fn source_guard_background_controller_uses_executor_trait_and_clock() {
     let runtime_source = super::RUNTIME_SOURCE;
     let controller_block = runtime_source
@@ -511,7 +601,7 @@ fn lifecycle_simulation_boundary_source_guards_are_registered() {
 }
 
 #[test]
-fn source_guard_merge_cost_rewrite_publication_uses_prevalidated_row_handoff() {
+fn source_guard_rewrite_publication_installs_lazy_disk_resident_output() {
     let rewrite_source = include_str!("../../lifecycle/rewrite_publication.rs");
     let publish_artifact_source = rewrite_source
         .split("fn publish_rewrite_artifact")
@@ -529,17 +619,18 @@ fn source_guard_merge_cost_rewrite_publication_uses_prevalidated_row_handoff() {
         .expect("publish-or-load helper precedes object-name helper");
 
     assert!(
-        publish_artifact_source.contains("into_parts_with_rows"),
-        "durable rewrite publication must carry build-time rows forward"
+        publish_artifact_source.contains("into_parts()")
+            && !publish_artifact_source.contains("into_parts_with_rows"),
+        "BS4.4l: durable rewrite publication must drop build-time rows, not carry them forward"
     );
     assert!(
-        publish_artifact_source.contains("open_reader_from_validated_rows"),
-        "durable rewrite publication must install readers from validated rows"
+        publish_artifact_source.contains(".open_reader(")
+            && !publish_artifact_source.contains("open_reader_from_validated_rows"),
+        "BS4.4l: durable rewrite publication must install a lazy, disk-resident reader over the published object"
     );
     assert!(
-        !publish_artifact_source.contains(".open_reader(")
-            && !publish_artifact_source.contains("open_bytes("),
-        "durable rewrite publication must not reopen/reparse table bytes"
+        publish_artifact_source.contains("deny_runtime_materialization"),
+        "BS4.4l: durable rewrite output reader must guard against accidental full materialization"
     );
     assert!(
         publish_or_load_source.contains("publish_create_prevalidated"),

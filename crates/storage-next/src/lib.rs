@@ -18,6 +18,7 @@ mod backend;
 mod branch;
 mod commit;
 mod config;
+mod debug_trace;
 mod error;
 mod format;
 mod layout;

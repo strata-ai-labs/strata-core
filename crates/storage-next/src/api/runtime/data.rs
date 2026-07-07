@@ -195,16 +195,37 @@ pub(super) fn row_is_expired_at_selected_frontier(
     })
 }
 
+/// Cap a resolved (versioned) read bound at the visible version `V`, so an off-lock versioned read
+/// never observes rows newer than the writer has acknowledged (an `applied_not_visible` commit, or
+/// a batch mid-apply on another thread). A no-op when the requested version is already `≤ V`.
+/// `resolve_read_bound` always yields `AtVersion` for a versioned request; the other arms are
+/// defensive.
+///
+/// KNOWN GAP (deferred): when the version is capped down (`req > V`, reachable only in
+/// `applied_not_visible` with a landed timeline entry), the caller keeps `selected_timestamp` at
+/// `req`'s rather than the served version `V`'s — a narrow, conservative TTL-frontier over-hide.
+/// The `AtVersion` vs `AtTimestamp` frontier semantics are subtle (for `AtTimestamp` the requested
+/// time may be the correct frontier), so the fix is intentionally left to a focused later slice.
+pub(super) fn cap_bound_at_visible(bound: BranchReadBound, visible: u64) -> BranchReadBound {
+    match bound {
+        BranchReadBound::AtVersion(version) => {
+            BranchReadBound::at_version(CommitVersion::new(version.as_u64().min(visible)))
+        }
+        BranchReadBound::Latest => BranchReadBound::at_version(CommitVersion::new(visible)),
+        BranchReadBound::AtTimestamp(_) => bound,
+    }
+}
+
 pub(super) fn visible_tombstone_at_bound(
     view: &BranchReadView,
     key: &PhysicalKey,
-    resolved: ResolvedReadBound,
+    bound: BranchReadBound,
 ) -> StorageApiResult<Option<StorageReadRow>> {
     let rows = view
         .history(key, BranchHistoryOptions::all())
         .map_err(branch_error)?;
     for row in rows {
-        if !row_matches_read_bound(row.row(), resolved.branch_bound) {
+        if !row_matches_read_bound(row.row(), bound) {
             continue;
         }
         if row.row().is_tombstone() {

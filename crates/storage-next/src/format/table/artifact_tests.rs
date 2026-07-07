@@ -7,8 +7,9 @@ use super::properties::TableProperties;
 use super::test_support::{branch, encoded_internal_key_for_row, put, timestamp, tombstone};
 use super::{
     decode_table_footer, encode_table_block_frame, encode_table_footer, encode_table_header,
-    FormatError, TableBlockFrame, TableBlockKind, TableCompression, TableFooter, TableHeader,
-    TABLE_BLOCK_FRAME_HEADER_SIZE, TABLE_FOOTER_FORMAT, TABLE_FOOTER_SIZE, TABLE_HEADER_SIZE,
+    FormatError, TableBlockFrame, TableBlockKind, TableCompression, TableFilterFrame, TableFooter,
+    TableHeader, TABLE_BLOCK_FRAME_HEADER_SIZE, TABLE_FOOTER_FORMAT, TABLE_FOOTER_SIZE,
+    TABLE_HEADER_SIZE,
 };
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use std::ops::Range;
@@ -277,6 +278,7 @@ fn immutable_table_round_trips_zstd_and_mixed_data_compression() {
         4096,
         2,
         &[TableCompression::Uncompressed, TableCompression::Zstd],
+        None,
     )
     .expect("encode mixed table");
     assert_eq!(
@@ -373,7 +375,8 @@ fn immutable_table_rejects_empty_unsorted_duplicate_or_bad_split_inputs() {
             &[put(b"alpha".to_vec(), 7), put(b"beta".to_vec(), 6)],
             4096,
             1,
-            &[TableCompression::Uncompressed]
+            &[TableCompression::Uncompressed],
+            None
         ),
         Err(FormatError::InvalidValue {
             field: "data_compressions"
@@ -906,4 +909,73 @@ fn shift_footer_offsets(table: &mut [u8], index_delta: u64, properties_delta: u6
         .copy_from_slice(&(index_offset + index_delta).to_le_bytes());
     table[footer_start + 24..footer_start + 32]
         .copy_from_slice(&(properties_offset + properties_delta).to_le_bytes());
+}
+
+// BS4.2: a filtered table (nonzero footer slot, filter frame between data and index) round-trips and
+// carries its filter; malformed / corrupt filter frames are rejected before a reader could trust them.
+
+fn filtered_table(bits: [u8; 8]) -> (Vec<StorageRow>, TableFilterFrame, Vec<u8>) {
+    let rows = vec![put(b"alpha".to_vec(), 7), put(b"beta".to_vec(), 6)];
+    let filter = TableFilterFrame {
+        probes: 3,
+        key_count: 2,
+        bit_count: 64,
+        bits: bits.to_vec(),
+    };
+    let table = encode_immutable_table_with_block_compressions(
+        &rows,
+        4096,
+        2,
+        &[TableCompression::Uncompressed],
+        Some(&filter),
+    )
+    .expect("encode filtered table");
+    (rows, filter, table)
+}
+
+#[test]
+fn filtered_table_round_trips_and_carries_the_filter() {
+    let (rows, filter, table) = filtered_table([0xFF; 8]);
+    let decoded = decode_immutable_table(&table).expect("decode filtered table");
+    assert_eq!(decoded.rows(), rows.as_slice());
+    assert_eq!(decoded.filter(), Some(&filter));
+    assert!(decode_table_footer(&table).expect("footer").has_filter());
+}
+
+#[test]
+fn filtered_table_rejects_filter_slot_outside_the_data_index_gap() {
+    let (_, _, mut table) = filtered_table([0xFF; 8]);
+    let footer_start = table.len() - TABLE_FOOTER_SIZE;
+    // Grow the recorded filter length so filter_end no longer meets index_start.
+    let filter_len = u32::from_le_bytes(
+        table[footer_start + 20..footer_start + 24]
+            .try_into()
+            .expect("filter len bytes"),
+    );
+    table[footer_start + 20..footer_start + 24].copy_from_slice(&(filter_len + 1).to_le_bytes());
+    refresh_table_crc(&mut table);
+    assert!(matches!(
+        decode_immutable_table(&table),
+        Err(FormatError::InvalidLength { .. })
+    ));
+}
+
+#[test]
+fn filtered_table_rejects_flipped_filter_frame_bit() {
+    let (_, _, mut table) = filtered_table([0xAB; 8]);
+    let footer_start = table.len() - TABLE_FOOTER_SIZE;
+    let filter_offset = usize::try_from(u64::from_le_bytes(
+        table[footer_start + 12..footer_start + 20]
+            .try_into()
+            .expect("filter offset bytes"),
+    ))
+    .expect("filter offset fits usize");
+    // Flip a byte inside the filter frame payload; refresh the whole-table CRC so only the filter
+    // frame's own CRC is left broken.
+    table[filter_offset + TABLE_BLOCK_FRAME_HEADER_SIZE] ^= 0x01;
+    refresh_table_crc(&mut table);
+    assert!(matches!(
+        decode_immutable_table(&table),
+        Err(FormatError::ChecksumMismatch { .. })
+    ));
 }

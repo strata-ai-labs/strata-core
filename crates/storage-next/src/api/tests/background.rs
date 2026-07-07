@@ -329,7 +329,7 @@ fn deterministic_inline_block_pressure_wait_uses_manual_clock_executor() {
         "deterministic-inline background runtime should expose test block wait limits"
     );
 
-    for index in 0..16 {
+    for index in 0..36 {
         let key = format!("inline-block-clock-seed-{index}");
         runtime
             .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))
@@ -386,7 +386,7 @@ fn deterministic_inline_block_pressure_deadline_uses_manual_clock_without_progre
         "deterministic-inline background runtime should expose test block wait limits"
     );
 
-    for index in 0..16 {
+    for index in 0..36 {
         let key = format!("inline-block-deadline-seed-{index}");
         runtime
             .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))
@@ -489,7 +489,7 @@ fn deterministic_inline_manual_clock_runtime_limit_stops_and_resumes_drain_round
 #[test]
 fn disabled_maintenance_policy_skips_api_post_commit_enqueue_and_worker_wake() {
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let mut runtime = StorageRuntime::open(
+    let runtime = StorageRuntime::open(
         StorageOpenOptions::cache()
             .with_maintenance_scheduling_policy(StorageMaintenanceSchedulingPolicy::Disabled),
     )
@@ -524,7 +524,7 @@ fn disabled_maintenance_policy_skips_api_post_commit_enqueue_and_worker_wake() {
 
 #[test]
 fn maintenance_status_reports_queue_state_without_background_worker_in_manual_mode() {
-    let mut runtime = StorageRuntime::open(
+    let runtime = StorageRuntime::open(
         StorageOpenOptions::cache().with_maintenance_scheduling_policy(
             StorageMaintenanceSchedulingPolicy::EvaluateAndEnqueue,
         ),
@@ -782,10 +782,9 @@ fn background_duplicate_enqueue_coalesces_wake_while_worker_busy() {
     use std::sync::{Arc, Barrier};
 
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let mut runtime =
-        StorageRuntime::open(StorageOpenOptions::cache().with_background_worker_count(1))
-            .expect("single-worker background cache open")
-            .into_runtime();
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache().with_background_worker_count(1))
+        .expect("single-worker background cache open")
+        .into_runtime();
     let ready = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
     let observed_open = Arc::new(AtomicBool::new(false));
@@ -833,7 +832,7 @@ fn background_foreground_wait_counter_records_short_runtime_lock_waits() {
     use std::sync::{Arc, Barrier};
 
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let mut runtime = StorageRuntime::open_cache()
+    let runtime = StorageRuntime::open_cache()
         .expect("background cache open")
         .into_runtime();
     let ready = Arc::new(Barrier::new(2));
@@ -1239,7 +1238,7 @@ fn background_wal_growth_checkpoint_wakes_and_drains() {
     let backend = Box::leak(Box::new(StorageBackend::local_fs(temp_dir_for_api_test(
         "background-wal-growth",
     ))));
-    let mut runtime = StorageRuntime::open_with_backend(
+    let runtime = StorageRuntime::open_with_backend(
         StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
             .with_wal_growth_policy(StorageWalGrowthPolicy::thresholds(u64::MAX, usize::MAX, 1)),
         backend,
@@ -1477,7 +1476,7 @@ fn background_block_pressure_wait_has_deadline_when_worker_is_busy() {
     );
     ready.wait();
 
-    for index in 0..16 {
+    for index in 0..36 {
         let key = format!("block-timeout-seed-{index}");
         runtime
             .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))

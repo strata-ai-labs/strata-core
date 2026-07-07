@@ -10,10 +10,35 @@ use super::{
     DEFAULT_BACKGROUND_BLOCK_WAIT_SLICE,
 };
 
+use std::sync::atomic::AtomicU64;
+
+use strata_core_next::BranchId;
+
+use crate::branch::read::BranchReadView;
+use crate::branch::snapshot::{load_from_registry, BranchSnapshotRegistry};
+use crate::lifecycle::RuntimeReadHandles;
+
 pub(super) struct RuntimeSlot<R> {
     runtime: Arc<ParkingMutex<R>>,
+    /// Off-lock read handles (BS2.4): the visible-version bound `V` and the published-snapshot
+    /// registry, cloned out of the runtime at construction so a read never takes the runtime lock.
+    visible: Arc<AtomicU64>,
+    snapshot_registry: Arc<BranchSnapshotRegistry>,
     background: Option<BackgroundRuntimeController>,
     background_drain: Option<BackgroundDrainFn>,
+    /// Write-group join queue (BS5.1): contended durable commits enqueue here
+    /// and are executed in groups by whichever caller holds the runtime lock.
+    commit_groups: super::commit_group::CommitGroupQueue,
+    /// Covering-fsync chain (BS5.2): serializes the pipelined groups' off-lock
+    /// syncs so the device flush stays fat (one sync in flight, everyone it
+    /// covers skips their own).
+    wal_sync: super::commit_group::WalSyncChain,
+    /// Commits currently blocked on (or about to take) the runtime lock
+    /// (BS5.3): background drain rounds yield between steps while this is
+    /// nonzero — measured at 10-18 µs of writer lock-wait PER COMMIT when
+    /// drains interleave freely. Bounded by the drains' one-task fairness
+    /// floor so maintenance never starves into the admission stall wall.
+    commit_waiters: Arc<AtomicUsize>,
     #[cfg(test)]
     pub(super) background_block_wait: BackgroundBlockWaitConfig,
 }
@@ -23,6 +48,7 @@ pub(super) type BackgroundDrainFn = Arc<
 >;
 pub(super) type BackgroundArcDrain<R> = fn(
     &Arc<ParkingMutex<R>>,
+    &AtomicUsize,
     BackgroundDrainLimits,
     &Arc<dyn MaintenanceClock>,
 ) -> BackgroundDrainRound;
@@ -35,8 +61,16 @@ where
         let mut debug = formatter.debug_struct("RuntimeSlot");
         debug
             .field("runtime", &self.runtime)
+            .field("visible", &self.visible.load(Ordering::Relaxed))
+            .field("published_branches", &self.snapshot_registry.load().len())
             .field("background", &self.background)
-            .field("background_drain", &self.background_drain.is_some());
+            .field("background_drain", &self.background_drain.is_some())
+            .field("commit_groups", &self.commit_groups)
+            .field("wal_sync", &self.wal_sync)
+            .field(
+                "commit_waiters",
+                &self.commit_waiters.load(Ordering::Relaxed),
+            );
         #[cfg(test)]
         debug.field("background_block_wait", &self.background_block_wait);
         debug.finish()
@@ -203,14 +237,14 @@ pub(super) const fn lifecycle_storage_pressure_severity_rank(
 }
 
 impl<R> RuntimeSlot<R> {
-    pub(super) fn new(runtime: R, _config: LifecycleConfig) -> Self {
-        Self {
-            runtime: Arc::new(ParkingMutex::new(runtime)),
-            background: None,
-            background_drain: None,
-            #[cfg(test)]
-            background_block_wait: BackgroundBlockWaitConfig::default(),
-        }
+    /// The current visible-commit-version bound `V`, loaded off-lock (Acquire).
+    pub(super) fn visible(&self) -> u64 {
+        self.visible.load(Ordering::Acquire)
+    }
+
+    /// The published snapshot for `branch_id`, loaded off-lock from the shared registry.
+    pub(super) fn load_snapshot(&self, branch_id: BranchId) -> Option<Arc<BranchReadView>> {
+        load_from_registry(&self.snapshot_registry, branch_id)
     }
 
     pub(super) fn lock(&self) -> ParkingMutexGuard<'_, R> {
@@ -219,6 +253,26 @@ impl<R> RuntimeSlot<R> {
         perf_trace::record_lifecycle_foreground_wait_background_lock(perf_trace::timer_elapsed(
             started,
         ));
+        guard
+    }
+
+    /// The write-group join queue (BS5.1).
+    pub(super) fn commit_groups(&self) -> &super::commit_group::CommitGroupQueue {
+        &self.commit_groups
+    }
+
+    /// The covering-fsync chain (BS5.2).
+    pub(super) fn wal_sync(&self) -> &super::commit_group::WalSyncChain {
+        &self.wal_sync
+    }
+
+    /// Runtime lock acquisition for the COMMIT path (BS5.3): registers as a
+    /// commit waiter for the blocked span so background drain rounds yield
+    /// between steps instead of interleaving lock holds into every commit.
+    pub(super) fn lock_for_commit(&self) -> ParkingMutexGuard<'_, R> {
+        self.commit_waiters.fetch_add(1, Ordering::Release);
+        let guard = self.lock();
+        self.commit_waiters.fetch_sub(1, Ordering::Release);
         guard
     }
 
@@ -301,12 +355,6 @@ impl<R> RuntimeSlot<R> {
             .map(|background| background.shutdown(timeout))
     }
 
-    pub(super) fn request_background_shutdown(&self) -> Option<MaintenanceExecutorStats> {
-        self.background
-            .as_ref()
-            .map(BackgroundRuntimeController::request_shutdown)
-    }
-
     #[cfg(test)]
     pub(super) fn background_shutdown_requested_flag(&self) -> Option<Arc<AtomicBool>> {
         self.background
@@ -386,7 +434,7 @@ impl<R> RuntimeSlot<R> {
 
 impl<R> RuntimeSlot<R>
 where
-    R: Send + 'static,
+    R: Send + RuntimeReadHandles + 'static,
 {
     pub(super) fn new_with_background_arc_drain(
         runtime: R,
@@ -396,6 +444,8 @@ where
         mode_policy: ModeLifecyclePolicy,
         drain: BackgroundArcDrain<R>,
     ) -> Self {
+        let visible = runtime.visible_handle();
+        let snapshot_registry = runtime.snapshot_registry();
         let runtime = Arc::new(ParkingMutex::new(runtime));
         // The maintenance scheduling policy selects the executor flavor, but the
         // mode policy is authoritative: volatile modes (cache) never run a
@@ -412,14 +462,22 @@ where
         } else {
             None
         };
+        let commit_waiters = Arc::new(AtomicUsize::new(0));
         let background_drain = background.as_ref().map(|_| {
             let runtime = Arc::clone(&runtime);
-            Arc::new(move |limits, clock| drain(&runtime, limits, &clock)) as BackgroundDrainFn
+            let waiters = Arc::clone(&commit_waiters);
+            Arc::new(move |limits, clock| drain(&runtime, &waiters, limits, &clock))
+                as BackgroundDrainFn
         });
         Self {
             runtime,
+            visible,
+            snapshot_registry,
             background,
             background_drain,
+            commit_groups: super::commit_group::CommitGroupQueue::default(),
+            wal_sync: super::commit_group::WalSyncChain::default(),
+            commit_waiters,
             #[cfg(test)]
             background_block_wait: BackgroundBlockWaitConfig::default(),
         }
@@ -428,7 +486,17 @@ where
 
 impl<R> Drop for RuntimeSlot<R> {
     fn drop(&mut self) {
-        let _ = self.request_background_shutdown();
+        // Join the workers (bounded, same policy as close), don't just signal:
+        // an in-flight background task holds the runtime Arc — and with it the
+        // backend writer lock — so a signal-only drop leaves a window where an
+        // immediate reopen of the same database fails EWOULDBLOCK (post-delete
+        // GC publishes a pending-releases manifest through several fsyncs).
+        // Drop must release the lock deterministically; the timeout preserves
+        // liveness by detaching workers that fail to quiesce, exactly like the
+        // close path.
+        // Rationale: shutdown stats are close()'s diagnostics concern; a drop
+        // site has no caller to report them to.
+        let _ = self.shutdown_background(Some(super::DEFAULT_BACKGROUND_CLOSE_SHUTDOWN_TIMEOUT));
     }
 }
 
@@ -619,13 +687,6 @@ impl BackgroundRuntimeController {
             stats: self.executor.stats(),
             first_shutdown,
         }
-    }
-
-    fn request_shutdown(&self) -> MaintenanceExecutorStats {
-        if !self.close_requested.swap(true, Ordering::AcqRel) {
-            let _ = self.executor.request_shutdown();
-        }
-        self.executor.stats()
     }
 
     #[cfg(test)]

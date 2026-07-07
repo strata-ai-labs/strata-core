@@ -16,6 +16,7 @@ fault-injection = ["testkit"]
 perf-trace = []
 
 [dependencies]
+arc-swap = { workspace = true }
 crc32fast = { workspace = true }
 parking_lot = { workspace = true }
 serde = { workspace = true }

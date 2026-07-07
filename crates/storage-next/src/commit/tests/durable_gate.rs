@@ -266,13 +266,11 @@ fn unresolved_durable_gate_records_idempotently_and_blocks_mutation() {
 fn unresolved_durable_gate_availability_probe_rejects_without_admitting() {
     let gate = CommitUnresolvedDurableGate::new();
     assert_eq!(gate.require_admission_available(), Ok(()));
+    // BS5.2: an open span no longer blocks the probe — the pipelined commit
+    // path keeps a span open across its off-lock fsync while later commits
+    // admit. Only an unresolved fact refuses admission.
     let active = gate.admit_mutating_commit().expect("active admission");
-    assert_eq!(
-        gate.require_admission_available(),
-        Err(CommitRuntimeError::InvalidCommitState {
-            reason: "durable commit admission is already active",
-        })
-    );
+    assert_eq!(gate.require_admission_available(), Ok(()));
     drop(active);
 
     let fact = CommitUnresolvedDurable::durable_not_applied_with_facts(
@@ -303,23 +301,16 @@ fn unresolved_durable_gate_availability_probe_counts_only_rejections() {
     let clean = crate::observability::perf_trace::snapshot();
     assert_eq!(clean.commit_unresolved_gate_admission_attempts(), 0);
     assert_eq!(clean.commit_unresolved_gate_admission_acquired(), 0);
-    assert_eq!(clean.commit_unresolved_gate_rejected_active(), 0);
     assert_eq!(clean.commit_unresolved_gate_rejected_unresolved(), 0);
 
+    // BS5.2: an open span no longer rejects the probe — the probe stays clean
+    // (no attempt counted) while a pipelined span is in flight.
     let active = gate.admit_mutating_commit().expect("active admission");
     crate::observability::perf_trace::reset();
-    assert!(matches!(
-        gate.require_admission_available(),
-        Err(CommitRuntimeError::InvalidCommitState { .. })
-    ));
-    let active_reject = crate::observability::perf_trace::snapshot();
-    assert_eq!(active_reject.commit_unresolved_gate_admission_attempts(), 1);
-    assert_eq!(active_reject.commit_unresolved_gate_admission_acquired(), 0);
-    assert_eq!(active_reject.commit_unresolved_gate_rejected_active(), 1);
-    assert_eq!(
-        active_reject.commit_unresolved_gate_rejected_unresolved(),
-        0
-    );
+    gate.require_admission_available()
+        .expect("probe succeeds while a span is in flight");
+    let overlapping = crate::observability::perf_trace::snapshot();
+    assert_eq!(overlapping.commit_unresolved_gate_admission_attempts(), 0);
     drop(active);
 
     let fact = CommitUnresolvedDurable::durable_not_applied_with_facts(
@@ -341,10 +332,6 @@ fn unresolved_durable_gate_availability_probe_counts_only_rejections() {
     );
     assert_eq!(
         unresolved_reject.commit_unresolved_gate_admission_acquired(),
-        0
-    );
-    assert_eq!(
-        unresolved_reject.commit_unresolved_gate_rejected_active(),
         0
     );
     assert_eq!(
@@ -372,25 +359,69 @@ fn unresolved_durable_gate_instances_are_not_process_global() {
 }
 
 #[test]
-fn unresolved_durable_gate_serializes_active_empty_admissions() {
+fn unresolved_durable_gate_admits_concurrent_spans_and_still_blocks_on_fact() {
+    // BS5.2: the pipelined commit path keeps a span open across its off-lock
+    // covering fsync, so overlapping spans are legal; a recorded fact still
+    // refuses new admission until reconciled, regardless of open spans.
     let gate = CommitUnresolvedDurableGate::new();
     let first = gate.admit_mutating_commit().expect("first admission");
 
     assert_eq!(gate.unresolved().expect("gate read"), None);
+    let second = gate
+        .admit_mutating_commit()
+        .expect("overlapping admission while a span is in flight");
+    assert!(gate.require_open_for_mutation().is_ok());
+
+    let fact = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        stamp(branch_id(87), 11),
+        CommitDurabilityClass::Standard,
+        "apply failed",
+    )
+    .expect("fact");
+    gate.record_unresolved(fact).expect("record fact");
     assert!(matches!(
         gate.admit_mutating_commit(),
-        Err(CommitRuntimeError::InvalidCommitState {
-            reason: "durable commit admission is already active",
-        })
+        Err(CommitRuntimeError::UnresolvedDurableCommit { .. })
     ));
-    assert_eq!(
-        gate.require_open_for_mutation(),
-        Err(CommitRuntimeError::InvalidCommitState {
-            reason: "durable commit admission is already active",
-        })
-    );
+
+    // Open spans release independently; the fact outlives them.
     drop(first);
+    drop(second);
+    assert!(matches!(
+        gate.require_open_for_mutation(),
+        Err(CommitRuntimeError::UnresolvedDurableCommit { .. })
+    ));
+    gate.clear_exact(fact).expect("clear fact");
     assert!(gate.require_open_for_mutation().is_ok());
+}
+
+#[test]
+fn unresolved_durable_gate_leader_spans_nest_and_release_independently() {
+    // BS5.2: pipelined leader spans overlap — two groups in flight hold two
+    // spans; each `end_group_admission` releases exactly one, and a fact still
+    // refuses a new span regardless of how many are open.
+    let gate = CommitUnresolvedDurableGate::new();
+    gate.begin_group_admission().expect("first leader span");
+    gate.begin_group_admission().expect("second leader span");
+    assert!(gate.require_admission_available().is_ok());
+
+    gate.end_group_admission();
+    gate.end_group_admission();
+    // Over-release is saturating, not a panic or underflow.
+    gate.end_group_admission();
+    assert!(gate.require_admission_available().is_ok());
+
+    let fact = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        stamp(branch_id(88), 12),
+        CommitDurabilityClass::Standard,
+        "apply failed",
+    )
+    .expect("fact");
+    gate.record_unresolved(fact).expect("record fact");
+    assert!(matches!(
+        gate.begin_group_admission(),
+        Err(CommitRuntimeError::UnresolvedDurableCommit { .. })
+    ));
 }
 
 #[test]
@@ -535,6 +566,57 @@ fn unresolved_durable_gate_replaces_only_exact_existing_fact() {
     gate.replace_exact(original, replacement)
         .expect("replace original");
     assert_eq!(gate.unresolved().expect("gate read"), Some(replacement));
+}
+
+/// BS5.1 D1: a write group's group-fatal failure widens the fact to the group's contiguous
+/// version block. A group of one stays byte-identical to the single-commit fact; the widened
+/// fact round-trips the same exact-CAS record/clear, covers every member version, and rejects
+/// an inverted range.
+#[test]
+fn unresolved_durable_range_fact_covers_group_and_round_trips() {
+    let gate = CommitUnresolvedDurableGate::new();
+    let branch = branch_id(88);
+    let single = CommitUnresolvedDurable::durable_not_applied_with_facts(
+        stamp(branch, 12),
+        CommitDurabilityClass::Always,
+        "group apply failed",
+    )
+    .expect("single fact");
+
+    // Group-of-1 widening is the identity.
+    assert_eq!(
+        single
+            .covering_group_from(CommitVersion::new(12))
+            .expect("identity widening"),
+        single
+    );
+
+    let group = single
+        .covering_group_from(CommitVersion::new(9))
+        .expect("group widening");
+    assert_ne!(group, single, "a widened range is a distinct fact");
+    assert_eq!(group.first_commit_version(), CommitVersion::new(9));
+    assert_eq!(group.commit_version(), CommitVersion::new(12));
+    assert!(group.covers_version(CommitVersion::new(9)));
+    assert!(group.covers_version(CommitVersion::new(11)));
+    assert!(group.covers_version(CommitVersion::new(12)));
+    assert!(!group.covers_version(CommitVersion::new(8)));
+    assert!(!group.covers_version(CommitVersion::new(13)));
+
+    // Exact-CAS semantics are preserved for the widened fact.
+    gate.record_unresolved(group).expect("record range fact");
+    assert_eq!(
+        gate.clear_exact(single),
+        Err(CommitRuntimeError::InvalidCommitState {
+            reason: "cannot clear different unresolved durable commit",
+        }),
+        "the single-stamp fact must not clear the range fact",
+    );
+    gate.clear_exact(group).expect("exact clear of range fact");
+    assert_eq!(gate.unresolved().expect("gate read"), None);
+
+    // An inverted range is rejected at construction.
+    assert!(single.covering_group_from(CommitVersion::new(13)).is_err());
 }
 
 fn stamp(branch: BranchId, version: u64) -> CommitStamp {

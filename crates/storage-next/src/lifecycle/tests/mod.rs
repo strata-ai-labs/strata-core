@@ -12,6 +12,7 @@ mod cache_mode_lifecycle_policy;
 mod capability;
 mod checkpoint;
 mod close;
+mod commit_group;
 mod commit_hardening;
 mod compaction;
 mod durable;
@@ -132,6 +133,10 @@ fn lifecycle_config_rejects_zero_limits() {
             "max_commits_since_checkpoint",
             LifecycleWalGrowthPolicy::new(1, 1, Some(0)),
         ),
+        (
+            "max_total_wal_bytes",
+            LifecycleWalGrowthPolicy::new(1, 1, Some(1)).with_max_total_wal_bytes(0),
+        ),
     ] {
         assert!(matches!(
             LifecycleConfig::default().with_wal_growth_policy(policy),
@@ -139,6 +144,31 @@ fn lifecycle_config_rejects_zero_limits() {
                 field: actual,
                 reason: "must be nonzero when WAL growth policy is enabled",
             }) if actual == field
+        ));
+    }
+}
+
+#[test]
+fn lifecycle_config_rejects_invalid_write_throttle_policy() {
+    // soft ratio must be strictly inside (0, 1000) so the `1000 - soft` ramp denominator is
+    // never 0; max delay must be nonzero. Reasons differ per field, so match on `field` only.
+    for (field, policy) in [
+        (
+            "write_throttle_soft_ratio_permille",
+            LifecycleWriteThrottlePolicy::new(0, 20),
+        ),
+        (
+            "write_throttle_soft_ratio_permille",
+            LifecycleWriteThrottlePolicy::new(1000, 20),
+        ),
+        (
+            "write_throttle_max_delay_millis",
+            LifecycleWriteThrottlePolicy::new(700, 0),
+        ),
+    ] {
+        assert!(matches!(
+            LifecycleConfig::default().with_write_throttle_policy(policy),
+            Err(LifecycleError::InvalidConfig { field: actual, .. }) if actual == field
         ));
     }
 }

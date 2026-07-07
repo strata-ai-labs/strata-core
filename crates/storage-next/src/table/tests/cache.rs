@@ -1,4 +1,5 @@
 use crate::format::TableCompression;
+use crate::format::{decode_filter_frame, encode_filter_frame, TableFilterFrame};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     CacheInsert, TableBlockAddress, TableBlockCache, TableBlockCacheKey, TableBlockCacheKind,
@@ -300,8 +301,20 @@ fn sharded_cache_aggregates_capacity_stats_and_table_invalidation() {
 
 #[test]
 fn sharded_cache_caps_default_budget_without_tiny_shards() {
-    let cache = enabled_cache(64 * 1024 * 1024);
-    assert_eq!(cache.shard_count_for_test(), 16);
+    let capacity = 64 * 1024 * 1024;
+    let cache = enabled_cache(capacity);
+    // BS4.1: shard count is CPU-derived (clamped [4,64]) and capped by capacity so no shard is
+    // smaller than one 64 KiB block. Assert machine-independently: the band, and no tiny shards.
+    let shard_count = cache.shard_count_for_test();
+    assert!(
+        (4..=64).contains(&shard_count),
+        "shard count {shard_count} outside [4,64]"
+    );
+    assert!(
+        capacity / shard_count >= 64 * 1024,
+        "per-shard capacity {} is below one block",
+        capacity / shard_count
+    );
     assert_eq!(cache.stats().capacity_bytes(), 64 * 1024 * 1024);
 
     let block = bytes(0x55, 154);
@@ -313,6 +326,63 @@ fn sharded_cache_caps_default_budget_without_tiny_shards() {
     let stats = cache.stats();
     assert_eq!(stats.inserts(), 1);
     assert_eq!(stats.skipped_oversized(), 0);
+}
+
+#[test]
+fn shard_count_follows_cpu_band_and_caps_by_capacity() {
+    // Disabled (zero-capacity) collapses to a single shard.
+    assert_eq!(TableBlockCache::disabled().shard_count_for_test(), 1);
+    // A sub-block cache never gets more shards than blocks it can hold (no tiny shards).
+    assert_eq!(enabled_cache(4).shard_count_for_test(), 1);
+    // A large cache is CPU-derived: within [4,64], and never sub-block per shard. Machine-independent.
+    let capacity = 64 * 1024 * 1024;
+    let shard_count = enabled_cache(capacity).shard_count_for_test();
+    assert!(
+        (4..=64).contains(&shard_count),
+        "shard count {shard_count} outside [4,64]"
+    );
+    assert!(
+        capacity / shard_count >= 64 * 1024,
+        "shard smaller than one block"
+    );
+}
+
+#[test]
+fn concurrent_hammer_stays_within_capacity_and_never_panics() {
+    let capacity = 256 * 1024;
+    let cache = Arc::new(enabled_cache(capacity));
+    let workers: Vec<_> = (0..8u8)
+        .map(|worker| {
+            let cache = Arc::clone(&cache);
+            std::thread::spawn(move || {
+                for round in 0..4_000u64 {
+                    let offset = u64::from(worker) * 128 + (round % 64);
+                    let entry = key("hammer", TableBlockCacheKind::Data, offset, 4);
+                    // Outcomes are intentionally discarded: this is a race / panic / deadlock smoke
+                    // under concurrency, not a correctness assertion (that is the property test).
+                    match round % 3 {
+                        0 => {
+                            let _ = cache.insert(entry, bytes(worker, 4 * 1024));
+                        }
+                        1 => {
+                            let _ = cache.get(&entry);
+                        }
+                        _ => {
+                            let _ = cache.remove(&entry);
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().expect("hammer worker joins cleanly");
+    }
+    assert!(
+        cache.current_bytes() <= u64::try_from(capacity).expect("capacity fits u64"),
+        "cache exceeded capacity: {} > {capacity}",
+        cache.current_bytes()
+    );
 }
 
 #[cfg(feature = "perf-trace")]
@@ -868,4 +938,63 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
 
 fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("u64 bytes"))
+}
+
+// BS4.2: a bloom filter must survive a persisted-frame round trip byte-for-byte, so a loaded filter
+// never drops a live row via a false `DefinitelyAbsent`.
+
+fn filter_to_frame(filter: &TableBloomFilter) -> TableFilterFrame {
+    TableFilterFrame {
+        probes: filter.probes(),
+        key_count: u64::try_from(filter.key_count()).expect("key count fits u64"),
+        bit_count: u64::try_from(filter.bit_count()).expect("bit count fits u64"),
+        bits: filter.bits().to_vec(),
+    }
+}
+
+fn round_trip(filter: &TableBloomFilter) -> TableBloomFilter {
+    let frame = filter_to_frame(filter);
+    let encoded = encode_filter_frame(&frame).expect("encode filter frame");
+    let (decoded, consumed) = decode_filter_frame(&encoded).expect("decode filter frame");
+    assert_eq!(consumed, encoded.len());
+    assert_eq!(decoded, frame, "frame parts diverged");
+    TableBloomFilter::from_frame_parts(
+        decoded.probes,
+        decoded.key_count,
+        decoded.bit_count,
+        decoded.bits,
+    )
+    .expect("reconstruct bloom from frame parts")
+}
+
+#[test]
+fn bloom_filter_survives_frame_round_trip_without_dropping_keys() {
+    let keys: Vec<Vec<u8>> = (0..500u32)
+        .map(|index| format!("key-{index:08}").into_bytes())
+        .collect();
+    let filter = TableBloomFilter::build(keys.iter().map(Vec::as_slice), 10).expect("build filter");
+    let restored = round_trip(&filter);
+    assert_eq!(
+        restored, filter,
+        "reconstructed bloom differs byte-for-byte"
+    );
+    for key in &keys {
+        assert_eq!(
+            restored.might_contain(key),
+            TableBloomProbe::MaybePresent,
+            "round-tripped filter dropped a live key"
+        );
+    }
+}
+
+#[test]
+fn empty_bloom_filter_survives_frame_round_trip() {
+    let filter = TableBloomFilter::build(std::iter::empty::<&[u8]>(), 10).expect("build empty");
+    let restored = round_trip(&filter);
+    assert_eq!(restored, filter);
+    // An empty table has no rows: every probe is correctly DefinitelyAbsent.
+    assert_eq!(
+        restored.might_contain(b"anything"),
+        TableBloomProbe::DefinitelyAbsent
+    );
 }

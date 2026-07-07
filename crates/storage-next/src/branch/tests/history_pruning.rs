@@ -765,7 +765,9 @@ fn timestamp_lookup_scan_remains_counter_visible_until_timeline_facts_exist() {
         .expect("attach inherited layer");
 
     let _capture = perf_trace::begin_test_capture();
-    let version = state.resolve_timestamp_to_commit_version(Timestamp::from_micros(350));
+    let version = state
+        .resolve_timestamp_to_commit_version(Timestamp::from_micros(350))
+        .expect("resolve timestamp");
     let perf = perf_trace::snapshot();
 
     assert_eq!(version, Some(CommitVersion::new(30)));
@@ -809,8 +811,12 @@ fn timestamp_lookup_miss_and_fork_cap_are_counter_visible_until_timeline_facts_e
         .expect("install owned table");
 
     let _capture = perf_trace::begin_test_capture();
-    let miss = state.resolve_timestamp_to_commit_version(Timestamp::from_micros(5));
-    let at_fork = state.resolve_timestamp_to_commit_version(Timestamp::from_micros(450));
+    let miss = state
+        .resolve_timestamp_to_commit_version(Timestamp::from_micros(5))
+        .expect("resolve timestamp");
+    let at_fork = state
+        .resolve_timestamp_to_commit_version(Timestamp::from_micros(450))
+        .expect("resolve timestamp");
     let perf = perf_trace::snapshot();
 
     assert_eq!(miss, None);
@@ -905,12 +911,15 @@ fn timestamp_lookup_after_lifecycle_source_changes_stays_counter_visible_until_t
         .expect("install snapshot rows");
 
     let _capture = perf_trace::begin_test_capture();
-    let flushed_version =
-        flushed_state.resolve_timestamp_to_commit_version(Timestamp::from_micros(250));
-    let materialized_version =
-        materialized_state.resolve_timestamp_to_commit_version(Timestamp::from_micros(350));
-    let snapshot_version =
-        snapshot_states[0].resolve_timestamp_to_commit_version(Timestamp::from_micros(550));
+    let flushed_version = flushed_state
+        .resolve_timestamp_to_commit_version(Timestamp::from_micros(250))
+        .expect("resolve timestamp");
+    let materialized_version = materialized_state
+        .resolve_timestamp_to_commit_version(Timestamp::from_micros(350))
+        .expect("resolve timestamp");
+    let snapshot_version = snapshot_states[0]
+        .resolve_timestamp_to_commit_version(Timestamp::from_micros(550))
+        .expect("resolve timestamp");
     let perf = perf_trace::snapshot();
 
     assert_eq!(flushed_version, Some(CommitVersion::new(20)));

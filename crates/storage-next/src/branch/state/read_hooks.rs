@@ -5,8 +5,8 @@ use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::branch::facts::{BranchSourceLayout, BranchStateFacts};
 use crate::branch::read::{
-    inherited_table_count, source_layout_from_sources, BranchInheritedLayer, BranchOwnedTable,
-    BranchReadView, BranchTimestampCoverage,
+    inherited_table_count, source_layout_from_sources, try_for_each_reader_row,
+    BranchInheritedLayer, BranchOwnedTable, BranchReadView, BranchTimestampCoverage,
 };
 use crate::observability::perf_trace;
 use crate::table::{FrozenTable, MutableTable};
@@ -80,7 +80,7 @@ impl BranchLocalState {
     }
 
     pub(crate) fn owned_levels(&self) -> &[Vec<BranchOwnedTable>] {
-        &self.owned_levels
+        self.layout.levels()
     }
 
     pub(crate) fn inherited_layers(&self) -> &[BranchInheritedLayer] {
@@ -100,25 +100,34 @@ impl BranchLocalState {
     }
 
     pub(crate) fn frozen_byte_count(&self) -> u64 {
-        self.frozen.iter().fold(0u64, |total, table| {
-            total.saturating_add(u64::try_from(table.approximate_size_bytes()).unwrap_or(u64::MAX))
-        })
+        #[cfg(debug_assertions)]
+        self.debug_assert_shape_consistent();
+        self.shape.frozen_bytes
     }
 
     /// Approximate resident bytes held by this branch's durable owned tables. Whole-object readers
     /// materialize each table in memory, so this is the dominant steady-state read footprint and
-    /// must be counted toward the database memory total.
+    /// must be counted toward the database memory total. O(1): served from the cached shape
+    /// aggregates, maintained at structural-mutation cadence.
     pub(crate) fn owned_table_byte_count(&self) -> u64 {
-        self.owned_levels
-            .iter()
-            .flatten()
-            .fold(0u64, |total, table| {
-                total.saturating_add(table.approximate_size_bytes())
-            })
+        #[cfg(debug_assertions)]
+        self.debug_assert_shape_consistent();
+        self.shape.owned_bytes
+    }
+
+    /// Per-level logical byte totals (`facts().byte_count()`), index-aligned with
+    /// `owned_levels()`. O(1): served from the cached shape aggregates. Consumed by
+    /// compaction level-target scoring.
+    pub(crate) fn per_level_bytes(&self) -> &[u64] {
+        #[cfg(debug_assertions)]
+        self.debug_assert_shape_consistent();
+        &self.shape.per_level_bytes
     }
 
     pub(crate) fn owned_table_count(&self) -> usize {
-        self.owned_levels.iter().map(Vec::len).sum()
+        #[cfg(debug_assertions)]
+        self.debug_assert_shape_consistent();
+        self.shape.owned_tables
     }
 
     pub(crate) fn inherited_layer_count(&self) -> usize {
@@ -126,14 +135,16 @@ impl BranchLocalState {
     }
 
     pub(crate) fn inherited_table_count(&self) -> usize {
-        inherited_table_count(&self.inherited_layers)
+        #[cfg(debug_assertions)]
+        self.debug_assert_shape_consistent();
+        self.shape.inherited_tables
     }
 
     pub(crate) fn source_layout(&self) -> BranchSourceLayout {
         source_layout_from_sources(
             &self.active,
             &self.frozen,
-            &self.owned_levels,
+            self.owned_levels(),
             &self.inherited_layers,
         )
     }
@@ -160,11 +171,11 @@ impl BranchLocalState {
     pub(crate) fn resolve_timestamp_to_commit_version(
         &self,
         timestamp: Timestamp,
-    ) -> Option<CommitVersion> {
+    ) -> BranchRuntimeResult<Option<CommitVersion>> {
         perf_trace::record_branch_timestamp_rows(source_row_counts(
             &self.active,
             &self.frozen,
-            &self.owned_levels,
+            self.owned_levels(),
             &self.inherited_layers,
             |_| true,
         ));
@@ -187,30 +198,39 @@ impl BranchLocalState {
                 }
             }
         }
-        for tables in &self.owned_levels {
-            for table in tables {
-                for row in table.rows() {
-                    if row.row().commit_timestamp() <= timestamp {
-                        consider(row.row().commit_version());
-                    }
-                }
+        for table in self.owned_levels().iter().flatten() {
+            let version = owned_timestamp_commit_version(table, timestamp)?;
+            #[cfg(debug_assertions)]
+            {
+                let scan = owned_timestamp_commit_version_by_scan(table, timestamp)?;
+                debug_assert_eq!(
+                    version, scan,
+                    "owned timestamp resolution diverged from a full row scan",
+                );
+            }
+            if let Some(version) = version {
+                consider(version);
             }
         }
         for layer in &self.inherited_layers {
             let fork_version = layer.fork_version();
-            for tables in layer.owned_levels() {
-                for table in tables {
-                    for row in table.rows() {
-                        if row.row().commit_timestamp() <= timestamp
-                            && row.row().commit_version().as_u64() <= fork_version.as_u64()
-                        {
-                            consider(row.row().commit_version());
-                        }
-                    }
+            for table in layer.owned_levels().iter().flatten() {
+                let version = inherited_timestamp_commit_version(table, timestamp, fork_version)?;
+                #[cfg(debug_assertions)]
+                {
+                    let scan =
+                        inherited_timestamp_commit_version_by_scan(table, timestamp, fork_version)?;
+                    debug_assert_eq!(
+                        version, scan,
+                        "inherited timestamp resolution diverged from a full row scan",
+                    );
+                }
+                if let Some(version) = version {
+                    consider(version);
                 }
             }
         }
-        best
+        Ok(best)
     }
 
     pub(crate) const fn timestamp_min(&self) -> Option<Timestamp> {
@@ -258,7 +278,26 @@ impl BranchLocalState {
             self.branch_id,
             self.active.clone_for_read_view(),
             self.frozen.clone(),
-            self.owned_levels.clone(),
+            self.owned_levels().to_vec(),
+            self.inherited_layers.clone(),
+            self.facts()?,
+        )
+        .map(|view| view.with_timestamp_coverage(self.timestamp_coverage))
+    }
+
+    /// Capture a snapshot for off-lock publication (BS2.4 Model 2): identical to
+    /// [`capture_read_view`](Self::capture_read_view) but holds the **live** (unpinned) active
+    /// handle, so the published snapshot sees commits appended to the shared memtable without a
+    /// per-commit republish. Each off-lock read pins the active at read time. Called only under the
+    /// runtime lock, where `active.len()` and `self.facts()` observe the same `inner`, so the
+    /// construction validation (`facts.active_rows == active.len()`) holds at capture.
+    pub(crate) fn capture_snapshot(&self) -> BranchRuntimeResult<BranchReadView> {
+        perf_trace::record_read_view_capture(read_view_source_handle_count(self), 0, 0);
+        BranchReadView::new_from_validated_state(
+            self.branch_id,
+            self.active.clone(),
+            self.frozen.clone(),
+            self.owned_levels().to_vec(),
             self.inherited_layers.clone(),
             self.facts()?,
         )
@@ -270,12 +309,77 @@ impl BranchLocalState {
             self.branch_id,
             self.active.clone_for_read_view(),
             self.frozen.clone(),
-            self.owned_levels.clone(),
+            self.owned_levels().to_vec(),
             self.inherited_layers.clone(),
             self.facts()?,
         )
         .map(|_| ())
     }
+}
+
+/// BS4.4c: the max commit version among an owned table's rows stamped at or before `timestamp`. The
+/// table's timestamp extras skip the row scan when the whole table is on one side of the query; only a
+/// table straddling the query timestamp is scanned (`by_scan`; BS4.4d cursor-izes that fallback).
+fn owned_timestamp_commit_version(
+    table: &BranchOwnedTable,
+    timestamp: Timestamp,
+) -> BranchRuntimeResult<Option<CommitVersion>> {
+    let extras = table.extras();
+    if extras.timestamp_max().is_some_and(|max| max <= timestamp) {
+        Ok(Some(table.facts().commit_range().max()))
+    } else if extras.timestamp_min().is_some_and(|min| min > timestamp) {
+        Ok(None)
+    } else {
+        owned_timestamp_commit_version_by_scan(table, timestamp)
+    }
+}
+
+fn owned_timestamp_commit_version_by_scan(
+    table: &BranchOwnedTable,
+    timestamp: Timestamp,
+) -> BranchRuntimeResult<Option<CommitVersion>> {
+    let mut best: Option<CommitVersion> = None;
+    try_for_each_reader_row(table.reader(), |row| {
+        if row.row().commit_timestamp() <= timestamp {
+            let version = row.row().commit_version();
+            best = Some(best.map_or(version, |current| current.max(version)));
+        }
+        Ok(())
+    })?;
+    Ok(best)
+}
+
+/// BS4.4c: like [`owned_timestamp_commit_version`] but for an inherited table, excluding rows past the
+/// layer's fork. A validly-constructed layer has no rows past the fork, so the fork check is a no-op and
+/// the owned fast path applies; the fork-straddle branch is reachable only via unchecked test construction.
+fn inherited_timestamp_commit_version(
+    table: &BranchOwnedTable,
+    timestamp: Timestamp,
+    fork_version: CommitVersion,
+) -> BranchRuntimeResult<Option<CommitVersion>> {
+    if table.facts().commit_range().max().as_u64() <= fork_version.as_u64() {
+        owned_timestamp_commit_version(table, timestamp)
+    } else {
+        inherited_timestamp_commit_version_by_scan(table, timestamp, fork_version)
+    }
+}
+
+fn inherited_timestamp_commit_version_by_scan(
+    table: &BranchOwnedTable,
+    timestamp: Timestamp,
+    fork_version: CommitVersion,
+) -> BranchRuntimeResult<Option<CommitVersion>> {
+    let mut best: Option<CommitVersion> = None;
+    try_for_each_reader_row(table.reader(), |row| {
+        if row.row().commit_timestamp() <= timestamp
+            && row.row().commit_version().as_u64() <= fork_version.as_u64()
+        {
+            let version = row.row().commit_version();
+            best = Some(best.map_or(version, |current| current.max(version)));
+        }
+        Ok(())
+    })?;
+    Ok(best)
 }
 
 fn read_view_source_handle_count(state: &BranchLocalState) -> usize {
@@ -301,9 +405,9 @@ fn source_row_counts(
     for (level_index, tables) in owned_levels.iter().enumerate() {
         for table in tables {
             if level_index == 0 {
-                counts.owned_l0 = counts.owned_l0.saturating_add(table.rows().len());
+                counts.owned_l0 = counts.owned_l0.saturating_add(table.row_count_usize());
             } else {
-                counts.owned_nonzero = counts.owned_nonzero.saturating_add(table.rows().len());
+                counts.owned_nonzero = counts.owned_nonzero.saturating_add(table.row_count_usize());
             }
         }
     }
@@ -314,10 +418,12 @@ fn source_row_counts(
         for (level_index, tables) in layer.owned_levels().iter().enumerate() {
             for table in tables {
                 if level_index == 0 {
-                    counts.inherited_l0 = counts.inherited_l0.saturating_add(table.rows().len());
+                    counts.inherited_l0 =
+                        counts.inherited_l0.saturating_add(table.row_count_usize());
                 } else {
-                    counts.inherited_nonzero =
-                        counts.inherited_nonzero.saturating_add(table.rows().len());
+                    counts.inherited_nonzero = counts
+                        .inherited_nonzero
+                        .saturating_add(table.row_count_usize());
                 }
             }
         }

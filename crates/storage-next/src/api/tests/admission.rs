@@ -429,12 +429,16 @@ fn durable_write_admission_liveness_level_zero_backlog_completes_via_forced_comp
         1,
     ));
 
-    // Build a blocking L0 backlog: each flush turns one frozen memtable into one
-    // owned level-zero table.
-    for index in 0..16 {
+    // Build a blocking L0 backlog: each flush turns one frozen memtable into one owned level-zero
+    // table. The backlog must cross LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD to reach
+    // `BlockMutatingAdmission` severity — L0 tables are cheap on-disk objects, so they block admission
+    // far later than a frozen-memtable backlog (FROZEN_BLOCKING_FLUSH_THRESHOLD = 4). Referencing the
+    // constant keeps the test from silently under-shooting the threshold if it is retuned.
+    let l0_backlog = crate::lifecycle::LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD + 4;
+    for index in 0..l0_backlog {
         let key = format!("durable-level-zero-{index}");
         runtime
-            .append_raw_row_for_test(background_raw_row(key.as_bytes(), 0))
+            .append_raw_row_for_test(background_raw_row(key.as_bytes(), index as u64 + 1))
             .expect("seed active row before flush");
         runtime
             .flush_default_branch_for_test()
@@ -468,7 +472,7 @@ fn durable_admission_changes_do_not_disturb_cache_absence_counters() {
     // background maintenance, admission waits, or manifest persistence into the
     // volatile cache path.
     let _capture = crate::observability::perf_trace::begin_test_capture();
-    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache())
         .expect("cache open")
         .into_runtime();
     for index in 0..64 {

@@ -15,6 +15,12 @@ rocksdb-compare = ["dep:rocksdb"]
 strata-engine-next = { path = "../crates/engine-next", features = ["testkit"] }
 strata-storage-next = { path = "../crates/storage-next", features = ["perf-trace"] }
 serde = { version = "1.0", features = ["derive"] }
+# The old root `stratadb` package (a bench dependency until the V1 cutover)
+# installed jemalloc as the global allocator, so every recorded benchmark
+# number is a jemalloc number. Pin it here explicitly to keep the instrument
+# comparable across the cutover — glibc malloc costs ~25% on the write path.
+tikv-jemallocator = "0.6"
+
 serde_json = "1.0"
 tempfile = "3.8"
 fastrand = "2.0.0"
@@ -41,6 +47,14 @@ name = "storage-next-point-spike"
 path = "src/bin/storage_next_point_spike.rs"
 
 [[bin]]
+name = "storage-next-concurrent-writers"
+path = "src/bin/storage_next_concurrent_writers.rs"
+
+[[bin]]
+name = "storage-next-concurrent-reads"
+path = "src/bin/storage_next_concurrent_reads.rs"
+
+[[bin]]
 name = "engine-kv-scan-regression"
 path = "src/bin/engine_kv_scan_regression.rs"
 
@@ -65,5 +79,15 @@ path = "src/bin/engine_vector_indexing.rs"
 name = "storage-next-after-version-scan"
 path = "src/bin/storage_next_after_version_scan.rs"
 
+[[bin]]
+name = "storage-next-l0-compact"
+path = "src/bin/storage_next_l0_compact.rs"
+
 [profile.bench]
 debug = true
+
+# Explicit standalone-workspace root. A no-op in the main checkout (the root manifest already
+# excludes `benchmarks/`), but required for git worktrees: without it, cargo walks up past the
+# worktree and resolves against the ORIGINAL checkout's root manifest, whose `exclude`
+# entries don't match the worktree path — "current package believes it's in a workspace".
+[workspace]

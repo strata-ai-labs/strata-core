@@ -15,9 +15,10 @@ use crate::branch::state::compaction::{BranchCompactionKind, BranchCompactionReq
 use crate::branch::state::BranchLocalState;
 use crate::commit::{
     CommitBatch, CommitBatchOptions, CommitBranchGeneration, CommitBranchGenerationGuard,
-    CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource, CommitMutation,
-    CommitObservedVersion, CommitOrigin, CommitReadFact, CommitRetentionHint, CommitRuntimeConfig,
-    CommitTimestampPolicy, CommitValidationFacts,
+    CommitDurabilityClass, CommitDurabilityMode, CommitExpiry, CommitManualTimestampSource,
+    CommitMutation, CommitObservedVersion, CommitOrigin, CommitReadFact, CommitRetentionHint,
+    CommitRuntimeConfig, CommitRuntimeError, CommitStamp, CommitTimestampPolicy,
+    CommitUnresolvedDurable, CommitValidationFacts,
 };
 #[cfg(feature = "perf-trace")]
 use crate::lifecycle::cache::{
@@ -500,7 +501,11 @@ fn cache_compaction_is_preempted_when_flush_pressure_exists() {
             )],
         );
     }
-    {
+    // Flush must be at the blocking backlog (>= FROZEN_BLOCKING_FLUSH_THRESHOLD) for it to preempt
+    // compaction; below that, a frozen memtable is drained concurrently rather than preempting.
+    let flush_block = crate::lifecycle::compaction::FROZEN_BLOCKING_FLUSH_THRESHOLD;
+    for frozen_index in 0..flush_block {
+        let version = 99 + frozen_index as u64;
         let state = runtime
             .branch_catalog_mut_for_test()
             .branch_state_mut(
@@ -513,15 +518,15 @@ fn cache_compaction_is_preempted_when_flush_pressure_exists() {
         state
             .append_committed_rows_atomically(vec![active_pressure_put_row(
                 branch,
-                b"flush-preempt-frozen",
-                99,
-                99_000,
+                format!("flush-preempt-frozen-{frozen_index}").as_bytes(),
+                version,
+                version * 1_000,
                 512,
                 0x65,
             )])
             .expect("append frozen pressure row");
         state.rotate_active();
-        assert_eq!(state.frozen_table_count(), 1);
+        assert_eq!(state.frozen_table_count(), frozen_index + 1);
     }
     runtime
         .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
@@ -2513,6 +2518,114 @@ fn cache_read_correctness_without_maintenance_deletes_and_tombstones() {
     assert!(with_tombstone.row().is_tombstone());
 }
 
+/// BS2.2 deliberate behavior change: a row applied above `visible` (the state a
+/// visible-publication failure leaves behind — `applied_not_visible`) is hidden from the
+/// bounded runtime Latest read while the gate blocks follow-on commits. The unbounded
+/// snapshot path (`read_view`) still serves it — the pinned same-branch read-your-writes
+/// contract for cache mode is unchanged.
+#[test]
+fn cache_bounded_latest_read_hides_applied_not_visible_row_while_gate_blocks_commits() {
+    let branch = branch_id(0x7B);
+    let backend = MemoryBackend::new();
+    let mut runtime = open_runtime(branch, &backend);
+
+    // A normally committed row: `visible` covers it.
+    commit_cache_put(&mut runtime, branch, b"vis-acked", 1_000);
+    assert_eq!(runtime.visible_version(), CommitVersion::new(1));
+
+    // Recreate the applied-not-visible shape without a publish-failure seam: trip the gate,
+    // then apply a row above `visible` directly into branch state.
+    let hidden_version = CommitVersion::new(2);
+    let stamp =
+        CommitStamp::new(branch, hidden_version, Timestamp::from_micros(2_000)).expect("stamp");
+    let unresolved = CommitUnresolvedDurable::applied_not_visible(
+        stamp,
+        CommitDurabilityClass::NotDurable,
+        "test: visible publication failed after apply",
+    )
+    .expect("unresolved fact");
+    runtime
+        .durable_gate_for_test()
+        .record_unresolved(unresolved)
+        .expect("trip the unresolved gate");
+    let generation = runtime
+        .branch_catalog()
+        .registry()
+        .lookup(branch)
+        .expect("branch lookup")
+        .generation();
+    let hidden_key = physical_key(branch, b"vis-hidden");
+    runtime
+        .branch_catalog_mut_for_test()
+        .branch_state_mut(branch, CommitBranchGenerationGuard::exact(generation))
+        .expect("branch state")
+        .append_committed_row(StorageRow::put(
+            hidden_key.clone(),
+            hidden_version,
+            Timestamp::from_micros(2_000),
+            Timestamp::EPOCH,
+            b"hidden-value".to_vec(),
+        ))
+        .expect("apply row above visible");
+    // BS2.3: this test mutates branch state directly (bypassing the commit publish); resync.
+    runtime.publish_branch_snapshot_for_test(branch);
+
+    // The bounded Latest point read hides the unacknowledged row...
+    assert!(runtime
+        .read_latest_point_or_tombstone_for_branch(branch, &hidden_key)
+        .expect("bounded point read")
+        .is_none());
+    // ...while rows at or below `visible` stay served...
+    let acked = runtime
+        .read_latest_point_or_tombstone_for_branch(branch, &physical_key(branch, b"vis-acked"))
+        .expect("bounded point read")
+        .expect("acked row stays visible");
+    assert_eq!(acked.row().commit_version(), CommitVersion::new(1));
+    // ...and the bounded scan agrees.
+    let bounds = crate::branch::read::BranchScanBounds::prefix(&physical_key(branch, b"vis-"));
+    let scanned = runtime
+        .scan_latest_including_tombstones_for_branch(branch, &bounds, None)
+        .expect("bounded scan");
+    assert_eq!(scanned.len(), 1);
+    assert_eq!(scanned[0].row().physical_key().user_key(), b"vis-acked");
+
+    // The unbounded snapshot path still serves the applied row (cache RYW, unchanged).
+    assert!(runtime
+        .read_view_for_branch(branch)
+        .expect("read view")
+        .latest(&hidden_key)
+        .expect("snapshot read")
+        .is_some());
+
+    // And the gate blocks the next mutating commit at the runtime level.
+    let error = runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"vis-blocked"),
+                b"blocked".to_vec(),
+                Timestamp::from_micros(3_000),
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect_err("unresolved gate blocks the follow-on commit");
+    let LifecycleError::LowerLayer {
+        layer: LifecycleLowerLayer::CommitRuntime,
+        source: Some(source),
+        ..
+    } = error
+    else {
+        panic!("expected commit-runtime lower-layer error, got {error:?}");
+    };
+    let commit_error = source
+        .downcast_ref::<CommitRuntimeError>()
+        .expect("commit runtime source");
+    assert!(matches!(
+        commit_error,
+        CommitRuntimeError::UnresolvedDurableCommit { .. }
+    ));
+}
+
 #[test]
 fn cache_read_correctness_without_maintenance_range_scans_with_limit() {
     let branch = branch_id(0x73);
@@ -3152,7 +3265,9 @@ fn owned_table_for_cache_test(
     .expect("reader");
     let descriptor =
         BranchTableDescriptor::new(identity, reader.facts().clone(), level).expect("descriptor");
-    BranchOwnedTable::new(branch, descriptor, reader).expect("owned table")
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras");
+    BranchOwnedTable::new(branch, descriptor, reader, extras).expect("owned table")
 }
 
 #[cfg(feature = "perf-trace")]

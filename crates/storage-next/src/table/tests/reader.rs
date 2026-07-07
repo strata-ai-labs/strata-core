@@ -1,16 +1,17 @@
 use crate::format::{
-    decode_immutable_table_metadata, decode_table_footer_metadata, MAX_TABLE_FOOTER_SIZE,
+    decode_immutable_table_metadata, decode_table_footer_metadata,
+    encode_immutable_table_with_block_compressions, TableFilterFrame, MAX_TABLE_FOOTER_SIZE,
 };
 use crate::format::{TableCompression, MAX_TABLE_HEADER_SIZE};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     sort_table_rows_by_key, BuiltTableArtifact, BytesTableSource, ImmutableTableBuilder,
     ImmutableTableReader, TableBlockAddress, TableBlockCache, TableBlockCacheKey,
-    TableBlockCacheKind, TableBloomProbe, TableBuilderConfig, TableByteSource, TableCacheConfig,
-    TableCacheTableId, TableCompactionConfig, TableCursor, TableIdentity, TableInternalKeyBytes,
-    TableKeyBound, TableKeyBounds, TablePhysicalKeyBound, TablePhysicalKeyBytes, TableReaderConfig,
-    TableReaderFilter, TableReaderOpenMode, TableRow, TableRuntimeConfig, TableRuntimeError,
-    TableRuntimeResult,
+    TableBlockCacheKind, TableBloomFilter, TableBloomProbe, TableBuilderConfig, TableByteSource,
+    TableCacheConfig, TableCacheTableId, TableCompactionConfig, TableCursor, TableIdentity,
+    TableInternalKeyBytes, TableKeyBound, TableKeyBounds, TablePhysicalKeyBound,
+    TablePhysicalKeyBytes, TableReaderConfig, TableReaderFilter, TableReaderOpenMode, TableRow,
+    TableRuntimeConfig, TableRuntimeError, TableRuntimeResult,
 };
 use sha2::{Digest, Sha256};
 use std::error::Error as _;
@@ -311,6 +312,9 @@ struct TestSource {
     short_read: bool,
     long_read: bool,
     fail_read: bool,
+    // BS4.2b: fail only the Nth read_at (1-indexed) — lets a test target the filter-frame fetch, which
+    // is the 5th read (header, footer, index, properties, filter).
+    fail_at_call: Option<usize>,
     calls: Arc<AtomicUsize>,
 }
 
@@ -322,6 +326,7 @@ impl TestSource {
             short_read: false,
             long_read: false,
             fail_read: false,
+            fail_at_call: None,
             calls: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -333,6 +338,7 @@ impl TestSource {
             short_read: true,
             long_read: false,
             fail_read: false,
+            fail_at_call: None,
             calls: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -344,6 +350,7 @@ impl TestSource {
             short_read: false,
             long_read: true,
             fail_read: false,
+            fail_at_call: None,
             calls: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -355,6 +362,7 @@ impl TestSource {
             short_read: false,
             long_read: false,
             fail_read: true,
+            fail_at_call: None,
             calls: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -366,6 +374,19 @@ impl TestSource {
             short_read: false,
             long_read: false,
             fail_read: false,
+            fail_at_call: None,
+            calls: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn fail_at_call(bytes: Vec<u8>, call: usize) -> Self {
+        Self {
+            advertised_len: bytes.len() as u64,
+            bytes,
+            short_read: false,
+            long_read: false,
+            fail_read: false,
+            fail_at_call: Some(call),
             calls: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -381,8 +402,8 @@ impl TableByteSource for TestSource {
     }
 
     fn read_at(&self, offset: u64, len: usize) -> TableRuntimeResult<Vec<u8>> {
-        self.calls.fetch_add(1, Ordering::Relaxed);
-        if self.fail_read {
+        let call = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.fail_read || self.fail_at_call == Some(call) {
             return Err(TableRuntimeError::source_read(
                 "injected table source failure",
             ));
@@ -1806,6 +1827,35 @@ fn immutable_reader_rejects_supplied_filter_when_table_content_drift() {
             reason: "must match table bytes"
         })
     ));
+}
+
+#[test]
+fn filter_clone_shares_bloom_allocation() {
+    // BS2.1: the bloom is `Arc`-shared, so cloning a filter (and thus any reader / owned table that
+    // holds it) is a refcount bump, not a deep byte-copy of the bloom bits. A revert to `Box` breaks
+    // this two ways: `bloom_alloc_addr` (Arc::as_ptr) stops compiling, and the two clones would land
+    // at distinct allocations.
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let (artifact, _) = build_artifact(
+        "filter-clone-share",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let filter = reader_filter_for_table_bytes("filter-clone-share", artifact.bytes(), 10);
+    let original_addr = filter
+        .bloom_alloc_addr()
+        .expect("a built filter over real keys is a bloom, not unavailable");
+    let cloned = filter.clone();
+    assert_eq!(
+        cloned.bloom_alloc_addr(),
+        Some(original_addr),
+        "cloned filter must share the original bloom allocation by Arc refcount"
+    );
 }
 
 #[test]
@@ -4015,4 +4065,506 @@ fn bytes_table_source_enforces_exact_ranges() {
             field: "byte_range"
         })
     ));
+}
+
+// ---- BS4.2b: the reader loads + attaches the persisted filter frame ----
+
+// Distinctive so a loaded persisted filter's shape differs from a default (10 bits/key) rescan.
+const PERSISTED_FILTER_BITS_PER_KEY: usize = 25;
+
+fn persisted_filter_rows() -> Vec<StorageRow> {
+    vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+    ]
+}
+
+/// Encode a table that carries a real persisted filter frame (a bloom over its own physical keys),
+/// mirroring what BS4.3's writer will emit. Returns the bytes, the frame, and the sorted rows.
+fn build_filtered_table_bytes(
+    rows: &[StorageRow],
+    rows_per_block: usize,
+    bits_per_key: usize,
+) -> (Vec<u8>, TableFilterFrame, Vec<TableRow>) {
+    let table_rows = sorted_table_rows(rows);
+    let bloom = TableBloomFilter::build(
+        table_rows.iter().map(|row| row.key().physical_key_bytes()),
+        bits_per_key,
+    )
+    .expect("build persisted bloom");
+    let frame = TableFilterFrame {
+        probes: bloom.probes(),
+        key_count: u64::try_from(bloom.key_count()).expect("key count fits u64"),
+        bit_count: u64::try_from(bloom.bit_count()).expect("bit count fits u64"),
+        bits: bloom.bits().to_vec(),
+    };
+    let storage_rows = sorted_storage_rows(rows);
+    let block_count = storage_rows.len().div_ceil(rows_per_block);
+    let bytes = encode_immutable_table_with_block_compressions(
+        &storage_rows,
+        1024,
+        rows_per_block,
+        &vec![TableCompression::Uncompressed; block_count],
+        Some(&frame),
+    )
+    .expect("encode filtered table");
+    (bytes, frame, table_rows)
+}
+
+fn expected_shape(frame: &TableFilterFrame) -> (u8, usize, usize) {
+    (
+        frame.probes,
+        usize::try_from(frame.bit_count).expect("bit count fits usize"),
+        usize::try_from(frame.key_count).expect("key count fits usize"),
+    )
+}
+
+fn assert_all_keys_maybe_present(reader: &ImmutableTableReader, rows: &[TableRow]) {
+    let filter = reader.loaded_filter().expect("filter loaded");
+    for row in rows {
+        assert_eq!(
+            filter_probe_for_key(filter, row.physical_key()),
+            TableBloomProbe::MaybePresent,
+            "a live key must probe MaybePresent",
+        );
+    }
+}
+
+fn find_definitely_absent_key(filter: &TableReaderFilter) -> PhysicalKey {
+    for index in 0..8192u32 {
+        let key = physical_key(1, "reader", 0x20, format!("absent-{index:05}").into_bytes());
+        if filter_probe_for_key(filter, &key) == TableBloomProbe::DefinitelyAbsent {
+            return key;
+        }
+    }
+    panic!("no generated absent key probed DefinitelyAbsent");
+}
+
+#[test]
+fn open_bytes_loads_persisted_filter_frame() {
+    let rows = persisted_filter_rows();
+    let (bytes, frame, table_rows) =
+        build_filtered_table_bytes(&rows, 2, PERSISTED_FILTER_BITS_PER_KEY);
+    let reader = ImmutableTableReader::open_bytes(
+        identity("persisted-eager"),
+        bytes,
+        TableReaderConfig::default(),
+    )
+    .expect("open filtered eager reader");
+
+    assert!(reader.runtime_facts().filter_available());
+    let shape = reader
+        .loaded_filter()
+        .and_then(TableReaderFilter::bloom_shape)
+        .expect("persisted filter loaded");
+    // The loaded shape is the persisted 25-bits/key filter, not a 10-bits/key rescan.
+    assert_eq!(shape, expected_shape(&frame));
+    assert_all_keys_maybe_present(&reader, &table_rows);
+}
+
+#[test]
+fn open_source_loads_and_range_fetches_persisted_filter_frame() {
+    let rows = persisted_filter_rows();
+    let (bytes, frame, table_rows) =
+        build_filtered_table_bytes(&rows, 2, PERSISTED_FILTER_BITS_PER_KEY);
+    let source = TestSource::exact(bytes);
+    let probe = source.clone();
+    let reader = ImmutableTableReader::open_source(
+        identity("persisted-lazy"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open filtered lazy reader");
+
+    assert!(reader.runtime_facts().filter_available());
+    // header + footer + index + properties + one extra range read for the filter frame = 5.
+    assert_eq!(probe.calls(), 5);
+    let shape = reader
+        .loaded_filter()
+        .and_then(TableReaderFilter::bloom_shape)
+        .expect("persisted filter loaded");
+    assert_eq!(shape, expected_shape(&frame));
+    assert_all_keys_maybe_present(&reader, &table_rows);
+}
+
+#[test]
+fn open_bytes_persisted_filter_wins_over_unavailable_mode() {
+    let rows = persisted_filter_rows();
+    let (bytes, frame, _) = build_filtered_table_bytes(&rows, 2, PERSISTED_FILTER_BITS_PER_KEY);
+    let reader = ImmutableTableReader::open_bytes(
+        identity("persisted-wins"),
+        bytes,
+        TableReaderConfig::default().with_eager_filter_unavailable(),
+    )
+    .expect("open filtered eager reader with unavailable mode");
+
+    // Unavailable mode only governs the fallback scan; a persisted filter still loads.
+    assert!(reader.runtime_facts().filter_available());
+    let shape = reader
+        .loaded_filter()
+        .and_then(TableReaderFilter::bloom_shape)
+        .expect("persisted filter loaded despite unavailable mode");
+    assert_eq!(shape, expected_shape(&frame));
+}
+
+#[test]
+fn open_bytes_without_persisted_filter_rescans() {
+    let rows = persisted_filter_rows();
+    let (artifact, table_rows) =
+        build_artifact("fallback-eager", &rows, 2, TableCompression::Uncompressed);
+    let reader = ImmutableTableReader::open_bytes(
+        identity("fallback-eager"),
+        artifact.bytes().to_vec(),
+        TableReaderConfig::default(),
+    )
+    .expect("open unfiltered eager reader");
+
+    assert!(reader.runtime_facts().filter_available());
+    // No persisted frame: the eager path rebuilds the 10-bits/key scan filter, as before.
+    let expected_scan = TableBloomFilter::build(
+        table_rows.iter().map(|row| row.key().physical_key_bytes()),
+        10,
+    )
+    .expect("scan bloom");
+    let shape = reader
+        .loaded_filter()
+        .and_then(TableReaderFilter::bloom_shape)
+        .expect("scan filter loaded");
+    assert_eq!(
+        shape,
+        (
+            expected_scan.probes(),
+            expected_scan.bit_count(),
+            expected_scan.key_count()
+        )
+    );
+    assert_all_keys_maybe_present(&reader, &table_rows);
+}
+
+#[test]
+fn open_source_without_persisted_filter_has_no_filter() {
+    let rows = persisted_filter_rows();
+    let (artifact, _) = build_artifact("fallback-lazy", &rows, 2, TableCompression::Uncompressed);
+    let reader = ImmutableTableReader::open_source(
+        identity("fallback-lazy"),
+        BytesTableSource::new(artifact.bytes().to_vec()),
+        TableReaderConfig::default(),
+    )
+    .expect("open unfiltered lazy reader");
+
+    // No persisted frame and the lazy path never rescans: the reader has no filter (as before).
+    assert!(!reader.runtime_facts().filter_available());
+    assert!(reader.loaded_filter().is_none());
+}
+
+#[test]
+fn persisted_filter_short_circuits_absent_point_lookup() {
+    let rows = persisted_filter_rows();
+    let (bytes, _, _) = build_filtered_table_bytes(&rows, 2, PERSISTED_FILTER_BITS_PER_KEY);
+
+    let eager = ImmutableTableReader::open_bytes(
+        identity("shortcircuit-eager"),
+        bytes.clone(),
+        TableReaderConfig::default(),
+    )
+    .expect("open eager");
+    let absent = find_definitely_absent_key(eager.loaded_filter().expect("filter"));
+    let (row, visited) = eager.seek_physical_key(&absent, None, None);
+    assert!(row.is_none());
+    assert_eq!(visited, 0, "eager: DefinitelyAbsent must skip the row scan");
+
+    let lazy = ImmutableTableReader::open_source(
+        identity("shortcircuit-lazy"),
+        BytesTableSource::new(bytes),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy");
+    let (row, visited) = lazy.seek_physical_key(&absent, None, None);
+    assert!(row.is_none());
+    assert_eq!(
+        visited, 0,
+        "lazy: DefinitelyAbsent must skip index walk + data read"
+    );
+}
+
+#[test]
+fn corrupt_persisted_filter_frame_is_rejected_on_open() {
+    let rows = persisted_filter_rows();
+    let (bytes, _, _) = build_filtered_table_bytes(&rows, 2, PERSISTED_FILTER_BITS_PER_KEY);
+
+    let footer_start = bytes.len() - MAX_TABLE_FOOTER_SIZE;
+    let filter_offset = checked_table_offset(u64::from_le_bytes(
+        bytes[footer_start + 12..footer_start + 20]
+            .try_into()
+            .expect("filter offset bytes"),
+    ));
+    let mut corrupt = bytes.clone();
+    // Flip a byte inside the filter frame payload (past the 12-byte frame header); refresh the
+    // whole-table CRC so only the filter frame's own CRC is left broken.
+    corrupt[filter_offset + 12] ^= 0xff;
+    refresh_table_crc(&mut corrupt);
+
+    assert!(matches!(
+        ImmutableTableReader::open_bytes(
+            identity("corrupt-filter"),
+            corrupt.clone(),
+            TableReaderConfig::default()
+        ),
+        Err(TableRuntimeError::DecodeFormat { .. })
+    ));
+    assert!(matches!(
+        ImmutableTableReader::open_source(
+            identity("corrupt-filter"),
+            BytesTableSource::new(corrupt),
+            TableReaderConfig::default()
+        ),
+        Err(TableRuntimeError::DecodeFormat { .. })
+    ));
+}
+
+#[test]
+fn persisted_filter_returns_present_rows_via_seek() {
+    let rows = persisted_filter_rows();
+    let (bytes, _, table_rows) =
+        build_filtered_table_bytes(&rows, 2, PERSISTED_FILTER_BITS_PER_KEY);
+
+    let eager = ImmutableTableReader::open_bytes(
+        identity("present-eager"),
+        bytes.clone(),
+        TableReaderConfig::default(),
+    )
+    .expect("open eager");
+    let lazy = ImmutableTableReader::open_source(
+        identity("present-lazy"),
+        BytesTableSource::new(bytes),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy");
+
+    // The persisted filter must never false-absent a live row: every present key still seeks to Some.
+    for row in &table_rows {
+        let key = row.physical_key();
+        let (eager_row, _) = eager.seek_physical_key(key, None, None);
+        assert!(
+            eager_row.is_some(),
+            "eager: present key must be found through the persisted filter",
+        );
+        let (lazy_row, _) = lazy.seek_physical_key(key, None, None);
+        assert!(
+            lazy_row.is_some(),
+            "lazy: present key must be found through the persisted filter",
+        );
+    }
+}
+
+#[test]
+fn empty_persisted_filter_is_rejected_on_open() {
+    let sorted = sorted_storage_rows(&persisted_filter_rows());
+    // A malformed frame: key_count 0 with a nonempty bit array. `might_contain` would short-circuit
+    // every probe to DefinitelyAbsent, silently losing every live row — the reader must reject it.
+    let frame = TableFilterFrame {
+        probes: 3,
+        key_count: 0,
+        bit_count: 64,
+        bits: vec![0xff; 8],
+    };
+    let block_count = sorted.len().div_ceil(2);
+    let bytes = encode_immutable_table_with_block_compressions(
+        &sorted,
+        1024,
+        2,
+        &vec![TableCompression::Uncompressed; block_count],
+        Some(&frame),
+    )
+    .expect("encode table with empty filter");
+
+    assert!(matches!(
+        ImmutableTableReader::open_bytes(
+            identity("empty-filter"),
+            bytes.clone(),
+            TableReaderConfig::default()
+        ),
+        Err(TableRuntimeError::InvalidRange {
+            field: "table_filter_key_count"
+        })
+    ));
+    assert!(matches!(
+        ImmutableTableReader::open_source(
+            identity("empty-filter"),
+            BytesTableSource::new(bytes),
+            TableReaderConfig::default()
+        ),
+        Err(TableRuntimeError::InvalidRange {
+            field: "table_filter_key_count"
+        })
+    ));
+}
+
+#[test]
+fn open_source_propagates_filter_frame_read_failure() {
+    let (bytes, _, _) =
+        build_filtered_table_bytes(&persisted_filter_rows(), 2, PERSISTED_FILTER_BITS_PER_KEY);
+    // header(1), footer(2), index(3), properties(4), filter(5): inject a failure on the filter read.
+    let source = TestSource::fail_at_call(bytes, 5);
+    let probe = source.clone();
+    let result = ImmutableTableReader::open_source(
+        identity("filter-read-fail"),
+        source,
+        TableReaderConfig::default(),
+    );
+    assert!(
+        result.is_err(),
+        "a failed filter-frame read must fail the open, not silently skip the filter"
+    );
+    assert_eq!(
+        probe.calls(),
+        5,
+        "the failure must be the filter read, after the four metadata reads"
+    );
+}
+
+// ---- BS4.4a-i: materialization-free reader equality + the row_count == rows().len() invariant ----
+
+#[test]
+fn reader_equality_compares_fingerprint_without_materializing() {
+    let (bytes, _, _) = build_filtered_table_bytes(&persisted_filter_rows(), 2, 10);
+    let mut other = persisted_filter_rows();
+    other.push(put_row(b"echo".to_vec(), 5));
+    let (other_bytes, _, _) = build_filtered_table_bytes(&other, 2, 10);
+
+    let eager = |b: Vec<u8>| {
+        ImmutableTableReader::open_bytes(identity("bs44-eq"), b, TableReaderConfig::default())
+            .expect("open eager")
+    };
+    let lazy = |b: Vec<u8>| {
+        ImmutableTableReader::open_source(
+            identity("bs44-eq"),
+            BytesTableSource::new(b),
+            TableReaderConfig::default(),
+        )
+        .expect("open lazy")
+    };
+
+    // Same bytes compare equal in both open modes — and a lazy reader never materializes to compare.
+    assert_eq!(eager(bytes.clone()), eager(bytes.clone()));
+    assert_eq!(lazy(bytes.clone()), lazy(bytes.clone()));
+    // An eager and a lazy reader of the same table still compare equal (behavior-neutral vs the old
+    // row compare), even though only the eager fingerprint carries a content sha256.
+    assert_eq!(eager(bytes.clone()), lazy(bytes.clone()));
+    // Different content compares unequal.
+    assert_ne!(eager(bytes), eager(other_bytes));
+}
+
+#[test]
+fn reader_row_count_matches_materialized_length() {
+    let (bytes, _, table_rows) = build_filtered_table_bytes(&persisted_filter_rows(), 2, 10);
+    let reader = ImmutableTableReader::open_bytes(
+        identity("bs44-count"),
+        bytes,
+        TableReaderConfig::default(),
+    )
+    .expect("open");
+    // The invariant every COUNT conversion relies on: facts().row_count() == the materialized length.
+    assert_eq!(reader.facts().row_count(), table_rows.len() as u64);
+    assert_eq!(
+        usize::try_from(reader.facts().row_count()).expect("row count fits usize"),
+        reader.rows().len(),
+    );
+}
+
+// ---- BS4.4d: the materialization guard ----
+
+fn deny_runtime_lazy_reader() -> ImmutableTableReader<'static> {
+    let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)]);
+    let artifact = builder(1, TableCompression::Uncompressed)
+        .build_from_rows(identity("bs44d-deny"), &rows)
+        .expect("build deny-runtime source");
+    ImmutableTableReader::open_source(
+        identity("bs44d-deny"),
+        BytesTableSource::new(artifact.bytes().to_vec()),
+        TableReaderConfig::default().deny_runtime_materialization(),
+    )
+    .expect("open lazy deny-runtime reader")
+}
+
+#[cfg(not(debug_assertions))]
+#[test]
+fn deny_runtime_reader_refuses_full_materialization() {
+    // In release the guard returns a typed error instead of panicking.
+    assert!(matches!(
+        deny_runtime_lazy_reader().try_rows(),
+        Err(TableRuntimeError::LazyMaterializationDenied { .. })
+    ));
+}
+
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "DenyRuntime")]
+fn deny_runtime_reader_debug_asserts_on_full_materialization() {
+    // In debug/test builds the guard fails loudly at the site so accidental materialization is caught.
+    let _ = deny_runtime_lazy_reader().try_rows();
+}
+
+#[test]
+fn deny_runtime_reader_still_serves_targeted_and_streaming_reads() {
+    // The guard blocks only full materialization; facts and cursor streaming never trip it.
+    let reader = deny_runtime_lazy_reader();
+    assert_eq!(reader.facts().row_count(), 2);
+    let mut cursor = reader.cursor();
+    cursor.seek_to_first().expect("seek");
+    let mut count = 0;
+    while cursor.current().is_some() {
+        count += 1;
+        cursor.advance().expect("advance");
+    }
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn allow_lazy_reader_materializes() {
+    let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1)]);
+    let artifact = builder(1, TableCompression::Uncompressed)
+        .build_from_rows(identity("bs44d-allow"), &rows)
+        .expect("build allow source");
+    let reader = ImmutableTableReader::open_source(
+        identity("bs44d-allow"),
+        BytesTableSource::new(artifact.bytes().to_vec()),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy allow reader");
+    assert_eq!(reader.try_rows().expect("allow materializes").len(), 1);
+}
+
+#[cfg(feature = "perf-trace")]
+#[test]
+fn allow_lazy_materialization_increments_counter_once() {
+    let rows = sorted_table_rows(&[put_row(b"alpha".to_vec(), 1)]);
+    let artifact = builder(1, TableCompression::Uncompressed)
+        .build_from_rows(identity("bs44d-count"), &rows)
+        .expect("build count source");
+    let reader = ImmutableTableReader::open_source(
+        identity("bs44d-count"),
+        BytesTableSource::new(artifact.bytes().to_vec()),
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy allow reader");
+
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    assert_eq!(
+        crate::observability::perf_trace::snapshot().table_lazy_full_materializations(),
+        0
+    );
+    assert_eq!(reader.try_rows().expect("materialize").len(), 1);
+    assert_eq!(
+        crate::observability::perf_trace::snapshot().table_lazy_full_materializations(),
+        1
+    );
+    // Repeat reads hit the OnceLock cache — the counter must not climb (no double materialization).
+    assert_eq!(reader.try_rows().expect("cached").len(), 1);
+    assert_eq!(
+        crate::observability::perf_trace::snapshot().table_lazy_full_materializations(),
+        1
+    );
 }

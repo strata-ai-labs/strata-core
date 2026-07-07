@@ -28,10 +28,13 @@ fn branch_materialization_retry_removes_layer_when_replacements_are_already_visi
     let rewritten = rewrite_row_branch(&source_row, source, child).expect("rewrite retry row");
     let reader = immutable_reader("materialize-retry-layer-0-table-0", vec![rewritten.clone()]);
     let descriptor = branch_table_descriptor(BranchLevel::ZERO, &reader);
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras");
     let replacement = BranchOwnedTable::new_materialization_replacement(
         child,
         descriptor,
         reader,
+        extras,
         BranchMaterializationSource::new(source, CommitVersion::new(4)),
     )
     .expect("replacement table");
@@ -116,10 +119,13 @@ fn branch_materialization_retry_continues_after_partial_replacement_install() {
         .collect::<Vec<_>>();
     let reader = immutable_reader("materialize-partial-layer-0-table-0", rewritten_first_chunk);
     let descriptor = branch_table_descriptor(BranchLevel::ZERO, &reader);
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras");
     let replacement = BranchOwnedTable::new_materialization_replacement(
         child,
         descriptor,
         reader,
+        extras,
         BranchMaterializationSource::new(
             source,
             CommitVersion::new(u64::try_from(source_rows.len()).expect("fork fits")),
@@ -192,12 +198,15 @@ fn preinstall_materialization_replacement(
 ) {
     let reader = immutable_reader(identity, rows);
     let descriptor = branch_table_descriptor(BranchLevel::ZERO, &reader);
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras");
     child_state
         .install_l0_table(
             BranchOwnedTable::new_materialization_replacement(
                 child,
                 descriptor,
                 reader,
+                extras,
                 materialization_source,
             )
             .expect("materialization replacement"),

@@ -9,7 +9,9 @@ use super::{
 use crate::backend::{PublishError, PublishFailureKind};
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::BranchOwnedTable;
-use crate::branch::state::{BranchImmutableInstallOutcome, BranchLocalState};
+use crate::branch::state::{
+    frozen_rows_match_table, BranchImmutableInstallOutcome, BranchLocalState,
+};
 use crate::object::ObjectName;
 use crate::service::{
     TableObjectFacts, TableObjectReadError, TableObjectReaderService, TableObjectService,
@@ -17,7 +19,7 @@ use crate::service::{
 };
 use crate::table::{
     FrozenTable, ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig, TableIdentity,
-    TableReaderConfig, TableRuntimeFacts,
+    TableReaderConfig, TableRuntimeFacts, TableSummaryExtras,
 };
 use strata_core_next::BranchId;
 
@@ -88,6 +90,10 @@ pub(crate) struct PreparedCacheFlush {
 pub(crate) struct PreparedDurableFlush {
     request: FlushFrozenRequest,
     frozen_index: usize,
+    /// `Arc` identity of the sealed memtable this build consumed (BS5.3b):
+    /// the install matches by identity in O(1); row equality against this
+    /// same sealed input is verified here in the (off-lock) prepare phase.
+    frozen_identity: usize,
     table_facts: TableRuntimeFacts,
     object_facts: TableObjectFacts,
     table: Result<BranchOwnedTable, FlushFrozenOutcome>,
@@ -602,13 +608,14 @@ pub(crate) fn flush_cache_branch_with_budget(
     )?;
     let identity = artifact.facts().identity().clone();
     let table_facts = artifact.facts().clone();
+    let extras = artifact.extras().clone();
     let reader = ImmutableTableReader::open_bytes(
         identity.clone(),
         artifact.into_bytes(),
         TableReaderConfig::default().with_eager_filter_unavailable(),
     )
     .map_err(table_error)?;
-    let table = branch_owned_table(branch.branch_id(), identity, reader)?;
+    let table = branch_owned_table(branch.branch_id(), identity, reader, extras)?;
     let install_outcome = match branch.replace_frozen_with_level_zero_table(frozen_index, table) {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -649,13 +656,14 @@ pub(crate) fn prepare_cache_flush_with_budget(
     )?;
     let identity = artifact.facts().identity().clone();
     let table_facts = artifact.facts().clone();
+    let extras = artifact.extras().clone();
     let reader = ImmutableTableReader::open_bytes(
         identity.clone(),
         artifact.into_bytes(),
         TableReaderConfig::default().with_eager_filter_unavailable(),
     )
     .map_err(table_error)?;
-    let table = branch_owned_table(branch.branch_id(), identity, reader)?;
+    let table = branch_owned_table(branch.branch_id(), identity, reader, extras)?;
     Ok(Some(PreparedCacheFlush {
         request: request.clone(),
         frozen_index,
@@ -692,7 +700,7 @@ pub(crate) fn install_prepared_cache_flush(
 pub(crate) fn flush_durable_branch(
     branch: &mut BranchLocalState,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     request: &FlushFrozenRequest,
 ) -> LifecycleResult<FlushFrozenOutcome> {
     flush_durable_branch_with_budget(branch, table_service, reader_service, request, None)
@@ -701,7 +709,7 @@ pub(crate) fn flush_durable_branch(
 pub(crate) fn flush_durable_branch_with_budget(
     branch: &mut BranchLocalState,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     request: &FlushFrozenRequest,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<FlushFrozenOutcome> {
@@ -716,7 +724,7 @@ pub(crate) fn flush_durable_branch_with_budget(
 pub(crate) fn prepare_durable_flush_with_budget(
     branch: &BranchLocalState,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     request: &FlushFrozenRequest,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<Option<PreparedDurableFlush>> {
@@ -729,9 +737,14 @@ pub(crate) fn prepare_durable_flush_with_budget(
         artifact.byte_count(),
         "flush artifact exceeds generated artifact budget",
     )?;
+    // BS4.5a: the installed durable table holds a lazy, disk-resident reader — charge only its
+    // metadata-resident footprint (index + properties + filter frame), not the full encoded object.
+    // The generated-artifact pool above still accounts the transient in-memory artifact at full size.
+    // (Cache-mode flush keeps charging full bytes: those tables install eager, genuinely-resident
+    // readers — constraint C2.)
     require_optional_table_reader_budget(
         budget,
-        artifact.byte_count(),
+        artifact.resident_metadata_bytes(),
         "flush table reader exceeds storage budget",
     )?;
     let identity = artifact.facts().identity().clone();
@@ -746,10 +759,20 @@ pub(crate) fn prepare_durable_flush_with_budget(
         artifact.bytes(),
         &table_facts,
     )?;
+    let frozen =
+        branch
+            .frozen()
+            .get(frozen_index)
+            .ok_or(LifecycleError::MaintenanceTaskFailed {
+                reason: "flush frozen index must exist",
+            })?;
+    let frozen_identity = frozen.memory_state_identity();
     let reader = match reader_service.open_reader(
         identity.clone(),
         &object_facts,
-        TableReaderConfig::default().with_eager_filter_unavailable(),
+        TableReaderConfig::default()
+            .with_eager_filter_unavailable()
+            .deny_runtime_materialization(),
     ) {
         Ok(reader) => reader,
         Err(error) => {
@@ -763,14 +786,35 @@ pub(crate) fn prepare_durable_flush_with_budget(
             return Ok(Some(PreparedDurableFlush {
                 request: request.clone(),
                 frozen_index,
+                frozen_identity,
                 table_facts,
                 object_facts,
                 table: Err(outcome),
             }));
         }
     };
-    let table = match branch_owned_table(branch.branch_id(), identity, reader) {
-        Ok(table) => Ok(table),
+    let extras = artifact.extras().clone();
+    let table = match branch_owned_table(branch.branch_id(), identity, reader, extras) {
+        // BS5.3b: the row-equality verification moved OFF-lock from the
+        // install (where it walked every row under the runtime lock, ~7.5 ms
+        // per flush): verify the built, published table's rows end to end
+        // through the reader against the sealed memtable the build consumed.
+        // The install then matches that memtable by O(1) identity.
+        Ok(table) => {
+            if frozen_rows_match_table(&table, frozen) {
+                Ok(table)
+            } else {
+                Err(FlushFrozenOutcome::published_not_installed_outcome(
+                    request,
+                    frozen_index,
+                    table_facts.clone(),
+                    object_facts.clone(),
+                    LifecycleError::MaintenanceTaskFailed {
+                        reason: "flush artifact rows do not match the frozen table",
+                    },
+                ))
+            }
+        }
         Err(error) => Err(FlushFrozenOutcome::published_not_installed_outcome(
             request,
             frozen_index,
@@ -782,6 +826,7 @@ pub(crate) fn prepare_durable_flush_with_budget(
     Ok(Some(PreparedDurableFlush {
         request: request.clone(),
         frozen_index,
+        frozen_identity,
         table_facts,
         object_facts,
         table,
@@ -795,6 +840,7 @@ pub(crate) fn install_prepared_durable_flush(
     let PreparedDurableFlush {
         request,
         frozen_index,
+        frozen_identity,
         table_facts,
         object_facts,
         table,
@@ -803,18 +849,19 @@ pub(crate) fn install_prepared_durable_flush(
         Ok(table) => table,
         Err(outcome) => return outcome,
     };
-    let install_outcome = match branch.replace_frozen_with_level_zero_table(frozen_index, table) {
-        Ok(outcome) => outcome,
-        Err(error) => {
-            return FlushFrozenOutcome::published_not_installed_outcome(
-                &request,
-                frozen_index,
-                table_facts,
-                object_facts,
-                branch_error(error),
-            );
-        }
-    };
+    let install_outcome =
+        match branch.replace_frozen_with_level_zero_table_by_identity(frozen_identity, table) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return FlushFrozenOutcome::published_not_installed_outcome(
+                    &request,
+                    frozen_index,
+                    table_facts,
+                    object_facts,
+                    branch_error(error),
+                );
+            }
+        };
     FlushFrozenOutcome::completed_outcome(
         &request,
         frozen_index,
@@ -827,7 +874,7 @@ pub(crate) fn install_prepared_durable_flush(
 pub(crate) fn prepare_durable_flush_drain_with_budget(
     branch: &BranchLocalState,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     request: &FlushDrainRequest,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<PreparedDurableFlushDrain> {
@@ -1213,7 +1260,7 @@ fn derived_table_identity(
 ) -> LifecycleResult<TableIdentity> {
     let facts = frozen.facts();
     TableIdentity::new(format!(
-        "{}-{}-frozen-{}-{}-{}",
+        "{}-{}-frozen-{}-{}-{}-{:016x}",
         request.table_identity_seed().as_str(),
         request.branch_id(),
         facts.row_count(),
@@ -1223,8 +1270,41 @@ fn derived_table_identity(
         facts
             .max_commit()
             .map_or(0, strata_core_next::CommitVersion::as_u64),
+        frozen_key_span_digest(frozen),
     ))
     .map_err(table_error)
+}
+
+/// FNV-1a-64 over the frozen table's physical key span (first key, a separator, then last key).
+///
+/// The flush object id derives from the table identity (`derived_object_id`), and
+/// `publish_or_load_existing` treats an id that already exists as the same content (idempotent
+/// retry). So two frozen tables that share a row count and commit range but cover different keys
+/// MUST NOT share an identity — otherwise the second flush would load the first's stale object,
+/// whose rows would not match this table's summary (extras). Production keeps flush identities
+/// distinct through monotonic commit versions; this span digest keeps them distinct even when the
+/// row count and commit range collide (e.g. raw same-version rows). It is idempotent — the same
+/// frozen span yields the same digest — so retry-load stays sound.
+fn frozen_key_span_digest(frozen: &FrozenTable) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    fn mix(mut hash: u64, bytes: &[u8]) -> u64 {
+        for &byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        hash
+    }
+    let mut hash = FNV_OFFSET;
+    if let Some(first) = frozen.first_key() {
+        hash = mix(hash, first.as_slice());
+    }
+    // Unit separator so an empty last key cannot alias a first key that ends where last begins.
+    hash = mix(hash, b"\x1f");
+    if let Some(last) = frozen.last_key() {
+        hash = mix(hash, last.as_slice());
+    }
+    hash
 }
 
 fn derived_object_id(request: &FlushFrozenRequest, table_facts: &TableRuntimeFacts) -> String {
@@ -1258,12 +1338,13 @@ fn publish_or_load_existing(
 fn branch_owned_table(
     branch_id: BranchId,
     identity: TableIdentity,
-    reader: ImmutableTableReader<'_>,
+    reader: ImmutableTableReader<'static>,
+    extras: TableSummaryExtras,
 ) -> LifecycleResult<BranchOwnedTable> {
     let descriptor =
         BranchTableDescriptor::new(identity, reader.facts().clone(), BranchLevel::ZERO)
             .map_err(branch_error)?;
-    BranchOwnedTable::new(branch_id, descriptor, reader).map_err(branch_error)
+    BranchOwnedTable::new(branch_id, descriptor, reader, extras).map_err(branch_error)
 }
 
 fn validate_single_component(field: &'static str, value: &str) -> LifecycleResult<()> {

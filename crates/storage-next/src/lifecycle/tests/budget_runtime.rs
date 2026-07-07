@@ -307,7 +307,11 @@ fn reader_budget_error_names_table_identity() {
 }
 
 #[test]
-fn reader_budget_cache_mode_and_durable_mode_match() {
+fn reader_budget_below_metadata_rejects_in_both_cache_and_durable_mode() {
+    // BS4.5a: cache flush charges the whole object; durable flush charges only the metadata-resident
+    // footprint. This 1-byte reader budget sits below *even the metadata*, so both modes still reject —
+    // the floor case where the two charges agree. (Where they diverge — a budget between the metadata and
+    // the object — is covered by `durable_flush_admits_table_larger_than_reader_budget_while_cache_rejects`.)
     let cache_branch = branch_id(0x50);
     let durable_branch = branch_id(0x51);
     let mut parts = budget_parts(16 * 1024);
@@ -327,8 +331,10 @@ fn reader_budget_cache_mode_and_durable_mode_match() {
         )
         .expect("cache commit");
     cache.rotate_active_for_maintenance().expect("cache rotate");
-    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
-    let mut durable = open_durable_runtime(durable_branch, &backend, budget);
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
+    let mut durable = open_durable_runtime(durable_branch, backend, budget);
     durable
         .execute_durable_commit(
             durable_put_batch(
@@ -354,6 +360,69 @@ fn reader_budget_cache_mode_and_durable_mode_match() {
     assert_budget_error(&durable_error, StorageBudgetPool::TableReader);
     assert_eq!(cache.branch_state().frozen_table_count(), 1);
     assert_eq!(durable.branch_state().frozen_table_count(), 1);
+}
+
+#[test]
+fn durable_flush_admits_table_larger_than_reader_budget_while_cache_rejects() {
+    // BS4.5a: a durable flush installs a lazy, disk-resident reader, so it charges only the
+    // metadata-resident footprint against the reader pool — a table whose full object far exceeds the
+    // reader budget still installs. A cache flush installs an eager, fully-resident reader and keeps
+    // charging the whole object (constraint C2), so the same table is rejected. The reader budget sits
+    // between the two: above the metadata (few hundred bytes) but well below the 32 KiB object.
+    let cache_branch = branch_id(0x54);
+    let durable_branch = branch_id(0x55);
+    let mut parts = budget_parts(128 * 1024);
+    parts.table_reader_bytes = 8 * 1024;
+    parts.frozen_mutable_bytes = 64 * 1024;
+    parts.generated_artifact_bytes = 64 * 1024;
+    parts.total_bytes = pool_sum(parts);
+    let budget = StorageRuntimeBudget::from_parts(parts).expect("budget");
+    let value = vec![0x63; 32 * 1024];
+
+    let mut cache = open_cache_runtime(cache_branch, budget);
+    cache
+        .execute_cache_commit(
+            put_batch(
+                cache_branch,
+                physical_key(cache_branch, b"cache-large-table"),
+                value.clone(),
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("cache commit");
+    cache.rotate_active_for_maintenance().expect("cache rotate");
+
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
+    let mut durable = open_durable_runtime(durable_branch, backend, budget);
+    durable
+        .execute_durable_commit(
+            durable_put_batch(
+                durable_branch,
+                physical_key(durable_branch, b"durable-large-table"),
+                value,
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("durable commit");
+    durable
+        .rotate_active_for_maintenance()
+        .expect("durable rotate");
+
+    // Cache: the whole-object reader charge exceeds the reader budget — rejected, table stays frozen.
+    let cache_error = cache
+        .flush_frozen(&flush_request(cache_branch, "cache-large"))
+        .expect_err("cache reader budget rejects the whole-object charge");
+    assert_budget_error(&cache_error, StorageBudgetPool::TableReader);
+    assert_eq!(cache.branch_state().frozen_table_count(), 1);
+
+    // Durable: the metadata-resident charge fits — the table installs disk-resident.
+    durable
+        .flush_frozen(&flush_request(durable_branch, "durable-large"))
+        .expect("durable flush admits a table larger than the reader budget");
+    assert_eq!(durable.branch_state().frozen_table_count(), 0);
+    assert_eq!(durable.branch_state().owned_table_count(), 1);
 }
 
 #[test]
@@ -810,10 +879,12 @@ fn low_memory_profile_opens_cache_runtime() {
 #[test]
 fn low_memory_profile_opens_durable_runtime_on_test_backend() {
     let branch = branch_id(0x4e);
-    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
     let runtime = open_durable_runtime(
         branch,
-        &backend,
+        backend,
         StorageRuntimeBudget::low_memory_test_profile(),
     );
 
@@ -833,10 +904,12 @@ fn low_memory_profile_opens_durable_runtime_on_test_backend() {
 #[test]
 fn low_memory_profile_opens_durable_runtime_on_memory_backend() {
     let branch = branch_id(0x5a);
-    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
     let runtime = open_durable_runtime(
         branch,
-        &backend,
+        backend,
         StorageRuntimeBudget::low_memory_test_profile(),
     );
 
@@ -939,13 +1012,15 @@ fn low_memory_profile_reports_pressure_without_product_policy() {
 #[test]
 fn checkpoint_encode_over_budget_rejects_before_snapshot_publish() {
     let branch = branch_id(0x4c);
-    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
     let mut parts = budget_parts(32 * 1024);
     parts.generated_artifact_bytes = 1;
     parts.total_bytes = pool_sum(parts);
     let mut runtime = open_durable_runtime(
         branch,
-        &backend,
+        backend,
         StorageRuntimeBudget::from_parts(parts).expect("budget"),
     );
     runtime
@@ -993,13 +1068,15 @@ fn flush_artifact_exact_budget_succeeds() {
 #[test]
 fn compaction_artifact_over_budget_defers_before_publish() {
     let branch = branch_id(0x52);
-    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
     let mut parts = budget_parts(64 * 1024);
     parts.generated_artifact_bytes = 1;
     parts.total_bytes = pool_sum(parts);
     let mut runtime = open_durable_runtime(
         branch,
-        &backend,
+        backend,
         StorageRuntimeBudget::from_parts(parts).expect("budget"),
     );
     install_budget_l0_table(
@@ -1035,7 +1112,9 @@ fn compaction_artifact_over_budget_defers_before_publish() {
 fn materialization_artifact_over_budget_defers_before_publish() {
     let parent = branch_id(0x53);
     let child = branch_id(0x54);
-    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
     let mut parts = budget_parts(64 * 1024);
     parts.generated_artifact_bytes = 1;
     parts.total_bytes = pool_sum(parts);
@@ -1051,7 +1130,7 @@ fn materialization_artifact_over_budget_defers_before_publish() {
         .expect("fork child");
     let mut runtime = open_durable_runtime(
         child,
-        &backend,
+        backend,
         StorageRuntimeBudget::from_parts(parts).expect("budget"),
     );
     *runtime.branch_state_mut() = child_state;
@@ -1140,13 +1219,15 @@ fn artifact_budget_reports_output_bytes() {
 #[test]
 fn artifact_budget_does_not_truncate_wal_or_delete_objects() {
     let branch = branch_id(0x55);
-    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
     let mut parts = budget_parts(32 * 1024);
     parts.generated_artifact_bytes = 1;
     parts.total_bytes = pool_sum(parts);
     let mut runtime = open_durable_runtime(
         branch,
-        &backend,
+        backend,
         StorageRuntimeBudget::from_parts(parts).expect("budget"),
     );
     runtime
@@ -1176,10 +1257,12 @@ fn artifact_budget_does_not_truncate_wal_or_delete_objects() {
 #[test]
 fn low_memory_profile_defers_large_compaction_artifact() {
     let branch = branch_id(0x56);
-    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
     let mut runtime = open_durable_runtime(
         branch,
-        &backend,
+        backend,
         StorageRuntimeBudget::low_memory_test_profile(),
     );
     install_budget_l0_table(
@@ -1223,8 +1306,10 @@ fn cache_and_durable_rotation_budget_behavior_diverges() {
     let durable_budget = storage_budget_with_frozen(128, 64);
     let cache_budget = storage_budget_with_frozen(16 * 1024, 16 * 1024);
     let mut cache = open_cache_runtime(cache_branch, cache_budget);
-    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
-    let mut durable = open_durable_runtime(durable_branch, &backend, durable_budget);
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
+    let mut durable = open_durable_runtime(durable_branch, backend, durable_budget);
 
     // Cache is volatile in-memory storage: it no longer projects incoming
     // rotation against the frozen budget, so an oversize commit succeeds.
@@ -1289,9 +1374,11 @@ fn frozen_cache_runtime(
 
 #[test]
 fn durable_global_total_reflects_committed_resident_bytes() {
-    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
     let branch = branch_id(0x71);
-    let mut runtime = open_durable_runtime(branch, &backend, StorageRuntimeBudget::default());
+    let mut runtime = open_durable_runtime(branch, backend, StorageRuntimeBudget::default());
     assert_eq!(
         runtime.budget_total_used_bytes(),
         0,
@@ -1318,11 +1405,288 @@ fn durable_global_total_reflects_committed_resident_bytes() {
     );
 }
 
+/// Independent full fold of a branch's resident bytes, computed directly from the tables
+/// (active memtable + frozen tables + owned-level tables) rather than the BS1 cached shape
+/// aggregates. This is the reference the runtime memory total must equal; because it reads
+/// table sizes directly, it also validates the total in release, where BS1.1's per-branch
+/// debug oracle is compiled out.
+fn fold_resident_bytes(state: &BranchLocalState) -> u64 {
+    let active = u64::try_from(state.active().approximate_size_bytes()).unwrap_or(u64::MAX);
+    let frozen = state.frozen().iter().fold(0u64, |total, table| {
+        total.saturating_add(u64::try_from(table.approximate_size_bytes()).unwrap_or(u64::MAX))
+    });
+    let owned = state
+        .owned_levels()
+        .iter()
+        .flatten()
+        .fold(0u64, |total, table| {
+            total.saturating_add(table.approximate_size_bytes())
+        });
+    active.saturating_add(frozen).saturating_add(owned)
+}
+
 #[test]
-fn multi_branch_combined_resident_over_budget_refuses_commit() {
-    // total_bytes is just above active_mutable_bytes, so a single branch can never exceed the
-    // global total through its own active pool — only two branches' combined resident can. This is
-    // the case the single-branch admission path cannot reach.
+fn durable_runtime_total_matches_independent_full_fold() {
+    // The block cache is disabled (`budget_parts` sets `block_cache_bytes = 0`), so the published
+    // runtime total is exactly the branch resident bytes and can be checked against an independent
+    // fold over the tables after a real flush + compaction sequence. This catches drift in the
+    // O(branches) memory-total composition (the fold + publish in `refresh_runtime_memory_total`),
+    // which the per-branch BS1.1 oracle does not cover, and holds in release.
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
+    let branch = branch_id(0x74);
+    let mut parts = budget_parts(256 * 1024);
+    parts.table_reader_bytes = 1024 * 1024;
+    parts.generated_artifact_bytes = 1024 * 1024;
+    parts.frozen_mutable_bytes = 256 * 1024;
+    parts.max_frozen_tables = 8;
+    parts.max_open_readers = 64;
+    parts.total_bytes = pool_sum(parts);
+    let mut runtime = open_durable_runtime(
+        branch,
+        backend,
+        StorageRuntimeBudget::from_parts(parts).expect("budget"),
+    );
+
+    // Two owned L0 tables via the real flush path (commit -> rotate -> flush), then compact them.
+    for tag in ["a", "b"] {
+        runtime
+            .execute_durable_commit(
+                durable_put_batch(
+                    branch,
+                    physical_key(branch, tag.as_bytes()),
+                    vec![0x33; 512],
+                ),
+                CommitBranchGenerationGuard::exact(
+                    CommitBranchGeneration::new(1).expect("generation"),
+                ),
+            )
+            .expect("commit");
+        runtime.rotate_active_for_maintenance().expect("rotate");
+        runtime
+            .flush_frozen(&flush_request(branch, tag))
+            .expect("flush");
+    }
+    runtime
+        .compact_branch_tables(
+            &LifecycleCompactionRequest::new(
+                branch,
+                BranchCompactionKind::CompactL0,
+                "drift-compact-output",
+            )
+            .expect("compaction request"),
+        )
+        .expect("compact");
+
+    // Leave a rotated-but-unflushed frozen table plus a populated active memtable, so all three
+    // resident components (active + frozen + owned) contribute to the total.
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(
+                branch,
+                physical_key(branch, b"frozen-tail"),
+                vec![0x35; 512],
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit");
+    runtime.rotate_active_for_maintenance().expect("rotate");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(
+                branch,
+                physical_key(branch, b"active-tail"),
+                vec![0x36; 512],
+            ),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit");
+
+    let _ = runtime.budget_snapshot();
+    let state = runtime.branch_state();
+    assert!(
+        state.owned_table_count() > 0,
+        "compaction left owned tables"
+    );
+    assert_eq!(state.frozen_table_count(), 1, "one frozen table remains");
+    assert!(state.active_row_count() > 0, "active memtable populated");
+    assert_eq!(
+        runtime.runtime_total_bytes(),
+        fold_resident_bytes(state),
+        "durable runtime memory total must equal an independent full table fold"
+    );
+}
+
+#[test]
+fn cache_runtime_total_matches_independent_full_fold() {
+    // Cache mode has no block-cache term at all (`refresh_runtime_memory_total` sets the total to
+    // the branch resident sum), so the published total must equal the independent fold over active
+    // + frozen tables regardless of the budget.
+    let branch = branch_id(0x76);
+    let mut runtime = open_cache_runtime(branch, storage_budget(256 * 1024));
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"cache-frozen"),
+                vec![0x33; 512],
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("commit");
+    runtime.rotate_active_for_maintenance().expect("rotate");
+    runtime
+        .execute_cache_commit(
+            put_batch(
+                branch,
+                physical_key(branch, b"cache-active"),
+                vec![0x34; 512],
+            ),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("commit");
+
+    let _ = runtime.budget_snapshot();
+    let state = runtime.branch_state();
+    assert_eq!(state.frozen_table_count(), 1, "one frozen table remains");
+    assert!(state.active_row_count() > 0, "active memtable populated");
+    assert_eq!(
+        runtime.runtime_total_bytes(),
+        fold_resident_bytes(state),
+        "cache runtime memory total must equal an independent full table fold"
+    );
+}
+
+#[test]
+fn durable_runtime_total_sums_resident_bytes_across_all_branches() {
+    // The runtime total is the O(branches) sum of every branch's resident bytes. Verify it equals
+    // the exact per-branch fold across two asymmetric branches, so a fold bug that skips a branch
+    // or double-counts one would be caught (the combined-over-budget rejection test only proves the
+    // sum is large enough to trip the budget, not that it is exact). Block cache disabled -> total
+    // is exactly the branch sum.
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
+    let branch_a = branch_id(0x77);
+    let branch_b = branch_id(0x78);
+    let mut parts = budget_parts(1024 * 1024);
+    parts.total_bytes = pool_sum(parts);
+    let mut runtime = open_durable_runtime(
+        branch_a,
+        backend,
+        StorageRuntimeBudget::from_parts(parts).expect("budget"),
+    );
+    runtime
+        .create_branch(
+            branch_b,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create branch b");
+
+    // Asymmetric resident sizes so `fold_a != fold_b` — a bug that counts one branch for both would
+    // not produce the correct sum.
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch_a, physical_key(branch_a, b"a"), vec![0x33; 1024]),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit a");
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch_b, physical_key(branch_b, b"b"), vec![0x34; 4096]),
+            CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
+        )
+        .expect("commit b");
+
+    let _ = runtime.budget_snapshot();
+    let fold_a = fold_resident_bytes(
+        runtime
+            .branch_catalog()
+            .branch_state(branch_a)
+            .expect("branch a state"),
+    );
+    let fold_b = fold_resident_bytes(
+        runtime
+            .branch_catalog()
+            .branch_state(branch_b)
+            .expect("branch b state"),
+    );
+    assert!(
+        fold_a > 0 && fold_b > 0,
+        "both branches hold resident bytes"
+    );
+    assert_ne!(fold_a, fold_b, "branches are asymmetric");
+    assert_eq!(
+        runtime.runtime_total_bytes(),
+        fold_a.saturating_add(fold_b),
+        "runtime memory total must sum resident bytes across all branches"
+    );
+}
+
+#[test]
+fn cache_runtime_total_sums_resident_bytes_across_all_branches() {
+    // Cache mode folds resident bytes across all branches on its own (separate) refresh path,
+    // with no block-cache term. Verify the published total equals the exact per-branch fold across
+    // two asymmetric branches (the cache cross-branch fold is a distinct copy of the durable one).
+    let branch_a = branch_id(0x79);
+    let branch_b = branch_id(0x7a);
+    let mut runtime = open_cache_runtime(branch_a, storage_budget(1024 * 1024));
+    runtime
+        .create_branch(
+            branch_b,
+            CommitBranchGeneration::new(1).expect("generation"),
+            None,
+        )
+        .expect("create branch b");
+    runtime
+        .execute_cache_commit(
+            put_batch(branch_a, physical_key(branch_a, b"a"), vec![0x33; 1024]),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("commit a");
+    runtime
+        .execute_cache_commit(
+            put_batch(branch_b, physical_key(branch_b, b"b"), vec![0x34; 4096]),
+            CommitBranchGenerationGuard::not_supplied(),
+        )
+        .expect("commit b");
+
+    let _ = runtime.budget_snapshot();
+    let fold_a = fold_resident_bytes(
+        runtime
+            .branch_catalog()
+            .branch_state(branch_a)
+            .expect("branch a state"),
+    );
+    let fold_b = fold_resident_bytes(
+        runtime
+            .branch_catalog()
+            .branch_state(branch_b)
+            .expect("branch b state"),
+    );
+    assert!(
+        fold_a > 0 && fold_b > 0,
+        "both branches hold resident bytes"
+    );
+    assert_ne!(fold_a, fold_b, "branches are asymmetric");
+    assert_eq!(
+        runtime.runtime_total_bytes(),
+        fold_a.saturating_add(fold_b),
+        "cache runtime memory total must sum resident bytes across all branches"
+    );
+}
+
+#[test]
+fn multi_branch_combined_resident_over_budget_is_admitted_as_gauge() {
+    // BS4.5a: total_bytes is just above active_mutable_bytes, so a single branch can never exceed the
+    // global total through its own active pool — only two branches' combined resident can. Before the
+    // disk-resident flip this hard-rejected the second commit; now the database-wide durable memory
+    // budget is an observability gauge, not an admission failure — a durable dataset is no longer
+    // RAM-bounded, and per-branch memtable pressure is still enforced by rotation + frozen-backlog
+    // admission. Cache mode keeps its hard reject (see
+    // `api::tests::cache::cache_multi_branch_over_global_budget_is_refused`).
     let mut parts = budget_parts(64 * 1024);
     parts.table_reader_bytes = 1024;
     parts.frozen_mutable_bytes = 1024;
@@ -1330,10 +1694,12 @@ fn multi_branch_combined_resident_over_budget_refuses_commit() {
     parts.total_bytes = pool_sum(parts);
     let budget = StorageRuntimeBudget::from_parts(parts).expect("budget");
 
-    let backend = super::checkpoint::shared::CheckpointTestBackend::new();
+    let backend: &'static super::checkpoint::shared::CheckpointTestBackend = Box::leak(Box::new(
+        super::checkpoint::shared::CheckpointTestBackend::new(),
+    ));
     let branch_a = branch_id(0x72);
     let branch_b = branch_id(0x73);
-    let mut runtime = open_durable_runtime(branch_a, &backend, budget);
+    let mut runtime = open_durable_runtime(branch_a, backend, budget);
     runtime
         .create_branch(
             branch_b,
@@ -1352,17 +1718,16 @@ fn multi_branch_combined_resident_over_budget_refuses_commit() {
         )
         .expect("branch a commit fits the per-branch and global budget");
 
-    // Branch B's commit fits its own active pool but pushes the database-wide total over budget,
-    // so the global admission refuses it before any visible mutation.
-    let error = runtime
+    // BS4.5a: branch B's commit pushes the database-wide total over budget but is admitted — the
+    // over-budget condition is surfaced as a gauge (perf-trace counter), not a refusal.
+    runtime
         .execute_durable_commit(
             durable_put_batch(branch_b, physical_key(branch_b, b"b"), value),
             CommitBranchGenerationGuard::exact(CommitBranchGeneration::new(1).expect("generation")),
         )
-        .expect_err("branch b commit exceeds the database memory budget");
-    assert_eq!(error.code(), "resource_exhausted.lifecycle.storage_budget");
+        .expect("branch b commit is admitted despite exceeding the database memory budget");
 
-    // Refusal is before mutation: branch A's value survives, branch B's never became visible.
+    // Both branches' values are visible: neither commit was refused.
     let view_a = runtime
         .branch_catalog()
         .branch_state(branch_a)
@@ -1374,7 +1739,7 @@ fn multi_branch_combined_resident_over_budget_refuses_commit() {
             .latest(&physical_key(branch_a, b"a"))
             .expect("read a")
             .is_some(),
-        "branch A's committed value survives the refused branch-B commit"
+        "branch A's committed value is visible"
     );
     let view_b = runtime
         .branch_catalog()
@@ -1386,8 +1751,8 @@ fn multi_branch_combined_resident_over_budget_refuses_commit() {
         view_b
             .latest(&physical_key(branch_b, b"b"))
             .expect("read b")
-            .is_none(),
-        "the refused branch-B commit left no visible state"
+            .is_some(),
+        "branch B's committed value is visible — the over-budget commit was admitted"
     );
 }
 
@@ -1424,9 +1789,9 @@ fn open_cache_runtime(
 
 fn open_durable_runtime(
     branch: BranchId,
-    backend: &dyn crate::backend::Backend,
+    backend: &'static dyn crate::backend::Backend,
     budget: StorageRuntimeBudget,
-) -> LifecycleDurableLocalRuntime<'_, CommitManualTimestampSource> {
+) -> LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource> {
     let config = LifecycleConfig::default()
         .with_storage_budget(budget)
         .expect("storage budget config");
@@ -1544,7 +1909,9 @@ fn budget_owned_table(
     .expect("reader");
     let descriptor =
         BranchTableDescriptor::new(identity, reader.facts().clone(), level).expect("descriptor");
-    BranchOwnedTable::new(branch, descriptor, reader).expect("owned table")
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras");
+    BranchOwnedTable::new(branch, descriptor, reader, extras).expect("owned table")
 }
 
 fn budget_row(

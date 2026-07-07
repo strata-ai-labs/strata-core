@@ -7,14 +7,16 @@ use super::compaction::{
 };
 use super::{
     publish_table_manifest_for_branch_with_budget, require_generated_artifact_budget,
-    require_table_reader_budget, LifecycleDurableTableCatalog, LifecycleError, LifecycleResult,
-    StorageBudgetLedger,
+    require_table_reader_budget, subcompaction_cap, LifecycleDurableTableCatalog, LifecycleError,
+    LifecycleResult, StorageBudgetLedger,
 };
 use crate::backend::{PublishError, PublishFailureKind};
 use crate::branch::error::BranchRuntimeError;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::{BranchMaterializationSource, BranchOwnedTable};
-use crate::branch::state::compaction::{BranchCompactionPlan, BranchCompactionRequest};
+use crate::branch::state::compaction::{
+    BranchCompactionKind, BranchCompactionPlan, BranchCompactionRequest,
+};
 use crate::branch::state::materialization::{
     BranchMaterializationHandle, BranchMaterializationOutcome, BranchMaterializationPreparedOutput,
     BranchMaterializationRecovery, BranchMaterializationRequest,
@@ -26,7 +28,7 @@ use crate::service::{
     TableManifestService, TableObjectFacts, TableObjectReadError, TableObjectReaderService,
     TableObjectService, TableObjectServiceError,
 };
-use crate::table::{BuiltTableArtifact, TableCompactionReport, TableReaderConfig};
+use crate::table::{BuiltTableArtifact, TableCompactionReport, TableKeyBounds, TableReaderConfig};
 use strata_core_next::BranchId;
 
 pub(crate) struct PreparedDurableCompaction {
@@ -71,7 +73,7 @@ pub(crate) struct PreparedDurableMaterialization {
 pub(crate) fn compact_durable_branch_manifest_backed(
     branch: &mut BranchLocalState,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     manifest_service: &TableManifestService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
     request: &LifecycleCompactionRequest,
@@ -90,7 +92,7 @@ pub(crate) fn compact_durable_branch_manifest_backed(
 pub(crate) fn prepare_durable_compaction_publication(
     branch: &BranchLocalState,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     request: &LifecycleCompactionRequest,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<PreparedDurableCompaction> {
@@ -104,26 +106,17 @@ pub(crate) fn prepare_durable_compaction_publication(
         .plan_branch_compaction(&branch_request)
         .map_err(branch_error)?;
     let io_facts = LifecycleCompactionIoFacts::from_plan(branch, &plan);
-    let output = match branch
-        .prepare_branch_compaction_plan(&branch_request, &plan)
-        .map_err(branch_error)?
-    {
-        Some((artifacts, report)) => {
-            let Some(output_level) = plan.output_level() else {
-                return Err(LifecycleError::RewritePublicationFailed {
-                    reason: "prepared compaction output requires a candidate plan",
-                    source: None,
-                });
-            };
-            let published = publish_compaction_outputs(
-                branch.branch_id(),
-                output_level,
-                plan.materialization_source(),
-                table_service,
-                reader_service,
-                artifacts,
-                budget,
-            )?;
+    let ranges = subcompaction_ranges_for_publication(branch, &branch_request, &plan)?;
+    let output = match build_and_publish_compaction(
+        branch,
+        &branch_request,
+        &plan,
+        table_service,
+        reader_service,
+        budget,
+        &ranges,
+    )? {
+        Some((published, report)) => {
             PreparedDurableCompactionOutput::Published { report, published }
         }
         None => PreparedDurableCompactionOutput::MetadataOnly,
@@ -136,6 +129,134 @@ pub(crate) fn prepare_durable_compaction_publication(
         output,
         elapsed: started.elapsed(),
     })
+}
+
+/// The subcompaction key ranges for one compaction: `vec![None]` (a single serial build) unless
+/// the candidate is an L0-to-L1 table rewrite large enough to split, in which case up to
+/// `subcompaction_cap()` disjoint half-open physical-key ranges.
+fn subcompaction_ranges_for_publication(
+    branch: &BranchLocalState,
+    branch_request: &BranchCompactionRequest,
+    plan: &BranchCompactionPlan,
+) -> LifecycleResult<Vec<Option<TableKeyBounds>>> {
+    let Some(candidate) = plan.candidate() else {
+        return Ok(vec![None]);
+    };
+    if candidate.is_metadata_promotion()
+        || branch_request.kind() != BranchCompactionKind::CompactL0ToLevelOne
+    {
+        return Ok(vec![None]);
+    }
+    let n = subcompaction_cap();
+    if n <= 1 {
+        return Ok(vec![None]);
+    }
+    let target_output_bytes = branch_request
+        .table_compaction_config()
+        .target_output_bytes();
+    branch
+        .subcompaction_ranges_for_candidate(candidate, n, target_output_bytes)
+        .map_err(branch_error)
+}
+
+/// Build and publish a compaction as `ranges.len()` parallel subcompactions (or one serial build
+/// when `ranges` is a single unbounded range), then aggregate their published output tables and
+/// reports into one result. Returns `None` for a metadata promotion (no build). Any subcompaction
+/// failure aborts the whole compaction and cleans up already-published objects as an orphaned
+/// partial publish.
+fn build_and_publish_compaction(
+    branch: &BranchLocalState,
+    branch_request: &BranchCompactionRequest,
+    plan: &BranchCompactionPlan,
+    table_service: &TableObjectService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
+    budget: Option<&StorageBudgetLedger>,
+    ranges: &[Option<TableKeyBounds>],
+) -> SubcompactionBuildResult {
+    let build_range = |index: usize, bounds: Option<&TableKeyBounds>| -> SubcompactionBuildResult {
+        let Some((artifacts, report)) = branch
+            .prepare_branch_compaction_plan_bounded(branch_request, plan, bounds, index)
+            .map_err(branch_error)?
+        else {
+            return Ok(None);
+        };
+        let output_level = plan
+            .output_level()
+            .ok_or(LifecycleError::RewritePublicationFailed {
+                reason: "prepared compaction output requires a candidate plan",
+                source: None,
+            })?;
+        let published = publish_compaction_outputs(
+            branch.branch_id(),
+            output_level,
+            plan.materialization_source(),
+            table_service,
+            reader_service,
+            artifacts,
+            budget,
+        )?;
+        Ok(Some((published, report)))
+    };
+
+    if ranges.len() <= 1 {
+        return build_range(0, ranges.first().and_then(Option::as_ref));
+    }
+
+    // BS3.1 (G23 / constraint C1): the subcompaction fan-out spawns threads, unsupported on wasm32.
+    // `mod lifecycle` is compiled for wasm (only `localfs` is forbidden — see lib.rs), so the spawn
+    // must be cfg'd out of the wasm build, not merely left unreached. On wasm the ranges build
+    // serially (n_eff = 1); env vars don't exist there, so `subcompaction_cap()` is already 1 and
+    // this arm is effectively dead, but it stays correct if `ranges.len() > 1` is ever forced.
+    #[cfg(not(target_arch = "wasm32"))]
+    let results: Vec<SubcompactionBuildResult> = std::thread::scope(|scope| {
+        let handles: Vec<_> = ranges
+            .iter()
+            .enumerate()
+            .map(|(index, bounds)| scope.spawn(move || build_range(index, bounds.as_ref())))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err(LifecycleError::RewritePublicationFailed {
+                        reason: "subcompaction build thread panicked",
+                        source: None,
+                    })
+                })
+            })
+            .collect()
+    });
+    #[cfg(target_arch = "wasm32")]
+    let results: Vec<SubcompactionBuildResult> = ranges
+        .iter()
+        .enumerate()
+        .map(|(index, bounds)| build_range(index, bounds.as_ref()))
+        .collect();
+
+    let mut all_published: Vec<PublishedRewriteTable> = Vec::new();
+    let mut merged_report: Option<TableCompactionReport> = None;
+    let mut first_error: Option<LifecycleError> = None;
+    for result in results {
+        match result {
+            Ok(Some((published, report))) => {
+                all_published.extend(published);
+                match &mut merged_report {
+                    Some(existing) => existing.accumulate(&report),
+                    None => merged_report = Some(report),
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+    }
+    if let Some(error) = first_error {
+        return Err(partial_publish_error(&all_published, error));
+    }
+    Ok(merged_report.map(|report| (all_published, report)))
 }
 
 pub(crate) fn install_prepared_durable_compaction(
@@ -303,7 +424,7 @@ fn compaction_request_with_durable_budget_target(
 pub(crate) fn materialize_durable_branch_manifest_backed(
     branch: &mut BranchLocalState,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     manifest_service: &TableManifestService<'_>,
     catalog: &mut LifecycleDurableTableCatalog,
     request: &LifecycleMaterializationRequest,
@@ -351,7 +472,7 @@ impl DurableMaterializationBuild {
     pub(crate) fn build(
         self,
         table_service: &TableObjectService<'_>,
-        reader_service: &TableObjectReaderService<'_>,
+        reader_service: &TableObjectReaderService<'static>,
         budget: Option<&StorageBudgetLedger>,
     ) -> LifecycleResult<PreparedDurableMaterialization> {
         let prepared = self
@@ -524,6 +645,11 @@ type PublishedRewriteTable = (
     TableManifestTableProvenance,
 );
 
+/// One subcompaction's published output tables plus its compaction report.
+type SubcompactionBuildOutput = (Vec<PublishedRewriteTable>, TableCompactionReport);
+/// Result of building one subcompaction range (`None` = a metadata promotion, no build).
+type SubcompactionBuildResult = LifecycleResult<Option<SubcompactionBuildOutput>>;
+
 struct PublishedRewriteObject {
     facts: TableObjectFacts,
     exact_bytes_validated: bool,
@@ -534,7 +660,7 @@ fn publish_compaction_outputs(
     output_level: BranchLevel,
     materialization_source: Option<BranchMaterializationSource>,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     artifacts: Vec<BuiltTableArtifact>,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<Vec<PublishedRewriteTable>> {
@@ -559,7 +685,7 @@ fn publish_compaction_outputs(
 fn publish_materialization_outputs(
     branch_id: BranchId,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     prepared: &BranchMaterializationPreparedOutput,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<Vec<PublishedRewriteTable>> {
@@ -585,14 +711,21 @@ fn publish_rewrite_artifact(
     branch_id: BranchId,
     level: BranchLevel,
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     artifact: BuiltTableArtifact,
     materialization_source: Option<BranchMaterializationSource>,
     budget: Option<&StorageBudgetLedger>,
 ) -> LifecycleResult<PublishedRewriteTable> {
-    let (bytes, table_facts, rows) = artifact.into_parts_with_rows();
+    let extras = artifact.extras().clone();
+    // BS4.5a: the rewrite output installs a lazy, disk-resident reader — charge only its
+    // metadata-resident footprint (captured before `into_parts` consumes the artifact), not the full
+    // encoded object. The generated-artifact pool below still accounts the transient artifact in full.
+    let reader_resident_bytes = artifact.resident_metadata_bytes();
+    // BS4.4l: drop the decoded rows — the output installs a lazy, disk-resident reader over the
+    // just-published object rather than reusing the in-memory rows.
+    let (bytes, table_facts) = artifact.into_parts();
     require_optional_rewrite_generated_budget(budget, table_facts.byte_count())?;
-    require_optional_rewrite_reader_budget(budget, table_facts.byte_count())?;
+    require_optional_rewrite_reader_budget(budget, reader_resident_bytes)?;
     let identity = table_facts.identity().clone();
     let branch_component = branch_id.to_string();
     let object = publish_or_load_rewrite_output(
@@ -616,23 +749,23 @@ fn publish_rewrite_artifact(
                 )
             })?;
     }
+    // BS4.4l: lazy, metadata-only reopen over the just-published (byte-exact-validated) object —
+    // disk-resident, block-cache-cold, guarded against accidental full materialization. Reverses the
+    // former eager row-reuse handoff (the L1+ outputs it produces are the bulk of a large dataset).
     let reader = reader_service
-        .open_reader_from_validated_rows(
+        .open_reader(
+            identity.clone(),
             &object_facts,
-            table_facts,
-            &bytes,
-            rows,
-            TableReaderConfig::default().with_eager_filter_unavailable(),
+            TableReaderConfig::default().deny_runtime_materialization(),
         )
         .map_err(|source| {
             orphaned_published_object_error(
                 &object_facts,
-                "table rewrite published output before in-memory reader handoff failed",
+                "table rewrite published output before lazy reader reopen failed",
                 source,
             )
         })?;
-    perf_trace::record_table_rewrite_reader_reopen_avoided();
-    perf_trace::record_table_rewrite_reader_rows_reused();
+    perf_trace::record_table_rewrite_reader_reopen_performed();
     let descriptor =
         BranchTableDescriptor::new(identity, reader.facts().clone(), level).map_err(|source| {
             orphaned_published_object_error(
@@ -644,7 +777,7 @@ fn publish_rewrite_artifact(
     let (table, provenance) = if let Some(source) = materialization_source {
         (
             BranchOwnedTable::new_materialization_replacement(
-                branch_id, descriptor, reader, source,
+                branch_id, descriptor, reader, extras, source,
             )
             .map_err(|error| {
                 orphaned_published_object_error(
@@ -667,7 +800,7 @@ fn publish_rewrite_artifact(
         )
     } else {
         (
-            BranchOwnedTable::new(branch_id, descriptor, reader).map_err(|error| {
+            BranchOwnedTable::new(branch_id, descriptor, reader, extras).map_err(|error| {
                 orphaned_published_object_error(
                     &object_facts,
                     "table rewrite published output before branch table validation failed",
@@ -706,7 +839,7 @@ fn require_optional_rewrite_reader_budget(
 
 fn publish_or_load_rewrite_output(
     table_service: &TableObjectService<'_>,
-    reader_service: &TableObjectReaderService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
     branch_component: &str,
     level: u32,
     object_id: &str,

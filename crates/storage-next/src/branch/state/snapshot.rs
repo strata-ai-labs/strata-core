@@ -5,7 +5,7 @@ use crate::branch::config::BranchRuntimeConfig;
 use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor, InheritedLayerStatus};
 use crate::branch::identity::{require_row_branch, rewrite_row_branch};
-use crate::branch::read::BranchOwnedTable;
+use crate::branch::read::{try_for_each_reader_row, BranchOwnedTable};
 use crate::row::StorageRow;
 use crate::table::{
     ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig, TableIdentity,
@@ -349,16 +349,16 @@ impl BranchLocalState {
                 )?;
             }
         }
-        for table in self.owned_levels.iter().flatten() {
-            for row in table.rows() {
+        for table in self.owned_levels().iter().flatten() {
+            try_for_each_reader_row(table.reader(), |row| {
                 insert_own_fork_snapshot_row(
                     &mut rows_by_key,
                     self.branch_id,
                     target_branch_id,
                     watermark,
                     row.row(),
-                )?;
-            }
+                )
+            })?;
         }
         for layer in &self.inherited_layers {
             match layer.status() {
@@ -372,15 +372,15 @@ impl BranchLocalState {
             }
             let inherited_watermark = watermark.min(layer.fork_version());
             for table in layer.owned_levels().iter().flatten() {
-                for row in table.rows() {
+                try_for_each_reader_row(table.reader(), |row| {
                     insert_lower_precedence_fork_snapshot_row(
                         &mut rows_by_key,
                         layer.source_branch_id(),
                         target_branch_id,
                         inherited_watermark,
                         row.row(),
-                    )?;
-                }
+                    )
+                })?;
             }
         }
 
@@ -557,7 +557,7 @@ fn stage_snapshot_install_branches(
             if branches.iter().any(|branch| {
                 branch_reachable_table_identity_exists(
                     identity,
-                    &branch.owned_levels,
+                    branch.owned_levels(),
                     &branch.inherited_layers,
                 )
             }) {
@@ -631,6 +631,7 @@ fn build_snapshot_l0_tables(
         let artifact = builder
             .build_from_storage_rows(identity.clone(), chunk)
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        let extras = artifact.extras().clone();
         let reader = ImmutableTableReader::open_bytes(
             identity.clone(),
             artifact.into_bytes(),
@@ -639,7 +640,9 @@ fn build_snapshot_l0_tables(
         .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
         let descriptor =
             BranchTableDescriptor::new(identity, reader.facts().clone(), BranchLevel::ZERO)?;
-        tables.push(BranchOwnedTable::new(branch_id, descriptor, reader)?);
+        tables.push(BranchOwnedTable::new(
+            branch_id, descriptor, reader, extras,
+        )?);
     }
     Ok(tables)
 }

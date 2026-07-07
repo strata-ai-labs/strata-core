@@ -104,7 +104,7 @@ fn api_conformance_closed_runtime_rejects_operations() {
 
 #[test]
 fn api_conformance_commit_then_read_round_trip() {
-    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache())
         .expect("cache open")
         .into_runtime();
     let branch = BranchId::from_bytes([0x01; BranchId::BYTE_LEN]);
@@ -140,7 +140,7 @@ fn api_conformance_commit_then_read_round_trip() {
 
 #[test]
 fn api_conformance_branch_lifecycle_round_trip() {
-    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache())
         .expect("cache open")
         .into_runtime();
     let parent = BranchId::from_bytes([0x01; BranchId::BYTE_LEN]);
@@ -238,7 +238,7 @@ fn api_conformance_branch_lifecycle_round_trip() {
 
 #[test]
 fn api_conformance_diagnostics_reports_boundary_facts() {
-    let mut runtime = StorageRuntime::open(StorageOpenOptions::cache())
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache())
         .expect("cache open")
         .into_runtime();
     let branch = BranchId::from_bytes([0x01; BranchId::BYTE_LEN]);

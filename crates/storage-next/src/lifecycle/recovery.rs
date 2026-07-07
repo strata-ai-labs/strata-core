@@ -2,6 +2,8 @@
 
 use std::collections::BTreeSet;
 
+use super::checkpoint::branch_durable_ranges_cover_interval;
+#[cfg(debug_assertions)]
 use super::checkpoint::branch_durable_rows_cover_interval;
 use super::{
     preflight_table_manifest_with_checkpoint, require_generated_artifact_budget,
@@ -23,7 +25,7 @@ use crate::row::StorageRow;
 use crate::service::{
     QuarantineServiceError, SnapshotServiceError, WalRepair, WalServiceError, WalTruncation,
 };
-use crate::table::TableIdentity;
+use crate::table::{ImmutableTableReader, TableCursor, TableIdentity, TableRow};
 use strata_core_next::{CommitVersion, Timestamp};
 
 #[derive(Debug)]
@@ -177,11 +179,18 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                 // synchronous baseline and keeping reads active-first newest-wins.
                 // This is what lets a bounded delta checkpoint recover without
                 // losing manifest-resident owned rows.
+                // BS4.5b: close always writes a delta checkpoint, so this checkpoint+manifest COMBINE
+                // path runs on every durable reopen. When the delta is empty (the common clean
+                // flush+close case) both calls short-circuit in O(1) — O(metadata) open. Only a
+                // non-empty delta (unflushed rows at close) still scans the full manifest to build its
+                // key set (O(dataset)); making that functional dedup O(metadata) needs a facts-based
+                // point-lookup and is a deferred follow-up. preflight stays a release guard (unlike the
+                // demoted per-table scans) so a checkpoint/manifest byte conflict is still caught.
                 let _overlap = preflight_table_manifest_with_checkpoint(
                     &recovered_branch,
                     stage.staged_branch(),
                 )?;
-                let delta = checkpoint_delta_rows(&recovered_branch, stage.staged_branch());
+                let delta = checkpoint_delta_rows(&recovered_branch, stage.staged_branch())?;
                 self.shell.apply_table_manifest_recovery(stage);
                 if !delta.is_empty() {
                     self.shell
@@ -782,22 +791,62 @@ fn install_checkpoint_rows(
 fn checkpoint_delta_rows(
     checkpoint_branch: &BranchLocalState,
     staged_manifest_branch: &BranchLocalState,
-) -> Vec<StorageRow> {
-    let mut manifest_keys = BTreeSet::<&[u8]>::new();
+) -> LifecycleResult<Vec<StorageRow>> {
+    // BS4.5b: a delta checkpoint holds only rows above the flush watermark; after a clean flush+close it
+    // is empty. When it has no owned rows the delta is empty regardless of the manifest, so return early
+    // and skip building the manifest key set — that scan is O(dataset) and, since close always writes a
+    // (usually empty) delta checkpoint, would otherwise run on every reopen and defeat O(metadata) open.
+    if checkpoint_branch
+        .owned_levels()
+        .iter()
+        .flatten()
+        .next()
+        .is_none()
+    {
+        return Ok(Vec::new());
+    }
+    // BS4.4c: stream the owned tables through the cursor instead of materializing every row. The
+    // manifest key set is now owned (cursor rows are transient), and the function becomes fallible.
+    let mut manifest_keys = BTreeSet::<Vec<u8>>::new();
     for table in staged_manifest_branch.owned_levels().iter().flatten() {
-        for row in table.rows() {
-            manifest_keys.insert(row.key().as_slice());
-        }
+        for_each_reader_row(table.reader(), |row| {
+            manifest_keys.insert(row.key().as_slice().to_vec());
+        })?;
     }
     let mut delta = Vec::new();
     for table in checkpoint_branch.owned_levels().iter().flatten() {
-        for row in table.rows() {
+        for_each_reader_row(table.reader(), |row| {
             if !manifest_keys.contains(row.key().as_slice()) {
                 delta.push(row.row().clone());
             }
-        }
+        })?;
     }
-    delta
+    Ok(delta)
+}
+
+/// BS4.4c: walk a durable table's rows through its cursor (ascending internal-key order), applying `f`
+/// per row without materializing the whole table. Cursor failures map to a recovery error.
+fn for_each_reader_row(
+    reader: &ImmutableTableReader<'_>,
+    mut f: impl FnMut(&TableRow),
+) -> LifecycleResult<()> {
+    let mut cursor = reader.cursor();
+    cursor
+        .seek_to_first()
+        .map_err(|_| checkpoint_delta_scan_failed())?;
+    while let Some(row) = cursor.current() {
+        f(row);
+        cursor
+            .advance()
+            .map_err(|_| checkpoint_delta_scan_failed())?;
+    }
+    Ok(())
+}
+
+fn checkpoint_delta_scan_failed() -> LifecycleError {
+    LifecycleError::RecoveryFailed {
+        reason: "checkpoint delta cursor scan failed",
+    }
 }
 
 fn trusted_replay_start(
@@ -865,7 +914,7 @@ fn table_manifest_covers_flush_watermark(
     tables: &LifecycleRecoveredTables,
     staged_branch: Option<&crate::branch::state::BranchLocalState>,
 ) -> bool {
-    let checkpoint_watermark = checkpoint_watermark.unwrap_or(CommitVersion::ZERO);
+    // O(1) facts check: the manifest's max durable commit version must reach the flush watermark.
     if tables
         .table_manifest()
         .install_outcome()
@@ -874,9 +923,34 @@ fn table_manifest_covers_flush_watermark(
     {
         return false;
     }
-    staged_branch.is_some_and(|branch| {
-        branch_durable_rows_cover_interval(branch, checkpoint_watermark, flush_watermark)
-    })
+    let Some(branch) = staged_branch else {
+        return false;
+    };
+    let checkpoint_watermark = checkpoint_watermark.unwrap_or(CommitVersion::ZERO);
+    // BS4.5b: O(tables) release fail-safe — the durable tables' commit-range intervals must union-cover
+    // (checkpoint_wm, flush_wm], catching an inter-table version gap (orphaned/partial durable state)
+    // without a row scan. The exact per-version contiguity is additionally cross-checked under the debug
+    // oracle, which also catches an intra-table gap the interval union cannot see. The old per-version
+    // scan was O(dataset) at open when no checkpoint bounded the window.
+    let ranges_cover = branch_durable_ranges_cover_interval(
+        branch.owned_levels(),
+        branch.inherited_layers(),
+        checkpoint_watermark,
+        flush_watermark,
+    );
+    #[cfg(debug_assertions)]
+    if ranges_cover {
+        debug_assert!(
+            branch_durable_rows_cover_interval(
+                branch.owned_levels(),
+                branch.inherited_layers(),
+                checkpoint_watermark,
+                flush_watermark,
+            ),
+            "durable rows have an intra-table gap in the flush watermark interval despite range coverage",
+        );
+    }
+    ranges_cover
 }
 
 fn manifest_snapshot_watermark(

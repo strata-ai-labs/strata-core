@@ -20,6 +20,27 @@ pub(super) fn install_l0_table(
     install_owned_table(state, branch, BranchLevel::ZERO, identity, rows);
 }
 
+/// Build an owned L0 table through the flush-install path (append -> rotate -> replace frozen).
+/// Unlike `install_l0_table` (which installs via the hook recompute), this exercises the
+/// incremental `per_level_bytes` delta (`apply_flush_install_shape_delta`) — the maintenance path
+/// BS1.3's scoring depends on but that only the debug shape oracle otherwise covers.
+pub(super) fn flush_install_state(
+    branch: BranchId,
+    identity: &str,
+    rows: Vec<StorageRow>,
+) -> BranchLocalState {
+    let mut state = BranchLocalState::empty(branch);
+    for row in &rows {
+        state.append_committed_row(row.clone()).expect("append");
+    }
+    let _rotation = state.rotate_active();
+    let table = owned_table(branch, BranchLevel::ZERO, identity, rows);
+    state
+        .replace_frozen_with_l0_table(0, table)
+        .expect("flush install");
+    state
+}
+
 pub(super) fn read_shape_state(branch: BranchId) -> BranchLocalState {
     let mut state = BranchLocalState::empty(branch);
     let live = put_row(branch, b"scan-a", 3, 3_000, b"live");
@@ -125,7 +146,9 @@ fn owned_table(
     .expect("reader");
     let descriptor =
         BranchTableDescriptor::new(identity, reader.facts().clone(), level).expect("descriptor");
-    BranchOwnedTable::new(branch, descriptor, reader).expect("owned table")
+    let extras =
+        crate::table::TableSummaryExtras::from_rows(reader.rows()).expect("table summary extras");
+    BranchOwnedTable::new(branch, descriptor, reader, extras).expect("owned table")
 }
 
 pub(super) fn put_row(

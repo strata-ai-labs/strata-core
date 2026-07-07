@@ -127,7 +127,7 @@ pub fn check_storage_api_commit_model_contract(
     script: &[u8],
 ) -> Result<StorageApiCommitModelOutcome, TestkitError> {
     let script = non_empty_script(script);
-    let mut runtime = StorageRuntime::open_ephemeral()
+    let runtime = StorageRuntime::open_ephemeral()
         .map_err(|error| testkit_error(&error))?
         .into_runtime();
     let mut outcome = StorageApiCommitModelOutcome {
@@ -259,7 +259,7 @@ fn check_conflict_fault(
     script: &[u8],
     outcome: &mut StorageApiCommitFaultOutcome,
 ) -> Result<(), TestkitError> {
-    let mut runtime = StorageRuntime::open_ephemeral()
+    let runtime = StorageRuntime::open_ephemeral()
         .map_err(|error| testkit_error(&error))?
         .into_runtime();
     runtime

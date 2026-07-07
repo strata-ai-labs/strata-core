@@ -12,10 +12,10 @@ use crate::commit::{
     COMMIT_TIMELINE_SPACE,
 };
 use crate::lifecycle::{
-    collect_storage_pressure_with_budget, BackgroundBackpressureError, BackgroundTaskPriority,
-    CacheBackgroundMaintenanceStep, CloseOutcome, CloseOutcomeStatus,
-    DurableBackgroundMaintenanceStep, FlushFrozenRequest, FlushTableIdentitySeed,
-    FlushTableObjectId, InlineMaintenanceExecutor, LifecycleBranchCatalog,
+    collect_storage_pressure_with_budget, estimate_commit_batch_active_bytes,
+    BackgroundBackpressureError, BackgroundTaskPriority, CacheBackgroundMaintenanceStep,
+    CloseOutcome, CloseOutcomeStatus, DurableBackgroundMaintenanceStep, FlushFrozenRequest,
+    FlushTableIdentitySeed, FlushTableObjectId, InlineMaintenanceExecutor, LifecycleBranchCatalog,
     LifecycleBranchDescriptor, LifecycleBranchStatus, LifecycleCacheOpenRequest,
     LifecycleCacheRuntime, LifecycleCheckpointOutcome, LifecycleCodecId,
     LifecycleCompactionDrainRequest, LifecycleConfig, LifecycleDurableLocalOpenRequest,
@@ -24,9 +24,10 @@ use crate::lifecycle::{
     LifecycleRetentionRequest, LifecycleRetentionScope, LifecycleStoragePressure,
     LifecycleStoragePressureReason, LifecycleStoragePressureSeverity, LifecycleWalGrowthOutcome,
     LifecycleWalGrowthPolicy, LifecycleWalGrowthStatus, LifecycleWalGrowthTrigger,
-    LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus, MaintenanceCheckpointOptions,
-    MaintenanceClock, MaintenanceExecutor, MaintenanceExecutorStats, MaintenanceExecutorStatus,
-    MaintenanceInstant, MaintenanceOutcome as LifecycleMaintenanceOutcome,
+    LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus, LifecycleWriteThrottlePolicy,
+    MaintenanceCheckpointOptions, MaintenanceClock, MaintenanceExecutor, MaintenanceExecutorStats,
+    MaintenanceExecutorStatus, MaintenanceInstant,
+    MaintenanceOutcome as LifecycleMaintenanceOutcome,
     MaintenanceOutcomeReasonClass as LifecycleMaintenanceOutcomeReasonClass,
     MaintenanceOutcomeStatus as LifecycleMaintenanceOutcomeStatus,
     MaintenanceTaskKind as LifecycleMaintenanceTaskKind,
@@ -75,11 +76,13 @@ use super::{
 use crate::api::outcome::StorageCloseEffects;
 use parking_lot::{Mutex as ParkingMutex, MutexGuard as ParkingMutexGuard};
 use std::fmt;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::marker::PhantomData;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 mod background;
+mod commit_group;
 mod data;
 mod diagnostics;
 mod error;
@@ -91,8 +94,8 @@ use background::{
 };
 
 use data::{
-    flush_request_for_boundary, map_api_commit_batch, map_commit_summary, map_immutable_sources,
-    map_scan_rows, map_storage_space, physical_key, read_row_from_storage,
+    cap_bound_at_visible, flush_request_for_boundary, map_api_commit_batch, map_commit_summary,
+    map_immutable_sources, map_scan_rows, map_storage_space, physical_key, read_row_from_storage,
     read_row_from_storage_if_visible, require_version_retained, resolve_read_bound,
     visible_tombstone_at_bound,
 };
@@ -129,7 +132,7 @@ const API_PHYSICAL_SPACE: &str = "api";
 const DEFAULT_BACKGROUND_BLOCK_WAIT_SLICE: Duration = Duration::from_millis(250);
 const DEFAULT_BACKGROUND_BLOCK_STALL_DEADLINE: Duration = Duration::from_secs(30);
 const DEFAULT_BACKGROUND_BLOCK_NO_RELIEF_ROUNDS: usize = 4;
-const DEFAULT_BACKGROUND_CLOSE_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
+pub(super) const DEFAULT_BACKGROUND_CLOSE_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ResolvedReadBound {
@@ -139,24 +142,30 @@ struct ResolvedReadBound {
 
 #[derive(Debug)]
 pub struct StorageRuntime<'a> {
-    inner: StorageRuntimeInner<'a>,
+    inner: StorageRuntimeInner,
     open_summary: Option<StorageOpenSummary>,
     last_recovery: Option<DiagnosticsRecoveryReport>,
     last_close: Option<StorageCloseSummary>,
+    /// Off-lock mirror of the allocator's last-allocated commit timestamp, in
+    /// micros (BS5.1). `0` = not yet sampled (one locked read refreshes it).
+    /// Reading this under the runtime lock serialized every writer BEFORE the
+    /// commit path, so the write-group join queue always looked empty. The
+    /// value is only a clamp candidate: the allocator enforces the real
+    /// monotonic floor under the lock, exactly as with the (equally
+    /// stale-by-interleaving) locked read this replaces.
+    last_allocated_timestamp_micros: AtomicU64,
+    // BS4.4i: every durable runtime is owned/`'static` (the borrowed `Durable(<'a>)` variant was
+    // removed), so `StorageRuntimeInner` no longer needs a lifetime. The public `StorageRuntime<'a>`
+    // signature is retained (it is spelled across downstream crates) by parking the now-inert lifetime
+    // here; `open_with_backend` still takes `&'a StorageBackend`, so callers are unchanged.
+    _marker: PhantomData<&'a ()>,
 }
 
 #[derive(Debug)]
-enum StorageRuntimeInner<'a> {
+enum StorageRuntimeInner {
     Cache(Box<RuntimeSlot<LifecycleCacheRuntime<ApiTimestampSource>>>),
-    Durable(Box<RuntimeSlot<LifecycleDurableLocalRuntime<'a, ApiTimestampSource>>>),
     DurableOwned(Box<RuntimeSlot<LifecycleDurableLocalRuntime<'static, ApiTimestampSource>>>),
     Closed,
-}
-
-enum DurableBackendHandleForOpen<'a> {
-    Borrowed(BackendHandle<'a>),
-    #[cfg(feature = "localfs")]
-    Owned(BackendHandle<'static>),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -219,6 +228,8 @@ impl StorageRuntime<'static> {
             open_summary: None,
             last_recovery: None,
             last_close: None,
+            last_allocated_timestamp_micros: AtomicU64::new(0),
+            _marker: PhantomData,
         }
     }
 
@@ -299,17 +310,6 @@ impl StorageRuntime<'static> {
                     );
                 })
                 .is_ok(),
-            StorageRuntimeInner::Durable(slot) => slot
-                .submit_background(BackgroundTaskPriority::High, move |runtime| {
-                    ready.wait();
-                    release.wait();
-                    let runtime = runtime.lock();
-                    observed_open.store(
-                        runtime.state() == crate::lifecycle::LifecycleState::Open,
-                        std::sync::atomic::Ordering::Release,
-                    );
-                })
-                .is_ok(),
             StorageRuntimeInner::DurableOwned(slot) => slot
                 .submit_background(BackgroundTaskPriority::High, move |runtime| {
                     ready.wait();
@@ -340,13 +340,6 @@ impl StorageRuntime<'static> {
                     panic!("intentional background close panic test");
                 })
                 .is_ok(),
-            StorageRuntimeInner::Durable(slot) => slot
-                .submit_background(BackgroundTaskPriority::High, move |_runtime| {
-                    ready.wait();
-                    release.wait();
-                    panic!("intentional background close panic test");
-                })
-                .is_ok(),
             StorageRuntimeInner::DurableOwned(slot) => slot
                 .submit_background(BackgroundTaskPriority::High, move |_runtime| {
                     ready.wait();
@@ -360,16 +353,11 @@ impl StorageRuntime<'static> {
 
     #[cfg(test)]
     #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
-    #[allow(
-        clippy::match_same_arms,
-        reason = "borrowed and owned durable slots have different concrete lifetimes"
-    )]
     pub(crate) fn background_shutdown_requested_flag_for_test(
         &self,
     ) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => slot.background_shutdown_requested_flag(),
-            StorageRuntimeInner::Durable(slot) => slot.background_shutdown_requested_flag(),
             StorageRuntimeInner::DurableOwned(slot) => slot.background_shutdown_requested_flag(),
             StorageRuntimeInner::Closed => None,
         }
@@ -377,24 +365,15 @@ impl StorageRuntime<'static> {
 
     #[cfg(test)]
     #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
-    #[allow(
-        clippy::match_same_arms,
-        reason = "borrowed and owned durable slots have different concrete lifetimes"
-    )]
     pub(crate) fn wait_background_idle_for_test(&self) {
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => slot.wait_background_idle(),
-            StorageRuntimeInner::Durable(slot) => slot.wait_background_idle(),
             StorageRuntimeInner::DurableOwned(slot) => slot.wait_background_idle(),
             StorageRuntimeInner::Closed => {}
         }
     }
 
     #[cfg(test)]
-    #[allow(
-        clippy::match_same_arms,
-        reason = "borrowed and owned durable slots have different concrete lifetimes"
-    )]
     #[allow(dead_code)]
     pub(crate) fn wait_background_idle_until_for_test(
         &self,
@@ -402,7 +381,6 @@ impl StorageRuntime<'static> {
     ) -> Option<MaintenanceExecutorStats> {
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => slot.wait_background_idle_until(timeout),
-            StorageRuntimeInner::Durable(slot) => slot.wait_background_idle_until(timeout),
             StorageRuntimeInner::DurableOwned(slot) => slot.wait_background_idle_until(timeout),
             StorageRuntimeInner::Closed => None,
         }
@@ -414,7 +392,6 @@ impl StorageRuntime<'static> {
     ) -> Vec<LifecycleMaintenanceTaskKind> {
         match &self.inner {
             StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => Vec::new(),
-            StorageRuntimeInner::Durable(slot) => slot.lock().pending_maintenance_kinds_for_test(),
             StorageRuntimeInner::DurableOwned(slot) => {
                 slot.lock().pending_maintenance_kinds_for_test()
             }
@@ -426,7 +403,7 @@ impl StorageRuntime<'static> {
     pub(crate) fn pending_flush_watermark_candidate_for_test(&self) -> Option<CommitVersion> {
         match &self.inner {
             StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => None,
-            StorageRuntimeInner::Durable(slot) | StorageRuntimeInner::DurableOwned(slot) => {
+            StorageRuntimeInner::DurableOwned(slot) => {
                 slot.lock().pending_flush_watermark_candidate_for_test()
             }
         }
@@ -440,10 +417,6 @@ impl StorageRuntime<'static> {
 
     #[cfg(test)]
     #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
-    #[allow(
-        clippy::match_same_arms,
-        reason = "borrowed and owned durable slots have different concrete lifetimes"
-    )]
     pub(crate) fn set_background_drain_limits_for_test(
         &mut self,
         max_tasks: usize,
@@ -451,9 +424,6 @@ impl StorageRuntime<'static> {
     ) -> bool {
         match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                slot.set_background_drain_limits(max_tasks, max_runtime)
-            }
-            StorageRuntimeInner::Durable(slot) => {
                 slot.set_background_drain_limits(max_tasks, max_runtime)
             }
             StorageRuntimeInner::DurableOwned(slot) => {
@@ -465,10 +435,6 @@ impl StorageRuntime<'static> {
 
     #[cfg(test)]
     #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
-    #[allow(
-        clippy::match_same_arms,
-        reason = "borrowed and owned durable slots have different concrete lifetimes"
-    )]
     pub(crate) fn set_background_block_wait_for_test(
         &mut self,
         wait_slice: Duration,
@@ -477,11 +443,6 @@ impl StorageRuntime<'static> {
     ) -> bool {
         match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => slot.set_background_block_wait_for_test(
-                wait_slice,
-                stall_deadline,
-                no_relief_rounds,
-            ),
-            StorageRuntimeInner::Durable(slot) => slot.set_background_block_wait_for_test(
                 wait_slice,
                 stall_deadline,
                 no_relief_rounds,
@@ -497,16 +458,9 @@ impl StorageRuntime<'static> {
 
     #[cfg(test)]
     #[cfg_attr(not(feature = "perf-trace"), allow(dead_code))]
-    #[allow(
-        clippy::match_same_arms,
-        reason = "borrowed and owned durable slots have different concrete lifetimes"
-    )]
     pub(crate) fn shutdown_background_for_test(&self) {
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let _ = slot.shutdown_background(Some(DEFAULT_BACKGROUND_CLOSE_SHUTDOWN_TIMEOUT));
-            }
-            StorageRuntimeInner::Durable(slot) => {
                 let _ = slot.shutdown_background(Some(DEFAULT_BACKGROUND_CLOSE_SHUTDOWN_TIMEOUT));
             }
             StorageRuntimeInner::DurableOwned(slot) => {
@@ -523,10 +477,6 @@ impl StorageRuntime<'static> {
     }
 
     #[cfg(test)]
-    #[allow(
-        clippy::match_same_arms,
-        reason = "borrowed and owned durable slots have different concrete lifetimes"
-    )]
     pub(crate) fn enqueue_lifecycle_maintenance_for_test(
         &mut self,
         task: LifecycleMaintenanceTaskRequest,
@@ -534,20 +484,6 @@ impl StorageRuntime<'static> {
         self.require_open("maintenance enqueue requires an open runtime")?;
         match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let status = {
-                    let mut runtime = slot.lock();
-                    runtime
-                        .enqueue_maintenance(task)
-                        .map_err(map_lifecycle_error)?;
-                    runtime.maintenance_status()
-                };
-                slot.notify_background_drain(background_priority_for_task_request(task));
-                Ok(map_maintenance_queue_summary(
-                    status,
-                    slot.background_stats(),
-                ))
-            }
-            StorageRuntimeInner::Durable(slot) => {
                 let status = {
                     let mut runtime = slot.lock();
                     runtime
@@ -584,9 +520,9 @@ impl StorageRuntime<'static> {
 
 fn assemble_durable_runtime(
     options: StorageOpenOptions,
-    backend: BackendHandle<'_>,
+    backend: BackendHandle<'static>,
 ) -> StorageApiResult<(
-    LifecycleDurableLocalRuntime<'_, ApiTimestampSource>,
+    LifecycleDurableLocalRuntime<'static, ApiTimestampSource>,
     StorageOpenSummary,
     DiagnosticsRecoveryReport,
     LifecycleConfig,
@@ -657,6 +593,8 @@ fn open_durable_with_owned_backend_handle<'runtime>(
             open_summary: Some(summary),
             last_recovery: Some(recovery_report),
             last_close: None,
+            last_allocated_timestamp_micros: AtomicU64::new(0),
+            _marker: PhantomData,
         },
         summary,
     ))
@@ -708,10 +646,6 @@ fn open_durable_local_owned_with_options(
     })
 }
 
-#[allow(
-    clippy::match_same_arms,
-    reason = "borrowed and owned durable runtime variants share behavior but carry different backend lifetimes"
-)]
 impl<'a> StorageRuntime<'a> {
     /// Open durable local storage with an explicit backend handle.
     ///
@@ -732,15 +666,11 @@ impl<'a> StorageRuntime<'a> {
         match options.mode() {
             StorageMode::Cache => Self::open_cache_with_backend(options, backend),
             StorageMode::DurableLocal { .. } => {
-                match durable_backend_handle_for_open(options, backend)? {
-                    DurableBackendHandleForOpen::Borrowed(handle) => {
-                        Self::open_durable_with_backend_handle(options, handle)
-                    }
-                    #[cfg(feature = "localfs")]
-                    DurableBackendHandleForOpen::Owned(handle) => {
-                        open_durable_with_owned_backend_handle(options, handle)
-                    }
-                }
+                // BS4.4i: durable runtimes are uniformly owned/`'static`; the borrowed `Durable`
+                // variant is gone. A non-ownable backend (in-memory) yields a policy-appropriate
+                // error from `durable_backend_handle_for_open` rather than a borrowed runtime.
+                let handle = durable_backend_handle_for_open(options, backend)?;
+                open_durable_with_owned_backend_handle(options, handle)
             }
             StorageMode::ObjectDurableCandidate | StorageMode::DistributedCandidate => {
                 unreachable!("unsupported modes are rejected during validation")
@@ -751,9 +681,9 @@ impl<'a> StorageRuntime<'a> {
     #[must_use]
     pub const fn state(&self) -> StorageRuntimeState {
         match self.inner {
-            StorageRuntimeInner::Cache(_)
-            | StorageRuntimeInner::Durable(_)
-            | StorageRuntimeInner::DurableOwned(_) => StorageRuntimeState::Open,
+            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::DurableOwned(_) => {
+                StorageRuntimeState::Open
+            }
             StorageRuntimeInner::Closed => StorageRuntimeState::Closed,
         }
     }
@@ -762,9 +692,7 @@ impl<'a> StorageRuntime<'a> {
     pub const fn is_open(&self) -> bool {
         matches!(
             self.inner,
-            StorageRuntimeInner::Cache(_)
-                | StorageRuntimeInner::Durable(_)
-                | StorageRuntimeInner::DurableOwned(_)
+            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::DurableOwned(_)
         )
     }
 
@@ -799,30 +727,6 @@ impl<'a> StorageRuntime<'a> {
                     maintenance_before_close,
                     maintenance_after_close,
                 );
-                let summary = with_background_close_facts(
-                    map_close_summary(close, false),
-                    background_shutdown.as_ref().map(|shutdown| &shutdown.stats),
-                );
-                drop(runtime);
-                self.inner = StorageRuntimeInner::Closed;
-                self.last_recovery = Some(recovery);
-                self.last_close = Some(summary);
-                Ok(summary)
-            }
-            StorageRuntimeInner::Durable(runtime) => {
-                let background_shutdown = runtime.shutdown_background(background_shutdown_timeout);
-                if let Some(error) = background_shutdown_panic_error(background_shutdown.as_ref()) {
-                    return Err(error);
-                }
-                let mut runtime = runtime.lock();
-                let maintenance_before_close = runtime.maintenance_status().stats();
-                let close = runtime.close().map_err(map_lifecycle_error)?;
-                let maintenance_after_close = runtime.maintenance_status().stats();
-                record_background_close_maintenance_facts(
-                    maintenance_before_close,
-                    maintenance_after_close,
-                );
-                let recovery = map_diagnostics_recovery(runtime.current_recovery_health());
                 let summary = with_background_close_facts(
                     map_close_summary(close, false),
                     background_shutdown.as_ref().map(|shutdown| &shutdown.stats),
@@ -878,11 +782,18 @@ impl<'a> StorageRuntime<'a> {
         }
     }
 
-    pub fn commit(&mut self, batch: &CommitBatch) -> StorageApiResult<CommitSummary> {
+    /// Commit a batch. Takes `&self` (BS2.4b) so a shared runtime can serve reads and forks
+    /// concurrently with a writer; concurrent `commit` calls are serialized by the runtime lock.
+    /// Commit **versions** are always strictly monotonic. Commit **timestamps** are strictly
+    /// monotonic under the intended single-writer pattern; concurrent writers may share a timestamp
+    /// (the base is read before the commit lock), which the MVCC timeline keeps both of — resolved
+    /// by version, with `AtTimestamp` returning the latest. Serialize commits for strict timestamp
+    /// monotonicity.
+    pub fn commit(&self, batch: &CommitBatch) -> StorageApiResult<CommitSummary> {
         self.execute_commit(batch, None)
     }
 
-    pub fn branch(&mut self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
+    pub fn branch(&self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
         match request.action() {
             BranchAction::Create => self.create_branch_request(request),
             BranchAction::Describe => self.describe_branch_request(request),
@@ -961,13 +872,6 @@ impl<'a> StorageRuntime<'a> {
                     slot.background_stats(),
                 ))
             }
-            StorageRuntimeInner::Durable(slot) => {
-                let runtime = slot.lock();
-                Ok(map_maintenance_queue_summary(
-                    runtime.maintenance_status(),
-                    slot.background_stats(),
-                ))
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let runtime = slot.lock();
                 Ok(map_maintenance_queue_summary(
@@ -984,7 +888,6 @@ impl<'a> StorageRuntime<'a> {
     pub fn diagnostics(&self, request: DiagnosticsRequest) -> StorageApiResult<DiagnosticsOutcome> {
         match &self.inner {
             StorageRuntimeInner::Cache(runtime) => self.cache_diagnostics(request, runtime),
-            StorageRuntimeInner::Durable(runtime) => self.durable_diagnostics(request, runtime),
             StorageRuntimeInner::DurableOwned(runtime) => {
                 self.durable_diagnostics(request, runtime)
             }
@@ -1123,28 +1026,14 @@ impl<'a> StorageRuntime<'a> {
     }
 
     pub fn enqueue_maintenance(
-        &mut self,
+        &self,
         request: &MaintenanceRequest,
     ) -> StorageApiResult<MaintenanceQueueSummary> {
         self.require_open("maintenance enqueue requires an open runtime")?;
         validate_maintenance_request(request)?;
         let task = map_maintenance_task_request(self, request)?;
-        match &mut self.inner {
+        match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let status = {
-                    let mut runtime = slot.lock();
-                    runtime
-                        .enqueue_maintenance(task)
-                        .map_err(map_lifecycle_error)?;
-                    runtime.maintenance_status()
-                };
-                slot.notify_background_drain(background_priority_for_task_request(task));
-                Ok(map_maintenance_queue_summary(
-                    status,
-                    slot.background_stats(),
-                ))
-            }
-            StorageRuntimeInner::Durable(slot) => {
                 let status = {
                     let mut runtime = slot.lock();
                     runtime
@@ -1184,10 +1073,6 @@ impl<'a> StorageRuntime<'a> {
                 let mut runtime = slot.lock();
                 run_next_cache_maintenance(&mut runtime)?
             }
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                run_next_durable_maintenance(&mut runtime)?
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 run_next_durable_maintenance(&mut runtime)?
@@ -1212,43 +1097,20 @@ impl<'a> StorageRuntime<'a> {
         Ok(MaintenanceDrainSummary::new(drained_tasks, outcomes, queue))
     }
 
-    pub fn read_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
-        if request.bound() == ReadBound::Latest {
-            return self.read_latest_point(request);
-        }
-        let view = self.read_view_for_branch(request.branch_id())?;
-        let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
-        let resolved = resolve_read_bound(&view, request.bound())?;
-        let row = match view
-            .read_point(&key, resolved.branch_bound)
-            .map_err(branch_error)?
-        {
-            Some(row) => read_row_from_storage_if_visible(row.row(), resolved.selected_timestamp)?,
-            None => visible_tombstone_at_bound(&view, &key, resolved)?,
-        };
-        Ok(PointReadOutcome::new(row))
-    }
-
-    fn read_latest_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
-        let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
-        let row = match &self.inner {
-            StorageRuntimeInner::Cache(slot) => {
-                let runtime = slot.lock();
-                runtime
-                    .read_latest_point_or_tombstone_for_branch(request.branch_id(), &key)
-                    .map_err(map_lifecycle_error)?
-            }
-            StorageRuntimeInner::Durable(slot) => {
-                let runtime = slot.lock();
-                runtime
-                    .read_latest_point_or_tombstone_for_branch(request.branch_id(), &key)
-                    .map_err(map_lifecycle_error)?
-            }
+    /// Load the off-lock read handles for a branch: the visible-version bound `V` (Acquire) FIRST,
+    /// then the published snapshot `S` (a single `ArcSwap` load). V-before-S is the read protocol's
+    /// ordering guarantee — a reader seeing `V=v` observes a snapshot at least as new as any
+    /// structural change published under the lock before `v`. A `None` snapshot means the branch
+    /// has no published slot (never created, or deleted) → not found.
+    fn load_published_snapshot(
+        &self,
+        branch_id: BranchId,
+    ) -> StorageApiResult<(u64, Arc<BranchReadView>)> {
+        // Tuple evaluation is left-to-right, so `V` (Acquire) is loaded before `S`.
+        let (visible, snapshot) = match &self.inner {
+            StorageRuntimeInner::Cache(slot) => (slot.visible(), slot.load_snapshot(branch_id)),
             StorageRuntimeInner::DurableOwned(slot) => {
-                let runtime = slot.lock();
-                runtime
-                    .read_latest_point_or_tombstone_for_branch(request.branch_id(), &key)
-                    .map_err(map_lifecycle_error)?
+                (slot.visible(), slot.load_snapshot(branch_id))
             }
             StorageRuntimeInner::Closed => {
                 return Err(StorageApiError::InvalidRuntimeState {
@@ -1256,10 +1118,46 @@ impl<'a> StorageRuntime<'a> {
                 });
             }
         };
-        let row = row
-            .as_ref()
-            .map(|row| read_row_from_storage(row.row()))
-            .transpose()?;
+        let snapshot = snapshot.ok_or(StorageApiError::BranchNotFound { branch_id })?;
+        Ok((visible, snapshot))
+    }
+
+    /// Load a branch's published snapshot off-lock, for the BS2.4b snapshot-lifetime probe (holding
+    /// an `Arc<BranchReadView>` across compaction/flush installs). `None` if the branch has no slot.
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn load_snapshot_for_test(
+        &self,
+        branch_id: BranchId,
+    ) -> Option<Arc<BranchReadView>> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => slot.load_snapshot(branch_id),
+            StorageRuntimeInner::DurableOwned(slot) => slot.load_snapshot(branch_id),
+            StorageRuntimeInner::Closed => None,
+        }
+    }
+
+    pub fn read_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
+        let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
+        let (visible, view) = self.load_published_snapshot(request.branch_id())?;
+        if request.bound() == ReadBound::Latest {
+            let row = view
+                .read_point_or_tombstone(
+                    &key,
+                    BranchReadBound::at_version(CommitVersion::new(visible)),
+                )
+                .map_err(branch_error)?;
+            let row = row
+                .as_ref()
+                .map(|row| read_row_from_storage(row.row()))
+                .transpose()?;
+            return Ok(PointReadOutcome::new(row));
+        }
+        let resolved = resolve_read_bound(&view, request.bound())?;
+        let capped = cap_bound_at_visible(resolved.branch_bound, visible);
+        let row = match view.read_point(&key, capped).map_err(branch_error)? {
+            Some(row) => read_row_from_storage_if_visible(row.row(), resolved.selected_timestamp)?,
+            None => visible_tombstone_at_bound(&view, &key, capped)?,
+        };
         Ok(PointReadOutcome::new(row))
     }
 
@@ -1267,7 +1165,7 @@ impl<'a> StorageRuntime<'a> {
         &self,
         request: &HistoryReadRequest,
     ) -> StorageApiResult<HistoryReadOutcome> {
-        let view = self.read_view_for_branch(request.branch_id())?;
+        let (visible, view) = self.load_published_snapshot(request.branch_id())?;
         let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
         if let Some(version) = request.before_version_bound() {
             require_version_retained(&view, version)?;
@@ -1281,7 +1179,7 @@ impl<'a> StorageRuntime<'a> {
             options = options.limit(limit.get());
         }
         let rows = view
-            .history(&key, options)
+            .history_visible(&key, options, CommitVersion::new(visible))
             .map_err(branch_error)?
             .iter()
             .map(|row| read_row_from_storage(row.row()))
@@ -1298,16 +1196,19 @@ impl<'a> StorageRuntime<'a> {
             request.storage_space(),
             request.prefix(),
         )?;
+        let (visible, view) = self.load_published_snapshot(request.branch_id())?;
+        let bounds = BranchScanBounds::prefix(&prefix);
         // The Latest fast path does not apply a version lower bound, so route `after_version`
         // reads through the resolving view path (which honors the bound at selection).
         if matches!(request.bound(), ReadBound::Latest) && request.after_version().is_none() {
-            let bounds = BranchScanBounds::prefix(&prefix);
             let scan_timer = perf_trace::start_timer();
-            let rows = self.scan_latest_including_tombstones_for_branch(
-                request.branch_id(),
-                &bounds,
-                request.limit().map(ReadLimit::get),
-            )?;
+            let rows = view
+                .scan_including_tombstones_visible(
+                    &bounds,
+                    BranchReadBound::at_version(CommitVersion::new(visible)),
+                    request.limit().map(ReadLimit::get),
+                )
+                .map_err(branch_error)?;
             perf_trace::record_api_scan_runtime_elapsed(scan_timer);
             let map_timer = perf_trace::start_timer();
             let outcome = map_scan_rows(
@@ -1319,15 +1220,10 @@ impl<'a> StorageRuntime<'a> {
             return outcome;
         }
 
-        let view = self.read_view_for_branch(request.branch_id())?;
         let resolved = resolve_read_bound(&view, request.bound())?;
-        let bounds = BranchScanBounds::prefix(&prefix);
+        let capped = cap_bound_at_visible(resolved.branch_bound, visible);
         let rows = view
-            .scan_prefix_including_tombstones(
-                &bounds,
-                resolved.branch_bound,
-                request.after_version(),
-            )
+            .scan_prefix_including_tombstones(&bounds, capped, request.after_version())
             .map_err(branch_error)?;
         map_scan_rows(
             rows.iter().map(crate::branch::read::BranchHistoryRow::row),
@@ -1358,13 +1254,16 @@ impl<'a> StorageRuntime<'a> {
         )
         .map_err(branch_error)?;
         perf_trace::record_api_scan_bounds_elapsed(bounds_timer);
+        let (visible, view) = self.load_published_snapshot(request.branch_id())?;
         if matches!(request.bound(), ReadBound::Latest) {
             let scan_timer = perf_trace::start_timer();
-            let rows = self.scan_latest_including_tombstones_for_branch(
-                request.branch_id(),
-                &bounds,
-                request.limit().map(ReadLimit::get),
-            )?;
+            let rows = view
+                .scan_including_tombstones_visible(
+                    &bounds,
+                    BranchReadBound::at_version(CommitVersion::new(visible)),
+                    request.limit().map(ReadLimit::get),
+                )
+                .map_err(branch_error)?;
             perf_trace::record_api_scan_runtime_elapsed(scan_timer);
             let map_timer = perf_trace::start_timer();
             let outcome = map_scan_rows(
@@ -1376,10 +1275,10 @@ impl<'a> StorageRuntime<'a> {
             return outcome;
         }
 
-        let view = self.read_view_for_branch(request.branch_id())?;
         let resolved = resolve_read_bound(&view, request.bound())?;
+        let capped = cap_bound_at_visible(resolved.branch_bound, visible);
         let rows = view
-            .scan_range_including_tombstones(&bounds, resolved.branch_bound)
+            .scan_range_including_tombstones(&bounds, capped)
             .map_err(branch_error)?;
         map_scan_rows(
             rows.iter().map(crate::branch::read::BranchHistoryRow::row),
@@ -1496,13 +1395,6 @@ impl<'a> StorageRuntime<'a> {
                 request,
                 "cache runtime does not support durable checkpoint maintenance",
             )),
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                let outcome = runtime
-                    .checkpoint_for_explicit_maintenance(branch_id, false)
-                    .map_err(map_lifecycle_error)?;
-                Ok(map_checkpoint_summary(request, &outcome))
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 let outcome = runtime
@@ -1524,13 +1416,6 @@ impl<'a> StorageRuntime<'a> {
         let flush_request = flush_request_for_boundary(branch_id)?;
         let outcome = match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let mut runtime = slot.lock();
-                runtime
-                    .rotate_active_for_branch_for_maintenance(branch_id)
-                    .map_err(map_lifecycle_error)?;
-                runtime.flush_frozen(&flush_request)
-            }
-            StorageRuntimeInner::Durable(slot) => {
                 let mut runtime = slot.lock();
                 runtime
                     .rotate_active_for_branch_for_maintenance(branch_id)
@@ -1565,15 +1450,6 @@ impl<'a> StorageRuntime<'a> {
         let task = LifecycleMaintenanceTaskRequest::compaction(branch_id, 0);
         let outcome = match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let mut runtime = slot.lock();
-                let enqueue = runtime
-                    .enqueue_maintenance(task)
-                    .map_err(map_lifecycle_error)?;
-                runtime
-                    .run_compaction_maintenance_task(enqueue.task_id())
-                    .map_err(map_lifecycle_error)?
-            }
-            StorageRuntimeInner::Durable(slot) => {
                 let mut runtime = slot.lock();
                 let enqueue = runtime
                     .enqueue_maintenance(task)
@@ -1618,10 +1494,6 @@ impl<'a> StorageRuntime<'a> {
                 let runtime = slot.lock();
                 runtime.storage_pressure().suggested_task()
             }
-            StorageRuntimeInner::Durable(slot) => {
-                let runtime = slot.lock();
-                runtime.storage_pressure().suggested_task()
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let runtime = slot.lock();
                 runtime.storage_pressure().suggested_task()
@@ -1659,10 +1531,6 @@ impl<'a> StorageRuntime<'a> {
                 let mut runtime = slot.lock();
                 runtime.compact_branch_tables_to_fixed_point(&compaction)
             }
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                runtime.compact_branch_tables_to_fixed_point(&compaction)
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 runtime.compact_branch_tables_to_fixed_point(&compaction)
@@ -1694,14 +1562,6 @@ impl<'a> StorageRuntime<'a> {
                     .map_err(map_lifecycle_error)?
                     .source_layout())
             }
-            StorageRuntimeInner::Durable(slot) => {
-                let runtime = slot.lock();
-                Ok(runtime
-                    .branch_catalog()
-                    .branch_state(branch_id)
-                    .map_err(map_lifecycle_error)?
-                    .source_layout())
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let runtime = slot.lock();
                 Ok(runtime
@@ -1724,15 +1584,6 @@ impl<'a> StorageRuntime<'a> {
         let task = LifecycleMaintenanceTaskRequest::materialization(branch_id);
         let outcome = match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let mut runtime = slot.lock();
-                let enqueue = runtime
-                    .enqueue_maintenance(task)
-                    .map_err(map_lifecycle_error)?;
-                runtime
-                    .run_materialization_maintenance_task(enqueue.task_id())
-                    .map_err(map_lifecycle_error)?
-            }
-            StorageRuntimeInner::Durable(slot) => {
                 let mut runtime = slot.lock();
                 let enqueue = runtime
                     .enqueue_maintenance(task)
@@ -1776,16 +1627,6 @@ impl<'a> StorageRuntime<'a> {
                 request,
                 "cache runtime does not support durable retention maintenance",
             )),
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                let outcome = runtime
-                    .prove_retention(&LifecycleRetentionRequest::global(1))
-                    .map_err(map_lifecycle_error)?;
-                Ok(map_maintenance_summary(
-                    *request,
-                    &outcome.maintenance_outcome(),
-                ))
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 let outcome = runtime
@@ -1811,17 +1652,6 @@ impl<'a> StorageRuntime<'a> {
                 request,
                 "cache runtime does not support durable snapshot pruning maintenance",
             )),
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                let retention = LifecycleRetentionRequest::snapshot_pruning(1);
-                let outcome = runtime
-                    .prune_snapshots(&retention)
-                    .map_err(map_lifecycle_error)?;
-                Ok(map_maintenance_summary(
-                    *request,
-                    &outcome.maintenance_outcome(),
-                ))
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 let retention = LifecycleRetentionRequest::snapshot_pruning(1);
@@ -1849,20 +1679,6 @@ impl<'a> StorageRuntime<'a> {
                 request,
                 "cache runtime does not support durable reclaim maintenance",
             )),
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                let retention = LifecycleRetentionRequest::new(
-                    LifecycleRetentionScope::TableObjects { branch_id },
-                    1,
-                );
-                let outcome = runtime
-                    .prove_retention(&retention)
-                    .map_err(map_lifecycle_error)?;
-                Ok(map_maintenance_summary(
-                    *request,
-                    &outcome.maintenance_outcome(),
-                ))
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 let retention = LifecycleRetentionRequest::new(
@@ -1893,24 +1709,6 @@ impl<'a> StorageRuntime<'a> {
                 request,
                 "cache runtime does not support durable quarantine maintenance",
             )),
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                let enqueue = runtime
-                    .enqueue_maintenance(task)
-                    .map_err(map_lifecycle_error)?;
-                let outcome = runtime
-                    .run_quarantine_maintenance_task(enqueue.task_id())
-                    .map_err(map_lifecycle_error)?;
-                Ok(outcome.map_or_else(
-                    || {
-                        unsupported_maintenance_summary(
-                            request,
-                            "quarantine maintenance was deferred",
-                        )
-                    },
-                    |outcome| map_maintenance_summary(*request, &outcome),
-                ))
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 let enqueue = runtime
@@ -1945,19 +1743,6 @@ impl<'a> StorageRuntime<'a> {
                 request,
                 "cache runtime does not support durable purge maintenance",
             )),
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                let enqueue = runtime
-                    .enqueue_maintenance(task)
-                    .map_err(map_lifecycle_error)?;
-                let outcome = runtime
-                    .run_purge_maintenance_task(enqueue.task_id())
-                    .map_err(map_lifecycle_error)?;
-                Ok(outcome.map_or_else(
-                    || unsupported_maintenance_summary(request, "purge maintenance was deferred"),
-                    |outcome| map_maintenance_summary(*request, &outcome),
-                ))
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 let enqueue = runtime
@@ -1987,19 +1772,6 @@ impl<'a> StorageRuntime<'a> {
                 request,
                 "cache runtime does not support quarantine repair maintenance",
             )),
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                let enqueue = runtime
-                    .enqueue_maintenance(task)
-                    .map_err(map_lifecycle_error)?;
-                let outcome = runtime
-                    .run_quarantine_repair_maintenance_task(enqueue.task_id())
-                    .map_err(map_lifecycle_error)?;
-                Ok(outcome.map_or_else(
-                    || unsupported_maintenance_summary(request, "repair maintenance was deferred"),
-                    |outcome| map_maintenance_summary(*request, &outcome),
-                ))
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 let enqueue = runtime
@@ -2027,10 +1799,6 @@ impl<'a> StorageRuntime<'a> {
             StorageRuntimeInner::Cache(slot) => {
                 let runtime = slot.lock();
                 Ok(runtime.evaluate_wal_growth_policy())
-            }
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                runtime.evaluate_wal_growth_policy()
             }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
@@ -2064,17 +1832,13 @@ impl<'a> StorageRuntime<'a> {
     }
 
     fn create_branch(
-        &mut self,
+        &self,
         branch_id: BranchId,
         generation: CommitBranchGeneration,
         created_at: Option<CommitVersion>,
     ) -> StorageApiResult<crate::lifecycle::LifecycleBranchCreateOutcome> {
-        match &mut self.inner {
+        match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let mut runtime = slot.lock();
-                runtime.create_branch(branch_id, generation, created_at)
-            }
-            StorageRuntimeInner::Durable(slot) => {
                 let mut runtime = slot.lock();
                 runtime.create_branch(branch_id, generation, created_at)
             }
@@ -2091,10 +1855,7 @@ impl<'a> StorageRuntime<'a> {
         .map_err(map_lifecycle_error)
     }
 
-    fn create_branch_request(
-        &mut self,
-        request: &BranchRequest,
-    ) -> StorageApiResult<BranchOutcome> {
+    fn create_branch_request(&self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
         require_valid_branch_identifier(request.branch_id(), "branch_id")?;
         let generation_before = self.recreate_generation_before(request.branch_id())?;
         let generation = branch_generation_or_default(request.expected_generation())?;
@@ -2123,10 +1884,6 @@ impl<'a> StorageRuntime<'a> {
                 let runtime = slot.lock();
                 runtime.list_branches(include_deleted)
             }
-            StorageRuntimeInner::Durable(slot) => {
-                let runtime = slot.lock();
-                runtime.list_branches(include_deleted)
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let runtime = slot.lock();
                 runtime.list_branches(include_deleted)
@@ -2143,10 +1900,6 @@ impl<'a> StorageRuntime<'a> {
     fn describe_branch(&self, branch_id: BranchId) -> StorageApiResult<BranchSummary> {
         let descriptor = match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let runtime = slot.lock();
-                runtime.branch_catalog().lookup(branch_id)
-            }
-            StorageRuntimeInner::Durable(slot) => {
                 let runtime = slot.lock();
                 runtime.branch_catalog().lookup(branch_id)
             }
@@ -2231,7 +1984,7 @@ impl<'a> StorageRuntime<'a> {
     }
 
     fn fork_branch_at_version(
-        &mut self,
+        &self,
         request: &BranchRequest,
         source: BranchId,
         version: CommitVersion,
@@ -2239,18 +1992,8 @@ impl<'a> StorageRuntime<'a> {
     ) -> StorageApiResult<BranchOutcome> {
         let generation = branch_generation_or_default(request.expected_generation())?;
         let retained_floor = self.retained_floor(source)?;
-        let outcome = match &mut self.inner {
+        let outcome = match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let mut runtime = slot.lock();
-                runtime.fork_at_retained_version(
-                    source,
-                    request.branch_id(),
-                    generation,
-                    version,
-                    retained_floor,
-                )
-            }
-            StorageRuntimeInner::Durable(slot) => {
                 let mut runtime = slot.lock();
                 runtime.fork_at_retained_version(
                     source,
@@ -2287,16 +2030,12 @@ impl<'a> StorageRuntime<'a> {
             ))
     }
 
-    fn clear_branch_request(&mut self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
+    fn clear_branch_request(&self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
         require_valid_branch_identifier(request.branch_id(), "branch_id")?;
         let before = self.describe_branch(request.branch_id())?;
         let guard = map_generation_guard(request.expected_generation())?;
-        let outcome = match &mut self.inner {
+        let outcome = match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let mut runtime = slot.lock();
-                runtime.clear_branch(request.branch_id(), guard)
-            }
-            StorageRuntimeInner::Durable(slot) => {
                 let mut runtime = slot.lock();
                 runtime.clear_branch(request.branch_id(), guard)
             }
@@ -2317,10 +2056,7 @@ impl<'a> StorageRuntime<'a> {
             .with_cleanup(map_branch_cleanup(outcome.release_plan())))
     }
 
-    fn delete_branch_request(
-        &mut self,
-        request: &BranchRequest,
-    ) -> StorageApiResult<BranchOutcome> {
+    fn delete_branch_request(&self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
         require_valid_branch_identifier(request.branch_id(), "branch_id")?;
         let before = self.describe_branch(request.branch_id())?;
         if before.status() == BranchStatus::Active && self.active_branch_count()? <= 1 {
@@ -2330,12 +2066,8 @@ impl<'a> StorageRuntime<'a> {
         }
         let guard = map_generation_guard(request.expected_generation())?;
         let deleted_at = current_visible(self);
-        let outcome = match &mut self.inner {
+        let outcome = match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let mut runtime = slot.lock();
-                runtime.delete_branch(request.branch_id(), guard, deleted_at)
-            }
-            StorageRuntimeInner::Durable(slot) => {
                 let mut runtime = slot.lock();
                 runtime.delete_branch(request.branch_id(), guard, deleted_at)
             }
@@ -2395,23 +2127,8 @@ impl<'a> StorageRuntime<'a> {
                 open_summary: Some(summary),
                 last_recovery: Some(recovery),
                 last_close: None,
-            },
-            summary,
-        ))
-    }
-
-    fn open_durable_with_backend_handle(
-        options: StorageOpenOptions,
-        backend: BackendHandle<'a>,
-    ) -> StorageApiResult<StorageOpenOutcome<'a>> {
-        let (runtime, summary, recovery_report, config) =
-            assemble_durable_runtime(options, backend)?;
-        Ok(StorageOpenOutcome::new(
-            Self {
-                inner: StorageRuntimeInner::Durable(Box::new(RuntimeSlot::new(runtime, config))),
-                open_summary: Some(summary),
-                last_recovery: Some(recovery_report),
-                last_close: None,
+                last_allocated_timestamp_micros: AtomicU64::new(0),
+                _marker: PhantomData,
             },
             summary,
         ))
@@ -2420,10 +2137,6 @@ impl<'a> StorageRuntime<'a> {
     #[cfg(all(test, feature = "localfs"))]
     pub(crate) fn release_writer_guard_for_test(&mut self) -> bool {
         match &mut self.inner {
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                runtime.release_writer_guard_for_test()
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 runtime.release_writer_guard_for_test()
@@ -2440,47 +2153,10 @@ impl<'a> StorageRuntime<'a> {
                     .read_view_for_branch(branch_id)
                     .map_err(map_lifecycle_error)
             }
-            StorageRuntimeInner::Durable(slot) => {
-                let runtime = slot.lock();
-                runtime
-                    .read_view_for_branch(branch_id)
-                    .map_err(map_lifecycle_error)
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let runtime = slot.lock();
                 runtime
                     .read_view_for_branch(branch_id)
-                    .map_err(map_lifecycle_error)
-            }
-            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
-                reason: "read requires an open runtime",
-            }),
-        }
-    }
-
-    fn scan_latest_including_tombstones_for_branch(
-        &self,
-        branch_id: BranchId,
-        bounds: &BranchScanBounds,
-        visible_limit: Option<usize>,
-    ) -> StorageApiResult<Vec<crate::branch::read::BranchHistoryRow>> {
-        match &self.inner {
-            StorageRuntimeInner::Cache(slot) => {
-                let runtime = slot.lock();
-                runtime
-                    .scan_latest_including_tombstones_for_branch(branch_id, bounds, visible_limit)
-                    .map_err(map_lifecycle_error)
-            }
-            StorageRuntimeInner::Durable(slot) => {
-                let runtime = slot.lock();
-                runtime
-                    .scan_latest_including_tombstones_for_branch(branch_id, bounds, visible_limit)
-                    .map_err(map_lifecycle_error)
-            }
-            StorageRuntimeInner::DurableOwned(slot) => {
-                let runtime = slot.lock();
-                runtime
-                    .scan_latest_including_tombstones_for_branch(branch_id, bounds, visible_limit)
                     .map_err(map_lifecycle_error)
             }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
@@ -2541,13 +2217,6 @@ impl<'a> StorageRuntime<'a> {
                     .lifecycle_config()
                     .maintenance_scheduling_policy()
             }
-            StorageRuntimeInner::Durable(slot) => {
-                let runtime = slot.lock();
-                runtime
-                    .open_plan()
-                    .lifecycle_config()
-                    .maintenance_scheduling_policy()
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let runtime = slot.lock();
                 runtime
@@ -2561,7 +2230,7 @@ impl<'a> StorageRuntime<'a> {
 
     #[cfg(any(test, feature = "testkit"))]
     pub(crate) fn commit_for_test(
-        &mut self,
+        &self,
         batch: &CommitBatch,
         timestamp: Timestamp,
     ) -> StorageApiResult<CommitSummary> {
@@ -2588,12 +2257,6 @@ impl<'a> StorageRuntime<'a> {
         health: &RecoveryHealth,
     ) -> StorageApiResult<()> {
         match &mut self.inner {
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                runtime.record_recovery_health_for_test(health);
-                self.last_recovery = Some(map_diagnostics_recovery(health));
-                Ok(())
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 runtime.record_recovery_health_for_test(health);
@@ -2609,14 +2272,21 @@ impl<'a> StorageRuntime<'a> {
     }
 
     fn execute_commit(
-        &mut self,
+        &self,
         batch: &CommitBatch,
         explicit_timestamp: Option<Timestamp>,
     ) -> StorageApiResult<CommitSummary> {
         let timestamp_base = explicit_timestamp.unwrap_or_else(|| self.next_commit_timestamp());
         // The API computes the timestamp before mapping TTL so lower commit
-        // stamping and expiry facts use the same monotonic frontier.
-        let timestamp_policy = crate::commit::CommitTimestampPolicy::Explicit(timestamp_base);
+        // stamping and expiry facts use the same monotonic frontier. An internally
+        // generated base uses the CLAMPING policy: with concurrent writers, another
+        // commit can advance the monotonic floor between this pre-lock read and the
+        // allocator — ordinary interleaving that must not reject the commit. Only a
+        // caller-supplied timestamp takes the strict Explicit path.
+        let timestamp_policy = match explicit_timestamp {
+            Some(timestamp) => crate::commit::CommitTimestampPolicy::Explicit(timestamp),
+            None => crate::commit::CommitTimestampPolicy::RuntimeGeneratedBase(timestamp_base),
+        };
         let durability = self.resolve_commit_durability(batch.options().durability())?;
         let generation_guard = map_generation_guard(batch.options().expected_generation())?;
         let map_timer = perf_trace::start_timer();
@@ -2628,57 +2298,61 @@ impl<'a> StorageRuntime<'a> {
         let runtime_timer = perf_trace::start_timer();
         let mut pressure_wait_deadline = None;
         loop {
-            let (outcome_result, admission, pending_tasks, wal_growth) = match &mut self.inner {
-                StorageRuntimeInner::Cache(slot) => {
-                    let mut runtime = slot.lock();
-                    let result =
-                        runtime.execute_cache_commit(runtime_batch.clone(), generation_guard);
-                    (
-                        result,
-                        runtime.last_write_admission(),
-                        runtime.maintenance_status().pending_tasks(),
-                        None,
-                    )
-                }
-                StorageRuntimeInner::Durable(slot) => {
-                    let mut runtime = slot.lock();
-                    let result =
-                        runtime.execute_durable_commit(runtime_batch.clone(), generation_guard);
-                    (
-                        result,
-                        runtime.last_write_admission(),
-                        runtime.maintenance_status().pending_tasks(),
-                        runtime.last_wal_growth_outcome().cloned(),
-                    )
-                }
-                StorageRuntimeInner::DurableOwned(slot) => {
-                    let mut runtime = slot.lock();
-                    let clone_timer = perf_trace::start_timer();
-                    let exec_batch = runtime_batch.clone();
-                    perf_trace::record_commit_api_batch_clone_elapsed(clone_timer);
-                    let result = runtime.execute_durable_commit(exec_batch, generation_guard);
-                    let post_timer = perf_trace::start_timer();
-                    let snapshot = (
-                        result,
-                        runtime.last_write_admission(),
-                        runtime.maintenance_status().pending_tasks(),
-                        runtime.last_wal_growth_outcome().cloned(),
-                    );
-                    perf_trace::record_commit_api_post_elapsed(post_timer);
-                    snapshot
-                }
-                StorageRuntimeInner::Closed => {
-                    return Err(StorageApiError::InvalidRuntimeState {
-                        reason: "commit requires an open runtime",
-                    });
-                }
-            };
+            let (outcome_result, admission, pending_tasks, wal_growth, throttle_delay_millis) =
+                match &self.inner {
+                    StorageRuntimeInner::Cache(slot) => {
+                        let mut runtime = slot.lock_for_commit();
+                        let result =
+                            runtime.execute_cache_commit(runtime_batch.clone(), generation_guard);
+                        (
+                            result,
+                            runtime.last_write_admission(),
+                            runtime.maintenance_status().pending_tasks(),
+                            None,
+                            // Cache mode neutralizes throttle pressure to 0; never throttles.
+                            0,
+                        )
+                    }
+                    StorageRuntimeInner::DurableOwned(slot) => {
+                        let clone_timer = perf_trace::start_timer();
+                        let exec_batch = runtime_batch.clone();
+                        perf_trace::record_commit_api_batch_clone_elapsed(clone_timer);
+                        // BS5.1 write groups: uncontended callers take the exact
+                        // solo path; contended callers join a group led by
+                        // whichever caller holds the runtime lock.
+                        let response = execute_durable_commit_grouped(
+                            slot,
+                            exec_batch,
+                            &runtime_batch,
+                            generation_guard,
+                        );
+                        (
+                            response.outcome,
+                            response.admission,
+                            response.pending_tasks,
+                            response.wal_growth,
+                            response.throttle_delay_millis,
+                        )
+                    }
+                    StorageRuntimeInner::Closed => {
+                        return Err(StorageApiError::InvalidRuntimeState {
+                            reason: "commit requires an open runtime",
+                        });
+                    }
+                };
             if pending_tasks > 0 {
                 self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
             }
             match outcome_result {
                 Ok(outcome) => {
+                    // Keep the off-lock timestamp mirror at the frontier
+                    // (monotone via fetch_max under concurrent committers).
+                    if let Some(timestamp) = outcome.commit_timestamp() {
+                        self.last_allocated_timestamp_micros
+                            .fetch_max(timestamp.as_micros(), Ordering::AcqRel);
+                    }
                     self.background_wait_after_wal_growth_enqueue(wal_growth.as_ref());
+                    self.background_wait_after_write_throttle(throttle_delay_millis);
                     perf_trace::record_api_commit_runtime_elapsed(runtime_timer);
                     return map_commit_summary(&outcome, admission);
                 }
@@ -2700,9 +2374,6 @@ impl<'a> StorageRuntime<'a> {
             StorageRuntimeInner::Cache(slot) => {
                 slot.notify_background_drain(priority);
             }
-            StorageRuntimeInner::Durable(slot) => {
-                slot.notify_background_drain(priority);
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 slot.notify_background_drain(priority);
             }
@@ -2713,7 +2384,6 @@ impl<'a> StorageRuntime<'a> {
     fn has_background_runtime(&self) -> bool {
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => slot.has_background(),
-            StorageRuntimeInner::Durable(slot) => slot.has_background(),
             StorageRuntimeInner::DurableOwned(slot) => slot.has_background(),
             StorageRuntimeInner::Closed => false,
         }
@@ -2722,7 +2392,6 @@ impl<'a> StorageRuntime<'a> {
     fn background_stats_for_current_runtime(&self) -> Option<MaintenanceExecutorStats> {
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => slot.background_stats(),
-            StorageRuntimeInner::Durable(slot) => slot.background_stats(),
             StorageRuntimeInner::DurableOwned(slot) => slot.background_stats(),
             StorageRuntimeInner::Closed => None,
         }
@@ -2732,7 +2401,6 @@ impl<'a> StorageRuntime<'a> {
     fn background_block_wait_for_current_runtime(&self) -> BackgroundBlockWaitConfig {
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => slot.background_block_wait,
-            StorageRuntimeInner::Durable(slot) => slot.background_block_wait,
             StorageRuntimeInner::DurableOwned(slot) => slot.background_block_wait,
             StorageRuntimeInner::Closed => BackgroundBlockWaitConfig::default(),
         }
@@ -2744,9 +2412,6 @@ impl<'a> StorageRuntime<'a> {
     ) -> Option<BackgroundPressureSnapshot> {
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => Some(BackgroundPressureSnapshot::from_pressure(
-                slot.lock().storage_pressure_for_branch(branch_id),
-            )),
-            StorageRuntimeInner::Durable(slot) => Some(BackgroundPressureSnapshot::from_pressure(
                 slot.lock().storage_pressure_for_branch(branch_id),
             )),
             StorageRuntimeInner::DurableOwned(slot) => {
@@ -2764,10 +2429,6 @@ impl<'a> StorageRuntime<'a> {
                 let status = slot.lock().maintenance_status();
                 Some((status.pending_tasks(), status.active_tasks() > 0))
             }
-            StorageRuntimeInner::Durable(slot) => {
-                let status = slot.lock().maintenance_status();
-                Some((status.pending_tasks(), status.active_tasks() > 0))
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let status = slot.lock().maintenance_status();
                 Some((status.pending_tasks(), status.active_tasks() > 0))
@@ -2782,10 +2443,6 @@ impl<'a> StorageRuntime<'a> {
                 u64::try_from(slot.lock().maintenance_status().stats().completed())
                     .unwrap_or(u64::MAX)
             }
-            StorageRuntimeInner::Durable(slot) => {
-                u64::try_from(slot.lock().maintenance_status().stats().completed())
-                    .unwrap_or(u64::MAX)
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 u64::try_from(slot.lock().maintenance_status().stats().completed())
                     .unwrap_or(u64::MAX)
@@ -2797,7 +2454,6 @@ impl<'a> StorageRuntime<'a> {
     fn background_now_for_current_runtime(&self) -> Option<MaintenanceInstant> {
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => slot.background_now(),
-            StorageRuntimeInner::Durable(slot) => slot.background_now(),
             StorageRuntimeInner::DurableOwned(slot) => slot.background_now(),
             StorageRuntimeInner::Closed => None,
         }
@@ -2816,14 +2472,13 @@ impl<'a> StorageRuntime<'a> {
     fn advance_maintenance_clock_for_current_runtime(&self, by: std::time::Duration) -> bool {
         match &self.inner {
             StorageRuntimeInner::Cache(slot) => slot.advance_maintenance_clock(by),
-            StorageRuntimeInner::Durable(slot) => slot.advance_maintenance_clock(by),
             StorageRuntimeInner::DurableOwned(slot) => slot.advance_maintenance_clock(by),
             StorageRuntimeInner::Closed => false,
         }
     }
 
     fn background_wait_after_pressure_rejection(
-        &mut self,
+        &self,
         error: &LifecycleError,
         deadline: &mut Option<MaintenanceInstant>,
     ) -> bool {
@@ -2879,9 +2534,6 @@ impl<'a> StorageRuntime<'a> {
             StorageRuntimeInner::Cache(slot) => {
                 slot.wait_background_progress_until(completed_before_wait, wait_deadline)
             }
-            StorageRuntimeInner::Durable(slot) => {
-                slot.wait_background_progress_until(completed_before_wait, wait_deadline)
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 slot.wait_background_progress_until(completed_before_wait, wait_deadline)
             }
@@ -2917,10 +2569,25 @@ impl<'a> StorageRuntime<'a> {
     }
 
     fn background_wait_after_wal_growth_enqueue(
-        &mut self,
+        &self,
         wal_growth: Option<&LifecycleWalGrowthOutcome>,
     ) {
-        if wal_growth.is_none() {
+        let Some(outcome) = wal_growth else {
+            return;
+        };
+        // BS5.3c: enter the wait loop only when the commit's OWN growth
+        // evaluation (computed under the lock it just held, carried in the
+        // response) signaled pressure. Re-probing current facts here cost two
+        // EXTRA runtime-lock acquisitions per commit — on every commit, for a
+        // condition that is almost always below threshold. A cap/threshold
+        // crossing between this commit and the next is caught by the next
+        // commit's own evaluation (the loop's documented re-check semantics).
+        if matches!(
+            outcome.status(),
+            LifecycleWalGrowthStatus::Disabled
+                | LifecycleWalGrowthStatus::BelowThreshold
+                | LifecycleWalGrowthStatus::NoDurableAction
+        ) {
             return;
         }
         if !self.has_background_runtime() {
@@ -2935,7 +2602,9 @@ impl<'a> StorageRuntime<'a> {
         let block_wait = BackgroundBlockWaitConfig::default();
         let stall_deadline = now.saturating_add(block_wait.stall_deadline);
         let mut no_relief_rounds = 0usize;
-        while self.current_wal_growth_exceeds_backpressure() {
+        while self.current_wal_growth_exceeds_backpressure()
+            || self.current_wal_growth_exceeds_hard_cap()
+        {
             let Some(now) = self.background_now_for_current_runtime() else {
                 return;
             };
@@ -2968,9 +2637,6 @@ impl<'a> StorageRuntime<'a> {
                 StorageRuntimeInner::Cache(slot) => {
                     slot.wait_background_progress_until(completed_before_wait, wait_deadline)
                 }
-                StorageRuntimeInner::Durable(slot) => {
-                    slot.wait_background_progress_until(completed_before_wait, wait_deadline)
-                }
                 StorageRuntimeInner::DurableOwned(slot) => {
                     slot.wait_background_progress_until(completed_before_wait, wait_deadline)
                 }
@@ -2998,17 +2664,54 @@ impl<'a> StorageRuntime<'a> {
                 }
             }
             if !progressed || no_relief_rounds >= block_wait.no_relief_rounds {
+                // Disk-safety guard: above the hard WAL cap the soft give-up does not apply —
+                // the WAL must not keep growing past the ceiling, so keep waiting on background
+                // reclaim (flush → flush-watermark → truncation, re-enqueued each iteration by
+                // `evaluate_wal_growth_policy_for_background_wait`) until relief or the stall
+                // deadline. Below the cap this stays the soft give-up that lets the writer make
+                // progress when maintenance is merely slow.
+                if self.current_wal_growth_exceeds_hard_cap() {
+                    no_relief_rounds = 0;
+                    continue;
+                }
                 return;
             }
         }
     }
 
-    fn evaluate_wal_growth_policy_for_background_wait(&mut self) {
-        match &mut self.inner {
-            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => {}
-            StorageRuntimeInner::Durable(slot) => {
-                slot.lock().evaluate_and_record_wal_growth_policy();
+    /// Proportional pre-budget write throttle (fix #2): pace the writer by `delay_millis`
+    /// (computed in `execute_commit` from pool fullness while the slot lock was held) so a
+    /// sustained load settles at the flush-limited rate before the hard memory budget is hit.
+    /// Like the WAL-growth wait, this runs AFTER the commit released the slot lock and paces via
+    /// `wait_background_progress_until` (deterministic under the manual clock). Unlike the relief
+    /// waits it sleeps the FULL delay (see the `u64::MAX` baseline below) — a deliberate pace, not
+    /// a wait-for-relief. No runtime lock is held across the wait, so the background flusher can
+    /// take it and drain — the throttle softens, never stalls.
+    fn background_wait_after_write_throttle(&self, delay_millis: u64) {
+        if delay_millis == 0 || !self.has_background_runtime() {
+            return;
+        }
+        let Some(now) = self.background_now_for_current_runtime() else {
+            return;
+        };
+        self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
+        // Sleep the FULL computed delay: this is a deliberate pace, not a wait-for-relief, so it
+        // must not wake early on background task completions (which fire constantly under load and
+        // would shrink the pace to ~0). `u64::MAX` as the progress baseline makes the
+        // "tasks_completed > baseline" wake condition unreachable, so it waits the whole deadline.
+        let completed_before = u64::MAX;
+        let deadline = now.saturating_add(Duration::from_millis(delay_millis));
+        let _drove_drain = match &self.inner {
+            StorageRuntimeInner::DurableOwned(slot) => {
+                slot.wait_background_progress_until(completed_before, deadline)
             }
+            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => false,
+        };
+    }
+
+    fn evaluate_wal_growth_policy_for_background_wait(&self) {
+        match &self.inner {
+            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => {}
             StorageRuntimeInner::DurableOwned(slot) => {
                 slot.lock().evaluate_and_record_wal_growth_policy();
             }
@@ -3020,22 +2723,24 @@ impl<'a> StorageRuntime<'a> {
             .is_some_and(|snapshot| snapshot.exceeds_backpressure)
     }
 
+    fn current_wal_growth_exceeds_hard_cap(&self) -> bool {
+        // A transient facts-read error is treated as "not over the cap" (mirrors the
+        // backpressure check): we never block the writer on a read failure — the next
+        // commit's pacing re-checks.
+        match &self.inner {
+            StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => false,
+            StorageRuntimeInner::DurableOwned(slot) => slot
+                .lock()
+                .current_wal_growth_exceeds_hard_cap()
+                .unwrap_or(false),
+        }
+    }
+
     fn background_wal_growth_snapshot_for_current_runtime(
         &self,
     ) -> Option<BackgroundWalGrowthSnapshot> {
         match &self.inner {
             StorageRuntimeInner::Cache(_) | StorageRuntimeInner::Closed => None,
-            StorageRuntimeInner::Durable(slot) => slot
-                .lock()
-                .current_wal_growth_backpressure_snapshot()
-                .ok()
-                .map(|(facts, commits_since_checkpoint, trigger)| {
-                    BackgroundWalGrowthSnapshot::from_parts(
-                        facts,
-                        commits_since_checkpoint,
-                        trigger,
-                    )
-                }),
             StorageRuntimeInner::DurableOwned(slot) => slot
                 .lock()
                 .current_wal_growth_backpressure_snapshot()
@@ -3051,11 +2756,11 @@ impl<'a> StorageRuntime<'a> {
     }
 
     fn enqueue_pressure_maintenance_for_background_wait(
-        &mut self,
+        &self,
         branch_id: BranchId,
         pressure_reason: LifecycleStoragePressureReason,
     ) -> usize {
-        match &mut self.inner {
+        match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
                 let mut runtime = slot.lock();
                 let _ = runtime.schedule_post_commit_maintenance_for_branch(branch_id);
@@ -3064,28 +2769,6 @@ impl<'a> StorageRuntime<'a> {
                 {
                     let _ = runtime
                         .enqueue_maintenance(LifecycleMaintenanceTaskRequest::flush(branch_id));
-                }
-                runtime.maintenance_status().pending_tasks()
-            }
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                let _ = runtime.schedule_post_commit_maintenance_for_branch(branch_id);
-                if pressure_reason == LifecycleStoragePressureReason::FrozenBacklog
-                    && runtime.maintenance_status().pending_tasks() == 0
-                {
-                    let _ = runtime
-                        .enqueue_maintenance(LifecycleMaintenanceTaskRequest::flush(branch_id));
-                }
-                // Symmetric to the forced flush above: an L0 backlog that blocks
-                // admission must have its L0->L1 compaction enqueued before the
-                // wait path can give up, so the writer is paced on real
-                // maintenance progress rather than rejected for lack of a task.
-                if pressure_reason == LifecycleStoragePressureReason::LevelZeroTableBacklog
-                    && runtime.maintenance_status().pending_tasks() == 0
-                {
-                    let _ = runtime.enqueue_maintenance(
-                        LifecycleMaintenanceTaskRequest::compaction(branch_id, 0),
-                    );
                 }
                 runtime.maintenance_status().pending_tasks()
             }
@@ -3131,45 +2814,25 @@ impl<'a> StorageRuntime<'a> {
                     })
                 }
             },
-            StorageRuntimeInner::Durable(slot) => {
-                let runtime = slot.lock();
-                match (runtime.open_plan().storage_mode(), requested) {
-                    (
-                        LifecycleStorageMode::DurableLocalStandard,
-                        CommitDurability::RuntimeDefault | CommitDurability::Standard,
-                    ) => Ok(crate::commit::CommitDurabilityMode::Standard),
-                    (
-                        LifecycleStorageMode::DurableLocalAlways,
-                        CommitDurability::RuntimeDefault | CommitDurability::Always,
-                    ) => Ok(crate::commit::CommitDurabilityMode::Always),
-                    (_, CommitDurability::NotDurable) => {
-                        Err(StorageApiError::UnsupportedCapability {
-                            capability: "commit_durability",
-                            reason: "durable runtime cannot accept cache-only commit requests",
-                        })
-                    }
-                    (LifecycleStorageMode::DurableLocalStandard, CommitDurability::Always) => {
-                        Err(StorageApiError::UnsupportedCapability {
-                            capability: "commit_durability",
-                            reason: "always commit durability requires an always-durable runtime",
-                        })
-                    }
-                    (LifecycleStorageMode::DurableLocalAlways, CommitDurability::Standard) => {
-                        Err(StorageApiError::UnsupportedCapability {
-                            capability: "commit_durability",
-                            reason:
-                                "standard commit durability cannot weaken an always-durable runtime",
-                        })
-                    }
-                    _ => Err(StorageApiError::UnsupportedCapability {
-                        capability: "commit_durability",
-                        reason: "commit durability is unsupported for this runtime mode",
-                    }),
-                }
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
-                let runtime = slot.lock();
-                match (runtime.open_plan().storage_mode(), requested) {
+                // BS5.1: the storage mode is fixed at open. Reading it through
+                // the runtime lock serialized every writer ahead of the commit
+                // path (the write-group join queue then always looked empty),
+                // so read the recorded open-summary mode off-lock; the locked
+                // read remains only as the fallback for a missing summary.
+                let storage_mode = match self.open_summary.map(StorageOpenSummary::mode) {
+                    Some(StorageMode::DurableLocal {
+                        policy: StorageDurabilityPolicy::Standard,
+                    }) => LifecycleStorageMode::DurableLocalStandard,
+                    Some(StorageMode::DurableLocal {
+                        policy: StorageDurabilityPolicy::Always,
+                    }) => LifecycleStorageMode::DurableLocalAlways,
+                    Some(_) | None => {
+                        let runtime = slot.lock();
+                        runtime.open_plan().storage_mode()
+                    }
+                };
+                match (storage_mode, requested) {
                     (
                         LifecycleStorageMode::DurableLocalStandard,
                         CommitDurability::RuntimeDefault | CommitDurability::Standard,
@@ -3210,20 +2873,32 @@ impl<'a> StorageRuntime<'a> {
     }
 
     fn next_commit_timestamp(&self) -> Timestamp {
-        let last_allocated = match &self.inner {
-            StorageRuntimeInner::Cache(slot) => {
-                let runtime = slot.lock();
-                runtime.allocator().timestamp_guard().last_allocated()
-            }
-            StorageRuntimeInner::Durable(slot) => {
-                let runtime = slot.lock();
-                runtime.allocator().timestamp_guard().last_allocated()
-            }
-            StorageRuntimeInner::DurableOwned(slot) => {
-                let runtime = slot.lock();
-                runtime.allocator().timestamp_guard().last_allocated()
-            }
-            StorageRuntimeInner::Closed => None,
+        // BS5.1: read the frontier off-lock (see the field's doc). The mirror
+        // is exact in steady state (updated from every commit outcome); the
+        // one-time locked sample below seeds it with the recovered allocator
+        // state after open.
+        let cached = self.last_allocated_timestamp_micros.load(Ordering::Acquire);
+        let last_allocated = if cached == 0 {
+            let sampled = match &self.inner {
+                StorageRuntimeInner::Cache(slot) => {
+                    let runtime = slot.lock();
+                    runtime.allocator().timestamp_guard().last_allocated()
+                }
+                StorageRuntimeInner::DurableOwned(slot) => {
+                    let runtime = slot.lock();
+                    runtime.allocator().timestamp_guard().last_allocated()
+                }
+                StorageRuntimeInner::Closed => None,
+            };
+            // `1` marks "sampled, nothing allocated yet" — still below the
+            // default timestamp, so the base resolution is unchanged.
+            self.last_allocated_timestamp_micros.fetch_max(
+                sampled.map_or(1, |timestamp| timestamp.as_micros().max(1)),
+                Ordering::AcqRel,
+            );
+            sampled
+        } else {
+            Some(Timestamp::from_micros(cached))
         };
         match last_allocated {
             Some(timestamp) if timestamp >= DEFAULT_TIMESTAMP => {
@@ -3253,21 +2928,8 @@ impl<'a> StorageRuntime<'a> {
                     .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
                     .map_err(map_lifecycle_error)?
                     .set_timestamp_coverage(coverage);
-                Ok(())
-            }
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                let generation = runtime
-                    .branch_catalog()
-                    .registry()
-                    .lookup(branch_id)
-                    .map_err(commit_error)?
-                    .generation();
-                runtime
-                    .branch_catalog_mut_for_test()
-                    .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
-                    .map_err(map_lifecycle_error)?
-                    .set_timestamp_coverage(coverage);
+                // BS2.3: coverage is part of the read view; republish after this test-only mutation.
+                runtime.publish_branch_snapshot_for_test(branch_id);
                 Ok(())
             }
             StorageRuntimeInner::DurableOwned(slot) => {
@@ -3283,6 +2945,8 @@ impl<'a> StorageRuntime<'a> {
                     .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
                     .map_err(map_lifecycle_error)?
                     .set_timestamp_coverage(coverage);
+                // BS2.3: coverage is part of the read view; republish after this test-only mutation.
+                runtime.publish_branch_snapshot_for_test(branch_id);
                 Ok(())
             }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
@@ -3301,11 +2965,6 @@ impl<'a> StorageRuntime<'a> {
                 .map_err(commit_error)?;
         match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => slot
-                .lock()
-                .fork_current(DEFAULT_BRANCH_ID, destination, destination_generation)
-                .map(|_| ())
-                .map_err(map_lifecycle_error),
-            StorageRuntimeInner::Durable(slot) => slot
                 .lock()
                 .fork_current(DEFAULT_BRANCH_ID, destination, destination_generation)
                 .map(|_| ())
@@ -3341,13 +3000,6 @@ impl<'a> StorageRuntime<'a> {
                     .map(|_| ())
                     .map_err(map_lifecycle_error)
             }
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                runtime
-                    .rotate_active_for_branch_for_maintenance(branch_id)
-                    .map(|_| ())
-                    .map_err(map_lifecycle_error)
-            }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
                 runtime
@@ -3365,16 +3017,6 @@ impl<'a> StorageRuntime<'a> {
     pub(crate) fn flush_branch_for_test(&mut self, branch_id: BranchId) -> StorageApiResult<()> {
         match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => {
-                let mut runtime = slot.lock();
-                runtime
-                    .rotate_active_for_maintenance()
-                    .map_err(map_lifecycle_error)?;
-                runtime
-                    .flush_frozen(&flush_request_for_boundary(branch_id)?)
-                    .map(|_| ())
-                    .map_err(map_lifecycle_error)
-            }
-            StorageRuntimeInner::Durable(slot) => {
                 let mut runtime = slot.lock();
                 runtime
                     .rotate_active_for_maintenance()
@@ -3412,12 +3054,6 @@ impl<'a> StorageRuntime<'a> {
                 .pin_reachability(branch_id)
                 .map(|_| ())
                 .map_err(map_lifecycle_error),
-            StorageRuntimeInner::Durable(slot) => slot
-                .lock()
-                .branch_catalog_mut_for_test()
-                .pin_reachability(branch_id)
-                .map(|_| ())
-                .map_err(map_lifecycle_error),
             StorageRuntimeInner::DurableOwned(slot) => slot
                 .lock()
                 .branch_catalog_mut_for_test()
@@ -3432,7 +3068,30 @@ impl<'a> StorageRuntime<'a> {
 
     #[cfg(test)]
     pub(crate) fn append_raw_row_for_test(&mut self, row: StorageRow) -> StorageApiResult<()> {
+        self.append_row_for_test_inner(row, true)
+    }
+
+    /// Append a committed row **above** the visible frontier without advancing it — the
+    /// `applied_not_visible` shape (a commit whose visible publish failed after apply). Off-lock
+    /// reads bounded by the visible version must hide the row (BS2.4 interleaving seam).
+    #[cfg(test)]
+    pub(crate) fn append_unacked_row_for_test(&mut self, row: StorageRow) -> StorageApiResult<()> {
+        self.append_row_for_test_inner(row, false)
+    }
+
+    #[cfg(test)]
+    fn append_row_for_test_inner(
+        &mut self,
+        row: StorageRow,
+        advance_visible: bool,
+    ) -> StorageApiResult<()> {
         let branch_id = row.physical_key().branch_id();
+        // Raw appends bypass the commit executor, so this seam maintains the executor's
+        // invariant itself: with `advance_visible` the visible frontier covers every committed row
+        // (BS2.2 bounded Latest reads would otherwise hide the injected rows); without it the row
+        // stays above the frontier to reproduce `applied_not_visible`.
+        let commit_version = row.commit_version();
+        let commit_timestamp = row.commit_timestamp();
         match &mut self.inner {
             StorageRuntimeInner::Cache(slot) => {
                 let mut runtime = slot.lock();
@@ -3448,23 +3107,15 @@ impl<'a> StorageRuntime<'a> {
                     .map_err(map_lifecycle_error)?
                     .append_committed_row(row)
                     .map(|_| ())
-                    .map_err(branch_error)
-            }
-            StorageRuntimeInner::Durable(slot) => {
-                let mut runtime = slot.lock();
-                let generation = runtime
-                    .branch_catalog()
-                    .registry()
-                    .lookup(branch_id)
-                    .map_err(commit_error)?
-                    .generation();
-                runtime
-                    .branch_catalog_mut_for_test()
-                    .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))
-                    .map_err(map_lifecycle_error)?
-                    .append_committed_row(row)
-                    .map(|_| ())
-                    .map_err(branch_error)
+                    .map_err(branch_error)?;
+                if advance_visible && commit_version > runtime.visible_version() {
+                    runtime.catch_up_commit_frontier_for_test(commit_version, commit_timestamp);
+                }
+                // Model 2 commits do not republish, but this seam bypasses the commit path, so
+                // refresh the snapshot's facts explicitly (harmless: the live active already sees
+                // the append).
+                runtime.publish_branch_snapshot_for_test(branch_id);
+                Ok(())
             }
             StorageRuntimeInner::DurableOwned(slot) => {
                 let mut runtime = slot.lock();
@@ -3480,7 +3131,15 @@ impl<'a> StorageRuntime<'a> {
                     .map_err(map_lifecycle_error)?
                     .append_committed_row(row)
                     .map(|_| ())
-                    .map_err(branch_error)
+                    .map_err(branch_error)?;
+                if advance_visible && commit_version > runtime.visible_version() {
+                    runtime.catch_up_commit_frontier_for_test(commit_version, commit_timestamp);
+                }
+                // Model 2 commits do not republish, but this seam bypasses the commit path, so
+                // refresh the snapshot's facts explicitly (harmless: the live active already sees
+                // the append).
+                runtime.publish_branch_snapshot_for_test(branch_id);
+                Ok(())
             }
             StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
                 reason: "raw row append requires an open runtime",
@@ -3489,6 +3148,455 @@ impl<'a> StorageRuntime<'a> {
     }
 }
 
+/// BS3.4b: the per-commit write-throttle delay for a durable runtime, dispatched on the admission
+/// mode. Graded → the debt-adaptive token bucket (paced by the batch's active bytes); legacy → the
+/// quadratic P-controller below. Default is legacy until BS3.4c bakes graded after the out-of-band
+/// A/B.
+fn durable_commit_throttle_delay_millis<S>(
+    runtime: &LifecycleDurableLocalRuntime<'_, S>,
+    batch: &crate::commit::CommitBatch,
+) -> u64 {
+    let batch_bytes = if runtime.is_graded_admission() {
+        // Pacing is best-effort and the commit has already succeeded; a byte-estimate error
+        // (row-size overflow) falls back to 0 bytes → no pacing for this commit, never a failure.
+        estimate_commit_batch_active_bytes(batch).unwrap_or(0)
+    } else {
+        0
+    };
+    durable_commit_throttle_delay_millis_from_bytes(
+        runtime,
+        batch_bytes,
+        runtime.last_write_admission(),
+    )
+}
+
+/// Throttle-delay computation from pre-captured inputs (BS5.1): group members' batches are
+/// consumed by the group execution, so the leader captures each member's byte estimate before
+/// executing and each member's admission snapshot as it completes, then computes the delay
+/// from the post-group runtime state — the same inputs a solo commit reads under the lock.
+fn durable_commit_throttle_delay_millis_from_bytes<S>(
+    runtime: &LifecycleDurableLocalRuntime<'_, S>,
+    batch_bytes: u64,
+    admission: Option<LifecycleWriteAdmissionOutcome>,
+) -> u64 {
+    if runtime.is_graded_admission() {
+        return runtime.graded_write_throttle_delay_millis(batch_bytes);
+    }
+    write_throttle_delay_millis(
+        admission.map_or(0, |admission| {
+            admission.pressure().throttle_ratio_permille()
+        }),
+        runtime
+            .open_plan()
+            .lifecycle_config()
+            .write_throttle_policy(),
+    )
+}
+
+/// The durable-commit under-lock section (BS5.1): every commit joins the slot's group queue.
+/// With no leader active the caller leads immediately (a drained-empty queue = the exact solo
+/// path); otherwise it waits on its own joiner — never on the runtime lock — so served members
+/// wake the moment the leader publishes their responses and immediately re-join, keeping the
+/// next group full. Leadership hands off by promotion when the leader finishes.
+fn execute_durable_commit_grouped<S>(
+    slot: &RuntimeSlot<LifecycleDurableLocalRuntime<'static, S>>,
+    batch: crate::commit::CommitBatch,
+    original_batch: &crate::commit::CommitBatch,
+    generation_guard: CommitBranchGenerationGuard,
+) -> commit_group::CommitGroupResponse
+where
+    S: CommitTimestampSource,
+{
+    let request = commit_group::CommitGroupRequest {
+        batch,
+        generation_guard,
+    };
+    match slot.commit_groups().join(request) {
+        commit_group::JoinPath::Lead(request) => {
+            lead_commit_group_as_leader(slot, request, original_batch)
+        }
+        commit_group::JoinPath::Wait(joiner) => {
+            match slot.commit_groups().await_service(&joiner) {
+                commit_group::WaitOutcome::Done(response) => *response,
+                commit_group::WaitOutcome::Lead(request) => {
+                    lead_commit_group_as_leader(slot, request, original_batch)
+                }
+                // Leaders complete every taken member before handing off, so this is
+                // only reachable if a leader died mid-group. Fail closed; never
+                // re-execute.
+                commit_group::WaitOutcome::Abandoned => commit_group::CommitGroupResponse {
+                    outcome: Err(LifecycleError::InvalidLifecycleState {
+                        reason: "write group leader did not complete this commit; \
+                                 durability is uncertain",
+                    }),
+                    admission: None,
+                    pending_tasks: 0,
+                    wal_growth: None,
+                    throttle_delay_millis: 0,
+                },
+            }
+        }
+    }
+}
+
+/// Acquire the runtime lock and lead one write group. `Always` runtimes take
+/// the pipelined path (fsync outside the lock); `Standard` executes in a
+/// single hold. The leadership guard promotes the next leader even if
+/// execution panics — the pipelined path hands off EARLY (right after phase 1
+/// releases the lock) so the next group forms and appends during this group's
+/// covering fsync.
+fn lead_commit_group_as_leader<S>(
+    slot: &RuntimeSlot<LifecycleDurableLocalRuntime<'static, S>>,
+    request: commit_group::CommitGroupRequest,
+    original_batch: &crate::commit::CommitBatch,
+) -> commit_group::CommitGroupResponse
+where
+    S: CommitTimestampSource,
+{
+    let leadership = commit_group::CommitGroupLeadership::new(slot.commit_groups());
+    let mut runtime = slot.lock_for_commit();
+    if matches!(
+        runtime.open_plan().storage_mode(),
+        LifecycleStorageMode::DurableLocalAlways
+    ) {
+        // Phase 1 under this hold: formation + admission + appends + applies
+        // + sync-ticket capture (~µs-scale next to the fsync).
+        let formed = form_commit_group(slot, &*runtime, request, original_batch);
+        let joiners = formed.joiners;
+        let member_bytes = formed.member_bytes;
+        let mut in_flight = runtime.execute_durable_commit_group_begin(formed.batches);
+        // Parallel branch applies (BS5.4c) inside this hold: checked-out
+        // states must be back before the lock drops, or the NEXT group
+        // (forming during our fsync) would fail closed on those branches.
+        let apply_fatal = run_group_applies_parallel(
+            &mut runtime,
+            &mut in_flight,
+            &joiners,
+            &formed.member_branches,
+        );
+        let durable_seq = runtime.wal_durable_seq_handle();
+        drop(runtime);
+        // Hand leadership off NOW: the next group forms, appends, and applies
+        // while this group's covering fsync runs.
+        drop(leadership);
+        // Off-lock durability: prove coverage by a completed sync, or run one
+        // through the chain (one sync in flight at a time — the device flush
+        // is the serial resource, and each completed sync covers everyone who
+        // appended before its capture).
+        let batching_beat = in_flight.concurrent_spans() > 1;
+        let sync_result = in_flight.ticket().and_then(|ticket| {
+            slot.wal_sync()
+                .sync_or_wait_covered(&durable_seq, ticket, batching_beat, || {
+                    slot.lock_for_commit().wal_group_sync_ticket()
+                })
+        });
+        // Phase 2 under a fresh hold: redeem the sync, publish the group's
+        // visibility, run post-commit bookkeeping.
+        let mut runtime = slot.lock_for_commit();
+        let results = runtime.execute_durable_commit_group_finish_with_apply_outcome(
+            in_flight,
+            sync_result,
+            apply_fatal,
+        );
+        distribute_group_responses(&mut runtime, results, member_bytes, joiners)
+    } else {
+        lead_commit_group(slot, &mut runtime, request, original_batch)
+    }
+}
+
+/// Today's exact solo under-lock section, shared by the uncontended fast path and a leader
+/// whose queue drained empty.
+fn solo_commit_response<S>(
+    runtime: &mut LifecycleDurableLocalRuntime<'_, S>,
+    batch: crate::commit::CommitBatch,
+    original_batch: &crate::commit::CommitBatch,
+    generation_guard: CommitBranchGenerationGuard,
+) -> commit_group::CommitGroupResponse
+where
+    S: CommitTimestampSource,
+{
+    let result = runtime.execute_durable_commit(batch, generation_guard);
+    let post_timer = perf_trace::start_timer();
+    let throttle_delay_millis = durable_commit_throttle_delay_millis(runtime, original_batch);
+    let response = commit_group::CommitGroupResponse {
+        outcome: result,
+        admission: runtime.last_write_admission(),
+        pending_tasks: runtime.maintenance_status().pending_tasks(),
+        wal_growth: runtime.last_wal_growth_outcome().cloned(),
+        throttle_delay_millis,
+    };
+    perf_trace::record_commit_api_post_elapsed(post_timer);
+    response
+}
+
+/// Group-leader under-lock section (BS5.1): drain queued joiners, execute the group with the
+/// leader's request last (member order is version order and WAL order), then publish every
+/// member's response BEFORE the runtime lock is released — a member waking under the lock must
+/// find its response, never an in-flight group.
+fn lead_commit_group<S>(
+    slot: &RuntimeSlot<LifecycleDurableLocalRuntime<'static, S>>,
+    runtime: &mut LifecycleDurableLocalRuntime<'static, S>,
+    leader_request: commit_group::CommitGroupRequest,
+    leader_original_batch: &crate::commit::CommitBatch,
+) -> commit_group::CommitGroupResponse
+where
+    S: CommitTimestampSource,
+{
+    let formed = form_commit_group(slot, runtime, leader_request, leader_original_batch);
+    if formed.joiners.is_empty() {
+        // Nothing actually joined: the exact solo path. Only the Standard
+        // leader reaches here (Always pipelines every group, including
+        // groups of one).
+        let mut batches = formed.batches;
+        // The leader's request is the sole (last) entry by construction.
+        let Some((batch, generation_guard)) = batches.pop() else {
+            return commit_group::CommitGroupResponse {
+                outcome: Err(LifecycleError::InvalidLifecycleState {
+                    reason: "write group formed without its leader's request",
+                }),
+                admission: None,
+                pending_tasks: 0,
+                wal_growth: None,
+                throttle_delay_millis: 0,
+            };
+        };
+        return solo_commit_response(runtime, batch, leader_original_batch, generation_guard);
+    }
+    let mut in_flight = runtime.execute_durable_commit_group_begin(formed.batches);
+    // Standard captures no sync ticket; the group's applies run in parallel
+    // across the deferring members' parked threads (BS5.4c) inside this
+    // single hold.
+    let apply_fatal = run_group_applies_parallel(
+        runtime,
+        &mut in_flight,
+        &formed.joiners,
+        &formed.member_branches,
+    );
+    let results = runtime.execute_durable_commit_group_finish_with_apply_outcome(
+        in_flight,
+        None,
+        apply_fatal,
+    );
+    distribute_group_responses(runtime, results, formed.member_bytes, formed.joiners)
+}
+
+/// BS5.4c: run the group's deferred branch applies in parallel — each
+/// deferring member's parked thread applies its own branch's rows on an
+/// owned, checked-out state (no locks held) while the leader applies the
+/// remainder and then collects the barrier. Runs entirely under the leader's
+/// runtime-lock hold, so checked-out states are never observable across
+/// groups. Returns whether the group must go fatal (an apply failed, or an
+/// outcome went missing).
+fn run_group_applies_parallel<S>(
+    runtime: &mut LifecycleDurableLocalRuntime<'static, S>,
+    in_flight: &mut crate::lifecycle::DurableGroupInFlight<'static>,
+    joiners: &[Arc<commit_group::CommitGroupJoiner>],
+    member_branches: &[BranchId],
+) -> bool
+where
+    S: CommitTimestampSource,
+{
+    let work = runtime.take_deferred_apply_work(in_flight);
+    if work.is_empty() {
+        return false;
+    }
+    let exchange = Arc::new(commit_group::GroupApplyExchange::default());
+    let mut expected = 0_usize;
+    let mut leader_work = Vec::new();
+    for unit in work {
+        let branch = unit.branch_id();
+        // Route to the branch's first member thread; work is self-contained
+        // (owned state + rows), so WHICH thread runs it is only a
+        // load-balancing choice. The leader (last, unlisted) keeps its own.
+        let Some(index) = member_branches.iter().position(|member| *member == branch) else {
+            leader_work.push(unit);
+            continue;
+        };
+        match joiners[index].request_apply(Box::new(commit_group::GroupApplyHandoff {
+            work: unit,
+            exchange: Arc::clone(&exchange),
+        })) {
+            Ok(()) => expected += 1,
+            Err(handoff) => leader_work.push(handoff.work),
+        }
+    }
+    // The leader's own share overlaps the members' applies.
+    let leader_done: Vec<_> = leader_work
+        .into_iter()
+        .map(crate::lifecycle::DurableGroupApplyWork::apply)
+        .collect();
+    let mut done = exchange.wait_for(expected);
+    // A missing outcome means a member thread died mid-apply (panic-class):
+    // group-fatal, and that branch stays checked out — every later access
+    // fails closed until reopen.
+    let missing = expected.saturating_sub(done.len());
+    done.extend(leader_done);
+    let apply_fatal = runtime.finish_deferred_apply_work(done, in_flight.group_state());
+    apply_fatal || missing > 0
+}
+
+/// One formed write group: queued joiners plus the leader's own request
+/// (always LAST — member order is version order), with per-member byte
+/// estimates captured before the batches are consumed.
+struct FormedCommitGroup {
+    joiners: Vec<Arc<commit_group::CommitGroupJoiner>>,
+    batches: Vec<(crate::commit::CommitBatch, CommitBranchGenerationGuard)>,
+    member_bytes: Vec<u64>,
+    /// Branch of each joiner member (aligned with `joiners`; the leader is
+    /// not listed), for routing deferred applies back to member threads.
+    member_branches: Vec<BranchId>,
+}
+
+fn form_commit_group<S>(
+    slot: &RuntimeSlot<LifecycleDurableLocalRuntime<'static, S>>,
+    runtime: &LifecycleDurableLocalRuntime<'static, S>,
+    leader_request: commit_group::CommitGroupRequest,
+    leader_original_batch: &crate::commit::CommitBatch,
+) -> FormedCommitGroup
+where
+    S: CommitTimestampSource,
+{
+    const MAX_DRAIN: usize = commit_group::COMMIT_GROUP_MAX_MEMBERS - 1;
+    let members = slot.commit_groups().drain_members(MAX_DRAIN);
+    let graded = runtime.is_graded_admission();
+    let estimate_bytes = |batch: &crate::commit::CommitBatch| {
+        if graded {
+            // Same best-effort fallback as the solo throttle path.
+            estimate_commit_batch_active_bytes(batch).unwrap_or(0)
+        } else {
+            0
+        }
+    };
+    let mut joiners = Vec::with_capacity(members.len());
+    let mut batches = Vec::with_capacity(members.len() + 1);
+    let mut member_bytes = Vec::with_capacity(members.len() + 1);
+    let mut member_branches = Vec::with_capacity(members.len());
+    for (joiner, request) in members {
+        member_bytes.push(estimate_bytes(&request.batch));
+        member_branches.push(request.batch.branch_id());
+        batches.push((request.batch, request.generation_guard));
+        joiners.push(joiner);
+    }
+    member_bytes.push(estimate_bytes(leader_original_batch));
+    batches.push((leader_request.batch, leader_request.generation_guard));
+    FormedCommitGroup {
+        joiners,
+        batches,
+        member_bytes,
+        member_branches,
+    }
+}
+
+/// Build per-member responses from settled group results (the same snapshots
+/// each member would read under the lock after a solo commit), publish every
+/// member's response into its joiner, and return the leader's own (last).
+fn distribute_group_responses<S>(
+    runtime: &mut LifecycleDurableLocalRuntime<'static, S>,
+    results: Vec<crate::lifecycle::DurableGroupMemberResult>,
+    member_bytes: Vec<u64>,
+    joiners: Vec<Arc<commit_group::CommitGroupJoiner>>,
+) -> commit_group::CommitGroupResponse
+where
+    S: CommitTimestampSource,
+{
+    let pending_tasks = runtime.maintenance_status().pending_tasks();
+    let wal_growth = runtime.last_wal_growth_outcome().cloned();
+    let mut responses: Vec<commit_group::CommitGroupResponse> = results
+        .into_iter()
+        .zip(member_bytes)
+        .map(|(result, batch_bytes)| commit_group::CommitGroupResponse {
+            throttle_delay_millis: durable_commit_throttle_delay_millis_from_bytes(
+                runtime,
+                batch_bytes,
+                result.admission,
+            ),
+            outcome: result.outcome,
+            admission: result.admission,
+            pending_tasks,
+            wal_growth: wal_growth.clone(),
+        })
+        .collect();
+    // The leader's request was the last member; the group runtime returns one result
+    // per member, so the pop cannot miss.
+    let leader_response = responses
+        .pop()
+        .unwrap_or_else(|| commit_group::CommitGroupResponse {
+            outcome: Err(LifecycleError::InvalidLifecycleState {
+                reason: "write group returned no result for its leader",
+            }),
+            admission: None,
+            pending_tasks,
+            wal_growth,
+            throttle_delay_millis: 0,
+        });
+    for (joiner, response) in joiners.into_iter().zip(responses) {
+        joiner.complete(response);
+    }
+    leader_response
+}
+
+/// Per-commit proportional write-throttle delay in milliseconds. Returns 0 below the policy's
+/// soft fullness threshold; above it the delay ramps quadratically toward `max_delay_millis` as
+/// pool fullness approaches the hard memory budget (a well-damped P-controller: gentle at the
+/// knee, strong as the budget nears). `RocksDB`'s debt-driven token-bucket rate ramp is a
+/// deliberate out-of-scope follow-up (stateful integral controller; RC1/fix #3 territory).
+fn write_throttle_delay_millis(ratio_permille: u16, policy: LifecycleWriteThrottlePolicy) -> u64 {
+    if !policy.enabled() {
+        return 0;
+    }
+    let soft = u64::from(policy.soft_ratio_permille());
+    let ratio = u64::from(ratio_permille).min(1000);
+    if ratio <= soft {
+        return 0;
+    }
+    // `validate()` guarantees soft in 1..1000, so the denominator is >= 1.
+    let excess_permille = (ratio - soft).saturating_mul(1000) / (1000 - soft);
+    policy
+        .max_delay_millis()
+        .saturating_mul(excess_permille)
+        .saturating_mul(excess_permille)
+        / 1_000_000
+}
+
 const fn default_timestamp_source() -> ApiTimestampSource {
     ApiTimestampSource::new(DEFAULT_TIMESTAMP)
+}
+
+#[cfg(test)]
+mod write_throttle_tests {
+    use super::{write_throttle_delay_millis, LifecycleWriteThrottlePolicy};
+
+    #[test]
+    fn delay_is_zero_at_or_below_the_soft_threshold() {
+        let policy = LifecycleWriteThrottlePolicy::new(700, 20);
+        assert_eq!(write_throttle_delay_millis(0, policy), 0);
+        assert_eq!(write_throttle_delay_millis(699, policy), 0);
+        assert_eq!(write_throttle_delay_millis(700, policy), 0);
+    }
+
+    #[test]
+    fn delay_ramps_monotonically_and_caps_at_max() {
+        let policy = LifecycleWriteThrottlePolicy::new(700, 20);
+        let mut previous = 0;
+        for ratio in 700u16..=1000 {
+            let delay = write_throttle_delay_millis(ratio, policy);
+            assert!(
+                delay >= previous,
+                "delay must be non-decreasing in fullness"
+            );
+            assert!(delay <= 20, "delay must never exceed max_delay_millis");
+            previous = delay;
+        }
+        // Full fullness reaches the cap; over-full (clamped) stays at the cap.
+        assert_eq!(write_throttle_delay_millis(1000, policy), 20);
+        assert_eq!(write_throttle_delay_millis(u16::MAX, policy), 20);
+    }
+
+    #[test]
+    fn delay_is_zero_when_the_policy_is_disabled() {
+        assert_eq!(
+            write_throttle_delay_millis(1000, LifecycleWriteThrottlePolicy::disabled()),
+            0
+        );
+    }
 }

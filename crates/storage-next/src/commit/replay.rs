@@ -180,6 +180,13 @@ where
         {
             return Ok(Some(unresolved));
         }
+        // A write group's range fact (BS5.1 D1) covers first..=last: replays of the EARLIER
+        // members in the range must proceed (without clearing the gate — only the range end's
+        // replay clears it above), or recovery could never work through the group in version
+        // order.
+        if unresolved.covers_version(request.commit_version()) {
+            return Ok(None);
+        }
         Err(CommitRuntimeError::UnresolvedDurableCommit {
             branch_id: unresolved.branch_id(),
             commit_version: unresolved.commit_version(),

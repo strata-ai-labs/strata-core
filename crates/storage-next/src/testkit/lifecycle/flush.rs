@@ -119,13 +119,13 @@ fn check_durable_success_and_retry(
         20_000,
         b"value",
     );
-    let backend = FlushContractBackend::new();
+    let backend: &'static FlushContractBackend = Box::leak(Box::new(FlushContractBackend::new()));
     let flush_request = request(branch, script, 5);
     let mut first = frozen_branch(branch, row.clone());
     let first_outcome = flush_durable_branch(
         &mut first,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &flush_request,
     )
     .map_err(|error| testkit_error(&error))?;
@@ -143,8 +143,8 @@ fn check_durable_success_and_retry(
     let mut retry = frozen_branch(branch, row);
     let retry_outcome = flush_durable_branch(
         &mut retry,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &flush_request,
     )
     .map_err(|error| testkit_error(&error))?;
@@ -193,11 +193,12 @@ fn check_publish_failure(
     );
     let mut state = frozen_branch(branch, row);
     let before = state.clone();
-    let backend = FlushContractBackend::with_publish_failure();
+    let backend: &'static FlushContractBackend =
+        Box::leak(Box::new(FlushContractBackend::with_publish_failure()));
     let error = flush_durable_branch(
         &mut state,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &request(branch, script, 10),
     )
     .expect_err("publish failure");
@@ -225,11 +226,12 @@ fn check_reopen_failure(
     );
     let mut state = frozen_branch(branch, row);
     let before = state.clone();
-    let backend = FlushContractBackend::with_range_failure();
+    let backend: &'static FlushContractBackend =
+        Box::leak(Box::new(FlushContractBackend::with_range_failure()));
     let flush = flush_durable_branch(
         &mut state,
-        &TableObjectService::new(&backend),
-        &TableObjectReaderService::new(&backend),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
         &request(branch, script, 13),
     )
     .map_err(|error| testkit_error(&error))?;

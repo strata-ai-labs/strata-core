@@ -1,5 +1,7 @@
 //! Inherited-layer materialization helpers for branch-local state.
 
+use std::sync::Arc;
+
 use super::{branch_reachable_table_identity_exists, BranchLocalState};
 use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::branch::facts::{
@@ -17,7 +19,7 @@ use crate::table::{
 };
 use std::cell::Cell;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use strata_core_next::{BranchId, CommitVersion};
 
 const MATERIALIZATION_ROWS_PER_OUTPUT_TABLE: usize = 4_096;
@@ -636,7 +638,7 @@ impl BranchLocalState {
             .collect::<Vec<_>>();
         validate_materialization_output_identities(
             &output_identities,
-            &self.owned_levels,
+            self.owned_levels(),
             &self.inherited_layers,
         )?;
         // Materialized rows represent an inherited snapshot, so they sit behind
@@ -645,7 +647,7 @@ impl BranchLocalState {
         let level_index = usize::from(BranchLevel::ZERO.raw());
         for table in replacement_tables {
             self.validate_install(BranchLevel::ZERO, &table)?;
-            self.owned_levels[level_index].push(table);
+            Arc::make_mut(&mut self.layout).levels_mut()[level_index].push(table);
         }
         self.refresh_observed_row_facts();
         Ok(())
@@ -677,11 +679,10 @@ impl BranchLocalState {
         layer_index: usize,
     ) -> Option<ExistingMaterializationReplacementSummary> {
         let mut summary = ExistingMaterializationReplacementSummary::default();
-        for table in self.owned_levels.iter().flatten() {
+        for table in self.owned_levels().iter().flatten() {
             if table.materialization_source() == Some(source) {
-                let Ok(row_count) = u64::try_from(table.rows().len()) else {
-                    return None;
-                };
+                // BS4.4a-i: the row count is on facts (u64) — no materialization needed.
+                let row_count = table.facts().row_count();
                 summary.tables = summary.tables.saturating_add(1);
                 summary.rows = summary.rows.saturating_add(row_count);
                 if let Some(output_index) = materialized_table_output_index(
@@ -712,7 +713,6 @@ impl BranchLocalState {
                 reason: "materialization layer index must exist",
             },
         )?;
-        let higher_precedence_rows = self.higher_precedence_materialization_rows(layer_index)?;
         let stats = MaterializationStreamStats::default();
         let sources = materialization_table_sources(
             layer.owned_levels().iter().flatten(),
@@ -741,8 +741,15 @@ impl BranchLocalState {
                             "materialized inherited rows must not contain duplicate internal keys",
                     });
                 }
-                if let Some(rows) = higher_precedence_rows.get(&key) {
-                    if rows.iter().any(|existing| existing == row.row()) {
+                // BS4.4e: probe the higher-precedence sources for this exact internal key instead of a
+                // precomputed whole-branch map (O(dataset) RAM). The gathered set equals the old map's
+                // `Vec` for `key`, so the shadow-skip/collision rules are unchanged.
+                let higher_precedence = self.higher_precedence_rows_for_row(layer_index, &row)?;
+                if !higher_precedence.is_empty() {
+                    if higher_precedence
+                        .iter()
+                        .any(|existing| existing == row.row())
+                    {
                         summary.record_shadow_skip();
                         stats.record_shadow_skip();
                         merged
@@ -772,31 +779,32 @@ impl BranchLocalState {
         finish_materialization_stream(summary, artifact_builder, artifact_verifier, &stats)
     }
 
-    fn higher_precedence_materialization_rows(
+    /// BS4.4e: gather every higher-precedence row sharing `target`'s exact internal key, in the same
+    /// source order the old whole-branch map used (active → frozen → owned levels → closer inherited),
+    /// via per-key probes (index+filter accelerated). Replaces `higher_precedence_materialization_rows`
+    /// on the hot path; that fn survives under `cfg(test)` as the differential oracle.
+    fn higher_precedence_rows_for_row(
         &self,
         target_layer_index: usize,
-    ) -> BranchRuntimeResult<BTreeMap<TableInternalKeyBytes, Vec<StorageRow>>> {
-        let mut rows_by_key = BTreeMap::<TableInternalKeyBytes, Vec<StorageRow>>::new();
-        for row in self.active.iter() {
-            rows_by_key
-                .entry(row.key().clone())
-                .or_default()
-                .push(row.row().clone());
+        target: &TableRow,
+    ) -> BranchRuntimeResult<Vec<StorageRow>> {
+        let key = target.key();
+        let mut rows = Vec::new();
+        if let Some(row) = self.active.get(key) {
+            rows.push(row.row().clone());
         }
         for table in &self.frozen {
-            for row in table.iter() {
-                rows_by_key
-                    .entry(row.key().clone())
-                    .or_default()
-                    .push(row.row().clone());
+            if let Some(row) = table.get(key) {
+                rows.push(row.row().clone());
             }
         }
-        for table in self.owned_levels.iter().flatten() {
-            for row in table.rows() {
-                rows_by_key
-                    .entry(row.key().clone())
-                    .or_default()
-                    .push(row.row().clone());
+        for table in self.owned_levels().iter().flatten() {
+            if let Some(hit) = table
+                .reader()
+                .try_get_exact(key)
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?
+            {
+                rows.push(hit.row().clone());
             }
         }
         for layer in self.inherited_layers.iter().take(target_layer_index) {
@@ -810,24 +818,33 @@ impl BranchLocalState {
                     });
                 }
             }
+            // Rewrite the target row to the source branch to get the internal key to probe there, then
+            // rewrite each hit (commit ≤ fork) back to the child branch so its key matches `key`.
+            let source_probe =
+                rewrite_row_branch(target.row(), self.branch_id, layer.source_branch_id())
+                    .map_err(|_| BranchRuntimeError::InvalidInheritedLayer {
+                        reason: "closer inherited row branch rewrite failed",
+                    })?;
+            let source_key = TableInternalKeyBytes::from_row(&source_probe);
             for table in layer.owned_levels().iter().flatten() {
-                for row in table.rows() {
-                    if row.commit_version().as_u64() > layer.fork_version().as_u64() {
+                if let Some(hit) = table
+                    .reader()
+                    .try_get_exact(&source_key)
+                    .map_err(|source| BranchRuntimeError::TableRuntime { source })?
+                {
+                    if hit.row().commit_version().as_u64() > layer.fork_version().as_u64() {
                         continue;
                     }
                     let rewritten =
-                        rewrite_row_branch(row.row(), layer.source_branch_id(), self.branch_id)
+                        rewrite_row_branch(hit.row(), layer.source_branch_id(), self.branch_id)
                             .map_err(|_| BranchRuntimeError::InvalidInheritedLayer {
                                 reason: "closer inherited row branch rewrite failed",
                             })?;
-                    rows_by_key
-                        .entry(TableInternalKeyBytes::from_row(&rewritten))
-                        .or_default()
-                        .push(rewritten);
+                    rows.push(rewritten);
                 }
             }
         }
-        Ok(rows_by_key)
+        Ok(rows)
     }
 
     pub(crate) fn materialization_tables_from_artifacts(
@@ -844,6 +861,7 @@ impl BranchLocalState {
         let mut tables = Vec::new();
         for artifact in artifacts {
             let identity = artifact.facts().identity().clone();
+            let extras = artifact.extras().clone();
             let reader = ImmutableTableReader::open_bytes(
                 identity.clone(),
                 artifact.into_bytes(),
@@ -856,6 +874,7 @@ impl BranchLocalState {
                 self.branch_id,
                 descriptor,
                 reader,
+                extras,
                 materialization_source,
             )?);
         }
@@ -1055,13 +1074,24 @@ fn validate_prepared_materialization_replacement_tables(
             TableReaderConfig::default(),
         )
         .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
-        if reader.rows().len() != table.rows().len() {
+        // BS4.4a-ii-a: `reader` is a fresh eager reader (open_bytes); pair its rows against the owned
+        // table's cursor so the owned side streams in ascending internal-key order instead of
+        // materializing. Row counts are compared via facts (no scan) before the paired walk.
+        if reader.rows().len() as u64 != table.facts().row_count() {
             return Err(materialization_replacement_mismatch());
         }
-        for (expected, actual) in reader.rows().iter().zip(table.rows()) {
-            if expected.row() != actual.row() {
-                return Err(materialization_replacement_mismatch());
+        let mut actual = table.reader().cursor();
+        actual
+            .seek_to_first()
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        for expected in reader.rows() {
+            match actual.current() {
+                Some(row) if expected.row() == row.row() => {}
+                _ => return Err(materialization_replacement_mismatch()),
             }
+            actual
+                .advance()
+                .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
         }
     }
     Ok(())
@@ -1173,8 +1203,9 @@ impl TableCompactionInput for MaterializationTableSource<'_> {
 
     fn open_cursor(&self) -> crate::table::TableRuntimeResult<Box<dyn TableCursor + '_>> {
         self.stats.record_source_table_open();
+        // BS4.4g: materialization reads each source table once — do not fill the block cache.
         Ok(Box::new(MaterializationRewriteCursor::new(
-            Box::new(self.table.reader().cursor()),
+            Box::new(self.table.reader().cursor_without_cache_fill()),
             self.source_branch_id,
             self.target_branch_id,
             self.fork_version,
