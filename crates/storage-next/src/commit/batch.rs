@@ -82,6 +82,12 @@ pub(crate) enum CommitDuplicateKeyPolicy {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CommitTimestampPolicy {
     RuntimeGenerated,
+    /// A runtime-generated timestamp candidate read BEFORE the runtime lock (the API reads it
+    /// early so TTL/expiry facts and the commit stamp derive from one frontier). Clamps up to
+    /// the monotonic floor like `RuntimeGenerated` — under concurrent writers another commit
+    /// may allocate a later floor between the read and the lock, which is ordinary interleaving,
+    /// not a caller error. Only truly caller-supplied stamps use the strict `Explicit` path.
+    RuntimeGeneratedBase(Timestamp),
     Explicit(Timestamp),
 }
 

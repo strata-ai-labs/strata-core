@@ -2266,8 +2266,15 @@ impl<'a> StorageRuntime<'a> {
     ) -> StorageApiResult<CommitSummary> {
         let timestamp_base = explicit_timestamp.unwrap_or_else(|| self.next_commit_timestamp());
         // The API computes the timestamp before mapping TTL so lower commit
-        // stamping and expiry facts use the same monotonic frontier.
-        let timestamp_policy = crate::commit::CommitTimestampPolicy::Explicit(timestamp_base);
+        // stamping and expiry facts use the same monotonic frontier. An internally
+        // generated base uses the CLAMPING policy: with concurrent writers, another
+        // commit can advance the monotonic floor between this pre-lock read and the
+        // allocator — ordinary interleaving that must not reject the commit. Only a
+        // caller-supplied timestamp takes the strict Explicit path.
+        let timestamp_policy = match explicit_timestamp {
+            Some(timestamp) => crate::commit::CommitTimestampPolicy::Explicit(timestamp),
+            None => crate::commit::CommitTimestampPolicy::RuntimeGeneratedBase(timestamp_base),
+        };
         let durability = self.resolve_commit_durability(batch.options().durability())?;
         let generation_guard = map_generation_guard(batch.options().expected_generation())?;
         let map_timer = perf_trace::start_timer();
