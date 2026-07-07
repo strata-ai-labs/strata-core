@@ -1518,6 +1518,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
             }
         };
+        let mut rotated = false;
         if branch.active_row_count() > 0 {
             if let Err(error) = require_rotate_budget(&self.budget, branch) {
                 let outcome =
@@ -1528,13 +1529,24 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
             }
             branch.rotate_active();
+            rotated = true;
+        }
+        let branch_snapshot = branch.clone();
+        // Model-2 V-before-S coverage: the rotation swapped in a fresh live active, but the
+        // published snapshot still holds (only) the pre-rotation one. Republish in the SAME lock
+        // hold — otherwise every commit landing in the new active during the off-lock build stays
+        // invisible to readers (reads at visible V missing rows ≤ V) until the finish-phase
+        // republish. Caught by the BS5.0 multi-writer stress: acked batches were unreadable for
+        // 15–140 ms whenever a flush build was in flight.
+        if rotated {
+            self.publish_branch_snapshot(branch_id);
         }
         Ok(Some(DurableBackgroundMaintenanceStep::Build(Box::new(
             DurableBackgroundMaintenanceBuild::Flush {
                 task,
                 branch_id,
                 request,
-                branch_snapshot: branch.clone(),
+                branch_snapshot,
                 table_object: self.services.table_object().clone(),
                 table_reader: self.services.table_reader().clone(),
                 budget: self.budget.clone(),

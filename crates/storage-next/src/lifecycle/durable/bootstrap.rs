@@ -1541,6 +1541,10 @@ where
             self.require_projected_mutating_commit_budget(branch_id, &batch)?;
         }
         perf_trace::record_commit_admit_elapsed(admit_timer);
+        let frozen_before = self
+            .branch_catalog
+            .branch_state(branch_id)?
+            .frozen_table_count();
         let outcome = {
             let setup_timer = perf_trace::start_timer();
             let (branch, registry) = self.branch_catalog.branch_state_mut_with_registry(
@@ -1564,6 +1568,19 @@ where
                 .map_err(commit_error)
         };
         if outcome.is_ok() {
+            // Commit-triggered auto-rotation is a STRUCTURAL change: per the Model-2 contract
+            // below, it must republish the snapshot in the same lock hold — the published view's
+            // live-active handle now points at the rotated-out (frozen) table, so later commits'
+            // rows in the fresh active would otherwise be invisible until the next background
+            // publish. Republish BEFORE advancing the atomic mirror so any reader observing the
+            // new visible version finds a covering snapshot (V-before-S).
+            let frozen_after = self
+                .branch_catalog
+                .branch_state(branch_id)?
+                .frozen_table_count();
+            if frozen_after != frozen_before {
+                self.publish_branch_snapshot(branch_id);
+            }
             // BS2.2: mirror the just-advanced visible version to the atomic (release) so off-lock
             // readers (BS2.4) observe it without the runtime lock. On the `applied_not_visible`
             // error path `outcome` is `Err`, so the atomic correctly does not advance.
@@ -1576,10 +1593,11 @@ where
             let _ = self.schedule_post_commit_maintenance_for_branch(branch_id);
             perf_trace::record_commit_post_maintenance_elapsed(maintenance_start);
         }
-        // BS2.4 Model 2: commits do NOT republish the snapshot. The published snapshot holds the
-        // live (unpinned) active handle, so it already sees this commit's appends; each off-lock
-        // read pins the active at read time and bounds by the visible version. Only structural
-        // changes (rotation/flush/compaction/materialization/fork/lifecycle) republish.
+        // BS2.4 Model 2: commits do NOT republish the snapshot (except the rotation case above).
+        // The published snapshot holds the live (unpinned) active handle, so it already sees this
+        // commit's appends; each off-lock read pins the active at read time and bounds by the
+        // visible version. Only structural changes (rotation/flush/compaction/materialization/
+        // fork/lifecycle) republish.
         outcome
     }
 
