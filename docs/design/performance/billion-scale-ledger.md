@@ -521,10 +521,13 @@ APP-HELD — post-load allocated=13.66GB (block cache filling its 15GiB pool), p
 **allocated=39.25GB ≈ resident=41.84GB**: +26GB of live heap accumulated during the run
 phase's compaction churn. Stalls persist under jemalloc (max 56.3s) — the allocator
 caused neither the 61GB OOMs nor the stall lottery. Eliminated by inspection: rewrite
-outputs lazy-reopen (BS4.4l), block cache evicts per shard. Next: jemalloc sampling
-heap profiler (`profiling` feature + `_RJEM_MALLOC_CONF=prof:true,prof_final:true` —
-the `_RJEM_` prefix is mandatory) names the holder; key cells re-baseline under
-jemalloc once memory is honest.
+outputs lazy-reopen (BS4.4l), block cache evicts per shard. The heap profile NAMED it (peak
+dump: 25.75GB live): **20.57GB in `ImmutableTableStreamingEncoder` output buffers** —
+compaction/flush builds hold every output table's complete encoded bytes (+ rows) in
+heap until the pass publishes; concurrent builds × unbounded mid-level pass outputs =
+the 26–50GB peaks, both OOMs, and (via page-cache eviction) the stall physics. Fix
+slice W1.2c: stream outputs to disk per completed table inside the build loop. Key
+cells re-baseline under jemalloc once landed.
 
 ## Backfilling a row after a perf run
 

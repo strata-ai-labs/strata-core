@@ -160,10 +160,23 @@ mid-level reunion differential test. But the bake-off did NOT move the gate:
    persist under jemalloc (max 56.3s) — the allocator was not the stall cause either.
 3. Hypotheses eliminated by code/counter checks: rewrite outputs DO lazy-reopen
    (BS4.4l applies to compaction), the block cache DOES enforce per-shard eviction.
-4. **Next (the named-structure step): jemalloc sampling heap profiler** —
-   `tikv-jemallocator` `profiling` feature, `_RJEM_MALLOC_CONF=prof:true,prof_final:true`
-   (note the `_RJEM_` prefix; plain MALLOC_CONF is ignored by the prefixed build),
-   dump analyzed via jeprof/`jemalloc_pprof`. One 10M run names the 26GB holder.
+4. **NAMED (jemalloc heap profile, peak dump of 396K high-water dumps, 25.75GB live):**
+   - **20.57GB — `ImmutableTableStreamingEncoder::flush_current_block` → `RawVec::finish_grow`**
+     via `PendingCompactionOutput::push_row` ← `TableCompactor::compact_inputs` ←
+     `prepare_branch_compaction_plan_bounded` ← background compaction builds.
+   - 2.53GB — same encoder path via the flush-build caller; 1.72GB — the artifact rows
+     vec. All one family: **build artifacts buffer each output table's COMPLETE encoded
+     bytes (plus decoded rows) in heap until the whole pass publishes.** Concurrent
+     builds × unbounded mid-level pass outputs (GBs per pass) × geometric Vec growth =
+     the 26–50GB peaks and both OOMs. It also completes the stall mechanism: a monster
+     pass transiently allocates ~2× its output bytes, evicting the page cache and
+     collapsing I/O for everything else.
+   - **Fix (W1.2c, new critical slice): stream outputs to disk as they complete** —
+     publish each output table object inside the build loop (the per-object publish and
+     orphaned-partial-publish cleanup already exist) instead of accumulating all
+     artifacts to the end of the pass; heap per build drops to ~one in-progress block +
+     table. Bounds memory independently of pass size, which ALSO de-fangs the mid-level
+     monsters (their harm was heap+page-cache, in addition to lane time).
 
 ## Sequencing (revised)
 
