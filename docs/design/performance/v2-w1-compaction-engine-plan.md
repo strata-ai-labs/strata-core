@@ -45,13 +45,14 @@ Add an input bound to `plan_l0_to_l1_compaction`: select the OLDEST-first prefix
 - Rows are `(physical_key, commit_version)`-keyed; reads merge sources by version, so
   moving any L0 subset into L1 cannot change read results — shadowing is by version,
   not by source position.
-- Recency ordering: L0 tables are appended in flush order (oldest first in
-  `owned_levels[0]`); consuming a PREFIX keeps every remaining L0 table newer than
-  everything moved to L1. The level invariant "Ln+1 rows are older than overlapping L0
-  rows" is preserved exactly because prefix consumption cannot leapfrog a newer L0
-  table past an older one. (A non-prefix subset COULD: an older L0 row left behind
-  would shadow-invert against the newer row now in L1 during future merges. Prefix-only
-  is load-bearing; assert it in the planner.)
+- Recency ordering: **verified — L0 installs at index 0 (`state.rs:223,306`), so
+  `owned_levels[0]` is NEWEST-FIRST and the oldest-first consumption unit is the index
+  SUFFIX `(len-k)..len`**, not the 0..k prefix. Consuming the suffix keeps every
+  remaining L0 table newer than everything moved to L1; the level invariant "Ln+1 rows
+  are older than overlapping L0 rows" is preserved because suffix consumption cannot
+  leapfrog a newer table past an older one. (A non-suffix subset COULD: an older L0 row
+  left behind would shadow-invert against the newer row now in L1 during future merges.
+  Suffix-only is load-bearing; assert it in the planner.)
 - Crash windows: unchanged — the pass publishes through the existing atomic install +
   candidate revalidation; a partial pass is indistinguishable from a small full pass.
 
@@ -112,8 +113,8 @@ W1.1a -> W1.1b -> W1.1c (measure) -> W1.2a (bake-off) -> W1.2b -> W1.3 -> W1.4 -
 ## Open items
 
 - 100M smoke (running): fold space-amp + reopen-at-100M numbers into W1.3's gates.
-- L0 ordering assertion: verify owned_levels[0] append order == flush recency order in
-  code (one recon check in W1.1a before relying on prefix semantics).
+- ~~L0 ordering assertion~~ RESOLVED: installs are `insert(0, ...)` — newest-first;
+  the consumption unit is the oldest-first SUFFIX. Plan text updated.
 - `max_pass_input_bytes` policy home: LifecycleCompactionIoPolicy (the existing
   max_bytes_per_task defers oversized plans — W1.1 TRIMS instead of deferring; the
   deferral path remains as the backstop for single-table-oversized cases).
