@@ -53,12 +53,10 @@ pub(super) const fn level_zero_blocking_threshold() -> usize {
 }
 const NONZERO_LEVEL_COMPACTION_THRESHOLD: usize = 4;
 const NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD: usize = 8;
-const NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD: usize = 16;
 const NONZERO_LEVEL_MIN_BASE_TARGET_BYTES: u64 = 1024 * 1024;
 const NONZERO_LEVEL_MAX_BASE_TARGET_BYTES: u64 = 256 * 1024 * 1024;
 const NONZERO_LEVEL_TARGET_GROWTH_FACTOR: u64 = 10;
 const NONZERO_LEVEL_URGENT_TARGET_MULTIPLIER: u64 = 2;
-const NONZERO_LEVEL_BLOCKING_TARGET_MULTIPLIER: u64 = 4;
 // Urgency-score normalizer for inherited-layer backlog (`count_pressure_score(layer_count, ..)`): a layer
 // counts as `layer_count * 1000` pressure, so materialization ranks linearly by backlog depth against
 // compaction. This is the *rank* input and is deliberately independent of the onset gate below.
@@ -591,10 +589,6 @@ fn nonzero_level_target_bytes_for_branch(
 
 fn nonzero_level_urgent_bytes(target_bytes: u64) -> u64 {
     target_bytes.saturating_mul(NONZERO_LEVEL_URGENT_TARGET_MULTIPLIER)
-}
-
-fn nonzero_level_blocking_bytes(target_bytes: u64) -> u64 {
-    target_bytes.saturating_mul(NONZERO_LEVEL_BLOCKING_TARGET_MULTIPLIER)
 }
 
 impl LifecycleCompactionDrainOutcome {
@@ -2452,11 +2446,20 @@ fn nonzero_compaction_pressure_for_target(
     if table_count < NONZERO_LEVEL_COMPACTION_THRESHOLD && byte_count < target_bytes {
         return None;
     }
-    let severity = if table_count >= NONZERO_LEVEL_BLOCKING_COMPACTION_THRESHOLD
-        || byte_count >= nonzero_level_blocking_bytes(target_bytes)
-    {
-        LifecycleStoragePressureSeverity::BlockMutatingAdmission
-    } else if table_count >= NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD
+    // Non-zero-level backlog NEVER blocks admission (caps at Urgent). A level's
+    // table count and byte overshoot are STRUCTURAL at scale — L1+ legitimately
+    // holds `dataset / output-table-size` tables while the level cascade catches
+    // up — and relief requires multi-GB level merges whose duration (30-60s at
+    // 10M x 1KB) blows past every pacing assumption: measured as a 52.8s
+    // single-commit stall in one run and a caller-visible
+    // `failed_precondition` load abort (stall-wall watchdog firing during one
+    // >30s merge with no other completions) in another — billion-scale-ledger.md
+    // § 10M three-way. Ln debt is a PACING signal: it already drives the graded
+    // admission ramp (`compaction_debt`), which brakes writers toward the
+    // near-stop floor as debt grows. Hard admission walls remain where relief is
+    // fast and bounded: the L0 backlog (one L0 merge pass) and the frozen
+    // backlog (a flush drain).
+    let severity = if table_count >= NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD
         || byte_count >= nonzero_level_urgent_bytes(target_bytes)
     {
         LifecycleStoragePressureSeverity::Urgent
