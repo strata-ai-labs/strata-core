@@ -3119,8 +3119,17 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let state = self.state;
-        let pinned_objects =
-            in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
+        // Defer the table-object mark outright while builds are in flight: the sweep would
+        // defer on the same condition anyway, so running the O(inventory + manifests) mark
+        // first only burns the drain slot (measured: enough wasted slots under a sustained
+        // load's 16 background workers to push compaction into the L0 admission wall). The
+        // deferral is cheap and the mark re-runs at the next lull, close, or reopen.
+        let builds_active = self.maintenance.has_active_build_task();
+        let pinned_objects = if builds_active {
+            Vec::new()
+        } else {
+            in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog)
+        };
         let maintenance = &mut self.maintenance;
         let services = &self.services;
         let health = self.current_recovery_health.clone();
@@ -3134,6 +3143,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             pending_releases,
             pending_releases_sequence,
             pinned_objects,
+            builds_active,
         };
         let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             matches!(
@@ -3690,6 +3700,9 @@ struct DurableRetentionMaintenanceRunner<'a, 'b> {
     /// In-memory-reachable table objects, pinned live in the mark (COW crash windows) so the
     /// report matches what the sweep will actually reclaim.
     pinned_objects: Vec<crate::object::ObjectName>,
+    /// When a build is in flight the table-object mark defers before the O(inventory) listing —
+    /// the sweep would defer on the same condition, so the scan would be pure wasted slot time.
+    builds_active: bool,
 }
 
 impl DurableRetentionMaintenanceRunner<'_, '_> {
@@ -3798,6 +3811,17 @@ impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
             self.publish_pending_releases()?;
         }
         if let LifecycleRetentionScope::TableObjects { branch_id } = request.scope() {
+            if self.builds_active {
+                return Ok(append_released_table_names(
+                    MaintenanceOutcome::new(
+                        MaintenanceTaskKind::Retention,
+                        MaintenanceOutcomeStatus::Deferred,
+                    )
+                    .with_reason("table-object mark deferred: build task in flight")
+                    .with_stats(LifecycleStats::new(0, 0, 1, 1, 0)),
+                    &drained,
+                ));
+            }
             let table_retention =
                 table_object_retention_request(self.services, branch_id, &self.health)
                     .map(|request| request.with_pinned_objects(self.pinned_objects.clone()))
