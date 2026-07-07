@@ -69,6 +69,7 @@ suites, green every slice.
 | BS2 snapshot reads | landed² | — | — | — | *pending run* | *pending run* | *pending run* | — | reads off the global lock (G4–G6); expected: C ↑, read tail ↓ |
 | BS3 admission (dark) | landed² | — | — | — | — | *pending run* | *pending run* | — | graceful admission behind `STRATA_ADMISSION` (G10); tail smoothing, throughput compaction-bound |
 | **BS4 disk-resident (re-baseline)** | this branch³ | *pending run* | *pending run* | *pending run* | *pending run* | *pending run* | *pending run* | *pending run* (target ≤ 1 s) | **the regime change** — dataset on disk, memory = caches (G11–G16). Exit gates above. Numbers filled from the BS4.6 perf run (runbook). |
+| BS4 + fork-manifest/GC fixes (dev-box l9, 10M×1KB, default budget)⁴ | `7fad3cff` | — | — | **41.1 K** | point p50 671 µs · 418 ops/s (cold-regime) | — | scan-prefix p50 612 µs | reopen w/ 100 forks: **24.8 s**, `lazy_full_materializations=0`, bounded RSS (pre-fix: OOM-killed) | first completed end-to-end 10M run on the disk-resident regime; fork p50 97.9 ms (+31%, fork-time manifest fsync); GC reclaims at lulls/close/reopen (space peaked ~85 GB mid-load — in-flight-registry follow-up needed for load-time reclaim); reopen dominated by O(children × tables) reader opens (37,902) — reader-sharing follow-up |
 
 ¹ `billion-scale-plan.md` §2 — a single pre-BS snapshot, single-threaded, 1 KB values, on
 the reference machine. There is **no committed per-milestone baseline** for BS1–BS3, so
@@ -82,6 +83,13 @@ this ledger; the measured numbers are captured in the perf environment per
 [`bs4-6-exit-runbook.md`](./bs4-6-exit-runbook.md) and backfilled here. Until then the
 BS4 row reads *pending run* — do not infer a regression or an improvement from an empty
 cell.
+⁴ Dev-box run (not the quiesced reference machine), captured while validating the reopen-OOM
+(fork-time child manifests) and table-object-GC fixes the first BS4.6 bench run surfaced.
+The 1 KB point/scan cells are the **cold disk-resident regime** (10 GB dataset, 240 MiB
+cache) — compare against RocksDB at the same operating point, not the pre-BS resident
+snapshot. Known follow-ups: in-flight-output registry (reclaim during sustained load),
+recovered-reader sharing across fork children (reopen ≤ 1 s at high fan-out),
+deleted-branch manifest cleanup, tombstone-only quarantine staging.
 
 ## Backfilling a row after a perf run
 
