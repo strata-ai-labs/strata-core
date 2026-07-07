@@ -15,8 +15,8 @@ Source of truth for the overall design: `docs/design/first-run-experience.md` in
 | [`00-shared-contracts.md`](00-shared-contracts.md) | all (read first) | The binary's shipped contracts: targeting, output, errors, agents surface, MCP, versioning |
 | [`stratadb-org.md`](stratadb-org.md) | stratadb.org | install.sh hardening (D6), **`/e/<code>` error pages** (D4 dependency), llms.txt upgrade + release.json (D11) |
 | [`strata-mcp.md`](strata-mcp.md) | strata-mcp | `@stratadb/mcp` npx shim + registry listings (D8's distribution half); repo repositioning |
-| [`strata-python.md`](strata-python.md) | strata-python | V1 SDK agent surfaces at M9 cutover (D9); prep that can start now |
-| [`strata-nodesdk.md`](strata-nodesdk.md) | strata-nodesdk | Same as Python, for npm (D9) |
+| [`strata-python.md`](strata-python.md) | strata-python | **Full V1 SDK specification** (ground-up: the current wheel binds the old engine) — binding architecture, complete API surface, error model, packaging (D9) |
+| [`strata-nodesdk.md`](strata-nodesdk.md) | strata-nodesdk | **Full V1 SDK specification**, isomorphic to the Python spec with Node conventions (D9) |
 | [`strata-eval.md`](strata-eval.md) | strata-eval | Agent onboarding evals with budgets + release gates (D12) |
 
 Every repo also owes the **D1 sweep**: all GitHub references point at the `stratalab`
