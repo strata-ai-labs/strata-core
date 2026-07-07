@@ -607,6 +607,9 @@ fn run_reopen_after_load(
                 table_reader_opens: open_trace.table_reader_opens(),
                 table_lazy_full_materializations: open_trace.table_lazy_full_materializations(),
                 table_data_block_reads: open_trace.table_data_block_reads(),
+                replay_rows_classified: open_trace.commit_replay_rows_classified(),
+                replay_source_probes: open_trace.commit_replay_source_probes(),
+                replay_history_calls: open_trace.commit_replay_history_calls(),
             }),
     )
 }
@@ -771,12 +774,15 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 fn print_result(result: &RunResult) {
     if let Some(reopen) = result.reopen_after_load_context {
         eprintln!(
-            "  {:<20} db_open_after_load_ms={:.3} reader_opens={} lazy_full_materializations={} data_block_reads={}",
+            "  {:<20} db_open_after_load_ms={:.3} reader_opens={} lazy_full_materializations={} data_block_reads={} replay_rows={} replay_probes={} replay_history_calls={}",
             result.workload,
             reopen.db_open_after_load_ms,
             reopen.table_reader_opens,
             reopen.table_lazy_full_materializations,
             reopen.table_data_block_reads,
+            reopen.replay_rows_classified,
+            reopen.replay_source_probes,
+            reopen.replay_history_calls,
         );
         return;
     }
@@ -1485,6 +1491,9 @@ struct ReopenAfterLoadContext {
     table_reader_opens: u64,
     table_lazy_full_materializations: u64,
     table_data_block_reads: u64,
+    replay_rows_classified: u64,
+    replay_source_probes: u64,
+    replay_history_calls: u64,
 }
 
 #[derive(Debug)]
