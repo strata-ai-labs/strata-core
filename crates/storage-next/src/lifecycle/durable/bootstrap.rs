@@ -1866,8 +1866,21 @@ where
             }
             // Standard mode publishes without a covering fsync (same durability
             // class as its solo path); only Always captures a sync ticket.
-            (self.services.wal.durability_policy() == DurabilityPolicy::Always)
-                .then(|| self.services.wal.begin_group_sync())
+            if self.services.wal.durability_policy() == DurabilityPolicy::Always {
+                // W3.3a: capture flushes the append-coalescing buffer (the
+                // group flush). A flush failure means the group's appends
+                // cannot be covered by any fsync — same terminal handling as
+                // a failed covering sync, recorded here in phase 1.
+                match self.services.wal.begin_group_sync() {
+                    Ok(ticket) => Some(ticket),
+                    Err(error) => {
+                        fatal = self.record_group_capture_failure(&group, &error);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -1994,6 +2007,35 @@ where
         results
     }
 
+    /// Record the gate fact for a group whose sync-ticket capture failed
+    /// (W3.3a: the append-buffer flush at capture). No watermark rescue is
+    /// possible — unflushed bytes cannot be covered by any completed fsync.
+    /// Returns whether the group is fatal (always, unless it had no stamp).
+    fn record_group_capture_failure(
+        &mut self,
+        group: &CommitGroupState,
+        error: &WalServiceError,
+    ) -> bool {
+        let Some(stamp) = group.last_stamp() else {
+            return true;
+        };
+        let _ = error;
+        let reason = "write group sync capture failed to flush the WAL append buffer";
+        let fact = CommitUnresolvedDurable::applied_not_visible(
+            stamp,
+            CommitDurabilityClass::NotDurable,
+            reason,
+        )
+        .and_then(|fact| group.widen_fact(fact));
+        if let Ok(fact) = fact {
+            // Rationale: recording can only fail when a DIFFERENT fact is
+            // already present; that fact already gates commits, and replay
+            // reconciles our range from the WAL contents.
+            let _ = self.durable_gate.record_unresolved(fact);
+        }
+        true
+    }
+
     /// Record the gate fact for a failed covering fsync (BS5.2), unless a
     /// later completed sync already proved this group's appends durable (the
     /// watermark rescue) or another group's fact already covers the range.
@@ -2059,7 +2101,9 @@ where
     /// A fresh covering-sync ticket at the CURRENT append frontier (BS5.2):
     /// the sync-chain token holder re-captures right before syncing so one
     /// fsync covers every group that appended while the previous sync ran.
-    pub(crate) fn wal_group_sync_ticket(&self) -> WalGroupSyncTicket<'a> {
+    pub(crate) fn wal_group_sync_ticket(
+        &mut self,
+    ) -> Result<WalGroupSyncTicket<'a>, WalServiceError> {
         self.services.wal.begin_group_sync()
     }
 

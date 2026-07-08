@@ -235,6 +235,14 @@ fn run_workload(
             perf.commit_wal_encode_buffer_reuses(),
         );
         eprintln!(
+            "  [probe] wal buffer: appends={} flushes thr={} cap={} dur={} bytes={}",
+            perf.commit_wal_buffered_appends(),
+            perf.commit_wal_buffer_flushes_threshold(),
+            perf.commit_wal_buffer_flushes_capture(),
+            perf.commit_wal_buffer_flushes_durability(),
+            perf.commit_wal_buffer_flush_bytes(),
+        );
+        eprintln!(
             "  [probe] pressure collection: calls={} levels={} tables={} total_ms={:.0} sampling_skips={} full_scans={}",
             perf.lifecycle_pressure_collection_calls(),
             perf.lifecycle_pressure_collection_levels_inspected(),

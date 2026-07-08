@@ -342,7 +342,10 @@ impl WalSyncChain {
         durable_seq: &std::sync::atomic::AtomicU64,
         ticket: &crate::service::WalGroupSyncTicket<'_>,
         batching_beat: bool,
-        refresh: impl Fn() -> crate::service::WalGroupSyncTicket<'t>,
+        refresh: impl Fn() -> Result<
+            crate::service::WalGroupSyncTicket<'t>,
+            crate::service::WalServiceError,
+        >,
     ) -> Option<Result<(), crate::service::WalServiceError>> {
         use std::sync::atomic::Ordering;
         loop {
@@ -365,14 +368,23 @@ impl WalSyncChain {
                         // covers half the writers. Never taken solo.
                         std::thread::sleep(Duration::from_micros(250));
                     }
-                    let fresh = refresh();
-                    let result = fresh.sync();
-                    if result.is_ok() {
-                        // Publish coverage immediately (the fsync's proof is
-                        // lock-independent); phase 2 re-asserts it under the
-                        // runtime lock via `complete_group_sync`.
-                        durable_seq.fetch_max(fresh.captured_seq(), Ordering::AcqRel);
-                    }
+                    // W3.3a: the re-capture flushes the append buffer; a
+                    // flush failure is the sync chain's failure (nothing was
+                    // covered) and flows to phase 2 like a failed fsync.
+                    let result = match refresh() {
+                        Ok(fresh) => {
+                            let result = fresh.sync();
+                            if result.is_ok() {
+                                // Publish coverage immediately (the fsync's
+                                // proof is lock-independent); phase 2
+                                // re-asserts it under the runtime lock via
+                                // `complete_group_sync`.
+                                durable_seq.fetch_max(fresh.captured_seq(), Ordering::AcqRel);
+                            }
+                            result
+                        }
+                        Err(error) => Err(error),
+                    };
                     if let Ok(mut completed) = self.completed.lock() {
                         *completed = completed.saturating_add(1);
                     }

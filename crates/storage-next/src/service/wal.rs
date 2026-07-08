@@ -107,17 +107,27 @@ struct WalEncodeBufferReuse {
     reuses: usize,
 }
 
+/// W3.3a: default user-space append-coalescing buffer. One backend write per
+/// buffer-full instead of one per commit; 0 disables buffering (direct writes).
+pub(crate) const DEFAULT_WAL_APPEND_BUFFER_BYTES: u64 = 128 * 1024;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WalServiceConfig {
     segment_size: u64,
     codec_id: &'static str,
+    append_buffer_bytes: u64,
 }
 
 impl WalServiceConfig {
+    /// Bare construction is DIRECT (no coalescing) — service-level byte
+    /// contracts are pinned against it. Production opens opt into the
+    /// coalescing buffer via [`with_append_buffer_bytes`]
+    /// (`DEFAULT_WAL_APPEND_BUFFER_BYTES`).
     pub(crate) const fn new(segment_size: u64) -> Self {
         Self {
             segment_size,
             codec_id: IDENTITY_CODEC_ID,
+            append_buffer_bytes: 0,
         }
     }
 
@@ -125,7 +135,19 @@ impl WalServiceConfig {
         Self {
             segment_size,
             codec_id,
+            append_buffer_bytes: 0,
         }
+    }
+
+    /// W3.3a: override the append-coalescing buffer size; 0 = direct writes
+    /// (the pre-coalescing behavior, kept for the differential oracle).
+    pub(crate) const fn with_append_buffer_bytes(mut self, append_buffer_bytes: u64) -> Self {
+        self.append_buffer_bytes = append_buffer_bytes;
+        self
+    }
+
+    pub(crate) const fn append_buffer_bytes(self) -> u64 {
+        self.append_buffer_bytes
     }
 
     pub(crate) const fn segment_size(self) -> u64 {
@@ -154,6 +176,7 @@ impl Default for WalServiceConfig {
         Self {
             segment_size: DEFAULT_SEGMENT_SIZE,
             codec_id: IDENTITY_CODEC_ID,
+            append_buffer_bytes: 0,
         }
     }
 }
@@ -203,6 +226,8 @@ pub(crate) enum WalOperation {
     Repair,
     List,
     Read,
+    /// W3.3a: draining the append-coalescing buffer to the backend.
+    Flush,
 }
 
 impl WalOperation {
@@ -215,6 +240,7 @@ impl WalOperation {
             Self::Repair => "repair WAL segment",
             Self::List => "list WAL segments",
             Self::Read => "read WAL segment",
+            Self::Flush => "flush WAL append buffer",
         }
     }
 }
@@ -422,7 +448,7 @@ impl WalServiceError {
         matches!(
             self,
             Self::Backend {
-                operation: WalOperation::Sync,
+                operation: WalOperation::Sync | WalOperation::Flush,
                 ..
             } | Self::UnexpectedAppendOffset { .. }
                 | Self::UnexpectedAppendLength { .. }
@@ -438,6 +464,17 @@ pub(crate) struct WalAppend {
     bytes_written: u64,
     dirty_bytes: u64,
     forced_durable: bool,
+}
+
+/// W3.3a: why the append-coalescing buffer is being drained (perf attribution).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WalBufferFlushTrigger {
+    /// The buffer crossed its configured size.
+    Threshold,
+    /// A group-sync ticket capture needs the bytes backend-visible.
+    Capture,
+    /// A durability barrier (`force_durable`: policy sync, rotation, close).
+    Durability,
 }
 
 /// Who owns the fsync for an append (BS5.1): the service's configured policy (today's per-append
@@ -879,6 +916,32 @@ pub(crate) struct WalService<'a> {
     // WITHOUT the runtime lock; it is only ever advanced under the lock.
     append_seq: u64,
     durable_seq: Arc<AtomicU64>,
+    // W3.3a append coalescing: encoded frames accepted but not yet written to
+    // the backend. `active_segment_size` is the LOGICAL size (physical bytes +
+    // `pending.len()`); every backend-facing size check uses
+    // `active_physical_size`. `pending` is never discarded on a flush failure —
+    // the bytes belong to accepted commits; a stuck buffer surfaces as a
+    // durability-uncertain flush error and the writer halt machinery takes over.
+    pending: Vec<u8>,
+    // Coalescing threshold from config; 0 = direct writes (pre-W3.3 behavior).
+    append_buffer_bytes: u64,
+}
+
+/// W3.3a: an orderly drop (runtime teardown without an explicit close) must
+/// not lose staged bytes while the process is alive — pre-coalescing, every
+/// append already sat in the OS page cache at drop. Best-effort: errors are
+/// swallowed (nothing to propagate from drop); a true process kill still
+/// loses the buffer, which is the accepted, bounded Standard exposure. No
+/// fsync here — `close()` remains the durability barrier.
+impl Drop for WalService<'_> {
+    fn drop(&mut self) {
+        if !self.pending.is_empty() {
+            // Rationale: best-effort page-cache parity on abandon; a flush
+            // failure here has no caller to inform and recovery treats the
+            // missing tail as the ordinary unsynced-loss window.
+            let _ = self.flush_pending(WalBufferFlushTrigger::Durability);
+        }
+    }
 }
 
 // `WalService` is moved across threads for background retention (the clone never
@@ -921,6 +984,8 @@ impl<'a> WalService<'a> {
             active_append: None,
             append_seq: 0,
             durable_seq: Arc::new(AtomicU64::new(0)),
+            pending: Vec::new(),
+            append_buffer_bytes: config.append_buffer_bytes(),
         })
     }
 
@@ -969,7 +1034,18 @@ impl<'a> WalService<'a> {
             // group-flush bookkeeping rather than sharing the writer's mirror.
             append_seq: 0,
             durable_seq: Arc::new(AtomicU64::new(0)),
+            // The retention clone never appends; keep it bufferless so a
+            // misuse would take the direct (validated) path, not stage bytes.
+            pending: Vec::new(),
+            append_buffer_bytes: 0,
         }
+    }
+
+    /// Backend-visible bytes of the active segment: the logical size minus
+    /// what is still staged in the coalescing buffer.
+    fn active_physical_size(&self) -> u64 {
+        self.active_segment_size
+            .saturating_sub(self.pending.len() as u64)
     }
 
     pub(crate) fn append(&mut self, record: &WalRecord) -> WalServiceResult<WalAppend> {
@@ -1029,20 +1105,20 @@ impl<'a> WalService<'a> {
                 });
             }
 
-            // Open the persistent append descriptor for the active segment when
-            // the backend supports one. The fast path then trusts the in-memory
-            // size (the open-time stat is the boundary check); the fallback keeps
-            // the per-append reconciliation stat.
-            self.ensure_active_append_handle()?;
-            if self.active_append.is_none() {
-                self.validate_active_object_size(WalOperation::Append)?;
+            // Direct mode opens the persistent append descriptor up front (the
+            // open-time stat is the boundary check the fast path then trusts).
+            // Buffered mode defers the handle to flush time — appends touch
+            // only the in-memory buffer.
+            if self.append_buffer_bytes == 0 {
+                self.ensure_active_append_handle()?;
+                if self.active_append.is_none() {
+                    self.validate_active_object_size(WalOperation::Append)?;
+                }
             }
 
-            // Rotation is decided against service state reconciled with backend
-            // metadata: the in-memory size (authoritative under the single-writer
-            // lock on the fast path) or the stat above on the fallback. That
-            // prevents appending after an unrepaired partial tail or external
-            // mutation of the active segment.
+            // Rotation is decided against the LOGICAL size (authoritative under
+            // the single-writer lock; buffered bytes count — they belong to the
+            // active segment and flush before it seals).
             let projected_size = self.active_segment_size.checked_add(frame_len).ok_or(
                 WalServiceError::RecordTooLarge {
                     bytes: frame_len,
@@ -1051,28 +1127,15 @@ impl<'a> WalService<'a> {
             )?;
             if projected_size > self.segment_size {
                 self.rotate_segment()?;
-                self.ensure_active_append_handle()?;
-                if self.active_append.is_none() {
-                    self.validate_active_object_size(WalOperation::Append)?;
+                if self.append_buffer_bytes == 0 {
+                    self.ensure_active_append_handle()?;
+                    if self.active_append.is_none() {
+                        self.validate_active_object_size(WalOperation::Append)?;
+                    }
                 }
             }
 
             let expected_offset = self.active_segment_size;
-            let append = self.append_frame(&buffers.frame)?;
-            if append.start_offset() != expected_offset {
-                return Err(WalServiceError::UnexpectedAppendOffset {
-                    object: self.active_object.clone(),
-                    expected: expected_offset,
-                    actual: append.start_offset(),
-                });
-            }
-            if append.bytes_written() != frame_len {
-                return Err(WalServiceError::UnexpectedAppendLength {
-                    object: self.active_object.clone(),
-                    expected: frame_len,
-                    actual: append.bytes_written(),
-                });
-            }
             let expected_size =
                 expected_offset
                     .checked_add(frame_len)
@@ -1080,20 +1143,34 @@ impl<'a> WalService<'a> {
                         bytes: frame_len,
                         segment_size: self.segment_size,
                     })?;
-            if append.metadata().size_bytes() != expected_size {
-                return Err(WalServiceError::UnexpectedObjectSize {
-                    object: self.active_object.clone(),
-                    expected: expected_size,
-                    actual: append.metadata().size_bytes(),
-                });
+            if self.append_buffer_bytes > 0 {
+                // W3.3a coalescing: stage the frame; the backend write (and its
+                // offset/length cross-validation against real backend facts)
+                // happens at flush. Threshold flushes run below, AFTER the
+                // append bookkeeping, so a flush failure surfaces as a
+                // durability-uncertain error with the record accepted — never
+                // a half-staged record.
+                self.pending.extend_from_slice(&buffers.frame);
+                perf_trace::record_commit_wal_buffered_append();
+            } else {
+                self.append_frame_direct_validated(&buffers.frame, expected_offset)?;
             }
 
-            self.active_segment_size = append.metadata().size_bytes();
+            self.active_segment_size = expected_size;
             self.dirty_bytes = self.dirty_bytes.saturating_add(frame_len);
             self.dirty_records = self.dirty_records.saturating_add(1);
             self.append_seq = self.append_seq.saturating_add(1);
             self.active_metadata
                 .track_record(record.commit_version(), record.commit_timestamp());
+
+            // W3.3a threshold flush: one coalesced backend write per buffer-full.
+            // Runs after the append bookkeeping so a failure is a
+            // durability-uncertain flush error on an ACCEPTED record (`pending`
+            // is kept; the writer halt machinery owns what happens next).
+            if self.append_buffer_bytes > 0 && self.pending.len() as u64 >= self.append_buffer_bytes
+            {
+                self.flush_pending(WalBufferFlushTrigger::Threshold)?;
+            }
 
             // In always mode the append is already visible when sync runs. If sync
             // fails, dirty facts intentionally remain advanced so lifecycle can
@@ -1108,14 +1185,51 @@ impl<'a> WalService<'a> {
                 false
             };
 
+            // Offset/length facts come from the logical model; the direct
+            // path validated them against the backend above, the buffered
+            // path validates at flush.
             Ok(WalAppend::new(
                 self.active_segment_id,
-                append.start_offset(),
-                append.bytes_written(),
+                expected_offset,
+                frame_len,
                 self.dirty_bytes,
                 forced_durable,
             ))
         })
+    }
+
+    /// Direct-path append: one backend write per frame, cross-validated
+    /// against the backend's returned facts (offset, length, resulting size).
+    fn append_frame_direct_validated(
+        &mut self,
+        frame: &[u8],
+        expected_offset: u64,
+    ) -> WalServiceResult<()> {
+        let frame_len = frame.len() as u64;
+        let expected_size = expected_offset.saturating_add(frame_len);
+        let append = self.append_frame(frame)?;
+        if append.start_offset() != expected_offset {
+            return Err(WalServiceError::UnexpectedAppendOffset {
+                object: self.active_object.clone(),
+                expected: expected_offset,
+                actual: append.start_offset(),
+            });
+        }
+        if append.bytes_written() != frame_len {
+            return Err(WalServiceError::UnexpectedAppendLength {
+                object: self.active_object.clone(),
+                expected: frame_len,
+                actual: append.bytes_written(),
+            });
+        }
+        if append.metadata().size_bytes() != expected_size {
+            return Err(WalServiceError::UnexpectedObjectSize {
+                object: self.active_object.clone(),
+                expected: expected_size,
+                actual: append.metadata().size_bytes(),
+            });
+        }
+        Ok(())
     }
 
     /// Lazily open a persistent append descriptor for the active segment when the
@@ -1128,7 +1242,7 @@ impl<'a> WalService<'a> {
         }
         let handle = self
             .backend
-            .open_append_handle(&self.active_object, self.active_segment_size)
+            .open_append_handle(&self.active_object, self.active_physical_size())
             .map_err(|source| WalServiceError::Backend {
                 operation: WalOperation::Append,
                 object: self.active_object.clone(),
@@ -1160,7 +1274,85 @@ impl<'a> WalService<'a> {
         })
     }
 
+    /// W3.3a: drain the append-coalescing buffer with ONE backend write. The
+    /// backend's returned facts replace the per-append cross-validation the
+    /// direct path performs: offset must equal the physical size, length the
+    /// buffer, and the resulting object size their sum. On a backend write
+    /// failure the buffer is kept intact (the bytes belong to accepted
+    /// commits) and the held descriptor is dropped so the retry re-validates
+    /// the tail — a partial write then surfaces as `UnexpectedAppendOffset`.
+    fn flush_pending(&mut self, trigger: WalBufferFlushTrigger) -> WalServiceResult<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        self.ensure_active_append_handle()?;
+        if self.active_append.is_none() {
+            self.validate_active_object_size(WalOperation::Flush)?;
+        }
+        let expected_offset = self.active_physical_size();
+        let flush_len = self.pending.len() as u64;
+        let pending = std::mem::take(&mut self.pending);
+        let append = match self.append_frame(&pending) {
+            Ok(append) => append,
+            Err(WalServiceError::Backend { object, source, .. }) => {
+                self.pending = pending;
+                self.active_append = None;
+                return Err(WalServiceError::Backend {
+                    operation: WalOperation::Flush,
+                    object,
+                    source,
+                });
+            }
+            Err(error) => {
+                self.pending = pending;
+                self.active_append = None;
+                return Err(error);
+            }
+        };
+        // Reuse the buffer's capacity for the next batch of frames.
+        self.pending = pending;
+        self.pending.clear();
+        if append.start_offset() != expected_offset {
+            return Err(WalServiceError::UnexpectedAppendOffset {
+                object: self.active_object.clone(),
+                expected: expected_offset,
+                actual: append.start_offset(),
+            });
+        }
+        if append.bytes_written() != flush_len {
+            return Err(WalServiceError::UnexpectedAppendLength {
+                object: self.active_object.clone(),
+                expected: flush_len,
+                actual: append.bytes_written(),
+            });
+        }
+        let expected_size = expected_offset.saturating_add(flush_len);
+        if append.metadata().size_bytes() != expected_size {
+            return Err(WalServiceError::UnexpectedObjectSize {
+                object: self.active_object.clone(),
+                expected: expected_size,
+                actual: append.metadata().size_bytes(),
+            });
+        }
+        match trigger {
+            WalBufferFlushTrigger::Threshold => {
+                perf_trace::record_commit_wal_buffer_flush_threshold(flush_len);
+            }
+            WalBufferFlushTrigger::Capture => {
+                perf_trace::record_commit_wal_buffer_flush_capture(flush_len);
+            }
+            WalBufferFlushTrigger::Durability => {
+                perf_trace::record_commit_wal_buffer_flush_durability(flush_len);
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn force_durable(&mut self) -> WalServiceResult<()> {
+        // Buffered frames must reach the backend before the barrier can cover
+        // them; a flush failure here is durability-uncertain, same class as a
+        // failed fsync.
+        self.flush_pending(WalBufferFlushTrigger::Durability)?;
         let result = match self.active_append.as_mut() {
             Some(handle) => handle.sync(),
             None => self.backend.sync_object(&self.active_object),
@@ -1192,15 +1384,21 @@ impl<'a> WalService<'a> {
     /// outcome back under it. Pure capture — no service mutation. The captured
     /// sequence makes the completed sync cover every append before the capture,
     /// so later captures cover earlier groups' appends too.
-    pub(crate) fn begin_group_sync(&self) -> WalGroupSyncTicket<'a> {
-        WalGroupSyncTicket {
+    pub(crate) fn begin_group_sync(&mut self) -> WalServiceResult<WalGroupSyncTicket<'a>> {
+        // W3.3a: the ticket's off-lock fsync syncs by object name — it can
+        // only cover bytes the backend has. Flushing here is the group-flush
+        // coalescing: an Always group's N member appends become one write. A
+        // flush failure means the capture's appends cannot be covered; the
+        // caller maps it to its sync-failure handling.
+        self.flush_pending(WalBufferFlushTrigger::Capture)?;
+        Ok(WalGroupSyncTicket {
             backend: self.backend.clone(),
             object: self.active_object.clone(),
             segment_id: self.active_segment_id,
             dirty_bytes: self.dirty_bytes,
             dirty_records: self.dirty_records,
             captured_seq: self.append_seq,
-        }
+        })
     }
 
     /// Redeem a successfully synced group ticket (BS5.2): advance the durable
@@ -1533,7 +1731,7 @@ impl<'a> WalService<'a> {
         // Old segment bytes must be durable before the active pointer advances
         // to a freshly created segment. Recovery can then replay all complete
         // segments up to the active segment without losing the rotation record.
-        if self.dirty_bytes > 0 {
+        if self.dirty_bytes > 0 || !self.pending.is_empty() {
             self.force_durable()?;
         }
         // The old segment is now sealed and durable; release its append descriptor
@@ -1568,7 +1766,8 @@ impl<'a> WalService<'a> {
     }
 
     fn validate_active_object_size(&self, operation: WalOperation) -> WalServiceResult<()> {
-        self.validate_active_object_size_against(operation, self.active_segment_size)
+        // Backend stats see only flushed bytes — compare physical, not logical.
+        self.validate_active_object_size_against(operation, self.active_physical_size())
     }
 
     fn validate_active_object_size_against(

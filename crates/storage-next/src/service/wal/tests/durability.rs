@@ -459,7 +459,7 @@ fn group_sync_ticket_covers_captured_dirty_and_leaves_inflight_appends_dirty() {
     let covered_bytes = service.dirty_bytes();
     assert_eq!(service.dirty_records(), 2);
 
-    let ticket = service.begin_group_sync();
+    let ticket = service.begin_group_sync().expect("group sync capture");
     assert_eq!(ticket.segment_id(), 1);
     // Capture is pure: no sync issued, no state change.
     assert!(backend.sync_calls().is_empty());
@@ -504,7 +504,7 @@ fn group_sync_ticket_completion_after_rotation_leaves_new_segment_dirty_alone() 
     .expect("open WAL");
 
     service.append(&first).expect("append pre-rotation");
-    let ticket = service.begin_group_sync();
+    let ticket = service.begin_group_sync().expect("group sync capture");
     assert_eq!(ticket.segment_id(), 1);
 
     // Rotation force-syncs segment one and resets the dirty counters itself.
@@ -539,7 +539,7 @@ fn group_sync_ticket_failure_surfaces_typed_sync_error_and_preserves_dirty() {
     service.append(&first).expect("append");
     let dirty_before = service.dirty_bytes();
 
-    let ticket = service.begin_group_sync();
+    let ticket = service.begin_group_sync().expect("group sync capture");
     let error = ticket.sync().expect_err("injected sync failure");
 
     assert_sync_error(error, &segment_one, BackendErrorKind::Unavailable);

@@ -191,6 +191,16 @@ pub struct StoragePerfSnapshot {
     lifecycle_foreground_wait_background_lock_ns: u64,
     lifecycle_write_admission_block_wait_ns: u64,
     /// W1.4a: graded token-bucket pacing sleeps actually taken by commits.
+    /// W3.3a: WAL appends staged in the coalescing buffer.
+    commit_wal_buffered_appends: u64,
+    /// W3.3a: buffer drains by trigger, plus total drained bytes.
+    commit_wal_buffer_flushes_threshold: u64,
+    /// W3.3a: drains forced by group-sync ticket captures.
+    commit_wal_buffer_flushes_capture: u64,
+    /// W3.3a: drains forced by durability barriers (sync/rotation/close).
+    commit_wal_buffer_flushes_durability: u64,
+    /// W3.3a: total bytes drained from the coalescing buffer.
+    commit_wal_buffer_flush_bytes: u64,
     /// W3.2: wall time inside the grouped durable dispatch (join + lead +
     /// execute + wake) — the envelope around the staged commit timers.
     commit_group_dispatch_ns: u64,
@@ -1110,6 +1120,31 @@ impl StoragePerfSnapshot {
     /// Nanoseconds spent waiting for background progress under Block pressure.
     pub const fn lifecycle_write_admission_block_wait_ns(self) -> u64 {
         self.lifecycle_write_admission_block_wait_ns
+    }
+
+    /// W3.3a: WAL appends staged in the coalescing buffer.
+    pub const fn commit_wal_buffered_appends(self) -> u64 {
+        self.commit_wal_buffered_appends
+    }
+
+    /// W3.3a: buffer drains triggered by the size threshold.
+    pub const fn commit_wal_buffer_flushes_threshold(self) -> u64 {
+        self.commit_wal_buffer_flushes_threshold
+    }
+
+    /// W3.3a: buffer drains triggered by group-sync ticket captures.
+    pub const fn commit_wal_buffer_flushes_capture(self) -> u64 {
+        self.commit_wal_buffer_flushes_capture
+    }
+
+    /// W3.3a: buffer drains triggered by durability barriers.
+    pub const fn commit_wal_buffer_flushes_durability(self) -> u64 {
+        self.commit_wal_buffer_flushes_durability
+    }
+
+    /// W3.3a: total bytes drained from the coalescing buffer.
+    pub const fn commit_wal_buffer_flush_bytes(self) -> u64 {
+        self.commit_wal_buffer_flush_bytes
     }
 
     /// W3.2: grouped durable dispatch envelope, nanoseconds.
@@ -2706,6 +2741,16 @@ static LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS: AtomicU64 = AtomicU64::new(
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static COMMIT_WAL_BUFFERED_APPENDS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_BUFFER_FLUSHES_CAPTURE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_BUFFER_FLUSHES_DURABILITY: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_WAL_BUFFER_FLUSH_BYTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_GROUP_DISPATCH_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_DRAIN_NOTIFY_NS: AtomicU64 = AtomicU64::new(0);
@@ -3438,6 +3483,11 @@ pub fn reset() {
     LIFECYCLE_BACKGROUND_CANDIDATE_STALE_DEFERRED.store(0, Ordering::Relaxed);
     LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS.store(0, Ordering::Relaxed);
+    COMMIT_WAL_BUFFERED_APPENDS.store(0, Ordering::Relaxed);
+    COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD.store(0, Ordering::Relaxed);
+    COMMIT_WAL_BUFFER_FLUSHES_CAPTURE.store(0, Ordering::Relaxed);
+    COMMIT_WAL_BUFFER_FLUSHES_DURABILITY.store(0, Ordering::Relaxed);
+    COMMIT_WAL_BUFFER_FLUSH_BYTES.store(0, Ordering::Relaxed);
     COMMIT_GROUP_DISPATCH_NS.store(0, Ordering::Relaxed);
     COMMIT_DRAIN_NOTIFY_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_GRADED_THROTTLE_DELAYS.store(0, Ordering::Relaxed);
@@ -3930,6 +3980,14 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         lifecycle_write_admission_block_wait_ns: LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS
             .load(Ordering::Relaxed),
+        commit_wal_buffered_appends: COMMIT_WAL_BUFFERED_APPENDS.load(Ordering::Relaxed),
+        commit_wal_buffer_flushes_threshold: COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD
+            .load(Ordering::Relaxed),
+        commit_wal_buffer_flushes_capture: COMMIT_WAL_BUFFER_FLUSHES_CAPTURE
+            .load(Ordering::Relaxed),
+        commit_wal_buffer_flushes_durability: COMMIT_WAL_BUFFER_FLUSHES_DURABILITY
+            .load(Ordering::Relaxed),
+        commit_wal_buffer_flush_bytes: COMMIT_WAL_BUFFER_FLUSH_BYTES.load(Ordering::Relaxed),
         commit_group_dispatch_ns: COMMIT_GROUP_DISPATCH_NS.load(Ordering::Relaxed),
         commit_drain_notify_ns: COMMIT_DRAIN_NOTIFY_NS.load(Ordering::Relaxed),
         lifecycle_graded_throttle_delays: LIFECYCLE_GRADED_THROTTLE_DELAYS.load(Ordering::Relaxed),
@@ -5466,6 +5524,53 @@ pub(crate) fn record_lifecycle_foreground_wait_background_lock(duration: std::ti
         u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
         Ordering::Relaxed,
     );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_wal_buffered_append() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_wal_buffered_append() {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_WAL_BUFFERED_APPENDS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_wal_buffer_flush_threshold(_bytes: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_wal_buffer_flush_threshold(bytes: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD.fetch_add(1, Ordering::Relaxed);
+    COMMIT_WAL_BUFFER_FLUSH_BYTES.fetch_add(bytes, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_wal_buffer_flush_capture(_bytes: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_wal_buffer_flush_capture(bytes: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_WAL_BUFFER_FLUSHES_CAPTURE.fetch_add(1, Ordering::Relaxed);
+    COMMIT_WAL_BUFFER_FLUSH_BYTES.fetch_add(bytes, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_wal_buffer_flush_durability(_bytes: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_wal_buffer_flush_durability(bytes: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_WAL_BUFFER_FLUSHES_DURABILITY.fetch_add(1, Ordering::Relaxed);
+    COMMIT_WAL_BUFFER_FLUSH_BYTES.fetch_add(bytes, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

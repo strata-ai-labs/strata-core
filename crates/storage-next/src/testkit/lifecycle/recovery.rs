@@ -1087,7 +1087,8 @@ pub(super) fn assemble_shell(
             CommitBranchGeneration::new(1).map_err(testkit_error)?,
             BranchRuntimeConfig::default(),
             CommitRuntimeConfig::default(),
-            WalServiceConfig::default(),
+            WalServiceConfig::default()
+                .with_append_buffer_bytes(crate::service::DEFAULT_WAL_APPEND_BUFFER_BYTES),
         )
         .map_err(testkit_error)?,
         backend,
