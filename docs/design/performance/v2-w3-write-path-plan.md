@@ -174,10 +174,10 @@ lessons apply).
 
 ## W3.3 — Standard WAL write coalescing (W3.3a LANDED 2026-07-08; gate passed)
 
-**Status: W3.3a shipped — l9 single-put Standard 129K → 162K ops/s (+25.5%),
-the ≥150K roadmap gate passes. W3.3b (idle-buffer trickle flush, task #82)
-remains. A@10M run-phase A/B found to be a settling lottery — see the ledger
-row; engine-ycsb `--settle-secs` added for future baselines.**
+**Status: COMPLETE. W3.3a shipped — l9 single-put Standard 129K → 162K ops/s
+(+25.5%), the ≥150K roadmap gate passes. W3.3b shipped — trickle flush bounds
+the abrupt-kill window. A@10M run-phase A/B found to be a settling lottery —
+see the ledger row; engine-ycsb `--settle-secs` added for future baselines.**
 
 Sole carrier of the ≤8µs solo-commit target (−3.9µs/commit `write()` syscall at
 100k, −7.7µs at 10M). Roadmap exit gate: single-writer Standard ≥ 150K
@@ -228,8 +228,16 @@ single-put commits/s at low debt.
      crash-sim harnesses drop runtimes without closing and correctly demanded
      ZeroLoss — the fix belonged in the product, not the oracles (all six
      failures resolved by it, zero oracle re-basing).
-  2. **Background trickle flush (W3.3b):** bounds the kill window to bg-drain
-     cadence for long-idle buffers.
+  2. **Trickle flush (W3.3b, landed):** a staleness window
+     (`append_buffer_flush_window`, default 500ms, keyed on the OLDEST staged
+     byte) drains a sub-threshold buffer from two carriers — the next append
+     (covers steady slow traffic) and the start of every background drain
+     round (one brief lock hold, no-op unless stale, so hot rounds never break
+     coalescing). Residual: a kill during TOTAL idleness after a sub-threshold
+     burst (no further commits, no maintenance) can still lose that burst —
+     orderly ends are covered by flush-on-drop/close; a dedicated timer for
+     the pure-idle tail is deliberately out of scope (BS5 liveness lessons)
+     unless product pulls it.
 
 ### Oracle
 
@@ -250,6 +258,7 @@ windows re-swept (faults now surface at flush points).
   byte contracts pin them; the oracle needs both modes); production opens and
   the lifecycle testkit fixtures opt into `DEFAULT_WAL_APPEND_BUFFER_BYTES`
   (128 KiB), so every integration and crash suite runs buffered.
-- **W3.3b — bounded exposure + measurement**: background trickle flush;
-  crash-test re-basing; solo Standard single-put cell at low debt vs the 150K
-  gate; A@100k + A@10M.
+- **W3.3b — bounded exposure (landed)**: the trickle flush above; zero-window
+  degeneracy oracle (window ZERO ⇒ byte-identical to direct after every
+  append); staleness-window service tests. Crash-test re-basing proved
+  unnecessary (flush-on-drop). Measurement landed with W3.3a.

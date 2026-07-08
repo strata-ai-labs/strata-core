@@ -238,3 +238,109 @@ fn randomized_sequences_converge_across_rotations_and_barriers() {
         assert_converged(&direct_backend, &buffered_backend, &direct, &buffered);
     }
 }
+
+/// W3.3b: a sub-threshold buffer older than the flush window drains on the
+/// NEXT append — steady slow traffic cannot hold staged bytes indefinitely.
+#[test]
+fn trickle_flushes_stale_subthreshold_buffer_on_next_append() {
+    let backend = StoredWalBackend::default();
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(SEGMENT_SIZE)
+            .with_append_buffer_bytes(u64::from(u16::MAX))
+            .with_append_buffer_flush_window(std::time::Duration::from_millis(1)),
+    )
+    .expect("open WAL service");
+    let object = ObjectLayout::wal_segment(1).expect("segment object");
+
+    service
+        .append(&record(1, b"staged and aging".to_vec()))
+        .expect("first append");
+    let staged_only = backend.read_object(&object).expect("bytes").len();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    service
+        .append(&record(2, b"triggers the trickle".to_vec()))
+        .expect("second append");
+
+    let after_trickle = backend.read_object(&object).expect("bytes").len();
+    assert!(
+        after_trickle > staged_only,
+        "stale buffer did not trickle on the next append"
+    );
+    let read = service.read_all().expect("read");
+    assert_eq!(
+        read.records().len(),
+        2,
+        "both records must be backend-visible"
+    );
+}
+
+/// W3.3b: the background entry point drains only when the window has elapsed.
+#[test]
+fn flush_pending_if_stale_respects_the_window() {
+    let backend = StoredWalBackend::default();
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(SEGMENT_SIZE)
+            .with_append_buffer_bytes(u64::from(u16::MAX))
+            .with_append_buffer_flush_window(std::time::Duration::from_millis(2)),
+    )
+    .expect("open WAL service");
+
+    service
+        .append(&record(1, b"fresh bytes stay staged".to_vec()))
+        .expect("append");
+    assert!(
+        !service.flush_pending_if_stale().expect("fresh check"),
+        "a fresh buffer must not trickle"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(6));
+    assert!(
+        service.flush_pending_if_stale().expect("stale check"),
+        "an aged buffer must trickle"
+    );
+    assert!(
+        !service.flush_pending_if_stale().expect("drained check"),
+        "a drained buffer has nothing to trickle"
+    );
+    let read = service.read_all().expect("read");
+    assert_eq!(read.records().len(), 1);
+}
+
+/// W3.3b degeneracy oracle: window ZERO makes every append trickle
+/// immediately — the buffered service becomes byte-identical to the direct
+/// service after EVERY append, no barrier needed.
+#[test]
+fn zero_window_degenerates_to_per_append_writes() {
+    let direct_backend = StoredWalBackend::default();
+    let buffered_backend = StoredWalBackend::default();
+    let mut direct = open_service(&direct_backend, DurabilityPolicy::Standard, 0, SEGMENT_SIZE);
+    let mut buffered = WalService::open(
+        &buffered_backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(SEGMENT_SIZE)
+            .with_append_buffer_bytes(u64::from(u16::MAX))
+            .with_append_buffer_flush_window(std::time::Duration::ZERO),
+    )
+    .expect("open buffered service");
+
+    let object = ObjectLayout::wal_segment(1).expect("segment object");
+    for version in 1..=6u64 {
+        let entry = record(version, format!("zero window {version}").into_bytes());
+        direct.append(&entry).expect("direct append");
+        buffered.append(&entry).expect("buffered append");
+        assert_eq!(
+            direct_backend.read_object(&object).expect("direct"),
+            buffered_backend.read_object(&object).expect("buffered"),
+            "zero-window buffering diverged at version {version}"
+        );
+    }
+}

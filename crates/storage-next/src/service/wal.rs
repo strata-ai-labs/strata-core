@@ -31,6 +31,7 @@ use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use strata_core_next::CommitVersion;
 
 const DEFAULT_SEGMENT_SIZE: u64 = 64 * 1024 * 1024;
@@ -111,11 +112,18 @@ struct WalEncodeBufferReuse {
 /// buffer-full instead of one per commit; 0 disables buffering (direct writes).
 pub(crate) const DEFAULT_WAL_APPEND_BUFFER_BYTES: u64 = 128 * 1024;
 
+/// W3.3b: how long a sub-threshold append buffer may hold staged bytes before
+/// the next append or background drain round trickle-flushes it (write, no
+/// fsync — bounds abrupt-kill exposure to roughly this window under any
+/// activity; pure idleness is covered by flush-on-drop/close for orderly ends).
+pub(crate) const DEFAULT_WAL_APPEND_BUFFER_FLUSH_WINDOW: Duration = Duration::from_millis(500);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct WalServiceConfig {
     segment_size: u64,
     codec_id: &'static str,
     append_buffer_bytes: u64,
+    append_buffer_flush_window: Duration,
 }
 
 impl WalServiceConfig {
@@ -128,6 +136,7 @@ impl WalServiceConfig {
             segment_size,
             codec_id: IDENTITY_CODEC_ID,
             append_buffer_bytes: 0,
+            append_buffer_flush_window: DEFAULT_WAL_APPEND_BUFFER_FLUSH_WINDOW,
         }
     }
 
@@ -136,6 +145,7 @@ impl WalServiceConfig {
             segment_size,
             codec_id,
             append_buffer_bytes: 0,
+            append_buffer_flush_window: DEFAULT_WAL_APPEND_BUFFER_FLUSH_WINDOW,
         }
     }
 
@@ -148,6 +158,17 @@ impl WalServiceConfig {
 
     pub(crate) const fn append_buffer_bytes(self) -> u64 {
         self.append_buffer_bytes
+    }
+
+    /// W3.3b: override the trickle-flush staleness window (tests: `ZERO`
+    /// degenerates to flush-per-append; large values disable trickling).
+    pub(crate) const fn with_append_buffer_flush_window(mut self, window: Duration) -> Self {
+        self.append_buffer_flush_window = window;
+        self
+    }
+
+    pub(crate) const fn append_buffer_flush_window(self) -> Duration {
+        self.append_buffer_flush_window
     }
 
     pub(crate) const fn segment_size(self) -> u64 {
@@ -177,6 +198,7 @@ impl Default for WalServiceConfig {
             segment_size: DEFAULT_SEGMENT_SIZE,
             codec_id: IDENTITY_CODEC_ID,
             append_buffer_bytes: 0,
+            append_buffer_flush_window: DEFAULT_WAL_APPEND_BUFFER_FLUSH_WINDOW,
         }
     }
 }
@@ -475,6 +497,8 @@ enum WalBufferFlushTrigger {
     Capture,
     /// A durability barrier (`force_durable`: policy sync, rotation, close).
     Durability,
+    /// W3.3b: the staleness window elapsed on a sub-threshold buffer.
+    Trickle,
 }
 
 /// Who owns the fsync for an append (BS5.1): the service's configured policy (today's per-append
@@ -925,6 +949,10 @@ pub(crate) struct WalService<'a> {
     pending: Vec<u8>,
     // Coalescing threshold from config; 0 = direct writes (pre-W3.3 behavior).
     append_buffer_bytes: u64,
+    // W3.3b: when the buffer became non-empty (oldest staged byte), for the
+    // trickle-flush staleness check. `None` while empty.
+    pending_since: Option<Instant>,
+    append_buffer_flush_window: Duration,
 }
 
 /// W3.3a: an orderly drop (runtime teardown without an explicit close) must
@@ -986,6 +1014,8 @@ impl<'a> WalService<'a> {
             durable_seq: Arc::new(AtomicU64::new(0)),
             pending: Vec::new(),
             append_buffer_bytes: config.append_buffer_bytes(),
+            pending_since: None,
+            append_buffer_flush_window: config.append_buffer_flush_window(),
         })
     }
 
@@ -1038,6 +1068,8 @@ impl<'a> WalService<'a> {
             // misuse would take the direct (validated) path, not stage bytes.
             pending: Vec::new(),
             append_buffer_bytes: 0,
+            pending_since: None,
+            append_buffer_flush_window: DEFAULT_WAL_APPEND_BUFFER_FLUSH_WINDOW,
         }
     }
 
@@ -1150,6 +1182,9 @@ impl<'a> WalService<'a> {
                 // append bookkeeping, so a flush failure surfaces as a
                 // durability-uncertain error with the record accepted — never
                 // a half-staged record.
+                if self.pending.is_empty() {
+                    self.pending_since = Some(Instant::now());
+                }
                 self.pending.extend_from_slice(&buffers.frame);
                 perf_trace::record_commit_wal_buffered_append();
             } else {
@@ -1170,6 +1205,11 @@ impl<'a> WalService<'a> {
             if self.append_buffer_bytes > 0 && self.pending.len() as u64 >= self.append_buffer_bytes
             {
                 self.flush_pending(WalBufferFlushTrigger::Threshold)?;
+            } else if self.pending_is_stale() {
+                // W3.3b: steady sub-threshold traffic must not hold staged
+                // bytes past the window — the oldest staged byte's age, not
+                // the newest, drives the check.
+                self.flush_pending(WalBufferFlushTrigger::Trickle)?;
             }
 
             // In always mode the append is already visible when sync runs. If sync
@@ -1274,6 +1314,25 @@ impl<'a> WalService<'a> {
         })
     }
 
+    /// W3.3b: true when staged bytes have waited past the configured window.
+    fn pending_is_stale(&self) -> bool {
+        self.pending_since
+            .is_some_and(|since| since.elapsed() >= self.append_buffer_flush_window)
+    }
+
+    /// W3.3b: background trickle entry — drain the buffer iff its oldest
+    /// staged byte is older than the flush window. Returns whether a flush
+    /// ran. Called from maintenance drains; a failure is returned for the
+    /// caller to swallow (later triggers retry, and the commit path's
+    /// durability barriers own the error surface).
+    pub(crate) fn flush_pending_if_stale(&mut self) -> WalServiceResult<bool> {
+        if self.pending.is_empty() || !self.pending_is_stale() {
+            return Ok(false);
+        }
+        self.flush_pending(WalBufferFlushTrigger::Trickle)?;
+        Ok(true)
+    }
+
     /// W3.3a: drain the append-coalescing buffer with ONE backend write. The
     /// backend's returned facts replace the per-append cross-validation the
     /// direct path performs: offset must equal the physical size, length the
@@ -1312,6 +1371,7 @@ impl<'a> WalService<'a> {
         // Reuse the buffer's capacity for the next batch of frames.
         self.pending = pending;
         self.pending.clear();
+        self.pending_since = None;
         if append.start_offset() != expected_offset {
             return Err(WalServiceError::UnexpectedAppendOffset {
                 object: self.active_object.clone(),
@@ -1343,6 +1403,9 @@ impl<'a> WalService<'a> {
             }
             WalBufferFlushTrigger::Durability => {
                 perf_trace::record_commit_wal_buffer_flush_durability(flush_len);
+            }
+            WalBufferFlushTrigger::Trickle => {
+                perf_trace::record_commit_wal_buffer_flush_trickle(flush_len);
             }
         }
         Ok(())

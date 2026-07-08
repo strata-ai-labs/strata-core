@@ -244,11 +244,12 @@ fn run_workload(
             perf.commit_wal_encode_buffer_reuses(),
         );
         eprintln!(
-            "  [probe] wal buffer: appends={} flushes thr={} cap={} dur={} bytes={}",
+            "  [probe] wal buffer: appends={} flushes thr={} cap={} dur={} trk={} bytes={}",
             perf.commit_wal_buffered_appends(),
             perf.commit_wal_buffer_flushes_threshold(),
             perf.commit_wal_buffer_flushes_capture(),
             perf.commit_wal_buffer_flushes_durability(),
+            perf.commit_wal_buffer_flushes_trickle(),
             perf.commit_wal_buffer_flush_bytes(),
         );
         eprintln!(
