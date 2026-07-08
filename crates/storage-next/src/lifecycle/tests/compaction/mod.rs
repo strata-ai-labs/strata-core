@@ -392,6 +392,59 @@ fn nonzero_compaction_level_targets_match_segmented_raised_base_fixture() {
     assert_eq!(targets[6], expected_base * 100);
 }
 
+/// W1.3a: every lifecycle-driven table-rewrite request carries the
+/// grandparent-overlap output bound by default — outputs of every pass kind
+/// are cut so future down-level passes have bounded inputs. Bottommost kinds
+/// carry it too; their grandparent level is empty, so it is inert there.
+#[test]
+fn lifecycle_requests_carry_the_grandparent_overlap_bound_by_default() {
+    let branch = branch_id(0x5b);
+    for (kind, seed) in [
+        (BranchCompactionKind::CompactL0, "gp-bound-l0"),
+        (BranchCompactionKind::CompactL0ToLevelOne, "gp-bound-l0l1"),
+        (
+            BranchCompactionKind::CompactLevel {
+                level: BranchLevel::new(1),
+                table_index: 0,
+            },
+            "gp-bound-mid",
+        ),
+        (
+            BranchCompactionKind::CompactBottommostLevel {
+                level: BranchLevel::new(2),
+                start_table_index: 0,
+                table_count: 1,
+            },
+            "gp-bound-bottom",
+        ),
+    ] {
+        let request = LifecycleCompactionRequest::new(branch, kind, seed)
+            .expect("lifecycle request")
+            .branch_request()
+            .expect("branch request");
+        assert_eq!(
+            request.output_grandparent_overlap_max_bytes(),
+            Some(256 * 1024 * 1024),
+            "kind {kind:?} must carry the default grandparent-overlap bound"
+        );
+    }
+
+    // The override reaches the branch request (tests and W1.4 calibration).
+    let overridden = LifecycleCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "gp-bound-override",
+    )
+    .expect("lifecycle request")
+    .with_output_grandparent_overlap_max_bytes(1024)
+    .branch_request()
+    .expect("branch request");
+    assert_eq!(
+        overridden.output_grandparent_overlap_max_bytes(),
+        Some(1024)
+    );
+}
+
 #[test]
 fn compaction_requests_use_table_output_target_bytes() {
     let branch = branch_id(0x5a);

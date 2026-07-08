@@ -567,6 +567,18 @@ grandparent-overlap-bounded output cutting** (bounds every future mid-level pass
 collapses the conflict window from ~50s to seconds). Not lanes, not locks (fg lock
 wait 92ms — BS5.5 holds), not memory (W1.2c gauges stable this run too).
 
+## W1.3a landed: grandparent-overlap output cutting kills the stall lottery (2026-07-07)
+
+Every table-rewrite pass now cuts its output tables so each overlaps ≤256MiB of the
+level below the output level (RocksDB `max_compaction_bytes` analogue), bounding every
+FUTURE mid-level pass and with it the level±1 conflict window that held L0 relief.
+5× YCSB A durable 10M: update max **3.0/4.6/3.2/3.6/1.8s** (was 21/55/1.1/50/1.8s and
+45.9–56.3s), block_wait totals 2.2–4.6s (was 46.3s in one episode), run throughput
+median 1,419 ops/s (was 610–802), memory line unchanged (~16.8GB post-run). Residual
+seconds-scale max = one bounded pass's relief window (calibration: W1.4; granularity:
+W1.2b). Load dipped to 85.7–107K on some runs (cutting write-amp) — W1.4 input.
+Design + full gate table in `v2-w1-compaction-engine-plan.md` § W1.3a.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

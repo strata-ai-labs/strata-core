@@ -240,6 +240,82 @@ cuts on size); the compactor needs grandparent boundary keys from the planner.
 W1.2b (conflict granularity below level±1) is NOT the right first move: with
 full-keyspan L1 tables, table-set conflicts would still collide — shape first.
 
+## W1.3a design: grandparent-overlap-bounded output cutting (implemented)
+
+RocksDB analogue: `max_compaction_bytes` enforced by
+`CompactionOutputs::ShouldStopBefore` (db/compaction/compaction_outputs.cc) — output
+files are cut at grandparent-overlap limits so future compactions of those files have
+bounded inputs.
+
+Mechanism, three layers (mirrors the W1.1a/W1.2c seams):
+
+1. **Table** (`table/compaction.rs`): `CompactionOutputCutHints` — sorted grandparent
+   start boundaries (physical keys) weighted by table byte counts, plus
+   `max_overlap_bytes`. `TableCompactor::with_output_cut_hints` attaches them per
+   pass. A `GrandparentCutTracker` walks boundaries alongside the merged-row cursor
+   (both are ascending — O(1) amortized) with interval accounting: grandparent `i`
+   covers `[start_i, start_{i+1})`; an output's overlap is the byte sum of intervals
+   its span touches, including the interval containing its first row. Cut fires
+   before appending a row when the output (a) already spans ≥1 CROSSED boundary and
+   (b) its overlap exceeds the bound — never inside one physical key (the size-split
+   invariant) and never on an empty output. The crossing requirement means one
+   grandparent larger than the bound cannot force degenerate near-empty outputs;
+   worst-case overlap is `bound + one grandparent`. Both cut causes (size,
+   grandparent) rebase the tracker to the interval containing the next output's
+   first row. `TableCompactionReport.grandparent_cut_count` records fires.
+2. **Branch** (`branch/state/compaction.rs`): `BranchCompactionRequest.
+   output_grandparent_overlap_max_bytes` (None = pre-W1.3a). `grandparent_cut_hints`
+   collects `(first_physical_key, byte_count)` for every table at
+   `candidate.output_level() + 1`; None when the bound is unset, the output level is
+   bottommost, or the grandparent level is empty — behavior then byte-identical to
+   before.
+3. **Lifecycle** (`lifecycle/compaction.rs`):
+   `OUTPUT_GRANDPARENT_OVERLAP_MAX_BYTES = 256MiB` (matches
+   `L0_PASS_MAX_INPUT_BYTES`; a future one-table mid-level pass reads ~table+bound ≈
+   seconds), applied to every kind in `branch_request()` — all entry points route
+   through it; bottommost kinds get no hints downstream, so universal application is
+   exact.
+
+Correctness argument: cutting changes only WHERE the sorted, non-overlapping output
+partition is cut — same merged rows, same order, more tables. Version shadowing and
+history are table-boundary-independent. Guarded by differential oracles at the table
+layer (cut vs uncut row streams byte-identical) and the branch layer (full per-key
+history equality, W1.1a pattern), plus a physical-key-grouping test and the
+no-degenerate-outputs test. Durable format untouched (outputs are ordinary tables).
+
+Expected effect: new L1 tables (and deeper) are created with ≤256MiB next-level
+overlap, so every future mid-level pass is bounded ≈ table + 256MiB (~3-5s at the
+observed ~100MB/s build rate) instead of multi-GB — the conflict window that holds
+L0 relief collapses proportionally. Shape adopts progressively as passes rewrite
+old full-span tables; the 5× YCSB A gate measures the steady state.
+
+### W1.3a gate result (2026-07-07): STALL LOTTERY ELIMINATED
+
+5× YCSB A durable 10M @ 32g (fresh DB per run, one process per run):
+
+| run | update max | run ops/s | block_wait_ms total | post-run allocated |
+|---|---|---|---|---|
+| 1 | 3.00s | 1,516 | 3,332 | 16.81GB |
+| 2 | 4.59s | 1,011 | 4,644 | 16.75GB |
+| 3 | 3.17s | 1,419 | 4,477 | 16.80GB |
+| 4 | 3.63s | 830 | 4,194 | 16.81GB |
+| 5 | 1.82s | 2,452 | 2,241 | 16.77GB |
+
+Pre-W1.3a lottery: maxes 21s / 55s / 1.1s / 50s / 1.8s (W1.1c gate) and 45.9–56.3s in
+the stack-sample era; single blocked episodes of `block_wait_ms=46,301`. The 40–70s
+class is GONE: worst max across five runs is 4.6s — the predicted one-bounded-pass
+relief window (~table + 256MiB at ~100MB/s), reproduced five-for-five. Run throughput
+rose (median 1,419 vs 610–802 pre-slice); wait_timeouts remain 0; W1.2c's memory line
+holds (~16.8GB post-run, retained ≤6.6GB). Load throughput dipped on some runs
+(85.7–107K vs ~115K) — the write-amp cost of cutting, recorded as the W1.4
+calibration input.
+
+The literal W1.1c criterion (max ≤500ms) is NOT met and is superseded: the residual
+1.8–4.6s max is the bounded relief window itself (one in-flight bounded pass +
+graded near-stop pacing), not a lottery. Tightening it further is a calibration
+trade (smaller bound = more write amp — W1.4) or a conflict-granularity change
+(W1.2b), both now optional rather than blocking.
+
 ## Sequencing (revised)
 
 W1.1a ✅ -> W1.1b ✅ -> W1.1c ❌ -> W1.2a ✅(split extended; no-win; default stays 1) ->
