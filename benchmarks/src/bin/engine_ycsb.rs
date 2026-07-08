@@ -223,6 +223,59 @@ fn run_workload(
             perf.lifecycle_background_task_low_tier_runs(),
             perf.lifecycle_background_task_low_tier_ns() as f64 / 1e6,
         );
+        // Read-path attribution (W2): branch-point fan-out is foreground-only;
+        // table-level cache/filter/io counters are shared with background
+        // maintenance readers — compare table_point vs table_cursor rows to
+        // split lookup traffic from compaction/scan traffic.
+        eprintln!(
+            "  [probe] point: rows_visited={} candidates={} probes act={} frz={} l0={} nz_search={} nz={} inh_l0={} inh_nz={} seeks={} clones={} clone_kb={} | selected act={} frz={} l0={} nz={} inh={}",
+            perf.point_rows_visited(),
+            perf.point_candidates_materialized(),
+            perf.point_active_probes(),
+            perf.point_frozen_probes(),
+            perf.point_owned_l0_table_probes(),
+            perf.point_owned_nonzero_level_searches(),
+            perf.point_owned_nonzero_table_probes(),
+            perf.point_inherited_l0_table_probes(),
+            perf.point_inherited_nonzero_table_probes(),
+            perf.point_table_seeks(),
+            perf.point_candidate_row_clones(),
+            perf.point_candidate_row_clone_bytes() / 1024,
+            perf.point_selected_active(),
+            perf.point_selected_frozen(),
+            perf.point_selected_owned_l0(),
+            perf.point_selected_owned_nonzero(),
+            perf.point_selected_inherited(),
+        );
+        eprintln!(
+            "  [probe] table read: cache hit={} miss={} ins={} skip={} | filter neg={} pos={} absent={} | eager neg={} pos={} unavail={} | seeks={} reader_opens={} point_rows={} cursor_rows={}",
+            perf.table_cache_hits(),
+            perf.table_cache_misses(),
+            perf.table_cache_inserts(),
+            perf.table_cache_skipped_inserts(),
+            perf.table_filter_negative_probes(),
+            perf.table_filter_positive_probes(),
+            perf.table_filter_absent_probes(),
+            perf.table_eager_filter_negative_probes(),
+            perf.table_eager_filter_positive_probes(),
+            perf.table_eager_filter_unavailable_probes(),
+            perf.table_seeks(),
+            perf.table_reader_opens(),
+            perf.table_point_rows_visited(),
+            perf.table_cursor_rows_visited(),
+        );
+        eprintln!(
+            "  [probe] table io: data_block reads={} read_mb={:.1} decodes={} | lazy scans={} entries={} rows_decoded={} full_decodes_avoided={} | index_mb={:.1} meta_mb={:.1}",
+            perf.table_data_block_reads(),
+            perf.table_data_block_read_bytes() as f64 / (1024.0 * 1024.0),
+            perf.table_data_block_decodes(),
+            perf.table_lazy_point_block_scans(),
+            perf.table_lazy_point_entries_scanned(),
+            perf.table_lazy_point_rows_decoded(),
+            perf.table_lazy_point_full_block_decodes_avoided(),
+            perf.table_index_read_bytes() as f64 / (1024.0 * 1024.0),
+            perf.table_metadata_read_bytes() as f64 / (1024.0 * 1024.0),
+        );
         print_jemalloc_split("post-run");
     }
 

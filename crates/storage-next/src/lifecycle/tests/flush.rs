@@ -1839,7 +1839,8 @@ fn branch_id(byte: u8) -> BranchId {
 }
 
 fn build_bytes_from_frozen(identity: TableIdentity, frozen: &crate::table::FrozenTable) -> Vec<u8> {
-    ImmutableTableBuilder::new(TableBuilderConfig::default())
+    // W2.2: mirror the production flush build (bloom filter included).
+    ImmutableTableBuilder::new(crate::lifecycle::compaction::lifecycle_table_builder_config())
         .expect("builder")
         .build_from_frozen(identity, frozen)
         .expect("built table")
@@ -1850,7 +1851,8 @@ fn built_bytes_for_row(identity: &str, row: StorageRow) -> Vec<u8> {
     let identity = TableIdentity::new(identity).expect("identity");
     let mut rows = vec![TableRow::new(row)];
     sort_table_rows_by_key(&mut rows);
-    ImmutableTableBuilder::new(TableBuilderConfig::default())
+    // W2.2: mirror the production flush build (bloom filter included).
+    ImmutableTableBuilder::new(crate::lifecycle::compaction::lifecycle_table_builder_config())
         .expect("builder")
         .build_from_rows(identity, &rows)
         .expect("built table")

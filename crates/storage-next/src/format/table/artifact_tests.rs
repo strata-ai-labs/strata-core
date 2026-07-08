@@ -1,10 +1,11 @@
 use super::artifact::{
     decode_immutable_table, encode_immutable_table, encode_immutable_table_with_block_compressions,
+    ImmutableTableStreamingEncoder, StreamingTableRow,
 };
 use super::data::TableDataBlock;
 use super::index::{TableIndexBlock, TableIndexEntry};
 use super::properties::TableProperties;
-use super::test_support::{branch, encoded_internal_key_for_row, put, timestamp, tombstone};
+use super::test_support::{branch, encoded_internal_key_for_row, key, put, timestamp, tombstone};
 use super::{
     decode_table_footer, encode_table_block_frame, encode_table_footer, encode_table_header,
     FormatError, TableBlockFrame, TableBlockKind, TableCompression, TableFilterFrame, TableFooter,
@@ -261,6 +262,79 @@ fn immutable_table_round_trips_two_blocks_in_table_order() {
     assert_eq!(decoded.header().data_block_count(), 2);
     assert_eq!(decoded.data_blocks().len(), 2);
     assert_eq!(decoded.index().entry_count(), 2);
+}
+
+/// W2.1: the byte target gates the streaming block cut. Pre-W2.1 only
+/// `rows_per_block` cut, so large values produced blocks 4x+ over the declared
+/// target (read-path profile: ~280KB blocks against a 64KB target).
+#[test]
+fn streaming_encoder_cuts_blocks_on_the_byte_target() {
+    let rows = (0..32u64)
+        .map(|index| {
+            StorageRow::put(
+                key(format!("byte-cut-{index:04}").into_bytes()),
+                CommitVersion::new(index + 1),
+                timestamp(index + 1),
+                Timestamp::EPOCH,
+                vec![0xAB; 1024],
+            )
+        })
+        .collect::<Vec<_>>();
+
+    // ~1.1KB per entry against a 4KiB target: cuts land every 3-4 rows, far
+    // below the 256-row cap, which never binds.
+    let mut encoder =
+        ImmutableTableStreamingEncoder::new(4096, 256, TableCompression::Uncompressed)
+            .expect("encoder");
+    for row in &rows {
+        encoder
+            .append_streaming_row(StreamingTableRow::new(
+                encoded_internal_key_for_row(row),
+                row.clone(),
+            ))
+            .expect("append row");
+    }
+    let output = encoder.finish_with_metadata(None).expect("finish table");
+    assert!(
+        output.data_block_count() >= 8,
+        "byte target must cut blocks, got {} blocks for 32 x 1KB rows at a 4KiB target",
+        output.data_block_count()
+    );
+
+    let decoded = decode_immutable_table(output.bytes()).expect("decode table");
+    assert_eq!(
+        decoded.rows(),
+        rows.as_slice(),
+        "all rows round-trip in order"
+    );
+    assert_eq!(
+        u32::try_from(decoded.data_blocks().len()).expect("block count"),
+        output.data_block_count()
+    );
+
+    // A single row larger than the target becomes a one-row block, not an error.
+    let giant = StorageRow::put(
+        key(b"byte-cut-giant".to_vec()),
+        CommitVersion::new(1),
+        timestamp(1),
+        Timestamp::EPOCH,
+        vec![0xCD; 64 * 1024],
+    );
+    let mut encoder =
+        ImmutableTableStreamingEncoder::new(4096, 256, TableCompression::Uncompressed)
+            .expect("encoder");
+    encoder
+        .append_streaming_row(StreamingTableRow::new(
+            encoded_internal_key_for_row(&giant),
+            giant.clone(),
+        ))
+        .expect("append giant row");
+    let output = encoder
+        .finish_with_metadata(None)
+        .expect("finish giant table");
+    assert_eq!(output.data_block_count(), 1);
+    let decoded = decode_immutable_table(output.bytes()).expect("decode giant table");
+    assert_eq!(decoded.rows(), &[giant]);
 }
 
 #[test]

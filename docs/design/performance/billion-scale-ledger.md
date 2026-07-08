@@ -579,6 +579,97 @@ seconds-scale max = one bounded pass's relief window (calibration: W1.4; granula
 W1.2b). Load dipped to 85.7–107K on some runs (cutting write-amp) — W1.4 input.
 Design + full gate table in `v2-w1-compaction-engine-plan.md` § W1.3a.
 
+## 10M three-way, post-W1 re-baseline (2026-07-07 night, v1 @ 4dfcc376, /data2, jemalloc)
+
+First three-way with the engine bins genuinely on jemalloc (prior absolutes were
+glibc-confounded) and the first on the merged W1 compaction engine. One process per
+Strata mode; RocksDB re-run same-day as control.
+
+| | Strata cache | Strata durable | RocksDB |
+|---|---|---|---|
+| Load (rows/s) | 449–459K | 97–117K | 635–958K (control noise; see note) |
+| A (50r/50u) run ops/s | **273,103** | 1,036 | 303,868 |
+| B (95r/5u) | **1,082,049** | 5,017 | 436,577 |
+| C (read-only) | **1,654,098** | 6,778 | 426,083 |
+| C read p50 / p99 | 571ns / 631ns | 66.8µs / **930µs** | 2.83µs / 4.4µs |
+| A update max | 79µs | **3.26s** | 205µs |
+| durable post-run allocated | — | 16.7–17.0GB | — |
+
+**W1 verdict at the three-way level.** Durable is transformed from chaotic to
+predictable: A max 3.26s (was 425ms–48.4s lottery; in-family with the W1.3a gate's
+1.8–4.6s bounded relief window), block_wait 3.4s total, zero wait timeouts, memory
+flat at ~17GB across all three workloads (retained gauge grows across workloads only
+because one process runs A→B→C; per-load allocated returns to ~12.4GB). Read-heavy
+run phases nearly doubled: C 3,673 → **6,778**, B 4,256 → 5,017, and C read p99
+improved 3.5× (3.3ms → 930µs) — bounded shape means no monster passes evicting page
+cache mid-run. C read p50 ticked 59.5 → 66.8µs (more, smaller tables = slightly wider
+probe fan-out — a W2 input, not a regression story). Durable load 97–117K vs 82–96K
+pre-W1: the cutting write-amp did NOT regress load at three-way conditions.
+
+**Control note:** RocksDB A/B loads measured 635–647K vs 1.02M in prior rounds (C
+load 958K ≈ prior); run-phase numbers match prior rounds (A 304K vs 334K, B 437K vs
+404K, C 426K ≈ 425K). Same binary, same volume — load variance is environmental
+(cold page cache on first workloads); Strata comparisons are same-day, same
+conditions.
+
+**The post-W1 gap (what W2 must close), durable vs RocksDB-default:**
+A 293× / B 87× / C 63×; load 6–9×. The stall/memory terms are spent — the gap is now
+owned by the read path: C p50 66.8µs vs 2.83µs (24×) and p99 930µs vs 4.4µs (211×)
+with a 15GiB block-cache pool that should hold the zipfian hot set. Roadmap targets
+(A ≥230K, B ≥280K, C ≥290K) require ~34–64× on reads — next action per W6: read-path
+profile on this exact shape (block-cache hit accounting, probe fan-out, decode cost)
+BEFORE any W2 slice.
+
+## Read-path profile: the 66.8µs median read, fully attributed (2026-07-07 night)
+
+perf-trace read counters added to `engine-ycsb --perf-breakdown` (`[probe] point /
+table read / table io` lines). Durable C at 10M: p50 = a **254-entry full-block walk**
+(blocks are ~256 rows ≈ 280KB because the encoder cuts on rows only — the 64KB
+`target_data_block_size` never gates); p99 = **0.33 cache misses/read × 279KB** block
+reads; **3.63 table seeks/read with zero bloom-filter probes** (BS4.3 filter machinery
+is config-gated dark). Hit rate 69.7% is churn-limited (116 rewrites during the 14s
+run), not capacity-limited. Full anatomy + revised W2 slices in
+`billion-scale-roadmap-v2.md` § W2. Model closes: 254 × ~240ns ≈ 61µs vs 62.4µs
+measured — no flamegraph needed.
+
+## W2.1: block byte target enforced — read median halved; B variance trade (2026-07-07)
+
+The 64KB `target_data_block_size` now gates the streaming block cut (was rows-only →
+~280KB blocks). Durable 10M before → after: C read p50 62.4 → **29.2µs**, lazy walk
+254.5 → **58.7** entries, per-miss I/O 279 → **64KB**, C run 6,953 → **11,272 ops/s**;
+loads unchanged; A unchanged (952 ops/s, max 4.6s). Trade discovered by the confirm
+sweep (n=3 B runs): B now draws occasional L0-wall episodes (2.3–3.9s) it didn't
+pre-W2.1 — floor 2,077, good draw 5,037 (read p50 52µs vs 134 pre) — build wall-time
+varies 2× across identical B runs (29.9s vs 58.4s for ~same task count), pointing at
+per-block build/read fixed costs × 4.3 more blocks. Recorded as the W1.4/W2.1b
+calibration input (128KB A/B or per-block cost shave). Cache hit rate note: C hits
+dropped to 50% (more distinct blocks for the same hot keys + unchanged churn
+invalidation) — W2.4's churn-surviving cache matters more at 64KB.
+
+## W2.2: bloom filters on — L0 probe amplification absorbed (2026-07-07 night)
+
+Flush + compaction builds persist 10-bits/key filters; the reader's lazy point path
+already consulted them. Durable 10M single-process C→B→A run: **B 5,158 ops/s / read
+p50 31µs / update p99 175µs / zero L0-wall episodes** (post-W2.1 lottery was
+{5,037/2,982/2,077} with p50 52–134µs and 2.3–3.9s walls); **A 1,696 ops/s (best on
+record) / read p50 43.9µs** (was 255µs), one bounded 4.5s wall. Negative filter
+probes 554K (B) / 2.33M (A) — block-scans per read on B fell 15.7 → 0.87. C
+unchanged (28.4µs p50; losers die at range checks pre-filter; throughput 7,594 this
+draw — miss/churn-bound, W2.4's lever). Memory line holds (~16.9GB post-run;
+filters ≈ 82KB per 64MB table, budget-charged via resident metadata).
+
+## W2.4: publish-time cache warming — read-tail collapse (2026-07-08)
+
+Rewrite + flush publishes now warm the block cache from the just-encoded bytes
+(no-evict `insert_if_free`; fresh blocks never displace demand-cached ones; full
+shards skip — scale-safe). Durable 10M C→B→A vs post-W2.2: C **11,455 ops/s**
+(campaign best; was 7,594) read p99 **704 → 430µs**, p99.9 2.28 → 1.17ms; A read
+p99 2.23ms → 827µs; B read p99 1.60 → 807µs; read p50s ~26-32µs across all three.
+SkippedFull 34K (C) / 107K (B) / 382K (A) — the no-evict gate works under churn.
+Cache pool now actually utilized (post-run allocated ~19GB, resident ~21GB, within
+32g). Recorded: two low load draws (80-87K vs 99-115K band) — W1.4 input; blended
+hit-rate counter mixes compaction cursor traffic (split before quoting).
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

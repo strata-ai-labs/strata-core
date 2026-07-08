@@ -806,6 +806,19 @@ fn publish_rewrite_artifact(
             )
         })?;
     perf_trace::record_table_rewrite_reader_reopen_performed();
+    // W2.4: warm the block cache from the just-encoded bytes (no-evict inserts
+    // only), so rewriting a table does not turn its hot blocks cold. Bounds
+    // are index-derived over byte-exact-validated bytes — a failure here means
+    // a corrupt index and fails the publish closed.
+    reader
+        .warm_data_blocks_from_encoded(&bytes)
+        .map_err(|source| {
+            orphaned_published_object_error(
+                &object_facts,
+                "table rewrite published output before block-cache warming failed",
+                source,
+            )
+        })?;
     let descriptor =
         BranchTableDescriptor::new(identity, reader.facts().clone(), level).map_err(|source| {
             orphaned_published_object_error(

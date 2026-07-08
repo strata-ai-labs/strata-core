@@ -18,8 +18,8 @@ use crate::service::{
     TableObjectServiceError,
 };
 use crate::table::{
-    FrozenTable, ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig, TableIdentity,
-    TableReaderConfig, TableRuntimeFacts, TableSummaryExtras,
+    FrozenTable, ImmutableTableBuilder, ImmutableTableReader, TableIdentity, TableReaderConfig,
+    TableRuntimeFacts, TableSummaryExtras,
 };
 use strata_core_next::BranchId;
 
@@ -776,23 +776,31 @@ pub(crate) fn prepare_durable_flush_with_budget(
     ) {
         Ok(reader) => reader,
         Err(error) => {
-            let outcome = FlushFrozenOutcome::published_not_installed_outcome(
+            return Ok(Some(published_not_installed_flush(
                 request,
-                frozen_index,
-                table_facts.clone(),
-                object_facts.clone(),
-                table_read_error(error),
-            );
-            return Ok(Some(PreparedDurableFlush {
-                request: request.clone(),
                 frozen_index,
                 frozen_identity,
                 table_facts,
                 object_facts,
-                table: Err(outcome),
-            }));
+                table_read_error(error),
+            )));
         }
     };
+    // W2.4: warm the block cache from the just-encoded bytes (no-evict
+    // inserts only) — a fresh L0 table serves the hottest recent keys and
+    // should not start cold. Best-effort is wrong here for the same reason as
+    // the rewrite path: bounds are index-derived over just-published bytes,
+    // so a failure means a corrupt index and fails closed.
+    if let Err(error) = reader.warm_data_blocks_from_encoded(artifact.bytes()) {
+        return Ok(Some(published_not_installed_flush(
+            request,
+            frozen_index,
+            frozen_identity,
+            table_facts,
+            object_facts,
+            table_error(error),
+        )));
+    }
     let extras = artifact.extras().clone();
     let table = match branch_owned_table(branch.branch_id(), identity, reader, extras) {
         // BS5.3b: the row-equality verification moved OFF-lock from the
@@ -1248,7 +1256,7 @@ fn build_frozen_artifact(
                 reason: "flush frozen index must exist",
             })?;
     let identity = derived_table_identity(request, frozen)?;
-    ImmutableTableBuilder::new(TableBuilderConfig::default())
+    ImmutableTableBuilder::new(super::compaction::lifecycle_table_builder_config())
         .map_err(table_error)?
         .build_from_frozen(identity, frozen)
         .map_err(table_error)
@@ -1387,6 +1395,34 @@ fn require_optional_table_reader_budget(
         require_table_reader_budget(budget, bytes, reason)?;
     }
     Ok(())
+}
+
+/// A flush whose object published but whose table cannot install — the
+/// prepared outcome carries the error while the published object stays
+/// reachable for reconciliation.
+fn published_not_installed_flush(
+    request: &FlushFrozenRequest,
+    frozen_index: usize,
+    frozen_identity: usize,
+    table_facts: crate::table::TableRuntimeFacts,
+    object_facts: TableObjectFacts,
+    error: LifecycleError,
+) -> PreparedDurableFlush {
+    let outcome = FlushFrozenOutcome::published_not_installed_outcome(
+        request,
+        frozen_index,
+        table_facts.clone(),
+        object_facts.clone(),
+        error,
+    );
+    PreparedDurableFlush {
+        request: request.clone(),
+        frozen_index,
+        frozen_identity,
+        table_facts,
+        object_facts,
+        table: Err(outcome),
+    }
 }
 
 fn table_error(error: impl std::error::Error + Send + Sync + 'static) -> LifecycleError {

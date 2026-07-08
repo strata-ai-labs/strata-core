@@ -23,6 +23,7 @@ fn check_immutable_table_builder(script: &[u8]) -> Result<(), TestkitError> {
         &artifact,
         &expected_rows,
         rows_per_block,
+        target_data_block_size,
     )?;
 
     assert_builder_paths_match(&builder, &identity, &rows, &expected_rows, artifact.bytes())?;
@@ -107,7 +108,13 @@ fn assert_builder_compression_matches(
     let zstd = zstd_builder
         .build_from_rows(identity.clone(), rows)
         .map_err(|err| TestkitError::new(format!("generated zstd build failed: {err}")))?;
-    assert_built_table_matches_model("generated zstd build", &zstd, expected_rows, rows_per_block)
+    assert_built_table_matches_model(
+        "generated zstd build",
+        &zstd,
+        expected_rows,
+        rows_per_block,
+        target_data_block_size,
+    )
 }
 
 fn assert_builder_block_shapes(
@@ -133,6 +140,7 @@ fn assert_builder_block_shapes(
         &single_block,
         expected_rows,
         rows.len(),
+        target_data_block_size,
     )?;
 
     if rows.len() > 1 {
@@ -144,7 +152,13 @@ fn assert_builder_block_shapes(
         let multi_block = multi_block_builder
             .build_from_rows(identity.clone(), rows)
             .map_err(|err| TestkitError::new(format!("multi-block build failed: {err}")))?;
-        assert_built_table_matches_model("multi-block build", &multi_block, expected_rows, 1)?;
+        assert_built_table_matches_model(
+            "multi-block build",
+            &multi_block,
+            expected_rows,
+            1,
+            target_data_block_size,
+        )?;
     }
     Ok(())
 }
@@ -167,7 +181,13 @@ fn assert_builder_one_row_shape(
     let artifact = builder
         .build_from_rows(identity.clone(), &[one_row])
         .map_err(|err| TestkitError::new(format!("one-row build failed: {err}")))?;
-    assert_built_table_matches_model("one-row build", &artifact, &expected_rows, 1)
+    assert_built_table_matches_model(
+        "one-row build",
+        &artifact,
+        &expected_rows,
+        1,
+        target_data_block_size,
+    )
 }
 
 fn assert_builder_rejects_invalid_inputs(
@@ -272,11 +292,43 @@ fn generated_builder_table_rows(script: &[u8]) -> Result<Vec<TableRow>, TestkitE
     Ok(rows)
 }
 
+/// W2.1: predicted block count under the streaming encoder's cut rule — a
+/// block closes when it reaches `rows_per_block` rows OR its estimated
+/// encoded payload reaches the byte target, whichever first. Mirrors
+/// `ImmutableTableStreamingEncoder::append_streaming_row` via the shared
+/// `streaming_entry_size_estimate`.
+fn expected_streaming_block_count(
+    expected_rows: &[StorageRow],
+    target_data_block_size: u32,
+    rows_per_block: usize,
+) -> usize {
+    let mut blocks = 0usize;
+    let mut rows_in_block = 0usize;
+    let mut estimated_bytes = 0usize;
+    for row in expected_rows {
+        estimated_bytes = estimated_bytes.saturating_add(streaming_entry_size_estimate(
+            table_key_bytes(row).len(),
+            row.value().len(),
+        ));
+        rows_in_block += 1;
+        if rows_in_block == rows_per_block || estimated_bytes >= target_data_block_size as usize {
+            blocks += 1;
+            rows_in_block = 0;
+            estimated_bytes = 0;
+        }
+    }
+    if rows_in_block > 0 {
+        blocks += 1;
+    }
+    blocks
+}
+
 fn assert_built_table_matches_model(
     label: &'static str,
     artifact: &BuiltTableArtifact,
     expected_rows: &[StorageRow],
     rows_per_block: usize,
+    target_data_block_size: u32,
 ) -> Result<(), TestkitError> {
     let decoded = decode_immutable_table(artifact.bytes())
         .map_err(|err| TestkitError::new(format!("{label} decode failed: {err}")))?;
@@ -286,7 +338,8 @@ fn assert_built_table_matches_model(
             "{label} decoded rows did not match generated model"
         )));
     }
-    let expected_block_count = expected_rows.len().div_ceil(rows_per_block);
+    let expected_block_count =
+        expected_streaming_block_count(expected_rows, target_data_block_size, rows_per_block);
     let expected_block_count_u32 = u32::try_from(expected_block_count)
         .map_err(|_| TestkitError::new("expected block count exceeded u32"))?;
     if decoded.data_blocks().len() != expected_block_count

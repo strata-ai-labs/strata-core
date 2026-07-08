@@ -1,6 +1,9 @@
 use crate::backend::memory::MemoryBackend;
 use crate::backend::Backend;
-use crate::format::{decode_immutable_table, encode_internal_key, FormatError, TableCompression};
+use crate::format::{
+    decode_immutable_table, encode_internal_key, streaming_entry_size_estimate, FormatError,
+    TableCompression,
+};
 use crate::layout::ObjectLayout;
 use crate::row::{InternalKey, PhysicalKey, StorageRow, StorageSpaceId};
 use crate::service::{TableObjectFacts, TableObjectReaderService};

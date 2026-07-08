@@ -89,17 +89,77 @@ Pi-Zero-to-server scaling contract; RSS must track it or every deployment story 
 
 ### W2 — Read path at scale (T2)
 
-- **W2.1 Attribution first.** gdb/stack sampling of the 10M C run (the counters lied
-  twice this cycle; stacks decide): I/O wait vs probe CPU vs decode vs cache misses.
-- **W2.2 Block cache that works.** Decoded-row (or decoded-block) caching with budget
-  accounting (the raw-bytes cache decodes on every fetch — measured as the replay
-  elephant, same seam serves reads); admission of hot blocks during compaction writes
-  (RocksDB `fill_cache` analog); size the pool per the profile (durable: block cache is
-  ~47% of budget — make it earn that).
-- **W2.3 Probe fan-out reduction.** Rides W1.3's shape bounds; per-source filter checks
-  on every point path (verify bloom coverage end-to-end — the probe work found paths
-  that skip filters); single-branch fast path.
-- **W2.4 Scan readahead (BS6 item).** Auto-ramping readahead 8→256KB; fixes E and
+**W2.0 attribution DONE (2026-07-07 night, post-W1 shape, perf-trace read probes in
+`engine-ycsb --perf-breakdown`).** Per-read anatomy of durable C (100K zipfian point
+reads over 10M×1KB, p50 62.4µs / p99 927µs):
+
+| component | measured (per read) | cost |
+|---|---|---|
+| table seeks | 3.63 (1 memtable + 1.62 L0 + ~1 winning Ln; 5.05 level searches) | index-only for losers — **no bloom filters: all filter counters are 0** |
+| lazy block scan | 1.02 scans × **254.5 encoded entry headers walked** (no early exit — full-block walk) | ≈ the 62µs p50 (254 × ~240ns) |
+| cache miss | 0.33 × **279KB** block read | ≈ the 927µs p99 (NVMe + compaction I/O interference) |
+| row decode + clone | 1 row, 1.2KB | small |
+
+Two root causes, both already half-solved in the tree:
+1. **Blocks are ~256 rows ≈ 280KB, not the declared 64KB**: `append_streaming_row`
+   cuts only on `rows_per_block == 256`; `target_data_block_size` (64KB) is passed
+   down but never gates the cut. 4.3× oversized blocks inflate BOTH the p50 (entry
+   walk) and the p99 (per-miss I/O). No format break to fix — blocks are
+   length-framed, readers handle any size.
+2. **Bloom filters exist but ship dark** (BS4.3 `filter_bits_per_key: None`
+   config-gate, "until a later slice flips it on") — 2.6 of 3.63 seeks/read are
+   losers a filter would skip; B pays 6.04 seeks/read (3.5 L0 probes from its flush
+   backlog).
+
+Cache hit rate 69.7% (C) / 90.7% (B) is CHURN-limited, not capacity-limited (whole
+10GB dataset < 15GiB pool; 116 background rewrites completed during C's 14s run kill
+identity-keyed cached blocks). Read I/O counters conflate lookup misses with
+compaction reads (cursor_rows 1.77M in C) — split them before trusting absolute MB.
+
+Revised slices (ranked by measured leverage):
+- **W2.1 Enforce the data-block byte target — LANDED.** Cut on estimated bytes ≥
+  target OR rows, whichever first (`append_streaming_row`); testkit builder model
+  simulates the same rule. Measured at 10M durable: C read p50 **62.4 → 29.2µs**
+  (walk 254 → 58.7 entries, per-miss I/O 279 → 64KB, exactly as predicted), C run
+  6,953 → **11,272 ops/s**; load unchanged (98–113K); A unchanged (952, max 4.6s —
+  W1.3a band). TRADE: B's floor dropped — post-W2.1 B = {5,037 / 2,982 / 2,077} vs
+  {5,017 / 6,257} pre; the slow draws are L0-wall episodes (2.3–3.9s block_wait)
+  that B did not previously hit, consistent with more per-block build work per
+  window (same task counts, build wall-time varying 30–58s across identical runs).
+  Read p50 on B's good draw: 52µs (was 134µs). Follow-up: block-size build-cost
+  calibration (128KB compromise A/B, or shave per-block fixed costs in the
+  build/read path) rides W1.4.
+- **W2.2 Flip BS4.3 bloom filters on — LANDED.** Every lifecycle-driven build
+  (flush + compaction) persists a 10-bits/key bloom filter
+  (`lifecycle_table_builder_config`); the lazy point path's probe was already wired
+  (losers short-circuit before index descent) and is now perf-trace counted.
+  Measured at 10M durable: **B 5,158 ops/s, zero wall episodes, read p50 31µs**
+  (was 52–134µs across the lottery), update p99 175µs (was 950µs–77ms); **A 1,696
+  ops/s — the best A on record** (was 952–1,036), read p50 43.9µs (was 255µs). The
+  win is L0-probe absorption: 554K–2.3M negative probes per run; B's block-scans
+  per read fell 15.7 → 0.87. C unchanged by design — its loser probes die at the
+  min/max range check before the filter (1.05 filter probes/read), and its run
+  throughput remains cache-miss/churn-bound (W2.4). Follow-up W2.2b:
+  materialization + snapshot-install builds still unfiltered (reader treats as
+  `Unavailable`).
+- **W2.3 Lazy-scan early exit + intra-block restart points**: the walk averages a
+  FULL block today (254.5 ≈ 256); early exit alone halves it, restart-point binary
+  search makes it ~log. Evaluate after W2.1 (60-entry walks may not need it).
+- **W2.4 Block cache churn survival — LANDED.** Publish-time write-through:
+  `warm_data_blocks_from_encoded` slices the just-encoded block frames inside the
+  publish hook (rewrite sink + flush prepare, while the W1.2c sink still holds the
+  bytes) and admits them via `insert_if_free` — NO-EVICT inserts only, so unproven
+  fresh blocks never displace demand-cached ones; when the pool is smaller than the
+  write rate's working set the warming degrades to a no-op (`SkippedFull`,
+  scale-safe by construction). Measured at 10M durable: **tail collapse** — C read
+  p99 704 → **430µs** (p99.9 2.28 → 1.17ms) at **11,455 ops/s** (campaign best,
+  +51% over the W2.2 draw); A read p99 2.23ms → 827µs; B read p99 1.60ms → 807µs;
+  throughputs within lottery elsewhere. Skip counters confirm the gate (34K–382K
+  SkippedFull under churn). Pool now actually fills (+2GB allocated, within
+  budget). Notes: blended hit-rate metric is compaction-cursor-contaminated (split
+  in W6); two low load draws (80–87K) recorded for the W1.4 calibration. W2.4b:
+  heat-aware admission (carry input-block heat to outputs) when pool << dataset.
+- **W2.5 Scan readahead (BS6 item).** Auto-ramping readahead 8→256KB; fixes E and
   scan-range cells.
 - Exit: C ≥ 290K ops/s warm (p50 ≤ 6µs, p99 ≤ 20µs); B ≥ 280K; E within 3× of RocksDB.
 
