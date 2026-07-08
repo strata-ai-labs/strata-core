@@ -172,7 +172,12 @@ lessons apply).
   legacy rows to exercise the compat paths that remain product behavior until
   cutover (pre-elision WAL replay, recovery bridge).
 
-## W3.3 — Standard WAL write coalescing (designed 2026-07-08)
+## W3.3 — Standard WAL write coalescing (W3.3a LANDED 2026-07-08; gate passed)
+
+**Status: W3.3a shipped — l9 single-put Standard 129K → 162K ops/s (+25.5%),
+the ≥150K roadmap gate passes. W3.3b (idle-buffer trickle flush, task #82)
+remains. A@10M run-phase A/B found to be a settling lottery — see the ledger
+row; engine-ycsb `--settle-secs` added for future baselines.**
 
 Sole carrier of the ≤8µs solo-commit target (−3.9µs/commit `write()` syscall at
 100k, −7.7µs at 10M). Roadmap exit gate: single-writer Standard ≥ 150K

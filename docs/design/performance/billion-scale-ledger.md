@@ -734,6 +734,35 @@ rare pressure block-waits 22 + notify 2 — wal_append nearly doubles vs 100k
 and lock waits against busier maintenance sextuple, reinforcing W3.3 and the
 M-A/M-B lanes as the carriers at scale.
 
+## W3.3a: WAL append coalescing — the 150K single-put gate passes (2026-07-08)
+
+One user-space buffer turns per-commit `write()` syscalls into one coalesced
+write per 128 KiB (measured 114 appends/flush on A). Control-first A/B
+(control = `ce68b5ef` built in a temp worktree, same box/config, medians of 3):
+
+- **l9 single-put Standard 100k (the roadmap exit cell): 129,178 → 162,121
+  ops/s (+25.5%) — the ≥150K gate PASSES.** Tight cells (±0.6% / ±0.7%).
+- A@100k: wal_append stage 3.7 → 2.7µs/commit, update p50 25.7 → 22.6µs.
+- A@10M stage probes: wal_append 7.7 → 1.8µs/commit; best load yet (87.7K
+  rows/s) and best run yet (8,289 ops/s at pacing≈1s).
+
+**Protocol finding — the A@10M run phase is a settling lottery.** Three
+identical treatment invocations: run = 8,289 / 3,464 / 2,784 ops/s with pacing
+1.0s / 19.3s / 23.7s — the run phase measures whatever L0/compaction backlog
+the load left behind (worse when the load runs faster), not steady state.
+Every historical A@10M run-phase number, including the 4,884/5,343 baselines,
+sits inside this lottery. engine-ycsb gained `--settle-secs` (drain window
+between phases); the next re-baseline (W6/M10 discipline) should use it.
+
+Semantics: power-loss exposure unchanged (last barrier); orderly teardown
+keeps page-cache parity via flush-on-drop (the battery's crash-sim harnesses
+demanded ZeroLoss on drop-without-close and got it as a product fix — zero
+oracle re-basing); abrupt kill loses ≤ one buffer (trickle flush = W3.3b,
+task #82). Differential oracle pins byte-identical segments + identical growth
+facts vs the direct path at every durability boundary. `Backend{Flush}` errors
+are durability-uncertain; pending is never discarded; partial flush writes are
+caught by handle re-open reconciliation (no blind re-append).
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
