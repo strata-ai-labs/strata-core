@@ -429,6 +429,21 @@ fn lifecycle_requests_carry_the_grandparent_overlap_bound_by_default() {
         );
     }
 
+    // W2.2: every lifecycle request carries the bloom-filter build config.
+    let request = LifecycleCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "gp-filter-bits",
+    )
+    .expect("lifecycle request")
+    .branch_request()
+    .expect("branch request");
+    assert_eq!(
+        request.table_builder_config().filter_bits_per_key(),
+        Some(10),
+        "lifecycle builds must persist bloom filters"
+    );
+
     // The override reaches the branch request (tests and W1.4 calibration).
     let overridden = LifecycleCompactionRequest::new(
         branch,

@@ -25,8 +25,8 @@ use crate::branch::state::materialization::{
 use crate::branch::state::BranchLocalState;
 use crate::object::ObjectName;
 use crate::table::{
-    TableCompactionConfig, TableCompactionReport, TableIdentity, TableInternalKeyBytes,
-    TablePhysicalKeyBytes,
+    TableBuilderConfig, TableCompactionConfig, TableCompactionReport, TableIdentity,
+    TableInternalKeyBytes, TablePhysicalKeyBytes,
 };
 use strata_core_next::BranchId;
 
@@ -70,6 +70,24 @@ const L0_PASS_MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
 /// 256MiB matches `L0_PASS_MAX_INPUT_BYTES`: a future one-table pass reads
 /// ~table + bound ≈ seconds-scale.
 const OUTPUT_GRANDPARENT_OVERLAP_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+/// W2.2: bloom filter density for lifecycle-built tables (`RocksDB` default).
+/// BS4.3 built and gated the machinery (`filter_bits_per_key: None` = the
+/// pre-W2.2 unfiltered table); this flips it on for every lifecycle-driven
+/// build. The read-path profile measured 2.6 of 3.63 table seeks per point
+/// read probing tables that do not contain the key — exactly the seeks a
+/// filter's negative probe skips. ~10 bits/key ≈ 82KB per 64MB table, charged
+/// to the reader budget via `resident_metadata_bytes`.
+const TABLE_FILTER_BITS_PER_KEY: usize = 10;
+
+/// The builder config for every lifecycle-driven table build (flush and
+/// compaction): defaults plus the persisted bloom filter. Tables built
+/// elsewhere (materialization, snapshot install — W2.2 follow-up) stay
+/// unfiltered; the reader treats a missing filter as `Unavailable` and probes
+/// normally, so mixed tables are fine.
+pub(super) fn lifecycle_table_builder_config() -> TableBuilderConfig {
+    TableBuilderConfig::default().with_filter_bits_per_key(Some(TABLE_FILTER_BITS_PER_KEY))
+}
 
 const NONZERO_LEVEL_COMPACTION_THRESHOLD: usize = 4;
 const NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD: usize = 8;
@@ -436,6 +454,8 @@ impl LifecycleCompactionRequest {
         if matches!(self.kind, BranchCompactionKind::CompactL0ToLevelOne) {
             request = request.with_max_pass_input_bytes(self.l0_pass_max_input_bytes);
         }
+        // W2.2: every lifecycle-built table persists a bloom filter.
+        request = request.with_table_builder_config(lifecycle_table_builder_config());
         // W1.3a: every pass cuts its outputs by grandparent overlap. Kinds
         // whose output level is bottommost get no hints downstream (the
         // grandparent level is empty), so applying the bound universally is

@@ -18,8 +18,8 @@ use crate::service::{
     TableObjectServiceError,
 };
 use crate::table::{
-    FrozenTable, ImmutableTableBuilder, ImmutableTableReader, TableBuilderConfig, TableIdentity,
-    TableReaderConfig, TableRuntimeFacts, TableSummaryExtras,
+    FrozenTable, ImmutableTableBuilder, ImmutableTableReader, TableIdentity, TableReaderConfig,
+    TableRuntimeFacts, TableSummaryExtras,
 };
 use strata_core_next::BranchId;
 
@@ -1248,7 +1248,7 @@ fn build_frozen_artifact(
                 reason: "flush frozen index must exist",
             })?;
     let identity = derived_table_identity(request, frozen)?;
-    ImmutableTableBuilder::new(TableBuilderConfig::default())
+    ImmutableTableBuilder::new(super::compaction::lifecycle_table_builder_config())
         .map_err(table_error)?
         .build_from_frozen(identity, frozen)
         .map_err(table_error)

@@ -769,11 +769,26 @@ impl LazyTableState<'_> {
     }
 
     fn probe_physical_filter(&self, key: &TablePhysicalKeyBytes) -> TableBloomProbe {
-        self.filter
+        let probe = self
+            .filter
             .as_ref()
             .map_or(TableBloomProbe::Unavailable, |filter| {
                 filter.probe_physical_key(key)
-            })
+            });
+        // W2.2: the lazy point path's filter probes share the eager-probe
+        // counters — together they are "reader point filter probes".
+        match probe {
+            TableBloomProbe::DefinitelyAbsent => {
+                perf_trace::record_table_eager_filter_negative_probe();
+            }
+            TableBloomProbe::MaybePresent => {
+                perf_trace::record_table_eager_filter_positive_probe();
+            }
+            TableBloomProbe::Unavailable => {
+                perf_trace::record_table_eager_filter_unavailable_probe();
+            }
+        }
+        probe
     }
 
     fn read_data_block_rows(&self, block_index: usize) -> TableRuntimeResult<Vec<TableRow>> {
