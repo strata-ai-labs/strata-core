@@ -926,6 +926,55 @@ samples per the standing caveat):
 - RocksDB measured 287/437/428K — consistent with the standing reference row
   (304/437/426K).
 
+## C1 — fair-baseline re-base: compression hypothesis falsified (2026-07-08, b65207e5)
+
+Protocol slice (`c-campaign-60-70.md` C1): both harnesses now default to
+**incompressible values** (`ValueFill::Random`, unique splitmix64 payload per
+value; `--value-fill constant` kept for historical comparability), rocksdb-ycsb
+gained `--compression default|lz4|none`, and both bins print an on-disk
+post-load probe (engine-ycsb also post-settle).
+
+**The compression-flattered-reference hypothesis is falsified.** Fill ×
+compression matrix, RocksDB 10M × 1KB, 500K-op C:
+
+| fill | compression | on-disk | run C | read p50 | read max |
+|---|---|---|---|---|---|
+| constant | default | 9.59GB | 435K | 2.16us | 30.8us |
+| random | default | 9.59GB | 428K | 2.29us | 34.2us |
+| random | none | 9.59GB | 434K | 2.19us | 44.6us |
+| random | lz4 | 9.55GB | 425K | 2.18us | 232us |
+
+Stock rust-rocksdb writes uncompressed; all cells within 2.4%. RocksDB's C
+edge is **full page-cache residency** (read max ~34us across 500K reads =
+zero disk misses on a raw 9.6GB dataset), not compression.
+
+Re-based reference and parity cells (same session, interleaved):
+
+- **RocksDB C reference: 432K median** (428/432/448K), read p50 ~2.2us,
+  9.59GB on disk.
+- **Strata durable settled C, random fill: 19,244** (p50 12.45us, p99
+  295us) — inside the constant-fill band from the same session
+  (18,658-19,475). Value content costs nothing on the durable path.
+  Durable C gap: **22.4x**. The same-session constant control drew a
+  degraded shape (9.8K, p99 2.18ms, api_point_ms 2x — background compaction
+  overlapped the run window; shape lottery, not fill).
+- **Strata cache C: no fill effect** — interleaved constant 1.51M/1.53M vs
+  random 1.56M/1.43M (p50 611-671ns). A one-off 876K cache draw earlier in
+  the session was state, not protocol (2.5GB swap in use after the durable
+  marathon).
+- New probe, durable 10M load: on-disk **37GiB post-load → 12GiB
+  post-settle** — the load's transient churn (WAL + L0 + intermediate
+  tables) is ~3x the settled dataset, quantifying the page-cache eviction
+  mechanism behind C's ~150us misses (campaign doc Finding 2). Settled
+  Strata dataset 12GiB vs RocksDB 9.59GB (+25%, uncompressed both).
+
+Also: cleaned 229GB of stale engine-ycsb tempdirs (killed runs skip tempfile
+cleanup) from /data2/strata-bench/ycsb10m/.benchmark.
+
+C-campaign standing math after C1: target 60-70% of 432K = **259-302K**;
+today 19.2K = h 0.75 x 12.5us + 0.25 x ~110-150us. C2 (fill the 15GB pool →
+h≥0.98) then C3 (allocation-free hit path → ~3.5us) carry the plan.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
