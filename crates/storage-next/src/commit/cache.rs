@@ -7,9 +7,8 @@ use super::{
     CommitBranchReadViewConflictSource, CommitBranchRegistry, CommitDurabilityClass,
     CommitDurabilityMode, CommitFactAllocation, CommitFactAllocator, CommitMutationCounts,
     CommitOutcome, CommitRuntimeConfig, CommitRuntimeError, CommitRuntimeResult, CommitStamp,
-    CommitTimelineEntry, CommitTimelineRows, CommitTimestampSource, CommitUnresolvedDurable,
-    CommitUnresolvedDurableGate, CommitVisibilityFacts, CommitVisiblePublisher,
-    ValidatedCommitBatch,
+    CommitTimestampSource, CommitUnresolvedDurable, CommitUnresolvedDurableGate,
+    CommitVisibilityFacts, CommitVisiblePublisher, ValidatedCommitBatch,
 };
 use crate::observability::perf_trace;
 use crate::row::StorageRow;
@@ -182,25 +181,14 @@ pub(crate) fn prepare_commit_rows(
     let result = (|| {
         let user_row_count = batch.batch().mutations().len();
         let user_counts = CommitMutationCounts::from_validated_batch(&batch)?;
-        let user_rows = batch.into_stamped_user_rows(stamp)?;
-        let timeline_entry = CommitTimelineEntry::from_stamp(stamp)?;
-        let timeline_rows = CommitTimelineRows::from_entry(timeline_entry)?;
-        let mutation_counts = CommitMutationCounts::new(
-            user_counts.puts(),
-            user_counts.deletes(),
-            CommitTimelineRows::timeline_row_count(),
-            config,
-        )?;
-
-        let mut rows = Vec::with_capacity(
-            user_rows
-                .len()
-                .saturating_add(CommitTimelineRows::timeline_row_count()),
-        );
-        rows.extend(user_rows);
-        let timeline_row_count = CommitTimelineRows::timeline_row_count();
-        rows.extend(timeline_rows.into_rows());
-        perf_trace::record_commit_rows_prepared(user_row_count, timeline_row_count, rows.len());
+        // W3.1c: commits no longer materialize timeline index rows — the
+        // stamp is already durable in the WAL record and embedded in every
+        // row; the retained-timeline index (timeline_index.rs) observes it at
+        // apply. A single-put commit is one row again.
+        let rows = batch.into_stamped_user_rows(stamp)?;
+        let mutation_counts =
+            CommitMutationCounts::new(user_counts.puts(), user_counts.deletes(), 0, config)?;
+        perf_trace::record_commit_rows_prepared(user_row_count, 0, rows.len());
         Ok((rows, mutation_counts))
     })();
     perf_trace::record_commit_prepare_rows_elapsed(timer);

@@ -110,10 +110,16 @@ impl RetainedCommitTimeline {
         })
     }
 
-    /// W3.1b oracle: whether the index currently claims complete coverage.
+    /// Whether the index currently claims complete coverage (W3.1c: the
+    /// recovery invariant checks this before deciding to scan-seed).
+    pub(crate) fn is_complete(&self) -> bool {
+        self.inner.read().complete
+    }
+
+    /// W3.1b oracle alias.
     #[cfg(any(test, feature = "testkit"))]
     pub(crate) fn is_complete_for_test(&self) -> bool {
-        self.inner.read().complete
+        self.is_complete()
     }
 
     /// W3.1b: a branch created in-process starts with provably complete
@@ -222,6 +228,19 @@ impl RetainedCommitTimeline {
         state.entries = merged;
         state.timestamps_monotonic = timestamps_monotonic;
         state.complete = true;
+    }
+
+    /// W3.1c: the version-bounded entries when exactness is provable —
+    /// the cold timeline surfaces materialize a full view from these.
+    pub(crate) fn materialized_entries(
+        &self,
+        version_bound: Option<CommitVersion>,
+    ) -> Option<Vec<RetainedTimelineEntry>> {
+        let state = self.inner.read();
+        if !state.complete {
+            return None;
+        }
+        bounded_prefix(&state.entries, version_bound).map(<[_]>::to_vec)
     }
 
     /// The largest-timestamp entry at or before `query_timestamp`, among

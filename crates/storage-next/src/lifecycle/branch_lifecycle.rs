@@ -864,6 +864,16 @@ impl LifecycleBranchCatalog {
                 .expect("destination state is always present");
             (child, 0, 0)
         };
+        // W3.1c: the child's retained timeline = the parent's history at the
+        // fork point (its own commits observe from here on). The parent's
+        // index is the era-independent source — post-elision there are no
+        // timeline rows to copy. A rare incomplete parent falls back to
+        // scanning the child's own view (legacy rows), which is exact for
+        // pre-elision history.
+        match source.retained_timeline().snapshot_entries(fork_version) {
+            Some(entries) => child.retained_timeline().seed_from_scan(&entries),
+            None => crate::lifecycle::recovery::ensure_branch_timeline_complete(&child)?,
+        }
         let parent = LifecycleBranchParent::new(source_branch_id, fork_version);
         let descriptor = LifecycleBranchDescriptor::active(
             destination_branch_id,

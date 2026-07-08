@@ -414,7 +414,7 @@ fn checkpoint_publishes_snapshot_and_flush_watermark_after_commit() {
     assert_eq!(outcome.status(), LifecycleCheckpointStatus::Completed);
     assert_eq!(outcome.checkpoint_watermark(), Some(CommitVersion::new(1)));
     assert_eq!(outcome.snapshot_id(), Some(1));
-    assert_eq!(outcome.row_count(), 3);
+    assert_eq!(outcome.row_count(), 1);
     assert!(outcome.snapshot_object().is_some());
     assert!(outcome
         .flush_watermark()

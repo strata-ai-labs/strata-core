@@ -38,9 +38,11 @@ fn durable_pruned_compaction_publishes_pruned_manifest_facts() {
     );
     assert_eq!(manifest.levels()[0].tables().len(), 1);
     let facts = manifest.levels()[0].tables()[0].facts();
-    assert_eq!(facts.commit_min(), CommitVersion::new(1));
+    // W3.1c: timeline rows are gone — the pruned table holds user rows
+    // only, and commit 1's only trace was its (pruned) superseded put.
+    assert_eq!(facts.commit_min(), CommitVersion::new(2));
     assert_eq!(facts.commit_max(), CommitVersion::new(4));
-    assert_eq!(facts.row_count(), 11);
+    assert_eq!(facts.row_count(), 3);
 }
 
 #[test]

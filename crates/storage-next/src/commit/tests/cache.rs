@@ -2,14 +2,12 @@
 
 use super::*;
 use crate::branch::config::BranchRuntimeConfig;
-use crate::branch::read::{
-    BranchHistoryOptions, BranchReadBound, BranchReadView, BranchScanBounds,
-};
+use crate::branch::read::{BranchHistoryOptions, BranchReadView};
 use crate::branch::state::BranchLocalState;
 use crate::row::StorageRow;
 
 #[test]
-fn cache_commit_applies_user_and_timeline_rows_and_publishes_visible_version() {
+fn cache_commit_applies_user_rows_and_publishes_visible_version() {
     let branch = branch_id(21);
     let mut fixture = CacheFixture::new(branch, CommitRuntimeConfig::default());
     let key = physical_key(branch, 0x20, b"alpha".to_vec());
@@ -37,10 +35,7 @@ fn cache_commit_applies_user_and_timeline_rows_and_publishes_visible_version() {
     );
     assert_eq!(outcome.mutation_counts().puts(), 1);
     assert_eq!(outcome.mutation_counts().deletes(), 0);
-    assert_eq!(
-        outcome.mutation_counts().timeline_rows(),
-        CommitTimelineRows::timeline_row_count()
-    );
+    assert_eq!(outcome.mutation_counts().timeline_rows(), 0);
     assert_eq!(
         outcome.visibility_facts(),
         CommitVisibilityFacts::new(
@@ -63,7 +58,7 @@ fn cache_commit_applies_user_and_timeline_rows_and_publishes_visible_version() {
     );
     assert_eq!(visible.row().value(), b"value");
 
-    let timeline = timeline_view(&view, branch);
+    let timeline = timeline_view(&fixture.state, branch);
     assert_eq!(
         timeline
             .version_at_or_before(Timestamp::from_micros(1_000))
@@ -567,34 +562,33 @@ fn cache_allocation_gap_preserves_latest_bounded_history_and_timeline_reads() {
         first.commit_timestamp(),
         Some(Timestamp::from_micros(1_000))
     );
-    assert_eq!(fixture.state.active_row_count(), 3);
+    assert_eq!(fixture.state.active_row_count(), 1);
     assert_eq!(fixture.visible.visible_version(), CommitVersion::new(1));
 
     fixture
         .allocator
         .source_mut()
         .set_next_timestamp(Timestamp::from_micros(2_000));
-    fixture.config =
-        CommitRuntimeConfig::new(1, 1, 2, CommitReadOnlyDiagnostics::Enabled).expect("config");
-    let failed = fixture
-        .execute(mutating_batch(
-            branch,
-            vec![CommitMutation::put(
-                gap_key,
-                b"gap".to_vec(),
-                CommitExpiry::None,
-                CommitRetentionHint::Append,
-            )],
-            CommitValidationFacts::empty(),
-            CommitBatchOptions::default(),
-        ))
-        .expect_err("row limit fails after allocation");
-    assert_eq!(
-        failed,
-        CommitRuntimeError::InvalidBatch {
-            reason: "commit row count exceeds configured limit",
-        }
-    );
+    // W3.1c: commits stage user rows only, so the row limit can no longer
+    // fire after allocation (validation caps mutations at the limit). Burn
+    // the allocation directly — the same version gap the failed commit left.
+    let burned = mutating_batch(
+        branch,
+        vec![CommitMutation::put(
+            gap_key,
+            b"gap".to_vec(),
+            CommitExpiry::None,
+            CommitRetentionHint::Append,
+        )],
+        CommitValidationFacts::empty(),
+        CommitBatchOptions::default(),
+    )
+    .validate(&fixture.config)
+    .expect("validated gap batch");
+    fixture
+        .allocator
+        .allocate_for_batch(&burned)
+        .expect("burn allocation");
     assert_eq!(
         fixture.allocator.version_allocator().last_allocated(),
         CommitVersion::new(2)
@@ -603,7 +597,7 @@ fn cache_allocation_gap_preserves_latest_bounded_history_and_timeline_reads() {
         fixture.allocator.timestamp_guard().last_allocated(),
         Some(Timestamp::from_micros(2_000))
     );
-    assert_eq!(fixture.state.active_row_count(), 3);
+    assert_eq!(fixture.state.active_row_count(), 1);
     assert_eq!(fixture.visible.visible_version(), CommitVersion::new(1));
 
     fixture.config = CommitRuntimeConfig::default();
@@ -629,7 +623,7 @@ fn cache_allocation_gap_preserves_latest_bounded_history_and_timeline_reads() {
         third.commit_timestamp(),
         Some(Timestamp::from_micros(3_000))
     );
-    assert_eq!(fixture.state.active_row_count(), 6);
+    assert_eq!(fixture.state.active_row_count(), 2);
     assert_eq!(fixture.visible.visible_version(), CommitVersion::new(3));
 
     let view = fixture.state.capture_read_view().expect("read view");
@@ -656,7 +650,7 @@ fn cache_allocation_gap_preserves_latest_bounded_history_and_timeline_reads() {
         vec![CommitVersion::new(3), CommitVersion::new(1)]
     );
 
-    let timeline = timeline_view(&view, branch);
+    let timeline = timeline_view(&fixture.state, branch);
     assert_eq!(
         timeline.timestamp_for_version(CommitVersion::new(1)),
         Some(Timestamp::from_micros(1_000))
@@ -747,7 +741,7 @@ fn cache_commit_mixed_batch_spans_multiple_storage_spaces_atomically() {
 
     assert_eq!(outcome.mutation_counts().puts(), 2);
     assert_eq!(outcome.mutation_counts().deletes(), 1);
-    assert_eq!(fixture.state.active_row_count(), 5);
+    assert_eq!(fixture.state.active_row_count(), 3);
     let view = fixture.state.capture_read_view().expect("read view");
     assert_eq!(
         view.latest(&alpha)
@@ -1268,7 +1262,7 @@ fn cache_commit_preserves_explicit_timestamp_for_user_and_timeline_rows() {
     let view = fixture.state.capture_read_view().expect("read view");
     let row = view.latest(&key).expect("latest read").expect("row");
     assert_eq!(row.row().commit_timestamp(), timestamp);
-    let timeline = timeline_view(&view, branch);
+    let timeline = timeline_view(&fixture.state, branch);
     for entry in timeline.entries() {
         assert_eq!(entry.commit_timestamp(), timestamp);
     }
@@ -1533,35 +1527,35 @@ fn cache_commit_guard_contention_serializes_conflict_validation_window() {
 }
 
 #[test]
-fn cache_commit_row_limit_counts_timeline_rows_after_allocation_without_apply() {
+fn cache_commit_row_counts_match_user_mutations_exactly() {
+    // W3.1c: commits stage user rows only. The old after-allocation row-limit
+    // failure is unconstructible now — config validation requires the row
+    // limit to be at least the mutation limit, and rows == mutations — so
+    // this pins the invariant that retired it, plus the config guard.
     let branch = branch_id(24);
+    assert!(matches!(
+        CommitRuntimeConfig::new(2, 1, 1, CommitReadOnlyDiagnostics::Enabled),
+        Err(CommitRuntimeError::InvalidConfig { .. })
+    ));
     let config =
-        CommitRuntimeConfig::new(1, 1, 2, CommitReadOnlyDiagnostics::Enabled).expect("config");
+        CommitRuntimeConfig::new(1, 1, 1, CommitReadOnlyDiagnostics::Enabled).expect("config");
     let mut fixture = CacheFixture::new(branch, config);
-    let batch = mutating_batch(
-        branch,
-        vec![CommitMutation::put(
-            physical_key(branch, 0x20, b"limit".to_vec()),
-            b"value".to_vec(),
-            CommitExpiry::None,
-            CommitRetentionHint::Append,
-        )],
-        CommitValidationFacts::empty(),
-        CommitBatchOptions::default(),
-    );
-
-    assert_eq!(
-        fixture.execute(batch),
-        Err(CommitRuntimeError::InvalidBatch {
-            reason: "commit row count exceeds configured limit",
-        })
-    );
-    assert_eq!(
-        fixture.allocator.version_allocator().last_allocated(),
-        CommitVersion::new(1)
-    );
-    assert_eq!(fixture.state.active_row_count(), 0);
-    assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
+    let outcome = fixture
+        .execute(mutating_batch(
+            branch,
+            vec![CommitMutation::put(
+                physical_key(branch, 0x20, b"limit".to_vec()),
+                b"value".to_vec(),
+                CommitExpiry::None,
+                CommitRetentionHint::Append,
+            )],
+            CommitValidationFacts::empty(),
+            CommitBatchOptions::default(),
+        ))
+        .expect("single put fits a one-row limit without timeline padding");
+    assert_eq!(outcome.mutation_counts().puts(), 1);
+    assert_eq!(outcome.mutation_counts().timeline_rows(), 0);
+    assert_eq!(fixture.state.active_row_count(), 1);
 }
 
 #[test]
@@ -1657,10 +1651,7 @@ fn cache_commit_visible_publication_failure_reports_applied_not_visible_and_rele
         }
     );
     assert!(!format!("{error:?}").contains("super-secret-cache-visible-value"));
-    assert_eq!(
-        state.state.active_row_count(),
-        1 + CommitTimelineRows::timeline_row_count()
-    );
+    assert_eq!(state.state.active_row_count(), 1);
     assert_eq!(visible.publish_attempts, 1);
     assert_eq!(visible.tracker.visible_version(), CommitVersion::ZERO);
     assert_cache_applied_not_visible_gate(&durable_gate, branch);
@@ -1819,10 +1810,7 @@ fn cache_commit_visibility_gap_blocks_same_branch_follow_on() {
         allocator.version_allocator().last_allocated(),
         CommitVersion::new(1)
     );
-    assert_eq!(
-        state.state.active_row_count(),
-        1 + CommitTimelineRows::timeline_row_count()
-    );
+    assert_eq!(state.state.active_row_count(), 1);
     assert_eq!(visible.publish_attempts, 1);
 }
 
@@ -2131,7 +2119,7 @@ fn cache_commit_rejects_branch_state_mismatch_before_allocation() {
 }
 
 #[test]
-fn cache_commit_row_preparation_uses_one_stamp_for_user_and_timeline_rows() {
+fn cache_commit_row_preparation_uses_one_stamp_for_user_rows() {
     let branch = branch_id(28);
     let batch = mutating_batch(
         branch,
@@ -2155,13 +2143,10 @@ fn cache_commit_row_preparation_uses_one_stamp_for_user_and_timeline_rows() {
     let (rows, mutation_counts) =
         prepare_commit_rows(batch, stamp, &CommitRuntimeConfig::default()).expect("cache rows");
 
-    assert_eq!(rows.len(), 2 + CommitTimelineRows::timeline_row_count());
+    assert_eq!(rows.len(), 2);
     assert_eq!(mutation_counts.puts(), 1);
     assert_eq!(mutation_counts.deletes(), 1);
-    assert_eq!(
-        mutation_counts.timeline_rows(),
-        CommitTimelineRows::timeline_row_count()
-    );
+    assert_eq!(mutation_counts.timeline_rows(), 0);
     for row in rows {
         assert_eq!(row.commit_version(), stamp.commit_version());
         assert_eq!(row.commit_timestamp(), stamp.commit_timestamp());
@@ -2404,7 +2389,15 @@ impl CacheFixture {
                 CommitTimestampGuard::default(),
                 CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
             ),
-            state: BranchLocalState::new(branch, BranchRuntimeConfig::default()).expect("state"),
+            state: {
+                let state =
+                    BranchLocalState::new(branch, BranchRuntimeConfig::default()).expect("state");
+                // W3.1c: fixture branches are born empty in-process — their
+                // retained-timeline indexes are complete from birth, exactly
+                // like lifecycle-created branches.
+                state.retained_timeline().mark_complete_from_birth();
+                state
+            },
             visible: VisibleVersionTracker::default(),
             durable_gate: CommitUnresolvedDurableGate::new(),
         }
@@ -2450,24 +2443,20 @@ fn mutating_batch(
     CommitBatch::mutating(branch, mutations, validation, options)
 }
 
-fn timeline_view(
-    view: &crate::branch::read::BranchReadView,
-    branch: BranchId,
-) -> CommitTimelineView {
-    let bounds = BranchScanBounds::unbounded(
-        branch,
-        COMMIT_TIMELINE_SPACE,
-        StorageSpaceId::COMMIT_TIMELINE,
-    )
-    .expect("timeline scan bounds");
-    let rows = view
-        .scan_range(&bounds, BranchReadBound::latest())
-        .expect("timeline scan");
-    CommitTimelineView::from_rows(
-        branch,
-        rows.iter().map(crate::branch::read::BranchVisibleRow::row),
-    )
-    .expect("timeline view")
+fn timeline_view(state: &BranchLocalState, branch: BranchId) -> CommitTimelineView {
+    // W3.1c: commits no longer materialize timeline rows — the retained
+    // index observed at apply is the timeline's source.
+    let entries = state
+        .retained_timeline()
+        .materialized_entries(None)
+        .expect("fixture branches are complete from birth")
+        .iter()
+        .map(|entry| {
+            CommitTimelineEntry::new(branch, entry.commit_version(), entry.commit_timestamp())
+                .expect("retained entry")
+        })
+        .collect::<Vec<_>>();
+    CommitTimelineView::from_entries(branch, entries)
 }
 
 fn assert_cache_applied_not_visible_gate(

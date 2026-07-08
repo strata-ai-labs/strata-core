@@ -1,6 +1,6 @@
 use super::*;
 use crate::branch::config::BranchRuntimeConfig;
-use crate::branch::read::{BranchReadBound, BranchReadView, BranchScanBounds};
+use crate::branch::read::BranchReadView;
 use crate::branch::state::BranchLocalState;
 use crate::row::{PhysicalKey, StorageRow};
 use std::error::Error as _;
@@ -55,10 +55,7 @@ fn durable_standard_commit_appends_wal_record_then_applies_rows_and_publishes_vi
     assert_eq!(record.branch_id(), branch);
     assert_eq!(record.commit_version(), CommitVersion::new(1));
     assert_eq!(record.commit_timestamp(), Timestamp::from_micros(1_000));
-    assert_eq!(
-        record.commit_payload().rows().len(),
-        1 + CommitTimelineRows::timeline_row_count()
-    );
+    assert_eq!(record.commit_payload().rows().len(), 1);
     assert_eq!(record.commit_payload().rows()[0].physical_key(), &key);
     assert_eq!(
         record.commit_payload().rows()[0].commit_version(),
@@ -81,7 +78,7 @@ fn durable_standard_commit_appends_wal_record_then_applies_rows_and_publishes_vi
             .value(),
         b"value"
     );
-    let timeline = timeline_view(&view, branch);
+    let timeline = timeline_view(&fixture.state, branch);
     assert_eq!(
         timeline
             .version_at_or_before(Timestamp::from_micros(1_000))
@@ -674,10 +671,7 @@ fn durable_standard_delete_appends_tombstone_and_hides_latest() {
     assert_eq!(outcome.commit_version(), Some(CommitVersion::new(2)));
     assert_eq!(outcome.mutation_counts().puts(), 0);
     assert_eq!(outcome.mutation_counts().deletes(), 1);
-    assert_eq!(
-        outcome.mutation_counts().timeline_rows(),
-        CommitTimelineRows::timeline_row_count()
-    );
+    assert_eq!(outcome.mutation_counts().timeline_rows(), 0);
     let record = &fixture.wal.records[0];
     assert_eq!(record.commit_payload().rows()[0].physical_key(), &key);
     assert!(record.commit_payload().rows()[0].is_tombstone());
@@ -697,7 +691,7 @@ fn durable_standard_delete_appends_tombstone_and_hides_latest() {
 }
 
 #[test]
-fn durable_standard_mixed_batch_writes_user_rows_then_timeline_and_counts() {
+fn durable_standard_mixed_batch_writes_user_rows_and_counts() {
     let branch = branch_id(61);
     let first = physical_key(branch, 0x20, b"mixed-first".to_vec());
     let deleted = physical_key(branch, 0x21, b"mixed-delete".to_vec());
@@ -735,21 +729,15 @@ fn durable_standard_mixed_batch_writes_user_rows_then_timeline_and_counts() {
 
     assert_eq!(outcome.mutation_counts().puts(), 2);
     assert_eq!(outcome.mutation_counts().deletes(), 1);
-    assert_eq!(
-        outcome.mutation_counts().timeline_rows(),
-        CommitTimelineRows::timeline_row_count()
-    );
+    assert_eq!(outcome.mutation_counts().timeline_rows(), 0);
     let payload = fixture.wal.records[0].commit_payload().rows();
-    assert_eq!(payload.len(), 3 + CommitTimelineRows::timeline_row_count());
+    assert_eq!(payload.len(), 3);
     assert_eq!(payload[0].physical_key(), &first);
     assert!(!payload[0].is_tombstone());
     assert_eq!(payload[1].physical_key(), &deleted);
     assert!(payload[1].is_tombstone());
     assert_eq!(payload[2].physical_key(), &second);
     assert!(!payload[2].is_tombstone());
-    assert!(payload[3..]
-        .iter()
-        .all(|row| row.physical_key().storage_space_id() == StorageSpaceId::COMMIT_TIMELINE));
     let view = fixture.state.capture_read_view().expect("read view");
     assert!(view
         .latest(&first)
@@ -1540,10 +1528,14 @@ fn durable_conflict_rejects_before_allocation_or_wal_append() {
 }
 
 #[test]
-fn durable_row_limit_failure_after_allocation_leaves_version_gap_without_wal_append() {
+fn durable_row_counts_match_user_mutations_exactly() {
+    // W3.1c: commits stage user rows only, so the after-allocation row-limit
+    // failure is unconstructible (config validation requires the row limit to
+    // be at least the mutation limit, and rows == mutations). Pin the
+    // invariant that retired it on the durable path.
     let branch = branch_id(66);
     let config =
-        CommitRuntimeConfig::new(1, 1, 2, CommitReadOnlyDiagnostics::Enabled).expect("config");
+        CommitRuntimeConfig::new(1, 1, 1, CommitReadOnlyDiagnostics::Enabled).expect("config");
     let mut fixture = DurableFixture::new(
         branch,
         config,
@@ -1553,44 +1545,22 @@ fn durable_row_limit_failure_after_allocation_leaves_version_gap_without_wal_app
         },
     );
     let key = physical_key(branch, 0x20, b"row-limit".to_vec());
-
-    assert_eq!(
-        fixture.execute(durable_batch(
-            branch,
-            CommitDurabilityMode::Standard,
-            vec![CommitMutation::put(
-                key.clone(),
-                b"super-secret-apply-value".to_vec(),
-                CommitExpiry::None,
-                CommitRetentionHint::Append,
-            )],
-        )),
-        Err(CommitRuntimeError::InvalidBatch {
-            reason: "commit row count exceeds configured limit",
-        })
-    );
-    assert_eq!(
-        fixture.allocator.version_allocator().last_allocated(),
-        CommitVersion::new(1)
-    );
-    assert_eq!(fixture.wal.append_attempts, 0);
-    assert_eq!(fixture.state.active_row_count(), 0);
-    assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
-
-    fixture.config = CommitRuntimeConfig::default();
     let outcome = fixture
         .execute(durable_batch(
             branch,
             CommitDurabilityMode::Standard,
             vec![CommitMutation::put(
                 key,
-                b"retry".to_vec(),
+                b"value".to_vec(),
                 CommitExpiry::None,
                 CommitRetentionHint::Append,
             )],
         ))
-        .expect("retry after allocated row-limit failure succeeds");
-    assert_eq!(outcome.commit_version(), Some(CommitVersion::new(2)));
+        .expect("single put fits a one-row limit without timeline padding");
+    assert_eq!(outcome.mutation_counts().puts(), 1);
+    assert_eq!(outcome.mutation_counts().timeline_rows(), 0);
+    assert_eq!(fixture.wal.records[0].commit_payload().rows().len(), 1);
+    assert_eq!(fixture.state.active_row_count(), 1);
 }
 
 #[test]
@@ -2377,7 +2347,13 @@ struct FailingApplyTarget {
 impl FailingApplyTarget {
     fn new(branch: BranchId, fail_append: bool) -> Self {
         Self {
-            state: BranchLocalState::new(branch, BranchRuntimeConfig::default()).expect("state"),
+            state: {
+                let state =
+                    BranchLocalState::new(branch, BranchRuntimeConfig::default()).expect("state");
+                // W3.1c: fixture branches are born empty in-process.
+                state.retained_timeline().mark_complete_from_birth();
+                state
+            },
             fail_append,
         }
     }
@@ -2496,7 +2472,13 @@ impl DurableFixture {
                 CommitTimestampGuard::default(),
                 CommitManualTimestampSource::new(Timestamp::from_micros(1_000)),
             ),
-            state: BranchLocalState::new(branch, BranchRuntimeConfig::default()).expect("state"),
+            state: {
+                let state =
+                    BranchLocalState::new(branch, BranchRuntimeConfig::default()).expect("state");
+                // W3.1c: fixture branches are born empty in-process.
+                state.retained_timeline().mark_complete_from_birth();
+                state
+            },
             visible: VisibleVersionTracker::default(),
             wal: RecordingWalAppender::new(policy, wal_mode),
             durable_gate: CommitUnresolvedDurableGate::new(),
@@ -2587,24 +2569,20 @@ fn assert_unallocated_unattempted(fixture: &DurableFixture) {
     assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
 }
 
-fn timeline_view(
-    view: &crate::branch::read::BranchReadView,
-    branch: BranchId,
-) -> CommitTimelineView {
-    let bounds = BranchScanBounds::unbounded(
-        branch,
-        COMMIT_TIMELINE_SPACE,
-        StorageSpaceId::COMMIT_TIMELINE,
-    )
-    .expect("timeline scan bounds");
-    let rows = view
-        .scan_range(&bounds, BranchReadBound::latest())
-        .expect("timeline scan");
-    CommitTimelineView::from_rows(
-        branch,
-        rows.iter().map(crate::branch::read::BranchVisibleRow::row),
-    )
-    .expect("timeline view")
+fn timeline_view(state: &BranchLocalState, branch: BranchId) -> CommitTimelineView {
+    // W3.1c: commits no longer materialize timeline rows — the retained
+    // index observed at apply is the timeline's source.
+    let entries = state
+        .retained_timeline()
+        .materialized_entries(None)
+        .expect("fixture branches are complete from birth")
+        .iter()
+        .map(|entry| {
+            CommitTimelineEntry::new(branch, entry.commit_version(), entry.commit_timestamp())
+                .expect("retained entry")
+        })
+        .collect::<Vec<_>>();
+    CommitTimelineView::from_entries(branch, entries)
 }
 
 fn assert_record_rows_share_commit_facts(
@@ -2623,6 +2601,8 @@ fn assert_record_rows_share_commit_facts(
     }
 }
 
+/// W3.1c: commits no longer materialize timeline rows — WAL payloads carry
+/// user rows only (the stamp on the record is the timeline fact).
 fn assert_payload_contains_timeline_rows(record: &WalRecord) {
     let timeline_rows = record
         .commit_payload()
@@ -2630,7 +2610,7 @@ fn assert_payload_contains_timeline_rows(record: &WalRecord) {
         .iter()
         .filter(|row| row.physical_key().storage_space_id() == StorageSpaceId::COMMIT_TIMELINE)
         .count();
-    assert_eq!(timeline_rows, CommitTimelineRows::timeline_row_count());
+    assert_eq!(timeline_rows, 0);
 }
 
 #[cfg(feature = "perf-trace")]
@@ -2800,10 +2780,7 @@ fn assert_visibility_failure_error_and_state(
             ..
         } if *failed_branch == branch && *commit_version == CommitVersion::new(1)
     ));
-    assert_eq!(
-        state.state.active_row_count(),
-        1 + CommitTimelineRows::timeline_row_count()
-    );
+    assert_eq!(state.state.active_row_count(), 1);
     assert_eq!(visible.tracker.visible_version(), CommitVersion::ZERO);
     assert_eq!(visible.publish_attempts, 1);
     assert_eq!(

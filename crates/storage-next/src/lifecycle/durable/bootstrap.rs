@@ -2669,6 +2669,13 @@ fn install_non_seeded_checkpoint_state(
         checkpoint.timeline_groups(),
         seeded_branch_id,
     );
+    // W3.1c invariant: every branch (seeded included) leaves recovery with a
+    // complete index — section-seeded branches no-op; the rest scan-seed from
+    // their (pre-elision) timeline rows, or complete-empty when fresh.
+    for descriptor in branch_catalog.list_branches(false) {
+        let branch = branch_catalog.branch_state(descriptor.branch_id())?;
+        crate::lifecycle::recovery::ensure_branch_timeline_complete(branch)?;
+    }
     Ok(())
 }
 

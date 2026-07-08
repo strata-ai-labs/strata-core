@@ -424,9 +424,12 @@ fn validate_replay_timeline_rows(
         }
     }
 
-    if !has_timestamp_to_version || !has_version_to_timestamp {
+    // W3.1c: commits no longer materialize timeline rows, so their absence
+    // is the normal case. A LONE row of the pair (only possible in a corrupt
+    // pre-elision record — pairs were written atomically) still fails closed.
+    if has_timestamp_to_version != has_version_to_timestamp {
         return Err(CommitRuntimeError::InvalidTimelineFact {
-            reason: "replay payload is missing commit timeline rows",
+            reason: "replay payload has a partial commit timeline row pair",
         });
     }
     Ok(())

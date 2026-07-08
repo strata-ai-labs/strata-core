@@ -308,6 +308,24 @@ impl CommitTimelineView {
         &self.entries_by_version
     }
 
+    /// W3.1c: build a view directly from version-ordered entries (the
+    /// retained-timeline index's persistable form) — commits no longer
+    /// materialize timeline rows, so the index is the view's source.
+    pub(crate) fn from_entries(
+        branch_id: BranchId,
+        entries_by_version: Vec<CommitTimelineEntry>,
+    ) -> Self {
+        let mut entries = entries_by_version.clone();
+        entries.sort_by_key(|entry| (entry.commit_timestamp(), entry.commit_version()));
+        let bounds = timeline_bounds(&entries);
+        Self {
+            branch_id,
+            entries,
+            entries_by_version,
+            bounds,
+        }
+    }
+
     pub(crate) fn timestamp_for_version(&self, version: CommitVersion) -> Option<Timestamp> {
         self.entries_by_version
             .binary_search_by_key(&version, |entry| entry.commit_version())

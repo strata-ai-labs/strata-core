@@ -608,7 +608,11 @@ fn replay_duplicate_mismatch_checks_timestamp_expiry_and_tombstone() {
 }
 
 #[test]
-fn replay_rejects_record_without_timeline_pair() {
+fn replay_accepts_record_without_timeline_rows_and_rejects_partial_pair() {
+    // W3.1c: commits no longer materialize timeline rows, so their absence is
+    // the normal replay shape — the record's stamp is the timeline fact. A
+    // LONE row of the pre-elision pair (only possible in a corrupt legacy
+    // record — pairs were written atomically) still fails closed.
     let branch = branch_id(95);
     let version = CommitVersion::new(14);
     let timestamp = Timestamp::from_micros(14_000);
@@ -622,18 +626,38 @@ fn replay_rejects_record_without_timeline_pair() {
     let payload = WalCommitPayload::new(vec![row]).expect("payload");
     let record = WalRecord::new(version, branch, timestamp, payload).expect("record");
     let mut fixture = ReplayFixture::new(branch);
+    let report = fixture
+        .replay(record, CommitDurabilityClass::Standard)
+        .expect("stamp-only replay applies");
+    assert_eq!(report.outcome().commit_version(), Some(version));
+    assert_eq!(fixture.visible.visible_version(), version);
 
+    // Partial pair: one timeline row of the two → corrupt legacy record.
+    let partial_version = CommitVersion::new(15);
+    let partial_timestamp = Timestamp::from_micros(15_000);
+    let entry = CommitTimelineEntry::new(branch, partial_version, partial_timestamp)
+        .expect("timeline entry");
+    let pair = CommitTimelineRows::from_entry(entry).expect("timeline rows");
+    let [first_of_pair, _second] = pair.into_rows();
+    let user_row = StorageRow::put(
+        physical_key(branch, 0x20, b"partial-timeline".to_vec()),
+        partial_version,
+        partial_timestamp,
+        Timestamp::EPOCH,
+        b"durable".to_vec(),
+    );
+    let payload = WalCommitPayload::new(vec![user_row, first_of_pair]).expect("partial payload");
+    let record =
+        WalRecord::new(partial_version, branch, partial_timestamp, payload).expect("record");
     let error = fixture
         .replay(record, CommitDurabilityClass::Standard)
-        .expect_err("missing timeline rejects");
-
+        .expect_err("partial timeline pair rejects");
     assert_eq!(
         error,
         CommitRuntimeError::InvalidTimelineFact {
-            reason: "replay payload is missing commit timeline rows",
+            reason: "replay payload has a partial commit timeline row pair",
         }
     );
-    assert_eq!(fixture.visible.visible_version(), CommitVersion::ZERO);
 }
 
 #[test]

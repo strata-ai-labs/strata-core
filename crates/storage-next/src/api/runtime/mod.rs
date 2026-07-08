@@ -8,8 +8,8 @@ use crate::branch::read::{
 };
 use crate::commit::{
     CommitBranchGeneration, CommitBranchGenerationGuard, CommitDurabilityClass,
-    CommitRuntimeConfig, CommitTimelineLookup, CommitTimelineMiss, CommitTimelineView,
-    CommitTimestampSource, COMMIT_TIMELINE_SPACE,
+    CommitRuntimeConfig, CommitTimelineEntry, CommitTimelineLookup, CommitTimelineMiss,
+    CommitTimelineView, CommitTimestampSource, COMMIT_TIMELINE_SPACE,
 };
 use crate::lifecycle::{
     collect_storage_pressure_with_budget, estimate_commit_batch_active_bytes,
@@ -97,7 +97,7 @@ use data::{
     cap_bound_at_visible, flush_request_for_boundary, map_api_commit_batch, map_commit_summary,
     map_immutable_sources, map_scan_rows, map_storage_space, physical_key, read_row_from_storage,
     read_row_from_storage_if_visible, require_version_retained, resolve_read_bound,
-    visible_tombstone_at_bound,
+    timeline_view_or_index, visible_tombstone_at_bound,
 };
 use diagnostics::{
     branch_for_diagnostics_scope, branch_generation_or_default, current_visible,
@@ -106,7 +106,9 @@ use diagnostics::{
     map_branch_descriptor, map_budget_report, map_diagnostics_recovery, map_generation_guard,
     map_wal_growth_report, require_valid_branch_identifier,
 };
-use error::{branch_error, commit_error, default_branch_generation, map_lifecycle_error};
+#[cfg(test)]
+use error::commit_error;
+use error::{branch_error, default_branch_generation, map_lifecycle_error};
 #[cfg(any(test, feature = "testkit"))]
 pub(crate) use error::{
     map_commit_error_for_test, map_lifecycle_error_for_test, map_maintenance_outcome_for_test,
@@ -2167,22 +2169,9 @@ impl<'a> StorageRuntime<'a> {
 
     fn timeline_view(&self, branch_id: BranchId) -> StorageApiResult<CommitTimelineView> {
         let view = self.read_view_for_branch(branch_id)?;
-        let bounds = BranchScanBounds::unbounded(
-            branch_id,
-            COMMIT_TIMELINE_SPACE,
-            RowStorageSpaceId::COMMIT_TIMELINE,
-        )
-        .map_err(branch_error)?;
-        let timeline_rows = view
-            .scan_range_including_tombstones(&bounds, BranchReadBound::Latest)
-            .map_err(branch_error)?;
-        CommitTimelineView::from_rows(
-            branch_id,
-            timeline_rows
-                .iter()
-                .map(crate::branch::read::BranchHistoryRow::row),
-        )
-        .map_err(commit_error)
+        // W3.1c: index-first — commits no longer write timeline rows; the
+        // scan inside the helper covers testkit views and legacy rows only.
+        timeline_view_or_index(&view)
     }
 
     fn diagnostics_timeline(&self, branch_id: BranchId) -> DiagnosticsTimelineReport {

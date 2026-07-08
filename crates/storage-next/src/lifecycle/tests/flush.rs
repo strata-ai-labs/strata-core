@@ -463,7 +463,7 @@ fn cache_runtime_flushes_explicitly_rotated_state_only() {
         .flush_frozen(&flush_request(branch, None))
         .expect("deferred flush");
     assert!(deferred.deferred_no_frozen_state());
-    assert_eq!(runtime.branch_state().active_row_count(), 3);
+    assert_eq!(runtime.branch_state().active_row_count(), 1);
     assert_eq!(runtime.branch_state().frozen_table_count(), 0);
 
     runtime

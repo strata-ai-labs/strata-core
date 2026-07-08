@@ -3,13 +3,13 @@ use super::{
     BranchHistoryOptions, BranchId, BranchReadBound, BranchReadView, BranchScanBounds,
     CommitAdmissionPressureReason, CommitAdmissionPressureSeverity, CommitAdmissionSummary,
     CommitBatch, CommitDurabilityClass, CommitDurabilitySummary, CommitExpectedVersion,
-    CommitSummary, CommitTimelineLookup, CommitTimelineMiss, CommitTimelineView, CommitVersion,
-    FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId, LifecycleStoragePressureReason,
-    LifecycleStoragePressureSeverity, LifecycleWriteAdmissionOutcome,
-    LifecycleWriteAdmissionStatus, PhysicalKey, ReadBound, ReadLimit, ResolvedReadBound,
-    RowStorageSpaceId, ScanReadOutcome, StorageApiError, StorageApiLowerLayer, StorageApiResult,
-    StorageKey, StorageReadRow, StorageRow, StorageSpaceId, StorageValue, Timestamp,
-    API_PHYSICAL_SPACE, COMMIT_TIMELINE_SPACE,
+    CommitSummary, CommitTimelineEntry, CommitTimelineLookup, CommitTimelineMiss,
+    CommitTimelineView, CommitVersion, FlushFrozenRequest, FlushTableIdentitySeed,
+    FlushTableObjectId, LifecycleStoragePressureReason, LifecycleStoragePressureSeverity,
+    LifecycleWriteAdmissionOutcome, LifecycleWriteAdmissionStatus, PhysicalKey, ReadBound,
+    ReadLimit, ResolvedReadBound, RowStorageSpaceId, ScanReadOutcome, StorageApiError,
+    StorageApiLowerLayer, StorageApiResult, StorageKey, StorageReadRow, StorageRow, StorageSpaceId,
+    StorageValue, Timestamp, API_PHYSICAL_SPACE, COMMIT_TIMELINE_SPACE,
 };
 use crate::api::StorageImmutableSource;
 use crate::branch::read::BranchImmutableRowSource;
@@ -292,7 +292,7 @@ pub(super) fn require_version_retained(
     view: &BranchReadView,
     version: CommitVersion,
 ) -> StorageApiResult<()> {
-    let timeline = timeline_view_from_read_view(view)?;
+    let timeline = timeline_view_or_index(view)?;
     if timeline
         .bounds()
         .min_version()
@@ -400,6 +400,36 @@ pub(super) fn timeline_timestamp_for_version(
     let scanned = timeline_view_from_read_view(view)?;
     seed_retained_timeline(index, &scanned);
     Ok(scanned.timestamp_for_version(version))
+}
+
+/// W3.1c: materialize a `CommitTimelineView` for the cold public timeline
+/// surfaces (lookups, bounds, fork-at-timestamp). Index-first: commits no
+/// longer write timeline rows, so a provably complete index is the ONLY
+/// current source; the scan remains exact for testkit views and legacy
+/// pre-elision rows, and seeds the index when it runs.
+pub(super) fn timeline_view_or_index(
+    view: &BranchReadView,
+) -> StorageApiResult<CommitTimelineView> {
+    if let Some((index, live_active)) = view.retained_timeline() {
+        if let Some(entries) = index.materialized_entries(pinned_view_bound(view, live_active)) {
+            let entries = entries
+                .iter()
+                .map(|entry| {
+                    CommitTimelineEntry::new(
+                        view.branch_id(),
+                        entry.commit_version(),
+                        entry.commit_timestamp(),
+                    )
+                    .map_err(commit_error)
+                })
+                .collect::<StorageApiResult<Vec<_>>>()?;
+            return Ok(CommitTimelineView::from_entries(view.branch_id(), entries));
+        }
+        let scanned = timeline_view_from_read_view(view)?;
+        seed_retained_timeline(index, &scanned);
+        return Ok(scanned);
+    }
+    timeline_view_from_read_view(view)
 }
 
 /// A pinned view answers as of its captured facts; an empty branch pins to

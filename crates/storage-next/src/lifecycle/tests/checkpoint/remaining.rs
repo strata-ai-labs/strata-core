@@ -130,7 +130,7 @@ fn checkpoint_recovery_ignores_opaque_snapshot_sections() {
         .expect("recovery ignores opaque section");
     let reopened = shell.complete_recovery(&outcome).expect("open runtime");
 
-    assert_eq!(outcome.checkpoint().section_count(), 2);
+    assert_eq!(outcome.checkpoint().section_count(), 3);
     assert_eq!(
         reopened
             .read_view()
@@ -234,8 +234,9 @@ fn checkpoint_recovery_round_trip_after_frozen_flush() {
     // J2: the checkpoint is a bounded delta. Only the still-active `second` commit
     // (its user row + 2 timeline rows = 3) is emitted; the flushed `first` commit's
     // rows are owned and excluded (recovery restores them from the table manifest).
-    // Pre-J2 this would have been 6 (both commits' rows).
-    assert_eq!(outcome.row_count(), 3);
+    // Pre-J2 this would have been 6 (both commits' rows); W3.1c removed the
+    // two timeline rows.
+    assert_eq!(outcome.row_count(), 1);
     drop(runtime);
 
     let reopened = open_runtime(branch, backend);

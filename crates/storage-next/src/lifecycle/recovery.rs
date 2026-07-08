@@ -805,6 +805,53 @@ fn decode_timeline_groups(
     Ok(groups)
 }
 
+/// W3.1c: the completeness INVARIANT — every branch leaves recovery with a
+/// provably complete retained-timeline index. If the checkpoint section
+/// already seeded it, this is a no-op. Otherwise seed from a one-time scan of
+/// the branch's timeline-space rows: empty for a fresh branch (complete-empty
+/// is exact), and the full pre-elision history for databases created before
+/// W3.1c removed the rows (their rows still exist in tables). WAL-tail replay
+/// observations extend the result. After this, the index is the timeline's
+/// only read source — the scan never runs at read time again.
+pub(crate) fn ensure_branch_timeline_complete(branch: &BranchLocalState) -> LifecycleResult<()> {
+    if branch.retained_timeline().is_complete() {
+        return Ok(());
+    }
+    let view = branch.capture_read_view().map_err(branch_error)?;
+    let bounds = crate::branch::read::BranchScanBounds::unbounded(
+        branch.branch_id(),
+        crate::commit::COMMIT_TIMELINE_SPACE,
+        crate::row::StorageSpaceId::COMMIT_TIMELINE,
+    )
+    .map_err(branch_error)?;
+    let rows = view
+        .scan_range_including_tombstones(&bounds, crate::branch::read::BranchReadBound::Latest)
+        .map_err(branch_error)?;
+    let timeline = crate::commit::CommitTimelineView::from_rows(
+        branch.branch_id(),
+        rows.iter().map(crate::branch::read::BranchHistoryRow::row),
+    )
+    .map_err(|source| {
+        LifecycleError::lower_layer_with(
+            crate::lifecycle::LifecycleLowerLayer::CommitRuntime,
+            "commit runtime failed",
+            source,
+        )
+    })?;
+    let entries: Vec<crate::timeline_index::RetainedTimelineEntry> = timeline
+        .entries_by_version()
+        .iter()
+        .map(|entry| {
+            crate::timeline_index::RetainedTimelineEntry::new(
+                entry.commit_version(),
+                entry.commit_timestamp(),
+            )
+        })
+        .collect::<Vec<_>>();
+    branch.retained_timeline().seed_from_scan(&entries);
+    Ok(())
+}
+
 /// Seed a branch's retained-timeline index from its decoded group, if present.
 pub(crate) fn seed_branch_timeline_from_groups(
     branch: &BranchLocalState,
