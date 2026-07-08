@@ -33,6 +33,11 @@ impl Executor {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::unused_self,
+        clippy::needless_pass_by_value,
+        reason = "stub mirrors the arrow-enabled signature at the dispatch site"
+    )]
     #[cfg(not(feature = "arrow"))]
     pub(super) fn execute_arrow_import(
         &mut self,
@@ -76,6 +81,11 @@ impl Executor {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::unused_self,
+        clippy::needless_pass_by_value,
+        reason = "stub mirrors the arrow-enabled signature at the dispatch site"
+    )]
     #[cfg(not(feature = "arrow"))]
     pub(super) fn execute_arrow_export(
         &mut self,

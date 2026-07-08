@@ -2947,7 +2947,7 @@ fn compact_branch(
     request: &LifecycleCompactionRequest,
     budget: Option<StorageRuntimeBudget>,
 ) -> LifecycleResult<LifecycleCompactionOutcome> {
-    let started = std::time::Instant::now();
+    let started = crate::time_compat::Instant::now();
     let branch_request = cache_compaction_branch_request(request, budget)?;
     let plan = branch
         .plan_branch_compaction(&branch_request)

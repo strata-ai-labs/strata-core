@@ -560,6 +560,8 @@ pub(super) fn run_next_durable_maintenance(
         .map_err(map_lifecycle_error)
 }
 
+// Reached only through the localfs durable-owned drain path.
+#[cfg_attr(not(feature = "localfs"), allow(dead_code))]
 pub(super) fn run_next_background_durable_maintenance(
     runtime: &mut LifecycleDurableLocalRuntime<'static, ApiTimestampSource>,
 ) -> StorageApiResult<Option<DurableBackgroundMaintenanceStep<'static>>> {
@@ -654,6 +656,8 @@ fn start_next_background_step(
     clippy::too_many_lines,
     reason = "durable background drain is an explicit start/build/publish state machine"
 )]
+// Reached only through the localfs durable-owned drain path.
+#[cfg_attr(not(feature = "localfs"), allow(dead_code))]
 pub(super) fn drain_durable_background_round(
     runtime: &Arc<ParkingMutex<LifecycleDurableLocalRuntime<'static, ApiTimestampSource>>>,
     commit_waiters: &std::sync::atomic::AtomicUsize,

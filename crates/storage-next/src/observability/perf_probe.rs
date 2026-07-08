@@ -8,8 +8,8 @@ use super::perf_trace::{self, StoragePerfSnapshot};
 use crate::branch::read::{BranchReadBound, BranchVisibleRow};
 use crate::branch::state::BranchLocalState;
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
+use crate::time_compat::Instant;
 use std::hint::black_box;
-use std::time::Instant;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 const DEFAULT_SCALE_KEYS: usize = 100_000;

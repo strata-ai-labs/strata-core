@@ -1,7 +1,7 @@
 //! Event service.
 
+use crate::time_compat::{SystemTime, UNIX_EPOCH};
 use std::collections::BTreeSet;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use strata_core_next::Timestamp;
 

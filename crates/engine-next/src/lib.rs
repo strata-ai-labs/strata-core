@@ -15,6 +15,7 @@ mod data;
 mod diagnostics;
 mod persistence;
 mod runtime;
+mod time_compat;
 
 #[cfg(any(test, feature = "testkit"))]
 pub mod test_support;

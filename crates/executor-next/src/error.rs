@@ -557,8 +557,8 @@ fn default_reference_id_source() -> Arc<dyn ErrorReferenceIdSource> {
 /// (the sequential counter alone restarts at 1 each run, so `err_local_000001`
 /// would recur every process). Still begins with `err_local_`.
 fn process_reference_prefix() -> String {
-    let token = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let token = crate::time_compat::SystemTime::now()
+        .duration_since(crate::time_compat::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.subsec_nanos());
     format!("err_local_{token:08x}_")
 }

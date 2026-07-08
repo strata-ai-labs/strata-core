@@ -577,6 +577,8 @@ fn wal_service_config(options: StorageOpenOptions) -> StorageApiResult<WalServic
     Ok(config)
 }
 
+// Called only by the localfs open path.
+#[cfg_attr(not(feature = "localfs"), allow(dead_code))]
 fn open_durable_with_owned_backend_handle<'runtime>(
     options: StorageOpenOptions,
     backend: BackendHandle<'static>,

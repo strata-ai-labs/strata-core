@@ -128,7 +128,7 @@ pub(crate) enum CacheBackgroundMaintenanceBuild {
         request: FlushFrozenRequest,
         branch_snapshot: BranchLocalState,
         budget: StorageBudgetLedger,
-        started_at: std::time::Instant,
+        started_at: crate::time_compat::Instant,
     },
     Compaction {
         task: MaintenanceTask,
@@ -136,13 +136,13 @@ pub(crate) enum CacheBackgroundMaintenanceBuild {
         request: LifecycleCompactionRequest,
         branch_snapshot: BranchLocalState,
         storage_budget: StorageRuntimeBudget,
-        started_at: std::time::Instant,
+        started_at: crate::time_compat::Instant,
     },
     Materialization {
         task: MaintenanceTask,
         branch_id: BranchId,
         build: CacheMaterializationBuild,
-        started_at: std::time::Instant,
+        started_at: crate::time_compat::Instant,
     },
 }
 
@@ -1272,7 +1272,7 @@ impl<S> LifecycleCacheRuntime<S> {
         let (Some(request), Some(enqueue)) = (outcome.suggested_task(), outcome.enqueue()) else {
             return outcome;
         };
-        let inline_start = std::time::Instant::now();
+        let inline_start = crate::time_compat::Instant::now();
         let result = self.run_inline_maintenance_task(request, enqueue.task_id());
         crate::observability::perf_trace::record_lifecycle_inline_maintenance(
             inline_start.elapsed(),
@@ -1324,7 +1324,7 @@ impl<S> LifecycleCacheRuntime<S> {
         let Ok(enqueue) = self.enqueue_maintenance(request) else {
             return false;
         };
-        let inline_start = std::time::Instant::now();
+        let inline_start = crate::time_compat::Instant::now();
         let result = self.run_inline_maintenance_task(request, enqueue.task_id());
         crate::observability::perf_trace::record_lifecycle_inline_maintenance(
             inline_start.elapsed(),
@@ -1489,7 +1489,7 @@ impl<S> LifecycleCacheRuntime<S> {
                 request,
                 branch_snapshot: branch.clone(),
                 budget: self.budget.clone(),
-                started_at: std::time::Instant::now(),
+                started_at: crate::time_compat::Instant::now(),
             },
         ))))
     }
@@ -1634,7 +1634,7 @@ impl<S> LifecycleCacheRuntime<S> {
                 request,
                 branch_snapshot: branch.clone(),
                 storage_budget: budget,
-                started_at: std::time::Instant::now(),
+                started_at: crate::time_compat::Instant::now(),
             },
         ))))
     }
@@ -1702,7 +1702,7 @@ impl<S> LifecycleCacheRuntime<S> {
                         task,
                         branch_id,
                         build: *build,
-                        started_at: std::time::Instant::now(),
+                        started_at: crate::time_compat::Instant::now(),
                     },
                 ))))
             }

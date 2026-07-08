@@ -28,6 +28,7 @@ mod observability;
 mod row;
 mod service;
 mod table;
+mod time_compat;
 mod timeline_index;
 
 #[cfg(feature = "perf-trace")]

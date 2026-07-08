@@ -29,6 +29,7 @@ fs2 = { workspace = true, optional = true }
 zstd = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+web-time = { workspace = true }
 zstd-pure-rs = { workspace = true }
 
 [dev-dependencies]

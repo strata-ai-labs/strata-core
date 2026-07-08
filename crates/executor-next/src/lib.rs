@@ -19,6 +19,7 @@ pub mod executor;
 #[doc(hidden)]
 pub mod idl_tooling;
 pub mod output;
+mod time_compat;
 pub mod types;
 
 pub use command::Command;

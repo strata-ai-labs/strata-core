@@ -256,8 +256,8 @@ fn truncate_text(value: &str, limit: usize) -> &str {
 }
 
 fn unix_micros() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    crate::time_compat::SystemTime::now()
+        .duration_since(crate::time_compat::UNIX_EPOCH)
         .map_or(0, |duration| {
             u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
         })

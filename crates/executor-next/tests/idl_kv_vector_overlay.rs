@@ -127,9 +127,10 @@ fn resolved_commands_are_explain_ready() {
         assert!(command.fixtures.request.starts_with("requests/v1/"));
         assert!(command.fixtures.response.starts_with("responses/v1/"));
         assert!(
-            command.errors.iter().all(|error| error
-                .docs
-                .starts_with("https://stratadb.org/e/")),
+            command
+                .errors
+                .iter()
+                .all(|error| error.docs.starts_with("https://stratadb.org/e/")),
             "all command errors should include docs URLs"
         );
     }
