@@ -2731,6 +2731,7 @@ impl<'a> StorageRuntime<'a> {
         let Some(now) = self.background_now_for_current_runtime() else {
             return;
         };
+        perf_trace::record_lifecycle_graded_throttle_delay(delay_millis);
         self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
         // Sleep the FULL computed delay: this is a deliberate pace, not a wait-for-relief, so it
         // must not wake early on background task completions (which fire constantly under load and

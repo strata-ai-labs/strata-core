@@ -223,6 +223,18 @@ fn run_workload(
             perf.lifecycle_background_task_low_tier_runs(),
             perf.lifecycle_background_task_low_tier_ns() as f64 / 1e6,
         );
+        // W1.4a: graded pacing attribution — how much wall the token bucket
+        // slept, and where the debt-adaptive rate actually sat.
+        eprintln!(
+            "  [probe] pacing: delays={} total_ms={} max_ms={} | rate recomputes={} floor_events={} last_kbps={} debt_max_mb={}",
+            perf.lifecycle_graded_throttle_delays(),
+            perf.lifecycle_graded_throttle_delay_ms_total(),
+            perf.lifecycle_graded_throttle_delay_ms_max(),
+            perf.lifecycle_admission_rate_recomputes(),
+            perf.lifecycle_admission_rate_floor_events(),
+            perf.lifecycle_admission_rate_last() / 1024,
+            perf.lifecycle_admission_effective_debt_max() / (1024 * 1024),
+        );
         // Read-path attribution (W2): branch-point fan-out is foreground-only;
         // table-level cache/filter/io counters are shared with background
         // maintenance readers — compare table_point vs table_cursor rows to

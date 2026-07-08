@@ -163,6 +163,14 @@ Revised slices (ranked by measured leverage):
   scan-range cells.
 - Exit: C ≥ 290K ops/s warm (p50 ≤ 6µs, p99 ≤ 20µs); B ≥ 280K; E within 3× of RocksDB.
 
+### W1.4 — pacing calibration (LANDED)
+
+Full attribution + fix chain in the ledger (2026-07-08 row): pacing was 76% of
+workload A's wall; `pacing_debt` (budget/8 soft limit on structural overage) +
+proportional-quadratic L0-depth rate controller replaced the multiplicative walk.
+A 746–1,696 → ~3,000; B → 5,903 (best, zero delays); walls unchanged. Saturation
+cell (4T) required before PR.
+
 ### W3 — Per-commit write overhead (T3)
 
 - **W3.1 Timeline-row cost.** Single-put commits currently write 3 rows; either encode
