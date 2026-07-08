@@ -2309,12 +2309,14 @@ impl<'a> StorageRuntime<'a> {
                         // BS5.1 write groups: uncontended callers take the exact
                         // solo path; contended callers join a group led by
                         // whichever caller holds the runtime lock.
+                        let dispatch_timer = perf_trace::start_timer();
                         let response = execute_durable_commit_grouped(
                             slot,
                             exec_batch,
                             &runtime_batch,
                             generation_guard,
                         );
+                        perf_trace::record_commit_group_dispatch_elapsed(dispatch_timer);
                         (
                             response.outcome,
                             response.admission,
@@ -2330,7 +2332,9 @@ impl<'a> StorageRuntime<'a> {
                     }
                 };
             if pending_tasks > 0 {
+                let notify_timer = perf_trace::start_timer();
                 self.notify_background_drain_for_current_runtime(BackgroundTaskPriority::High);
+                perf_trace::record_commit_drain_notify_elapsed(notify_timer);
             }
             match outcome_result {
                 Ok(outcome) => {
@@ -2340,9 +2344,14 @@ impl<'a> StorageRuntime<'a> {
                         self.last_allocated_timestamp_micros
                             .fetch_max(timestamp.as_micros(), Ordering::AcqRel);
                     }
+                    // W3.2: the runtime timer measures commit-path work only.
+                    // The post-completion policy sleeps below (WAL-growth
+                    // backpressure, graded write throttle) are counted by their
+                    // own probes; folding them in here misattributed pacing as
+                    // path cost twice during W3 attribution.
+                    perf_trace::record_api_commit_runtime_elapsed(runtime_timer);
                     self.background_wait_after_wal_growth_enqueue(wal_growth.as_ref());
                     self.background_wait_after_write_throttle(throttle_delay_millis);
-                    perf_trace::record_api_commit_runtime_elapsed(runtime_timer);
                     return map_commit_summary(&outcome, admission);
                 }
                 Err(error)

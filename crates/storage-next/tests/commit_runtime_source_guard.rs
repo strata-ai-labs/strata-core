@@ -568,7 +568,10 @@ fn commit_runtime_source_guard_pins_timeline_module_boundary() {
     let timeline = root.join("src/commit/timeline.rs");
     let text = fs::read_to_string(&timeline).expect("read commit timeline source");
 
-    assert!(text.contains("use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};"));
+    // W3.2: `PhysicalKey` (legacy row-pair construction) is test/testkit-gated;
+    // the production module keeps only the row types the validators read.
+    assert!(text.contains("use crate::row::{StorageRow, StorageSpaceId};"));
+    assert!(text.contains("use crate::row::PhysicalKey;"));
     assert!(text.contains("StorageSpaceId::COMMIT_TIMELINE"));
     assert!(!contains_forbidden_storage_path_text_for_file(
         &text, &timeline

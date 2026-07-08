@@ -708,6 +708,32 @@ sub-second A). Load in-band (~81K — batched load only carried 0.2% timeline
 overhead; the win is single-put commits). Details + O2 bounds wording in
 `v2-w3-write-path-plan.md`.
 
+## W3.2 resolved by measurement: the solo path is already lean (2026-07-08)
+
+Attribution closed the slice instead of surgery. With new probes (grouped
+dispatch envelope, drain notify, batch clone, pressure collection) the
+commit-path anatomy at 100k/A: **true path ≈ 11.5µs** — wal_append 3.9µs (one
+`write()` per commit → W3.3's coalescing carries the ≤8µs target), apply 1.4,
+admit 1.3, post_maint 1.2, notify 0.9 (wanted drain-kicking, wake-bit-coalesced
+at cap), fragments ~2.8. The roadmap's levers were already spent: group
+bookkeeping ≈ 0, encode buffers at 0 allocs / 997K reuses; the batch-clone
+theory measured dead at 0.12µs. Policy waits — pacing ~7µs/commit at 100k,
+**87µs/op at 10M (42% of A's wall)** — dominate A at scale; commit-path µs do
+not move A@10M, the M-A/M-B lanes do. Shipped: `api_commit_runtime_ns` no
+longer wraps the post-completion policy sleeps (it misattributed pacing as path
+cost twice this workstream); `CommitTimelineRows` construction is now
+test/testkit-gated (production structurally cannot stage timeline rows);
+probes are permanent. Pressure collection runs 3×/commit — 0.27µs/call on a
+100k shape, 0.42µs/call at 10M (140 tables/call, 1.3µs/commit total): the
+O(levels×tables) walk has a tiny constant, so no epoch-cache slice until the
+~100M tier (~750-table bottom levels). Validation cell (A durable 10M, single
+run): **5,343 ops/s** vs 4,884 baseline — no regression; update p50 58.2µs,
+max 752ms. At 10M the fixed timer decomposes exactly: in-path 54.6µs/commit =
+dispatch 30.2 (stages 14.7, of which wal_append 7.7 + fg lock wait 12.6) +
+rare pressure block-waits 22 + notify 2 — wal_append nearly doubles vs 100k
+and lock waits against busier maintenance sextuple, reinforcing W3.3 and the
+M-A/M-B lanes as the carriers at scale.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

@@ -111,6 +111,67 @@ load carried only 0.2% timeline overhead (2 rows per 1,000-row commit) — the
 3× win is single-put commits, where A lives. `CommitTimelineRows` is now
 replay-validation + test-only; delete at W3.2 or cutover.
 
-## W3.2 — solo-writer fast path (unchanged from roadmap)
+## W3.2 — solo-writer fast path: RESOLVED BY MEASUREMENT (2026-07-08)
+
+Attribution first (the W6 rule), and the attribution closed the slice: the
+roadmap's three levers are already spent, and the remaining path cost sits in
+W3.3's territory. No fast-path surgery shipped — the slice's deliverables are
+the attribution itself, permanent probes, a timer-semantics fix, and the
+`CommitTimelineRows` retirement promised at W3.1c.
+
+### Measured commit-path anatomy (A durable, 100k records, 249K commits)
+
+In-runtime mean 25.3µs/commit decomposes as:
+
+| Component | µs/commit | Verdict |
+|---|---|---|
+| Grouped dispatch envelope | 12.0 | = stages 8.5 + fg lock wait 3.5 (exact) |
+| — wal_append | 3.9 | one `write()` syscall per commit → **W3.3** |
+| — apply (memtable insert) | 1.4 | fundamental |
+| — admit | 1.3 | guards/registry/projection fragments; pressure walk only 0.27 |
+| — post_maint | 1.2 | second pressure walk + compaction scoring + coverage |
+| — stage / post_growth | 0.7 | fine |
+| Pacing sleeps (graded throttle) | 7.0 | policy, not path — timer wrapped them (fixed below) |
+| Drain notify | 0.8 | *wanted* work: kicks drains; wake-bit coalesced at cap |
+| Batch clone + map | 0.24 | retry copy — negligible, theory dead |
+| Residual (loop, summary, growth checks, block-waits) | ~2.3 | fragments + 12 rare 74ms pressure block-waits |
+
+### Roadmap levers, audited
+
+- **"Skip group formation bookkeeping"** — measured ≈ 0: the dispatch envelope
+  minus stages minus lock wait is noise. The uncontended join is a mutex + bool.
+- **"Reuse encode buffers"** — already implemented: 0 allocations, 997,672
+  reuses over the run.
+- **"Cache admission verdicts"** — the only live lever, worth ~1µs of
+  sub-µs fragments at 100k shape. Deferred: pressure collection runs 3×/commit
+  (admit, post_maint, compaction scoring) at 0.27µs/call on a 100k shape, but
+  the walk is O(levels×tables) — re-audit at 10M via the new
+  `[probe] pressure collection` line before building epoch-cache machinery.
+
+### Why no surgery
+
+True uncontended path ≈ 11.5µs. The ≤8µs target is reachable only by removing
+the per-commit `write()` syscall — that is W3.3 (Standard coalescing), not
+micro-shaving. And A@10M is not commit-path-bound at all: pacing is 87µs/op
+there (42% of wall, debt-driven) — the M-A/M-B lanes carry A, commit-path µs
+do not. The notify path was audited and left alone: below the drain cap it
+performs wanted drain-kicking; at cap it is two atomics (BS5.5 liveness
+lessons apply).
+
+### Shipped in this slice
+
+- **Timer semantics fix**: `api_commit_runtime_ns` no longer wraps the
+  post-completion policy sleeps (WAL-growth backpressure, graded throttle) —
+  they misattributed pacing as path cost twice during W3 attribution.
+- **Permanent probes**: `commit_group_dispatch_ns`, `commit_drain_notify_ns`
+  counters; engine-ycsb `[probe] commit path` and `[probe] pressure collection`
+  lines.
+- **`CommitTimelineRows` retired from production**: the type and its key
+  construction are now `#[cfg(any(test, feature = "testkit"))]` — production
+  structurally cannot stage timeline rows; tests/testkit keep constructing
+  legacy rows to exercise the compat paths that remain product behavior until
+  cutover (pre-elision WAL replay, recovery bridge).
 
 ## W3.3 — Standard WAL write coalescing (unchanged from roadmap)
+
+Now the sole carrier of the ≤8µs solo-commit target (−3.9µs syscall).

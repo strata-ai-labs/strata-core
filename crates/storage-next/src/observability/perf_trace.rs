@@ -191,6 +191,11 @@ pub struct StoragePerfSnapshot {
     lifecycle_foreground_wait_background_lock_ns: u64,
     lifecycle_write_admission_block_wait_ns: u64,
     /// W1.4a: graded token-bucket pacing sleeps actually taken by commits.
+    /// W3.2: wall time inside the grouped durable dispatch (join + lead +
+    /// execute + wake) — the envelope around the staged commit timers.
+    commit_group_dispatch_ns: u64,
+    /// W3.2: wall time spent notifying the background drain from commits.
+    commit_drain_notify_ns: u64,
     lifecycle_graded_throttle_delays: u64,
     lifecycle_graded_throttle_delay_ms_total: u64,
     lifecycle_graded_throttle_delay_ms_max: u64,
@@ -1105,6 +1110,16 @@ impl StoragePerfSnapshot {
     /// Nanoseconds spent waiting for background progress under Block pressure.
     pub const fn lifecycle_write_admission_block_wait_ns(self) -> u64 {
         self.lifecycle_write_admission_block_wait_ns
+    }
+
+    /// W3.2: grouped durable dispatch envelope, nanoseconds.
+    pub const fn commit_group_dispatch_ns(self) -> u64 {
+        self.commit_group_dispatch_ns
+    }
+
+    /// W3.2: background-drain notification cost from the commit path.
+    pub const fn commit_drain_notify_ns(self) -> u64 {
+        self.commit_drain_notify_ns
     }
 
     /// W1.4a: pacing sleeps actually taken by commits (count).
@@ -2691,6 +2706,10 @@ static LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS: AtomicU64 = AtomicU64::new(
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static COMMIT_GROUP_DISPATCH_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static COMMIT_DRAIN_NOTIFY_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_GRADED_THROTTLE_DELAYS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_GRADED_THROTTLE_DELAY_MS_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -3419,6 +3438,8 @@ pub fn reset() {
     LIFECYCLE_BACKGROUND_CANDIDATE_STALE_DEFERRED.store(0, Ordering::Relaxed);
     LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS.store(0, Ordering::Relaxed);
+    COMMIT_GROUP_DISPATCH_NS.store(0, Ordering::Relaxed);
+    COMMIT_DRAIN_NOTIFY_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_GRADED_THROTTLE_DELAYS.store(0, Ordering::Relaxed);
     LIFECYCLE_GRADED_THROTTLE_DELAY_MS_TOTAL.store(0, Ordering::Relaxed);
     LIFECYCLE_GRADED_THROTTLE_DELAY_MS_MAX.store(0, Ordering::Relaxed);
@@ -3909,6 +3930,8 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         lifecycle_write_admission_block_wait_ns: LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS
             .load(Ordering::Relaxed),
+        commit_group_dispatch_ns: COMMIT_GROUP_DISPATCH_NS.load(Ordering::Relaxed),
+        commit_drain_notify_ns: COMMIT_DRAIN_NOTIFY_NS.load(Ordering::Relaxed),
         lifecycle_graded_throttle_delays: LIFECYCLE_GRADED_THROTTLE_DELAYS.load(Ordering::Relaxed),
         lifecycle_graded_throttle_delay_ms_total: LIFECYCLE_GRADED_THROTTLE_DELAY_MS_TOTAL
             .load(Ordering::Relaxed),
@@ -5443,6 +5466,22 @@ pub(crate) fn record_lifecycle_foreground_wait_background_lock(duration: std::ti
         u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
         Ordering::Relaxed,
     );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_group_dispatch_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_group_dispatch_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_GROUP_DISPATCH_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_drain_notify_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_drain_notify_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&COMMIT_DRAIN_NOTIFY_NS, start);
 }
 
 #[cfg(not(feature = "perf-trace"))]

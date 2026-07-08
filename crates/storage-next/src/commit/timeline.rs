@@ -2,7 +2,9 @@
 
 use super::{CommitRuntimeError, CommitRuntimeResult, CommitStamp};
 use crate::observability::perf_trace;
-use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
+#[cfg(any(test, feature = "testkit"))]
+use crate::row::PhysicalKey;
+use crate::row::{StorageRow, StorageSpaceId};
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
@@ -19,6 +21,12 @@ pub(crate) struct CommitTimelineEntry {
     commit_timestamp: Timestamp,
 }
 
+/// Legacy timeline-row pair construction. W3.1c elided these rows from the
+/// commit path; production code can no longer stage them. Tests and the
+/// testkit keep constructing them to exercise the compat paths that remain
+/// product behavior until cutover: replay of pre-elision WAL records and the
+/// recovery bridge that scan-seeds pre-elision databases.
+#[cfg(any(test, feature = "testkit"))]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CommitTimelineRows {
     entry: CommitTimelineEntry,
@@ -112,6 +120,7 @@ impl CommitTimelineEntry {
     }
 }
 
+#[cfg(any(test, feature = "testkit"))]
 impl CommitTimelineRows {
     pub(crate) fn from_entry(entry: CommitTimelineEntry) -> CommitRuntimeResult<Self> {
         let timestamp_to_version = StorageRow::put(
@@ -386,6 +395,7 @@ impl CommitTimelineLookup {
     }
 }
 
+#[cfg(any(test, feature = "testkit"))]
 fn timestamp_index_key(entry: CommitTimelineEntry) -> CommitRuntimeResult<PhysicalKey> {
     PhysicalKey::new(
         entry.branch_id(),
@@ -398,6 +408,7 @@ fn timestamp_index_key(entry: CommitTimelineEntry) -> CommitRuntimeResult<Physic
     })
 }
 
+#[cfg(any(test, feature = "testkit"))]
 fn version_index_key(entry: CommitTimelineEntry) -> CommitRuntimeResult<PhysicalKey> {
     PhysicalKey::new(
         entry.branch_id(),
@@ -410,6 +421,7 @@ fn version_index_key(entry: CommitTimelineEntry) -> CommitRuntimeResult<Physical
     })
 }
 
+#[cfg(any(test, feature = "testkit"))]
 fn timestamp_index_user_key(entry: CommitTimelineEntry) -> Vec<u8> {
     let mut key = Vec::with_capacity(TIMESTAMP_INDEX_PREFIX.len() + (ENCODED_U64_BYTES * 2));
     key.extend_from_slice(TIMESTAMP_INDEX_PREFIX);
@@ -418,6 +430,7 @@ fn timestamp_index_user_key(entry: CommitTimelineEntry) -> Vec<u8> {
     key
 }
 
+#[cfg(any(test, feature = "testkit"))]
 fn version_index_user_key(entry: CommitTimelineEntry) -> Vec<u8> {
     let mut key = Vec::with_capacity(VERSION_INDEX_PREFIX.len() + ENCODED_U64_BYTES);
     key.extend_from_slice(VERSION_INDEX_PREFIX);

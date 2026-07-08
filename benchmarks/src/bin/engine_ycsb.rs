@@ -226,6 +226,24 @@ fn run_workload(
         // W1.4a: graded pacing attribution — how much wall the token bucket
         // slept, and where the debt-adaptive rate actually sat.
         eprintln!(
+            "  [probe] commit path: map_ms={:.0} batch_clone_ms={:.0} dispatch_ms={:.0} notify_ms={:.0} | wal_buf allocs={} reuses={}",
+            perf.api_commit_map_ns() as f64 / 1e6,
+            perf.commit_api_batch_clone_ns() as f64 / 1e6,
+            perf.commit_group_dispatch_ns() as f64 / 1e6,
+            perf.commit_drain_notify_ns() as f64 / 1e6,
+            perf.commit_wal_encode_buffer_allocations(),
+            perf.commit_wal_encode_buffer_reuses(),
+        );
+        eprintln!(
+            "  [probe] pressure collection: calls={} levels={} tables={} total_ms={:.0} sampling_skips={} full_scans={}",
+            perf.lifecycle_pressure_collection_calls(),
+            perf.lifecycle_pressure_collection_levels_inspected(),
+            perf.lifecycle_pressure_collection_tables_inspected(),
+            perf.lifecycle_pressure_collection_ns() as f64 / 1e6,
+            perf.lifecycle_pressure_collection_sampling_skips(),
+            perf.lifecycle_pressure_collection_full_scans(),
+        );
+        eprintln!(
             "  [probe] pacing: delays={} total_ms={} max_ms={} | rate recomputes={} floor_events={} last_kbps={} debt_max_mb={}",
             perf.lifecycle_graded_throttle_delays(),
             perf.lifecycle_graded_throttle_delay_ms_total(),

@@ -136,13 +136,15 @@ pub(crate) use replay::{
     )
 )]
 pub(crate) use result::CommitRuntimeResult;
+#[cfg(any(test, feature = "testkit"))]
+pub(crate) use timeline::CommitTimelineRows;
 #[allow(
     unused_imports,
     reason = "commit scaffold exports define the local surface for later slices"
 )]
 pub(crate) use timeline::{
     CommitTimelineEntry, CommitTimelineFact, CommitTimelineLookup, CommitTimelineMiss,
-    CommitTimelineRowKind, CommitTimelineRows, CommitTimelineView, COMMIT_TIMELINE_SPACE,
+    CommitTimelineRowKind, CommitTimelineView, COMMIT_TIMELINE_SPACE,
 };
 #[allow(
     unused_imports,
