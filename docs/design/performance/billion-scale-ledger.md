@@ -620,6 +620,18 @@ with a 15GiB block-cache pool that should hold the zipfian hot set. Roadmap targ
 profile on this exact shape (block-cache hit accounting, probe fan-out, decode cost)
 BEFORE any W2 slice.
 
+## Read-path profile: the 66.8µs median read, fully attributed (2026-07-07 night)
+
+perf-trace read counters added to `engine-ycsb --perf-breakdown` (`[probe] point /
+table read / table io` lines). Durable C at 10M: p50 = a **254-entry full-block walk**
+(blocks are ~256 rows ≈ 280KB because the encoder cuts on rows only — the 64KB
+`target_data_block_size` never gates); p99 = **0.33 cache misses/read × 279KB** block
+reads; **3.63 table seeks/read with zero bloom-filter probes** (BS4.3 filter machinery
+is config-gated dark). Hit rate 69.7% is churn-limited (116 rewrites during the 14s
+run), not capacity-limited. Full anatomy + revised W2 slices in
+`billion-scale-roadmap-v2.md` § W2. Model closes: 254 × ~240ns ≈ 61µs vs 62.4µs
+measured — no flamegraph needed.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

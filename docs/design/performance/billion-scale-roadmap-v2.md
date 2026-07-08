@@ -89,17 +89,49 @@ Pi-Zero-to-server scaling contract; RSS must track it or every deployment story 
 
 ### W2 — Read path at scale (T2)
 
-- **W2.1 Attribution first.** gdb/stack sampling of the 10M C run (the counters lied
-  twice this cycle; stacks decide): I/O wait vs probe CPU vs decode vs cache misses.
-- **W2.2 Block cache that works.** Decoded-row (or decoded-block) caching with budget
-  accounting (the raw-bytes cache decodes on every fetch — measured as the replay
-  elephant, same seam serves reads); admission of hot blocks during compaction writes
-  (RocksDB `fill_cache` analog); size the pool per the profile (durable: block cache is
-  ~47% of budget — make it earn that).
-- **W2.3 Probe fan-out reduction.** Rides W1.3's shape bounds; per-source filter checks
-  on every point path (verify bloom coverage end-to-end — the probe work found paths
-  that skip filters); single-branch fast path.
-- **W2.4 Scan readahead (BS6 item).** Auto-ramping readahead 8→256KB; fixes E and
+**W2.0 attribution DONE (2026-07-07 night, post-W1 shape, perf-trace read probes in
+`engine-ycsb --perf-breakdown`).** Per-read anatomy of durable C (100K zipfian point
+reads over 10M×1KB, p50 62.4µs / p99 927µs):
+
+| component | measured (per read) | cost |
+|---|---|---|
+| table seeks | 3.63 (1 memtable + 1.62 L0 + ~1 winning Ln; 5.05 level searches) | index-only for losers — **no bloom filters: all filter counters are 0** |
+| lazy block scan | 1.02 scans × **254.5 encoded entry headers walked** (no early exit — full-block walk) | ≈ the 62µs p50 (254 × ~240ns) |
+| cache miss | 0.33 × **279KB** block read | ≈ the 927µs p99 (NVMe + compaction I/O interference) |
+| row decode + clone | 1 row, 1.2KB | small |
+
+Two root causes, both already half-solved in the tree:
+1. **Blocks are ~256 rows ≈ 280KB, not the declared 64KB**: `append_streaming_row`
+   cuts only on `rows_per_block == 256`; `target_data_block_size` (64KB) is passed
+   down but never gates the cut. 4.3× oversized blocks inflate BOTH the p50 (entry
+   walk) and the p99 (per-miss I/O). No format break to fix — blocks are
+   length-framed, readers handle any size.
+2. **Bloom filters exist but ship dark** (BS4.3 `filter_bits_per_key: None`
+   config-gate, "until a later slice flips it on") — 2.6 of 3.63 seeks/read are
+   losers a filter would skip; B pays 6.04 seeks/read (3.5 L0 probes from its flush
+   backlog).
+
+Cache hit rate 69.7% (C) / 90.7% (B) is CHURN-limited, not capacity-limited (whole
+10GB dataset < 15GiB pool; 116 background rewrites completed during C's 14s run kill
+identity-keyed cached blocks). Read I/O counters conflate lookup misses with
+compaction reads (cursor_rows 1.77M in C) — split them before trusting absolute MB.
+
+Revised slices (ranked by measured leverage):
+- **W2.1 Enforce the data-block byte target** (cut on bytes ≥ target OR rows; keep
+  64KB default, evaluate 16–32KB for point-read tables): lazy walk 254 → ~15–60
+  entries, per-miss I/O 279KB → 16–64KB. Attacks p50 and p99 at once. Cheapest
+  biggest lever.
+- **W2.2 Flip BS4.3 bloom filters on** (build cost + memory measured at load; wire
+  eager-filter probes into every point path): kills the 2.6 loser seeks/read (C),
+  more on B/deeper shapes.
+- **W2.3 Lazy-scan early exit + intra-block restart points**: the walk averages a
+  FULL block today (254.5 ≈ 256); early exit alone halves it, restart-point binary
+  search makes it ~log. Evaluate after W2.1 (60-entry walks may not need it).
+- **W2.4 Block cache churn survival**: rewrite outputs re-admit hot blocks (RocksDB
+  `fill_cache` analog) or key cache by content hash; then a settled-state cell to
+  measure the capacity truth. Decoded-block caching stays on the list if decode
+  shows up post-W2.1.
+- **W2.5 Scan readahead (BS6 item).** Auto-ramping readahead 8→256KB; fixes E and
   scan-range cells.
 - Exit: C ≥ 290K ops/s warm (p50 ≤ 6µs, p99 ≤ 20µs); B ≥ 280K; E within 3× of RocksDB.
 
