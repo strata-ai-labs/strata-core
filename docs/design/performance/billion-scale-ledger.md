@@ -646,6 +646,18 @@ calibration input (128KB A/B or per-block cost shave). Cache hit rate note: C hi
 dropped to 50% (more distinct blocks for the same hot keys + unchanged churn
 invalidation) — W2.4's churn-surviving cache matters more at 64KB.
 
+## W2.2: bloom filters on — L0 probe amplification absorbed (2026-07-07 night)
+
+Flush + compaction builds persist 10-bits/key filters; the reader's lazy point path
+already consulted them. Durable 10M single-process C→B→A run: **B 5,158 ops/s / read
+p50 31µs / update p99 175µs / zero L0-wall episodes** (post-W2.1 lottery was
+{5,037/2,982/2,077} with p50 52–134µs and 2.3–3.9s walls); **A 1,696 ops/s (best on
+record) / read p50 43.9µs** (was 255µs), one bounded 4.5s wall. Negative filter
+probes 554K (B) / 2.33M (A) — block-scans per read on B fell 15.7 → 0.87. C
+unchanged (28.4µs p50; losers die at range checks pre-filter; throughput 7,594 this
+draw — miss/churn-bound, W2.4's lever). Memory line holds (~16.9GB post-run;
+filters ≈ 82KB per 64MB table, budget-charged via resident metadata).
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

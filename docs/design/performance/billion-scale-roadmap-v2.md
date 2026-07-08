@@ -129,9 +129,19 @@ Revised slices (ranked by measured leverage):
   Read p50 on B's good draw: 52µs (was 134µs). Follow-up: block-size build-cost
   calibration (128KB compromise A/B, or shave per-block fixed costs in the
   build/read path) rides W1.4.
-- **W2.2 Flip BS4.3 bloom filters on** (build cost + memory measured at load; wire
-  eager-filter probes into every point path): kills the 2.6 loser seeks/read (C),
-  more on B/deeper shapes.
+- **W2.2 Flip BS4.3 bloom filters on — LANDED.** Every lifecycle-driven build
+  (flush + compaction) persists a 10-bits/key bloom filter
+  (`lifecycle_table_builder_config`); the lazy point path's probe was already wired
+  (losers short-circuit before index descent) and is now perf-trace counted.
+  Measured at 10M durable: **B 5,158 ops/s, zero wall episodes, read p50 31µs**
+  (was 52–134µs across the lottery), update p99 175µs (was 950µs–77ms); **A 1,696
+  ops/s — the best A on record** (was 952–1,036), read p50 43.9µs (was 255µs). The
+  win is L0-probe absorption: 554K–2.3M negative probes per run; B's block-scans
+  per read fell 15.7 → 0.87. C unchanged by design — its loser probes die at the
+  min/max range check before the filter (1.05 filter probes/read), and its run
+  throughput remains cache-miss/churn-bound (W2.4). Follow-up W2.2b:
+  materialization + snapshot-install builds still unfiltered (reader treats as
+  `Unavailable`).
 - **W2.3 Lazy-scan early exit + intra-block restart points**: the walk averages a
   FULL block today (254.5 ≈ 256); early exit alone halves it, restart-point binary
   search makes it ~log. Evaluate after W2.1 (60-entry walks may not need it).
