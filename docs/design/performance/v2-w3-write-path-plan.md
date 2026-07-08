@@ -71,6 +71,23 @@ count (compounds with every W1 win); `as_of` goes from O(timeline-space scan)
 to O(log commits). Combined with W3.2 (solo-writer fast path), targets the
 28µs → ≤8µs commit.
 
+### Slicing (agreed 2026-07-08)
+
+Three slices, riskiest-part-first-with-oracle ordering — the old rows stay alive
+as a differential oracle until the recovery story is proven:
+
+- **W3.1a — index as cache** (tasks #77): the retained index + binary-search
+  lookup + api switch; rows still written; rebuild = one timeline-space scan per
+  branch on first use. Oracle: index ≡ scan on randomized histories.
+- **W3.1b — persistence at checkpoint** (#78): reopen cannot afford a full data
+  scan post-elision, so the checkpoint artifact lands BEFORE elision; reopen =
+  artifact + WAL-tail stamps. Oracle: artifact-loaded ≡ row-derived across every
+  recovery path (crash sweeps). Settles O1; new artifact kind gets golden
+  coverage per the frozen-codec rule.
+- **W3.1c — elision** (#79): drop the rows from batches/replay, retire the
+  scans, update guards WITH the change (O4), write the retained-bounds contract
+  wording (O2). The 3× row-volume win and the measurement land here.
+
 ## W3.2 — solo-writer fast path (unchanged from roadmap)
 
 ## W3.3 — Standard WAL write coalescing (unchanged from roadmap)
