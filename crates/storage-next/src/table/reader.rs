@@ -19,6 +19,9 @@ use crate::format::{
     ImmutableTableMetadata, TableDataBlockPointSeek, TableFilterFrame, TableIndexEntry,
     MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE,
 };
+use crate::format::{
+    decode_immutable_table_data_block_trusted, seek_immutable_table_data_block_point_trusted,
+};
 use crate::observability::perf_trace;
 use crate::row::{InternalKey, PhysicalKey};
 use sha2::{Digest, Sha256};
@@ -535,7 +538,11 @@ impl<'a> LazyTableRows<'a> {
         let Some(block_index) = find_index_entry_for_key(&self.state.metadata, key) else {
             return Ok(None);
         };
-        let rows = self.state.read_data_block_rows(block_index)?;
+        // Exact-row probes serve verification-class consumers — they always
+        // re-verify cached frames.
+        let rows = self
+            .state
+            .read_data_block_rows(block_index, TableReadTrust::AlwaysVerify)?;
         Ok(find_exact_in_rows(&rows, key))
     }
 
@@ -729,7 +736,9 @@ impl LazyTableState<'_> {
                 PhysicalRangeOrdering::MayContain => {}
             }
 
-            let rows = self.read_data_block_rows(block_index)?;
+            // History reads are an interactive read surface — cache hits are
+            // trusted like point seeks.
+            let rows = self.read_data_block_rows(block_index, TableReadTrust::TrustCache)?;
             let start = if block_index == first_candidate_block_index {
                 candidate_row_index_for_seek_key(&rows, &seek_key)
             } else {
@@ -792,15 +801,28 @@ impl LazyTableState<'_> {
         probe
     }
 
-    fn read_data_block_rows(&self, block_index: usize) -> TableRuntimeResult<Vec<TableRow>> {
+    fn read_data_block_rows(
+        &self,
+        block_index: usize,
+        trust: TableReadTrust,
+    ) -> TableRuntimeResult<Vec<TableRow>> {
         let entry = self.metadata.index().entries().get(block_index).ok_or(
             TableRuntimeError::InvalidRange {
                 field: "data_block_index",
             },
         )?;
         let frame = self.read_data_block_frame(entry, block_index)?;
-        let block = decode_immutable_table_data_block(entry, frame.bytes.as_ref())
-            .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
+        // W2.6 (B1): only TrustCache consumers skip re-verification on hits;
+        // materialization, compaction merge inputs, and the oracle re-verify
+        // (see `TableReadTrust`).
+        let block = if frame.trusted && trust == TableReadTrust::TrustCache {
+            perf_trace::record_table_trusted_block_seek();
+            decode_immutable_table_data_block_trusted(entry, frame.bytes.as_ref())
+        } else {
+            perf_trace::record_table_checked_block_seek();
+            decode_immutable_table_data_block(entry, frame.bytes.as_ref())
+        }
+        .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
         perf_trace::record_table_data_blocks_decoded(1, block.row_count());
         if let Some((cache, key)) = frame.cache_insert {
             cache.insert(key, Arc::clone(&frame.bytes))?;
@@ -815,14 +837,30 @@ impl LazyTableState<'_> {
         lookup: &TablePreparedPointLookup,
     ) -> TableRuntimeResult<TableDataBlockPointSeek> {
         let frame = self.read_data_block_frame(entry, block_index)?;
-        let seek = seek_immutable_table_data_block_point(
-            entry,
-            frame.bytes.as_ref(),
-            lookup.seek_key().as_slice(),
-            lookup.physical_key().as_slice(),
-            lookup.max_commit_version(),
-            lookup.max_commit_timestamp(),
-        )
+        // W2.6 (B1): cache hits skip the CRC pass and the payload copy — the
+        // frame was verified at admission. Fresh source reads stay checked
+        // (and only then insert), so corrupt frames never enter the cache.
+        let seek = if frame.trusted {
+            perf_trace::record_table_trusted_block_seek();
+            seek_immutable_table_data_block_point_trusted(
+                entry,
+                frame.bytes.as_ref(),
+                lookup.seek_key().as_slice(),
+                lookup.physical_key().as_slice(),
+                lookup.max_commit_version(),
+                lookup.max_commit_timestamp(),
+            )
+        } else {
+            perf_trace::record_table_checked_block_seek();
+            seek_immutable_table_data_block_point(
+                entry,
+                frame.bytes.as_ref(),
+                lookup.seek_key().as_slice(),
+                lookup.physical_key().as_slice(),
+                lookup.max_commit_version(),
+                lookup.max_commit_timestamp(),
+            )
+        }
         .map_err(|source| TableRuntimeError::DecodeFormat { source })?;
         perf_trace::record_table_lazy_point_block_scan(
             seek.entries_scanned(),
@@ -852,6 +890,7 @@ impl LazyTableState<'_> {
                 return Ok(DataBlockFrame {
                     bytes,
                     cache_insert: None,
+                    trusted: true,
                 });
             }
         }
@@ -881,6 +920,7 @@ impl LazyTableState<'_> {
         Ok(DataBlockFrame {
             bytes,
             cache_insert,
+            trusted: false,
         })
     }
 }
@@ -895,6 +935,22 @@ struct LazyTableBlockCache {
 struct DataBlockFrame {
     bytes: Arc<[u8]>,
     cache_insert: Option<(Arc<TableBlockCache>, TableBlockCacheKey)>,
+    // W2.6 (B1): true ONLY for a block-cache hit — every frame in the cache
+    // passed the checked decode at admission (demand path decodes before
+    // insert; the warm path verifies before insert). NOT derivable from
+    // `cache_insert` (a no-fill miss also carries None).
+    trusted: bool,
+}
+
+/// W2.6 (B1): whether a consumer may skip re-verification on cache hits.
+/// Consumers whose rows feed newly built tables or independent cross-checks
+/// (materialization, merge inputs, the oracle) always verify, so an
+/// in-memory-corrupted cached frame can never be laundered into a new table
+/// with a fresh valid CRC.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TableReadTrust {
+    TrustCache,
+    AlwaysVerify,
 }
 
 #[derive(Clone)]
@@ -1362,7 +1418,22 @@ impl<'a> ImmutableTableReader<'a> {
                     field: "block_frame_len",
                 })?;
             let key = cache_key_for_entry(&cache.table, entry, block_index)?;
-            let frame: Arc<[u8]> = Arc::from(&encoded[start..end]);
+            // W2.6 (B1): trusting consumers skip re-verification on cache
+            // hits, so "only checked frames enter the cache" must be airtight
+            // — verify each sliced frame before admission. The bytes were
+            // just encoded in-process; a failure here indicates a slicing or
+            // buffer-mixup bug, not disk corruption, so it is rejected (and
+            // counted), never inserted.
+            let slice = &encoded[start..end];
+            if decode_immutable_table_data_block(entry, slice).is_err() {
+                // Rationale: reject-and-continue (never panic) — the demand
+                // path re-reads and re-verifies from the source on the next
+                // miss, so a rejected warm frame costs one cache miss and
+                // nothing more; the counter is the bug signal.
+                perf_trace::record_table_warm_insert_reject();
+                continue;
+            }
+            let frame: Arc<[u8]> = Arc::from(slice);
             match cache.cache.insert_if_free(key, frame)? {
                 CacheInsert::Inserted(_) => admitted = admitted.saturating_add(1),
                 CacheInsert::DuplicateExisting(_)
@@ -1512,7 +1583,15 @@ impl<'source> LazyImmutableTableCursor<'source> {
                 return Ok(());
             }
 
-            let rows = self.state.read_data_block_rows(block_index)?;
+            // BS4.4g gave merge-input readers their own no-fill
+            // constructors; those cursors re-verify cached frames (their
+            // rows feed newly built tables). Interactive cursors trust.
+            let trust = if self.state.fill_cache {
+                TableReadTrust::TrustCache
+            } else {
+                TableReadTrust::AlwaysVerify
+            };
+            let rows = self.state.read_data_block_rows(block_index, trust)?;
             let row_index =
                 target.map_or(0, |target| candidate_row_index_for_seek_key(&rows, target));
             if row_index < rows.len() {
@@ -2000,7 +2079,9 @@ fn table_fingerprint_range<'a>(
 fn read_rows_from_metadata(state: &LazyTableState<'_>) -> TableRuntimeResult<Vec<TableRow>> {
     let mut rows = Vec::new();
     for block_index in 0..state.metadata.index().entries().len() {
-        rows.extend(state.read_data_block_rows(block_index)?);
+        // Full materialization feeds eager rows (and the oracle cross-check
+        // path) — always re-verify cached frames.
+        rows.extend(state.read_data_block_rows(block_index, TableReadTrust::AlwaysVerify)?);
     }
     Ok(rows)
 }

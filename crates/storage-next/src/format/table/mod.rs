@@ -7,11 +7,12 @@ mod index;
 mod properties;
 
 pub(crate) use artifact::{
-    decode_immutable_table, decode_immutable_table_data_block, decode_immutable_table_metadata,
+    decode_immutable_table, decode_immutable_table_data_block,
+    decode_immutable_table_data_block_trusted, decode_immutable_table_metadata,
     encode_immutable_table, encode_immutable_table_with_block_compressions,
-    seek_immutable_table_data_block_point, streaming_entry_size_estimate, ImmutableTable,
-    ImmutableTableMetadata, ImmutableTableStreamingEncoder, ImmutableTableStreamingOutput,
-    StreamingTableRow,
+    seek_immutable_table_data_block_point, seek_immutable_table_data_block_point_trusted,
+    streaming_entry_size_estimate, ImmutableTable, ImmutableTableMetadata,
+    ImmutableTableStreamingEncoder, ImmutableTableStreamingOutput, StreamingTableRow,
 };
 pub(crate) use data::TableDataBlockPointSeek;
 pub(crate) use index::TableIndexEntry;
@@ -513,6 +514,107 @@ pub(crate) fn decode_table_block_frame_as(
     expected_kind: TableBlockKind,
 ) -> Result<(TableBlockFrame, usize), FormatError> {
     decode_table_block_frame_inner(bytes, Some(expected_kind))
+}
+
+/// W2.6 (B1): a decoded block frame whose payload BORROWS the input bytes when
+/// no decompression is needed. Produced only by the TRUSTED decode below —
+/// callers must hold frames whose integrity was already proven (the block
+/// cache admits frames only after a checked decode; see `table/reader.rs`).
+pub(crate) struct TableBlockFrameRef<'a> {
+    decoded_payload: std::borrow::Cow<'a, [u8]>,
+}
+
+impl TableBlockFrameRef<'_> {
+    pub(crate) fn decoded_payload(&self) -> &[u8] {
+        &self.decoded_payload
+    }
+}
+
+/// W2.6 (B1): decode a block frame WITHOUT the CRC32 pass and WITHOUT copying
+/// the payload (borrowed for `Uncompressed`; `Zstd` still decompresses to an
+/// owned buffer). Every STRUCTURAL check of the checked decode is retained —
+/// kind, compression byte, flags, length ceilings, total-length bounds, and
+/// the uncompressed length equality — so malformed bytes still fail closed;
+/// only content corruption with intact structure (the CRC-only class) passes.
+/// Callers must restrict this to integrity-proven frames (cache hits).
+pub(crate) fn decode_table_block_frame_trusted(
+    bytes: &[u8],
+    expected_kind: TableBlockKind,
+) -> Result<(TableBlockFrameRef<'_>, usize), FormatError> {
+    if bytes.len() < TABLE_BLOCK_FRAME_HEADER_SIZE {
+        return Err(FormatError::InsufficientBytes {
+            format: TABLE_BLOCK_FRAME_FORMAT,
+            needed: TABLE_BLOCK_FRAME_HEADER_SIZE,
+            actual: bytes.len(),
+        });
+    }
+
+    let mut reader = ByteReader::new(
+        TABLE_BLOCK_FRAME_FORMAT,
+        &bytes[..TABLE_BLOCK_FRAME_HEADER_SIZE],
+    );
+    let kind = TableBlockKind::from_byte(reader.read_u8()?)?;
+    if kind != expected_kind {
+        return Err(FormatError::InvalidValue {
+            field: "block_type",
+        });
+    }
+    let compression = TableCompression::from_byte(reader.read_u8()?)?;
+    let flags = reader.read_u16_le()?;
+    if flags != 0 {
+        return Err(FormatError::UnsupportedFlags {
+            format: TABLE_BLOCK_FRAME_FORMAT,
+            flags: u32::from(flags),
+        });
+    }
+    let encoded_len =
+        usize::try_from(reader.read_u32_le()?).map_err(|_| FormatError::InvalidLength {
+            field: "encoded_len",
+        })?;
+    let decoded_len =
+        usize::try_from(reader.read_u32_le()?).map_err(|_| FormatError::InvalidLength {
+            field: "decoded_len",
+        })?;
+    reader.finish()?;
+    validate_block_payload_len(encoded_len, "encoded_len", MAX_TABLE_BLOCK_ENCODED_BYTES)?;
+    validate_block_payload_len(decoded_len, "decoded_len", MAX_TABLE_BLOCK_DECODED_BYTES)?;
+
+    let total_len = TABLE_BLOCK_FRAME_HEADER_SIZE
+        .checked_add(encoded_len)
+        .and_then(|len| len.checked_add(4))
+        .ok_or(FormatError::InvalidLength {
+            field: TABLE_BLOCK_FRAME_FORMAT,
+        })?;
+    if bytes.len() < total_len {
+        return Err(FormatError::InsufficientBytes {
+            format: TABLE_BLOCK_FRAME_FORMAT,
+            needed: total_len,
+            actual: bytes.len(),
+        });
+    }
+
+    let encoded_payload =
+        &bytes[TABLE_BLOCK_FRAME_HEADER_SIZE..TABLE_BLOCK_FRAME_HEADER_SIZE + encoded_len];
+    let decoded_payload = match compression {
+        TableCompression::Uncompressed => {
+            if encoded_len != decoded_len {
+                return Err(FormatError::InvalidLength {
+                    field: "table_block_lengths",
+                });
+            }
+            std::borrow::Cow::Borrowed(encoded_payload)
+        }
+        TableCompression::Zstd => {
+            std::borrow::Cow::Owned(zstd_decompress(encoded_payload, decoded_len)?)
+        }
+    };
+    if decoded_payload.len() != decoded_len {
+        return Err(FormatError::InvalidLength {
+            field: "decoded_len",
+        });
+    }
+
+    Ok((TableBlockFrameRef { decoded_payload }, total_len))
 }
 
 /// BS4.2: the filter-frame payload, serialized inside a `TableBlockKind::Filter` block frame. The

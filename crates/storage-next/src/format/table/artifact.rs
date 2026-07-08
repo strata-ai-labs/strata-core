@@ -9,11 +9,11 @@ use super::properties::{
     TableProperties,
 };
 use super::{
-    decode_filter_frame, decode_table_block_frame_as, decode_table_footer,
-    decode_table_footer_metadata, decode_table_header, encode_filter_frame,
+    decode_filter_frame, decode_table_block_frame_as, decode_table_block_frame_trusted,
+    decode_table_footer, decode_table_footer_metadata, decode_table_header, encode_filter_frame,
     encode_table_block_frame, encode_table_footer, encode_table_header, TableBlockFrame,
-    TableBlockKind, TableCompression, TableFilterFrame, TableFooter, TableHeader,
-    MAX_TABLE_DATA_BLOCKS, MAX_TABLE_ROWS, TABLE_FOOTER_SIZE, TABLE_HEADER_SIZE,
+    TableBlockFrameRef, TableBlockKind, TableCompression, TableFilterFrame, TableFooter,
+    TableHeader, MAX_TABLE_DATA_BLOCKS, MAX_TABLE_ROWS, TABLE_FOOTER_SIZE, TABLE_HEADER_SIZE,
 };
 use crate::format::FormatError;
 use crate::row::StorageRow;
@@ -882,6 +882,30 @@ pub(crate) fn decode_immutable_table_data_block(
     Ok(block)
 }
 
+/// W2.6 (B1): the trusted full-block decode for integrity-proven frames (block
+/// cache hits on the interactive cursor path): no CRC pass, no frame copy; the
+/// row decode and the index cross-validation are identical to the checked path.
+pub(crate) fn decode_immutable_table_data_block_trusted(
+    index_entry: &TableIndexEntry,
+    frame_bytes: &[u8],
+) -> Result<TableDataBlock, FormatError> {
+    let (frame, consumed) = decode_exact_frame_trusted(frame_bytes, TableBlockKind::Data)?;
+    if consumed
+        != usize::try_from(index_entry.block_frame_len()).map_err(|_| {
+            FormatError::InvalidLength {
+                field: "block_frame_len",
+            }
+        })?
+    {
+        return Err(FormatError::InvalidLength {
+            field: "block_frame_len",
+        });
+    }
+    let block = decode_table_data_block(frame.decoded_payload())?;
+    validate_data_block_against_index(index_entry, &block)?;
+    Ok(block)
+}
+
 pub(crate) fn seek_immutable_table_data_block_point(
     index_entry: &TableIndexEntry,
     frame_bytes: &[u8],
@@ -891,6 +915,40 @@ pub(crate) fn seek_immutable_table_data_block_point(
     max_commit_timestamp: Option<Timestamp>,
 ) -> Result<TableDataBlockPointSeek, FormatError> {
     let (frame, consumed) = decode_exact_frame(frame_bytes, TableBlockKind::Data)?;
+    if consumed
+        != usize::try_from(index_entry.block_frame_len()).map_err(|_| {
+            FormatError::InvalidLength {
+                field: "block_frame_len",
+            }
+        })?
+    {
+        return Err(FormatError::InvalidLength {
+            field: "block_frame_len",
+        });
+    }
+    seek_table_data_block_point(
+        index_entry,
+        frame.decoded_payload(),
+        seek_key,
+        target_physical_key,
+        max_commit_version,
+        max_commit_timestamp,
+    )
+}
+
+/// W2.6 (B1): the trusted-seek counterpart for integrity-proven frames (block
+/// cache hits): no CRC pass, no payload copy. Identical structural validation
+/// (frame shape, exact frame length against the index entry) and identical
+/// seek semantics — pinned by the trusted/checked equivalence property tests.
+pub(crate) fn seek_immutable_table_data_block_point_trusted(
+    index_entry: &TableIndexEntry,
+    frame_bytes: &[u8],
+    seek_key: &[u8],
+    target_physical_key: &[u8],
+    max_commit_version: Option<CommitVersion>,
+    max_commit_timestamp: Option<Timestamp>,
+) -> Result<TableDataBlockPointSeek, FormatError> {
+    let (frame, consumed) = decode_exact_frame_trusted(frame_bytes, TableBlockKind::Data)?;
     if consumed
         != usize::try_from(index_entry.block_frame_len()).map_err(|_| {
             FormatError::InvalidLength {
@@ -952,6 +1010,22 @@ fn decode_exact_frame(
     expected_kind: TableBlockKind,
 ) -> Result<(TableBlockFrame, usize), FormatError> {
     let (frame, consumed) = decode_table_block_frame_as(bytes, expected_kind)?;
+    if consumed != bytes.len() {
+        return Err(FormatError::TrailingData {
+            format: TABLE_ARTIFACT_FORMAT,
+            remaining: bytes.len() - consumed,
+        });
+    }
+    Ok((frame, consumed))
+}
+
+/// W2.6 (B1): exact-frame decode without the CRC pass — same trailing-data
+/// check as the checked variant.
+fn decode_exact_frame_trusted(
+    bytes: &[u8],
+    expected_kind: TableBlockKind,
+) -> Result<(TableBlockFrameRef<'_>, usize), FormatError> {
+    let (frame, consumed) = decode_table_block_frame_trusted(bytes, expected_kind)?;
     if consumed != bytes.len() {
         return Err(FormatError::TrailingData {
             format: TABLE_ARTIFACT_FORMAT,

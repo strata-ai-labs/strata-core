@@ -82,6 +82,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "format_table_block_trusted"
+path = "fuzz_targets/format_table_block_trusted.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "format_table_manifest"
 path = "fuzz_targets/format_table_manifest.rs"
 test = false

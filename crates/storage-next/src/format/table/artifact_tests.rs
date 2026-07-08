@@ -1053,3 +1053,159 @@ fn filtered_table_rejects_flipped_filter_frame_bit() {
         Err(FormatError::ChecksumMismatch { .. })
     ));
 }
+
+// ===== W2.6 (B1): trusted-vs-checked decode equivalence and taxonomy =====
+
+/// Slice each data-block frame out of an encoded table, paired with its index
+/// entry — the exact inputs the reader hands to the seek/decode fns.
+fn data_block_frames(bytes: &[u8]) -> Vec<(TableIndexEntry, Vec<u8>)> {
+    let decoded = decode_immutable_table(bytes).expect("decode table");
+    decoded
+        .index()
+        .entries()
+        .iter()
+        .map(|entry| {
+            let start = usize::try_from(entry.block_offset()).expect("offset");
+            let len = usize::try_from(entry.block_frame_len()).expect("frame len");
+            (entry.clone(), bytes[start..start + len].to_vec())
+        })
+        .collect()
+}
+
+fn equivalence_rows() -> Vec<StorageRow> {
+    (0..48u64)
+        .map(|index| {
+            StorageRow::put(
+                key(format!("trusted-eq-{index:04}").into_bytes()),
+                CommitVersion::new(index + 1),
+                timestamp(index + 1),
+                Timestamp::EPOCH,
+                vec![
+                    u8::try_from(index % 251).expect("fill");
+                    64 + usize::try_from(index % 512).expect("len")
+                ],
+            )
+        })
+        .collect()
+}
+
+fn assert_trusted_checked_equivalent(compression: TableCompression) {
+    let rows = equivalence_rows();
+    let bytes = encode_immutable_table(&rows, 2048, 8, compression).expect("encode table");
+    for (entry, frame) in data_block_frames(&bytes) {
+        // Full-block decode equivalence.
+        let checked = super::artifact::decode_immutable_table_data_block(&entry, &frame)
+            .expect("checked decode");
+        let trusted = super::artifact::decode_immutable_table_data_block_trusted(&entry, &frame)
+            .expect("trusted decode");
+        assert_eq!(
+            checked.rows().collect::<Vec<_>>(),
+            trusted.rows().collect::<Vec<_>>()
+        );
+
+        // Point-seek equivalence for every row in the block plus an absent key.
+        let mut seek_keys: Vec<(Vec<u8>, Vec<u8>)> = checked
+            .rows()
+            .map(|row| {
+                (
+                    encoded_internal_key_for_row(row),
+                    crate::format::encode_physical_key(row.physical_key()),
+                )
+            })
+            .collect();
+        let absent = put(b"zzz-absent".to_vec(), 1);
+        seek_keys.push((
+            encoded_internal_key_for_row(&absent),
+            crate::format::encode_physical_key(absent.physical_key()),
+        ));
+        for (seek_key, physical) in seek_keys {
+            let checked_seek = super::artifact::seek_immutable_table_data_block_point(
+                &entry, &frame, &seek_key, &physical, None, None,
+            )
+            .expect("checked seek");
+            let trusted_seek = super::artifact::seek_immutable_table_data_block_point_trusted(
+                &entry, &frame, &seek_key, &physical, None, None,
+            )
+            .expect("trusted seek");
+            assert_eq!(checked_seek.rows_visited(), trusted_seek.rows_visited());
+            assert_eq!(
+                checked_seek.continue_to_next_block(),
+                trusted_seek.continue_to_next_block()
+            );
+            assert_eq!(checked_seek.row(), trusted_seek.row());
+        }
+    }
+}
+
+#[test]
+fn trusted_decode_matches_checked_decode_uncompressed() {
+    assert_trusted_checked_equivalent(TableCompression::Uncompressed);
+}
+
+#[test]
+fn trusted_decode_matches_checked_decode_zstd() {
+    assert_trusted_checked_equivalent(TableCompression::Zstd);
+}
+
+/// The ONE divergence trusted decode is allowed: pure content corruption with
+/// intact structure (the CRC-only class). A flipped stored CRC fails the
+/// checked path and is invisible to the trusted path — that is the contract
+/// (cache admission runs the checked decode; hits skip re-verification).
+#[test]
+fn trusted_decode_skips_the_crc_only_corruption_class() {
+    let rows = sample_rows();
+    let bytes = encode_immutable_table(&rows, 4096, 16, TableCompression::Uncompressed)
+        .expect("encode table");
+    let frames = data_block_frames(&bytes);
+    let (entry, mut frame) = frames.into_iter().next().expect("one block");
+    // Flip a bit in the stored CRC (last 4 bytes) — structure untouched.
+    let crc_byte = frame.len() - 1;
+    frame[crc_byte] ^= 0x01;
+
+    let checked = super::artifact::decode_immutable_table_data_block(&entry, &frame);
+    assert!(
+        matches!(checked, Err(FormatError::ChecksumMismatch { .. })),
+        "checked decode must reject a CRC flip, got {checked:?}"
+    );
+    let trusted = super::artifact::decode_immutable_table_data_block_trusted(&entry, &frame)
+        .expect("trusted decode ignores the stored CRC");
+    assert_eq!(trusted.rows().count(), rows.len());
+}
+
+/// Structural corruption must fail BOTH paths — trusted keeps every
+/// non-CRC check of the checked decode.
+#[test]
+fn trusted_decode_rejects_structural_corruption_like_checked() {
+    let rows = sample_rows();
+    let bytes = encode_immutable_table(&rows, 4096, 16, TableCompression::Uncompressed)
+        .expect("encode table");
+    let frames = data_block_frames(&bytes);
+    let (entry, frame) = frames.into_iter().next().expect("one block");
+
+    // Truncated frame.
+    let truncated = &frame[..frame.len() - 8];
+    assert!(super::artifact::decode_immutable_table_data_block(&entry, truncated).is_err());
+    assert!(super::artifact::decode_immutable_table_data_block_trusted(&entry, truncated).is_err());
+
+    // Wrong block kind byte.
+    let mut wrong_kind = frame.clone();
+    wrong_kind[0] = TableBlockKind::Index.as_byte();
+    assert!(super::artifact::decode_immutable_table_data_block(&entry, &wrong_kind).is_err());
+    assert!(
+        super::artifact::decode_immutable_table_data_block_trusted(&entry, &wrong_kind).is_err()
+    );
+
+    // Nonzero flags.
+    let mut bad_flags = frame.clone();
+    bad_flags[2] = 0x01;
+    assert!(super::artifact::decode_immutable_table_data_block(&entry, &bad_flags).is_err());
+    assert!(
+        super::artifact::decode_immutable_table_data_block_trusted(&entry, &bad_flags).is_err()
+    );
+
+    // Trailing garbage past the frame length.
+    let mut trailing = frame.clone();
+    trailing.extend_from_slice(&[0u8; 4]);
+    assert!(super::artifact::decode_immutable_table_data_block(&entry, &trailing).is_err());
+    assert!(super::artifact::decode_immutable_table_data_block_trusted(&entry, &trailing).is_err());
+}

@@ -61,6 +61,21 @@ pub(crate) fn decode_table_block(bytes: &[u8]) -> bool {
     table::decode_table_block_frame(bytes).is_ok_and(|(_frame, consumed)| consumed == bytes.len())
 }
 
+/// W2.6 (B1): the trusted (no-CRC) block decode must never panic on arbitrary
+/// bytes, and must accept AT LEAST everything the checked decode accepts (it
+/// relaxes only the checksum, never a structural check).
+pub(crate) fn decode_table_block_trusted(bytes: &[u8]) -> bool {
+    let trusted = table::decode_table_block_frame_trusted(bytes, table::TableBlockKind::Data)
+        .is_ok_and(|(_frame, consumed)| consumed == bytes.len());
+    let checked = table::decode_table_block_frame_as(bytes, table::TableBlockKind::Data)
+        .is_ok_and(|(_frame, consumed)| consumed == bytes.len());
+    assert!(
+        trusted || !checked,
+        "checked decode accepted a data frame the trusted decode rejected"
+    );
+    trusted
+}
+
 pub(crate) fn decode_table_manifest(bytes: &[u8]) -> bool {
     let Ok(manifest) = table_manifest::decode_table_manifest(bytes) else {
         return false;

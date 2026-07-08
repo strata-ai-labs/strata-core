@@ -253,6 +253,12 @@ fn run_workload(
             perf.commit_wal_buffer_flush_bytes(),
         );
         eprintln!(
+            "  [probe] block reads: trusted={} checked={} warm_rejects={}",
+            perf.table_trusted_block_seeks(),
+            perf.table_checked_block_seeks(),
+            perf.table_warm_insert_rejects(),
+        );
+        eprintln!(
             "  [probe] pressure collection: calls={} levels={} tables={} total_ms={:.0} sampling_skips={} full_scans={}",
             perf.lifecycle_pressure_collection_calls(),
             perf.lifecycle_pressure_collection_levels_inspected(),

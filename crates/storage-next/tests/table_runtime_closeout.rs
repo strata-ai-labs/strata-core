@@ -172,7 +172,11 @@ fn table_runtime_closeout_fuzz_inventory_matches_existing_table_targets() {
     let crate_root = common::crate_root();
     let fuzz_manifest = read_file(&crate_root.join("fuzz/Cargo.toml"));
 
-    for target in ["format_table_artifact", "format_table_block"] {
+    for target in [
+        "format_table_artifact",
+        "format_table_block",
+        "format_table_block_trusted",
+    ] {
         let target_path = crate_root.join(format!("fuzz/fuzz_targets/{target}.rs"));
         assert!(
             target_path.is_file(),

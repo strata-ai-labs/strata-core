@@ -191,6 +191,14 @@ pub struct StoragePerfSnapshot {
     lifecycle_foreground_wait_background_lock_ns: u64,
     lifecycle_write_admission_block_wait_ns: u64,
     /// W1.4a: graded token-bucket pacing sleeps actually taken by commits.
+    /// W2.6 (B1): data-block reads served by the trusted (no re-CRC, no
+    /// copy) decode — cache hits on trusting consumers.
+    table_trusted_block_seeks: u64,
+    /// W2.6 (B1): data-block reads that ran the checked decode (misses, and
+    /// always-verify consumers).
+    table_checked_block_seeks: u64,
+    /// W2.6 (B1): publish-time warm inserts rejected by verification.
+    table_warm_insert_rejects: u64,
     /// W3.3a: WAL appends staged in the coalescing buffer.
     commit_wal_buffered_appends: u64,
     /// W3.3a: buffer drains by trigger, plus total drained bytes.
@@ -1122,6 +1130,21 @@ impl StoragePerfSnapshot {
     /// Nanoseconds spent waiting for background progress under Block pressure.
     pub const fn lifecycle_write_admission_block_wait_ns(self) -> u64 {
         self.lifecycle_write_admission_block_wait_ns
+    }
+
+    /// W2.6 (B1): trusted (no re-CRC) data-block reads.
+    pub const fn table_trusted_block_seeks(self) -> u64 {
+        self.table_trusted_block_seeks
+    }
+
+    /// W2.6 (B1): checked (re-verifying) data-block reads.
+    pub const fn table_checked_block_seeks(self) -> u64 {
+        self.table_checked_block_seeks
+    }
+
+    /// W2.6 (B1): warm inserts rejected by pre-insert verification.
+    pub const fn table_warm_insert_rejects(self) -> u64 {
+        self.table_warm_insert_rejects
     }
 
     /// W3.3a: WAL appends staged in the coalescing buffer.
@@ -2748,6 +2771,12 @@ static LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS: AtomicU64 = AtomicU64::new(
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static TABLE_TRUSTED_BLOCK_SEEKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_CHECKED_BLOCK_SEEKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_WARM_INSERT_REJECTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_WAL_BUFFERED_APPENDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD: AtomicU64 = AtomicU64::new(0);
@@ -3492,6 +3521,9 @@ pub fn reset() {
     LIFECYCLE_BACKGROUND_CANDIDATE_STALE_DEFERRED.store(0, Ordering::Relaxed);
     LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS.store(0, Ordering::Relaxed);
+    TABLE_TRUSTED_BLOCK_SEEKS.store(0, Ordering::Relaxed);
+    TABLE_CHECKED_BLOCK_SEEKS.store(0, Ordering::Relaxed);
+    TABLE_WARM_INSERT_REJECTS.store(0, Ordering::Relaxed);
     COMMIT_WAL_BUFFERED_APPENDS.store(0, Ordering::Relaxed);
     COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD.store(0, Ordering::Relaxed);
     COMMIT_WAL_BUFFER_FLUSHES_CAPTURE.store(0, Ordering::Relaxed);
@@ -3990,6 +4022,9 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         lifecycle_write_admission_block_wait_ns: LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS
             .load(Ordering::Relaxed),
+        table_trusted_block_seeks: TABLE_TRUSTED_BLOCK_SEEKS.load(Ordering::Relaxed),
+        table_checked_block_seeks: TABLE_CHECKED_BLOCK_SEEKS.load(Ordering::Relaxed),
+        table_warm_insert_rejects: TABLE_WARM_INSERT_REJECTS.load(Ordering::Relaxed),
         commit_wal_buffered_appends: COMMIT_WAL_BUFFERED_APPENDS.load(Ordering::Relaxed),
         commit_wal_buffer_flushes_threshold: COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD
             .load(Ordering::Relaxed),
@@ -5536,6 +5571,39 @@ pub(crate) fn record_lifecycle_foreground_wait_background_lock(duration: std::ti
         u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
         Ordering::Relaxed,
     );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_trusted_block_seek() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_trusted_block_seek() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_TRUSTED_BLOCK_SEEKS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_checked_block_seek() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_checked_block_seek() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_CHECKED_BLOCK_SEEKS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_warm_insert_reject() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_warm_insert_reject() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_WARM_INSERT_REJECTS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

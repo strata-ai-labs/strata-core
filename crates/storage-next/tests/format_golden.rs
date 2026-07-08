@@ -132,6 +132,16 @@ fn format_fuzz_corpus_matches_golden_vectors() {
             "zstd",
         ),
         (
+            "table-data-block-one-put-uncompressed-frame.hex",
+            "format_table_block_trusted",
+            "one-put-uncompressed",
+        ),
+        (
+            "table-data-block-zstd-frame.hex",
+            "format_table_block_trusted",
+            "zstd",
+        ),
+        (
             "immutable-table-one-block.hex",
             "format_table_artifact",
             "one-block",

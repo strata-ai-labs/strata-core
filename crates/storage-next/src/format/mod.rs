@@ -65,14 +65,16 @@ pub(crate) use storage_row::{decode_storage_row, encode_storage_row};
     reason = "immutable table artifact helpers are consumed by the table runtime layer"
 )]
 pub(crate) use table::{
-    decode_immutable_table, decode_immutable_table_data_block, decode_immutable_table_metadata,
+    decode_immutable_table, decode_immutable_table_data_block,
+    decode_immutable_table_data_block_trusted, decode_immutable_table_metadata,
     decode_table_footer_metadata, decode_table_header, encode_immutable_table,
     encode_immutable_table_with_block_compressions, seek_immutable_table_data_block_point,
-    streaming_entry_size_estimate, ImmutableTable, ImmutableTableMetadata,
-    ImmutableTableStreamingEncoder, ImmutableTableStreamingOutput, StreamingTableRow,
-    TableCompression, TableDataBlockPointSeek, TableIndexEntry, MAX_TABLE_BLOCK_DECODED_BYTES,
-    MAX_TABLE_BLOCK_ENTRIES, MAX_TABLE_DATA_BLOCKS, MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE,
-    MAX_TABLE_KEY_BYTES, MAX_TABLE_ROWS, MAX_TABLE_ROW_BYTES,
+    seek_immutable_table_data_block_point_trusted, streaming_entry_size_estimate, ImmutableTable,
+    ImmutableTableMetadata, ImmutableTableStreamingEncoder, ImmutableTableStreamingOutput,
+    StreamingTableRow, TableCompression, TableDataBlockPointSeek, TableIndexEntry,
+    MAX_TABLE_BLOCK_DECODED_BYTES, MAX_TABLE_BLOCK_ENTRIES, MAX_TABLE_DATA_BLOCKS,
+    MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE, MAX_TABLE_KEY_BYTES, MAX_TABLE_ROWS,
+    MAX_TABLE_ROW_BYTES,
 };
 #[allow(
     unused_imports,
