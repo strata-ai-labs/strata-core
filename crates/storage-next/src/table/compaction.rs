@@ -17,6 +17,7 @@ const OUTPUT_IDENTITY_METADATA_HASH_PRIME: u64 = 0x0000_0100_0000_01b3;
 pub(crate) struct TableCompactor {
     config: TableCompactionConfig,
     builder_config: TableBuilderConfig,
+    output_cut_hints: Option<CompactionOutputCutHints>,
 }
 
 impl TableCompactor {
@@ -29,7 +30,15 @@ impl TableCompactor {
         Ok(Self {
             config,
             builder_config,
+            output_cut_hints: None,
         })
+    }
+
+    /// W1.3a: cut output tables so each spans a bounded number of bytes of the
+    /// level below the output level (see [`CompactionOutputCutHints`]).
+    pub(crate) fn with_output_cut_hints(mut self, hints: CompactionOutputCutHints) -> Self {
+        self.output_cut_hints = Some(hints);
+        self
     }
 
     pub(crate) fn compact<P: TableCompactionPolicy + ?Sized>(
@@ -77,6 +86,30 @@ impl TableCompactor {
         )
     }
 
+    /// [`compact_inputs`](Self::compact_inputs) with each completed output
+    /// table handed to `sink` as it finishes instead of accumulated
+    /// (W1.2c). Accumulation held every output's complete encoded bytes and
+    /// rows in heap until the whole pass published — measured as 20.6GB live
+    /// at peak under a 10M compaction-churn workload (billion-scale-ledger.md
+    /// § T4). A sink that publishes-and-drops bounds the build's heap to the
+    /// one in-progress table regardless of pass size.
+    pub(crate) fn compact_inputs_into<P: TableCompactionPolicy + ?Sized>(
+        &self,
+        output_identity_seed: &TableIdentity,
+        sources: &[&dyn TableCompactionInput],
+        policy: &mut P,
+        sink: &mut dyn FnMut(BuiltTableArtifact) -> TableRuntimeResult<()>,
+    ) -> TableRuntimeResult<TableCompactionReport> {
+        compact_table_inputs_into(
+            self,
+            output_identity_seed,
+            sources,
+            policy,
+            GlobalDuplicateValidation::Skip,
+            sink,
+        )
+    }
+
     /// Run cursor-input compaction with an explicit cross-source duplicate-key validation pass.
     pub(crate) fn compact_inputs_validating_global_duplicates<P: TableCompactionPolicy + ?Sized>(
         &self,
@@ -116,6 +149,143 @@ impl Default for TableCompactor {
 enum GlobalDuplicateValidation {
     Skip,
     Run,
+}
+
+/// W1.3a: one "grandparent" boundary — the start of a table at the level BELOW
+/// the compaction's output level, weighted by that table's byte count.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CompactionCutBoundary {
+    start_physical_key: Vec<u8>,
+    byte_count: u64,
+}
+
+impl CompactionCutBoundary {
+    pub(crate) const fn new(start_physical_key: Vec<u8>, byte_count: u64) -> Self {
+        Self {
+            start_physical_key,
+            byte_count,
+        }
+    }
+}
+
+/// W1.3a: hints for cutting compaction output tables by their overlap with the
+/// level below the output level ("grandparent" tables in `RocksDB` terminology —
+/// `max_compaction_bytes` / `CompactionOutputs::ShouldStopBefore` in
+/// `db/compaction/compaction_outputs.cc`). Bounding an output table's grandparent
+/// overlap bounds the input size of every FUTURE pass that compacts that output
+/// down a level: without it, a full-keyspan L(n) table forces its L(n)→L(n+1)
+/// pass to absorb the entire L(n+1) overlap in one unbounded pass (the 40-70s
+/// stall monsters — ledger § stall root cause).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CompactionOutputCutHints {
+    /// Grandparent-table start boundaries, sorted ascending by physical key.
+    boundaries: Vec<CompactionCutBoundary>,
+    /// Cut the current output before a row that would push the output's
+    /// spanned grandparent bytes past this bound.
+    max_overlap_bytes: u64,
+}
+
+impl CompactionOutputCutHints {
+    pub(crate) fn new(
+        mut boundaries: Vec<CompactionCutBoundary>,
+        max_overlap_bytes: u64,
+    ) -> TableRuntimeResult<Self> {
+        if max_overlap_bytes == 0 {
+            return Err(TableRuntimeError::InvalidConfig {
+                field: "max_overlap_bytes",
+                reason: "must be nonzero",
+            });
+        }
+        boundaries.sort_by(|a, b| a.start_physical_key.cmp(&b.start_physical_key));
+        Ok(Self {
+            boundaries,
+            max_overlap_bytes,
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.boundaries.is_empty()
+    }
+}
+
+/// Walks the sorted grandparent boundaries alongside the merged-row cursor and
+/// decides where to cut the current output. Accounting is interval-based: the
+/// grandparent starting at boundary `i` is treated as covering
+/// `[start_i, start_{i+1})`, and an output's overlap is the byte sum of every
+/// interval its key span touches. An output must span at least one CROSSED
+/// boundary before it can be cut (`output_crossings >= 1`), so a single
+/// grandparent larger than the bound cannot force degenerate near-empty
+/// outputs — worst-case overlap is `max_overlap_bytes` plus one grandparent.
+struct GrandparentCutTracker<'a> {
+    hints: &'a CompactionOutputCutHints,
+    /// First boundary index the merged-row cursor has not yet reached.
+    next_boundary: usize,
+    /// Grandparent bytes spanned by the current pending output (including the
+    /// interval containing its first row).
+    output_overlap_bytes: u64,
+    /// Boundaries crossed while the current output had rows.
+    output_crossings: u64,
+}
+
+impl<'a> GrandparentCutTracker<'a> {
+    fn new(hints: &'a CompactionOutputCutHints) -> Option<Self> {
+        if hints.is_empty() {
+            return None;
+        }
+        Some(Self {
+            hints,
+            next_boundary: 0,
+            output_overlap_bytes: 0,
+            output_crossings: 0,
+        })
+    }
+
+    /// Advance to `row_physical_key` and report whether the current output
+    /// should be cut before appending this row. Never cuts inside one physical
+    /// key (versions of a key stay in one table, matching
+    /// [`should_split_before`]) and never cuts an empty output.
+    fn should_cut_before(
+        &mut self,
+        row_physical_key: &[u8],
+        pending_has_rows: bool,
+        pending_last_physical_key: Option<&[u8]>,
+    ) -> bool {
+        while self.next_boundary < self.hints.boundaries.len()
+            && row_physical_key
+                >= self.hints.boundaries[self.next_boundary]
+                    .start_physical_key
+                    .as_slice()
+        {
+            if pending_has_rows {
+                self.output_overlap_bytes = self
+                    .output_overlap_bytes
+                    .saturating_add(self.hints.boundaries[self.next_boundary].byte_count);
+                self.output_crossings = self.output_crossings.saturating_add(1);
+            }
+            self.next_boundary = self.next_boundary.saturating_add(1);
+        }
+        if !pending_has_rows {
+            // The output will start at this row: its overlap begins at the
+            // interval containing the row.
+            self.rebase_to_containing_interval();
+            return false;
+        }
+        if pending_last_physical_key == Some(row_physical_key) {
+            return false;
+        }
+        self.output_crossings >= 1 && self.output_overlap_bytes > self.hints.max_overlap_bytes
+    }
+
+    /// The current output was finished; the NEXT pushed row starts a new
+    /// output whose overlap begins at the interval containing that row (the
+    /// boundary cursor has already advanced to it).
+    fn rebase_to_containing_interval(&mut self) {
+        self.output_crossings = 0;
+        self.output_overlap_bytes = match self.next_boundary.checked_sub(1) {
+            Some(containing) => self.hints.boundaries[containing].byte_count,
+            None => 0,
+        };
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -373,6 +543,9 @@ pub(crate) struct TableCompactionReport {
     output_tables: usize,
     output_bytes: u64,
     split_count: u64,
+    /// W1.3a: output cuts forced by the grandparent-overlap bound (a subset of
+    /// `split_count`'s output boundaries).
+    grandparent_cut_count: u64,
     peak_buffered_rows: usize,
     drop_summaries: Vec<TableCompactionDropSummary>,
 }
@@ -387,6 +560,7 @@ impl TableCompactionReport {
             output_tables: 0,
             output_bytes: 0,
             split_count: 0,
+            grandparent_cut_count: 0,
             peak_buffered_rows: 0,
             drop_summaries: Vec::new(),
         }
@@ -418,6 +592,10 @@ impl TableCompactionReport {
 
     pub(crate) const fn split_count(&self) -> u64 {
         self.split_count
+    }
+
+    pub(crate) const fn grandparent_cut_count(&self) -> u64 {
+        self.grandparent_cut_count
     }
 
     pub(crate) const fn peak_buffered_rows(&self) -> usize {
@@ -461,6 +639,9 @@ impl TableCompactionReport {
         self.dropped_rows = self.dropped_rows.saturating_add(other.dropped_rows);
         self.output_tables = self.output_tables.saturating_add(other.output_tables);
         self.output_bytes = self.output_bytes.saturating_add(other.output_bytes);
+        self.grandparent_cut_count = self
+            .grandparent_cut_count
+            .saturating_add(other.grandparent_cut_count);
         self.peak_buffered_rows = self.peak_buffered_rows.max(other.peak_buffered_rows);
         for summary in &other.drop_summaries {
             if let Some(existing) = self
@@ -600,6 +781,29 @@ fn compact_table_inputs(
     policy: &mut (impl TableCompactionPolicy + ?Sized),
     global_duplicate_validation: GlobalDuplicateValidation,
 ) -> TableRuntimeResult<TableCompactionOutput> {
+    let mut artifacts = Vec::new();
+    let report = compact_table_inputs_into(
+        compactor,
+        output_identity_seed,
+        sources,
+        policy,
+        global_duplicate_validation,
+        &mut |artifact| {
+            artifacts.push(artifact);
+            Ok(())
+        },
+    )?;
+    Ok(TableCompactionOutput::new(artifacts, report))
+}
+
+fn compact_table_inputs_into(
+    compactor: &TableCompactor,
+    output_identity_seed: &TableIdentity,
+    sources: &[&dyn TableCompactionInput],
+    policy: &mut (impl TableCompactionPolicy + ?Sized),
+    global_duplicate_validation: GlobalDuplicateValidation,
+    sink: &mut dyn FnMut(BuiltTableArtifact) -> TableRuntimeResult<()>,
+) -> TableRuntimeResult<TableCompactionReport> {
     let builder = ImmutableTableBuilder::new(compactor.builder_config)?;
     let mut report = TableCompactionReport::new(sources.len());
     let source_identity = output_source_identity(sources);
@@ -611,7 +815,6 @@ fn compact_table_inputs(
 
     let target_output_bytes = compactor.config.target_output_bytes();
     require_nonzero_target_output_bytes(target_output_bytes)?;
-    let mut artifacts = Vec::new();
     let mut pending_output = PendingCompactionOutput::new(
         builder,
         output_identity_seed,
@@ -619,6 +822,10 @@ fn compact_table_inputs(
         compactor.config.max_output_tables(),
     );
     let mut previous_kept_key: Option<TableInternalKeyBytes> = None;
+    let mut cut_tracker = compactor
+        .output_cut_hints
+        .as_ref()
+        .and_then(GrandparentCutTracker::new);
     let merge_timer = perf_trace::start_timer();
 
     while let Some(current) = merged.current() {
@@ -635,18 +842,32 @@ fn compact_table_inputs(
             TableCompactionDecision::Keep => {
                 let row_approximate_bytes = row_approximate_size_bytes(current.row)?;
                 let current_physical_key = current.row.key().physical_key_bytes();
-                if should_split_before(
+                let size_split = should_split_before(
                     pending_output.has_rows(),
                     pending_output.approximate_bytes(),
                     pending_output.last_physical_key(),
                     target_output_bytes,
                     row_approximate_bytes,
                     current_physical_key,
-                ) {
-                    pending_output.finish_current(&mut artifacts, &mut report)?;
+                );
+                let grandparent_cut = cut_tracker.as_mut().is_some_and(|tracker| {
+                    tracker.should_cut_before(
+                        current_physical_key,
+                        pending_output.has_rows(),
+                        pending_output.last_physical_key(),
+                    )
+                });
+                if size_split || grandparent_cut {
+                    pending_output.finish_current(sink, &mut report)?;
+                    if grandparent_cut {
+                        report.grandparent_cut_count =
+                            report.grandparent_cut_count.saturating_add(1);
+                    }
+                    if let Some(tracker) = cut_tracker.as_mut() {
+                        tracker.rebase_to_containing_interval();
+                    }
                 }
                 pending_output.push_row(
-                    &artifacts,
                     &mut report,
                     current.row,
                     row_approximate_bytes,
@@ -668,11 +889,11 @@ fn compact_table_inputs(
         report.input_rows,
     );
 
-    pending_output.finish_current(&mut artifacts, &mut report)?;
+    pending_output.finish_current(sink, &mut report)?;
 
     perf_trace::record_table_compaction_peak_buffered_rows(report.peak_buffered_rows());
 
-    Ok(TableCompactionOutput::new(artifacts, report))
+    Ok(report)
 }
 
 fn validate_no_global_duplicate_internal_keys(
@@ -703,6 +924,9 @@ struct PendingCompactionOutput<'a> {
     current_rows: usize,
     current_approximate_bytes: u64,
     current_last_physical_key: Option<Vec<u8>>,
+    /// Outputs already handed to the sink — the output-index seed and the
+    /// `max_output_tables` bound (artifacts are no longer accumulated here).
+    finished_outputs: usize,
 }
 
 impl<'a> PendingCompactionOutput<'a> {
@@ -717,6 +941,7 @@ impl<'a> PendingCompactionOutput<'a> {
             output_identity_seed,
             source_identity,
             max_output_tables,
+            finished_outputs: 0,
             current: None,
             current_rows: 0,
             current_approximate_bytes: 0,
@@ -738,19 +963,18 @@ impl<'a> PendingCompactionOutput<'a> {
 
     fn push_row(
         &mut self,
-        artifacts: &[BuiltTableArtifact],
         report: &mut TableCompactionReport,
         row: &TableRow,
         row_approximate_bytes: u64,
         row_physical_key: &[u8],
     ) -> TableRuntimeResult<()> {
         if self.current.is_none() {
-            if artifacts.len() >= self.max_output_tables {
+            if self.finished_outputs >= self.max_output_tables {
                 return Err(TableRuntimeError::InvalidRange {
                     field: "max_output_tables",
                 });
             }
-            let output_index = artifacts.len();
+            let output_index = self.finished_outputs;
             let identity = output_identity(
                 self.output_identity_seed,
                 self.source_identity,
@@ -775,7 +999,7 @@ impl<'a> PendingCompactionOutput<'a> {
 
     fn finish_current(
         &mut self,
-        artifacts: &mut Vec<BuiltTableArtifact>,
+        sink: &mut dyn FnMut(BuiltTableArtifact) -> TableRuntimeResult<()>,
         report: &mut TableCompactionReport,
     ) -> TableRuntimeResult<()> {
         if self.current_rows == 0 {
@@ -791,8 +1015,11 @@ impl<'a> PendingCompactionOutput<'a> {
         let artifact = current.finish()?;
         perf_trace::record_table_compaction_output_table_built();
         report.output_bytes = report.output_bytes.saturating_add(artifact.byte_count());
-        artifacts.push(artifact);
-        report.output_tables = artifacts.len();
+        // Hand the completed output to the sink BEFORE building the next one:
+        // a publishing sink frees the artifact's bytes immediately (W1.2c).
+        sink(artifact)?;
+        self.finished_outputs = self.finished_outputs.saturating_add(1);
+        report.output_tables = self.finished_outputs;
         report.split_count = report.output_tables.saturating_sub(1) as u64;
         Ok(())
     }

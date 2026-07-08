@@ -156,6 +156,31 @@ Milestone exits are measured, not calendared. Rough shape: M-A alone should take
 durable A from ~1K to ≥ 30K (tails bounded, pacing sane) and C from 3.7K to ~30–60K
 (fan-out + debt tails); M-B and M-C together carry the rest of the way to the 70% line.
 
+## 100M smoke findings (2026-07-07, post-plan; folded into workstreams)
+
+The 100M×64B l9 ladder (standard, default budget) completed with zero admission aborts
+(the Ln/watchdog fixes hold). Beyond amplified T1/T2 (load ~70K rows/s with 173s of
+admission block-wait; scan-prefix p50 2.94ms with cursor SETUP taking 28.4s of the 30.9s
+scan phase and 128× row-decode amplification), it exposed:
+
+- **N1 — Level-shape pathology (folds into W1.3, upgraded):** post-load shape
+  `L1=14, L2=3, L3/L4 empty, L5=41, L6=39, L7=750` — a 750-table bottommost level with
+  holes mid-cascade; selected bytes 15.3GB vs 11.5GB targets. The level-target
+  derivation misbehaves at 100M. W1.3 is now a required (not tuning) slice.
+- **N2 — Fork scans rows (NEW, added as W5.2):** branch-fork p50 595ms at 100M (87ms at
+  10M) with **40M rows visited across 100 forks** (~400K rows/fork) through the scan
+  path. Fork is contractually O(1) metadata; something in the fork path scans
+  proportionally to data. Attribution + fix before the 1B tier (at 1B this is a
+  multi-second fork).
+- **N3 — Reopen reader-count ≈ 100× live tables (attribution needed, W5.3):** reopen
+  153s with **87,617 reader opens** against ~870 live tables at close, zero replay —
+  the manifest/catalog appears to carry two orders of magnitude more table refs than
+  live state (or recovery re-opens per reference). Close also took 89.5s. Both need
+  stack-level attribution.
+
+RSS observed ~16GB under the default (512MiB-class) budget mid-load — T4's standing
+number at 100M (task #59).
+
 ## Non-goals (this plan)
 
 - Beating RocksDB-default (the 67–70% line is the bar; parity is tuning-era work).

@@ -15,6 +15,12 @@
 //!   rocksdb-ycsb --workload a --records 100000 --ops 100000
 //!   rocksdb-ycsb -q
 
+// Link the benchmark lib for its #[global_allocator] (jemalloc): a bin that
+// never references the lib does NOT link it, silently running on glibc
+// malloc — whose per-thread arenas fragment unboundedly under multi-GB
+// alloc/free churn (T4 RSS attribution, roadmap-v2).
+extern crate strata_benchmarks;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process;

@@ -26,6 +26,12 @@
 //! Single-thread now beats the locked control (regression gone); the slope improves to ~5.1x across
 //! 1->8 threads as the contended Arc<TableMemoryState> refcount RMW is removed.
 
+// Link the benchmark lib for its #[global_allocator] (jemalloc): a bin that
+// never references the lib does NOT link it, silently running on glibc
+// malloc — whose per-thread arenas fragment unboundedly under multi-GB
+// alloc/free churn (T4 RSS attribution, roadmap-v2).
+extern crate strata_benchmarks;
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 

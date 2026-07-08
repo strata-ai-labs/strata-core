@@ -39,6 +39,12 @@
 //!   decomposition + ranked BS3.3 fix list:
 //! `docs/design/performance/bs3-compaction-admission-plan.md` (BS3.2 section).
 
+// Link the benchmark lib for its #[global_allocator] (jemalloc): a bin that
+// never references the lib does NOT link it, silently running on glibc
+// malloc — whose per-thread arenas fragment unboundedly under multi-GB
+// alloc/free churn (T4 RSS attribution, roadmap-v2).
+extern crate strata_benchmarks;
+
 use std::error::Error;
 use std::path::PathBuf;
 use std::time::Instant;

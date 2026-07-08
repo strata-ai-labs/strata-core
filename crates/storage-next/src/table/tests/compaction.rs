@@ -4,12 +4,12 @@ use crate::format::{decode_immutable_table, TableCompression};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     sort_table_rows_by_key, validate_strictly_sorted_unique_rows, BuiltTableArtifact,
-    ImmutableTableReader, MutableTable, TableBuilderConfig, TableCompactionConfig,
-    TableCompactionDecision, TableCompactionDropReason, TableCompactionDropSummary,
-    TableCompactionInput, TableCompactionOutput, TableCompactionPolicy, TableCompactionReport,
-    TableCompactionRowContext, TableCompactionSource, TableCompactionSourceId, TableCompactor,
-    TableCursor, TableIdentity, TableInternalKeyBytes, TableReaderConfig, TableRow,
-    TableRuntimeError,
+    CompactionCutBoundary, CompactionOutputCutHints, ImmutableTableReader, MutableTable,
+    TableBuilderConfig, TableCompactionConfig, TableCompactionDecision, TableCompactionDropReason,
+    TableCompactionDropSummary, TableCompactionInput, TableCompactionOutput, TableCompactionPolicy,
+    TableCompactionReport, TableCompactionRowContext, TableCompactionSource,
+    TableCompactionSourceId, TableCompactor, TableCursor, TableIdentity, TableInternalKeyBytes,
+    TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeError,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -1264,6 +1264,143 @@ fn output_splitting_respects_limits_and_keeps_physical_key_groups_together() {
             field: "max_output_tables",
         }
     );
+}
+
+/// W1.3a: encoded-physical-key cut boundaries for user keys in the standard
+/// test keyspace (branch 1, space 0x20), each weighted with `byte_count`.
+fn cut_hints(boundaries: &[(&[u8], u64)], max_overlap_bytes: u64) -> CompactionOutputCutHints {
+    CompactionOutputCutHints::new(
+        boundaries
+            .iter()
+            .map(|(user_key, byte_count)| {
+                CompactionCutBoundary::new(
+                    TablePhysicalKeyBytes::from_physical_key(&physical_key(
+                        1,
+                        0x20,
+                        user_key.to_vec(),
+                    ))
+                    .as_slice()
+                    .to_vec(),
+                    *byte_count,
+                )
+            })
+            .collect(),
+        max_overlap_bytes,
+    )
+    .expect("cut hints")
+}
+
+/// W1.3a: cutting outputs by grandparent overlap changes only WHERE tables are
+/// cut — the merged row stream is byte-identical to the uncut run, and the cut
+/// fires exactly when an output's spanned grandparent bytes exceed the bound.
+#[test]
+fn grandparent_cutting_preserves_the_uncut_row_stream() {
+    let rows = [
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+        put_row(b"echo".to_vec(), 5),
+        put_row(b"foxtrot".to_vec(), 6),
+    ];
+    let mut policy = keep_all_policy();
+    let uncut = compactor(1 << 20, 16)
+        .compact(&identity("gp-uncut"), &[source("gp", &rows)], &mut policy)
+        .expect("uncut run");
+    assert_eq!(uncut.report().output_tables(), 1);
+    assert_eq!(uncut.report().grandparent_cut_count(), 0);
+
+    // Grandparents start at `charlie` (100 bytes) and `echo` (100 bytes); an
+    // output may span at most 150 bytes of them. The output holding
+    // {alpha..delta} spans only `charlie`'s interval (100 bytes); appending
+    // `echo` would add its interval (200 total) — cut before `echo`.
+    let cut = compactor(1 << 20, 16)
+        .with_output_cut_hints(cut_hints(&[(b"charlie", 100), (b"echo", 100)], 150))
+        .compact(&identity("gp-cut"), &[source("gp", &rows)], &mut policy)
+        .expect("cut run");
+    assert_eq!(cut.report().output_tables(), 2);
+    assert_eq!(cut.report().grandparent_cut_count(), 1);
+    assert_eq!(output_storage_rows(&cut), output_storage_rows(&uncut));
+
+    let first_output_rows = ImmutableTableReader::open_bytes(
+        cut.artifacts()[0].facts().identity().clone(),
+        cut.artifacts()[0].bytes().to_vec(),
+        TableReaderConfig::default(),
+    )
+    .expect("first cut output")
+    .rows()
+    .len();
+    assert_eq!(first_output_rows, 4, "cut lands before `echo`");
+}
+
+/// W1.3a: a grandparent cut never separates versions of one physical key —
+/// the same invariant the size split enforces.
+#[test]
+fn grandparent_cut_never_splits_one_physical_key() {
+    let mike = physical_key(1, 0x20, b"mike".to_vec());
+    let rows = [
+        put_row(b"alpha".to_vec(), 1),
+        put_row_for_key(mike.clone(), 3, vec![3; 16]),
+        put_row_for_key(mike, 5, vec![5; 16]),
+        put_row(b"zulu".to_vec(), 7),
+    ];
+    let mut policy = keep_all_policy();
+    // Both boundaries alone exceed the bound, so a cut fires at each
+    // physical-key change that crosses one — but never between the two
+    // `mike` versions.
+    let cut = compactor(1 << 20, 16)
+        .with_output_cut_hints(cut_hints(&[(b"mike", 200), (b"zulu", 200)], 150))
+        .compact(
+            &identity("gp-grouped"),
+            &[source("gp-grouped", &rows)],
+            &mut policy,
+        )
+        .expect("cut run");
+    assert_eq!(cut.report().output_tables(), 3);
+    assert_eq!(cut.report().grandparent_cut_count(), 2);
+    let per_output_rows = cut
+        .artifacts()
+        .iter()
+        .map(|artifact| {
+            ImmutableTableReader::open_bytes(
+                artifact.facts().identity().clone(),
+                artifact.bytes().to_vec(),
+                TableReaderConfig::default(),
+            )
+            .expect("cut output")
+            .rows()
+            .len()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        per_output_rows,
+        vec![1, 2, 1],
+        "both mike versions together"
+    );
+    assert_eq!(cut.report().kept_rows(), 4);
+}
+
+/// W1.3a: an output must span at least one CROSSED boundary before it can be
+/// cut, so a single grandparent larger than the bound cannot force degenerate
+/// near-empty outputs.
+#[test]
+fn single_oversized_grandparent_does_not_degenerate_outputs() {
+    let rows = [
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let mut policy = keep_all_policy();
+    let cut = compactor(1 << 20, 16)
+        .with_output_cut_hints(cut_hints(&[(b"alpha", 1_000)], 150))
+        .compact(
+            &identity("gp-oversized"),
+            &[source("gp-oversized", &rows)],
+            &mut policy,
+        )
+        .expect("cut run");
+    assert_eq!(cut.report().output_tables(), 1);
+    assert_eq!(cut.report().grandparent_cut_count(), 0);
 }
 
 #[test]

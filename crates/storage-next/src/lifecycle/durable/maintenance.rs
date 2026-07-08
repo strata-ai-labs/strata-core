@@ -351,11 +351,14 @@ enum PreparedPublishPost {
     Compaction {
         branch_id: BranchId,
         level: u8,
-        outcome: LifecycleCompactionOutcome,
+        /// Boxed: the outcome dominates the enum size (clippy
+        /// `large_enum_variant`), and one post is built per publish.
+        outcome: Box<LifecycleCompactionOutcome>,
     },
     Materialization {
         branch_id: BranchId,
-        outcome: LifecycleMaterializationOutcome,
+        /// Boxed for the same reason as the compaction outcome.
+        outcome: Box<LifecycleMaterializationOutcome>,
     },
 }
 
@@ -2051,7 +2054,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             PreparedPublishPost::Compaction {
                 branch_id,
                 level,
-                outcome: compaction,
+                outcome: Box::new(compaction),
             },
         )
     }
@@ -2098,7 +2101,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             base_outcome,
             PreparedPublishPost::Materialization {
                 branch_id,
-                outcome: materialization,
+                outcome: Box::new(materialization),
             },
         )
     }
@@ -2227,18 +2230,20 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 level,
                 outcome,
             } => {
-                let outcome = self.fold_rewrite_publish(write_result, outcome, |outcome, error| {
-                    outcome.manifest_debt(error)
-                });
+                let outcome =
+                    self.fold_rewrite_publish(write_result, *outcome, |outcome, error| {
+                        outcome.manifest_debt(error)
+                    });
                 record_lifecycle_compaction_outcome(&outcome);
                 let maintenance = outcome.maintenance_outcome();
                 self.apply_compaction_post(branch_id, level, &maintenance);
                 maintenance
             }
             PreparedPublishPost::Materialization { branch_id, outcome } => {
-                let outcome = self.fold_rewrite_publish(write_result, outcome, |outcome, error| {
-                    outcome.manifest_debt(error)
-                });
+                let outcome =
+                    self.fold_rewrite_publish(write_result, *outcome, |outcome, error| {
+                        outcome.manifest_debt(error)
+                    });
                 let maintenance = outcome.maintenance_outcome();
                 if table_rewrite_outcome_allows_chain_resubmit(&maintenance) {
                     self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
@@ -2510,7 +2515,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     pub(crate) fn run_next_background_flush_watermark_maintenance(
         &mut self,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
-        // No pending-flush gate: the watermark advance (Path A/B below) is proven
+        // No pending-flush gate: the watermark advance (cases A and B below) is proven
         // against the *current* published table manifest, so an unpublished in-flight
         // flush is simply not counted — advancing to already-covered L0 while a flush
         // is active is safe and is what lets WAL reclaim keep pace under write pressure.

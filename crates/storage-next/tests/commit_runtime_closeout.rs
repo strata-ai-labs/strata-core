@@ -135,7 +135,7 @@ fn commit_runtime_closeout_fault_tests_cover_required_phase_families() {
         "durable_writer_halted_failure_is_clean_durability_unavailable",
         "durable_apply_failure_after_wal_success_records_durable_not_applied_gate",
         "durable_visibility_failure_after_apply_records_applied_not_visible_gate",
-        "durable_active_global_admission_blocks_other_branch_before_wal_append",
+        "durable_commit_proceeds_alongside_open_admission_span_other_branch",
         "unresolved_durable_gate_blocks_durable_commit_before_allocation_and_wal_append",
     ] {
         assert!(

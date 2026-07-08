@@ -392,6 +392,59 @@ fn nonzero_compaction_level_targets_match_segmented_raised_base_fixture() {
     assert_eq!(targets[6], expected_base * 100);
 }
 
+/// W1.3a: every lifecycle-driven table-rewrite request carries the
+/// grandparent-overlap output bound by default — outputs of every pass kind
+/// are cut so future down-level passes have bounded inputs. Bottommost kinds
+/// carry it too; their grandparent level is empty, so it is inert there.
+#[test]
+fn lifecycle_requests_carry_the_grandparent_overlap_bound_by_default() {
+    let branch = branch_id(0x5b);
+    for (kind, seed) in [
+        (BranchCompactionKind::CompactL0, "gp-bound-l0"),
+        (BranchCompactionKind::CompactL0ToLevelOne, "gp-bound-l0l1"),
+        (
+            BranchCompactionKind::CompactLevel {
+                level: BranchLevel::new(1),
+                table_index: 0,
+            },
+            "gp-bound-mid",
+        ),
+        (
+            BranchCompactionKind::CompactBottommostLevel {
+                level: BranchLevel::new(2),
+                start_table_index: 0,
+                table_count: 1,
+            },
+            "gp-bound-bottom",
+        ),
+    ] {
+        let request = LifecycleCompactionRequest::new(branch, kind, seed)
+            .expect("lifecycle request")
+            .branch_request()
+            .expect("branch request");
+        assert_eq!(
+            request.output_grandparent_overlap_max_bytes(),
+            Some(256 * 1024 * 1024),
+            "kind {kind:?} must carry the default grandparent-overlap bound"
+        );
+    }
+
+    // The override reaches the branch request (tests and W1.4 calibration).
+    let overridden = LifecycleCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "gp-bound-override",
+    )
+    .expect("lifecycle request")
+    .with_output_grandparent_overlap_max_bytes(1024)
+    .branch_request()
+    .expect("branch request");
+    assert_eq!(
+        overridden.output_grandparent_overlap_max_bytes(),
+        Some(1024)
+    );
+}
+
 #[test]
 fn compaction_requests_use_table_output_target_bytes() {
     let branch = branch_id(0x5a);
@@ -4919,4 +4972,75 @@ fn queued_cache_materialization_skips_other_task_kinds() {
         .expect("flush outcome");
     assert_eq!(remaining.task_id(), Some(flush.task_id()));
     assert_eq!(remaining.task_kind(), MaintenanceTaskKind::Flush);
+}
+
+/// W1.1b: a bounded L0→L1 request consumes the OLDEST-first suffix
+/// incrementally through the lifecycle path, and every partial pass's outcome
+/// satisfies the chain-resubmit predicate — the background publish path
+/// (`apply_compaction_post` → `resubmit_table_rewrite_if_any_branch_still_unhealthy`)
+/// re-enqueues the next pass off exactly this predicate plus live re-scoring,
+/// so bounded passes drain L0 pass by pass without new commits.
+#[test]
+fn bounded_l0_to_l1_pass_consumes_oldest_suffix_and_allows_chaining() {
+    let branch = branch_id(0x6b);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    // Installed oldest→newest; L0 keeps newest at index 0, oldest at the tail.
+    for (index, (seed, key)) in [
+        ("chain-l0-oldest", &b"chain-a"[..]),
+        ("chain-l0-second", &b"chain-b"[..]),
+        ("chain-l0-third", &b"chain-c"[..]),
+        ("chain-l0-newest", &b"chain-d"[..]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let version = u64::try_from(index + 1).expect("small index");
+        let row = put_row(branch, key, version, version * 10, b"v");
+        install_l0_table(&mut state, branch, seed, vec![row]);
+    }
+    assert_eq!(state.owned_levels()[0].len(), 4);
+
+    let mut passes = 0usize;
+    while !state.owned_levels()[0].is_empty() {
+        let before = state.owned_levels()[0].len();
+        let request = LifecycleCompactionRequest::new(
+            branch,
+            BranchCompactionKind::CompactL0ToLevelOne,
+            format!("chain-pass-{passes}"),
+        )
+        .expect("request")
+        .with_l0_pass_max_input_bytes(1);
+        let outcome = compact_durable_branch(&mut state, &request).expect("bounded pass");
+        let after = state.owned_levels()[0].len();
+        assert_eq!(
+            after,
+            before - 1,
+            "a 1-byte bound must consume exactly the single oldest table per pass"
+        );
+        assert!(
+            crate::lifecycle::compaction::table_rewrite_outcome_allows_chain_resubmit(
+                &outcome.maintenance_outcome()
+            ),
+            "a healthy bounded pass must satisfy the chain-resubmit predicate"
+        );
+        passes += 1;
+        assert!(passes <= 4, "bounded passes must drain L0 in bounded steps");
+    }
+    assert_eq!(passes, 4);
+
+    // Every row survived the pass sequence and reads back at latest.
+    let view = state.capture_read_view().expect("view");
+    for key in [&b"chain-a"[..], b"chain-b", b"chain-c", b"chain-d"] {
+        let rows = view
+            .scan_prefix(
+                &BranchScanBounds::prefix(&physical_key(branch, key)),
+                BranchReadBound::latest(),
+            )
+            .expect("scan");
+        assert_eq!(rows.len(), 1, "key {key:?} must survive the bounded drain");
+    }
 }

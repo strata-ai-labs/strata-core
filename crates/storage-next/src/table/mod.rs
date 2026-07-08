@@ -48,8 +48,9 @@ pub(crate) use cache::{
     )
 )]
 pub(crate) use compaction::{
-    TableCompactionDecision, TableCompactionDropReason, TableCompactionDropSummary,
-    TableCompactionInput, TableCompactionMergeCursor, TableCompactionOutput, TableCompactionPolicy,
+    CompactionCutBoundary, CompactionOutputCutHints, TableCompactionDecision,
+    TableCompactionDropReason, TableCompactionDropSummary, TableCompactionInput,
+    TableCompactionMergeCursor, TableCompactionOutput, TableCompactionPolicy,
     TableCompactionReport, TableCompactionRowContext, TableCompactionSource,
     TableCompactionSourceId, TableCompactor, TableStreamingArtifactBuilder,
     TableStreamingArtifactReport,

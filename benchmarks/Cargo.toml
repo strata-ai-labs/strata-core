@@ -19,7 +19,11 @@ serde = { version = "1.0", features = ["derive"] }
 # installed jemalloc as the global allocator, so every recorded benchmark
 # number is a jemalloc number. Pin it here explicitly to keep the instrument
 # comparable across the cutover — glibc malloc costs ~25% on the write path.
-tikv-jemallocator = "0.6"
+tikv-jemallocator = { version = "0.6", features = ["profiling"] }
+# Live allocator gauges for the RSS-attribution probe (roadmap-v2 T4): the
+# allocated/active/resident/retained split separates app-held memory from
+# allocator retention per benchmark phase.
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
 
 serde_json = "1.0"
 tempfile = "3.8"

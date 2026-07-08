@@ -8,18 +8,18 @@ use crate::branch::facts::BranchTableReferenceKind;
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor, BranchTableRef};
 use crate::branch::pruning::{BranchCompactionPruningPolicy, BranchCompactionPruningProof};
 use crate::branch::read::{
-    table_physical_ranges_overlap, BranchInheritedLayer, BranchLayout, BranchMaterializationSource,
-    BranchOwnedTable, BranchTimestampCoverage,
+    table_physical_first_key, table_physical_ranges_overlap, BranchInheritedLayer, BranchLayout,
+    BranchMaterializationSource, BranchOwnedTable, BranchTimestampCoverage,
 };
 use crate::observability::perf_trace;
 #[cfg(any(test, debug_assertions))]
 use crate::table::TableInternalKeyBytes;
 use crate::table::{
-    BuiltTableArtifact, ImmutableTableReader, TableBuilderConfig, TableCompactionConfig,
-    TableCompactionDecision, TableCompactionInput, TableCompactionPolicy, TableCompactionReport,
-    TableCompactionRowContext, TableCompactionSourceId, TableCompactor, TableCursor, TableIdentity,
-    TableKeyBounds, TablePhysicalKeyBound, TablePhysicalKeyBytes, TableReaderConfig, TableRow,
-    TableRuntimeResult,
+    BuiltTableArtifact, CompactionCutBoundary, CompactionOutputCutHints, ImmutableTableReader,
+    TableBuilderConfig, TableCompactionConfig, TableCompactionDecision, TableCompactionInput,
+    TableCompactionPolicy, TableCompactionReport, TableCompactionRowContext,
+    TableCompactionSourceId, TableCompactor, TableCursor, TableIdentity, TableKeyBounds,
+    TablePhysicalKeyBound, TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeResult,
 };
 use std::collections::BTreeSet;
 use strata_core_next::BranchId;
@@ -63,6 +63,16 @@ pub(crate) struct BranchCompactionRequest {
     output_identity_seed: TableIdentity,
     table_compaction_config: TableCompactionConfig,
     table_builder_config: TableBuilderConfig,
+    /// W1.1: byte bound for one L0→L1 pass (input tables + L1 overlap).
+    /// `None` = unbounded (the pre-W1.1 behavior). The planner trims the L0
+    /// input to the largest OLDEST-FIRST SUFFIX fitting the bound (always at
+    /// least one table, so progress is guaranteed); non-L0 kinds ignore it.
+    max_pass_input_bytes: Option<u64>,
+    /// W1.3a: cut output tables so each overlaps at most this many bytes of
+    /// the level BELOW the output level ("grandparent" tables). `None` = no
+    /// cutting (the pre-W1.3a behavior). Bounds the input size of every
+    /// FUTURE pass that compacts an output table down a level.
+    output_grandparent_overlap_max_bytes: Option<u64>,
 }
 
 impl BranchCompactionRequest {
@@ -81,7 +91,29 @@ impl BranchCompactionRequest {
             output_identity_seed,
             table_compaction_config: TableCompactionConfig::default(),
             table_builder_config: TableBuilderConfig::default(),
+            max_pass_input_bytes: None,
+            output_grandparent_overlap_max_bytes: None,
         })
+    }
+
+    /// W1.1: bound one L0→L1 pass's input bytes (see the field doc).
+    pub(crate) const fn with_max_pass_input_bytes(mut self, bound: u64) -> Self {
+        self.max_pass_input_bytes = Some(bound);
+        self
+    }
+
+    pub(crate) const fn max_pass_input_bytes(&self) -> Option<u64> {
+        self.max_pass_input_bytes
+    }
+
+    /// W1.3a: bound each output table's grandparent overlap (see the field doc).
+    pub(crate) const fn with_output_grandparent_overlap_max_bytes(mut self, bound: u64) -> Self {
+        self.output_grandparent_overlap_max_bytes = Some(bound);
+        self
+    }
+
+    pub(crate) const fn output_grandparent_overlap_max_bytes(&self) -> Option<u64> {
+        self.output_grandparent_overlap_max_bytes
     }
 
     pub(crate) const fn branch_id(&self) -> BranchId {
@@ -517,6 +549,34 @@ impl BranchLocalState {
         bounds: Option<&TableKeyBounds>,
         subcompaction_index: usize,
     ) -> BranchRuntimeResult<Option<(Vec<BuiltTableArtifact>, TableCompactionReport)>> {
+        let mut artifacts = Vec::new();
+        let report = self.prepare_branch_compaction_plan_bounded_into(
+            request,
+            plan,
+            bounds,
+            subcompaction_index,
+            &mut |artifact| {
+                artifacts.push(artifact);
+                Ok(())
+            },
+        )?;
+        Ok(report.map(|report| (artifacts, report)))
+    }
+
+    /// [`prepare_branch_compaction_plan_bounded`] with each completed output
+    /// table handed to `sink` as it finishes (W1.2c): a publishing sink frees
+    /// each output's encoded bytes immediately instead of accumulating the
+    /// whole pass's outputs in heap (measured 20.6GB live at peak — ledger
+    /// § T4). The sink's error surfaces as the compaction's error; callers
+    /// that publish keep their partial-publish cleanup semantics.
+    pub(crate) fn prepare_branch_compaction_plan_bounded_into(
+        &self,
+        request: &BranchCompactionRequest,
+        plan: &BranchCompactionPlan,
+        bounds: Option<&TableKeyBounds>,
+        subcompaction_index: usize,
+        sink: &mut dyn FnMut(BuiltTableArtifact) -> crate::table::TableRuntimeResult<()>,
+    ) -> BranchRuntimeResult<Option<TableCompactionReport>> {
         self.validate_compaction_request(request)?;
         if plan.branch_id() != self.branch_id || plan.kind() != request.kind() {
             return Err(BranchRuntimeError::InvalidCompaction {
@@ -543,6 +603,10 @@ impl BranchLocalState {
             request.table_builder_config(),
         )
         .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
+        let compactor = match self.grandparent_cut_hints(candidate, request)? {
+            Some(hints) => compactor.with_output_cut_hints(hints),
+            None => compactor,
+        };
         // Salt the output-table identity seed per subcompaction so parallel ranges (each of which
         // restarts its output index at 0) never produce colliding output-table identities.
         let output_identity_seed = if subcompaction_index == 0 {
@@ -554,11 +618,11 @@ impl BranchLocalState {
             ))
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?
         };
-        let output = match request.retention_policy() {
+        let report = match request.retention_policy() {
             BranchCompactionRetentionPolicy::KeepAll => {
                 let mut policy = keep_all_policy();
                 compactor
-                    .compact_inputs(&output_identity_seed, &source_refs, &mut policy)
+                    .compact_inputs_into(&output_identity_seed, &source_refs, &mut policy, sink)
                     .map_err(|source| BranchRuntimeError::TableRuntime { source })?
             }
             BranchCompactionRetentionPolicy::DropOlderVersions
@@ -574,13 +638,12 @@ impl BranchLocalState {
                 let mut policy =
                     BranchCompactionPruningPolicy::new(request.retention_policy(), proof);
                 compactor
-                    .compact_inputs(&output_identity_seed, &source_refs, &mut policy)
+                    .compact_inputs_into(&output_identity_seed, &source_refs, &mut policy, sink)
                     .map_err(|source| BranchRuntimeError::TableRuntime { source })?
             }
         };
-        let (artifacts, report) = output.into_parts();
         perf_trace::record_branch_compaction_peak_buffered_rows(report.peak_buffered_rows());
-        Ok(Some((artifacts, report)))
+        Ok(Some(report))
     }
 
     pub(crate) fn install_branch_compaction_plan(
@@ -840,7 +903,27 @@ impl BranchLocalState {
                 BranchCompactionNoopReason::EmptyInputLevel,
             ));
         }
-        let input_refs = self.table_refs_at_level(0, 0..input_count)?;
+        // W1.1: bound the pass. L0 is NEWEST-FIRST (installs at index 0), so
+        // the oldest-first consumption unit is the index SUFFIX — grow it
+        // oldest-to-newer until input + L1-overlap bytes would exceed the
+        // bound. SUFFIX-ONLY is load-bearing for recency ordering: any
+        // non-suffix subset could move a newer row to L1 while an older row
+        // for the same key stays in L0, inverting shadowing in later merges.
+        // At least one table is always taken so passes make progress; the io
+        // policy's defer path remains the backstop for single-oversized
+        // inputs.
+        let selected_count = match request.max_pass_input_bytes() {
+            None => input_count,
+            Some(bound) => self.bounded_l0_suffix_len(input_count, bound)?,
+        };
+        let input_refs =
+            self.table_refs_at_level(0, (input_count - selected_count)..input_count)?;
+        debug_assert!(
+            input_refs
+                .last()
+                .is_none_or(|last| last.table_index() == input_count - 1),
+            "bounded L0 selection must end at the oldest table (suffix-only invariant)"
+        );
         let overlap_refs = self.overlapping_refs_for_output_range(&input_refs, 1)?;
         let input_row_count = self
             .table_ref_row_count(&input_refs)?
@@ -1097,6 +1180,87 @@ impl BranchLocalState {
             kind,
             candidate,
         ))
+    }
+
+    /// W1.1: the largest oldest-first L0 SUFFIX whose input bytes plus L1
+    /// overlap bytes fit `bound` (minimum one table). Grows the suffix one
+    /// table at a time from the oldest (highest index) toward newer entries,
+    /// recomputing the overlap for the widened key range each step — L0 is
+    /// small by construction (the blocking threshold caps it at ~36), so the
+    /// quadratic-in-L0 overlap recomputation is bounded and cheap next to the
+    /// merge it sizes.
+    fn bounded_l0_suffix_len(&self, input_count: usize, bound: u64) -> BranchRuntimeResult<usize> {
+        let mut selected = 1usize;
+        while selected < input_count {
+            let next = selected + 1;
+            if self.l0_suffix_pass_bytes(input_count, next)? > bound {
+                break;
+            }
+            selected = next;
+        }
+        Ok(selected)
+    }
+
+    /// Input + L1-overlap byte total for the oldest-first L0 suffix of
+    /// `selected` tables.
+    fn l0_suffix_pass_bytes(
+        &self,
+        input_count: usize,
+        selected: usize,
+    ) -> BranchRuntimeResult<u64> {
+        let refs = self.table_refs_at_level(0, (input_count - selected)..input_count)?;
+        let overlap = self.overlapping_refs_for_output_range(&refs, 1)?;
+        let mut bytes = 0u64;
+        for table_ref in refs.iter().chain(overlap.iter()) {
+            let table =
+                self.table_for_ref(table_ref)
+                    .ok_or(BranchRuntimeError::InvalidCompaction {
+                        reason: BranchCompactionInvalidity::Generic(
+                            "compaction table ref must exist",
+                        ),
+                    })?;
+            bytes = bytes.saturating_add(table.facts().byte_count());
+        }
+        Ok(bytes)
+    }
+
+    /// W1.3a: output-cut hints for a table-rewrite pass — the start boundaries
+    /// and byte weights of every table at the level BELOW the candidate's
+    /// output level ("grandparents"). `None` when the request carries no
+    /// overlap bound, the output level is bottommost, or the grandparent
+    /// level is empty (nothing to bound against — behavior is then identical
+    /// to pre-W1.3a).
+    fn grandparent_cut_hints(
+        &self,
+        candidate: &BranchCompactionCandidate,
+        request: &BranchCompactionRequest,
+    ) -> BranchRuntimeResult<Option<CompactionOutputCutHints>> {
+        let Some(max_overlap_bytes) = request.output_grandparent_overlap_max_bytes() else {
+            return Ok(None);
+        };
+        let grandparent_level_index = usize::from(candidate.output_level().raw()).saturating_add(1);
+        let Some(grandparent_tables) = self.owned_levels().get(grandparent_level_index) else {
+            return Ok(None);
+        };
+        if grandparent_tables.is_empty() {
+            return Ok(None);
+        }
+        let mut boundaries = Vec::with_capacity(grandparent_tables.len());
+        for table in grandparent_tables {
+            let Some(first_key) = table_physical_first_key(table) else {
+                continue;
+            };
+            boundaries.push(CompactionCutBoundary::new(
+                first_key.as_slice().to_vec(),
+                table.facts().byte_count(),
+            ));
+        }
+        if boundaries.is_empty() {
+            return Ok(None);
+        }
+        CompactionOutputCutHints::new(boundaries, max_overlap_bytes)
+            .map(Some)
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })
     }
 
     fn table_refs_at_level(

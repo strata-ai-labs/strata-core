@@ -11,6 +11,10 @@ pub(crate) type TableRuntimeResult<T> = Result<T, TableRuntimeError>;
 
 #[derive(Clone, Debug)]
 pub(crate) enum TableRuntimeError {
+    /// A caller-provided compaction output sink refused an output (W1.2c).
+    /// The REAL error lives with the sink's owner (e.g. the lifecycle publish
+    /// error captured alongside); this variant only unwinds the build.
+    OutputSinkFailed,
     InvalidConfig {
         field: &'static str,
         reason: &'static str,
@@ -123,6 +127,9 @@ impl Eq for TableRuntimeError {}
 impl fmt::Display for TableRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::OutputSinkFailed => {
+                write!(formatter, "compaction output sink refused an output")
+            }
             Self::InvalidConfig { field, reason } => {
                 write!(
                     formatter,
@@ -181,7 +188,8 @@ impl std::error::Error for TableRuntimeError {
                 source: Some(source),
                 ..
             } => Some(source.as_ref()),
-            Self::InvalidConfig { .. }
+            Self::OutputSinkFailed
+            | Self::InvalidConfig { .. }
             | Self::InvalidRowOrder { .. }
             | Self::DuplicateInternalKey { .. }
             | Self::InvalidRange { .. }

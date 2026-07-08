@@ -1,6 +1,8 @@
 //! Opaque storage backend handles.
 
-use crate::backend::{memory::MemoryBackend, Backend, BackendHandle};
+#[cfg(feature = "localfs")]
+use crate::backend::BackendHandle;
+use crate::backend::{memory::MemoryBackend, Backend};
 
 #[cfg(feature = "localfs")]
 use crate::backend::local_fs::LocalFsBackend;

@@ -14,6 +14,12 @@
 //! `tables_opened == 0` in the skip arm is the direct proof of the optimization. Storage-layer only:
 //! it exercises the public `strata_storage_next::api` surface.
 
+// Link the benchmark lib for its #[global_allocator] (jemalloc): a bin that
+// never references the lib does NOT link it, silently running on glibc
+// malloc — whose per-thread arenas fragment unboundedly under multi-GB
+// alloc/free churn (T4 RSS attribution, roadmap-v2).
+extern crate strata_benchmarks;
+
 use std::error::Error;
 use std::hint::black_box;
 use std::path::PathBuf;

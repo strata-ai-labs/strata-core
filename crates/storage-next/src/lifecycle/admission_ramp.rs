@@ -1,8 +1,8 @@
 //! BS3.4b — `RocksDB` `SetupDelay` port: debt-adaptive write-rate ramp + token bucket.
 //!
 //! The pure mechanism behind graded write admission — the DEFAULT since the BS3.4c bake-off
-//! (2026-07-07: graded won every cell; `STRATA_ADMISSION=legacy` is the escape hatch until M10
-//! removes the legacy path). No I/O and no clock-of-record — callers pass the branch shape, the previous
+//! (2026-07-07: graded won every cell; `STRATA_ADMISSION=legacy` is the escape hatch until the
+//! readiness-hardening milestone removes the legacy path). No I/O and no clock-of-record — callers pass the branch shape, the previous
 //! rate/debt, and a `MaintenanceInstant`, so the whole thing is deterministically unit-testable.
 //!
 //! Reference: `docs/architecture/storage-next/durable-write-pipeline-scaling.md:175-188`
@@ -24,8 +24,8 @@ pub(crate) enum LifecycleAdmissionMode {
 }
 
 /// The admission mode seeded once from the `STRATA_ADMISSION` env var. `Graded` is the default
-/// (BS3.4c decision); `legacy` selects the quadratic P-controller as the escape hatch until M10
-/// retires it. Cached in a `OnceLock` so it is read exactly once per process; tests select the
+/// (BS3.4c decision); `legacy` selects the quadratic P-controller as the escape hatch until the
+/// readiness-hardening milestone retires it. Cached in a `OnceLock` so it is read exactly once per process; tests select the
 /// mode via a runtime override (`with_admission_mode_for_test`) rather than this global, to avoid
 /// cross-test coupling.
 pub(crate) fn admission_mode_from_env() -> LifecycleAdmissionMode {

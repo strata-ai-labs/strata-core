@@ -2161,7 +2161,7 @@ where
             } = outcome;
             // Restore FIRST: even a failed apply returns the state (fail-
             // closed absence would wedge the branch until reopen).
-            if self.branch_catalog.restore_branch_state(state).is_err() {
+            if self.branch_catalog.check_in_branch_state(state).is_err() {
                 fatal = true;
                 continue;
             }

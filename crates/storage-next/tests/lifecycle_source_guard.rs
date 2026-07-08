@@ -29,7 +29,7 @@ fn lifecycle_source_does_not_import_engine_product_or_raw_io() {
                 continue;
             }
             assert!(
-                !contains_forbidden_import_or_io(line),
+                !contains_forbidden_import_or_io(&strip_allowed_dark_launch_env_reads(line)),
                 "{}:{} uses forbidden lifecycle dependency or IO surface: {line}",
                 file.strip_prefix(&root).unwrap_or(&file).display(),
                 line_number + 1
@@ -2268,7 +2268,28 @@ fn contains_sleep_or_thread_spawn(line: &str) -> bool {
     .any(|needle| lower.contains(needle))
 }
 
+/// Dark-launch perf A/B toggles read once from the environment. These are the
+/// ONLY sanctioned lifecycle env reads; each dies with its calibration:
+/// `STRATA_ADMISSION` when the legacy admission path is retired at readiness
+/// hardening, the lane/subcompaction knobs when the W1 compaction calibration
+/// fixes their defaults. Any other env read still fails the guard.
+const ALLOWED_DARK_LAUNCH_ENV_READS: [&str; 3] = [
+    "std::env::var(\"STRATA_ADMISSION\")",
+    "std::env::var(\"STRATA_COMPACTION_LANES\")",
+    "std::env::var(\"STRATA_SUBCOMPACTIONS\")",
+];
+
+fn strip_allowed_dark_launch_env_reads(text: &str) -> String {
+    let mut text = text.to_owned();
+    for allowed in ALLOWED_DARK_LAUNCH_ENV_READS {
+        text = text.replace(allowed, "");
+    }
+    text
+}
+
 fn contains_forbidden_import_or_io_text(text: &str) -> bool {
+    let text = strip_allowed_dark_launch_env_reads(text);
+    let text = text.as_str();
     let compact: String = uncommented_text(text)
         .chars()
         .filter(|character| !character.is_whitespace())

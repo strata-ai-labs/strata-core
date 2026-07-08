@@ -4953,3 +4953,513 @@ fn branch_owned_level_outside_configured_count_is_rejected_without_mutation() {
     ));
     assert_eq!(state, before_outside);
 }
+
+/// W1.1a differential oracle: a sequence of BOUNDED L0→L1 passes (tiny byte
+/// bound → one-or-few tables per pass, consumed as the oldest-first suffix)
+/// must converge to the same visible state as ONE unbounded pass. Rows are
+/// (key, version)-keyed, so per-key full history equality is the strongest
+/// observable: identical winners, identical shadowed versions, identical
+/// tombstone handling.
+#[test]
+fn bounded_l0_passes_match_one_unbounded_pass() {
+    let branch = branch_id(244);
+    let build_state = || {
+        let mut state = BranchLocalState::new(
+            branch,
+            BranchRuntimeConfig::new(3, 64, 32).expect("branch config"),
+        )
+        .expect("state");
+        // L1: two non-overlapping tables covering the low key range.
+        state
+            .install_owned_table_at_level(
+                BranchLevel::new(1),
+                branch_owned_table(
+                    branch,
+                    BranchLevel::new(1),
+                    "oracle-l1-a",
+                    vec![
+                        storage_row_with(
+                            branch,
+                            b"ok-a".to_vec(),
+                            1,
+                            10,
+                            Timestamp::EPOCH,
+                            b"l1a".to_vec(),
+                        ),
+                        storage_row_with(
+                            branch,
+                            b"ok-c".to_vec(),
+                            1,
+                            10,
+                            Timestamp::EPOCH,
+                            b"l1c".to_vec(),
+                        ),
+                    ],
+                ),
+            )
+            .expect("install l1 a");
+        state
+            .install_owned_table_at_level(
+                BranchLevel::new(1),
+                branch_owned_table(
+                    branch,
+                    BranchLevel::new(1),
+                    "oracle-l1-b",
+                    vec![storage_row_with(
+                        branch,
+                        b"ok-m".to_vec(),
+                        2,
+                        20,
+                        Timestamp::EPOCH,
+                        b"l1m".to_vec(),
+                    )],
+                ),
+            )
+            .expect("install l1 b");
+        // L0: four tables installed oldest→newest (each install lands at
+        // index 0, so the OLDEST ends at the highest index). Overlapping keys
+        // across versions plus a tombstone shadowing an L1 row.
+        for (seed, rows) in [
+            (
+                "oracle-l0-oldest",
+                vec![
+                    storage_row_with(
+                        branch,
+                        b"ok-a".to_vec(),
+                        3,
+                        30,
+                        Timestamp::EPOCH,
+                        b"v3".to_vec(),
+                    ),
+                    storage_row_with(
+                        branch,
+                        b"ok-z".to_vec(),
+                        3,
+                        30,
+                        Timestamp::EPOCH,
+                        b"z3".to_vec(),
+                    ),
+                ],
+            ),
+            (
+                "oracle-l0-mid",
+                vec![tombstone_row(branch, b"ok-c".to_vec(), 4, 40)],
+            ),
+            (
+                "oracle-l0-newer",
+                vec![
+                    storage_row_with(
+                        branch,
+                        b"ok-a".to_vec(),
+                        5,
+                        50,
+                        Timestamp::EPOCH,
+                        b"v5".to_vec(),
+                    ),
+                    storage_row_with(
+                        branch,
+                        b"ok-m".to_vec(),
+                        5,
+                        50,
+                        Timestamp::EPOCH,
+                        b"m5".to_vec(),
+                    ),
+                ],
+            ),
+            (
+                "oracle-l0-newest",
+                vec![storage_row_with(
+                    branch,
+                    b"ok-z".to_vec(),
+                    6,
+                    60,
+                    Timestamp::EPOCH,
+                    b"z6".to_vec(),
+                )],
+            ),
+        ] {
+            state
+                .install_owned_table_at_level(
+                    BranchLevel::ZERO,
+                    branch_owned_table(branch, BranchLevel::ZERO, seed, rows),
+                )
+                .expect("install l0");
+        }
+        state
+    };
+
+    let keys: [&[u8]; 4] = [b"ok-a", b"ok-c", b"ok-m", b"ok-z"];
+    let full_history = |state: &BranchLocalState| {
+        let view = state.capture_read_view().expect("view");
+        keys.iter()
+            .map(|key| {
+                view.history(
+                    &physical_key(branch, key.to_vec()),
+                    crate::branch::read::BranchHistoryOptions::all(),
+                )
+                .expect("history")
+                .into_iter()
+                .map(|row| row.row().clone())
+                .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // State A: one unbounded pass.
+    let mut unbounded = build_state();
+    let request_a = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "oracle-unbounded",
+    )
+    .expect("request");
+    unbounded
+        .compact_branch_owned_tables(&request_a)
+        .expect("unbounded pass");
+    assert!(
+        unbounded.owned_levels()[0].is_empty(),
+        "L0 drained in one pass"
+    );
+
+    // State B: bounded passes (1-byte bound → one oldest table per pass).
+    let mut bounded = build_state();
+    let mut passes = 0usize;
+    while !bounded.owned_levels()[0].is_empty() {
+        let request = BranchCompactionRequest::new(
+            branch,
+            BranchCompactionKind::CompactL0ToLevelOne,
+            format!("oracle-bounded-{passes}"),
+        )
+        .expect("request")
+        .with_max_pass_input_bytes(1);
+        bounded
+            .compact_branch_owned_tables(&request)
+            .expect("bounded pass");
+        passes += 1;
+        assert!(passes <= 8, "bounded passes must make progress");
+    }
+    assert!(
+        passes >= 4,
+        "a 1-byte bound must take multiple passes, got {passes}"
+    );
+
+    assert_eq!(
+        full_history(&unbounded),
+        full_history(&bounded),
+        "bounded pass sequence must converge to the unbounded pass's state"
+    );
+}
+
+/// W1.3a: cutting L0→L1 outputs by their L2 ("grandparent") overlap changes
+/// only WHERE the output tables are cut — the branch's full per-key history is
+/// identical to the uncut pass, and the cut run installs more, smaller L1
+/// tables whose future L1→L2 passes each drag in bounded L2 overlap.
+#[test]
+fn grandparent_bounded_outputs_match_the_uncut_pass() {
+    let branch = branch_id(0x3D);
+    let build_state = || {
+        let mut state = BranchLocalState::new(
+            branch,
+            BranchRuntimeConfig::new(4, 64, 32).expect("branch config"),
+        )
+        .expect("state");
+        // L2 grandparents: two disjoint tables starting at gk-a and gk-e.
+        for (seed, key, version) in [("gp-low", b"gk-a", 1u64), ("gp-high", b"gk-e", 1)] {
+            state
+                .install_owned_table_at_level(
+                    BranchLevel::new(2),
+                    branch_owned_table(
+                        branch,
+                        BranchLevel::new(2),
+                        seed,
+                        vec![storage_row_with(
+                            branch,
+                            key.to_vec(),
+                            version,
+                            10,
+                            Timestamp::EPOCH,
+                            b"gp".to_vec(),
+                        )],
+                    ),
+                )
+                .expect("install l2 grandparent");
+        }
+        // L1 overlap spanning the whole range, and one full-range L0 table.
+        state
+            .install_owned_table_at_level(
+                BranchLevel::new(1),
+                branch_owned_table(
+                    branch,
+                    BranchLevel::new(1),
+                    "gp-l1",
+                    vec![
+                        storage_row_with(
+                            branch,
+                            b"gk-a".to_vec(),
+                            2,
+                            20,
+                            Timestamp::EPOCH,
+                            b"a2".to_vec(),
+                        ),
+                        storage_row_with(
+                            branch,
+                            b"gk-e".to_vec(),
+                            2,
+                            20,
+                            Timestamp::EPOCH,
+                            b"e2".to_vec(),
+                        ),
+                    ],
+                ),
+            )
+            .expect("install l1");
+        state
+            .install_owned_table_at_level(
+                BranchLevel::ZERO,
+                branch_owned_table(
+                    branch,
+                    BranchLevel::ZERO,
+                    "gp-l0",
+                    vec![
+                        storage_row_with(
+                            branch,
+                            b"gk-a".to_vec(),
+                            5,
+                            50,
+                            Timestamp::EPOCH,
+                            b"a5".to_vec(),
+                        ),
+                        storage_row_with(
+                            branch,
+                            b"gk-c".to_vec(),
+                            6,
+                            60,
+                            Timestamp::EPOCH,
+                            b"c6".to_vec(),
+                        ),
+                        storage_row_with(
+                            branch,
+                            b"gk-e".to_vec(),
+                            7,
+                            70,
+                            Timestamp::EPOCH,
+                            b"e7".to_vec(),
+                        ),
+                        storage_row_with(
+                            branch,
+                            b"gk-g".to_vec(),
+                            8,
+                            80,
+                            Timestamp::EPOCH,
+                            b"g8".to_vec(),
+                        ),
+                    ],
+                ),
+            )
+            .expect("install l0");
+        state
+    };
+
+    let keys: [&[u8]; 4] = [b"gk-a", b"gk-c", b"gk-e", b"gk-g"];
+    let full_history = |state: &BranchLocalState| {
+        let view = state.capture_read_view().expect("view");
+        keys.iter()
+            .map(|key| {
+                view.history(
+                    &physical_key(branch, key.to_vec()),
+                    crate::branch::read::BranchHistoryOptions::all(),
+                )
+                .expect("history")
+                .into_iter()
+                .map(|row| row.row().clone())
+                .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // State A: no grandparent bound (pre-W1.3a behavior) — one output table.
+    let mut uncut = build_state();
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "gp-uncut",
+    )
+    .expect("request");
+    uncut
+        .compact_branch_owned_tables(&request)
+        .expect("uncut pass");
+    assert_eq!(
+        uncut.owned_levels()[1].len(),
+        1,
+        "uncut pass emits one table"
+    );
+
+    // State B: a 1-byte bound cuts at every crossed grandparent boundary.
+    let mut cut = build_state();
+    let request =
+        BranchCompactionRequest::new(branch, BranchCompactionKind::CompactL0ToLevelOne, "gp-cut")
+            .expect("request")
+            .with_output_grandparent_overlap_max_bytes(1);
+    cut.compact_branch_owned_tables(&request).expect("cut pass");
+    assert_eq!(
+        cut.owned_levels()[1].len(),
+        2,
+        "cut pass splits at the gk-e grandparent boundary"
+    );
+    assert_eq!(cut.owned_levels()[2].len(), 2, "grandparents untouched");
+
+    assert_eq!(
+        full_history(&uncut),
+        full_history(&cut),
+        "grandparent cutting must not change the branch's visible history"
+    );
+}
+
+/// W1.2a: the subcompaction reunion property for a MID-LEVEL (`CompactLevel`)
+/// rewrite — one L1 input table plus overlapping L2 tables, split into
+/// bounded ranges, must concatenate to the serial output row-for-row. This is
+/// the kind the split was extended to: the W1.1c attribution measured
+/// mid-level passes as the compaction lane's dominant occupants.
+#[test]
+fn midlevel_subcompaction_ranges_reunite_into_the_serial_output() {
+    const SUBCOMPACTIONS: usize = 4;
+    let branch = branch_id(0x3C);
+    let mut state = BranchLocalState::new(
+        branch,
+        BranchRuntimeConfig::new(4, 64, 32).expect("branch config"),
+    )
+    .expect("state");
+    // L1 input: one table spanning the whole key range at newer versions.
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "mid-reunion-input",
+                vec![
+                    storage_row_with(
+                        branch,
+                        b"mid-a".to_vec(),
+                        10,
+                        100,
+                        Timestamp::EPOCH,
+                        b"a10".to_vec(),
+                    ),
+                    storage_row_with(
+                        branch,
+                        b"mid-c".to_vec(),
+                        11,
+                        110,
+                        Timestamp::EPOCH,
+                        b"c11".to_vec(),
+                    ),
+                    storage_row_with(
+                        branch,
+                        b"mid-e".to_vec(),
+                        12,
+                        120,
+                        Timestamp::EPOCH,
+                        b"e12".to_vec(),
+                    ),
+                    storage_row_with(
+                        branch,
+                        b"mid-g".to_vec(),
+                        13,
+                        130,
+                        Timestamp::EPOCH,
+                        b"g13".to_vec(),
+                    ),
+                ],
+            ),
+        )
+        .expect("install l1 input");
+    // L2 overlap: distinct-key tables (older versions), including one key
+    // duplicated against the input so a boundary must keep versions together.
+    for (index, (identity, key, version)) in [
+        ("mid-reunion-l2-a", &b"mid-a"[..], 1u64),
+        ("mid-reunion-l2-b", &b"mid-b"[..], 2),
+        ("mid-reunion-l2-d", &b"mid-d"[..], 3),
+        ("mid-reunion-l2-f", &b"mid-f"[..], 4),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let _ = index;
+        state
+            .install_owned_table_at_level(
+                BranchLevel::new(2),
+                branch_owned_table(
+                    branch,
+                    BranchLevel::new(2),
+                    identity,
+                    vec![storage_row_with(
+                        branch,
+                        key.to_vec(),
+                        version,
+                        version.saturating_mul(10),
+                        Timestamp::EPOCH,
+                        key.to_vec(),
+                    )],
+                ),
+            )
+            .expect("install l2 overlap");
+    }
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactLevel {
+            level: BranchLevel::new(1),
+            table_index: 0,
+        },
+        "mid-reunion-output",
+    )
+    .expect("request")
+    .with_table_compaction_config(TableCompactionConfig::new(1, 16).expect("split config"));
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert!(
+        !candidate.is_metadata_promotion(),
+        "mid-level reunion needs a real merge"
+    );
+    let ranges = state
+        .subcompaction_ranges_for_candidate(
+            candidate,
+            SUBCOMPACTIONS,
+            request.table_compaction_config().target_output_bytes(),
+        )
+        .expect("ranges");
+    assert!(
+        ranges.len() > 1,
+        "the mid-level split must fan out (got {})",
+        ranges.len()
+    );
+
+    let (serial_artifacts, _report) = state
+        .prepare_branch_compaction_plan(&request, &plan)
+        .expect("serial prepare")
+        .expect("serial output");
+    let serial_rows: Vec<StorageRow> = serial_artifacts
+        .into_iter()
+        .flat_map(|artifact| artifact.into_parts_with_rows().2)
+        .map(TableRow::into_row)
+        .collect();
+
+    let mut bounded_rows: Vec<StorageRow> = Vec::new();
+    for (index, bounds) in ranges.iter().enumerate() {
+        let (artifacts, _report) = state
+            .prepare_branch_compaction_plan_bounded(&request, &plan, bounds.as_ref(), index)
+            .expect("bounded prepare")
+            .expect("bounded output");
+        bounded_rows.extend(
+            artifacts
+                .into_iter()
+                .flat_map(|artifact| artifact.into_parts_with_rows().2)
+                .map(TableRow::into_row),
+        );
+    }
+    assert_eq!(
+        bounded_rows, serial_rows,
+        "mid-level subcompaction ranges did not reunite into the serial output"
+    );
+}

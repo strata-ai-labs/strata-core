@@ -12,6 +12,12 @@
 //!   engine-ycsb -q                                # quick: 10k records, 10k ops
 //!   engine-ycsb --mode cache --memory-budget 16g
 
+// Link the benchmark lib for its #[global_allocator] (jemalloc): a bin that
+// never references the lib does NOT link it, silently running on glibc
+// malloc — whose per-thread arenas fragment unboundedly under multi-GB
+// alloc/free churn (T4 RSS attribution, roadmap-v2).
+extern crate strata_benchmarks;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process;
@@ -45,6 +51,29 @@ const RUN_SEED: u64 = 0xABCD_2026;
 // phase even starts. The run phase keeps one commit per operation (proper YCSB).
 // Override with `--load-batch 1` to measure single-insert load throughput.
 const DEFAULT_LOAD_BATCH: usize = 1_000;
+
+/// T4 RSS attribution: jemalloc's own gauges. `allocated` = live bytes the
+/// application holds; `resident` = pages jemalloc keeps from the OS (the RSS
+/// driver); `retained` = unmapped-but-reusable virtual ranges. app-held vs
+/// allocator-retention is `allocated` vs `resident - allocated`.
+fn print_jemalloc_split(label: &str) {
+    use tikv_jemalloc_ctl::{epoch, stats};
+    if epoch::advance().is_err() {
+        return;
+    }
+    let gb = |value: Result<usize, _>| match value {
+        Ok(bytes) => format!("{:.2}GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0)),
+        Err(_) => "?".to_owned(),
+    };
+    eprintln!(
+        "  [jemalloc {label}] allocated={} active={} resident={} retained={} mapped={}",
+        gb(stats::allocated::read()),
+        gb(stats::active::read()),
+        gb(stats::resident::read()),
+        gb(stats::retained::read()),
+        gb(stats::mapped::read()),
+    );
+}
 
 fn main() {
     let config = match Config::parse(std::env::args().skip(1)) {
@@ -132,6 +161,7 @@ fn run_workload(
 
     // Run phase: weighted operation mix over the chosen request distribution.
     if config.perf_breakdown {
+        print_jemalloc_split("post-load");
         strata_storage_next::perf_trace::reset();
     }
     let run = run_phase(&mut database, config, workload, &value)?;
@@ -193,6 +223,7 @@ fn run_workload(
             perf.lifecycle_background_task_low_tier_runs(),
             perf.lifecycle_background_task_low_tier_ns() as f64 / 1e6,
         );
+        print_jemalloc_split("post-run");
     }
 
     Ok(WorkloadResult {

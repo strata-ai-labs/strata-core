@@ -506,6 +506,79 @@ reduction, AND no active task). Before it, one >30s giant pass with no other
 completions converted a busy executor into a caller-visible `failed_precondition`
 load abort (observed twice: NonZeroLevel pre-demotion, L0 post-demotion).
 
+## T4 attribution + allocator-linkage caveat (2026-07-07 evening, v2 branch)
+
+**Evidence-base caveat:** every engine-level bench bin except
+`storage-next-concurrent-writers` was silently running GLIBC MALLOC — the jemalloc
+`#[global_allocator]` lives in the benchmark lib crate and unreferenced libs don't
+link. All engine-ycsb rows above (three-ways, stall investigations) are glibc-measured:
+internally consistent (deltas stand), absolute values carry the confound. Fixed on the
+v2 branch (`1279809b`): every bin force-links the lib; the probe prints live
+`tikv-jemalloc-ctl` gauges per phase.
+
+**T4 verdict (jemalloc truly active, YCSB A durable 10M @ 32g):** the RSS runaway is
+APP-HELD — post-load allocated=13.66GB (block cache filling its 15GiB pool), post-run
+**allocated=39.25GB ≈ resident=41.84GB**: +26GB of live heap accumulated during the run
+phase's compaction churn. Stalls persist under jemalloc (max 56.3s) — the allocator
+caused neither the 61GB OOMs nor the stall lottery. Eliminated by inspection: rewrite
+outputs lazy-reopen (BS4.4l), block cache evicts per shard. The heap profile NAMED it (peak
+dump: 25.75GB live): **20.57GB in `ImmutableTableStreamingEncoder` output buffers** —
+compaction/flush builds hold every output table's complete encoded bytes (+ rows) in
+heap until the pass publishes; concurrent builds × unbounded mid-level pass outputs =
+the 26–50GB peaks, both OOMs, and (via page-cache eviction) the stall physics. Fix
+slice W1.2c: stream outputs to disk per completed table inside the build loop. Key
+cells re-baseline under jemalloc once landed.
+
+## W1.2c landed: memory term (T4) closed for compaction; stalls persist (2026-07-07, `2399d7b1`)
+
+Streaming output publish (sink through `compact_inputs_into` →
+`prepare_branch_compaction_plan_bounded_into` → `build_range_with_publishing_sink`;
+each completed output table publishes and frees inside the build loop). Same cell,
+before → after (YCSB A durable 10M @ 32g, jemalloc gauges):
+
+| gauge | pre-W1.2c | post-W1.2c |
+|---|---|---|
+| post-load allocated | 13.66GB | 12.25GB |
+| post-run allocated | **39.25GB** | **16.92GB** |
+| post-run resident | 41.84GB | 17.98GB |
+| post-run retained (VM high-water proxy) | **37.65GB** | **5.25GB** |
+| load / run ops/s | 120,594 / 610 | 115,693 / 697 |
+| update max | 56.3s | **46.1s (persists)** |
+
+The +26GB run-phase heap accumulation and the ~50GB VM peaks are GONE — resident now
+tracks block cache + memtables; both 61GB OOM modes are physically impossible at this
+shape. Flush-side accumulation (~2.5GB) is a recorded smaller follow-up (same sink
+pattern through the flush build). **Stall attribution is now fully open again:** pass
+size (W1.1), parallelism (W1.2a), and memory (W1.2c) are all eliminated as causes of
+the 40–70s update max. Per the W6 rule, next action is a live stack sample of a stall
+window — no scheduling/memory slices until the stacks name the holder.
+
+## Stall root cause NAMED by stack sample (2026-07-07)
+
+gdb-sampled YCSB A durable 10M reproduced the stall under observation (max 45.9s =
+one blocked commit; `block_wait_ms=46301`). 17 consecutive samples: the writer waits
+in `execute_commit → wait_for_progress` (L0 wall) while at most 2 of 4 workers run
+giant mid-level pass builds and the rest idle. L0→L1 relief is excluded by the
+dispatch conflict rule `same branch && level.abs_diff <= 1` (an in-flight L1→L2
+conflicts with L0→L1) — and the L1→L2 passes are monsters because L1 tables are built
+with unbounded L2 (grandparent) overlap. Full chain and fix design in
+`v2-w1-compaction-engine-plan.md` § stack sample. **Next slice: W1.3a
+grandparent-overlap-bounded output cutting** (bounds every future mid-level pass,
+collapses the conflict window from ~50s to seconds). Not lanes, not locks (fg lock
+wait 92ms — BS5.5 holds), not memory (W1.2c gauges stable this run too).
+
+## W1.3a landed: grandparent-overlap output cutting kills the stall lottery (2026-07-07)
+
+Every table-rewrite pass now cuts its output tables so each overlaps ≤256MiB of the
+level below the output level (RocksDB `max_compaction_bytes` analogue), bounding every
+FUTURE mid-level pass and with it the level±1 conflict window that held L0 relief.
+5× YCSB A durable 10M: update max **3.0/4.6/3.2/3.6/1.8s** (was 21/55/1.1/50/1.8s and
+45.9–56.3s), block_wait totals 2.2–4.6s (was 46.3s in one episode), run throughput
+median 1,419 ops/s (was 610–802), memory line unchanged (~16.8GB post-run). Residual
+seconds-scale max = one bounded pass's relief window (calibration: W1.4; granularity:
+W1.2b). Load dipped to 85.7–107K on some runs (cutting write-amp) — W1.4 input.
+Design + full gate table in `v2-w1-compaction-engine-plan.md` § W1.3a.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

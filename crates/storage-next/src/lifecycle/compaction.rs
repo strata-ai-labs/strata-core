@@ -51,6 +51,26 @@ pub(super) const fn level_zero_urgent_threshold() -> usize {
 pub(super) const fn level_zero_blocking_threshold() -> usize {
     LEVEL_ZERO_BLOCKING_COMPACTION_THRESHOLD
 }
+/// W1.1: byte bound for one L0→L1 pass (input + L1 overlap). Bounds the
+/// unit of L0-blocking relief: pre-W1.1 a single pass took ALL of L0 plus all
+/// overlap — GBs at 10M scale, ~50s per pass, which made the L0 admission
+/// wall's relief a ~50s lottery (billion-scale-ledger.md § 10M three-way,
+/// roadmap-v2 T1). 256MiB ≈ seconds-scale passes; L0 count drops
+/// incrementally pass by pass.
+const L0_PASS_MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// W1.3a: cut every table-rewrite pass's output tables so each overlaps at most
+/// this many bytes of the level BELOW the output level ("grandparent" tables —
+/// `RocksDB`'s `max_compaction_bytes` / `CompactionOutputs::ShouldStopBefore`).
+/// This bounds the input size of every FUTURE pass that compacts an output
+/// table down a level: without it, full-keyspan L(n) tables force multi-GB
+/// L(n)→L(n+1) rewrites, and the dispatch conflict rule (same branch,
+/// level ±1) makes the L0 admission wall wait out whichever monster is in
+/// flight — the stack-sampled 40-70s stall (ledger § stall root cause).
+/// 256MiB matches `L0_PASS_MAX_INPUT_BYTES`: a future one-table pass reads
+/// ~table + bound ≈ seconds-scale.
+const OUTPUT_GRANDPARENT_OVERLAP_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
 const NONZERO_LEVEL_COMPACTION_THRESHOLD: usize = 4;
 const NONZERO_LEVEL_URGENT_COMPACTION_THRESHOLD: usize = 8;
 const NONZERO_LEVEL_MIN_BASE_TARGET_BYTES: u64 = 1024 * 1024;
@@ -91,6 +111,15 @@ pub(crate) struct LifecycleCompactionRequest {
     durability: LifecycleTableRewriteDurability,
     retention_policy: BranchCompactionRetentionPolicy,
     pruning_proof: Option<BranchCompactionPruningProof>,
+    /// W1.1: per-pass input byte bound applied to L0→L1 requests (see
+    /// `L0_PASS_MAX_INPUT_BYTES`). A field rather than the bare constant so
+    /// tests and the W1.4 pacing calibration can vary it per request; every
+    /// constructor seeds the default.
+    l0_pass_max_input_bytes: u64,
+    /// W1.3a: per-output grandparent-overlap bound applied to every
+    /// table-rewrite request (see `OUTPUT_GRANDPARENT_OVERLAP_MAX_BYTES`);
+    /// same field-over-constant rationale as the L0 pass bound.
+    output_grandparent_overlap_max_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -293,9 +322,40 @@ impl LifecycleCompactionRequest {
             durability: LifecycleTableRewriteDurability::VolatileOnly,
             retention_policy: BranchCompactionRetentionPolicy::KeepAll,
             pruning_proof: None,
+            l0_pass_max_input_bytes: L0_PASS_MAX_INPUT_BYTES,
+            output_grandparent_overlap_max_bytes: OUTPUT_GRANDPARENT_OVERLAP_MAX_BYTES,
         };
         request.branch_request()?;
         Ok(request)
+    }
+
+    /// W1.1b: override the per-pass L0→L1 input byte bound (tests and pacing
+    /// calibration; production requests keep `L0_PASS_MAX_INPUT_BYTES`).
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "pass-bound override is consumed by W1 tests and tuning"
+        )
+    )]
+    pub(crate) const fn with_l0_pass_max_input_bytes(mut self, bound: u64) -> Self {
+        self.l0_pass_max_input_bytes = bound;
+        self
+    }
+
+    /// W1.3a: override the per-output grandparent-overlap bound (tests and
+    /// pacing calibration; production requests keep
+    /// `OUTPUT_GRANDPARENT_OVERLAP_MAX_BYTES`).
+    #[cfg_attr(
+        not(test),
+        allow(
+            dead_code,
+            reason = "overlap-bound override is consumed by W1 tests and tuning"
+        )
+    )]
+    pub(crate) const fn with_output_grandparent_overlap_max_bytes(mut self, bound: u64) -> Self {
+        self.output_grandparent_overlap_max_bytes = bound;
+        self
     }
 
     pub(crate) const fn with_durability(
@@ -371,6 +431,17 @@ impl LifecycleCompactionRequest {
         if let Some(proof) = self.pruning_proof {
             request = request.with_pruning_proof(proof);
         }
+        // W1.1: every lifecycle-driven L0→L1 pass is byte-bounded (all entry
+        // points route through here — background, inline, explicit drains).
+        if matches!(self.kind, BranchCompactionKind::CompactL0ToLevelOne) {
+            request = request.with_max_pass_input_bytes(self.l0_pass_max_input_bytes);
+        }
+        // W1.3a: every pass cuts its outputs by grandparent overlap. Kinds
+        // whose output level is bottommost get no hints downstream (the
+        // grandparent level is empty), so applying the bound universally is
+        // exact, not approximate.
+        request = request
+            .with_output_grandparent_overlap_max_bytes(self.output_grandparent_overlap_max_bytes);
         Ok(request)
     }
 }
