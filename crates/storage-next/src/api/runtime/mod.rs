@@ -1143,6 +1143,15 @@ impl<'a> StorageRuntime<'a> {
     }
 
     pub fn read_point(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
+        // B4: the point-read runtime timer splits engine-layer tax from
+        // storage work (bench read latency minus this timer's mean).
+        let read_timer = perf_trace::start_timer();
+        let outcome = self.read_point_inner(request);
+        perf_trace::record_api_read_point_runtime_elapsed(read_timer);
+        outcome
+    }
+
+    fn read_point_inner(&self, request: &PointReadRequest) -> StorageApiResult<PointReadOutcome> {
         let key = physical_key(request.branch_id(), request.storage_space(), request.key())?;
         let (visible, view) = self.load_published_snapshot(request.branch_id())?;
         if request.bound() == ReadBound::Latest {

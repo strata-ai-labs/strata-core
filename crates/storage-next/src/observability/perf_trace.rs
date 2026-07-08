@@ -64,6 +64,8 @@ pub(crate) struct BranchSourceRowCounts {
 pub struct StoragePerfSnapshot {
     api_commit_map_ns: u64,
     api_commit_runtime_ns: u64,
+    /// B4: wall time inside the api point-read runtime.
+    api_read_point_runtime_ns: u64,
     api_scan_runtime_ns: u64,
     api_scan_map_ns: u64,
     api_scan_bounds_ns: u64,
@@ -499,6 +501,11 @@ impl StoragePerfSnapshot {
     /// Nanoseconds spent inside cache/durable commit execution from the API.
     pub const fn api_commit_runtime_ns(self) -> u64 {
         self.api_commit_runtime_ns
+    }
+
+    /// B4: api point-read runtime, nanoseconds.
+    pub const fn api_read_point_runtime_ns(self) -> u64 {
+        self.api_read_point_runtime_ns
     }
 
     /// Nanoseconds spent inside cache/durable scan execution from the API.
@@ -2540,6 +2547,8 @@ static API_COMMIT_MAP_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static API_COMMIT_RUNTIME_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static API_READ_POINT_RUNTIME_NS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static API_SCAN_RUNTIME_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static API_SCAN_MAP_NS: AtomicU64 = AtomicU64::new(0);
@@ -3423,6 +3432,7 @@ pub(crate) fn with_test_capture_enabled_for_current_thread<T>(
 pub fn reset() {
     API_COMMIT_MAP_NS.store(0, Ordering::Relaxed);
     API_COMMIT_RUNTIME_NS.store(0, Ordering::Relaxed);
+    API_READ_POINT_RUNTIME_NS.store(0, Ordering::Relaxed);
     API_SCAN_RUNTIME_NS.store(0, Ordering::Relaxed);
     API_SCAN_MAP_NS.store(0, Ordering::Relaxed);
     API_SCAN_BOUNDS_NS.store(0, Ordering::Relaxed);
@@ -3848,6 +3858,7 @@ pub fn snapshot() -> StoragePerfSnapshot {
     StoragePerfSnapshot {
         api_commit_map_ns: API_COMMIT_MAP_NS.load(Ordering::Relaxed),
         api_commit_runtime_ns: API_COMMIT_RUNTIME_NS.load(Ordering::Relaxed),
+        api_read_point_runtime_ns: API_READ_POINT_RUNTIME_NS.load(Ordering::Relaxed),
         api_scan_runtime_ns: API_SCAN_RUNTIME_NS.load(Ordering::Relaxed),
         api_scan_map_ns: API_SCAN_MAP_NS.load(Ordering::Relaxed),
         api_scan_bounds_ns: API_SCAN_BOUNDS_NS.load(Ordering::Relaxed),
@@ -4504,6 +4515,14 @@ pub(crate) fn record_api_commit_runtime_elapsed(_start: PerfTraceTimer) {}
 #[cfg(feature = "perf-trace")]
 pub(crate) fn record_api_commit_runtime_elapsed(start: PerfTraceTimer) {
     record_elapsed(&API_COMMIT_RUNTIME_NS, start);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_api_read_point_runtime_elapsed(_start: PerfTraceTimer) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_api_read_point_runtime_elapsed(start: PerfTraceTimer) {
+    record_elapsed(&API_READ_POINT_RUNTIME_NS, start);
 }
 
 #[cfg(not(feature = "perf-trace"))]

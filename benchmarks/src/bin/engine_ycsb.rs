@@ -253,13 +253,14 @@ fn run_workload(
             perf.commit_wal_buffer_flush_bytes(),
         );
         eprintln!(
-            "  [probe] block reads: trusted={} checked={} indexed={} accel_builds={} accel_rebuilds={} warm_rejects={}",
+            "  [probe] block reads: trusted={} checked={} indexed={} accel_builds={} accel_rebuilds={} warm_rejects={} | api_point_ms={:.0}",
             perf.table_trusted_block_seeks(),
             perf.table_checked_block_seeks(),
             perf.table_indexed_block_seeks(),
             perf.table_accelerator_builds(),
             perf.table_accelerator_rebuilds(),
             perf.table_warm_insert_rejects(),
+            perf.api_read_point_runtime_ns() as f64 / 1e6,
         );
         eprintln!(
             "  [probe] pressure collection: calls={} levels={} tables={} total_ms={:.0} sampling_skips={} full_scans={}",
