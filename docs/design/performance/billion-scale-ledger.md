@@ -824,6 +824,30 @@ side is B2 (64KB per miss, miss RATE from blocks-per-pool-byte). B1 stays
 (strictly removes wasted CPU, hardens cache admission, prerequisite for an
 honest B2 sweep), but the C levers are B3 then B2.
 
+## B3 (W2.3): entry-offset accelerator — hot read p50 HALVED (2026-07-08)
+
+Trusted seeks bisect a derived per-block entry-offset index (cached under the
+previously unused Accelerator kind, ~260B per 64KB block) instead of walking
+~57 entries linearly. Zero durable-format change (payload is M3-frozen; the
+index is derived at admission/first-hit from verified payloads). Same-session
+INTERLEAVED A/B (settled C, 10M, 500K ops, T1-C1-T2-C2-T3):
+
+| | read p50 | run ops/s |
+|---|---|---|
+| Control (B1) | 21.04 / 21.31µs | 12,766 / 13,744 |
+| **Treatment (B3)** | **9.83 / 10.07 / 9.84µs** | **16,514 / 14,317 / 17,050** |
+
+**p50 21.2 → 9.8µs (−54%)** — the predicted 8-13µs band, first single-digit
+hot read. Every treatment run beat every control run on throughput too
+(median 16.5K vs 13.3K, ~+24%) — the bisection also trims the mean's hit
+term. Counters airtight: indexed == trusted in every run (395-400K), zero
+self-heal rebuilds, ~117K builds (misses + first hits).
+
+Read-path arithmetic now: hot p50 9.8µs ≈ engine-layer tax (B4: 4 value
+copies, 5 key copies, branch-by-string lookup, ~1-2µs) + probe/bisect/window
++ per-op fixed costs. C's MEAN remains miss-IO-dominated (~20% × 64KB) — B2
+(block-size sweep) owns the next throughput bite; B4 owns the next p50 bite.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
