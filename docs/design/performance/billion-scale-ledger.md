@@ -763,6 +763,112 @@ facts vs the direct path at every durability boundary. `Backend{Flush}` errors
 are durability-uncertain; pending is never discarded; partial flush writes are
 caught by handle re-open reconciliation (no blind re-append).
 
+## SETTLED 10M baseline — first trustworthy A/B/C numbers (2026-07-08, post-W3.3)
+
+Protocol: `engine-ycsb --workload a,b,c --durable --records 10m --ops 100k
+--memory-budget 32g --settle-secs 120` — each workload gets a fresh load, then a
+120s drain window before the measured run. The window works: pacing collapsed
+from the lottery's 1-24s to 0-1s across all nine cells (A/B/C x 3 runs).
+Medians of 3, spreads noted; v1 @ `ca3b1a11` (all of W3 in):
+
+| Cell | Settled median | Spread | Old unsettled row | RocksDB | Gap |
+|---|---|---|---|---|---|
+| load 10M (batched) | **103K rows/s** | 91-119K | ~81K | 660K | 6.4x |
+| A run | **9,127 ops/s** | 7.7-15.5K | 4.9-5.3K | 304K | 33x |
+| B run | **7,595 ops/s** | 7.5-8.2K (tight) | 5.9K | 437K | 57x |
+| C run | **7,150 ops/s** | 5.3-7.6K | 11.5K (flattered) | 426K | 59x |
+
+Latency shape (settled): read p50 24-26us everywhere; read p99 ~460us at good
+shape (2ms when the load leaves a worse level shape — A retains a 2x run
+spread even settled, driven by read-tail differences, i.e. SHAPE lottery
+survives the DEBT lottery fix); update p50 36-42us, **update p99 70-77us,
+p99.9 88-141us** on clean runs — the W3 write path is essentially flat now.
+
+Readings:
+- The old C row (11.5K) was flattered by unsettled conditions; honest settled
+  C is ~7.2K. C's mean (135-140us) is 5.4x its p50 (25us): the zipfian head is
+  cache-hot at 25us, and the cold middle (block-cache misses to disk) carries
+  the mean — this is the api-vs-storage read split's attribution target.
+- B ~= C: the 5% writes cost nothing now; both are read-bound.
+- Load 103K median is the best yet (W3.3a coalescing); load itself needs no
+  settling (91-119K spread is shape/IO variance).
+- A@10M went 4.9K -> 9.1K median across W3 (settled-to-settled would be
+  cleaner, but no settled pre-W3 control exists; directionally consistent
+  with the per-commit wins).
+
+## B1 (W2.6) trusted block reads: landed, measured ~NIL at 10M C — estimate falsified (2026-07-08)
+
+Cache hits (79% of block reads, counter-verified) now skip the per-read CRC32
++ 64KB payload copy; verification moved to admission (demand path already
+verified pre-insert; the W2.4 warm path now verifies before insert — a
+design-review finding). Equivalence property + taxonomy mirror + fuzz target
+pin trusted == checked minus only the stored-CRC class. All 44 targets green.
+
+**Same-session interleaved A/B (settled C, 10M, 500K ops): no measurable win.**
+Control 25,357/15,483 vs treatment 14,664/15,873/15,733 ops/s — within the
+shape lottery; read p50 UNMOVED (21.2-21.6 control vs 20.8-21.3 treatment).
+
+Why the audit's 8-15us estimate was wrong (recorded for the method ledger):
+the gdb profile's crc32/memcpy samples could not distinguish hit-path from
+miss-path work — and B1 deliberately KEEPS the miss-path CRC (verify before
+insert). The median hit's CRC+copy was evidently <=1us (hot blocks are
+CPU-cache-resident; hashing them is cheap). C's mean is dominated by the
+21% miss rate x ~300us disk reads, which a hit-path shave cannot touch.
+Fifth falsified lever this workstream (batch clone, encode buffers, group
+bookkeeping, hit-CRC) — control-first A/B keeps paying for itself.
+
+Where the hot p50 actually lives (probe data from the treatment runs):
+**28.5M entries scanned / 500K ops = 57 linear entry-scan steps per read**
+(~12-17us of the 21us p50) — that is B3 (restart points, W2.3). The miss
+side is B2 (64KB per miss, miss RATE from blocks-per-pool-byte). B1 stays
+(strictly removes wasted CPU, hardens cache admission, prerequisite for an
+honest B2 sweep), but the C levers are B3 then B2.
+
+## B3 (W2.3): entry-offset accelerator — hot read p50 HALVED (2026-07-08)
+
+Trusted seeks bisect a derived per-block entry-offset index (cached under the
+previously unused Accelerator kind, ~260B per 64KB block) instead of walking
+~57 entries linearly. Zero durable-format change (payload is M3-frozen; the
+index is derived at admission/first-hit from verified payloads). Same-session
+INTERLEAVED A/B (settled C, 10M, 500K ops, T1-C1-T2-C2-T3):
+
+| | read p50 | run ops/s |
+|---|---|---|
+| Control (B1) | 21.04 / 21.31µs | 12,766 / 13,744 |
+| **Treatment (B3)** | **9.83 / 10.07 / 9.84µs** | **16,514 / 14,317 / 17,050** |
+
+**p50 21.2 → 9.8µs (−54%)** — the predicted 8-13µs band, first single-digit
+hot read. Every treatment run beat every control run on throughput too
+(median 16.5K vs 13.3K, ~+24%) — the bisection also trims the mean's hit
+term. Counters airtight: indexed == trusted in every run (395-400K), zero
+self-heal rebuilds, ~117K builds (misses + first hits).
+
+Read-path arithmetic now: hot p50 9.8µs ≈ engine-layer tax (B4: 4 value
+copies, 5 key copies, branch-by-string lookup, ~1-2µs) + probe/bisect/window
++ per-op fixed costs. C's MEAN remains miss-IO-dominated (~20% × 64KB) — B2
+(block-size sweep) owns the next throughput bite; B4 owns the next p50 bite.
+
+## B4: move-don't-copy point reads — landed, measured ~nil; the C picture is now miss-IO (2026-07-08)
+
+The read path sheds 3 value copies, 3 key copies, and the per-read branch
+record clone (moves through every layer; parity-asserted refactor, both crate
+batteries green). Same-session interleaved A/B (settled C, T1-C1-T2-C2-T3):
+control p50 9.97/10.37us vs treatment 10.65/10.79/10.77us, throughput
+15.5-16.5K both sides — **no measurable movement**. Second B1-class outcome:
+the audit's 1-2us engine-tax estimate was high, and the new
+api_read_point_runtime_ns probe (Phase A of this slice) shows why — the
+engine layer above the storage api costs only **~0.3-1us mean**; the layers
+were already thin. B4 stays as hygiene (fewer allocs/copies = CPU + allocator
+headroom, matters under concurrency and bigger values), cost ~0 risk.
+
+**The standing C@10M picture the probe pair now gives** (mean ~62us/read):
+- hit path (79%): ~10us p50 -> ~8us of the mean
+- miss path (21%): ~250us each -> **~52us of the 62us mean**
+B2 (block-size sweep: 64KB per miss, miss RATE from blocks-per-pool-byte) is
+now overwhelmingly the C-throughput lever. The hit p50's own next terms
+(bisect+window ~1-2us, candidate decode, cache shard ops, source-walk
+machinery) need a fresh stack profile if a sub-5us hit becomes the goal.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

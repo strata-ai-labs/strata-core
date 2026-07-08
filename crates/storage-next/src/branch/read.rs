@@ -231,6 +231,12 @@ impl BranchVisibleRow {
         &self.row
     }
 
+    /// B4: the owned exit — point reads move the row out instead of copying
+    /// key and value at the api boundary.
+    pub(crate) fn into_storage_row(self) -> StorageRow {
+        self.row
+    }
+
     pub(crate) const fn source(&self) -> BranchRowSource {
         self.source
     }
@@ -249,6 +255,11 @@ impl BranchHistoryRow {
 
     pub(crate) const fn row(&self) -> &StorageRow {
         &self.row
+    }
+
+    /// B4: the owned exit for point reads (see [`BranchVisibleRow`]).
+    pub(crate) fn into_storage_row(self) -> StorageRow {
+        self.row
     }
 
     pub(crate) const fn source(&self) -> BranchRowSource {
@@ -1984,7 +1995,13 @@ impl PointCandidate<'_> {
                 source,
             )),
             Self::LocalLookup { row, source } => Ok(candidate_row(
-                clone_point_candidate_row(row.as_table_row()),
+                // B4: lazy block lookups return an already-owned row — move
+                // it instead of cloning (the clone counter stays honest: it
+                // records only actual clones).
+                match row {
+                    TablePointLookupRow::Borrowed(row) => clone_point_candidate_row(row),
+                    TablePointLookupRow::Owned(row) => row.into_row(),
+                },
                 source,
             )),
             Self::InheritedLookup {

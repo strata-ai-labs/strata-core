@@ -29,6 +29,12 @@ impl KvVersionedValue {
         &self.value
     }
 
+    /// B4: consume the versioned wrapper, moving the value out (kept
+    /// `pub(crate)`: only `KvService::get`/`get_at` need it — rule 8).
+    pub(crate) fn into_value(self) -> KvValue {
+        self.value
+    }
+
     #[must_use]
     /// Returns the commit version that wrote this value.
     pub const fn version(&self) -> CommitVersion {

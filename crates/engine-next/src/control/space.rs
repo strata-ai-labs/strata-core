@@ -146,7 +146,7 @@ fn required_space_mutations(
 ) -> EngineResult<Vec<RowMutation>> {
     let default = default_space()?;
     let mut spaces = match persistence.read(
-        &space_address(record, space_index_key()),
+        space_address(record, space_index_key()),
         ReadSelector::Latest,
     )? {
         Some(bytes) => decode_space_index(&bytes)?,
@@ -205,7 +205,7 @@ fn read_required(
     persistence: &mut StoragePersistence,
     address: &RowAddress,
 ) -> EngineResult<Vec<u8>> {
-    match persistence.read(address, ReadSelector::Latest) {
+    match persistence.read(address.clone(), ReadSelector::Latest) {
         Ok(Some(value)) => Ok(value),
         Ok(None) => Err(EngineError::corruption(
             "data_loss.engine.space_catalog",

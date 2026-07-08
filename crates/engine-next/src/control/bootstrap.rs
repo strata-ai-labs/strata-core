@@ -441,7 +441,7 @@ fn read_required(
     row_class: RowClass,
     key: Vec<u8>,
 ) -> EngineResult<Vec<u8>> {
-    match persistence.read(&control_address(row_class, key), ReadSelector::Latest) {
+    match persistence.read(control_address(row_class, key), ReadSelector::Latest) {
         Ok(Some(value)) => Ok(value),
         Ok(None) => Err(EngineError::corruption(
             "data_loss.engine.control_plane_missing",
@@ -579,7 +579,7 @@ mod tests {
     fn pending_names(persistence: &mut StoragePersistence) -> Vec<BranchName> {
         let row = persistence
             .read(
-                &control_address(RowClass::BranchControl, branch_pending_index_key()),
+                control_address(RowClass::BranchControl, branch_pending_index_key()),
                 ReadSelector::Latest,
             )
             .expect("read pending index")

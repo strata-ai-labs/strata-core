@@ -1679,13 +1679,15 @@ fn immutable_reader_indexed_point_present_hit_reads_one_block_then_uses_cache() 
 
     let stats = cache.stats();
     assert_eq!(stats.misses(), 1);
-    assert_eq!(stats.inserts(), 1);
+    // W2.3 (B3): a point-seek miss admits the data frame AND its derived
+    // entry-offset accelerator.
+    assert_eq!(stats.inserts(), 2);
     assert_eq!(stats.hits(), 1);
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.table_seeks(), 2);
     assert_eq!(perf.table_data_block_reads(), 1);
     assert_eq!(perf.table_cache_misses(), 1);
-    assert_eq!(perf.table_cache_inserts(), 1);
+    assert_eq!(perf.table_cache_inserts(), 2);
     assert_eq!(perf.table_cache_hits(), 1);
     assert_eq!(perf.table_data_block_decodes(), 0);
     assert_eq!(perf.table_rows_decoded(), 0);
@@ -4567,4 +4569,294 @@ fn allow_lazy_materialization_increments_counter_once() {
         crate::observability::perf_trace::snapshot().table_lazy_full_materializations(),
         1
     );
+}
+
+// ===== W2.6 (B1): trusted block reads =====
+
+/// A cache-hit point seek takes the trusted (no re-CRC, no copy) path;
+/// the cold read stays checked. Results are identical either way.
+#[test]
+fn trusted_seek_serves_point_cache_hits_and_matches_cold_read() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-trusted-point-hit",
+        &rows,
+        4,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let cache = enabled_block_cache(1 << 20);
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-trusted-point-hit"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader")
+    .with_block_cache(Arc::clone(&cache))
+    .expect("attach block cache");
+
+    let target = table_rows[1].physical_key().clone();
+    let (cold, _) = reader
+        .try_seek_physical_key(&target, None, None)
+        .expect("cold seek");
+    let (warm, _) = reader
+        .try_seek_physical_key(&target, None, None)
+        .expect("warm seek");
+    assert_eq!(cold, warm);
+    assert_eq!(cache.stats().hits(), 1);
+
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(
+            perf.table_checked_block_seeks(),
+            1,
+            "the cold read must verify"
+        );
+        assert_eq!(
+            perf.table_trusted_block_seeks(),
+            1,
+            "the cache hit must take the trusted path"
+        );
+    }
+}
+
+/// Durable-adjacent consumers re-verify cached frames even on hits: the
+/// no-fill cursor family (compaction/materialization merge inputs) and full
+/// materialization must never take the trusted path.
+#[test]
+fn always_verify_consumers_reverify_cache_hits() {
+    let rows = vec![put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)];
+    let (artifact, table_rows) = build_artifact(
+        "reader-always-verify",
+        &rows,
+        4,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let cache = enabled_block_cache(1 << 20);
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-always-verify"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader")
+    .with_block_cache(Arc::clone(&cache))
+    .expect("attach block cache");
+
+    // Prime the cache through a point read (checked cold miss + insert).
+    let target = table_rows[0].physical_key().clone();
+    reader
+        .try_seek_physical_key(&target, None, None)
+        .expect("prime cache");
+    // W2.3 (B3): the miss admits the data frame and its accelerator.
+    assert_eq!(cache.stats().inserts(), 2);
+
+    // A no-fill cursor over the SAME block gets a cache hit and must verify.
+    let mut cursor = reader.cursor_without_cache_fill();
+    cursor.seek_to_first().expect("seek to first");
+    let mut scanned = 0usize;
+    while cursor.current().is_some() {
+        scanned += 1;
+        cursor.advance().expect("cursor advance");
+    }
+    assert_eq!(scanned, rows.len());
+    assert!(cache.stats().hits() >= 1, "cursor must have hit the cache");
+
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(
+            perf.table_trusted_block_seeks(),
+            0,
+            "no consumer on this test may trust the cache"
+        );
+        assert!(perf.table_checked_block_seeks() >= 2);
+    }
+}
+
+/// The publish-time warm path verifies each sliced frame before admission:
+/// corrupted bytes are rejected (counted, never inserted) instead of relying
+/// on read-time re-verification that trusted hits no longer perform.
+#[test]
+fn warm_insert_rejects_corrupted_frames() {
+    let rows = vec![put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)];
+    let (artifact, _) = build_artifact(
+        "reader-warm-reject",
+        &rows,
+        4,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let cache = enabled_block_cache(1 << 20);
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-warm-reject"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader")
+    .with_block_cache(Arc::clone(&cache))
+    .expect("attach block cache");
+
+    // Corrupt one byte inside the first data block's frame, located via the
+    // decoded index (offset arithmetic stays format-owned).
+    let decoded = crate::format::decode_immutable_table(artifact.bytes()).expect("decode table");
+    let entry = decoded.index().entries().first().expect("one entry");
+    let flip_at = usize::try_from(entry.block_offset()).expect("offset") + 20;
+    let mut corrupted = artifact.bytes().to_vec();
+    corrupted[flip_at] ^= 0xFF;
+
+    let admitted = reader
+        .warm_data_blocks_from_encoded(&corrupted)
+        .expect("warm from corrupted bytes");
+    assert_eq!(admitted, 0, "the corrupted frame must be rejected");
+    assert_eq!(cache.stats().inserts(), 0);
+
+    // The pristine bytes warm cleanly.
+    let admitted = reader
+        .warm_data_blocks_from_encoded(artifact.bytes())
+        .expect("warm from pristine bytes");
+    assert_eq!(admitted, 1);
+
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.table_warm_insert_rejects(), 1);
+    }
+}
+
+/// W2.3 (B3): trusted cache hits binary-search via the derived accelerator;
+/// the miss builds and admits it alongside the data frame.
+#[test]
+fn trusted_hits_use_the_indexed_seek_path() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-indexed-hit",
+        &rows,
+        4,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let cache = enabled_block_cache(1 << 20);
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-indexed-hit"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader")
+    .with_block_cache(Arc::clone(&cache))
+    .expect("attach block cache");
+
+    let target = table_rows[1].physical_key().clone();
+    let (cold, _) = reader
+        .try_seek_physical_key(&target, None, None)
+        .expect("cold seek");
+    // Data frame + accelerator admitted together on the miss.
+    assert_eq!(cache.stats().inserts(), 2);
+    let (warm, _) = reader
+        .try_seek_physical_key(&target, None, None)
+        .expect("warm seek");
+    assert_eq!(cold, warm);
+
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.table_checked_block_seeks(), 1);
+        assert_eq!(perf.table_trusted_block_seeks(), 1);
+        assert_eq!(
+            perf.table_indexed_block_seeks(),
+            1,
+            "the trusted hit must seek via the accelerator"
+        );
+        assert_eq!(
+            perf.table_accelerator_builds(),
+            1,
+            "one build on the miss; the hit reuses the cached accelerator"
+        );
+        assert_eq!(perf.table_accelerator_rebuilds(), 0);
+    }
+}
+
+/// W2.3 (B3): a malformed cached accelerator self-heals — the seek rebuilds
+/// from the verified payload and still answers correctly.
+#[test]
+fn malformed_accelerator_self_heals() {
+    let rows = vec![put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)];
+    let (artifact, table_rows) = build_artifact(
+        "reader-accel-heal",
+        &rows,
+        4,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let cache = enabled_block_cache(1 << 20);
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-accel-heal"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader")
+    .with_block_cache(Arc::clone(&cache))
+    .expect("attach block cache");
+
+    // Poison the accelerator slot FIRST (the cache keeps the earliest insert
+    // for a key — `DuplicateExisting` — so later legitimate inserts cannot
+    // displace the garbage; every trusted hit must then self-heal).
+    let decoded = crate::format::decode_immutable_table(artifact.bytes()).expect("decode table");
+    let entry = decoded.index().entries().first().expect("one entry");
+    let ordinal = 0u32;
+    let address = TableBlockAddress::new(
+        TableBlockCacheKind::Accelerator,
+        entry.block_offset(),
+        entry.block_frame_len(),
+        Some(ordinal),
+    )
+    .expect("accelerator address");
+    let key = TableBlockCacheKey::new(
+        TableCacheTableId::new(identity("reader-accel-heal").as_str().as_bytes())
+            .expect("table id"),
+        address,
+    );
+    let garbage: Arc<[u8]> = Arc::from(vec![0xFFu8; 8]);
+    cache.insert(key, garbage).expect("poison accelerator");
+
+    // Miss (checked walk, admits the data frame; the accelerator insert
+    // no-ops against the poisoned entry), then a trusted hit that must
+    // detect the garbage, rebuild from the verified payload, and answer.
+    let target = table_rows[0].physical_key().clone();
+    reader
+        .try_seek_physical_key(&target, None, None)
+        .expect("prime cache");
+    let (healed, _) = reader
+        .try_seek_physical_key(&target, None, None)
+        .expect("seek after poisoning");
+    assert_eq!(healed, Some(table_rows[0].clone()));
+
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(
+            perf.table_accelerator_rebuilds(),
+            1,
+            "the poisoned accelerator must trigger one self-heal rebuild"
+        );
+    }
 }

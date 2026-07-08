@@ -175,6 +175,34 @@ pub(super) fn read_row_from_storage(row: &StorageRow) -> StorageApiResult<Storag
     ))
 }
 
+/// B4: the move-based point-read exit — expiry/tombstone checks run on the
+/// reference BEFORE this call; the row's key and value Vecs move straight
+/// into the public row (no per-read key/value copies). Scan and history
+/// paths keep the by-ref builder above.
+pub(super) fn point_read_row_from_storage_owned(
+    row: StorageRow,
+) -> StorageApiResult<StorageReadRow> {
+    let (space_id, user_key, value, commit_version, commit_timestamp, expires_at, tombstone) =
+        row.into_read_parts();
+    let storage_space = StorageSpaceId::new(vec![space_id.raw()])?;
+    let key = StorageKey::new(user_key)?;
+    let expires_at = (expires_at != Timestamp::EPOCH).then_some(expires_at);
+    let value = if tombstone {
+        None
+    } else {
+        Some(StorageValue::new(value))
+    };
+    Ok(StorageReadRow::new(
+        storage_space,
+        key,
+        value,
+        commit_version,
+        commit_timestamp,
+        expires_at,
+        tombstone,
+    ))
+}
+
 pub(super) fn read_row_from_storage_if_visible(
     row: &StorageRow,
     selected_timestamp: Option<Timestamp>,
@@ -229,7 +257,8 @@ pub(super) fn visible_tombstone_at_bound(
             continue;
         }
         if row.row().is_tombstone() {
-            return read_row_from_storage(row.row()).map(Some);
+            // B4: tombstone rows exit by move too.
+            return point_read_row_from_storage_owned(row.into_storage_row()).map(Some);
         }
         return Ok(None);
     }

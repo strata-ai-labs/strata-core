@@ -194,6 +194,20 @@ impl PersistenceReadRow {
         }
     }
 
+    /// B4: the move-based twin for point reads — key and value Vecs move
+    /// across the crate boundary instead of being re-copied. Scan and
+    /// history paths keep the by-ref constructor above.
+    fn from_storage_owned(row: StorageReadRow) -> Self {
+        let (key, value, commit_version, commit_timestamp, tombstone) = row.into_read_parts();
+        Self {
+            key: key.into_bytes(),
+            value: value.map(StorageValue::into_bytes),
+            commit_version,
+            commit_timestamp,
+            tombstone,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(key: Vec<u8>, value: Option<Vec<u8>>, tombstone: bool) -> Self {
         Self {
@@ -484,7 +498,7 @@ impl StoragePersistence {
 
     pub(crate) fn read(
         &mut self,
-        address: &RowAddress,
+        address: RowAddress,
         selector: ReadSelector,
     ) -> EngineResult<Option<Vec<u8>>> {
         Ok(self
@@ -495,7 +509,7 @@ impl StoragePersistence {
 
     pub(crate) fn read_row(
         &mut self,
-        address: &RowAddress,
+        address: RowAddress,
         selector: ReadSelector,
     ) -> EngineResult<Option<PersistenceReadRow>> {
         self.guard_fault(FaultOp::Read)?;
@@ -503,7 +517,9 @@ impl StoragePersistence {
             .runtime
             .read_point(&point_read_request(address, selector)?)
             .map_err(map_storage_error)?;
-        Ok(outcome.row().map(PersistenceReadRow::from_storage))
+        Ok(outcome
+            .into_row()
+            .map(PersistenceReadRow::from_storage_owned))
     }
 
     pub(crate) fn read_history(
@@ -756,13 +772,15 @@ fn storage_key_from_bytes(bytes: Vec<u8>) -> EngineResult<StorageKey> {
 }
 
 fn point_read_request(
-    address: &RowAddress,
+    address: RowAddress,
     selector: ReadSelector,
 ) -> EngineResult<PointReadRequest> {
+    // B4: the encoded key is allocated once (encode_kv_key and friends) and
+    // MOVED through the request instead of re-copied.
     Ok(PointReadRequest::new(
         address.branch_id(),
-        storage_space(address)?,
-        storage_key(address)?,
+        storage_space_for_class(address.row_class())?,
+        storage_key_from_bytes(address.into_key())?,
         storage_read_bound(selector),
     ))
 }

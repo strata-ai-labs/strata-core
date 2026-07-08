@@ -64,7 +64,7 @@ impl<'a> GraphService<'a> {
         let address = self.metadata_address(&record, &name);
         if self
             .persistence
-            .read_row(&address, ReadSelector::Latest)?
+            .read_row(address.clone(), ReadSelector::Latest)?
             .is_some_and(|row| !row.is_tombstone())
         {
             return Err(EngineError::conflict(
@@ -996,7 +996,7 @@ impl<'a> GraphService<'a> {
         let address = self.metadata_address(record, graph);
         Ok(self
             .persistence
-            .read_row(&address, selector)?
+            .read_row(address, selector)?
             .filter(|row| !row.is_tombstone()))
     }
 
@@ -1100,7 +1100,7 @@ impl<'a> GraphService<'a> {
         let address = self.node_address(record, graph, node_id);
         Ok(self
             .persistence
-            .read_row(&address, selector)?
+            .read_row(address, selector)?
             .filter(|row| !row.is_tombstone()))
     }
 
@@ -1137,7 +1137,7 @@ impl<'a> GraphService<'a> {
         let address = self.edge_address(record, graph, src, edge_type, dst);
         Ok(self
             .persistence
-            .read_row(&address, selector)?
+            .read_row(address, selector)?
             .filter(|row| !row.is_tombstone()))
     }
 

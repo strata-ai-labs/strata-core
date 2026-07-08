@@ -150,7 +150,7 @@ impl<'a> VectorService<'a> {
         let address = self.collection_address(&record, &name);
         if self
             .persistence
-            .read_row(&address, ReadSelector::Latest)?
+            .read_row(address.clone(), ReadSelector::Latest)?
             .is_some_and(|row| !row.is_tombstone())
         {
             return Err(EngineError::conflict(
@@ -278,7 +278,7 @@ impl<'a> VectorService<'a> {
         let record = self.branch_record()?;
         self.require_collection_config(&record, collection)?;
         let address = self.vector_address(&record, collection, key);
-        let Some(row) = self.persistence.read_row(&address, ReadSelector::Latest)? else {
+        let Some(row) = self.persistence.read_row(address, ReadSelector::Latest)? else {
             return Ok(None);
         };
         Self::versioned_entry_from_row(collection, key, &row)
@@ -300,7 +300,7 @@ impl<'a> VectorService<'a> {
         let address = self.vector_address(&record, collection, key);
         let Some(row) = self
             .persistence
-            .read_row(&address, ReadSelector::AtVersion(version))?
+            .read_row(address, ReadSelector::AtVersion(version))?
         else {
             return Ok(None);
         };
@@ -323,7 +323,7 @@ impl<'a> VectorService<'a> {
         let address = self.vector_address(&record, collection, key);
         let Some(row) = self
             .persistence
-            .read_row(&address, ReadSelector::AtTimestamp(timestamp))?
+            .read_row(address, ReadSelector::AtTimestamp(timestamp))?
         else {
             return Ok(None);
         };
@@ -396,7 +396,10 @@ impl<'a> VectorService<'a> {
         let record = self.branch_record()?;
         self.require_collection_config(&record, collection)?;
         let address = self.vector_address(&record, collection, &key);
-        let Some(row) = self.persistence.read_row(&address, ReadSelector::Latest)? else {
+        let Some(row) = self
+            .persistence
+            .read_row(address.clone(), ReadSelector::Latest)?
+        else {
             return Ok(VectorMetadataUpdateOutcome::new(key, false, None, None));
         };
         if row.is_tombstone() {
@@ -547,7 +550,7 @@ impl<'a> VectorService<'a> {
         let mut entries = Vec::with_capacity(keys.len());
         for key in keys {
             let address = self.vector_address(&record, collection, key);
-            let entry = match self.persistence.read_row(&address, ReadSelector::Latest)? {
+            let entry = match self.persistence.read_row(address, ReadSelector::Latest)? {
                 Some(row) => Self::versioned_entry_from_row(collection, key, &row)?,
                 None => None,
             };
@@ -578,7 +581,7 @@ impl<'a> VectorService<'a> {
             let address = self.vector_address(&record, collection, key);
             let exists = self
                 .persistence
-                .read_row(&address, ReadSelector::Latest)?
+                .read_row(address.clone(), ReadSelector::Latest)?
                 .is_some_and(|row| !row.is_tombstone());
             if exists {
                 mutations.push(RowMutation::delete(address));
@@ -788,7 +791,7 @@ impl<'a> VectorService<'a> {
         let address = self.index_manifest_address(&record, collection);
         Ok(self
             .persistence
-            .read(&address, ReadSelector::Latest)?
+            .read(address, ReadSelector::Latest)?
             .map(|bytes| bytes.len()))
     }
 
@@ -1651,7 +1654,7 @@ impl<'a> VectorService<'a> {
         let address = self.collection_address(record, collection);
         Ok(self
             .persistence
-            .read_row(&address, selector)?
+            .read_row(address, selector)?
             .filter(|row| !row.is_tombstone()))
     }
 
@@ -1706,7 +1709,7 @@ impl<'a> VectorService<'a> {
         let address = self.index_manifest_address(record, collection);
         let Some(row) = self
             .persistence
-            .read_row(&address, selector)?
+            .read_row(address, selector)?
             .filter(|row| !row.is_tombstone())
         else {
             return Ok(VectorIndexManifestResolution {
@@ -2583,7 +2586,7 @@ impl<'a> VectorService<'a> {
         let address = self.vector_address(record, collection, key);
         Ok(self
             .persistence
-            .read_row(&address, ReadSelector::Latest)?
+            .read_row(address, ReadSelector::Latest)?
             .is_some_and(|row| !row.is_tombstone()))
     }
 
@@ -2594,7 +2597,10 @@ impl<'a> VectorService<'a> {
         key: &VectorKey,
     ) -> EngineResult<Option<u64>> {
         let address = self.vector_address(record, collection, key);
-        if let Some(row) = self.persistence.read_row(&address, ReadSelector::Latest)? {
+        if let Some(row) = self
+            .persistence
+            .read_row(address.clone(), ReadSelector::Latest)?
+        {
             if !row.is_tombstone() {
                 return Ok(Some(
                     Self::vector_record_from_row(collection, key, &row)?.vector_revision(),

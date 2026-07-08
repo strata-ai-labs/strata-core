@@ -54,6 +54,13 @@ impl StorageKey {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+
+    /// B4: consume the key without copying (rule-32 note: additive public
+    /// item; the engine adapter moves point-read keys across the boundary).
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,6 +76,13 @@ impl StorageValue {
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
+    }
+
+    /// B4: consume the value without copying (rule-32 note: additive public
+    /// item; the engine adapter moves values across the crate boundary).
+    #[must_use]
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.0
     }
 }
 

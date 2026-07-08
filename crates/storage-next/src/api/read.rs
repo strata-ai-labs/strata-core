@@ -407,6 +407,27 @@ impl StorageReadRow {
     }
 
     #[must_use]
+    /// B4: destructure the row for the engine adapter's move-based point
+    /// path — (moved key, moved value, version, timestamp, tombstone).
+    /// Rule-32 note: additive public item, cross-crate consumer.
+    pub fn into_read_parts(
+        self,
+    ) -> (
+        StorageKey,
+        Option<StorageValue>,
+        CommitVersion,
+        Timestamp,
+        bool,
+    ) {
+        (
+            self.key,
+            self.value,
+            self.commit_version,
+            self.commit_timestamp,
+            self.tombstone,
+        )
+    }
+
     pub const fn value(&self) -> Option<&StorageValue> {
         self.value.as_ref()
     }
@@ -441,6 +462,13 @@ impl PointReadOutcome {
     #[must_use]
     pub const fn new(row: Option<StorageReadRow>) -> Self {
         Self { row }
+    }
+
+    /// B4: consume the outcome, moving the row out (rule-32 note: additive
+    /// public item for the engine adapter's move-based point path).
+    #[must_use]
+    pub fn into_row(self) -> Option<StorageReadRow> {
+        self.row
     }
 
     #[must_use]

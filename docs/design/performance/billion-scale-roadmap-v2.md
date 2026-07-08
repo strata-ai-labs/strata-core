@@ -142,9 +142,11 @@ Revised slices (ranked by measured leverage):
   throughput remains cache-miss/churn-bound (W2.4). Follow-up W2.2b:
   materialization + snapshot-install builds still unfiltered (reader treats as
   `Unavailable`).
-- **W2.3 Lazy-scan early exit + intra-block restart points**: the walk averages a
-  FULL block today (254.5 ≈ 256); early exit alone halves it, restart-point binary
-  search makes it ~log. Evaluate after W2.1 (60-entry walks may not need it).
+- **W2.3 Intra-block bisection — LANDED (B3, `b36d0c04`).** Derived per-block
+  entry-offset accelerator (no format change; Accelerator cache kind): trusted
+  seeks bisect instead of walking ~57 entries. Settled C interleaved A/B:
+  **read p50 21.2 → 9.8µs (−54%)**, run +24% (16.5K median). Self-healing,
+  equivalence-property-pinned, fuzzed.
 - **W2.4 Block cache churn survival — LANDED.** Publish-time write-through:
   `warm_data_blocks_from_encoded` slices the just-encoded block frames inside the
   publish hook (rewrite sink + flush prepare, while the W1.2c sink still holds the

@@ -21,6 +21,10 @@ pub enum FormatDecoder {
     StorageRow,
     TableArtifact,
     TableBlock,
+    /// W2.6 (B1): the trusted (no-CRC) data-block frame decode.
+    TableBlockTrusted,
+    /// W2.3 (B3): the indexed point seek over a (payload, offsets) split.
+    TableBlockIndexedSeek,
     TableManifest,
     WalCommitPayload,
     WalRecord,
@@ -57,6 +61,8 @@ pub fn decode_format_bytes(decoder: FormatDecoder, bytes: &[u8]) -> FormatDecode
         FormatDecoder::StorageRow => fuzzing::decode_storage_row(bytes),
         FormatDecoder::TableArtifact => fuzzing::decode_table_artifact(bytes),
         FormatDecoder::TableBlock => fuzzing::decode_table_block(bytes),
+        FormatDecoder::TableBlockTrusted => fuzzing::decode_table_block_trusted(bytes),
+        FormatDecoder::TableBlockIndexedSeek => fuzzing::decode_table_block_indexed_seek(bytes),
         FormatDecoder::TableManifest => fuzzing::decode_table_manifest(bytes),
         FormatDecoder::WalCommitPayload => fuzzing::decode_wal_commit_payload(bytes),
         FormatDecoder::WalRecord => fuzzing::decode_wal_record(bytes),
@@ -229,6 +235,8 @@ mod tests {
             FormatDecoder::StorageRow,
             FormatDecoder::TableArtifact,
             FormatDecoder::TableBlock,
+            FormatDecoder::TableBlockTrusted,
+            FormatDecoder::TableBlockIndexedSeek,
             FormatDecoder::TableManifest,
             FormatDecoder::WalCommitPayload,
             FormatDecoder::WalRecord,

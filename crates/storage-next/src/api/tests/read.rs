@@ -134,6 +134,9 @@ fn read_latest_returns_newest_visible_value() {
     assert_eq!(row.commit_version(), latest.commit_version());
     assert_eq!(row.commit_timestamp(), latest.commit_timestamp());
     assert!(!row.is_tombstone());
+    // B4: the moved exit is identical to the borrowed peek.
+    let peeked = outcome.row().cloned();
+    assert_eq!(outcome.into_row(), peeked);
 }
 
 #[test]
@@ -160,6 +163,9 @@ fn read_latest_returns_tombstone_fact_for_visible_delete() {
     assert!(row.is_tombstone());
     assert!(row.value().is_none());
     assert_eq!(row.commit_version(), deleted.commit_version());
+    // B4: tombstone facts also survive the moved exit unchanged.
+    let peeked = outcome.row().cloned();
+    assert_eq!(outcome.into_row(), peeked);
 }
 
 #[cfg(feature = "perf-trace")]

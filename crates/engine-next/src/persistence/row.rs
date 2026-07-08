@@ -29,6 +29,12 @@ impl RowAddress {
         self.row_class
     }
 
+    /// B4: consume the address, moving the encoded key into the point-read
+    /// request (the key is allocated once at encode and moved through).
+    pub(crate) fn into_key(self) -> Vec<u8> {
+        self.key
+    }
+
     pub(crate) fn key(&self) -> &[u8] {
         &self.key
     }
