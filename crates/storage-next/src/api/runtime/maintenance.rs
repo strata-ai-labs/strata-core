@@ -663,6 +663,15 @@ pub(super) fn drain_durable_background_round(
     let start = clock.now();
     let mut tasks_completed = 0;
     let mut made_progress = false;
+    // W3.3b: trickle-flush a stale WAL append buffer once per round (one brief
+    // lock hold; a no-op unless staged bytes aged past the flush window, so
+    // hot rounds never break coalescing).
+    {
+        let mut runtime = runtime.lock();
+        if runtime.flush_stale_wal_buffer() {
+            made_progress = true;
+        }
+    }
     // D.2b-2: once an off-lock flush-watermark coverage scan finds nothing coverable this
     // round, skip flush-watermark for the rest of the round so the maintenance that runs
     // after it (WAL truncation, table rewrite, durable) is not starved — mirrors the

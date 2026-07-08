@@ -199,6 +199,8 @@ pub struct StoragePerfSnapshot {
     commit_wal_buffer_flushes_capture: u64,
     /// W3.3a: drains forced by durability barriers (sync/rotation/close).
     commit_wal_buffer_flushes_durability: u64,
+    /// W3.3b: drains triggered by the staleness window (trickle).
+    commit_wal_buffer_flushes_trickle: u64,
     /// W3.3a: total bytes drained from the coalescing buffer.
     commit_wal_buffer_flush_bytes: u64,
     /// W3.2: wall time inside the grouped durable dispatch (join + lead +
@@ -1140,6 +1142,11 @@ impl StoragePerfSnapshot {
     /// W3.3a: buffer drains triggered by durability barriers.
     pub const fn commit_wal_buffer_flushes_durability(self) -> u64 {
         self.commit_wal_buffer_flushes_durability
+    }
+
+    /// W3.3b: buffer drains triggered by the staleness window.
+    pub const fn commit_wal_buffer_flushes_trickle(self) -> u64 {
+        self.commit_wal_buffer_flushes_trickle
     }
 
     /// W3.3a: total bytes drained from the coalescing buffer.
@@ -2749,6 +2756,8 @@ static COMMIT_WAL_BUFFER_FLUSHES_CAPTURE: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_WAL_BUFFER_FLUSHES_DURABILITY: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static COMMIT_WAL_BUFFER_FLUSHES_TRICKLE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_WAL_BUFFER_FLUSH_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_GROUP_DISPATCH_NS: AtomicU64 = AtomicU64::new(0);
@@ -3487,6 +3496,7 @@ pub fn reset() {
     COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD.store(0, Ordering::Relaxed);
     COMMIT_WAL_BUFFER_FLUSHES_CAPTURE.store(0, Ordering::Relaxed);
     COMMIT_WAL_BUFFER_FLUSHES_DURABILITY.store(0, Ordering::Relaxed);
+    COMMIT_WAL_BUFFER_FLUSHES_TRICKLE.store(0, Ordering::Relaxed);
     COMMIT_WAL_BUFFER_FLUSH_BYTES.store(0, Ordering::Relaxed);
     COMMIT_GROUP_DISPATCH_NS.store(0, Ordering::Relaxed);
     COMMIT_DRAIN_NOTIFY_NS.store(0, Ordering::Relaxed);
@@ -3986,6 +3996,8 @@ pub fn snapshot() -> StoragePerfSnapshot {
         commit_wal_buffer_flushes_capture: COMMIT_WAL_BUFFER_FLUSHES_CAPTURE
             .load(Ordering::Relaxed),
         commit_wal_buffer_flushes_durability: COMMIT_WAL_BUFFER_FLUSHES_DURABILITY
+            .load(Ordering::Relaxed),
+        commit_wal_buffer_flushes_trickle: COMMIT_WAL_BUFFER_FLUSHES_TRICKLE
             .load(Ordering::Relaxed),
         commit_wal_buffer_flush_bytes: COMMIT_WAL_BUFFER_FLUSH_BYTES.load(Ordering::Relaxed),
         commit_group_dispatch_ns: COMMIT_GROUP_DISPATCH_NS.load(Ordering::Relaxed),
@@ -5558,6 +5570,18 @@ pub(crate) fn record_commit_wal_buffer_flush_capture(bytes: u64) {
         return;
     }
     COMMIT_WAL_BUFFER_FLUSHES_CAPTURE.fetch_add(1, Ordering::Relaxed);
+    COMMIT_WAL_BUFFER_FLUSH_BYTES.fetch_add(bytes, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_commit_wal_buffer_flush_trickle(_bytes: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_commit_wal_buffer_flush_trickle(bytes: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    COMMIT_WAL_BUFFER_FLUSHES_TRICKLE.fetch_add(1, Ordering::Relaxed);
     COMMIT_WAL_BUFFER_FLUSH_BYTES.fetch_add(bytes, Ordering::Relaxed);
 }
 

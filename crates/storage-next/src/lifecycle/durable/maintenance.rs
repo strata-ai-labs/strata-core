@@ -764,6 +764,15 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         self.schedule_post_commit_maintenance_for_branch(branch_id)
     }
 
+    /// W3.3b: trickle-flush the WAL append buffer when its staged bytes have
+    /// aged past the flush window. Called at the start of maintenance drains.
+    /// Best-effort — a flush failure is swallowed here (rationale: the drain
+    /// has no commit to fail; the buffer stays intact, later triggers retry,
+    /// and the commit path's durability barriers own the error surface).
+    pub(crate) fn flush_stale_wal_buffer(&mut self) -> bool {
+        self.services.wal.flush_pending_if_stale().unwrap_or(false)
+    }
+
     pub(crate) fn schedule_background_maintenance_coverage(&mut self) -> bool {
         // Coverage hysteresis: under saturation interlocks every task the
         // coverage scan generates can DEFER instantly, draining the queue
