@@ -619,7 +619,10 @@ fn immutable_builder_compression_paths_decode_to_same_rows() {
 }
 
 #[test]
-fn immutable_builder_target_size_only_changes_header_fact_not_rows() {
+fn immutable_builder_target_size_gates_the_block_cut() {
+    // W2.1: the byte target cuts blocks alongside the row cap (pre-W2.1 it
+    // was a header-recorded fact only). A tight target yields MORE blocks for
+    // the same rows; the decoded row stream is identical either way.
     let rows = vec![
         put_row(b"alpha".to_vec(), 1),
         put_row(b"bravo".to_vec(), 2),
@@ -645,10 +648,10 @@ fn immutable_builder_target_size_only_changes_header_fact_not_rows() {
     assert_ne!(small_target.bytes(), large_target.bytes());
     assert_eq!(decoded_small.header().target_data_block_size(), 128);
     assert_eq!(decoded_large.header().target_data_block_size(), 8192);
-    assert_eq!(
-        decoded_small.header().data_block_count(),
-        decoded_large.header().data_block_count()
-    );
+    // 128 bytes binds below every entry's estimated size: one block per row.
+    // 8KiB never binds for these rows: the 2-row cap cuts.
+    assert_eq!(decoded_small.header().data_block_count(), 3);
+    assert_eq!(decoded_large.header().data_block_count(), 2);
     assert_eq!(decoded_small.rows(), expected_rows.as_slice());
     assert_eq!(decoded_large.rows(), expected_rows.as_slice());
 }

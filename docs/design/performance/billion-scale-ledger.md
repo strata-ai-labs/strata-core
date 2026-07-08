@@ -632,6 +632,20 @@ run), not capacity-limited. Full anatomy + revised W2 slices in
 `billion-scale-roadmap-v2.md` § W2. Model closes: 254 × ~240ns ≈ 61µs vs 62.4µs
 measured — no flamegraph needed.
 
+## W2.1: block byte target enforced — read median halved; B variance trade (2026-07-07)
+
+The 64KB `target_data_block_size` now gates the streaming block cut (was rows-only →
+~280KB blocks). Durable 10M before → after: C read p50 62.4 → **29.2µs**, lazy walk
+254.5 → **58.7** entries, per-miss I/O 279 → **64KB**, C run 6,953 → **11,272 ops/s**;
+loads unchanged; A unchanged (952 ops/s, max 4.6s). Trade discovered by the confirm
+sweep (n=3 B runs): B now draws occasional L0-wall episodes (2.3–3.9s) it didn't
+pre-W2.1 — floor 2,077, good draw 5,037 (read p50 52µs vs 134 pre) — build wall-time
+varies 2× across identical B runs (29.9s vs 58.4s for ~same task count), pointing at
+per-block build/read fixed costs × 4.3 more blocks. Recorded as the W1.4/W2.1b
+calibration input (128KB A/B or per-block cost shave). Cache hit rate note: C hits
+dropped to 50% (more distinct blocks for the same hot keys + unchanged churn
+invalidation) — W2.4's churn-surviving cache matters more at 64KB.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

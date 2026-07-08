@@ -117,10 +117,18 @@ identity-keyed cached blocks). Read I/O counters conflate lookup misses with
 compaction reads (cursor_rows 1.77M in C) — split them before trusting absolute MB.
 
 Revised slices (ranked by measured leverage):
-- **W2.1 Enforce the data-block byte target** (cut on bytes ≥ target OR rows; keep
-  64KB default, evaluate 16–32KB for point-read tables): lazy walk 254 → ~15–60
-  entries, per-miss I/O 279KB → 16–64KB. Attacks p50 and p99 at once. Cheapest
-  biggest lever.
+- **W2.1 Enforce the data-block byte target — LANDED.** Cut on estimated bytes ≥
+  target OR rows, whichever first (`append_streaming_row`); testkit builder model
+  simulates the same rule. Measured at 10M durable: C read p50 **62.4 → 29.2µs**
+  (walk 254 → 58.7 entries, per-miss I/O 279 → 64KB, exactly as predicted), C run
+  6,953 → **11,272 ops/s**; load unchanged (98–113K); A unchanged (952, max 4.6s —
+  W1.3a band). TRADE: B's floor dropped — post-W2.1 B = {5,037 / 2,982 / 2,077} vs
+  {5,017 / 6,257} pre; the slow draws are L0-wall episodes (2.3–3.9s block_wait)
+  that B did not previously hit, consistent with more per-block build work per
+  window (same task counts, build wall-time varying 30–58s across identical runs).
+  Read p50 on B's good draw: 52µs (was 134µs). Follow-up: block-size build-cost
+  calibration (128KB compromise A/B, or shave per-block fixed costs in the
+  build/read path) rides W1.4.
 - **W2.2 Flip BS4.3 bloom filters on** (build cost + memory measured at load; wire
   eager-filter probes into every point path): kills the 2.6 loser seeks/read (C),
   more on B/deeper shapes.

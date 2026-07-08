@@ -151,11 +151,33 @@ pub(crate) struct ImmutableTableStreamingEncoder {
     compression: TableCompression,
     table_bytes: Vec<u8>,
     current_block_rows: Vec<StreamingTableRow>,
+    /// W2.1: running estimate of the current block's encoded payload, so the
+    /// byte target actually gates the cut (rows-only cutting produced ~280KB
+    /// blocks at 1KB values against a declared 64KB target — read-path
+    /// profile, ledger § read-path).
+    current_block_estimated_bytes: usize,
     index_entries: Vec<TableIndexEntry>,
     row_count: u64,
     commit_min: Option<CommitVersion>,
     commit_max: Option<CommitVersion>,
     peak_buffered_rows: usize,
+}
+
+/// Approximate encoded size of one data-block entry: two `u32` length
+/// prefixes, the internal key, and the encoded row (fixed fields ~38 bytes;
+/// the internal key stands in for the embedded physical key, a slight
+/// over-estimate). This feeds a cut TARGET, not a frame length — erring high
+/// only makes blocks land slightly under the target. Exported so the testkit
+/// builder model predicts cuts with the SAME rule the encoder applies.
+pub(crate) fn streaming_entry_size_estimate(internal_key_len: usize, value_len: usize) -> usize {
+    8_usize
+        .saturating_add(internal_key_len.saturating_mul(2))
+        .saturating_add(value_len)
+        .saturating_add(38)
+}
+
+fn entry_encoded_size_estimate(row: &StreamingTableRow) -> usize {
+    streaming_entry_size_estimate(row.internal_key_bytes().len(), row.row().value().len())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -258,6 +280,7 @@ impl ImmutableTableStreamingEncoder {
             compression,
             table_bytes: vec![0; TABLE_HEADER_SIZE],
             current_block_rows: Vec::new(),
+            current_block_estimated_bytes: 0,
             index_entries: Vec::new(),
             row_count: 0,
             commit_min: None,
@@ -289,10 +312,18 @@ impl ImmutableTableStreamingEncoder {
         });
 
         self.row_count = next_row_count;
+        self.current_block_estimated_bytes = self
+            .current_block_estimated_bytes
+            .saturating_add(entry_encoded_size_estimate(&row));
         self.current_block_rows.push(row);
         self.peak_buffered_rows = self.peak_buffered_rows.max(self.current_block_rows.len());
 
-        if self.current_block_rows.len() == self.rows_per_block {
+        // W2.1: the byte target gates the cut alongside the row cap. Checked
+        // after the append, so a single row larger than the target becomes a
+        // one-row block rather than an error.
+        if self.current_block_rows.len() == self.rows_per_block
+            || self.current_block_estimated_bytes >= self.target_data_block_size as usize
+        {
             self.flush_current_block()?;
         }
         Ok(())
@@ -458,6 +489,7 @@ impl ImmutableTableStreamingEncoder {
         }
 
         let rows = std::mem::take(&mut self.current_block_rows);
+        self.current_block_estimated_bytes = 0;
         let encoded_block = encode_table_data_block_from_encoded_rows(
             rows.iter().map(|row| (row.internal_key_bytes(), row.row())),
         )?;
