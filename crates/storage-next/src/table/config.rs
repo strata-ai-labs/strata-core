@@ -3,7 +3,12 @@
 use super::{TableRuntimeError, TableRuntimeResult};
 use crate::format::TableCompression;
 
-const DEFAULT_TARGET_DATA_BLOCK_SIZE: u32 = 64 * 1024;
+// B2 (2026-07-08): 16 KiB replaced 64 KiB after the block-size sweep at 10M —
+// C run +22% (median of 3, interleaved), read p99 434 -> 296us (and stable),
+// B +20-34%, A parity, miss IO 6.5GB -> 2.1GB per 500K reads. 8 KiB read even
+// less IO but showed erratic tails; per-database override via the open
+// options' data-block byte target.
+const DEFAULT_TARGET_DATA_BLOCK_SIZE: u32 = 16 * 1024;
 const DEFAULT_ROWS_PER_BLOCK: usize = 256;
 const DEFAULT_CACHE_CAPACITY_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_COMPACTION_TARGET_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;

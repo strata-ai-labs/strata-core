@@ -51,6 +51,7 @@ impl CacheOpenOptions {
 pub struct DurableLocalOpenOptions {
     default_branch: Option<BranchName>,
     memory_budget_bytes: Option<u64>,
+    data_block_bytes: Option<u32>,
 }
 
 #[allow(clippy::new_without_default)]
@@ -61,6 +62,7 @@ impl DurableLocalOpenOptions {
         Self {
             default_branch: None,
             memory_budget_bytes: None,
+            data_block_bytes: None,
         }
     }
 
@@ -80,8 +82,21 @@ impl DurableLocalOpenOptions {
         self
     }
 
+    /// B2: sets the data-block byte target for durable tables (4 KiB..=1 MiB,
+    /// validated by the storage layer at open). Smaller blocks reduce
+    /// per-miss read amplification at the cost of per-table index metadata.
+    #[must_use]
+    pub const fn with_data_block_bytes(mut self, data_block_bytes: u32) -> Self {
+        self.data_block_bytes = Some(data_block_bytes);
+        self
+    }
+
     pub(crate) fn into_default_branch(self) -> Option<BranchName> {
         self.default_branch
+    }
+
+    pub(crate) const fn data_block_bytes(&self) -> Option<u32> {
+        self.data_block_bytes
     }
 
     pub(crate) const fn memory_budget_bytes(&self) -> Option<u64> {

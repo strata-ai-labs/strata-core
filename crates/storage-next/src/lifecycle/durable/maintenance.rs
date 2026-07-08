@@ -133,6 +133,25 @@ pub(crate) struct FlushWatermarkCoverageInputs {
     min_unflushed_commit: Option<CommitVersion>,
 }
 
+/// B2/W1: the off-lock flush-drain build step (extracted for line-count).
+fn build_flush_drain(
+    branch_snapshot: &BranchLocalState,
+    table_object: &TableObjectService<'static>,
+    table_reader: &TableObjectReaderService<'static>,
+    request: &crate::lifecycle::flush::FlushDrainRequest,
+    budget: &crate::lifecycle::StorageBudgetLedger,
+    data_block_bytes: Option<u32>,
+) -> LifecycleResult<crate::lifecycle::flush::PreparedDurableFlushDrain> {
+    prepare_durable_flush_drain_with_budget(
+        branch_snapshot,
+        table_object,
+        table_reader,
+        request,
+        Some(budget),
+        data_block_bytes,
+    )
+}
+
 pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
     Flush {
         task: MaintenanceTask,
@@ -142,6 +161,7 @@ pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
         table_object: TableObjectService<'static>,
         table_reader: TableObjectReaderService<'static>,
         budget: crate::lifecycle::StorageBudgetLedger,
+        data_block_bytes: Option<u32>,
         started_at: std::time::Instant,
     },
     Checkpoint {
@@ -221,6 +241,10 @@ impl DurableBackgroundMaintenanceBuild<'_> {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per maintenance kind; splitting the dispatch obscures the build/publish pairing"
+    )]
     pub(crate) fn build(self) -> LifecycleResult<DurableBackgroundMaintenanceBuilt> {
         match self {
             Self::Flush {
@@ -231,16 +255,18 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                 table_object,
                 table_reader,
                 budget,
+                data_block_bytes,
                 started_at,
             } => Ok(DurableBackgroundMaintenanceBuilt::Flush {
                 task,
                 branch_id,
-                prepared: prepare_durable_flush_drain_with_budget(
+                prepared: build_flush_drain(
                     &branch_snapshot,
                     &table_object,
                     &table_reader,
                     &request,
-                    Some(&budget),
+                    &budget,
+                    data_block_bytes,
                 )?,
                 elapsed: started_at.elapsed(),
             }),
@@ -475,6 +501,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 self.services.table_reader(),
                 request,
                 Some(&self.budget),
+                self.open_plan.lifecycle_config().data_block_bytes(),
             )?
         };
         if publish_table_manifest_after_flush(
@@ -1515,6 +1542,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 table_manifest,
                 table_catalog,
                 budget: &self.budget,
+                data_block_bytes: self.open_plan.lifecycle_config().data_block_bytes(),
             };
             maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
         };
@@ -1640,6 +1668,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 table_object: self.services.table_object().clone(),
                 table_reader: self.services.table_reader().clone(),
                 budget: self.budget.clone(),
+                data_block_bytes: self.open_plan.lifecycle_config().data_block_bytes(),
                 started_at: std::time::Instant::now(),
             },
         ))))
@@ -2867,6 +2896,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 table_manifest,
                 table_catalog,
                 budget,
+                data_block_bytes: self.open_plan.lifecycle_config().data_block_bytes(),
                 compaction_io_policy: self.open_plan.lifecycle_config().compaction_io_policy(),
             };
             maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
@@ -2939,7 +2969,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             branch,
             Some(budget),
         ) {
-            Ok(Some(request)) => request,
+            // B2: stamp the per-database data-block byte target at dispatch.
+            Ok(Some(request)) => {
+                request.with_data_block_bytes(self.open_plan.lifecycle_config().data_block_bytes())
+            }
             Ok(None) => {
                 crate::observability::perf_trace::record_lifecycle_background_candidate_stale_deferred(
                 );
@@ -3702,6 +3735,7 @@ struct DurableFlushMaintenanceRunner<'a, 'b> {
     table_manifest: &'a TableManifestService<'b>,
     table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
     budget: &'a crate::lifecycle::StorageBudgetLedger,
+    data_block_bytes: Option<u32>,
 }
 
 impl MaintenanceTaskRunner for DurableFlushMaintenanceRunner<'_, '_> {
@@ -3728,6 +3762,7 @@ impl MaintenanceTaskRunner for DurableFlushMaintenanceRunner<'_, '_> {
                         self.table_reader,
                         request,
                         Some(self.budget),
+                        self.data_block_bytes,
                     )?;
                     let maintenance_outcome = outcome.maintenance_outcome();
                     if let Some(error) = publish_table_manifest_after_flush(
@@ -3962,6 +3997,7 @@ struct DurableCompactionMaintenanceRunner<'a, 'b> {
     table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
     budget: &'a crate::lifecycle::StorageBudgetLedger,
     compaction_io_policy: LifecycleCompactionIoPolicy,
+    data_block_bytes: Option<u32>,
 }
 
 impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
@@ -3974,6 +4010,8 @@ impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
         else {
             return Ok(stale_compaction_maintenance_outcome());
         };
+        // B2: stamp the per-database data-block byte target at dispatch.
+        let request = request.with_data_block_bytes(self.data_block_bytes);
         if let Some(outcome) =
             defer_compaction_for_resource_policy(self.branch, &request, self.compaction_io_policy)?
         {

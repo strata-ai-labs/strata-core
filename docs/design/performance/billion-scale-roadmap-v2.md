@@ -163,6 +163,9 @@ Revised slices (ranked by measured leverage):
   heat-aware admission (carry input-block heat to outputs) when pool << dataset.
 - **W2.5 Scan readahead (BS6 item).** Auto-ramping readahead 8→256KB; fixes E and
   scan-range cells.
+- **W2.6 (B2) Data-block size — LANDED.** Per-database knob + swept at 10M:
+  **default flipped 64→16 KiB** (C +22%, p99 434→296µs stable, B +20-34%, A
+  parity, miss IO ÷3). Subsumed W2.1b (#72).
 - Exit: C ≥ 290K ops/s warm (p50 ≤ 6µs, p99 ≤ 20µs); B ≥ 280K; E within 3× of RocksDB.
 
 ### W1.4 — pacing calibration (LANDED)

@@ -106,6 +106,10 @@ pub enum StorageMaintenanceSchedulingPolicy {
     Disabled,
 }
 
+/// B2: bounds for the configurable data-block byte target.
+const MIN_DATA_BLOCK_BYTES: u32 = 4 * 1024;
+const MAX_DATA_BLOCK_BYTES: u32 = 1024 * 1024;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageOpenOptions {
     mode: StorageMode,
@@ -116,6 +120,7 @@ pub struct StorageOpenOptions {
     maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy,
     background_maintenance: StorageBackgroundMaintenanceOptions,
     wal_segment_size_for_test: Option<u64>,
+    data_block_bytes: Option<u32>,
     #[cfg(any(test, feature = "testkit"))]
     storage_budget_for_test: Option<StorageRuntimeBudget>,
 }
@@ -228,6 +233,7 @@ impl StorageOpenOptions {
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
+            data_block_bytes: None,
             #[cfg(any(test, feature = "testkit"))]
             storage_budget_for_test: None,
         }
@@ -253,6 +259,7 @@ impl StorageOpenOptions {
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
+            data_block_bytes: None,
             #[cfg(any(test, feature = "testkit"))]
             storage_budget_for_test: None,
         }
@@ -269,6 +276,7 @@ impl StorageOpenOptions {
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
+            data_block_bytes: None,
             #[cfg(any(test, feature = "testkit"))]
             storage_budget_for_test: None,
         }
@@ -285,6 +293,7 @@ impl StorageOpenOptions {
             maintenance_scheduling_policy: StorageMaintenanceSchedulingPolicy::Background,
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
+            data_block_bytes: None,
             #[cfg(any(test, feature = "testkit"))]
             storage_budget_for_test: None,
         }
@@ -373,6 +382,21 @@ impl StorageOpenOptions {
         self
     }
 
+    /// B2: the data-block byte target for lifecycle-built tables (durable
+    /// modes). Smaller blocks cut per-miss read amplification and raise the
+    /// block-cache hit rate; the cost is per-table index metadata (decoded at
+    /// open) and per-block build overhead. Bounds: 4 KiB..=1 MiB. `None`
+    /// keeps the built-in default (64 KiB).
+    #[must_use]
+    pub const fn with_data_block_bytes(mut self, data_block_bytes: u32) -> Self {
+        self.data_block_bytes = Some(data_block_bytes);
+        self
+    }
+
+    pub(crate) const fn data_block_bytes(&self) -> Option<u32> {
+        self.data_block_bytes
+    }
+
     #[cfg(any(test, feature = "testkit"))]
     #[must_use]
     pub const fn with_wal_segment_size_for_test(mut self, segment_size: u64) -> Self {
@@ -391,6 +415,14 @@ impl StorageOpenOptions {
     }
 
     pub fn validate(&self) -> StorageApiResult<()> {
+        if let Some(bytes) = self.data_block_bytes {
+            if !(MIN_DATA_BLOCK_BYTES..=MAX_DATA_BLOCK_BYTES).contains(&bytes) {
+                return Err(StorageApiError::InvalidArgument {
+                    field: "data_block_bytes",
+                    reason: "data block byte target must be within 4 KiB..=1 MiB",
+                });
+            }
+        }
         self.wal_growth_policy.validate()?;
         self.background_maintenance.validate()?;
         if let Some(segment_size) = self.wal_segment_size_for_test {

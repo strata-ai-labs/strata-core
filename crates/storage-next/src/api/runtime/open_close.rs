@@ -76,6 +76,12 @@ pub(super) fn lifecycle_plan(options: StorageOpenOptions) -> StorageApiResult<St
     config = config
         .with_wal_growth_policy(map_wal_growth_policy(options.wal_growth_policy()))
         .map_err(map_lifecycle_error)?;
+    if let Some(bytes) = options.data_block_bytes() {
+        // B2: per-database data-block byte target (validated in options).
+        config = config
+            .with_data_block_bytes(Some(bytes))
+            .map_err(map_lifecycle_error)?;
+    }
     config = config
         .with_maintenance_scheduling_policy(map_maintenance_scheduling_policy(
             options.maintenance_scheduling_policy(),

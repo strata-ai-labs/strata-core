@@ -869,6 +869,38 @@ now overwhelmingly the C-throughput lever. The hit p50's own next terms
 (bisect+window ~1-2us, candidate decode, cache shard ops, source-walk
 machinery) need a fresh stack profile if a sub-5us hit becomes the goal.
 
+## B2: data-block size calibrated — DEFAULT FLIPPED 64 KiB -> 16 KiB (2026-07-08)
+
+The knob went production-configurable (per-database, options-validated
+4KiB..=1MiB, durable-only), then the sweep ran on settled C at 10M (fresh
+load per point, medians of 3 with interleaved fine pass):
+
+| block | C run (median) | read p99 | miss IO / 500K reads | misses | RSS post-load |
+|---|---|---|---|---|---|
+| 64 KiB (old default) | 15,519 | 434-452us | 6.4-6.7 GB | 103-107K | 20.4-20.6 GB |
+| 32 KiB | 15,668¹ | 339us | 3.8 GB | 120K | — |
+| **16 KiB (new default)** | **18,960 (+22%)** | **295-297us, sub-1% spread** | 2.0-2.2 GB | 123-131K | 22.5 GB |
+| 8 KiB | 16,305 | 218-618us (erratic) | 1.2 GB | 134K | 18.7 GB |
+
+¹ single coarse run.
+
+Winner checks at 16 KiB: **B improves too** — 21.5K/19.1K vs control 16.0K
+(+20-34%; the W2.1 "smaller blocks hurt B" variance concern inverted — B is
+read-mostly and the read win dominates), update max 28-30ms vs control's
+604ms draw. A@100k parity (24.1K vs 23.3K, better p99.9/max). Load within
+the historical spread. Index metadata at 16 KiB ≈ 75MB at 10M (4x the 64KiB
+cost, well within budget); 8 KiB was rejected for erratic tails despite the
+lowest miss IO.
+
+Read p50 stays ~10.5-11.5us (hit path unchanged — B1/B3/B4 territory). The
+C mean's miss term shrank from ~52us to ~30us; the remaining gap to the
+290K target is now split between miss RATE (cache-pool sizing / W2.4b
+heat-aware admission), the ~10us hit path, and engine-level concurrency
+(single-threaded cells throughout).
+
+Subsumes task #72 (W2.1b calibration). Sweep protocol: settled C
+(`--settle-secs 120`), `--block-bytes` per point, same-session interleaved.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

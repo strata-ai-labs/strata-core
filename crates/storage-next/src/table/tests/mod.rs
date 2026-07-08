@@ -18,7 +18,7 @@ mod reader;
 fn table_runtime_default_config_constructs() {
     let config = TableRuntimeConfig::default();
 
-    assert_eq!(config.builder().target_data_block_size(), 64 * 1024);
+    assert_eq!(config.builder().target_data_block_size(), 16 * 1024);
     assert_eq!(config.builder().rows_per_block(), 256);
     assert_eq!(
         config.builder().compression(),
