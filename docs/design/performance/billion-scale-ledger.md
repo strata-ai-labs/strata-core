@@ -796,6 +796,34 @@ Readings:
   cleaner, but no settled pre-W3 control exists; directionally consistent
   with the per-commit wins).
 
+## B1 (W2.6) trusted block reads: landed, measured ~NIL at 10M C — estimate falsified (2026-07-08)
+
+Cache hits (79% of block reads, counter-verified) now skip the per-read CRC32
++ 64KB payload copy; verification moved to admission (demand path already
+verified pre-insert; the W2.4 warm path now verifies before insert — a
+design-review finding). Equivalence property + taxonomy mirror + fuzz target
+pin trusted == checked minus only the stored-CRC class. All 44 targets green.
+
+**Same-session interleaved A/B (settled C, 10M, 500K ops): no measurable win.**
+Control 25,357/15,483 vs treatment 14,664/15,873/15,733 ops/s — within the
+shape lottery; read p50 UNMOVED (21.2-21.6 control vs 20.8-21.3 treatment).
+
+Why the audit's 8-15us estimate was wrong (recorded for the method ledger):
+the gdb profile's crc32/memcpy samples could not distinguish hit-path from
+miss-path work — and B1 deliberately KEEPS the miss-path CRC (verify before
+insert). The median hit's CRC+copy was evidently <=1us (hot blocks are
+CPU-cache-resident; hashing them is cheap). C's mean is dominated by the
+21% miss rate x ~300us disk reads, which a hit-path shave cannot touch.
+Fifth falsified lever this workstream (batch clone, encode buffers, group
+bookkeeping, hit-CRC) — control-first A/B keeps paying for itself.
+
+Where the hot p50 actually lives (probe data from the treatment runs):
+**28.5M entries scanned / 500K ops = 57 linear entry-scan steps per read**
+(~12-17us of the 21us p50) — that is B3 (restart points, W2.3). The miss
+side is B2 (64KB per miss, miss RATE from blocks-per-pool-byte). B1 stays
+(strictly removes wasted CPU, hardens cache admission, prerequisite for an
+honest B2 sweep), but the C levers are B3 then B2.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

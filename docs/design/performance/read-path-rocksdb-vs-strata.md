@@ -65,7 +65,7 @@ binary search, no hash, no copy.
 
 | # | Finding | Class | Cost today | Fix shape |
 |---|---|---|---|---|
-| B1 | Block cache stores raw ENCODED frames; every seek (hit or miss) re-pays 64KB CRC + 64KB copy | **Mechanism blunder** | ~8–15µs of the 22µs hot p50 | Verify once at insert; cache a verified frame (or decoded block); seeks borrow from the Arc. The roadmap's "decoded cache breaks budget accounting" risk note already anticipated this — charge decoded entries to the pool (BS4.5a seams). |
+| B1 | Block cache stores raw ENCODED frames; every seek (hit or miss) re-pays 64KB CRC + 64KB copy | **Mechanism blunder** | LANDED (`e7f0f1ea`) — measured ~nil at 10M C: the cost estimate was miss-path-contaminated; median-hit CRC+copy ≤1µs. Kept: removes wasted CPU, hardens admission, unblocks B2. | Verify once at insert; cache a verified frame (or decoded block); seeks borrow from the Arc. The roadmap's "decoded cache breaks budget accounting" risk note already anticipated this — charge decoded entries to the pool (BS4.5a seams). |
 | B2 | 64KB data blocks for a point workload | **Calibration miss** | 64KB IO per miss for a 1KB row (RocksDB: 4–8KB); fewer distinct blocks per pool byte → structurally lower hit rate; 49% of C's wall is these reads | Extend the W2.1b sweep DOWN (4–16KB) for point cells; or partitioned/point-oriented block sizing. Interacts with B1: smaller blocks make per-block fixed costs (B1) relatively worse until B1 lands — sequence B1 first. |
 | B3 | No restart points → linear ~59-entry encoded scan per block seek | Known (W2.3) | few µs per seek | W2.3 as planned (restart-point binary search); shrinks with B2 too. |
 | B4 | Layer-boundary re-materialization: 4 value copies, 5 key copies, ~10 allocs, a per-read branch-catalog STRING lookup + record clone, per-read request objects | **Layering tax** | ~1–2µs now; becomes the floor after B1/B2 | Borrowed read path end-to-end: `read_point_or_tombstone_borrowed` already EXISTS (branch/read.rs:1550) and the API doesn't use it; pinnable value out (engine returns `Arc`/slice, `get()` stops cloning); cache the branch record on the service handle. |
@@ -84,9 +84,13 @@ binary search, no hash, no copy.
 - **The ordered source walk**: provable early-exit machinery, bloom-gated L0,
   Arc-shared candidates — the LSM probe SHAPE matches RocksDB's.
 
-## Reconstruction of the gap
+## Reconstruction of the gap (REVISED post-B1 measurement)
 
-- Hot hit: ~22µs ≈ B1 (8–15µs) + B3 (few µs) + B4 (~1–2µs) + probe walk (~2µs).
+- Hot hit: ~21µs ≈ **B3 (~12–17µs: 57 linear entry-scan steps per read,
+  probe-verified)** + B4 (~1–2µs) + probe walk (~2µs) + B1 (≤1µs, landed).
+  The original B1 estimate was miss-path-contaminated — see the ledger row.
+- Original estimate line kept for the record:
+- Hot hit (original, falsified): ~22µs ≈ B1 (8–15µs) + B3 (few µs) + B4 (~1–2µs) + probe walk (~2µs).
   Post-B1/B3/B4 estimate: **~3–5µs** — RocksDB territory.
 - Miss: 64KB pread + B1 tax vs RocksDB's 4–8KB pread. Post-B1/B2: miss cost
   drops ~4–8× AND miss RATE drops (more blocks per pool byte).
