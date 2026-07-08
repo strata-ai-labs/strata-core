@@ -579,6 +579,47 @@ seconds-scale max = one bounded pass's relief window (calibration: W1.4; granula
 W1.2b). Load dipped to 85.7–107K on some runs (cutting write-amp) — W1.4 input.
 Design + full gate table in `v2-w1-compaction-engine-plan.md` § W1.3a.
 
+## 10M three-way, post-W1 re-baseline (2026-07-07 night, v1 @ 4dfcc376, /data2, jemalloc)
+
+First three-way with the engine bins genuinely on jemalloc (prior absolutes were
+glibc-confounded) and the first on the merged W1 compaction engine. One process per
+Strata mode; RocksDB re-run same-day as control.
+
+| | Strata cache | Strata durable | RocksDB |
+|---|---|---|---|
+| Load (rows/s) | 449–459K | 97–117K | 635–958K (control noise; see note) |
+| A (50r/50u) run ops/s | **273,103** | 1,036 | 303,868 |
+| B (95r/5u) | **1,082,049** | 5,017 | 436,577 |
+| C (read-only) | **1,654,098** | 6,778 | 426,083 |
+| C read p50 / p99 | 571ns / 631ns | 66.8µs / **930µs** | 2.83µs / 4.4µs |
+| A update max | 79µs | **3.26s** | 205µs |
+| durable post-run allocated | — | 16.7–17.0GB | — |
+
+**W1 verdict at the three-way level.** Durable is transformed from chaotic to
+predictable: A max 3.26s (was 425ms–48.4s lottery; in-family with the W1.3a gate's
+1.8–4.6s bounded relief window), block_wait 3.4s total, zero wait timeouts, memory
+flat at ~17GB across all three workloads (retained gauge grows across workloads only
+because one process runs A→B→C; per-load allocated returns to ~12.4GB). Read-heavy
+run phases nearly doubled: C 3,673 → **6,778**, B 4,256 → 5,017, and C read p99
+improved 3.5× (3.3ms → 930µs) — bounded shape means no monster passes evicting page
+cache mid-run. C read p50 ticked 59.5 → 66.8µs (more, smaller tables = slightly wider
+probe fan-out — a W2 input, not a regression story). Durable load 97–117K vs 82–96K
+pre-W1: the cutting write-amp did NOT regress load at three-way conditions.
+
+**Control note:** RocksDB A/B loads measured 635–647K vs 1.02M in prior rounds (C
+load 958K ≈ prior); run-phase numbers match prior rounds (A 304K vs 334K, B 437K vs
+404K, C 426K ≈ 425K). Same binary, same volume — load variance is environmental
+(cold page cache on first workloads); Strata comparisons are same-day, same
+conditions.
+
+**The post-W1 gap (what W2 must close), durable vs RocksDB-default:**
+A 293× / B 87× / C 63×; load 6–9×. The stall/memory terms are spent — the gap is now
+owned by the read path: C p50 66.8µs vs 2.83µs (24×) and p99 930µs vs 4.4µs (211×)
+with a 15GiB block-cache pool that should hold the zipfian hot set. Roadmap targets
+(A ≥230K, B ≥280K, C ≥290K) require ~34–64× on reads — next action per W6: read-path
+profile on this exact shape (block-cache hit accounting, probe fan-out, decode cost)
+BEFORE any W2 slice.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
