@@ -687,9 +687,14 @@ Results (10M durable): **A 3,059 / 2,926 ops/s** (was 746–1,696; update p99 44
 **4.2–5.2ms**, pacing sleeps 101.7s → 18.5–24.3s, maxes 1.7–2.8s bounded);
 **B 5,903 — best on record** (zero pacing delays, rate rode the 16MiB/s ceiling,
 update max 692ms, zero wall episodes). Floor events 17–50 per A run show the brake
-engaging only near the wall, as designed. NOTE before the W1.4 PR: run the 4T
-saturation cell (`storage-next-concurrent-writers`) per the graded-flip lesson —
-pacing changes get saturation guardrails.
+engaging only near the wall, as designed. Saturation gate (post-commit, same night): `storage-next-concurrent-writers` at
+default budgets — **PASS**. Standard shared 33.3–34.2K at 1/4/8T (BS5 family ~35K),
+per-writer 8T 45.7K with tight fairness (16.8–17.3K/writer); Always 158/551/1,046 at
+1/4/8T (BS5 gate family: 159/553/1,117); **zero stalls, no hangs, no watchdog
+aborts** at any point. Two non-blocking notes: per-writer 8T is ~14% under the 53.2K
+BS5.4 baseline (W2 write-path additions + 3s windows — re-baseline at the next
+concurrency slice), and one 4T per-writer draw showed a transient fairness spread
+(29K vs 52K; 8T tight, so not systemic starvation).
 
 ## Backfilling a row after a perf run
 
