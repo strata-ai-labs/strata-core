@@ -190,6 +190,16 @@ pub struct StoragePerfSnapshot {
     lifecycle_background_candidate_stale_deferred: u64,
     lifecycle_foreground_wait_background_lock_ns: u64,
     lifecycle_write_admission_block_wait_ns: u64,
+    /// W1.4a: graded token-bucket pacing sleeps actually taken by commits.
+    lifecycle_graded_throttle_delays: u64,
+    lifecycle_graded_throttle_delay_ms_total: u64,
+    lifecycle_graded_throttle_delay_ms_max: u64,
+    /// W1.4a: debt-adaptive rate recomputes (install events) and how often the
+    /// rate landed at the floor; last computed rate and max effective debt.
+    lifecycle_admission_rate_recomputes: u64,
+    lifecycle_admission_rate_floor_events: u64,
+    lifecycle_admission_rate_last: u64,
+    lifecycle_admission_effective_debt_max: u64,
     lifecycle_wal_retention_samples: u64,
     lifecycle_wal_retained_bytes_last: u64,
     lifecycle_wal_retained_bytes_max: u64,
@@ -1095,6 +1105,41 @@ impl StoragePerfSnapshot {
     /// Nanoseconds spent waiting for background progress under Block pressure.
     pub const fn lifecycle_write_admission_block_wait_ns(self) -> u64 {
         self.lifecycle_write_admission_block_wait_ns
+    }
+
+    /// W1.4a: pacing sleeps actually taken by commits (count).
+    pub const fn lifecycle_graded_throttle_delays(self) -> u64 {
+        self.lifecycle_graded_throttle_delays
+    }
+
+    /// W1.4a: total wall-clock the token bucket slept, in milliseconds.
+    pub const fn lifecycle_graded_throttle_delay_ms_total(self) -> u64 {
+        self.lifecycle_graded_throttle_delay_ms_total
+    }
+
+    /// W1.4a: the largest single pacing sleep, in milliseconds.
+    pub const fn lifecycle_graded_throttle_delay_ms_max(self) -> u64 {
+        self.lifecycle_graded_throttle_delay_ms_max
+    }
+
+    /// W1.4a: debt-adaptive rate recomputations (install-event cadence).
+    pub const fn lifecycle_admission_rate_recomputes(self) -> u64 {
+        self.lifecycle_admission_rate_recomputes
+    }
+
+    /// W1.4a: recomputes that landed the rate at the configured floor.
+    pub const fn lifecycle_admission_rate_floor_events(self) -> u64 {
+        self.lifecycle_admission_rate_floor_events
+    }
+
+    /// W1.4a: the most recently computed write rate, bytes/sec.
+    pub const fn lifecycle_admission_rate_last(self) -> u64 {
+        self.lifecycle_admission_rate_last
+    }
+
+    /// W1.4a: the largest pacing debt observed at a recompute, in bytes.
+    pub const fn lifecycle_admission_effective_debt_max(self) -> u64 {
+        self.lifecycle_admission_effective_debt_max
     }
 
     /// WAL-growth policy samples taken after durable commits.
@@ -2646,6 +2691,20 @@ static LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS: AtomicU64 = AtomicU64::new(
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static LIFECYCLE_GRADED_THROTTLE_DELAYS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_GRADED_THROTTLE_DELAY_MS_TOTAL: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_GRADED_THROTTLE_DELAY_MS_MAX: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_ADMISSION_RATE_RECOMPUTES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_ADMISSION_RATE_FLOOR_EVENTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_ADMISSION_RATE_LAST: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static LIFECYCLE_ADMISSION_EFFECTIVE_DEBT_MAX: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static LIFECYCLE_WAL_RETENTION_SAMPLES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static LIFECYCLE_WAL_RETAINED_BYTES_LAST: AtomicU64 = AtomicU64::new(0);
@@ -3360,6 +3419,13 @@ pub fn reset() {
     LIFECYCLE_BACKGROUND_CANDIDATE_STALE_DEFERRED.store(0, Ordering::Relaxed);
     LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS.store(0, Ordering::Relaxed);
     LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS.store(0, Ordering::Relaxed);
+    LIFECYCLE_GRADED_THROTTLE_DELAYS.store(0, Ordering::Relaxed);
+    LIFECYCLE_GRADED_THROTTLE_DELAY_MS_TOTAL.store(0, Ordering::Relaxed);
+    LIFECYCLE_GRADED_THROTTLE_DELAY_MS_MAX.store(0, Ordering::Relaxed);
+    LIFECYCLE_ADMISSION_RATE_RECOMPUTES.store(0, Ordering::Relaxed);
+    LIFECYCLE_ADMISSION_RATE_FLOOR_EVENTS.store(0, Ordering::Relaxed);
+    LIFECYCLE_ADMISSION_RATE_LAST.store(0, Ordering::Relaxed);
+    LIFECYCLE_ADMISSION_EFFECTIVE_DEBT_MAX.store(0, Ordering::Relaxed);
     LIFECYCLE_WAL_RETENTION_SAMPLES.store(0, Ordering::Relaxed);
     LIFECYCLE_WAL_RETAINED_BYTES_LAST.store(0, Ordering::Relaxed);
     LIFECYCLE_WAL_RETAINED_BYTES_MAX.store(0, Ordering::Relaxed);
@@ -3842,6 +3908,18 @@ pub fn snapshot() -> StoragePerfSnapshot {
         lifecycle_foreground_wait_background_lock_ns: LIFECYCLE_FOREGROUND_WAIT_BACKGROUND_LOCK_NS
             .load(Ordering::Relaxed),
         lifecycle_write_admission_block_wait_ns: LIFECYCLE_WRITE_ADMISSION_BLOCK_WAIT_NS
+            .load(Ordering::Relaxed),
+        lifecycle_graded_throttle_delays: LIFECYCLE_GRADED_THROTTLE_DELAYS.load(Ordering::Relaxed),
+        lifecycle_graded_throttle_delay_ms_total: LIFECYCLE_GRADED_THROTTLE_DELAY_MS_TOTAL
+            .load(Ordering::Relaxed),
+        lifecycle_graded_throttle_delay_ms_max: LIFECYCLE_GRADED_THROTTLE_DELAY_MS_MAX
+            .load(Ordering::Relaxed),
+        lifecycle_admission_rate_recomputes: LIFECYCLE_ADMISSION_RATE_RECOMPUTES
+            .load(Ordering::Relaxed),
+        lifecycle_admission_rate_floor_events: LIFECYCLE_ADMISSION_RATE_FLOOR_EVENTS
+            .load(Ordering::Relaxed),
+        lifecycle_admission_rate_last: LIFECYCLE_ADMISSION_RATE_LAST.load(Ordering::Relaxed),
+        lifecycle_admission_effective_debt_max: LIFECYCLE_ADMISSION_EFFECTIVE_DEBT_MAX
             .load(Ordering::Relaxed),
         lifecycle_wal_retention_samples: LIFECYCLE_WAL_RETENTION_SAMPLES.load(Ordering::Relaxed),
         lifecycle_wal_retained_bytes_last: LIFECYCLE_WAL_RETAINED_BYTES_LAST
@@ -5365,6 +5443,44 @@ pub(crate) fn record_lifecycle_foreground_wait_background_lock(duration: std::ti
         u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX),
         Ordering::Relaxed,
     );
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_graded_throttle_delay(_delay_millis: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_graded_throttle_delay(delay_millis: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_GRADED_THROTTLE_DELAYS.fetch_add(1, Ordering::Relaxed);
+    LIFECYCLE_GRADED_THROTTLE_DELAY_MS_TOTAL.fetch_add(delay_millis, Ordering::Relaxed);
+    LIFECYCLE_GRADED_THROTTLE_DELAY_MS_MAX.fetch_max(delay_millis, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_admission_rate_recompute(
+    _rate: u64,
+    _effective_debt: u64,
+    _at_floor: bool,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_admission_rate_recompute(
+    rate: u64,
+    effective_debt: u64,
+    at_floor: bool,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    LIFECYCLE_ADMISSION_RATE_RECOMPUTES.fetch_add(1, Ordering::Relaxed);
+    if at_floor {
+        LIFECYCLE_ADMISSION_RATE_FLOOR_EVENTS.fetch_add(1, Ordering::Relaxed);
+    }
+    LIFECYCLE_ADMISSION_RATE_LAST.store(rate, Ordering::Relaxed);
+    LIFECYCLE_ADMISSION_EFFECTIVE_DEBT_MAX.fetch_max(effective_debt, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

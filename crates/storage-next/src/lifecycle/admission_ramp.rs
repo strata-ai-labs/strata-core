@@ -40,6 +40,30 @@ pub(crate) fn admission_mode_from_env() -> LifecycleAdmissionMode {
 /// (`targets[0] == 0`, per `nonzero_level_targets_from_level_bytes`), so all L0 bytes count; non-zero
 /// levels contribute only bytes over their target. This mirrors `RocksDB`'s
 /// `estimated_compaction_needed_bytes` — the signal that grows when compaction falls behind.
+/// W1.4b: the debt the RAMP paces on. L0 bytes always count — writers grow
+/// L0 directly and one bounded pass directly drains it, so pacing writers to
+/// L0 debt is causally sound. Nonzero-level overage is STRUCTURAL debt (the
+/// level shape converging at compaction's own pace); it counts only beyond
+/// `soft_nonzero_debt_limit`, because braking writers cannot drain it faster —
+/// measured: the ramp held workload A at ~150KB/s for a 942MB post-load
+/// overhang, and pacing sleeps were 76% of the run's wall clock (ledger
+/// § W1.4a). `RocksDB` analog: `soft_pending_compaction_bytes_limit` (64GB
+/// default) — modest pending bytes never pace there either.
+pub(crate) fn pacing_debt(
+    per_level_bytes: &[u64],
+    targets: &[u64],
+    soft_nonzero_debt_limit: u64,
+) -> u64 {
+    let l0_bytes = per_level_bytes.first().copied().unwrap_or(0);
+    let nonzero_over_target: u64 = per_level_bytes
+        .iter()
+        .zip(targets.iter())
+        .skip(1)
+        .map(|(bytes, target)| bytes.saturating_sub(*target))
+        .sum();
+    l0_bytes.saturating_add(nonzero_over_target.saturating_sub(soft_nonzero_debt_limit))
+}
+
 pub(crate) fn compaction_debt(per_level_bytes: &[u64], targets: &[u64]) -> u64 {
     per_level_bytes
         .iter()
@@ -48,50 +72,44 @@ pub(crate) fn compaction_debt(per_level_bytes: &[u64], targets: &[u64]) -> u64 {
         .fold(0u64, u64::saturating_add)
 }
 
-// SetupDelay rate multipliers (numerator/denominator). Adopted verbatim from `RocksDB` (decade-tuned).
-const RATE_GROWING_NUM: u64 = 8; // ×0.8 when debt is flat or growing
-const RATE_GROWING_DEN: u64 = 10;
-const RATE_SHRINKING_NUM: u64 = 5; // ×1.25 when debt is shrinking (compaction catching up)
-const RATE_SHRINKING_DEN: u64 = 4;
-const RATE_NEAR_STOP_NUM: u64 = 3; // ×0.6 near the hard stop (brake hardest)
-const RATE_NEAR_STOP_DEN: u64 = 5;
-const RATE_RECOVER_NUM: u64 = 7; // ×1.4 on return to normal (accelerate back toward max)
-const RATE_RECOVER_DEN: u64 = 5;
-/// Within this many L0 tables of the hard stop, brake hardest (×0.6).
+/// Within this many L0 tables of the hard stop, pace at the floor.
 const NEAR_STOP_MARGIN: usize = 2;
 
-fn scale(rate: u64, num: u64, den: u64) -> u64 {
-    u64::try_from(u128::from(rate) * u128::from(num) / u128::from(den)).unwrap_or(u64::MAX)
-}
-
-/// One `SetupDelay` recomputation: the new write rate (bytes/sec) from the current rate, the debt now
-/// vs. at the previous recompute, the L0 count, and the hard-stop threshold. Clamped to
-/// `[floor_rate, max_rate]`. Called only at install events (event cadence), never per commit.
+/// W1.4b: deterministic proportional-quadratic rate from L0 depth. Below the
+/// urgent count: no pacing (max rate). From urgent toward the near-stop point:
+/// `min + (max-min)·h²` where `h` is the remaining headroom fraction — full
+/// rate on entering the band, quadratic brake into the floor as L0 approaches
+/// the blocking wall (which stays the hard backstop, unchanged).
 ///
-/// Precedence: near-stop braking (×0.6) overrides everything; then return-to-normal (×1.4) when the
-/// debt has cleared; otherwise ×0.8 while debt is flat/growing, ×1.25 while it shrinks.
+/// Replaces the `SetupDelay`-style multiplicative walk (×0.8/×1.25 per install
+/// event): at our recompute cadence (~1/s) and with post-load STRUCTURAL debt
+/// flat by nature, the walk decayed to the floor and held a ~1KB/commit writer
+/// at ~150KB/s — pacing sleeps were 76% of workload A's wall clock (ledger
+/// § W1.4a); the proportional form cannot pin low while L0 has headroom.
+/// Byte debt no longer drives the rate: below the soft structural limit it is
+/// L0-count-correlated anyway, and beyond it compaction pressure deepens L0,
+/// which this controller sees directly (`pacing_debt` stays as telemetry).
 pub(crate) fn next_write_rate(
-    current_rate: u64,
-    debt: u64,
-    last_debt: u64,
     l0_count: usize,
+    urgent_threshold: usize,
     stop_threshold: usize,
     max_rate: u64,
     floor_rate: u64,
 ) -> u64 {
-    let near_stop = l0_count.saturating_add(NEAR_STOP_MARGIN) >= stop_threshold;
-    let next = if near_stop {
-        scale(current_rate, RATE_NEAR_STOP_NUM, RATE_NEAR_STOP_DEN)
-    } else if debt == 0 {
-        scale(current_rate, RATE_RECOVER_NUM, RATE_RECOVER_DEN)
-    } else if debt >= last_debt {
-        scale(current_rate, RATE_GROWING_NUM, RATE_GROWING_DEN)
-    } else {
-        scale(current_rate, RATE_SHRINKING_NUM, RATE_SHRINKING_DEN)
-    };
-    next.clamp(floor_rate.min(max_rate), max_rate)
+    let floor_rate = floor_rate.min(max_rate);
+    if l0_count < urgent_threshold {
+        return max_rate;
+    }
+    let stop_point = stop_threshold.saturating_sub(NEAR_STOP_MARGIN);
+    if l0_count >= stop_point {
+        return floor_rate;
+    }
+    let span = stop_point.saturating_sub(urgent_threshold).max(1) as u64;
+    let headroom = stop_point.saturating_sub(l0_count) as u64; // in (0, span]
+    let scaled = u128::from(max_rate - floor_rate) * u128::from(headroom) * u128::from(headroom)
+        / (u128::from(span) * u128::from(span));
+    floor_rate.saturating_add(u64::try_from(scaled).unwrap_or(u64::MAX))
 }
-
 const NANOS_PER_SEC: u128 = 1_000_000_000;
 /// A charged commit never sleeps for less than this (`RocksDB`'s 1 ms floor keeps the pacing coarse
 /// enough not to spin).
@@ -160,60 +178,70 @@ mod tests {
     }
 
     #[test]
+    fn pacing_debt_counts_l0_fully_and_nonzero_overage_only_beyond_soft_limit() {
+        // L0 = 5,000; nonzero overage = 30: under a 100-byte soft limit the
+        // overage is structural noise — only L0 paces.
+        let per_level = [5_000u64, 130, 0];
+        let targets = [0u64, 100, 100];
+        assert_eq!(pacing_debt(&per_level, &targets, 100), 5_000);
+        // Overage beyond the soft limit paces by its EXCESS only.
+        let per_level = [5_000u64, 700, 0];
+        assert_eq!(pacing_debt(&per_level, &targets, 100), 5_000 + 500);
+        // Zero soft limit degenerates to the full debt signal.
+        assert_eq!(
+            pacing_debt(&per_level, &targets, 0),
+            compaction_debt(&per_level, &targets)
+        );
+    }
+
+    #[test]
     fn debt_is_zero_when_all_levels_at_or_below_target_and_l0_empty() {
         assert_eq!(compaction_debt(&[0, 50, 50], &[0, 100, 100]), 0);
     }
 
     #[test]
-    fn ramp_decays_geometrically_while_debt_grows() {
-        // debt >= last_debt (growing): ×0.8 each recompute.
-        let mut rate = MAX_RATE;
-        rate = next_write_rate(rate, 100, 50, 21, 36, MAX_RATE, FLOOR);
-        assert_eq!(rate, MAX_RATE * 8 / 10);
-        rate = next_write_rate(rate, 200, 100, 21, 36, MAX_RATE, FLOOR);
-        assert_eq!(rate, MAX_RATE * 8 / 10 * 8 / 10);
+    fn rate_is_max_below_the_urgent_band() {
+        assert_eq!(next_write_rate(0, 8, 16, MAX_RATE, FLOOR), MAX_RATE);
+        assert_eq!(next_write_rate(7, 8, 16, MAX_RATE, FLOOR), MAX_RATE);
     }
 
     #[test]
-    fn ramp_recovers_capped_at_max_while_debt_shrinks() {
-        let low = MAX_RATE / 2;
-        // debt shrinking (10 < 20): ×1.25, but never above max.
-        assert_eq!(
-            next_write_rate(low, 10, 20, 21, 36, MAX_RATE, FLOOR),
-            low * 5 / 4
-        );
-        // near max, ×1.25 clamps to max.
-        assert_eq!(
-            next_write_rate(MAX_RATE * 9 / 10, 10, 20, 21, 36, MAX_RATE, FLOOR),
-            MAX_RATE
-        );
-    }
-
-    #[test]
-    fn ramp_brakes_hardest_near_stop_regardless_of_debt_direction() {
-        // l0 = stop-2 -> near-stop -> ×0.6 even though debt is shrinking.
-        assert_eq!(
-            next_write_rate(MAX_RATE, 10, 20, 34, 36, MAX_RATE, FLOOR),
-            MAX_RATE * 3 / 5
+    fn rate_brakes_quadratically_through_the_band() {
+        // Band: urgent=8 .. stop_point=14 (blocking 16 - margin 2), span 6.
+        let at = |l0: usize| next_write_rate(l0, 8, 16, MAX_RATE, FLOOR);
+        assert_eq!(at(8), MAX_RATE); // full headroom on entering the band
+        let mut previous = at(8);
+        for l0 in 9..14 {
+            let rate = at(l0);
+            assert!(rate < previous, "rate must fall monotonically: l0={l0}");
+            assert!(
+                rate > FLOOR,
+                "rate holds above floor inside the band: l0={l0}"
+            );
+            previous = rate;
+        }
+        // Quadratic: half headroom (l0=11) => quarter of the range above floor.
+        let expected = FLOOR + (MAX_RATE - FLOOR) / 4;
+        let half = at(11);
+        assert!(
+            half.abs_diff(expected) <= (MAX_RATE - FLOOR) / 100,
+            "half-headroom rate {half} must be ~quarter-range {expected}"
         );
     }
 
     #[test]
-    fn ramp_returns_to_normal_when_debt_clears() {
-        // debt == 0, not near stop -> ×1.4 toward max.
-        assert_eq!(
-            next_write_rate(MAX_RATE / 2, 0, 100, 5, 36, MAX_RATE, FLOOR),
-            MAX_RATE / 2 * 7 / 5
-        );
+    fn rate_is_floor_at_and_beyond_the_near_stop_point() {
+        assert_eq!(next_write_rate(14, 8, 16, MAX_RATE, FLOOR), FLOOR);
+        assert_eq!(next_write_rate(15, 8, 16, MAX_RATE, FLOOR), FLOOR);
+        assert_eq!(next_write_rate(40, 8, 16, MAX_RATE, FLOOR), FLOOR);
     }
 
     #[test]
-    fn ramp_clamps_at_floor() {
-        // A tiny rate braked near stop never drops below the floor.
-        assert_eq!(
-            next_write_rate(FLOOR, 100, 50, 34, 36, MAX_RATE, FLOOR),
-            FLOOR
-        );
+    fn rate_clamps_floor_to_max_and_survives_degenerate_thresholds() {
+        // floor > max clamps to max.
+        assert_eq!(next_write_rate(20, 8, 16, FLOOR, MAX_RATE), FLOOR);
+        // urgent == stop point: any in-band count is already at the floor.
+        assert_eq!(next_write_rate(14, 14, 16, MAX_RATE, FLOOR), FLOOR);
     }
 
     #[test]

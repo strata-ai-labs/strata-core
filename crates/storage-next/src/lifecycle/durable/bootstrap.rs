@@ -724,6 +724,16 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         }
         let mut worst_debt = 0u64;
         let mut worst_l0 = 0usize;
+        // W1.4b: nonzero-level overage below budget/8 is structural (shape
+        // converging at compaction's pace) and never paces writers; only the
+        // excess beyond it joins L0 bytes in the pacing signal. Budget-
+        // relative so a 512MB device and a 32GB server brake proportionally.
+        let soft_nonzero_debt_limit = self
+            .open_plan
+            .lifecycle_config()
+            .storage_budget()
+            .total_bytes()
+            / 8;
         for descriptor in self.branch_catalog.list_branches(false) {
             let Ok(branch) = self.branch_catalog.branch_state(descriptor.branch_id()) else {
                 continue;
@@ -731,31 +741,35 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
             let per_level = branch.per_level_bytes();
             let targets =
                 crate::lifecycle::compaction::nonzero_level_targets_from_level_bytes(per_level);
-            let debt = crate::lifecycle::admission_ramp::compaction_debt(per_level, &targets);
+            let debt = crate::lifecycle::admission_ramp::pacing_debt(
+                per_level,
+                &targets,
+                soft_nonzero_debt_limit,
+            );
             let l0 = branch.owned_levels().first().map_or(0, Vec::len);
             if debt > worst_debt || (debt == worst_debt && l0 > worst_l0) {
                 worst_debt = debt;
                 worst_l0 = l0;
             }
         }
-        // The rate ramps *only* inside the L0 delay band (>= the slowdown/urgent grade). Below it,
-        // feed the ramp zero debt so it recovers (×1.4) back toward the un-throttled ceiling; the
-        // commit path then applies no pacing (rate == max). Within the band the debt direction
-        // (growing/shrinking as L0 fills/drains) drives ×0.8 vs ×1.25.
-        let grade_active = worst_l0 >= crate::lifecycle::compaction::level_zero_urgent_threshold();
-        let effective_debt = if grade_active { worst_debt } else { 0 };
+        // W1.4b: the rate is a pure function of L0 depth within the band
+        // (proportional-quadratic; admission_ramp::next_write_rate). Byte debt
+        // is telemetry only — structural overage cannot pin the rate low.
         let policy = self.open_plan.lifecycle_config().write_throttle_policy();
         let new_rate = crate::lifecycle::admission_ramp::next_write_rate(
-            self.admission_current_rate.get(),
-            effective_debt,
-            self.admission_last_debt.get(),
             worst_l0,
+            crate::lifecycle::compaction::level_zero_urgent_threshold(),
             crate::lifecycle::compaction::level_zero_blocking_threshold(),
             policy.max_rate_bytes_per_sec(),
             policy.min_rate_bytes_per_sec(),
         );
         self.admission_current_rate.set(new_rate);
-        self.admission_last_debt.set(effective_debt);
+        self.admission_last_debt.set(worst_debt);
+        perf_trace::record_lifecycle_admission_rate_recompute(
+            new_rate,
+            worst_debt,
+            new_rate <= policy.min_rate_bytes_per_sec(),
+        );
     }
 
     /// BS3.4b (graded): the per-commit token-bucket delay in millis. `0` on the legacy path, and `0`
