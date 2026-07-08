@@ -17,6 +17,7 @@ Cargo.lock
 *.o
 *.so
 *.dylib
+crates/wasm-next/www/pkg/
 /test
 .benchmark/
 benchmarks/results/

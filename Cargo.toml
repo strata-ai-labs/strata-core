@@ -16,6 +16,7 @@ members = [
     "crates/executor-next",
     "crates/inference-next",
     "crates/cli-next",
+    "crates/wasm-next",
 ]
 
 [workspace.package]
@@ -109,6 +110,10 @@ getrandom = "0.2"
 # std::time clocks trap on wasm32-unknown-unknown; web-time mirrors the same
 # API over performance.now()/Date.now(). Only wired as a wasm32 target dep.
 web-time = "1"
+
+# Browser boundary (crates/wasm-next)
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
 
 # Data structures
 arc-swap = "1"

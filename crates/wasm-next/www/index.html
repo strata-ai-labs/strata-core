@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strata Playground — in your browser</title>
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #11151f;
+    --panel-2: #161b28;
+    --border: #232a3b;
+    --text: #d7dce6;
+    --muted: #8a93a6;
+    --accent: #5eead4;
+    --accent-2: #818cf8;
+    --ok: #4ade80;
+    --err: #f87171;
+    --cmd: #facc15;
+    font-size: 15px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 12px 20px;
+    border-bottom: 1px solid var(--border); background: var(--panel);
+    flex-wrap: wrap;
+  }
+  header .logo { font-weight: 800; font-size: 1.25rem; letter-spacing: 0.02em; }
+  header .logo span { color: var(--accent); }
+  .badge {
+    font-size: 0.72rem; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
+  }
+  .badge.live { color: var(--ok); border-color: #234; }
+  header .scope { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 0.85rem; color: var(--muted); }
+  header .scope select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 3px 8px; font: inherit;
+  }
+  main { display: flex; flex: 1; min-height: 0; }
+  nav {
+    width: 270px; min-width: 230px; border-right: 1px solid var(--border);
+    background: var(--panel); padding: 14px; overflow-y: auto;
+  }
+  nav h2 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin: 14px 0 8px; }
+  nav h2:first-child { margin-top: 0; }
+  nav button {
+    display: block; width: 100%; text-align: left; margin: 4px 0; padding: 8px 10px;
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; font: inherit; font-size: 0.86rem; cursor: pointer;
+  }
+  nav button:hover { border-color: var(--accent); }
+  nav button small { display: block; color: var(--muted); font-size: 0.72rem; margin-top: 2px; }
+  nav .danger:hover { border-color: var(--err); }
+  section.console { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #log { flex: 1; overflow-y: auto; padding: 16px 20px; }
+  .entry { margin-bottom: 14px; }
+  .entry .say { color: var(--muted); font-size: 0.86rem; margin-bottom: 4px; }
+  .entry .say strong { color: var(--text); }
+  .entry pre {
+    margin: 4px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--panel-2);
+    border: 1px solid var(--border); overflow-x: auto; font-size: 0.8rem; line-height: 1.45;
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, monospace;
+    white-space: pre-wrap; word-break: break-word;
+  }
+  .entry pre.cmd { color: var(--cmd); border-left: 3px solid var(--cmd); }
+  .entry pre.ok { border-left: 3px solid var(--ok); }
+  .entry pre.err { color: #fca5a5; border-left: 3px solid var(--err); }
+  .entry .note { color: var(--accent); font-size: 0.84rem; margin-top: 6px; }
+  form.repl {
+    display: flex; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border);
+    background: var(--panel);
+  }
+  form.repl input {
+    flex: 1; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 10px 12px; font-family: ui-monospace, Menlo, monospace; font-size: 0.85rem;
+  }
+  form.repl input:focus { outline: none; border-color: var(--accent-2); }
+  form.repl button {
+    background: var(--accent-2); color: #0b0e14; font-weight: 700; border: none;
+    border-radius: 8px; padding: 0 18px; font: inherit; cursor: pointer;
+  }
+  .hint { padding: 0 20px 10px; color: var(--muted); font-size: 0.74rem; background: var(--panel); }
+  .hint code { color: var(--accent); }
+  #boot { padding: 40px; text-align: center; color: var(--muted); }
+  @media (max-width: 760px) {
+    main { flex-direction: column; }
+    nav { width: 100%; min-width: 0; border-right: none; border-bottom: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">strata<span>db</span> <small style="font-weight:400;color:var(--muted)">playground</small></div>
+  <span class="badge" id="version">loading…</span>
+  <span class="badge live" id="mode" hidden>in-memory session · cache mode · lives and dies with this tab</span>
+  <div class="scope" id="scope" hidden>
+    branch
+    <select id="branch-select"><option>main</option></select>
+  </div>
+</header>
+<main>
+  <nav id="tours" hidden>
+    <h2>Guided tours</h2>
+    <button data-tour="kv">1 · Keys &amp; versions<small>put, get, and every version of a key</small></button>
+    <button data-tour="branch">2 · Branch &amp; time travel<small>fork the database, diverge, read the past</small></button>
+    <button data-tour="json">3 · JSON documents<small>path-level writes into documents</small></button>
+    <button data-tour="events">4 · Event log<small>append-only, hash-linked history</small></button>
+    <button data-tour="vector">5 · Vector search<small>embeddings + nearest-neighbor query</small></button>
+    <button data-tour="graph">6 · Graph<small>nodes, edges, neighbors</small></button>
+    <h2>Session</h2>
+    <button data-run='{"type":"info"}'>info<small>database facts</small></button>
+    <button data-run='{"type":"branch_list"}'>branch list<small>all branches</small></button>
+    <button data-run='{"type":"metrics"}'>metrics<small>runtime counters</small></button>
+    <button id="reset" class="danger">reset session<small>discard everything, open fresh</small></button>
+  </nav>
+  <section class="console">
+    <div id="log"><div id="boot">Loading the Strata engine (wasm)…</div></div>
+    <div class="hint" hidden id="hint">
+      Type a raw command as JSON — the same wire the CLI, MCP server, and SDKs speak.
+      KV keys/values are base64 bytes: <code>{"type":"kv_put","key":"aGk=","value":"d29ybGQ="}</code>.
+      Wrap text as <code>b64:hello</code> to have the playground encode it for you.
+      Unknown fields and commands come back as teaching errors. ↑/↓ for history.
+    </div>
+    <form class="repl" id="repl" hidden>
+      <input id="repl-input" placeholder='{"type":"kv_scan","limit":10}' autocomplete="off" spellcheck="false">
+      <button type="submit">run</button>
+    </form>
+  </section>
+</main>
+<script type="module">
+import init, { StrataSession, engineVersion } from './pkg/strata_wasm_next.js';
+
+const log = document.getElementById('log');
+const b64 = (t) => btoa(String.fromCharCode(...new TextEncoder().encode(t)));
+const utf8 = (b) => {
+  try { return new TextDecoder().decode(Uint8Array.from(atob(b), c => c.charCodeAt(0))); }
+  catch { return null; }
+};
+
+let session;
+const history = [];
+let historyAt = -1;
+
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+function say(html) {
+  const entry = el('div', 'entry');
+  const line = el('div', 'say');
+  line.innerHTML = html;
+  entry.appendChild(line);
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+  return entry;
+}
+
+// Decode base64 KV byte fields for display next to the raw envelope.
+function decodedPreview(envelope) {
+  const seen = [];
+  const walk = (node, path) => {
+    if (node === null || typeof node !== 'object') return;
+    for (const [k, v] of Object.entries(node)) {
+      if ((k === 'key' || k === 'value' || k === 'keys') && typeof v === 'string' && v.length > 0) {
+        const text = utf8(v);
+        if (text !== null && /^[\x20-\x7E]*$/.test(text)) seen.push(`${path}${k} = "${text}"`);
+      } else if (k === 'keys' && Array.isArray(v)) {
+        v.forEach((item, i) => { const t = typeof item === 'string' ? utf8(item) : null; if (t) seen.push(`keys[${i}] = "${t}"`); });
+      } else if (typeof v === 'object') { walk(v, `${path}${k}.`); }
+    }
+  };
+  walk(envelope, '');
+  return seen;
+}
+
+function runCommand(command, narration) {
+  const wire = typeof command === 'string' ? command : JSON.stringify(command);
+  const entry = el('div', 'entry');
+  if (narration) { const n = el('div', 'say'); n.innerHTML = narration; entry.appendChild(n); }
+  entry.appendChild(el('pre', 'cmd', `> ${wire}`));
+  let envelope, failed = false, thrown = false;
+  try {
+    envelope = JSON.parse(session.execute(wire));
+    failed = 'error' in envelope;
+  } catch (error) {
+    thrown = true;
+    entry.appendChild(el('pre', 'err', String(error.message ?? error)));
+  }
+  if (!thrown) {
+    entry.appendChild(el('pre', failed ? 'err' : 'ok', JSON.stringify(envelope, null, 2)));
+    const decoded = decodedPreview(envelope);
+    if (decoded.length > 0 && decoded.length <= 12) {
+      entry.appendChild(el('div', 'note', `decoded bytes → ${decoded.join('  ·  ')}`));
+    }
+    if (failed && envelope.error.suggested_fix) {
+      entry.appendChild(el('div', 'note', `hint: ${envelope.error.suggested_fix}`));
+    }
+  }
+  log.appendChild(entry);
+  log.scrollTop = log.scrollHeight;
+  return thrown ? null : envelope;
+}
+
+async function refreshBranches() {
+  const select = document.getElementById('branch-select');
+  try {
+    const out = JSON.parse(session.execute('{"type":"branch_list"}'));
+    const names = (out.data?.items ?? out.data?.branches ?? []).map(b => b.branch ?? b.name ?? b);
+    if (names.length) {
+      select.innerHTML = '';
+      for (const name of names) {
+        const opt = document.createElement('option');
+        opt.value = opt.textContent = name;
+        if (name === session.branch) opt.selected = true;
+        select.appendChild(opt);
+      }
+    }
+  } catch { /* branch list is cosmetic */ }
+}
+
+// ---- guided tours ------------------------------------------------------
+
+const tours = {
+  kv() {
+    say('<strong>Keys &amp; versions.</strong> Every write is a commit; every value keeps its version and commit timestamp. Bytes travel base64-encoded on the wire — the playground decodes them for you underneath each result.');
+    runCommand({ type: 'kv_put', key: b64('greeting'), value: b64('hello from your browser') });
+    runCommand({ type: 'kv_put', key: b64('greeting'), value: b64('hello again — version 2') });
+    runCommand({ type: 'kv_get', key: b64('greeting') }, 'Latest version:');
+    runCommand({ type: 'kv_getv', key: b64('greeting') }, 'And the versioned read — the value with its full commit provenance:');
+  },
+  branch() {
+    say('<strong>Branch &amp; time travel.</strong> A Strata branch forks the whole database — cheap, copy-on-write, fully isolated. <code>as_of</code> reads any branch at any past commit timestamp.');
+    const put = runCommand({ type: 'kv_put', key: b64('config'), value: b64('v1: conservative') }, 'Write a value on <strong>main</strong>:');
+    const ts = put?.data?.commit?.timestamp;
+    runCommand({ type: 'branch_fork_current', source: session.branch, branch: 'experiment' }, 'Fork the database:');
+    runCommand({ type: 'kv_put', branch: 'experiment', key: b64('config'), value: b64('v2: aggressive rewrite') }, 'Diverge on the fork:');
+    runCommand({ type: 'kv_get', branch: 'experiment', key: b64('config') }, 'The fork sees its own write:');
+    runCommand({ type: 'kv_get', key: b64('config') }, '<strong>main</strong> is untouched:');
+    runCommand({ type: 'kv_put', key: b64('config'), value: b64('v3: main moved on') }, 'Now move main forward…');
+    if (ts !== undefined) {
+      runCommand({ type: 'kv_get', key: b64('config'), as_of: ts }, `…and read main <em>as of commit timestamp ${ts}</em> — the past is still there:`);
+    }
+    refreshBranches();
+  },
+  json() {
+    say('<strong>JSON documents.</strong> Documents with path-level writes — no read-modify-write round trips.');
+    runCommand({ type: 'json_set', key: 'profile', path: '$.name', value: 'Ada Lovelace' });
+    runCommand({ type: 'json_set', key: 'profile', path: '$.skills', value: ['analysis', 'engines'] });
+    runCommand({ type: 'json_set', key: 'profile', path: '$.notes.style', value: 'poetical science' }, 'Deep paths create intermediate objects:');
+    runCommand({ type: 'json_get', key: 'profile', path: '$' }, 'The assembled document:');
+  },
+  events() {
+    say('<strong>Event log.</strong> An append-only, hash-linked event stream per branch — the audit trail is a primitive, not an afterthought.');
+    runCommand({ type: 'event_append', event_type: 'user.signup', payload: { user: 'ada', plan: 'pro' } });
+    runCommand({ type: 'event_append', event_type: 'user.login', payload: { user: 'ada' } });
+    runCommand({ type: 'event_append', event_type: 'doc.created', payload: { id: 'spec-1' } });
+    runCommand({ type: 'event_list', limit: 10 }, 'The stream so far:');
+    runCommand({ type: 'event_verify_chain' }, 'Verify the hash linkage:');
+  },
+  vector() {
+    say('<strong>Vector search.</strong> A real HNSW index running in your tab. Four dimensions here for readability — the engine does not care.');
+    runCommand({ type: 'vector_create_collection', collection: 'notes', dimension: 4, metric: 'cosine' });
+    runCommand({ type: 'vector_upsert', collection: 'notes', key: 'rust', vector: [0.9, 0.1, 0.0, 0.0], metadata: { topic: 'systems' } });
+    runCommand({ type: 'vector_upsert', collection: 'notes', key: 'wasm', vector: [0.8, 0.2, 0.1, 0.0], metadata: { topic: 'systems' } });
+    runCommand({ type: 'vector_upsert', collection: 'notes', key: 'poetry', vector: [0.0, 0.1, 0.9, 0.4], metadata: { topic: 'arts' } });
+    runCommand({ type: 'vector_query', collection: 'notes', query: [1, 0, 0, 0], k: 2 }, 'Nearest neighbors of a systems-flavored query:');
+  },
+  graph() {
+    say('<strong>Graph.</strong> Property graph over the same branch-aware substrate — fork a branch and the graph forks with it.');
+    runCommand({ type: 'graph_create', graph: 'social' });
+    runCommand({ type: 'graph_add_node', graph: 'social', node_id: 'ada', properties: { role: 'engineer' } });
+    runCommand({ type: 'graph_add_node', graph: 'social', node_id: 'grace', properties: { role: 'admiral' } });
+    runCommand({ type: 'graph_add_edge', graph: 'social', src: 'ada', edge_type: 'knows', dst: 'grace', weight: 0.9 });
+    runCommand({ type: 'graph_neighbors', graph: 'social', node_id: 'ada', direction: 'outgoing' }, "Ada's neighborhood:");
+  },
+};
+
+// ---- boot --------------------------------------------------------------
+
+function openSession() {
+  session = new StrataSession();
+  document.getElementById('branch-select').innerHTML = '<option>' + session.branch + '</option>';
+}
+
+await init();
+document.getElementById('version').textContent = `engine ${engineVersion()} · wasm`;
+openSession();
+document.getElementById('boot').remove();
+for (const id of ['mode', 'scope', 'tours', 'hint', 'repl']) document.getElementById(id).hidden = false;
+
+say(`<strong>Strata is running in your browser.</strong> This is the full V1 engine — MVCC storage, branches, time travel,
+KV / JSON / events / vectors / graph — compiled to WebAssembly, holding an in-memory (cache-mode) database that lives
+and dies with this tab. Take a guided tour on the left, or speak the raw command wire below.`);
+
+document.getElementById('tours').addEventListener('click', (event) => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  if (button.dataset.tour) tours[button.dataset.tour]();
+  else if (button.dataset.run) runCommand(button.dataset.run);
+  else if (button.id === 'reset') {
+    try { session.close(); } catch { /* already closed */ }
+    session.free?.();
+    openSession();
+    say('<strong>Fresh session.</strong> Everything from the previous session is gone — cache mode has no disk to remember it.');
+  }
+});
+
+document.getElementById('branch-select').addEventListener('focus', refreshBranches);
+document.getElementById('branch-select').addEventListener('change', (event) => {
+  try {
+    session.setBranch(event.target.value);
+    say(`Session default branch is now <strong>${event.target.value}</strong> — commands that omit <code>branch</code> read and write here.`);
+  } catch (error) { say(`<span style="color:var(--err)">${error.message}</span>`); }
+});
+
+const input = document.getElementById('repl-input');
+document.getElementById('repl').addEventListener('submit', (event) => {
+  event.preventDefault();
+  let raw = input.value.trim();
+  if (!raw) return;
+  // b64:... sugar — encode marked strings so humans can type text for byte fields.
+  raw = raw.replace(/"b64:((?:[^"\\]|\\.)*)"/g, (_, text) => JSON.stringify(b64(JSON.parse('"' + text + '"'))));
+  history.push(input.value); historyAt = history.length;
+  input.value = '';
+  runCommand(raw);
+});
+input.addEventListener('keydown', (event) => {
+  if (event.key === 'ArrowUp' && historyAt > 0) { historyAt--; input.value = history[historyAt]; event.preventDefault(); }
+  else if (event.key === 'ArrowDown' && historyAt < history.length - 1) { historyAt++; input.value = history[historyAt]; event.preventDefault(); }
+  else if (event.key === 'ArrowDown') { input.value = ''; historyAt = history.length; }
+});
+</script>
+</body>
+</html>
