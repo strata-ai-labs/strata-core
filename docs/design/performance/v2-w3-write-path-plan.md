@@ -88,6 +88,29 @@ as a differential oracle until the recovery story is proven:
   scans, update guards WITH the change (O4), write the retained-bounds contract
   wording (O2). The 3× row-volume win and the measurement land here.
 
+### W3.1c LANDED (2026-07-08)
+
+Commits stage user rows only (`prepare_commit_rows`); the apply funnel observes
+every row's stamp (idempotent dedup); replay is stamp-only (a partial legacy
+pair still fails closed). Completeness became INVARIANT: recovery's
+`ensure_branch_timeline_complete` bridge covers fresh opens, pre-elision
+databases (their rows still decode — corruption fails the open closed, coverage
+moved from read time to the bridge), and section-less recoveries; fork children
+seed from the parent's index at fork_version (era-independent). All four public
+timeline surfaces materialize from the index (`timeline_view_or_index`).
+**O2 resolved**: `timeline_bounds` reports the retained index's bounds —
+identical to what the rows would have said. The after-allocation row-limit
+failure is retired (unconstructible: rows == mutations) — its tests pin the
+no-padding invariant. ~28 test expectations updated; replay/bootstrap contracts
+flipped with closeout inventories in the same change.
+
+Measured (A durable 10M): run **3,000 → 4,884 ops/s (+63%)**, update p99
+**4.2ms → 1.13ms**, p99.9 99ms → 5.1ms, **max 879ms — sub-second for the first
+time**; pacing sleeps 18.5s → 8.7s. Load unchanged (~81K, in-band): batched
+load carried only 0.2% timeline overhead (2 rows per 1,000-row commit) — the
+3× win is single-put commits, where A lives. `CommitTimelineRows` is now
+replay-validation + test-only; delete at W3.2 or cutover.
+
 ## W3.2 — solo-writer fast path (unchanged from roadmap)
 
 ## W3.3 — Standard WAL write coalescing (unchanged from roadmap)

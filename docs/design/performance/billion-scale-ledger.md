@@ -696,6 +696,18 @@ BS5.4 baseline (W2 write-path additions + 3s windows — re-baseline at the next
 concurrency slice), and one 4T per-writer draw showed a transient fairness spread
 (29K vs 52K; 8T tight, so not systemic starvation).
 
+## W3.1 complete: the timeline is derived, not materialized (2026-07-08)
+
+Three slices (index cache → checkpoint persistence → elision), each proven by
+oracles before the next. Single-put commits write **1 row instead of 3**; WAL
+payloads shrink accordingly; `as_of` resolution is O(log commits) against a
+retained per-branch index whose completeness is invariant at every open (fresh,
+recovered-with-section, pre-elision-rows bridge, forks). A durable 10M:
+**3,000 → 4,884 ops/s**, update p99 **4.2ms → 1.13ms**, max **879ms** (first
+sub-second A). Load in-band (~81K — batched load only carried 0.2% timeline
+overhead; the win is single-put commits). Details + O2 bounds wording in
+`v2-w3-write-path-plan.md`.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
