@@ -901,6 +901,31 @@ heat-aware admission), the ~10us hit path, and engine-level concurrency
 Subsumes task #72 (W2.1b calibration). Sweep protocol: settled C
 (`--settle-secs 120`), `--block-bytes` per point, same-session interleaved.
 
+## 10M three-way, post-campaign (2026-07-08 night, v1 @ f5940ddd, /data2, settled durable)
+
+The first three-way after the full W3 + read-path campaign (16 KiB blocks,
+settled durable protocol; single runs per cell — treat run cells as point
+samples per the standing caveat):
+
+| cell | Strata cache | Strata durable | RocksDB | durable gap | gap at campaign start |
+|---|---|---|---|---|---|
+| load 10M | 431-445K rows/s | 82-111K | 764K-1.0M | ~9-11x | — |
+| A run | **353,732** | 17,754 | 286,871 | **16x** | 62x |
+| B run | **1,167,803** | **54,509** | 436,638 | **8x** | 74x |
+| C run | **1,564,172** | 19,475 | 428,300 | **22x** | 37x |
+
+- **Cache mode beats RocksDB on every run cell** (reads ~600ns p50) — the
+  memory-first story holds.
+- **Durable B 54.5K is a new best by 2.5x** and exposes a mechanism worth
+  keeping in the model: under zipfian A/B the hot keys are continually
+  UPDATED, so their newest versions sit in the memtable and hot reads never
+  touch the block path; C pays the full table path on every read. B's read
+  p99 was 177us vs C's 294us.
+- Durable read tails post-B2: B p99.9 230us, C p99.9 318us. A's update max
+  drew 1.09s (the surviving shape lottery — W1.3's territory).
+- RocksDB measured 287/437/428K — consistent with the standing reference row
+  (304/437/426K).
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
