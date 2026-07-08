@@ -272,6 +272,65 @@ fn read_at_timestamp_resolves_to_commit_version() {
     assert_eq!(row.commit_version(), first.commit_version());
 }
 
+/// W3.1a oracle: timestamp reads answer identically before and after the
+/// retained-timeline index warms. The first probe pass runs on a cold index
+/// (scan fallback, which seeds it); the second pass takes the index fast
+/// path; the third pass runs after further commits extend the seeded index
+/// through the apply-funnel observations. Every answer is checked against
+/// the known committed history.
+#[test]
+fn retained_timeline_index_matches_history_before_and_after_warming() {
+    let mut runtime = open_runtime();
+    let stamps = [10u64, 11, 15, 40, 90, 200];
+    for (index, ts) in stamps.iter().enumerate() {
+        commit_put(&mut runtime, b"alpha", format!("v{index}").as_bytes(), *ts);
+    }
+
+    let expect_at = |runtime: &StorageRuntime<'static>, probe: u64, history: &[u64]| {
+        let outcome = runtime
+            .read_point(&point_request(
+                b"alpha",
+                ReadBound::AtTimestamp(Timestamp::from_micros(probe)),
+            ))
+            .expect("timestamp read");
+        let row = outcome.row().expect("row present");
+        let expected_index = history.iter().filter(|ts| **ts <= probe).count() - 1;
+        assert_eq!(
+            read_value(row),
+            format!("v{expected_index}").as_bytes(),
+            "probe {probe} must resolve to the last commit at or before it"
+        );
+    };
+    let expect_unavailable = |runtime: &StorageRuntime<'static>, probe: u64| {
+        let error = runtime
+            .read_point(&point_request(
+                b"alpha",
+                ReadBound::AtTimestamp(Timestamp::from_micros(probe)),
+            ))
+            .expect_err("out-of-history probe must reject");
+        assert_eq!(error.class(), StorageApiErrorClass::HistoryUnavailable);
+    };
+
+    // Pass 1 (cold index: scan fallback seeds it) and pass 2 (index fast
+    // path) must agree probe-for-probe.
+    for _pass in 0..2 {
+        expect_unavailable(&runtime, 9);
+        for probe in [10u64, 11, 12, 15, 39, 40, 89, 90, 199, 200] {
+            expect_at(&runtime, probe, &stamps);
+        }
+        expect_unavailable(&runtime, 201);
+    }
+
+    // Extend the history: the seeded index grows via apply-funnel
+    // observations and keeps answering exactly.
+    commit_put(&mut runtime, b"alpha", b"v6", 500);
+    let extended = [10u64, 11, 15, 40, 90, 200, 500];
+    for probe in [200u64, 250, 500] {
+        expect_at(&runtime, probe, &extended);
+    }
+    expect_unavailable(&runtime, 501);
+}
+
 #[test]
 fn read_at_timestamp_after_latest_rejects() {
     let mut runtime = open_runtime();

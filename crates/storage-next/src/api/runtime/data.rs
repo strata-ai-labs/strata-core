@@ -3,8 +3,8 @@ use super::{
     BranchHistoryOptions, BranchId, BranchReadBound, BranchReadView, BranchScanBounds,
     CommitAdmissionPressureReason, CommitAdmissionPressureSeverity, CommitAdmissionSummary,
     CommitBatch, CommitDurabilityClass, CommitDurabilitySummary, CommitExpectedVersion,
-    CommitSummary, CommitTimelineMiss, CommitTimelineView, CommitVersion, FlushFrozenRequest,
-    FlushTableIdentitySeed, FlushTableObjectId, LifecycleStoragePressureReason,
+    CommitSummary, CommitTimelineLookup, CommitTimelineMiss, CommitTimelineView, CommitVersion,
+    FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId, LifecycleStoragePressureReason,
     LifecycleStoragePressureSeverity, LifecycleWriteAdmissionOutcome,
     LifecycleWriteAdmissionStatus, PhysicalKey, ReadBound, ReadLimit, ResolvedReadBound,
     RowStorageSpaceId, ScanReadOutcome, StorageApiError, StorageApiLowerLayer, StorageApiResult,
@@ -316,8 +316,7 @@ pub(super) fn resolve_read_bound(
             selected_timestamp: None,
         }),
         ReadBound::AtVersion(version) => {
-            let timeline = timeline_view_from_read_view(view)?;
-            let selected_timestamp = timeline.timestamp_for_version(version).ok_or(
+            let selected_timestamp = timeline_timestamp_for_version(view, version)?.ok_or(
                 StorageApiError::RetainedHistoryUnavailable {
                     branch_id: view.branch_id(),
                     reason: "commit version is outside retained timeline history",
@@ -329,7 +328,7 @@ pub(super) fn resolve_read_bound(
             })
         }
         ReadBound::AtTimestamp(timestamp) => {
-            let lookup = timeline_view_from_read_view(view)?.version_at_or_before(timestamp);
+            let lookup = timeline_version_at_or_before(view, timestamp)?;
             match lookup.miss() {
                 CommitTimelineMiss::Matched => Ok(ResolvedReadBound {
                     branch_bound: BranchReadBound::AtVersion(lookup.matched_version().ok_or(
@@ -360,6 +359,107 @@ pub(super) fn resolve_read_bound(
             }
         }
     }
+}
+
+/// W3.1a: `version_at_or_before` through the retained-timeline index when it
+/// can prove equivalence with a scan of this view; otherwise the scan — which
+/// then seeds the index so the next caller takes the fast path. Pinned views
+/// clamp the index to their captured max commit version; live-snapshot views
+/// (whose scans race forward with the shared memtable) serve the index tip.
+pub(super) fn timeline_version_at_or_before(
+    view: &BranchReadView,
+    timestamp: Timestamp,
+) -> StorageApiResult<CommitTimelineLookup> {
+    let Some((index, live_active)) = view.retained_timeline() else {
+        return Ok(timeline_view_from_read_view(view)?.version_at_or_before(timestamp));
+    };
+    if let Some(lookup) = index.lookup_at_or_before(timestamp, pinned_view_bound(view, live_active))
+    {
+        return Ok(retained_lookup_to_commit_lookup(timestamp, lookup));
+    }
+    let scanned = timeline_view_from_read_view(view)?;
+    seed_retained_timeline(index, &scanned);
+    Ok(scanned.version_at_or_before(timestamp))
+}
+
+/// W3.1a: `timestamp_for_version` with the same index-or-scan-and-seed shape.
+pub(super) fn timeline_timestamp_for_version(
+    view: &BranchReadView,
+    version: CommitVersion,
+) -> StorageApiResult<Option<Timestamp>> {
+    let Some((index, live_active)) = view.retained_timeline() else {
+        return Ok(timeline_view_from_read_view(view)?.timestamp_for_version(version));
+    };
+    match index.timestamp_for_version(version, pinned_view_bound(view, live_active)) {
+        crate::timeline_index::RetainedVersionLookup::Found(timestamp) => {
+            return Ok(Some(timestamp));
+        }
+        crate::timeline_index::RetainedVersionLookup::Absent => return Ok(None),
+        crate::timeline_index::RetainedVersionLookup::Unproven => {}
+    }
+    let scanned = timeline_view_from_read_view(view)?;
+    seed_retained_timeline(index, &scanned);
+    Ok(scanned.timestamp_for_version(version))
+}
+
+/// A pinned view answers as of its captured facts; an empty branch pins to
+/// version zero (an empty index prefix), matching an empty scan.
+fn pinned_view_bound(view: &BranchReadView, live_active: bool) -> Option<CommitVersion> {
+    if live_active {
+        None
+    } else {
+        Some(
+            view.facts()
+                .max_commit_version()
+                .unwrap_or(CommitVersion::ZERO),
+        )
+    }
+}
+
+fn retained_lookup_to_commit_lookup(
+    query_timestamp: Timestamp,
+    lookup: crate::timeline_index::RetainedTimelineLookup,
+) -> CommitTimelineLookup {
+    use crate::timeline_index::RetainedTimelineLookup as Retained;
+    match lookup {
+        Retained::Matched(entry) => CommitTimelineLookup::from_retained_parts(
+            query_timestamp,
+            Some((entry.commit_version(), entry.commit_timestamp())),
+            CommitTimelineMiss::Matched,
+        ),
+        Retained::AfterLatestRetained(entry) => CommitTimelineLookup::from_retained_parts(
+            query_timestamp,
+            Some((entry.commit_version(), entry.commit_timestamp())),
+            CommitTimelineMiss::AfterLatestRetained,
+        ),
+        Retained::BeforeRetainedHistory => CommitTimelineLookup::from_retained_parts(
+            query_timestamp,
+            None,
+            CommitTimelineMiss::BeforeRetainedHistory,
+        ),
+        Retained::Empty => CommitTimelineLookup::from_retained_parts(
+            query_timestamp,
+            None,
+            CommitTimelineMiss::Empty,
+        ),
+    }
+}
+
+fn seed_retained_timeline(
+    index: &std::sync::Arc<crate::timeline_index::RetainedCommitTimeline>,
+    scanned: &CommitTimelineView,
+) {
+    let entries = scanned
+        .entries_by_version()
+        .iter()
+        .map(|entry| {
+            crate::timeline_index::RetainedTimelineEntry::new(
+                entry.commit_version(),
+                entry.commit_timestamp(),
+            )
+        })
+        .collect::<Vec<_>>();
+    index.seed_from_scan(&entries);
 }
 
 pub(super) fn timeline_view_from_read_view(

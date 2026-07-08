@@ -302,6 +302,12 @@ impl CommitTimelineView {
         }
     }
 
+    /// W3.1a: retained entries in commit-version order (the seed source for
+    /// the retained-timeline index).
+    pub(crate) fn entries_by_version(&self) -> &[CommitTimelineEntry] {
+        &self.entries_by_version
+    }
+
     pub(crate) fn timestamp_for_version(&self, version: CommitVersion) -> Option<Timestamp> {
         self.entries_by_version
             .binary_search_by_key(&version, |entry| entry.commit_version())
@@ -318,6 +324,30 @@ impl CommitTimelineLookup {
             matched_version: None,
             matched_timestamp: None,
             miss: CommitTimelineMiss::Empty,
+        }
+    }
+
+    /// W3.1a: construct lookups from the retained-timeline index's answers,
+    /// so the API layer's match arms are shared between the index fast path
+    /// and the scan fallback.
+    pub(crate) const fn from_retained_parts(
+        query_timestamp: Timestamp,
+        matched: Option<(CommitVersion, Timestamp)>,
+        miss: CommitTimelineMiss,
+    ) -> Self {
+        match matched {
+            Some((version, timestamp)) => Self {
+                query_timestamp,
+                matched_version: Some(version),
+                matched_timestamp: Some(timestamp),
+                miss,
+            },
+            None => Self {
+                query_timestamp,
+                matched_version: None,
+                matched_timestamp: None,
+                miss,
+            },
         }
     }
 

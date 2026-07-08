@@ -10,6 +10,7 @@ use crate::branch::read::{
 };
 use crate::observability::perf_trace;
 use crate::table::{FrozenTable, MutableTable};
+use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -282,7 +283,10 @@ impl BranchLocalState {
             self.inherited_layers.clone(),
             self.facts()?,
         )
-        .map(|view| view.with_timestamp_coverage(self.timestamp_coverage))
+        .map(|view| {
+            view.with_timestamp_coverage(self.timestamp_coverage)
+                .with_retained_timeline(Arc::clone(self.retained_timeline()), false)
+        })
     }
 
     /// Capture a snapshot for off-lock publication (BS2.4 Model 2): identical to
@@ -301,7 +305,10 @@ impl BranchLocalState {
             self.inherited_layers.clone(),
             self.facts()?,
         )
-        .map(|view| view.with_timestamp_coverage(self.timestamp_coverage))
+        .map(|view| {
+            view.with_timestamp_coverage(self.timestamp_coverage)
+                .with_retained_timeline(Arc::clone(self.retained_timeline()), true)
+        })
     }
 
     pub(crate) fn validate_read_view_sources(&self) -> BranchRuntimeResult<()> {

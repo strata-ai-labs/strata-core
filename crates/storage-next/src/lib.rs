@@ -28,6 +28,7 @@ mod observability;
 mod row;
 mod service;
 mod table;
+mod timeline_index;
 
 #[cfg(feature = "perf-trace")]
 #[doc(hidden)]

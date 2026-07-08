@@ -4,7 +4,7 @@ use super::BranchLocalState;
 use crate::branch::error::{BranchRuntimeError, BranchRuntimeResult};
 use crate::branch::identity::require_row_branch;
 use crate::observability::perf_trace;
-use crate::row::StorageRow;
+use crate::row::{StorageRow, StorageSpaceId};
 use crate::table::{
     MutableTableAppendBaseline, TableInternalKeyBytes, TableRow, TableRuntimeError,
 };
@@ -105,10 +105,19 @@ impl BranchLocalState {
         let commit_version = identity.commit_version();
         let commit_timestamp = identity.commit_timestamp();
         let is_tombstone = row.is_tombstone();
+        // W3.1a: a timeline-space row carries its commit's stamp — observing
+        // it here (the single apply funnel) keeps the retained-timeline index
+        // current on every path (durable, cache, replay, groups).
+        let is_timeline_row =
+            row.physical_key().storage_space_id() == StorageSpaceId::COMMIT_TIMELINE;
         self.active
             .insert_row(row)
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
         self.track_committed_row(commit_version, commit_timestamp, is_tombstone);
+        if is_timeline_row {
+            self.retained_timeline()
+                .observe(commit_version, commit_timestamp);
+        }
         self.rotate_active_if_size_threshold_reached();
 
         Ok(BranchAppendOutcome {
@@ -138,8 +147,16 @@ impl BranchLocalState {
         // condition before mutation. The rollback guard below handles any
         // unexpected table insertion rejection without cloning the full branch.
         let insert_timer = perf_trace::start_timer();
+        // W3.1a: collected during the loop, observed only after the whole
+        // batch succeeds — a rolled-back batch must leave no timeline trace.
+        let mut timeline_stamps: Vec<(CommitVersion, Timestamp)> = Vec::new();
         for validated in validated_rows {
             let rollback_key = validated.table_row.key().clone();
+            if validated.table_row.row().physical_key().storage_space_id()
+                == StorageSpaceId::COMMIT_TIMELINE
+            {
+                timeline_stamps.push((validated.commit_version, validated.commit_timestamp));
+            }
             if let Err(source) = self.active.insert_table_row(validated.table_row) {
                 perf_trace::record_append_insert_rows_elapsed(insert_timer);
                 rollback_direct_append(self, active_snapshot, metadata_snapshot, &inserted_keys);
@@ -156,6 +173,10 @@ impl BranchLocalState {
 
         perf_trace::record_append_rows_applied(inserted_keys.len());
         let appended_rows = inserted_keys.len();
+        for (commit_version, commit_timestamp) in timeline_stamps {
+            self.retained_timeline()
+                .observe(commit_version, commit_timestamp);
+        }
         self.rotate_active_if_size_threshold_reached();
         let outcome = BranchAppendBatchOutcome {
             branch_id: self.branch_id,

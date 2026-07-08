@@ -81,6 +81,10 @@ pub(crate) struct BranchLocalState {
     put_rows: u64,
     tombstone_rows: u64,
     shape: BranchShapeAggregates,
+    /// W3.1a: the retained commit-timeline index — observed at row apply,
+    /// shared into read views. Starts unseeded (lookups fall back to the
+    /// timeline-space scan, which seeds it).
+    retained_timeline: Arc<crate::timeline_index::RetainedCommitTimeline>,
 }
 
 impl BranchLocalState {
@@ -104,6 +108,7 @@ impl BranchLocalState {
             put_rows: 0,
             tombstone_rows: 0,
             shape: BranchShapeAggregates::empty(config.max_level_count()),
+            retained_timeline: crate::timeline_index::RetainedCommitTimeline::new(),
         })
     }
 
@@ -118,6 +123,11 @@ impl BranchLocalState {
     /// scaling with dataset size (D.2b). The snapshot is immutable: a
     /// concurrent install under the lock reassigns the branch's `Arc` (via
     /// `Arc::make_mut`), leaving this clone untouched.
+    /// W3.1a: the branch's shared retained-timeline index handle.
+    pub(crate) fn retained_timeline(&self) -> &Arc<crate::timeline_index::RetainedCommitTimeline> {
+        &self.retained_timeline
+    }
+
     pub(crate) fn layout_snapshot(&self) -> Arc<BranchLayout> {
         Arc::clone(&self.layout)
     }
