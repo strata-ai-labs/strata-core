@@ -1,6 +1,7 @@
 use super::data::{
-    decode_table_data_block, encode_table_data_block, encode_table_data_block_from_encoded_rows,
-    seek_table_data_block_point, TableDataBlock, TableDataBlockPointSeek,
+    build_data_block_entry_offsets, decode_table_data_block, encode_table_data_block,
+    encode_table_data_block_from_encoded_rows, seek_table_data_block_point,
+    seek_table_data_block_point_indexed, TableDataBlock, TableDataBlockPointSeek,
 };
 use super::index::{decode_table_index_block_for_data_blocks, encode_table_index_block};
 use super::index::{TableIndexBlock, TableIndexEntry};
@@ -1017,6 +1018,51 @@ fn decode_exact_frame(
         });
     }
     Ok((frame, consumed))
+}
+
+/// W2.3 (B3): the indexed-seek counterpart of
+/// [`seek_immutable_table_data_block_point_trusted`] — same trusted frame
+/// decode and frame-length validation, but the entry walk bisects the
+/// derived offsets instead of scanning from the block start. Trusted-hit
+/// paths only.
+pub(crate) fn seek_immutable_table_data_block_point_indexed(
+    index_entry: &TableIndexEntry,
+    frame_bytes: &[u8],
+    offsets: &[u32],
+    seek_key: &[u8],
+    target_physical_key: &[u8],
+    max_commit_version: Option<CommitVersion>,
+    max_commit_timestamp: Option<Timestamp>,
+) -> Result<TableDataBlockPointSeek, FormatError> {
+    let (frame, consumed) = decode_exact_frame_trusted(frame_bytes, TableBlockKind::Data)?;
+    if consumed
+        != usize::try_from(index_entry.block_frame_len()).map_err(|_| {
+            FormatError::InvalidLength {
+                field: "block_frame_len",
+            }
+        })?
+    {
+        return Err(FormatError::InvalidLength {
+            field: "block_frame_len",
+        });
+    }
+    seek_table_data_block_point_indexed(
+        frame.decoded_payload(),
+        offsets,
+        seek_key,
+        target_physical_key,
+        max_commit_version,
+        max_commit_timestamp,
+    )
+}
+
+/// W2.3 (B3): derive the entry-offset accelerator from a trusted frame's
+/// payload (one cheap pass over the length prefixes).
+pub(crate) fn build_immutable_table_data_block_entry_offsets(
+    frame_bytes: &[u8],
+) -> Result<Vec<u32>, FormatError> {
+    let (frame, _consumed) = decode_exact_frame_trusted(frame_bytes, TableBlockKind::Data)?;
+    build_data_block_entry_offsets(frame.decoded_payload())
 }
 
 /// W2.6 (B1): exact-frame decode without the CRC pass — same trailing-data

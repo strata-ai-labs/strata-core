@@ -65,10 +65,11 @@ pub(crate) use storage_row::{decode_storage_row, encode_storage_row};
     reason = "immutable table artifact helpers are consumed by the table runtime layer"
 )]
 pub(crate) use table::{
-    decode_immutable_table, decode_immutable_table_data_block,
-    decode_immutable_table_data_block_trusted, decode_immutable_table_metadata,
-    decode_table_footer_metadata, decode_table_header, encode_immutable_table,
-    encode_immutable_table_with_block_compressions, seek_immutable_table_data_block_point,
+    build_immutable_table_data_block_entry_offsets, decode_immutable_table,
+    decode_immutable_table_data_block, decode_immutable_table_data_block_trusted,
+    decode_immutable_table_metadata, decode_table_footer_metadata, decode_table_header,
+    encode_immutable_table, encode_immutable_table_with_block_compressions,
+    seek_immutable_table_data_block_point, seek_immutable_table_data_block_point_indexed,
     seek_immutable_table_data_block_point_trusted, streaming_entry_size_estimate, ImmutableTable,
     ImmutableTableMetadata, ImmutableTableStreamingEncoder, ImmutableTableStreamingOutput,
     StreamingTableRow, TableCompression, TableDataBlockPointSeek, TableIndexEntry,

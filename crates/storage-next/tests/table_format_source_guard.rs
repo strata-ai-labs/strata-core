@@ -211,6 +211,7 @@ fn table_format_surface_files(root: &Path) -> Vec<PathBuf> {
         root.join("fuzz/fuzz_targets/format_table_artifact.rs"),
         root.join("fuzz/fuzz_targets/format_table_block.rs"),
         root.join("fuzz/fuzz_targets/format_table_block_trusted.rs"),
+        root.join("fuzz/fuzz_targets/format_table_block_indexed_seek.rs"),
         root.join("fuzz/fuzz_targets/format_table_manifest.rs"),
         root.join("src/format/table_manifest.rs"),
     ];

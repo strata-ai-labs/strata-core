@@ -1209,3 +1209,142 @@ fn trusted_decode_rejects_structural_corruption_like_checked() {
     assert!(super::artifact::decode_immutable_table_data_block(&entry, &trailing).is_err());
     assert!(super::artifact::decode_immutable_table_data_block_trusted(&entry, &trailing).is_err());
 }
+
+// ===== W2.3 (B3): indexed-vs-linear seek equivalence and offsets taxonomy =====
+
+/// Rows with duplicate physical keys across versions so the indexed walk's
+/// version-bound selection is exercised, not just unique-key lookup.
+fn versioned_rows() -> Vec<StorageRow> {
+    // Internal keys order versions NEWEST-first (inverted suffix): within
+    // each user key, emit versions descending.
+    let mut rows = Vec::new();
+    for group in 0..8u64 {
+        for version_slot in (0..3u64).rev() {
+            let version = group * 3 + version_slot + 1;
+            rows.push(StorageRow::put(
+                key(format!("indexed-eq-{group:03}").into_bytes()),
+                CommitVersion::new(version),
+                timestamp(version),
+                Timestamp::EPOCH,
+                vec![u8::try_from(version % 251).expect("fill"); 48],
+            ));
+        }
+    }
+    rows
+}
+
+fn assert_indexed_matches_linear(compression: TableCompression) {
+    for rows in [equivalence_rows(), versioned_rows()] {
+        let bytes = encode_immutable_table(&rows, 1024, 8, compression).expect("encode table");
+        for (entry, frame) in data_block_frames(&bytes) {
+            let offsets = super::artifact::build_immutable_table_data_block_entry_offsets(&frame)
+                .expect("build offsets");
+            let block = super::artifact::decode_immutable_table_data_block(&entry, &frame)
+                .expect("decode block");
+            let mut probes: Vec<(Vec<u8>, Vec<u8>)> = block
+                .rows()
+                .map(|row| {
+                    (
+                        encoded_internal_key_for_row(row),
+                        crate::format::encode_physical_key(row.physical_key()),
+                    )
+                })
+                .collect();
+            let absent = put(b"zzz-indexed-absent".to_vec(), 1);
+            probes.push((
+                encoded_internal_key_for_row(&absent),
+                crate::format::encode_physical_key(absent.physical_key()),
+            ));
+            let version_bounds = [
+                None,
+                Some(CommitVersion::new(1)),
+                Some(CommitVersion::new(9)),
+            ];
+            let timestamp_bounds = [None, Some(timestamp(1)), Some(timestamp(11))];
+            for (seek_key, physical) in &probes {
+                for max_version in version_bounds {
+                    for max_timestamp in timestamp_bounds {
+                        let linear = super::artifact::seek_immutable_table_data_block_point(
+                            &entry,
+                            &frame,
+                            seek_key,
+                            physical,
+                            max_version,
+                            max_timestamp,
+                        )
+                        .expect("linear seek");
+                        let indexed =
+                            super::artifact::seek_immutable_table_data_block_point_indexed(
+                                &entry,
+                                &frame,
+                                &offsets,
+                                seek_key,
+                                physical,
+                                max_version,
+                                max_timestamp,
+                            )
+                            .expect("indexed seek");
+                        assert_eq!(linear.rows_visited(), indexed.rows_visited());
+                        assert_eq!(
+                            linear.continue_to_next_block(),
+                            indexed.continue_to_next_block()
+                        );
+                        assert_eq!(linear.row(), indexed.row());
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn indexed_seek_matches_linear_seek_uncompressed() {
+    assert_indexed_matches_linear(TableCompression::Uncompressed);
+}
+
+#[test]
+fn indexed_seek_matches_linear_seek_zstd() {
+    assert_indexed_matches_linear(TableCompression::Zstd);
+}
+
+/// Malformed offsets fail structurally (no panic, no wrong answer): wrong
+/// count, wrong first entry, non-monotonic, out-of-payload.
+#[test]
+fn indexed_seek_rejects_malformed_offsets() {
+    let rows = sample_rows();
+    let bytes = encode_immutable_table(&rows, 4096, 16, TableCompression::Uncompressed)
+        .expect("encode table");
+    let (entry, frame) = data_block_frames(&bytes)
+        .into_iter()
+        .next()
+        .expect("one block");
+    let offsets = super::artifact::build_immutable_table_data_block_entry_offsets(&frame)
+        .expect("build offsets");
+    let target = put(b"alpha".to_vec(), 9);
+    let seek_key = encoded_internal_key_for_row(&target);
+    let physical = crate::format::encode_physical_key(target.physical_key());
+
+    let seek_with = |offsets: &[u32]| {
+        super::artifact::seek_immutable_table_data_block_point_indexed(
+            &entry, &frame, offsets, &seek_key, &physical, None, None,
+        )
+    };
+
+    assert!(
+        seek_with(&offsets[..offsets.len() - 1]).is_err(),
+        "wrong count"
+    );
+    let mut wrong_first = offsets.clone();
+    wrong_first[0] = 0;
+    assert!(seek_with(&wrong_first).is_err(), "wrong first offset");
+    if offsets.len() >= 2 {
+        let mut non_monotonic = offsets.clone();
+        non_monotonic.swap(0, 1);
+        assert!(seek_with(&non_monotonic).is_err(), "non-monotonic");
+    }
+    let mut out_of_bounds = offsets.clone();
+    if let Some(last) = out_of_bounds.last_mut() {
+        *last = u32::MAX;
+    }
+    assert!(seek_with(&out_of_bounds).is_err(), "out of payload bounds");
+}

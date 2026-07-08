@@ -89,6 +89,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "format_table_block_indexed_seek"
+path = "fuzz_targets/format_table_block_indexed_seek.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "format_table_manifest"
 path = "fuzz_targets/format_table_manifest.rs"
 test = false

@@ -1679,13 +1679,15 @@ fn immutable_reader_indexed_point_present_hit_reads_one_block_then_uses_cache() 
 
     let stats = cache.stats();
     assert_eq!(stats.misses(), 1);
-    assert_eq!(stats.inserts(), 1);
+    // W2.3 (B3): a point-seek miss admits the data frame AND its derived
+    // entry-offset accelerator.
+    assert_eq!(stats.inserts(), 2);
     assert_eq!(stats.hits(), 1);
     let perf = crate::observability::perf_trace::snapshot();
     assert_eq!(perf.table_seeks(), 2);
     assert_eq!(perf.table_data_block_reads(), 1);
     assert_eq!(perf.table_cache_misses(), 1);
-    assert_eq!(perf.table_cache_inserts(), 1);
+    assert_eq!(perf.table_cache_inserts(), 2);
     assert_eq!(perf.table_cache_hits(), 1);
     assert_eq!(perf.table_data_block_decodes(), 0);
     assert_eq!(perf.table_rows_decoded(), 0);
@@ -4655,7 +4657,8 @@ fn always_verify_consumers_reverify_cache_hits() {
     reader
         .try_seek_physical_key(&target, None, None)
         .expect("prime cache");
-    assert_eq!(cache.stats().inserts(), 1);
+    // W2.3 (B3): the miss admits the data frame and its accelerator.
+    assert_eq!(cache.stats().inserts(), 2);
 
     // A no-fill cursor over the SAME block gets a cache hit and must verify.
     let mut cursor = reader.cursor_without_cache_fill();
@@ -4729,5 +4732,131 @@ fn warm_insert_rejects_corrupted_frames() {
     {
         let perf = crate::observability::perf_trace::snapshot();
         assert_eq!(perf.table_warm_insert_rejects(), 1);
+    }
+}
+
+/// W2.3 (B3): trusted cache hits binary-search via the derived accelerator;
+/// the miss builds and admits it alongside the data frame.
+#[test]
+fn trusted_hits_use_the_indexed_seek_path() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-indexed-hit",
+        &rows,
+        4,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let cache = enabled_block_cache(1 << 20);
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-indexed-hit"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader")
+    .with_block_cache(Arc::clone(&cache))
+    .expect("attach block cache");
+
+    let target = table_rows[1].physical_key().clone();
+    let (cold, _) = reader
+        .try_seek_physical_key(&target, None, None)
+        .expect("cold seek");
+    // Data frame + accelerator admitted together on the miss.
+    assert_eq!(cache.stats().inserts(), 2);
+    let (warm, _) = reader
+        .try_seek_physical_key(&target, None, None)
+        .expect("warm seek");
+    assert_eq!(cold, warm);
+
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.table_checked_block_seeks(), 1);
+        assert_eq!(perf.table_trusted_block_seeks(), 1);
+        assert_eq!(
+            perf.table_indexed_block_seeks(),
+            1,
+            "the trusted hit must seek via the accelerator"
+        );
+        assert_eq!(
+            perf.table_accelerator_builds(),
+            1,
+            "one build on the miss; the hit reuses the cached accelerator"
+        );
+        assert_eq!(perf.table_accelerator_rebuilds(), 0);
+    }
+}
+
+/// W2.3 (B3): a malformed cached accelerator self-heals — the seek rebuilds
+/// from the verified payload and still answers correctly.
+#[test]
+fn malformed_accelerator_self_heals() {
+    let rows = vec![put_row(b"alpha".to_vec(), 1), put_row(b"bravo".to_vec(), 2)];
+    let (artifact, table_rows) = build_artifact(
+        "reader-accel-heal",
+        &rows,
+        4,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let cache = enabled_block_cache(1 << 20);
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-accel-heal"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader")
+    .with_block_cache(Arc::clone(&cache))
+    .expect("attach block cache");
+
+    // Poison the accelerator slot FIRST (the cache keeps the earliest insert
+    // for a key — `DuplicateExisting` — so later legitimate inserts cannot
+    // displace the garbage; every trusted hit must then self-heal).
+    let decoded = crate::format::decode_immutable_table(artifact.bytes()).expect("decode table");
+    let entry = decoded.index().entries().first().expect("one entry");
+    let ordinal = 0u32;
+    let address = TableBlockAddress::new(
+        TableBlockCacheKind::Accelerator,
+        entry.block_offset(),
+        entry.block_frame_len(),
+        Some(ordinal),
+    )
+    .expect("accelerator address");
+    let key = TableBlockCacheKey::new(
+        TableCacheTableId::new(identity("reader-accel-heal").as_str().as_bytes())
+            .expect("table id"),
+        address,
+    );
+    let garbage: Arc<[u8]> = Arc::from(vec![0xFFu8; 8]);
+    cache.insert(key, garbage).expect("poison accelerator");
+
+    // Miss (checked walk, admits the data frame; the accelerator insert
+    // no-ops against the poisoned entry), then a trusted hit that must
+    // detect the garbage, rebuild from the verified payload, and answer.
+    let target = table_rows[0].physical_key().clone();
+    reader
+        .try_seek_physical_key(&target, None, None)
+        .expect("prime cache");
+    let (healed, _) = reader
+        .try_seek_physical_key(&target, None, None)
+        .expect("seek after poisoning");
+    assert_eq!(healed, Some(table_rows[0].clone()));
+
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(
+            perf.table_accelerator_rebuilds(),
+            1,
+            "the poisoned accelerator must trigger one self-heal rebuild"
+        );
     }
 }

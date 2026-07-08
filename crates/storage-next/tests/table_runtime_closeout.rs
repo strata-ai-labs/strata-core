@@ -176,6 +176,7 @@ fn table_runtime_closeout_fuzz_inventory_matches_existing_table_targets() {
         "format_table_artifact",
         "format_table_block",
         "format_table_block_trusted",
+        "format_table_block_indexed_seek",
     ] {
         let target_path = crate_root.join(format!("fuzz/fuzz_targets/{target}.rs"));
         assert!(

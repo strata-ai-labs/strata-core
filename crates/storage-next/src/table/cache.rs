@@ -509,6 +509,14 @@ impl TableBlockCache {
         }
     }
 
+    /// W2.3 (B3): a stats-quiet lookup for DERIVED artifacts (accelerator
+    /// entries). Touches the LRU like `get` but records no hit/miss — the
+    /// hit-rate metrics keep meaning "data-block demand", not doubled by the
+    /// per-seek accelerator probe.
+    pub(crate) fn get_quiet(&self, key: &TableBlockCacheKey) -> Option<Arc<[u8]>> {
+        self.shard_for_key(key).lock_state().lru.get(key)
+    }
+
     pub(crate) fn insert(
         &self,
         key: TableBlockCacheKey,

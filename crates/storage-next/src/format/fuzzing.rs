@@ -61,6 +61,33 @@ pub(crate) fn decode_table_block(bytes: &[u8]) -> bool {
     table::decode_table_block_frame(bytes).is_ok_and(|(_frame, consumed)| consumed == bytes.len())
 }
 
+/// W2.3 (B3): the indexed point seek must never panic on arbitrary
+/// (payload, offsets) inputs — offsets are a cached derived artifact, so the
+/// seek's defensive validation is the only thing between garbage and UB. The
+/// first two bytes select the payload/offsets split.
+pub(crate) fn decode_table_block_indexed_seek(bytes: &[u8]) -> bool {
+    if bytes.len() < 3 {
+        return false;
+    }
+    let split = usize::from(u16::from_le_bytes([bytes[0], bytes[1]]));
+    let rest = &bytes[2..];
+    let split = split % rest.len();
+    let (payload, offset_bytes) = rest.split_at(split);
+    let offsets: Vec<u32> = offset_bytes
+        .chunks_exact(4)
+        .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .collect();
+    table::seek_table_data_block_point_indexed(
+        payload,
+        &offsets,
+        b"fuzz-seek-key",
+        b"fuzz-target",
+        None,
+        None,
+    )
+    .is_ok()
+}
+
 /// W2.6 (B1): the trusted (no-CRC) block decode must never panic on arbitrary
 /// bytes, and must accept AT LEAST everything the checked decode accepts (it
 /// relaxes only the checksum, never a structural check).
