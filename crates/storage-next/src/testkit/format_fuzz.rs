@@ -17,6 +17,7 @@ pub enum FormatDecoder {
     SegmentMetadata,
     SnapshotEnvelope,
     SnapshotRowPayload,
+    SnapshotTimelinePayload,
     StorageRow,
     TableArtifact,
     TableBlock,
@@ -52,6 +53,7 @@ pub fn decode_format_bytes(decoder: FormatDecoder, bytes: &[u8]) -> FormatDecode
         FormatDecoder::SegmentMetadata => fuzzing::decode_segment_metadata(bytes),
         FormatDecoder::SnapshotEnvelope => fuzzing::decode_snapshot_envelope(bytes),
         FormatDecoder::SnapshotRowPayload => fuzzing::decode_snapshot_row_payload(bytes),
+        FormatDecoder::SnapshotTimelinePayload => fuzzing::decode_snapshot_timeline_payload(bytes),
         FormatDecoder::StorageRow => fuzzing::decode_storage_row(bytes),
         FormatDecoder::TableArtifact => fuzzing::decode_table_artifact(bytes),
         FormatDecoder::TableBlock => fuzzing::decode_table_block(bytes),
@@ -223,6 +225,7 @@ mod tests {
             FormatDecoder::SegmentMetadata,
             FormatDecoder::SnapshotEnvelope,
             FormatDecoder::SnapshotRowPayload,
+            FormatDecoder::SnapshotTimelinePayload,
             FormatDecoder::StorageRow,
             FormatDecoder::TableArtifact,
             FormatDecoder::TableBlock,
@@ -293,6 +296,11 @@ mod tests {
             (
                 FormatDecoder::SnapshotRowPayload,
                 include_bytes!("../../fuzz/corpus/format_snapshot_row_payload/valid-empty")
+                    .as_slice(),
+            ),
+            (
+                FormatDecoder::SnapshotTimelinePayload,
+                include_bytes!("../../fuzz/corpus/format_snapshot_timeline_payload/valid-empty")
                     .as_slice(),
             ),
         ] {

@@ -2946,6 +2946,35 @@ impl<'a> StorageRuntime<'a> {
         }
     }
 
+    /// W3.1b oracle: whether the branch's retained-timeline index claims
+    /// complete coverage (a checkpoint-seeded index must arrive complete
+    /// BEFORE any read scan-seeds it).
+    #[cfg(test)]
+    pub(crate) fn retained_timeline_complete_for_test(
+        &self,
+        branch_id: BranchId,
+    ) -> StorageApiResult<bool> {
+        match &self.inner {
+            StorageRuntimeInner::Cache(slot) => Ok(slot
+                .lock()
+                .branch_catalog()
+                .branch_state(branch_id)
+                .map_err(map_lifecycle_error)?
+                .retained_timeline()
+                .is_complete_for_test()),
+            StorageRuntimeInner::DurableOwned(slot) => Ok(slot
+                .lock()
+                .branch_catalog()
+                .branch_state(branch_id)
+                .map_err(map_lifecycle_error)?
+                .retained_timeline()
+                .is_complete_for_test()),
+            StorageRuntimeInner::Closed => Err(StorageApiError::InvalidRuntimeState {
+                reason: "timeline inspection requires an open runtime",
+            }),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn set_timestamp_coverage_for_test(
         &mut self,

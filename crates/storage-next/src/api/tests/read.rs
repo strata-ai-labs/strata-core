@@ -952,6 +952,65 @@ fn timeline_lookup_survives_flush_and_compaction() {
     assert_eq!(after_reverse.timestamp(), second.commit_timestamp());
 }
 
+/// W3.1b oracle: a durable reopen restores the retained-timeline index
+/// COMPLETE from the checkpoint section, before any read runs a seeding
+/// scan — and the restored index answers exactly. The pre-close `as_of`
+/// seeds the fresh database's index (the durable-open initial branch is
+/// deliberately not complete-from-birth), so the close-time checkpoint
+/// persists it.
+#[cfg(feature = "localfs")]
+#[test]
+fn retained_timeline_restores_complete_across_durable_reopen() {
+    let root = temp_dir_for_api_test("read-timeline-restore-complete");
+    {
+        let mut runtime = open_durable_runtime(root.clone());
+        commit_put(&mut runtime, b"warm-a", b"old", 10);
+        commit_put(&mut runtime, b"warm-a", b"new", 30);
+        // Seed by scan (fresh durable DBs start unproven), so the close-time
+        // checkpoint persists the index.
+        let outcome = runtime
+            .read_point(&point_request(
+                b"warm-a",
+                ReadBound::AtTimestamp(Timestamp::from_micros(20)),
+            ))
+            .expect("pre-close timestamp read");
+        assert_eq!(read_value(outcome.row().expect("row")), b"old");
+        assert!(runtime
+            .retained_timeline_complete_for_test(branch())
+            .expect("inspect pre-close"));
+        // Explicit checkpoint: the close ladder's own checkpoint is
+        // policy-gated for tiny WAL tails, and the persistence path under
+        // test is checkpoint-time section writing.
+        let checkpoint = MaintenanceRequest::new(
+            MaintenanceTask::Checkpoint,
+            MaintenanceScope::Branch(branch()),
+        );
+        runtime.maintenance(&checkpoint).expect("checkpoint");
+        runtime.close().expect("close durable runtime");
+    }
+
+    let runtime = open_durable_runtime(root);
+    // Complete BEFORE any read: restored from the checkpoint section, not
+    // seeded by a scan.
+    assert!(runtime
+        .retained_timeline_complete_for_test(branch())
+        .expect("inspect post-reopen"));
+    let outcome = runtime
+        .read_point(&point_request(
+            b"warm-a",
+            ReadBound::AtTimestamp(Timestamp::from_micros(20)),
+        ))
+        .expect("post-reopen timestamp read");
+    assert_eq!(read_value(outcome.row().expect("row")), b"old");
+    let outcome = runtime
+        .read_point(&point_request(
+            b"warm-a",
+            ReadBound::AtTimestamp(Timestamp::from_micros(30)),
+        ))
+        .expect("post-reopen latest read");
+    assert_eq!(read_value(outcome.row().expect("row")), b"new");
+}
+
 #[cfg(feature = "localfs")]
 #[test]
 fn timeline_lookup_survives_durable_recovery() {

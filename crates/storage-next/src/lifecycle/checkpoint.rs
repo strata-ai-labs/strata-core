@@ -1566,7 +1566,7 @@ pub(crate) fn checkpoint_durable_branch_with_budget(
 
 /// W3.1b: the branch's persistable timeline group — `None` unless its
 /// retained index is complete at `visible_version`.
-fn timeline_group_for_branch(
+pub(super) fn timeline_group_for_branch(
     branch: &BranchLocalState,
     visible_version: CommitVersion,
 ) -> Option<crate::format::SnapshotTimelineBranchGroup> {
@@ -1675,6 +1675,7 @@ pub(crate) fn checkpoint_durable_rows_with_budget(
     request: &LifecycleCheckpointRequest,
     visible_version: CommitVersion,
     rows: &[crate::row::StorageRow],
+    timeline_groups: &[crate::format::SnapshotTimelineBranchGroup],
     has_durable_rows: bool,
     flush_boundary: Option<CommitVersion>,
     budget: Option<&StorageBudgetLedger>,
@@ -1686,7 +1687,7 @@ pub(crate) fn checkpoint_durable_rows_with_budget(
         request,
         budget,
         rows,
-        &[],
+        timeline_groups,
         has_durable_rows,
         flush_boundary,
     )

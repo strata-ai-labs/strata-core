@@ -447,13 +447,12 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             Some(&self.budget),
         )?;
 
-        // Install non-seeded checkpoint rows into their catalog slots.
-        // Seeded-branch rows were installed during `recover_checkpoint`;
-        // anything else came from the multi-branch checkpoint encoder.
-        install_non_seeded_checkpoint_rows(
+        // Install non-seeded checkpoint rows and seed non-seeded timeline
+        // indexes (seeded-branch state was handled by `recover_checkpoint`).
+        install_non_seeded_checkpoint_state(
             &mut branch_catalog,
-            recovery.checkpoint().non_seeded_rows(),
-            recovery.checkpoint().install_identity_seed(),
+            recovery.checkpoint(),
+            initial_branch_id,
         )?;
 
         // Validate the WAL package against the catalog (multi-branch aware).
@@ -2653,6 +2652,55 @@ fn recover_per_branch_table_manifests(
 /// `RecoveryFailed` errors, mirroring the multi-branch WAL validator. Empty
 /// input is a no-op (common when the seeded branch is the only branch with
 /// checkpoint coverage).
+/// Non-seeded checkpoint state: rows into catalog slots, then W3.1b timeline
+/// groups into their branches' indexes (before WAL replay extends them).
+fn install_non_seeded_checkpoint_state(
+    branch_catalog: &mut LifecycleBranchCatalog,
+    checkpoint: &crate::lifecycle::LifecycleRecoveredCheckpoint,
+    seeded_branch_id: BranchId,
+) -> LifecycleResult<()> {
+    install_non_seeded_checkpoint_rows(
+        branch_catalog,
+        checkpoint.non_seeded_rows(),
+        checkpoint.install_identity_seed(),
+    )?;
+    seed_non_seeded_branch_timelines(
+        branch_catalog,
+        checkpoint.timeline_groups(),
+        seeded_branch_id,
+    );
+    Ok(())
+}
+
+/// W3.1b: seed each non-seeded active branch's retained-timeline index from
+/// its decoded checkpoint group. Deleted or unknown branches are skipped —
+/// their indexes stay unseeded and fall back to the timeline-space scan.
+fn seed_non_seeded_branch_timelines(
+    branch_catalog: &LifecycleBranchCatalog,
+    groups: &[crate::format::SnapshotTimelineBranchGroup],
+    seeded_branch_id: BranchId,
+) {
+    use crate::lifecycle::LifecycleBranchStatus;
+    for group in groups {
+        if group.branch_id == seeded_branch_id {
+            continue;
+        }
+        let Ok(descriptor) = branch_catalog.lookup(group.branch_id) else {
+            continue;
+        };
+        if descriptor.status() == LifecycleBranchStatus::Deleted {
+            continue;
+        }
+        let Ok(branch) = branch_catalog.branch_state(group.branch_id) else {
+            continue;
+        };
+        crate::lifecycle::recovery::seed_branch_timeline_from_groups(
+            branch,
+            std::slice::from_ref(group),
+        );
+    }
+}
+
 fn install_non_seeded_checkpoint_rows(
     branch_catalog: &mut LifecycleBranchCatalog,
     rows: &[crate::row::StorageRow],

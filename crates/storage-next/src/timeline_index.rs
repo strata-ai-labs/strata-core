@@ -110,6 +110,12 @@ impl RetainedCommitTimeline {
         })
     }
 
+    /// W3.1b oracle: whether the index currently claims complete coverage.
+    #[cfg(any(test, feature = "testkit"))]
+    pub(crate) fn is_complete_for_test(&self) -> bool {
+        self.inner.read().complete
+    }
+
     /// W3.1b: a branch created in-process starts with provably complete
     /// (empty) coverage — every later commit flows through the observation
     /// hook, so completeness holds by construction and checkpoints can
@@ -148,14 +154,21 @@ impl RetainedCommitTimeline {
     pub(crate) fn observe(&self, commit_version: CommitVersion, commit_timestamp: Timestamp) {
         let mut state = self.inner.write();
         if let Some(last) = state.entries.last().copied() {
-            if commit_version == last.commit_version() {
-                if commit_timestamp != last.commit_timestamp() {
-                    state.complete = false;
+            if commit_version.as_u64() <= last.commit_version().as_u64() {
+                // Not an append: either a legitimate re-observation (the
+                // pair's second row, or WAL replay re-applying commits a
+                // restored checkpoint already covers — replay idempotence) or
+                // an inconsistency. An exact match of an existing entry is a
+                // no-op; anything else poisons completeness.
+                let found = state
+                    .entries
+                    .binary_search_by_key(&commit_version.as_u64(), |entry| {
+                        entry.commit_version().as_u64()
+                    });
+                match found {
+                    Ok(at) if state.entries[at].commit_timestamp() == commit_timestamp => {}
+                    Ok(_) | Err(_) => state.complete = false,
                 }
-                return;
-            }
-            if commit_version.as_u64() < last.commit_version().as_u64() {
-                state.complete = false;
                 return;
             }
             if commit_timestamp < last.commit_timestamp() {
@@ -403,6 +416,26 @@ mod tests {
         index.observe(CommitVersion::new(5), Timestamp::from_micros(51));
         assert_eq!(
             index.lookup_at_or_before(Timestamp::from_micros(50), None),
+            None
+        );
+    }
+
+    /// WAL replay re-applies commits a restored checkpoint already covers:
+    /// exact re-observations must be no-ops, not poison.
+    #[test]
+    fn replay_reobservation_of_covered_commits_keeps_completeness() {
+        let index = seeded(&[entry(1, 10), entry(2, 20), entry(3, 30)]);
+        index.observe(CommitVersion::new(1), Timestamp::from_micros(10));
+        index.observe(CommitVersion::new(3), Timestamp::from_micros(30));
+        index.observe(CommitVersion::new(4), Timestamp::from_micros(40));
+        assert_eq!(
+            index.lookup_at_or_before(Timestamp::from_micros(40), None),
+            Some(RetainedTimelineLookup::Matched(entry(4, 40)))
+        );
+        // A non-matching historical observation still poisons.
+        index.observe(CommitVersion::new(2), Timestamp::from_micros(99));
+        assert_eq!(
+            index.lookup_at_or_before(Timestamp::from_micros(40), None),
             None
         );
     }
