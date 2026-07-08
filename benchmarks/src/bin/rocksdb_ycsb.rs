@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{Duration, Instant, SystemTime};
 
-use rocksdb::{Direction, IteratorMode, Options, WriteBatch, DB};
+use rocksdb::{DBCompressionType, Direction, IteratorMode, Options, WriteBatch, DB};
 use serde::Serialize;
 
 // Shared YCSB workload definitions and distribution generators — the same module
@@ -35,7 +35,10 @@ use serde::Serialize;
 #[path = "../../benches/ycsb_workloads.rs"]
 mod ycsb_workloads;
 
-use ycsb_workloads::{workload_by_label, ycsb_key, FastRng, KeyChooser, Operation, WorkloadSpec};
+use ycsb_workloads::{
+    dir_size_bytes, workload_by_label, ycsb_key, ycsb_value, FastRng, KeyChooser, Operation,
+    ValueFill, WorkloadSpec,
+};
 
 const DEFAULT_RECORDS: usize = 100_000;
 const DEFAULT_OPS: usize = 100_000;
@@ -68,10 +71,12 @@ fn run(config: Config) -> Result<(), String> {
     std::fs::create_dir_all(&root).map_err(|e| format!("create benchmark dir: {e}"))?;
 
     println!(
-        "rocksdb-ycsb records={} ops={} value={}B scan_max={} load_batch={} workloads={}",
+        "rocksdb-ycsb records={} ops={} value={}B fill={} compression={} scan_max={} load_batch={} workloads={}",
         config.records,
         config.ops,
         config.value_bytes,
+        config.value_fill.label(),
+        config.compression.label(),
         config.scan_max,
         config.load_batch,
         config
@@ -113,14 +118,26 @@ fn run_workload(
 ) -> Result<WorkloadResult, String> {
     let mut opts = Options::default();
     opts.create_if_missing(true);
+    match config.compression {
+        // Stock `Options::default()` — whatever the linked RocksDB build
+        // negotiates (the crate ships lz4; RocksDB's baked-in default is
+        // snappy, which is NOT compiled in). The on-disk probe below reports
+        // what actually happened.
+        CompressionMode::Default => {}
+        CompressionMode::Lz4 => opts.set_compression_type(DBCompressionType::Lz4),
+        CompressionMode::None => opts.set_compression_type(DBCompressionType::None),
+    }
     let db = DB::open(&opts, path).map_err(|e| format!("open rocksdb: {e}"))?;
 
-    let value = vec![0x42u8; config.value_bytes];
     let load_start = Instant::now();
-    load(&db, config, &value)?;
+    load(&db, config)?;
     let load_elapsed = load_start.elapsed();
+    eprintln!(
+        "  [probe] on-disk post-load: {:.2}GB (excludes unflushed memtable)",
+        dir_size_bytes(path) as f64 / (1024.0 * 1024.0 * 1024.0)
+    );
 
-    let run = run_phase(&db, config, workload, &value)?;
+    let run = run_phase(&db, config, workload)?;
 
     Ok(WorkloadResult {
         engine: "rocksdb",
@@ -130,6 +147,8 @@ fn run_workload(
         records: config.records,
         ops: config.ops,
         value_bytes: config.value_bytes,
+        value_fill: config.value_fill.label(),
+        compression: config.compression.label(),
         load_ops_per_sec: rate(config.records, load_elapsed),
         load_elapsed_ms: load_elapsed.as_millis(),
         run_ops_per_sec: run.ops_per_sec,
@@ -138,12 +157,13 @@ fn run_workload(
     })
 }
 
-fn load(db: &DB, config: &Config, value: &[u8]) -> Result<(), String> {
+fn load(db: &DB, config: &Config) -> Result<(), String> {
     let batch_size = config.load_batch.max(1);
     let mut batch = WriteBatch::default();
     let mut pending = 0usize;
     for index in 0..config.records {
-        batch.put(ycsb_key(index).as_bytes(), value);
+        let value = ycsb_value(config.value_fill, 0, index as u64, config.value_bytes);
+        batch.put(ycsb_key(index).as_bytes(), &value);
         pending += 1;
         if pending >= batch_size {
             db.write(std::mem::take(&mut batch))
@@ -167,9 +187,12 @@ fn run_phase(
     db: &DB,
     config: &Config,
     workload: &WorkloadSpec,
-    value: &[u8],
 ) -> Result<RunPhase, String> {
-    let update_value = vec![0x43u8; config.value_bytes];
+    let mut update_counter = 0u64;
+    let mut update_value = || {
+        update_counter += 1;
+        ycsb_value(config.value_fill, 1, update_counter, config.value_bytes)
+    };
     let mut rng = FastRng::new(RUN_SEED);
     let mut key_chooser = KeyChooser::new(workload.distribution, config.records.max(1));
     let mut insert_counter = config.records;
@@ -189,14 +212,16 @@ fn run_phase(
             }
             Operation::Update => {
                 let key = ycsb_key(key_chooser.next(&mut rng));
-                db.put(key.as_bytes(), &update_value)
+                db.put(key.as_bytes(), update_value())
                     .map_err(|e| format!("put: {e}"))?;
             }
             Operation::Insert => {
                 let key = ycsb_key(insert_counter);
+                let value =
+                    ycsb_value(config.value_fill, 0, insert_counter as u64, config.value_bytes);
                 insert_counter += 1;
                 key_chooser.set_max_key(insert_counter);
-                db.put(key.as_bytes(), value)
+                db.put(key.as_bytes(), &value)
                     .map_err(|e| format!("put: {e}"))?;
             }
             Operation::Scan => {
@@ -213,7 +238,7 @@ fn run_phase(
                 if let Some(v) = db.get(key.as_bytes()).map_err(|e| format!("get: {e}"))? {
                     checksum = checksum.wrapping_add(first_byte(&v));
                 }
-                db.put(key.as_bytes(), &update_value)
+                db.put(key.as_bytes(), update_value())
                     .map_err(|e| format!("put: {e}"))?;
             }
         }
@@ -361,6 +386,8 @@ fn write_results(config: &Config, results: &[WorkloadResult]) {
         records: config.records,
         ops: config.ops,
         value_bytes: config.value_bytes,
+        value_fill: config.value_fill.label(),
+        compression: config.compression.label(),
         scan_max: config.scan_max,
         results,
     };
@@ -384,13 +411,43 @@ fn unix_seconds() -> u64 {
 // CLI
 // ---------------------------------------------------------------------------
 
+/// RocksDB block-compression selection for the reference cells.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CompressionMode {
+    /// Stock `Options::default()` — no override.
+    Default,
+    Lz4,
+    None,
+}
+
+impl CompressionMode {
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "default" => Some(Self::Default),
+            "lz4" => Some(Self::Lz4),
+            "none" => Some(Self::None),
+            _ => None,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Lz4 => "lz4",
+            Self::None => "none",
+        }
+    }
+}
+
 struct Config {
     workloads: Vec<char>,
     records: usize,
     ops: usize,
     value_bytes: usize,
+    value_fill: ValueFill,
     scan_max: usize,
     load_batch: usize,
+    compression: CompressionMode,
 }
 
 impl Config {
@@ -400,8 +457,10 @@ impl Config {
             records: DEFAULT_RECORDS,
             ops: DEFAULT_OPS,
             value_bytes: DEFAULT_VALUE_BYTES,
+            value_fill: ValueFill::Random,
             scan_max: DEFAULT_SCAN_MAX,
             load_batch: DEFAULT_LOAD_BATCH,
+            compression: CompressionMode::Default,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -416,8 +475,18 @@ impl Config {
                 "--records" => config.records = parse_scale(&arg, args.next())?,
                 "--ops" => config.ops = parse_scale(&arg, args.next())?,
                 "--value-bytes" => config.value_bytes = parse_positive_usize(&arg, args.next())?,
+                "--value-fill" => {
+                    let text = arg_value(&arg, args.next())?;
+                    config.value_fill = ValueFill::parse(&text)
+                        .ok_or_else(|| format!("`{arg}` takes `constant` or `random`"))?;
+                }
                 "--scan-max" => config.scan_max = parse_positive_usize(&arg, args.next())?,
                 "--load-batch" => config.load_batch = parse_positive_usize(&arg, args.next())?,
+                "--compression" => {
+                    let text = arg_value(&arg, args.next())?;
+                    config.compression = CompressionMode::parse(&text)
+                        .ok_or_else(|| format!("`{arg}` takes `default`, `lz4`, or `none`"))?;
+                }
                 "-q" | "--quick" => {
                     config.records = QUICK_RECORDS;
                     config.ops = QUICK_OPS;
@@ -472,7 +541,8 @@ fn parse_scale(flag: &str, value: Option<String>) -> Result<usize, String> {
 
 fn usage() -> String {
     "usage: rocksdb-ycsb [--workload a,b,c,d,e,f] [--records N] [--ops N] \
-     [--value-bytes N] [--scan-max N] [--load-batch N] [-q]\n  \
+     [--value-bytes N] [--value-fill constant|random] [--scan-max N] [--load-batch N] \
+     [--compression default|lz4|none] [-q]\n  \
      records/ops accept k/m suffixes (decimal). RocksDB runs with default options."
         .to_owned()
 }
@@ -487,6 +557,8 @@ struct ResultsFile<'a> {
     records: usize,
     ops: usize,
     value_bytes: usize,
+    value_fill: &'static str,
+    compression: &'static str,
     scan_max: usize,
     results: &'a [WorkloadResult],
 }
@@ -500,6 +572,8 @@ struct WorkloadResult {
     records: usize,
     ops: usize,
     value_bytes: usize,
+    value_fill: &'static str,
+    compression: &'static str,
     load_ops_per_sec: f64,
     load_elapsed_ms: u128,
     run_ops_per_sec: f64,

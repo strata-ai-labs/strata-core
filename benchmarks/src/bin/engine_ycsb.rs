@@ -35,7 +35,10 @@ use strata_engine_next::{
 #[path = "../../benches/ycsb_workloads.rs"]
 mod ycsb_workloads;
 
-use ycsb_workloads::{workload_by_label, ycsb_key, FastRng, KeyChooser, Operation, WorkloadSpec};
+use ycsb_workloads::{
+    dir_size_bytes, workload_by_label, ycsb_key, ycsb_value, FastRng, KeyChooser, Operation,
+    ValueFill, WorkloadSpec,
+};
 
 const DEFAULT_RECORDS: usize = 100_000;
 const DEFAULT_OPS: usize = 100_000;
@@ -97,10 +100,11 @@ fn run(config: Config) -> EngineResult<()> {
     std::fs::create_dir_all(&root).expect("benchmark directory");
 
     println!(
-        "engine-ycsb records={} ops={} value={}B scan_max={} budget={} modes={} workloads={}",
+        "engine-ycsb records={} ops={} value={}B fill={} scan_max={} budget={} modes={} workloads={}",
         config.records,
         config.ops,
         config.value_bytes,
+        config.value_fill.label(),
         config.scan_max,
         format_bytes(config.memory_budget_bytes),
         config
@@ -154,10 +158,15 @@ fn run_workload(
     let mut database = open_database(config, mode, path)?;
 
     // Load phase: insert `records` keys (user0..user{records-1}).
-    let value = vec![0x42u8; config.value_bytes];
     let load_start = Instant::now();
-    load(&mut database, config, &value)?;
+    load(&mut database, config)?;
     let load_elapsed = load_start.elapsed();
+    if mode == BenchMode::Durable {
+        eprintln!(
+            "  [probe] on-disk post-load: {}",
+            format_bytes(dir_size_bytes(path))
+        );
+    }
 
     // Optional settle window: let background maintenance digest the load's
     // L0/compaction backlog before the run phase, so run-phase numbers measure
@@ -166,6 +175,12 @@ fn run_workload(
     if config.settle_secs > 0 {
         eprintln!("  [settle] waiting {}s for background maintenance", config.settle_secs);
         std::thread::sleep(std::time::Duration::from_secs(config.settle_secs));
+        if mode == BenchMode::Durable {
+            eprintln!(
+                "  [probe] on-disk post-settle: {}",
+                format_bytes(dir_size_bytes(path))
+            );
+        }
     }
 
     // Run phase: weighted operation mix over the chosen request distribution.
@@ -173,7 +188,7 @@ fn run_workload(
         print_jemalloc_split("post-load");
         strata_storage_next::perf_trace::reset();
     }
-    let run = run_phase(&mut database, config, workload, &value)?;
+    let run = run_phase(&mut database, config, workload)?;
     // Storage-side attribution of the run phase (requires the perf-trace
     // feature, on for benchmarks): separates commit-stage work from runtime-
     // lock wait and from background maintenance lock holds — the numbers that
@@ -345,6 +360,7 @@ fn run_workload(
         records: config.records,
         ops: config.ops,
         value_bytes: config.value_bytes,
+        value_fill: config.value_fill.label(),
         memory_budget_bytes: config.memory_budget_bytes,
         load_ops_per_sec: rate(config.records, load_elapsed),
         load_elapsed_ms: load_elapsed.as_millis(),
@@ -371,16 +387,19 @@ fn open_database(config: &Config, mode: BenchMode, path: &Path) -> EngineResult<
     Ok(outcome.into_database())
 }
 
-fn load(database: &mut Database, config: &Config, value: &[u8]) -> EngineResult<()> {
+fn load(database: &mut Database, config: &Config) -> EngineResult<()> {
     let mut service = database.kv(default_branch(), default_space())?;
+    let value = |index: usize| {
+        KvValue::new(ycsb_value(config.value_fill, 0, index as u64, config.value_bytes))
+    };
     if config.load_batch <= 1 {
         for index in 0..config.records {
-            service.put(make_key(index), KvValue::new(value.to_vec()))?;
+            service.put(make_key(index), value(index))?;
         }
     } else {
         let mut batch = Vec::with_capacity(config.load_batch);
         for index in 0..config.records {
-            batch.push((make_key(index), KvValue::new(value.to_vec())));
+            batch.push((make_key(index), value(index)));
             if batch.len() >= config.load_batch {
                 service.put_batch(std::mem::take(&mut batch))?;
             }
@@ -402,12 +421,15 @@ fn run_phase(
     database: &mut Database,
     config: &Config,
     workload: &WorkloadSpec,
-    value: &[u8],
 ) -> EngineResult<RunPhase> {
-    let update_value = vec![0x43u8; config.value_bytes];
     let mut rng = FastRng::new(RUN_SEED);
     let mut key_chooser = KeyChooser::new(workload.distribution, config.records.max(1));
     let mut insert_counter = config.records;
+    let mut update_counter = 0u64;
+    let mut update_value = || {
+        update_counter += 1;
+        KvValue::new(ycsb_value(config.value_fill, 1, update_counter, config.value_bytes))
+    };
     let mut stats = OpStatsByType::new();
 
     let mut service = database.kv(default_branch(), default_space())?;
@@ -422,10 +444,16 @@ fn run_phase(
             }
             Operation::Update => {
                 let key = make_key(key_chooser.next(&mut rng));
-                service.put(key, KvValue::new(update_value.clone()))?;
+                service.put(key, update_value())?;
             }
             Operation::Insert => {
-                service.put(make_key(insert_counter), KvValue::new(value.to_vec()))?;
+                let value = KvValue::new(ycsb_value(
+                    config.value_fill,
+                    0,
+                    insert_counter as u64,
+                    config.value_bytes,
+                ));
+                service.put(make_key(insert_counter), value)?;
                 insert_counter += 1;
                 key_chooser.set_max_key(insert_counter);
             }
@@ -437,7 +465,7 @@ fn run_phase(
             Operation::ReadModifyWrite => {
                 let key = make_key(key_chooser.next(&mut rng));
                 let _ = service.get(&key)?;
-                service.put(key, KvValue::new(update_value.clone()))?;
+                service.put(key, update_value())?;
             }
         }
         stats.record(op, op_start.elapsed().as_nanos() as u64);
@@ -617,6 +645,7 @@ fn write_results(config: &Config, results: &[WorkloadResult]) {
         records: config.records,
         ops: config.ops,
         value_bytes: config.value_bytes,
+        value_fill: config.value_fill.label(),
         scan_max: config.scan_max,
         memory_budget_bytes: config.memory_budget_bytes,
         results,
@@ -677,6 +706,7 @@ struct Config {
     records: usize,
     ops: usize,
     value_bytes: usize,
+    value_fill: ValueFill,
     scan_max: usize,
     load_batch: usize,
     memory_budget_bytes: u64,
@@ -694,6 +724,7 @@ impl Config {
             records: DEFAULT_RECORDS,
             ops: DEFAULT_OPS,
             value_bytes: DEFAULT_VALUE_BYTES,
+            value_fill: ValueFill::Random,
             scan_max: DEFAULT_SCAN_MAX,
             load_batch: DEFAULT_LOAD_BATCH,
             memory_budget_bytes: DEFAULT_MEMORY_BUDGET_BYTES,
@@ -717,6 +748,11 @@ impl Config {
                 "--records" => config.records = parse_scale(&arg, args.next())?,
                 "--ops" => config.ops = parse_scale(&arg, args.next())?,
                 "--value-bytes" => config.value_bytes = parse_positive_usize(&arg, args.next())?,
+                "--value-fill" => {
+                    let text = arg_value(&arg, args.next())?;
+                    config.value_fill = ValueFill::parse(&text)
+                        .ok_or_else(|| format!("`{arg}` takes `constant` or `random`"))?;
+                }
                 "--scan-max" => config.scan_max = parse_positive_usize(&arg, args.next())?,
                 "--load-batch" => config.load_batch = parse_positive_usize(&arg, args.next())?,
                 "--memory-budget" => config.memory_budget_bytes = parse_size(&arg, args.next())?,
@@ -820,7 +856,8 @@ fn parse_size(flag: &str, value: Option<String>) -> Result<u64, String> {
 
 fn usage() -> String {
     "usage: engine-ycsb [--workload a,b,c,d,e,f] [--mode cache|durable|both] \
-     [--records N] [--ops N] [--value-bytes N] [--scan-max N] [--load-batch N] \
+     [--records N] [--ops N] [--value-bytes N] [--value-fill constant|random] \
+     [--scan-max N] [--load-batch N] \
      [--memory-budget SIZE] [--perf-breakdown] [-q]\n  \
      records/ops accept k/m suffixes (decimal); SIZE accepts k/m/g (binary)."
         .to_owned()
@@ -836,6 +873,7 @@ struct ResultsFile<'a> {
     records: usize,
     ops: usize,
     value_bytes: usize,
+    value_fill: &'static str,
     scan_max: usize,
     memory_budget_bytes: u64,
     results: &'a [WorkloadResult],
@@ -850,6 +888,7 @@ struct WorkloadResult {
     records: usize,
     ops: usize,
     value_bytes: usize,
+    value_fill: &'static str,
     memory_budget_bytes: u64,
     load_ops_per_sec: f64,
     load_elapsed_ms: u128,
