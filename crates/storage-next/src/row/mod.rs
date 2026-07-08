@@ -177,6 +177,32 @@ impl StorageRow {
         self.expires_at
     }
 
+    /// B4: destructure the row for the api's move-based point-read exit —
+    /// (storage space id, moved user-key bytes, moved value bytes, version,
+    /// timestamp, `expires_at`, tombstone). The physical key's branch/space
+    /// context is dropped: the point-read caller supplied it.
+    pub(crate) fn into_read_parts(
+        self,
+    ) -> (
+        StorageSpaceId,
+        Vec<u8>,
+        Vec<u8>,
+        CommitVersion,
+        Timestamp,
+        Timestamp,
+        bool,
+    ) {
+        (
+            self.physical_key.storage_space_id,
+            self.physical_key.user_key,
+            self.value,
+            self.commit_version,
+            self.commit_timestamp,
+            self.expires_at,
+            self.is_tombstone,
+        )
+    }
+
     pub(crate) fn value(&self) -> &[u8] {
         &self.value
     }

@@ -105,7 +105,7 @@ impl<'a> JsonService<'a> {
         let address = self.row_address(&record, &id);
         if self
             .persistence
-            .read_row(&address, ReadSelector::Latest)?
+            .read_row(address.clone(), ReadSelector::Latest)?
             .is_some_and(|row| !row.is_tombstone())
         {
             return Err(EngineError::conflict(
@@ -170,7 +170,7 @@ impl<'a> JsonService<'a> {
     ) -> EngineResult<Option<JsonVersionedValue>> {
         let record = self.branch_record()?;
         let address = self.row_address(&record, id);
-        let Some(row) = self.persistence.read_row(&address, ReadSelector::Latest)? else {
+        let Some(row) = self.persistence.read_row(address, ReadSelector::Latest)? else {
             return Ok(None);
         };
         Self::versioned_value_from_row(id, path, &row)
@@ -187,7 +187,7 @@ impl<'a> JsonService<'a> {
         let address = self.row_address(&record, id);
         let Some(row) = self
             .persistence
-            .read_row(&address, ReadSelector::AtVersion(version))?
+            .read_row(address, ReadSelector::AtVersion(version))?
         else {
             return Ok(None);
         };
@@ -205,7 +205,7 @@ impl<'a> JsonService<'a> {
         let address = self.row_address(&record, id);
         let Some(row) = self
             .persistence
-            .read_row(&address, ReadSelector::AtTimestamp(timestamp))?
+            .read_row(address, ReadSelector::AtTimestamp(timestamp))?
         else {
             return Ok(None);
         };
@@ -234,7 +234,7 @@ impl<'a> JsonService<'a> {
         let mut results = Vec::with_capacity(entries.len());
         for entry in entries {
             let address = self.row_address(&record, entry.id());
-            let result = match self.persistence.read_row(&address, ReadSelector::Latest)? {
+            let result = match self.persistence.read_row(address, ReadSelector::Latest)? {
                 Some(row) => Self::versioned_value_from_row(entry.id(), entry.path(), &row)?,
                 None => None,
             };
@@ -249,7 +249,7 @@ impl<'a> JsonService<'a> {
         let address = self.row_address(&record, id);
         Ok(self
             .persistence
-            .read_row(&address, ReadSelector::Latest)?
+            .read_row(address, ReadSelector::Latest)?
             .is_some_and(|row| !row.is_tombstone()))
     }
 
@@ -264,7 +264,10 @@ impl<'a> JsonService<'a> {
         }
         let record = self.branch_record()?;
         let address = self.row_address(&record, &id);
-        let Some(row) = self.persistence.read_row(&address, ReadSelector::Latest)? else {
+        let Some(row) = self
+            .persistence
+            .read_row(address.clone(), ReadSelector::Latest)?
+        else {
             return Ok(JsonDeleteOutcome::new(false, None));
         };
         if row.is_tombstone() {
@@ -376,7 +379,9 @@ impl<'a> JsonService<'a> {
                 ));
             }
             let address = self.row_address(&record, &id);
-            let maybe_row = self.persistence.read_row(&address, ReadSelector::Latest)?;
+            let maybe_row = self
+                .persistence
+                .read_row(address.clone(), ReadSelector::Latest)?;
             let exists = maybe_row.as_ref().is_some_and(|row| !row.is_tombstone());
             if let Some(row) = maybe_row.filter(|row| !row.is_tombstone()) {
                 let document = Self::document_from_row(&id, &row)?;
@@ -419,7 +424,7 @@ impl<'a> JsonService<'a> {
         for entry in &entries {
             if !states.contains_key(entry.id()) {
                 let address = self.row_address(&record, entry.id());
-                let state = match self.persistence.read_row(&address, ReadSelector::Latest)? {
+                let state = match self.persistence.read_row(address, ReadSelector::Latest)? {
                     Some(row) if !row.is_tombstone() => {
                         let document = Self::document_from_row(entry.id(), &row)?;
                         BatchDeleteState::existing(document)
@@ -548,7 +553,7 @@ impl<'a> JsonService<'a> {
         let meta_address = self.index_meta_address(&record, &name);
         if self
             .persistence
-            .read_row(&meta_address, ReadSelector::Latest)?
+            .read_row(meta_address.clone(), ReadSelector::Latest)?
             .is_some_and(|row| !row.is_tombstone())
         {
             return Err(EngineError::conflict(
@@ -598,7 +603,7 @@ impl<'a> JsonService<'a> {
         let meta_address = self.index_meta_address(&record, name);
         let exists = self
             .persistence
-            .read_row(&meta_address, ReadSelector::Latest)?
+            .read_row(meta_address.clone(), ReadSelector::Latest)?
             .is_some_and(|row| !row.is_tombstone());
         if !exists {
             return Ok(false);
@@ -666,7 +671,7 @@ impl<'a> JsonService<'a> {
         create_if_missing: bool,
     ) -> EngineResult<(JsonDocument, Option<JsonValue>)> {
         let address = self.row_address(record, &id);
-        match self.persistence.read_row(&address, ReadSelector::Latest)? {
+        match self.persistence.read_row(address, ReadSelector::Latest)? {
             Some(row) if !row.is_tombstone() => {
                 let mut document = Self::document_from_row(&id, &row)?;
                 let old_value = document.value().clone();

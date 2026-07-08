@@ -95,9 +95,10 @@ use background::{
 
 use data::{
     cap_bound_at_visible, flush_request_for_boundary, map_api_commit_batch, map_commit_summary,
-    map_immutable_sources, map_scan_rows, map_storage_space, physical_key, read_row_from_storage,
-    read_row_from_storage_if_visible, require_version_retained, resolve_read_bound,
-    timeline_view_or_index, visible_tombstone_at_bound,
+    map_immutable_sources, map_scan_rows, map_storage_space, physical_key,
+    point_read_row_from_storage_owned, read_row_from_storage, require_version_retained,
+    resolve_read_bound, row_is_expired_at_selected_frontier, timeline_view_or_index,
+    visible_tombstone_at_bound,
 };
 use diagnostics::{
     branch_for_diagnostics_scope, branch_generation_or_default, current_visible,
@@ -1161,16 +1162,25 @@ impl<'a> StorageRuntime<'a> {
                     BranchReadBound::at_version(CommitVersion::new(visible)),
                 )
                 .map_err(branch_error)?;
+            // B4: the branch row is owned — move its key and value into the
+            // public row instead of copying at the boundary.
             let row = row
-                .as_ref()
-                .map(|row| read_row_from_storage(row.row()))
+                .map(|row| point_read_row_from_storage_owned(row.into_storage_row()))
                 .transpose()?;
             return Ok(PointReadOutcome::new(row));
         }
         let resolved = resolve_read_bound(&view, request.bound())?;
         let capped = cap_bound_at_visible(resolved.branch_bound, visible);
         let row = match view.read_point(&key, capped).map_err(branch_error)? {
-            Some(row) => read_row_from_storage_if_visible(row.row(), resolved.selected_timestamp)?,
+            Some(row) => {
+                // Expiry is decided on the reference (scalar reads), then the
+                // surviving row moves out.
+                if row_is_expired_at_selected_frontier(row.row(), resolved.selected_timestamp) {
+                    None
+                } else {
+                    Some(point_read_row_from_storage_owned(row.into_storage_row())?)
+                }
+            }
             None => visible_tombstone_at_bound(&view, &key, capped)?,
         };
         Ok(PointReadOutcome::new(row))

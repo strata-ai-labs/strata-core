@@ -385,7 +385,7 @@ impl<'a> EventService<'a> {
     ) -> EngineResult<Option<EventVersionedRecord>> {
         let record = self.branch_record()?;
         let address = self.event_address(&record, sequence);
-        let Some(row) = self.persistence.read_row(&address, selector)? else {
+        let Some(row) = self.persistence.read_row(address, selector)? else {
             return Ok(None);
         };
         // A tombstoned event row (e.g. from a forced space delete) is an absence,
@@ -498,7 +498,7 @@ impl<'a> EventService<'a> {
         selector: ReadSelector,
     ) -> EngineResult<EventLogMetadata> {
         let address = self.metadata_address(record);
-        let Some(row) = self.persistence.read_row(&address, selector)? else {
+        let Some(row) = self.persistence.read_row(address, selector)? else {
             return Ok(EventLogMetadata::default());
         };
         if row.is_tombstone() {

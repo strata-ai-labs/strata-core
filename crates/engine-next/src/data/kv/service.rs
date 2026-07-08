@@ -69,14 +69,14 @@ impl<'a> KvService<'a> {
 
     /// Reads the latest visible KV value.
     pub fn get(&mut self, key: &KvKey) -> EngineResult<Option<KvValue>> {
-        Ok(self.get_versioned(key)?.map(|value| value.value().clone()))
+        Ok(self.get_versioned(key)?.map(KvVersionedValue::into_value))
     }
 
     /// Reads the latest visible KV value with commit metadata.
     pub fn get_versioned(&mut self, key: &KvKey) -> EngineResult<Option<KvVersionedValue>> {
-        let record = self.branch_record()?;
-        let address = self.row_address(&record, key);
-        let Some(row) = self.persistence.read_row(&address, ReadSelector::Latest)? else {
+        let branch_id = self.read_branch_id()?;
+        let address = self.row_address_for_branch(branch_id, key);
+        let Some(row) = self.persistence.read_row(address, ReadSelector::Latest)? else {
             return Ok(None);
         };
         versioned_value_from_row(&row)
@@ -92,7 +92,7 @@ impl<'a> KvService<'a> {
         let address = self.row_address(&record, key);
         let Some(row) = self
             .persistence
-            .read_row(&address, ReadSelector::AtVersion(version))?
+            .read_row(address, ReadSelector::AtVersion(version))?
         else {
             return Ok(None);
         };
@@ -103,7 +103,7 @@ impl<'a> KvService<'a> {
     pub fn get_at(&mut self, key: &KvKey, timestamp: Timestamp) -> EngineResult<Option<KvValue>> {
         Ok(self
             .get_versioned_at(key, timestamp)?
-            .map(|value| value.value().clone()))
+            .map(KvVersionedValue::into_value))
     }
 
     /// Reads a KV value at a commit timestamp with commit metadata.
@@ -116,7 +116,7 @@ impl<'a> KvService<'a> {
         let address = self.row_address(&record, key);
         let Some(row) = self
             .persistence
-            .read_row(&address, ReadSelector::AtTimestamp(timestamp))?
+            .read_row(address, ReadSelector::AtTimestamp(timestamp))?
         else {
             return Ok(None);
         };
@@ -142,7 +142,7 @@ impl<'a> KvService<'a> {
         let mut results = Vec::with_capacity(keys.len());
         for key in keys {
             let address = self.row_address(&record, key);
-            let result = match self.persistence.read_row(&address, ReadSelector::Latest)? {
+            let result = match self.persistence.read_row(address, ReadSelector::Latest)? {
                 Some(row) => versioned_value_from_row(&row)?,
                 None => None,
             };
@@ -164,7 +164,7 @@ impl<'a> KvService<'a> {
             let address = self.row_address(&record, key);
             let exists = self
                 .persistence
-                .read_row(&address, ReadSelector::Latest)?
+                .read_row(address, ReadSelector::Latest)?
                 .is_some_and(|row| !row.is_tombstone());
             results.push(exists);
         }
@@ -354,7 +354,7 @@ impl<'a> KvService<'a> {
             let address = RowAddress::new(record.storage_branch_id(), RowClass::Kv, encoded_key);
             let exists = self
                 .persistence
-                .read_row(&address, ReadSelector::Latest)?
+                .read_row(address.clone(), ReadSelector::Latest)?
                 .is_some_and(|row| !row.is_tombstone());
             if exists {
                 mutations.push(RowMutation::delete(address));
@@ -372,6 +372,32 @@ impl<'a> KvService<'a> {
         }
         let commit = self.commit_batch(&record, mutations)?;
         Ok(KvBatchDeleteOutcome::new(deleted, Some(commit)))
+    }
+
+    /// B4: the read paths need only the storage branch id — a `Copy` — so
+    /// they skip the per-read record clone (a `BranchName` String heap
+    /// alloc). The catalog lookup itself stays: it is the staleness check
+    /// (no control-plane epoch exists). Write paths keep [`branch_record`]
+    /// (commits need the generation and full record).
+    fn read_branch_id(&self) -> EngineResult<strata_core_next::BranchId> {
+        self.control.require_healthy()?;
+        self.control
+            .lookup_branch(&self.branch)
+            .map(BranchCatalogRecord::storage_branch_id)
+            .ok_or_else(|| {
+                EngineError::not_found(
+                    "not_found.engine.branch",
+                    format!("branch `{}` does not exist", self.branch),
+                )
+            })
+    }
+
+    fn row_address_for_branch(
+        &self,
+        branch_id: strata_core_next::BranchId,
+        key: &KvKey,
+    ) -> RowAddress {
+        RowAddress::new(branch_id, RowClass::Kv, encode_kv_key(&self.space, key))
     }
 
     fn branch_record(&self) -> EngineResult<BranchCatalogRecord> {
