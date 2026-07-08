@@ -553,6 +553,20 @@ size (W1.1), parallelism (W1.2a), and memory (W1.2c) are all eliminated as cause
 the 40–70s update max. Per the W6 rule, next action is a live stack sample of a stall
 window — no scheduling/memory slices until the stacks name the holder.
 
+## Stall root cause NAMED by stack sample (2026-07-07)
+
+gdb-sampled YCSB A durable 10M reproduced the stall under observation (max 45.9s =
+one blocked commit; `block_wait_ms=46301`). 17 consecutive samples: the writer waits
+in `execute_commit → wait_for_progress` (L0 wall) while at most 2 of 4 workers run
+giant mid-level pass builds and the rest idle. L0→L1 relief is excluded by the
+dispatch conflict rule `same branch && level.abs_diff <= 1` (an in-flight L1→L2
+conflicts with L0→L1) — and the L1→L2 passes are monsters because L1 tables are built
+with unbounded L2 (grandparent) overlap. Full chain and fix design in
+`v2-w1-compaction-engine-plan.md` § stack sample. **Next slice: W1.3a
+grandparent-overlap-bounded output cutting** (bounds every future mid-level pass,
+collapses the conflict window from ~50s to seconds). Not lanes, not locks (fg lock
+wait 92ms — BS5.5 holds), not memory (W1.2c gauges stable this run too).
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

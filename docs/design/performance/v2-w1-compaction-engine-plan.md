@@ -196,6 +196,50 @@ now dead; per the W6 rule the ONLY next step is a live stack sample of a stall w
 (what every maintenance worker and the blocked writer are doing during a multi-second
 max) — no further scheduling or memory changes until that lands.
 
+## Stall-window stack sample (2026-07-07): ROOT CAUSE NAMED
+
+Method: YCSB A durable 10M run under gdb (ptrace_scope=1 forces gdb-as-parent),
+SIGINT all-thread backtraces every 4s through the run phase; 32 samples; the run
+reproduced the stall (update max 45.9s; probe `block_wait_ms=46301` over ONE episode
+— the whole max is a single blocked commit). Stack evidence, samples S9–S25 (~64s
+window covering the 46s stall):
+
+1. **Blocked writer** (all 17 samples, identical stack): `KvService::put →
+   StorageRuntime::execute_commit → wait_for_progress_until →
+   ThreadedMaintenanceExecutor::wait_for_progress` — the L0-blocking admission wall,
+   waiting for L0→L1 relief.
+2. **Workers are NOT saturated**: rewrite lane cap is 4 (`DEFAULT_COMPACTION_LANES`),
+   4 background workers exist, and at most TWO ran compaction at any sample (S13:
+   T3+T4 both inside `prepare_durable_compaction_publication`); T2 idle in
+   `worker_loop` for the entire window. Capacity was available the whole time.
+3. **What the busy workers ran**: continuous mid-level pass builds — read →
+   `decode_physical_key` → merge → `ImmutableTableStreamingEncoder` → crc32 → 62.7MB
+   single `write_all` → fsync per output table (streaming publish per W1.2c working
+   as designed) — one pass grinding for ~60s of samples.
+4. **Why L0→L1 relief could not run**: dispatch skips candidates that conflict with
+   an in-flight rewrite via `rewrite_tasks_conflict` (maintenance.rs): same branch
+   AND `level.abs_diff <= 1`. Compaction task scope carries the SOURCE level, so an
+   in-flight L1→L2 (level 1) excludes L0→L1 (level 0). Publish-time candidate
+   revalidation would reject it anyway — the conflict is real at level granularity.
+
+**Root cause chain**: L0→L1 outputs build L1 tables with UNBOUNDED next-level
+(grandparent) overlap — a single full-keyspan L1 table's L1→L2 pass must rewrite its
+entire L2 overlap (multi-GB, W1.1c's one-table-input monsters). While any such pass
+is in flight, the level±1 conflict rule (correctly) excludes L0→L1, so the L0 wall's
+relief waits out the monster: 40–70s. Pass size bounding (W1.1a) never applied to the
+monsters, subcompactions (W1.2a) split the build but not the conflict window, and
+memory (W1.2c) was a co-symptom, not the cause.
+
+**Fix = W1.3a, grandparent-overlap-bounded output cutting** (RocksDB's
+`max_compaction_bytes` mechanism, compaction_job.cc `ShouldStopBefore`): when an
+L(n-1)→L(n) pass emits output tables, cut table boundaries so each output overlaps at
+most B bytes of L(n+1). Every future mid-level pass then has bounded inputs
+(~table + B), the conflict window collapses from ~50s to seconds, and the L0 wall's
+relief latency becomes bounded. The cut machinery exists (`finish_current` already
+cuts on size); the compactor needs grandparent boundary keys from the planner.
+W1.2b (conflict granularity below level±1) is NOT the right first move: with
+full-keyspan L1 tables, table-set conflicts would still collide — shape first.
+
 ## Sequencing (revised)
 
 W1.1a ✅ -> W1.1b ✅ -> W1.1c ❌ -> W1.2a ✅(split extended; no-win; default stays 1) ->
