@@ -555,3 +555,82 @@ fn visible_partial_append_in_non_latest_segment_is_corruption() {
         other => panic!("expected WAL format error, got {other:?}"),
     }
 }
+
+/// W3.3a: a clean flush failure (no bytes visible) is durability-uncertain
+/// (`Backend { Flush }`), keeps the staged bytes, and a retry after the fault
+/// clears drains them — the barrier then covers everything.
+#[test]
+fn buffered_flush_failure_is_durability_uncertain_and_retry_drains() {
+    let backend = FaultWindowBackend::new();
+    let segment_one = ObjectLayout::wal_segment(1).expect("segment one");
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default().with_append_buffer_bytes(u64::from(u16::MAX)),
+    )
+    .expect("open WAL");
+    let first = record(1, b"buffered then stuck".to_vec());
+    let second = record(2, b"still buffered".to_vec());
+    service.append(&first).expect("buffered append");
+    service.append(&second).expect("buffered append");
+    assert_eq!(service.dirty_records(), 2);
+
+    backend.append_visible_prefix_then_error(0, BackendErrorKind::Interrupted);
+    let error = service
+        .force_durable()
+        .expect_err("flush behind the barrier should surface the fault");
+    assert!(
+        error.is_durability_uncertain_append_failure(),
+        "flush failure must be durability-uncertain, got {error:?}"
+    );
+    assert_backend_error(
+        error,
+        WalOperation::Flush,
+        &segment_one,
+        BackendErrorKind::Interrupted,
+    );
+    // The staged bytes belong to accepted records — never dropped.
+    assert_eq!(service.dirty_records(), 2);
+
+    service
+        .force_durable()
+        .expect("retry drains the staged bytes");
+    assert_eq!(service.dirty_records(), 0);
+    let read = service.read_all().expect("read after retry");
+    assert_eq!(read.records().len(), 2);
+    assert!(read.truncation().is_none());
+}
+
+/// W3.3a: a PARTIAL flush write leaves the backend ahead of the physical
+/// model; the retry's handle re-open reconciliation must reject with the
+/// durability-uncertain offset error rather than blindly re-appending (which
+/// would duplicate the visible prefix).
+#[test]
+fn buffered_flush_partial_write_rejects_blind_retry() {
+    let backend = FaultWindowBackend::new();
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default().with_append_buffer_bytes(u64::from(u16::MAX)),
+    )
+    .expect("open WAL");
+    let first = record(1, b"partially flushed".to_vec());
+    service.append(&first).expect("buffered append");
+
+    backend.append_visible_prefix_then_error(5, BackendErrorKind::Interrupted);
+    service
+        .force_durable()
+        .expect_err("partial flush should surface the fault");
+
+    let error = service
+        .force_durable()
+        .expect_err("retry must detect the partial prefix, not re-append blindly");
+    assert!(
+        matches!(error, WalServiceError::UnexpectedAppendOffset { .. }),
+        "expected offset reconciliation failure, got {error:?}"
+    );
+}

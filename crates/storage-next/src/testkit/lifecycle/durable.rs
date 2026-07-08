@@ -141,7 +141,8 @@ fn check_durable_rejections(
         CommitBranchGeneration::new(1).map_err(testkit_error)?,
         BranchRuntimeConfig::default(),
         CommitRuntimeConfig::default(),
-        WalServiceConfig::default(),
+        WalServiceConfig::default()
+            .with_append_buffer_bytes(crate::service::DEFAULT_WAL_APPEND_BUFFER_BYTES),
     );
     ensure(
         matches!(rejected, Err(LifecycleError::InvalidOpenPlan { .. })),
@@ -340,7 +341,8 @@ fn request(
         CommitBranchGeneration::new(1).map_err(testkit_error)?,
         BranchRuntimeConfig::default(),
         CommitRuntimeConfig::default(),
-        WalServiceConfig::default(),
+        WalServiceConfig::default()
+            .with_append_buffer_bytes(crate::service::DEFAULT_WAL_APPEND_BUFFER_BYTES),
     )
     .map_err(testkit_error)
 }

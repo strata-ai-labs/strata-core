@@ -1,0 +1,240 @@
+//! W3.3a differential oracle: a coalescing (buffered) WAL service must produce
+//! byte-identical durable segment content and identical growth facts to the
+//! direct (unbuffered) service at every durability boundary — the buffer may
+//! only change WHEN bytes reach the backend, never WHAT they are.
+
+use super::support::{database_id, record, StoredWalBackend};
+use super::{WalService, WalServiceConfig};
+use crate::backend::Backend;
+use crate::config::mode::DurabilityPolicy;
+use crate::layout::ObjectLayout;
+
+const SEGMENT_SIZE: u64 = 16 * 1024;
+
+fn open_service(
+    backend: &StoredWalBackend,
+    policy: DurabilityPolicy,
+    append_buffer_bytes: u64,
+    segment_size: u64,
+) -> WalService<'_> {
+    WalService::open(
+        backend,
+        database_id(),
+        1,
+        policy,
+        WalServiceConfig::new(segment_size).with_append_buffer_bytes(append_buffer_bytes),
+    )
+    .expect("open WAL service")
+}
+
+/// Every WAL segment object (1..=active) must hold identical bytes in both
+/// backends, and the services must agree on every growth-visible fact.
+fn assert_converged(
+    direct_backend: &StoredWalBackend,
+    buffered_backend: &StoredWalBackend,
+    direct: &WalService<'_>,
+    buffered: &WalService<'_>,
+) {
+    assert_eq!(direct.active_segment_id(), buffered.active_segment_id());
+    assert_eq!(direct.dirty_bytes(), buffered.dirty_bytes());
+    assert_eq!(direct.dirty_records(), buffered.dirty_records());
+    for segment_id in 1..=direct.active_segment_id() {
+        let object = ObjectLayout::wal_segment(segment_id).expect("segment object");
+        let direct_bytes = direct_backend.read_object(&object).expect("direct bytes");
+        let buffered_bytes = buffered_backend
+            .read_object(&object)
+            .expect("buffered bytes");
+        assert_eq!(
+            direct_bytes, buffered_bytes,
+            "segment {segment_id} bytes diverged"
+        );
+    }
+}
+
+/// Deterministic pseudo-random sequence (no external entropy in tests).
+struct Lcg(u64);
+
+impl Lcg {
+    fn next(&mut self) -> u64 {
+        self.0 = self
+            .0
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        self.0 >> 33
+    }
+}
+
+#[test]
+fn buffered_standard_appends_converge_at_durability_barrier() {
+    let direct_backend = StoredWalBackend::default();
+    let buffered_backend = StoredWalBackend::default();
+    let mut direct = open_service(&direct_backend, DurabilityPolicy::Standard, 0, SEGMENT_SIZE);
+    let mut buffered = open_service(
+        &buffered_backend,
+        DurabilityPolicy::Standard,
+        u64::from(u16::MAX),
+        SEGMENT_SIZE,
+    );
+
+    for version in 1..=8u64 {
+        let entry = record(version, format!("standard payload {version}").into_bytes());
+        let direct_append = direct.append(&entry).expect("direct append");
+        let buffered_append = buffered.append(&entry).expect("buffered append");
+        // The logical facts must agree even while the bytes are staged.
+        assert_eq!(direct_append.start_offset(), buffered_append.start_offset());
+        assert_eq!(
+            direct_append.bytes_written(),
+            buffered_append.bytes_written()
+        );
+        assert_eq!(direct.dirty_bytes(), buffered.dirty_bytes());
+    }
+    // Below the threshold nothing has reached the backend yet — that is the
+    // point of coalescing.
+    let object = ObjectLayout::wal_segment(1).expect("segment object");
+    let direct_len = direct_backend.read_object(&object).expect("direct").len();
+    let buffered_len = buffered_backend
+        .read_object(&object)
+        .expect("buffered")
+        .len();
+    assert!(buffered_len < direct_len, "appends were not coalesced");
+
+    direct.force_durable().expect("direct barrier");
+    buffered.force_durable().expect("buffered barrier");
+    assert_converged(&direct_backend, &buffered_backend, &direct, &buffered);
+}
+
+#[test]
+fn buffered_threshold_flush_matches_direct_bytes() {
+    let direct_backend = StoredWalBackend::default();
+    let buffered_backend = StoredWalBackend::default();
+    let mut direct = open_service(&direct_backend, DurabilityPolicy::Standard, 0, SEGMENT_SIZE);
+    // A tiny threshold forces mid-stream flushes, including a frame larger
+    // than the buffer itself (staged then flushed immediately).
+    let mut buffered = open_service(
+        &buffered_backend,
+        DurabilityPolicy::Standard,
+        256,
+        SEGMENT_SIZE,
+    );
+
+    for version in 1..=12u64 {
+        let payload_len = usize::try_from(96 * version % 700 + 16).expect("payload length");
+        let payload = vec![u8::try_from(version).expect("small version"); payload_len];
+        let entry = record(version, payload);
+        direct.append(&entry).expect("direct append");
+        buffered.append(&entry).expect("buffered append");
+    }
+    direct.force_durable().expect("direct barrier");
+    buffered.force_durable().expect("buffered barrier");
+    assert_converged(&direct_backend, &buffered_backend, &direct, &buffered);
+}
+
+#[test]
+fn buffered_always_policy_is_write_identical_per_append() {
+    let direct_backend = StoredWalBackend::default();
+    let buffered_backend = StoredWalBackend::default();
+    let mut direct = open_service(&direct_backend, DurabilityPolicy::Always, 0, SEGMENT_SIZE);
+    let mut buffered = open_service(
+        &buffered_backend,
+        DurabilityPolicy::Always,
+        u64::from(u16::MAX),
+        SEGMENT_SIZE,
+    );
+
+    for version in 1..=4u64 {
+        let entry = record(version, format!("always payload {version}").into_bytes());
+        let direct_append = direct.append(&entry).expect("direct append");
+        let buffered_append = buffered.append(&entry).expect("buffered append");
+        assert!(direct_append.forced_durable());
+        assert!(buffered_append.forced_durable());
+        // Always syncs inline — the buffer drains on every append, so the
+        // backends must agree after each one.
+        assert_converged(&direct_backend, &buffered_backend, &direct, &buffered);
+    }
+}
+
+#[test]
+fn group_sync_capture_flushes_buffered_appends() {
+    let direct_backend = StoredWalBackend::default();
+    let buffered_backend = StoredWalBackend::default();
+    let mut direct = open_service(&direct_backend, DurabilityPolicy::Standard, 0, SEGMENT_SIZE);
+    let mut buffered = open_service(
+        &buffered_backend,
+        DurabilityPolicy::Standard,
+        u64::from(u16::MAX),
+        SEGMENT_SIZE,
+    );
+
+    for version in 1..=5u64 {
+        let entry = record(version, format!("group member {version}").into_bytes());
+        direct.append(&entry).expect("direct append");
+        buffered.append(&entry).expect("buffered append");
+    }
+    // Capture must make every staged byte backend-visible — the ticket's
+    // off-lock fsync covers only what the backend has.
+    let direct_ticket = direct.begin_group_sync().expect("direct capture");
+    let buffered_ticket = buffered.begin_group_sync().expect("buffered capture");
+    assert_eq!(direct_ticket.captured_seq(), buffered_ticket.captured_seq());
+    let object = ObjectLayout::wal_segment(1).expect("segment object");
+    assert_eq!(
+        direct_backend.read_object(&object).expect("direct"),
+        buffered_backend.read_object(&object).expect("buffered"),
+        "capture left staged bytes behind"
+    );
+    direct_ticket.sync().expect("direct covering fsync");
+    buffered_ticket.sync().expect("buffered covering fsync");
+    direct.complete_group_sync(&direct_ticket);
+    buffered.complete_group_sync(&buffered_ticket);
+    assert_converged(&direct_backend, &buffered_backend, &direct, &buffered);
+}
+
+#[test]
+fn randomized_sequences_converge_across_rotations_and_barriers() {
+    for seed in [7u64, 1_337, 99_991] {
+        let mut lcg = Lcg(seed);
+        let direct_backend = StoredWalBackend::default();
+        let buffered_backend = StoredWalBackend::default();
+        let mut direct = open_service(&direct_backend, DurabilityPolicy::Standard, 0, SEGMENT_SIZE);
+        let mut buffered = open_service(
+            &buffered_backend,
+            DurabilityPolicy::Standard,
+            1024,
+            SEGMENT_SIZE,
+        );
+
+        for version in 1..=200u64 {
+            let payload_len = usize::try_from(lcg.next() % 1_800 + 16).expect("payload length");
+            let fill = u8::try_from(version % 251).expect("byte fill");
+            let entry = record(version, vec![fill; payload_len]);
+            direct.append(&entry).expect("direct append");
+            buffered.append(&entry).expect("buffered append");
+            // Rotation decisions are made on logical sizes, so both services
+            // must rotate on exactly the same append.
+            assert_eq!(
+                direct.active_segment_id(),
+                buffered.active_segment_id(),
+                "rotation diverged at version {version} (seed {seed})"
+            );
+            match lcg.next() % 10 {
+                0 => {
+                    direct.force_durable().expect("direct barrier");
+                    buffered.force_durable().expect("buffered barrier");
+                    assert_converged(&direct_backend, &buffered_backend, &direct, &buffered);
+                }
+                1 => {
+                    let direct_ticket = direct.begin_group_sync().expect("direct capture");
+                    let buffered_ticket = buffered.begin_group_sync().expect("buffered capture");
+                    direct_ticket.sync().expect("direct fsync");
+                    buffered_ticket.sync().expect("buffered fsync");
+                    direct.complete_group_sync(&direct_ticket);
+                    buffered.complete_group_sync(&buffered_ticket);
+                    assert_converged(&direct_backend, &buffered_backend, &direct, &buffered);
+                }
+                _ => {}
+            }
+        }
+        direct.close().expect("direct close");
+        buffered.close().expect("buffered close");
+        assert_converged(&direct_backend, &buffered_backend, &direct, &buffered);
+    }
+}

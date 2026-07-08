@@ -580,6 +580,7 @@ fn rotation_after_max_segment_id_returns_typed_overflow() {
 }
 
 mod append;
+mod coalescing;
 mod corruption;
 mod durability;
 mod fault_windows;

@@ -560,9 +560,13 @@ fn assemble_durable_runtime(
 }
 
 fn wal_service_config(options: StorageOpenOptions) -> StorageApiResult<WalServiceConfig> {
+    // W3.3a: every production durable open coalesces WAL appends; the bare
+    // constructors stay direct for service-level byte-contract tests and the
+    // buffered-vs-direct differential oracle.
     let config = options
         .wal_segment_size_for_test()
-        .map_or_else(WalServiceConfig::default, WalServiceConfig::new);
+        .map_or_else(WalServiceConfig::default, WalServiceConfig::new)
+        .with_append_buffer_bytes(crate::service::DEFAULT_WAL_APPEND_BUFFER_BYTES);
     config
         .validate()
         .map_err(|_| StorageApiError::InvalidArgument {

@@ -338,7 +338,8 @@ pub fn run_localfs_lifecycle_retention_runner_harness(
             .map_err(|err| TestkitError::new(format!("branch generation: {err}")))?,
         BranchRuntimeConfig::default(),
         CommitRuntimeConfig::default(),
-        WalServiceConfig::default(),
+        WalServiceConfig::default()
+            .with_append_buffer_bytes(crate::service::DEFAULT_WAL_APPEND_BUFFER_BYTES),
     )
     .map_err(|err| TestkitError::new(format!("open request: {err}")))?;
     let timestamp_source = CommitManualTimestampSource::new(Timestamp::from_micros(8_000));

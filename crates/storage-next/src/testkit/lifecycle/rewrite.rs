@@ -707,7 +707,8 @@ fn open_runtime(
         CommitBranchGeneration::new(1).map_err(rewrite_error)?,
         BranchRuntimeConfig::default(),
         CommitRuntimeConfig::default(),
-        WalServiceConfig::default(),
+        WalServiceConfig::default()
+            .with_append_buffer_bytes(crate::service::DEFAULT_WAL_APPEND_BUFFER_BYTES),
     )
     .map_err(rewrite_error)?;
     let mut shell = LifecycleDurableLocalShell::assemble(

@@ -172,6 +172,84 @@ lessons apply).
   legacy rows to exercise the compat paths that remain product behavior until
   cutover (pre-elision WAL replay, recovery bridge).
 
-## W3.3 — Standard WAL write coalescing (unchanged from roadmap)
+## W3.3 — Standard WAL write coalescing (W3.3a LANDED 2026-07-08; gate passed)
 
-Now the sole carrier of the ≤8µs solo-commit target (−3.9µs syscall).
+**Status: W3.3a shipped — l9 single-put Standard 129K → 162K ops/s (+25.5%),
+the ≥150K roadmap gate passes. W3.3b (idle-buffer trickle flush, task #82)
+remains. A@10M run-phase A/B found to be a settling lottery — see the ledger
+row; engine-ycsb `--settle-secs` added for future baselines.**
+
+Sole carrier of the ≤8µs solo-commit target (−3.9µs/commit `write()` syscall at
+100k, −7.7µs at 10M). Roadmap exit gate: single-writer Standard ≥ 150K
+single-put commits/s at low debt.
+
+### Mechanism
+
+`WalService` gains a user-space append buffer (`pending: Vec<u8>`):
+
+- `append_frame` copies the encoded frame into `pending` (one ~1KB memcpy)
+  instead of issuing a backend write. Append facts for buffered frames are
+  synthesized from the logical size model; the offset/length cross-validation
+  the backend used to provide moves to flush time, where the real backend facts
+  exist.
+- **Logical size model**: `active_segment_size` = physical bytes + `pending`
+  length. Rotation decisions, growth facts, and dirty accounting all read
+  logical size (they count real data). `validate_active_object_size*` compares
+  the backend stat against the physical size (logical − pending).
+- **Flush** (one coalesced backend write of `pending`) triggers on:
+  1. buffer threshold crossed by an append — a flush failure fails *that*
+     commit with the existing `WalServiceError::Backend { Append }` classes
+     (error attribution preserved for the halt machinery);
+  2. `begin_group_sync` capture (becomes `&mut self`) — the off-lock ticket
+     fsync syncs by object name and can only cover flushed bytes; this is the
+     roadmap's "group flush": an Always group's N member appends become ONE
+     write + one fsync;
+  3. `force_durable` (covers rotation and close, which route through it) — a
+     flush failure here is durability-uncertain, same class as fsync failure;
+  4. oversized frame: flush current buffer, then write the frame directly.
+- Recovery-time reads (`read_all`, `read_after_commit_version`) run at open on
+  an empty buffer; runtime never reads the WAL back (verified: no callers).
+- `clone_for_background_retention` never carries the buffer (it only deletes
+  sealed segments).
+
+### Durability semantics (the one delta, stated plainly)
+
+- **Power-loss exposure: unchanged.** Standard's durable point remains the last
+  forced barrier (rotation / checkpoint / close). Buffering changes nothing
+  the l7 contract promises: "L4 has accepted the record; the background or
+  periodic policy forces it within the configured window."
+- **Process-crash (kill -9) exposure: changes.** Today every acked append sits
+  in the OS page cache and survives a process crash; with buffering, up to one
+  buffer of acked-but-unflushed commits can be lost — on ABRUPT kill only. Two
+  mitigations bound it:
+  1. **Flush-on-drop (landed with W3.3a):** `WalService::drop` best-effort
+     flushes staged bytes, so every orderly teardown (runtime drop without
+     close) keeps exact page-cache parity. This emerged from the battery: the
+     crash-sim harnesses drop runtimes without closing and correctly demanded
+     ZeroLoss — the fix belonged in the product, not the oracles (all six
+     failures resolved by it, zero oracle re-basing).
+  2. **Background trickle flush (W3.3b):** bounds the kill window to bg-drain
+     cadence for long-idle buffers.
+
+### Oracle
+
+Differential: the same randomized append/sync/rotate/close sequence driven
+through a buffered and an unbuffered service must produce **byte-identical
+segment content at every durability boundary** and identical growth facts.
+Property-tested with rotation-crossing and oversized-frame cases; fault
+windows re-swept (faults now surface at flush points).
+
+### Slices
+
+- **W3.3a — the buffer** (service-level): mechanism above + flush-on-drop +
+  differential oracle + service test suites extended (flush-fault windows,
+  abrupt-termination contract, drop-flush contract) + perf counters (flushes
+  by trigger, flush bytes, buffered appends). Threshold configurable via
+  `WalServiceConfig` (write buffers must be configurable — standing feedback).
+  Placement: bare `WalServiceConfig` constructors stay DIRECT (service-level
+  byte contracts pin them; the oracle needs both modes); production opens and
+  the lifecycle testkit fixtures opt into `DEFAULT_WAL_APPEND_BUFFER_BYTES`
+  (128 KiB), so every integration and crash suite runs buffered.
+- **W3.3b — bounded exposure + measurement**: background trickle flush;
+  crash-test re-basing; solo Standard single-put cell at low debt vs the 150K
+  gate; A@100k + A@10M.

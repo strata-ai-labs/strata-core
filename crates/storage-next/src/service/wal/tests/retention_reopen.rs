@@ -920,3 +920,86 @@ fn reopen_after_corrupt_header_fails_strict_open() {
         other => panic!("expected WAL format error, got {other:?}"),
     }
 }
+
+/// W3.3a contract: Standard-mode records staged in the coalescing buffer are
+/// lost on ABRUPT process termination (simulated by leaking the service so no
+/// drop-flush runs) — recovery sees only flushed records, as a clean prefix.
+/// Orderly drops flush (see below); power-loss exposure is unchanged either
+/// way: the last forced barrier.
+#[test]
+fn buffered_abrupt_termination_recovers_only_flushed_records() {
+    let backend = StoredWalBackend::default();
+    let buffered_config = WalServiceConfig::default().with_append_buffer_bytes(u64::from(u16::MAX));
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        buffered_config,
+    )
+    .expect("open WAL");
+    let flushed = record(1, b"flushed before the crash".to_vec());
+    let staged = record(2, b"staged and lost".to_vec());
+    service.append(&flushed).expect("append flushed");
+    service.force_durable().expect("barrier");
+    service.append(&staged).expect("append staged");
+    // Abrupt termination: no drop runs, the staged buffer vanishes with the
+    // process. (An orderly drop would flush — covered by the test below.)
+    std::mem::forget(service);
+
+    let reopened = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        buffered_config,
+    )
+    .expect("reopen WAL");
+    let read = reopened.read_all().expect("read after reopen");
+    assert_eq!(read.records().len(), 1);
+    assert_eq!(
+        read.records()[0].commit_version(),
+        CommitVersion::new(1),
+        "only the flushed record survives a reopen without a barrier"
+    );
+    assert!(
+        read.truncation().is_none(),
+        "staged bytes never reach the backend — the tail stays well-formed"
+    );
+}
+
+/// W3.3a: an ORDERLY drop (no explicit close) flushes staged bytes best-effort
+/// — page-cache parity with the pre-coalescing behavior for every
+/// process-alive abandon path. Only an abrupt process kill loses the buffer.
+#[test]
+fn buffered_drop_flushes_staged_records_for_reopen() {
+    let backend = StoredWalBackend::default();
+    let buffered_config = WalServiceConfig::default().with_append_buffer_bytes(u64::from(u16::MAX));
+    let mut service = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        buffered_config,
+    )
+    .expect("open WAL");
+    service
+        .append(&record(1, b"staged then dropped".to_vec()))
+        .expect("append staged");
+    drop(service);
+
+    let reopened = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        buffered_config,
+    )
+    .expect("reopen WAL");
+    let read = reopened.read_all().expect("read after drop");
+    assert_eq!(
+        read.records().len(),
+        1,
+        "drop must flush staged bytes to the backend (no fsync — close owns the barrier)"
+    );
+}

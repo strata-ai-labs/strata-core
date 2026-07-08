@@ -159,6 +159,15 @@ fn run_workload(
     load(&mut database, config, &value)?;
     let load_elapsed = load_start.elapsed();
 
+    // Optional settle window: let background maintenance digest the load's
+    // L0/compaction backlog before the run phase, so run-phase numbers measure
+    // steady state instead of load-tail digestion (the backlog scales with how
+    // FAST the load ran, contaminating A/B comparisons across builds).
+    if config.settle_secs > 0 {
+        eprintln!("  [settle] waiting {}s for background maintenance", config.settle_secs);
+        std::thread::sleep(std::time::Duration::from_secs(config.settle_secs));
+    }
+
     // Run phase: weighted operation mix over the chosen request distribution.
     if config.perf_breakdown {
         print_jemalloc_split("post-load");
@@ -233,6 +242,14 @@ fn run_workload(
             perf.commit_drain_notify_ns() as f64 / 1e6,
             perf.commit_wal_encode_buffer_allocations(),
             perf.commit_wal_encode_buffer_reuses(),
+        );
+        eprintln!(
+            "  [probe] wal buffer: appends={} flushes thr={} cap={} dur={} bytes={}",
+            perf.commit_wal_buffered_appends(),
+            perf.commit_wal_buffer_flushes_threshold(),
+            perf.commit_wal_buffer_flushes_capture(),
+            perf.commit_wal_buffer_flushes_durability(),
+            perf.commit_wal_buffer_flush_bytes(),
         );
         eprintln!(
             "  [probe] pressure collection: calls={} levels={} tables={} total_ms={:.0} sampling_skips={} full_scans={}",
@@ -650,6 +667,7 @@ struct Config {
     memory_budget_bytes: u64,
     /// Print the storage perf-trace attribution after each durable run phase.
     perf_breakdown: bool,
+    settle_secs: u64,
 }
 
 impl Config {
@@ -664,6 +682,7 @@ impl Config {
             load_batch: DEFAULT_LOAD_BATCH,
             memory_budget_bytes: DEFAULT_MEMORY_BUDGET_BYTES,
             perf_breakdown: false,
+            settle_secs: 0,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -685,6 +704,11 @@ impl Config {
                 "--load-batch" => config.load_batch = parse_positive_usize(&arg, args.next())?,
                 "--memory-budget" => config.memory_budget_bytes = parse_size(&arg, args.next())?,
                 "--perf-breakdown" => config.perf_breakdown = true,
+                "--settle-secs" => {
+                    config.settle_secs = arg_value(&arg, args.next())?
+                        .parse()
+                        .map_err(|_| format!("`{arg}` takes seconds"))?;
+                }
                 "-q" | "--quick" => {
                     config.records = QUICK_RECORDS;
                     config.ops = QUICK_OPS;
