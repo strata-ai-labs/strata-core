@@ -102,6 +102,9 @@ pub(crate) enum TopCommand {
     Graph(GraphArgs),
     /// Arrow import/export commands.
     Arrow(ArrowArgs),
+    /// Model execution: local GGUF models and cloud providers.
+    #[cfg(feature = "inference")]
+    Inference(InferenceArgs),
     /// Raw serialized executor command.
     Command(CommandArgs),
     /// Deferred old search surface.
@@ -1189,5 +1192,139 @@ pub(crate) enum CommandCommand {
         /// File containing serialized command JSON.
         #[arg(long, id = "print_command_file", conflicts_with = "print_command_json")]
         file: Option<PathBuf>,
+    },
+}
+
+/// Inference command arguments.
+#[cfg(feature = "inference")]
+#[derive(Debug, Args)]
+pub(crate) struct InferenceArgs {
+    /// Inference command.
+    #[command(subcommand)]
+    pub(crate) command: InferenceCommand,
+}
+
+/// Model execution commands.
+///
+/// Model specs are catalog names (`tinyllama`, `qwen3:1.7b`), catalog
+/// name:quant pairs (`tinyllama:q8_0`), local GGUF paths, or provider specs
+/// (`anthropic:claude-...`) depending on the enabled features.
+#[cfg(feature = "inference")]
+#[derive(Debug, Subcommand)]
+pub(crate) enum InferenceCommand {
+    /// Model catalog and local model management.
+    Models(InferenceModelsArgs),
+    /// Show capability facts for one model spec.
+    Capability {
+        /// Model spec.
+        model: String,
+    },
+    /// Generate text with a model.
+    Generate {
+        /// Model spec.
+        model: String,
+        /// Prompt text (chat models expect their chat template verbatim).
+        prompt: String,
+        /// Maximum completion tokens (default 256).
+        #[arg(long)]
+        max_tokens: Option<usize>,
+        /// Sampling temperature (default 0.0, greedy).
+        #[arg(long)]
+        temperature: Option<f32>,
+        /// Top-k sampling cutoff.
+        #[arg(long)]
+        top_k: Option<usize>,
+        /// Nucleus sampling cutoff.
+        #[arg(long)]
+        top_p: Option<f32>,
+        /// Deterministic sampling seed.
+        #[arg(long)]
+        seed: Option<u64>,
+        /// Stop sequence (repeatable).
+        #[arg(long = "stop", value_name = "TEXT")]
+        stop_sequences: Vec<String>,
+        /// Stop token id (repeatable; local models only).
+        #[arg(long = "stop-token", value_name = "ID")]
+        stop_tokens: Vec<u32>,
+        /// GBNF grammar for constrained generation (local models).
+        #[arg(long)]
+        grammar: Option<String>,
+    },
+    /// Tokenize text with a local model.
+    Tokenize {
+        /// Model spec.
+        model: String,
+        /// Text to tokenize.
+        text: String,
+        /// Add the model's special tokens.
+        #[arg(long)]
+        special: bool,
+    },
+    /// Detokenize token ids with a local model.
+    Detokenize {
+        /// Model spec.
+        model: String,
+        /// Token ids.
+        #[arg(required = true)]
+        ids: Vec<u32>,
+    },
+    /// Embed one text.
+    Embed {
+        /// Model spec.
+        model: String,
+        /// Text to embed.
+        text: String,
+    },
+    /// Embed multiple texts in order.
+    EmbedBatch {
+        /// Model spec.
+        model: String,
+        /// Texts to embed.
+        #[arg(required = true)]
+        texts: Vec<String>,
+    },
+    /// Rank passages against a query.
+    Rank {
+        /// Model spec.
+        model: String,
+        /// Query text.
+        query: String,
+        /// Candidate passages.
+        #[arg(required = true)]
+        passages: Vec<String>,
+    },
+    /// Unload one cached model, or all cached models when omitted.
+    Unload {
+        /// Model spec (omit to unload everything).
+        model: Option<String>,
+    },
+    /// Show runtime model-cache diagnostics.
+    CacheStatus,
+}
+
+/// Inference model management arguments.
+#[cfg(feature = "inference")]
+#[derive(Debug, Args)]
+pub(crate) struct InferenceModelsArgs {
+    /// Models command.
+    #[command(subcommand)]
+    pub(crate) command: InferenceModelsCommand,
+}
+
+/// Inference model management commands.
+#[cfg(feature = "inference")]
+#[derive(Debug, Subcommand)]
+pub(crate) enum InferenceModelsCommand {
+    /// List catalog models.
+    List,
+    /// List locally available models.
+    Local,
+    /// Download a model into the local model directory.
+    ///
+    /// Honors `STRATA_MODELS_DIR`, `STRATA_HF_ENDPOINT`, and
+    /// `STRATA_HF_TOKEN` (or `HF_TOKEN`) for gated repositories.
+    Pull {
+        /// Model spec or catalog name.
+        model: String,
     },
 }

@@ -10,12 +10,20 @@ publish = false
 description = "Handwritten command-line interface for Strata V1"
 
 [features]
-default = []
+# Cloud providers ride in the lean binary by default: they are pure-Rust HTTP
+# clients with no build-time cost, and an API key at runtime is the only
+# requirement. Local model execution (vendored llama.cpp, cmake, optional
+# CUDA) stays opt-in via `inference-local`.
+default = ["cloud"]
+cloud = ["inference-anthropic", "inference-google", "inference-openai"]
+# Provider features imply the base `inference` feature: the CLI's own command
+# surface is gated on `inference`, so a provider-only selection must still
+# light it up (mirrors the executor's feature graph).
 inference = ["strata-executor-next/inference"]
-inference-anthropic = ["strata-executor-next/inference-anthropic"]
-inference-google = ["strata-executor-next/inference-google"]
-inference-local = ["strata-executor-next/inference-local"]
-inference-openai = ["strata-executor-next/inference-openai"]
+inference-anthropic = ["inference", "strata-executor-next/inference-anthropic"]
+inference-google = ["inference", "strata-executor-next/inference-google"]
+inference-local = ["inference", "strata-executor-next/inference-local"]
+inference-openai = ["inference", "strata-executor-next/inference-openai"]
 
 [dependencies]
 base64 = { workspace = true }
