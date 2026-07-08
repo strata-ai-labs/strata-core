@@ -1,12 +1,16 @@
 //! Local generation provider backed by llama.cpp.
 //!
+//! llama.cpp speaks `i32` token ids and counts; the casts at this boundary
+//! are the interface, not accidents.
+#![allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+//!
 //! [`LocalProvider`] wraps a [`LlamaCppContext`] loaded for generation and
 //! implements the autoregressive decode loop with sampler chain support.
 
 use std::path::Path;
 
 use crate::llama::context::LlamaCppContext;
-use crate::llama::ffi::*;
+use crate::llama::ffi::{llama_api_lock, LlamaSampler};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, StopReason};
 
 /// Local generation provider using llama.cpp.
@@ -188,7 +192,7 @@ impl LocalProvider {
             self.ctx
                 .api
                 .sampler_chain_add(chain, self.ctx.api.sampler_init_temp(request.temperature));
-            let seed = request.seed.unwrap_or(0xFFFFFFFF) as u32;
+            let seed = request.seed.unwrap_or(0xFFFF_FFFF) as u32;
             self.ctx
                 .api
                 .sampler_chain_add(chain, self.ctx.api.sampler_init_dist(seed));

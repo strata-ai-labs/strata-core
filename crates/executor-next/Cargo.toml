@@ -16,7 +16,14 @@ idl-tooling = ["dep:serde_yaml", "dep:sha2"]
 inference = ["dep:strata-inference-next"]
 inference-anthropic = ["inference"]
 inference-google = ["inference"]
-inference-local = ["inference", "strata-inference-next/local"]
+# Local model execution implies pull: the local story is catalog -> download
+# -> load, so `download` rides with `local` (cloud-only builds stay pull-free
+# and return unsupported from InferenceModelsPull).
+inference-local = [
+    "inference",
+    "strata-inference-next/local",
+    "strata-inference-next/download",
+]
 inference-openai = ["inference"]
 localfs = ["strata-engine-next/localfs"]
 testkit = ["strata-engine-next/testkit"]

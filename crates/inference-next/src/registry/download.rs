@@ -1,6 +1,14 @@
 //! HuggingFace model download with progress reporting and lock files.
 //!
 //! Gated behind the `download` feature flag.
+//!
+//! Endpoint and auth are environment-configurable, mirroring the
+//! `STRATA_MODELS_DIR` precedent:
+//!
+//! - `STRATA_HF_ENDPOINT` — base endpoint for model downloads (mirrors,
+//!   self-hosted proxies). Defaults to `https://huggingface.co`.
+//! - `STRATA_HF_TOKEN` (falling back to the ecosystem-standard `HF_TOKEN`) —
+//!   sent as a bearer token for gated/private repositories. Never logged.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -106,12 +114,13 @@ pub fn download_hf_file_with_size(
     }
 
     // Download
-    let url = format!(
-        "https://huggingface.co/{}/resolve/main/{}",
-        hf_repo, hf_file
-    );
+    let url = hf_download_url(&hf_endpoint(), hf_repo, hf_file);
 
-    let response = ureq::get(&url).call().map_err(|e| {
+    let mut request = ureq::get(&url);
+    if let Some(token) = hf_token() {
+        request = request.header("authorization", &format!("Bearer {token}"));
+    }
+    let response = request.call().map_err(|e| {
         InferenceError::Registry(format!(
             "Failed to download '{}' from HuggingFace: {}\n\n\
              Please check your internet connection, or manually download and place the file at:\n  \
@@ -168,32 +177,7 @@ pub fn download_hf_file_with_size(
     // Verify SHA-256 hash before rename (so concurrent processes never see
     // an unverified file at the final destination).
     if let Some(expected_hash) = sha256 {
-        let mut hasher = Sha256::new();
-        let mut f = fs::File::open(&temp_path).map_err(|e| {
-            InferenceError::Registry(format!(
-                "Failed to open temp file for hash verification: {}",
-                e
-            ))
-        })?;
-        let mut buf = vec![0u8; 64 * 1024];
-        loop {
-            let n = std::io::Read::read(&mut f, &mut buf).map_err(|e| {
-                InferenceError::Registry(format!("Hash verification read error: {}", e))
-            })?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-        }
-        let actual_hash = format!("{:x}", hasher.finalize());
-
-        if actual_hash != expected_hash {
-            let _ = fs::remove_file(&temp_path);
-            return Err(InferenceError::Registry(format!(
-                "SHA-256 hash mismatch for '{}': expected {}, got {}",
-                hf_file, expected_hash, actual_hash
-            )));
-        }
+        verify_sha256(&temp_path, expected_hash, hf_file)?;
     }
 
     // Atomic-ish rename to final location
@@ -206,6 +190,66 @@ pub fn download_hf_file_with_size(
     })?;
 
     Ok(())
+}
+
+/// Verifies a downloaded temp file against its expected SHA-256 digest,
+/// deleting the file on mismatch so no unverified bytes survive.
+fn verify_sha256(
+    temp_path: &Path,
+    expected_hash: &str,
+    hf_file: &str,
+) -> Result<(), InferenceError> {
+    let mut hasher = Sha256::new();
+    let mut f = fs::File::open(temp_path).map_err(|e| {
+        InferenceError::Registry(format!(
+            "Failed to open temp file for hash verification: {}",
+            e
+        ))
+    })?;
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = std::io::Read::read(&mut f, &mut buf).map_err(|e| {
+            InferenceError::Registry(format!("Hash verification read error: {}", e))
+        })?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let actual_hash = format!("{:x}", hasher.finalize());
+
+    if actual_hash != expected_hash {
+        let _ = fs::remove_file(temp_path);
+        return Err(InferenceError::Registry(format!(
+            "SHA-256 hash mismatch for '{}': expected {}, got {}",
+            hf_file, expected_hash, actual_hash
+        )));
+    }
+    Ok(())
+}
+
+/// Base endpoint for model downloads: `STRATA_HF_ENDPOINT` or the public hub.
+fn hf_endpoint() -> String {
+    match std::env::var("STRATA_HF_ENDPOINT") {
+        Ok(endpoint) if !endpoint.trim().is_empty() => endpoint,
+        _ => "https://huggingface.co".to_owned(),
+    }
+}
+
+/// Bearer token for gated/private repos: `STRATA_HF_TOKEN`, else `HF_TOKEN`.
+fn hf_token() -> Option<String> {
+    ["STRATA_HF_TOKEN", "HF_TOKEN"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .map(|token| token.trim().to_owned())
+        .find(|token| !token.is_empty())
+}
+
+/// Builds the resolve URL for one file, tolerating trailing slashes on the
+/// configured endpoint.
+fn hf_download_url(endpoint: &str, hf_repo: &str, hf_file: &str) -> String {
+    let endpoint = endpoint.trim_end_matches('/');
+    format!("{endpoint}/{hf_repo}/resolve/main/{hf_file}")
 }
 
 /// Stream from reader to file, returning total bytes written.
@@ -256,5 +300,30 @@ impl LockGuard {
 impl Drop for LockGuard {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hf_download_url;
+
+    #[test]
+    fn download_url_uses_default_hub_shape() {
+        assert_eq!(
+            hf_download_url(
+                "https://huggingface.co",
+                "stratalab-org/gpt2-GGUF",
+                "gpt2.Q4_K_M.gguf"
+            ),
+            "https://huggingface.co/stratalab-org/gpt2-GGUF/resolve/main/gpt2.Q4_K_M.gguf"
+        );
+    }
+
+    #[test]
+    fn download_url_tolerates_trailing_slash_on_endpoint() {
+        assert_eq!(
+            hf_download_url("https://mirror.internal/hf/", "org/repo", "file.gguf"),
+            "https://mirror.internal/hf/org/repo/resolve/main/file.gguf"
+        );
     }
 }

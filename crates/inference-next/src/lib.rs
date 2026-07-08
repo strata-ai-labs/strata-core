@@ -347,8 +347,8 @@ pub(crate) fn embedding_provider_feature_enabled(provider: ProviderKind) -> bool
 /// # Examples
 ///
 /// ```ignore
-/// let mut engine = strata_inference::load("local:qwen3:1.7b")?;
-/// let mut engine = strata_inference::load("anthropic:claude-sonnet-4-6")?;
+/// let mut engine = strata_inference_next::load("local:qwen3:1.7b")?;
+/// let mut engine = strata_inference_next::load("anthropic:claude-sonnet-4-6")?;
 /// ```
 #[cfg(any(
     feature = "local",
@@ -404,10 +404,10 @@ pub fn load(model_spec: &str) -> Result<Box<dyn InferenceEngine>, InferenceError
 /// # Examples
 ///
 /// ```ignore
-/// let engine = strata_inference::load_embedder("local:miniLM", None)?;
+/// let engine = strata_inference_next::load_embedder("local:miniLM", None)?;
 /// let embedding = engine.embed("hello world")?;
 ///
-/// let engine = strata_inference::load_embedder("openai:text-embedding-3-small", Some("sk-..."))?;
+/// let engine = strata_inference_next::load_embedder("openai:text-embedding-3-small", Some("sk-..."))?;
 /// let embedding = engine.embed("hello world")?;
 /// ```
 #[cfg(any(
@@ -478,7 +478,7 @@ pub fn load_embedder(
 /// # Examples
 ///
 /// ```ignore
-/// let engine = strata_inference::load_ranker("local:jina-reranker-v1-tiny")?;
+/// let engine = strata_inference_next::load_ranker("local:jina-reranker-v1-tiny")?;
 /// let scores = engine.rank("query", &["passage 1", "passage 2"])?;
 /// ```
 #[cfg(feature = "local")]
