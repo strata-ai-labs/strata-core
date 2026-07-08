@@ -763,6 +763,39 @@ facts vs the direct path at every durability boundary. `Backend{Flush}` errors
 are durability-uncertain; pending is never discarded; partial flush writes are
 caught by handle re-open reconciliation (no blind re-append).
 
+## SETTLED 10M baseline — first trustworthy A/B/C numbers (2026-07-08, post-W3.3)
+
+Protocol: `engine-ycsb --workload a,b,c --durable --records 10m --ops 100k
+--memory-budget 32g --settle-secs 120` — each workload gets a fresh load, then a
+120s drain window before the measured run. The window works: pacing collapsed
+from the lottery's 1-24s to 0-1s across all nine cells (A/B/C x 3 runs).
+Medians of 3, spreads noted; v1 @ `ca3b1a11` (all of W3 in):
+
+| Cell | Settled median | Spread | Old unsettled row | RocksDB | Gap |
+|---|---|---|---|---|---|
+| load 10M (batched) | **103K rows/s** | 91-119K | ~81K | 660K | 6.4x |
+| A run | **9,127 ops/s** | 7.7-15.5K | 4.9-5.3K | 304K | 33x |
+| B run | **7,595 ops/s** | 7.5-8.2K (tight) | 5.9K | 437K | 57x |
+| C run | **7,150 ops/s** | 5.3-7.6K | 11.5K (flattered) | 426K | 59x |
+
+Latency shape (settled): read p50 24-26us everywhere; read p99 ~460us at good
+shape (2ms when the load leaves a worse level shape — A retains a 2x run
+spread even settled, driven by read-tail differences, i.e. SHAPE lottery
+survives the DEBT lottery fix); update p50 36-42us, **update p99 70-77us,
+p99.9 88-141us** on clean runs — the W3 write path is essentially flat now.
+
+Readings:
+- The old C row (11.5K) was flattered by unsettled conditions; honest settled
+  C is ~7.2K. C's mean (135-140us) is 5.4x its p50 (25us): the zipfian head is
+  cache-hot at 25us, and the cold middle (block-cache misses to disk) carries
+  the mean — this is the api-vs-storage read split's attribution target.
+- B ~= C: the 5% writes cost nothing now; both are read-bound.
+- Load 103K median is the best yet (W3.3a coalescing); load itself needs no
+  settling (91-119K spread is shape/IO variance).
+- A@10M went 4.9K -> 9.1K median across W3 (settled-to-settled would be
+  cleaner, but no settled pre-W3 control exists; directionally consistent
+  with the per-commit wins).
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
