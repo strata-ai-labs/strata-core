@@ -17,6 +17,9 @@
 !/corpus/format_snapshot_row_payload/
 /corpus/format_snapshot_row_payload/*
 !/corpus/format_snapshot_row_payload/valid-empty
+!/corpus/format_snapshot_timeline_payload/
+/corpus/format_snapshot_timeline_payload/*
+!/corpus/format_snapshot_timeline_payload/valid-empty
 !/corpus/format_quarantine/
 /corpus/format_quarantine/*
 !/corpus/format_quarantine/quarantine-inventory-empty
@@ -29,6 +32,14 @@
 /corpus/format_table_block/*
 !/corpus/format_table_block/one-put-uncompressed
 !/corpus/format_table_block/zstd
+!/corpus/format_table_block_trusted/
+/corpus/format_table_block_trusted/*
+!/corpus/format_table_block_trusted/one-put-uncompressed
+!/corpus/format_table_block_trusted/zstd
+!/corpus/format_table_block_indexed_seek/
+/corpus/format_table_block_indexed_seek/*
+!/corpus/format_table_block_indexed_seek/one-put-uncompressed
+!/corpus/format_table_block_indexed_seek/zstd
 !/corpus/format_table_manifest/
 /corpus/format_table_manifest/*
 !/corpus/format_table_manifest/valid-empty
