@@ -133,6 +133,63 @@ fn cache_key_and_address_validation_is_structural() {
     assert!(rendered.len() < 96);
 }
 
+/// W2.4: publish-time warming admits blocks only into free capacity — a full
+/// shard skips the insert (`SkippedFull`) and never evicts what demand caching
+/// already proved hot; the regular demand path still evicts to fit.
+#[test]
+fn insert_if_free_never_evicts_and_reports_skipped_full() {
+    let cache = enabled_cache(64 * 1024);
+    let first = key("warm", TableBlockCacheKind::Data, 0, 4);
+    let shard = cache.shard_index_for_test(&first);
+    let mut same_shard_keys = (0..200_000u64)
+        .map(|index| {
+            key(
+                "warm",
+                TableBlockCacheKind::Data,
+                index.saturating_mul(4),
+                4,
+            )
+        })
+        .filter(|candidate| cache.shard_index_for_test(candidate) == shard);
+
+    // No-evict inserts admit until the shard is full, then skip.
+    let mut admitted = Vec::new();
+    let skipped_key = loop {
+        let candidate = same_shard_keys.next().expect("same-shard key supply");
+        match cache
+            .insert_if_free(candidate.clone(), bytes(0xAA, 1024))
+            .expect("insert_if_free")
+        {
+            CacheInsert::Inserted(_) => admitted.push(candidate),
+            CacheInsert::SkippedFull(_) => break candidate,
+            other => panic!("unexpected insert outcome: {other:?}"),
+        }
+        assert!(
+            admitted.len() < 1_000,
+            "shard must fill within its capacity"
+        );
+    };
+    assert!(
+        !admitted.is_empty(),
+        "warming must admit into free capacity"
+    );
+
+    // Nothing previously admitted was displaced.
+    for key in &admitted {
+        assert!(cache.get(key).is_some(), "no-evict insert must not evict");
+    }
+    assert!(cache.stats().skipped_full() >= 1);
+
+    // Control: the demand path evicts to fit on the same full shard.
+    assert!(matches!(
+        cache
+            .insert(skipped_key, bytes(0xBB, 1024))
+            .expect("insert"),
+        CacheInsert::Inserted(_)
+    ));
+    assert!(cache.stats().evictions() >= 1);
+}
+
 #[test]
 fn disabled_cache_stores_nothing_and_reports_skips() {
     let cache = TableBlockCache::disabled();

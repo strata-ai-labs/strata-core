@@ -3,6 +3,7 @@
 use std::fmt;
 use std::sync::{Arc, OnceLock};
 
+use super::cache::CacheInsert;
 use super::key::table_internal_physical_key_bytes;
 use super::{
     BoundedTableCursor, TableBlockAddress, TableBlockCache, TableBlockCacheKey,
@@ -1324,6 +1325,53 @@ impl<'a> ImmutableTableReader<'a> {
         let cache_enabled = self.rows.with_block_cache(table, cache);
         self.runtime_facts = self.runtime_facts.with_cache_enabled(cache_enabled);
         Ok(self)
+    }
+
+    /// W2.4: warm the block cache with this table's data blocks sliced from
+    /// its just-encoded bytes (publish-time write-through). No-evict inserts
+    /// only — freshly built blocks are unproven and must never displace
+    /// demand-cached ones. Returns the number of blocks admitted. No-op for
+    /// eager readers and readers without an attached cache.
+    pub(crate) fn warm_data_blocks_from_encoded(
+        &self,
+        encoded: &[u8],
+    ) -> TableRuntimeResult<usize> {
+        let TableReaderRows::Lazy(lazy) = &self.rows else {
+            return Ok(0);
+        };
+        let state = &lazy.state;
+        let Some(cache) = &state.cache else {
+            return Ok(0);
+        };
+        let mut admitted = 0usize;
+        for (block_index, entry) in state.metadata.index().entries().iter().enumerate() {
+            let start = usize::try_from(entry.block_offset()).map_err(|_| {
+                TableRuntimeError::InvalidRange {
+                    field: "block_offset",
+                }
+            })?;
+            let len = usize::try_from(entry.block_frame_len()).map_err(|_| {
+                TableRuntimeError::InvalidRange {
+                    field: "block_frame_len",
+                }
+            })?;
+            let end = start
+                .checked_add(len)
+                .filter(|end| *end <= encoded.len())
+                .ok_or(TableRuntimeError::InvalidRange {
+                    field: "block_frame_len",
+                })?;
+            let key = cache_key_for_entry(&cache.table, entry, block_index)?;
+            let frame: Arc<[u8]> = Arc::from(&encoded[start..end]);
+            match cache.cache.insert_if_free(key, frame)? {
+                CacheInsert::Inserted(_) => admitted = admitted.saturating_add(1),
+                CacheInsert::DuplicateExisting(_)
+                | CacheInsert::SkippedDisabled(_)
+                | CacheInsert::SkippedOversized(_)
+                | CacheInsert::SkippedFull(_) => {}
+            }
+        }
+        Ok(admitted)
     }
 
     pub(crate) fn with_table_filter(

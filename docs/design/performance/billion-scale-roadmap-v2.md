@@ -145,10 +145,20 @@ Revised slices (ranked by measured leverage):
 - **W2.3 Lazy-scan early exit + intra-block restart points**: the walk averages a
   FULL block today (254.5 ≈ 256); early exit alone halves it, restart-point binary
   search makes it ~log. Evaluate after W2.1 (60-entry walks may not need it).
-- **W2.4 Block cache churn survival**: rewrite outputs re-admit hot blocks (RocksDB
-  `fill_cache` analog) or key cache by content hash; then a settled-state cell to
-  measure the capacity truth. Decoded-block caching stays on the list if decode
-  shows up post-W2.1.
+- **W2.4 Block cache churn survival — LANDED.** Publish-time write-through:
+  `warm_data_blocks_from_encoded` slices the just-encoded block frames inside the
+  publish hook (rewrite sink + flush prepare, while the W1.2c sink still holds the
+  bytes) and admits them via `insert_if_free` — NO-EVICT inserts only, so unproven
+  fresh blocks never displace demand-cached ones; when the pool is smaller than the
+  write rate's working set the warming degrades to a no-op (`SkippedFull`,
+  scale-safe by construction). Measured at 10M durable: **tail collapse** — C read
+  p99 704 → **430µs** (p99.9 2.28 → 1.17ms) at **11,455 ops/s** (campaign best,
+  +51% over the W2.2 draw); A read p99 2.23ms → 827µs; B read p99 1.60ms → 807µs;
+  throughputs within lottery elsewhere. Skip counters confirm the gate (34K–382K
+  SkippedFull under churn). Pool now actually fills (+2GB allocated, within
+  budget). Notes: blended hit-rate metric is compaction-cursor-contaminated (split
+  in W6); two low load draws (80–87K) recorded for the W1.4 calibration. W2.4b:
+  heat-aware admission (carry input-block heat to outputs) when pool << dataset.
 - **W2.5 Scan readahead (BS6 item).** Auto-ramping readahead 8→256KB; fixes E and
   scan-range cells.
 - Exit: C ≥ 290K ops/s warm (p50 ≤ 6µs, p99 ≤ 20µs); B ≥ 280K; E within 3× of RocksDB.

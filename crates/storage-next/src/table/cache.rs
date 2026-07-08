@@ -141,6 +141,8 @@ pub(crate) struct TableBlockCacheStats {
     inserts: u64,
     duplicate_inserts: u64,
     evictions: u64,
+    /// W2.4: no-evict warm inserts skipped because the shard was full.
+    skipped_full: u64,
     removes: u64,
     table_invalidations: u64,
     clears: u64,
@@ -170,6 +172,10 @@ impl TableBlockCacheStats {
 
     pub(crate) const fn evictions(self) -> u64 {
         self.evictions
+    }
+
+    pub(crate) const fn skipped_full(self) -> u64 {
+        self.skipped_full
     }
 
     pub(crate) const fn removes(self) -> u64 {
@@ -211,6 +217,9 @@ pub(crate) enum CacheInsert {
     DuplicateExisting(Arc<[u8]>),
     SkippedDisabled(Arc<[u8]>),
     SkippedOversized(Arc<[u8]>),
+    /// W2.4: a no-evict insert found the shard full — the block was not
+    /// admitted (publish-time warming never displaces demand-cached blocks).
+    SkippedFull(Arc<[u8]>),
 }
 
 impl CacheInsert {
@@ -219,7 +228,8 @@ impl CacheInsert {
             Self::Inserted(bytes)
             | Self::DuplicateExisting(bytes)
             | Self::SkippedDisabled(bytes)
-            | Self::SkippedOversized(bytes) => Arc::clone(bytes),
+            | Self::SkippedOversized(bytes)
+            | Self::SkippedFull(bytes) => Arc::clone(bytes),
         }
     }
 }
@@ -535,6 +545,47 @@ impl TableBlockCache {
             return Ok(CacheInsert::SkippedOversized(bytes));
         }
 
+        state.lru.insert(key, Arc::clone(&bytes));
+        state.stats.inserts = state.stats.inserts.saturating_add(1);
+        perf_trace::record_table_cache_insert();
+        refresh_gauges(&mut state);
+        Ok(CacheInsert::Inserted(bytes))
+    }
+
+    /// W2.4: insert WITHOUT evicting — publish-time warming admits freshly
+    /// built blocks only into free capacity, so unproven blocks never displace
+    /// demand-cached (proven-hot) ones. Duplicate/disabled/oversized behavior
+    /// matches [`insert`](Self::insert).
+    pub(crate) fn insert_if_free(
+        &self,
+        key: TableBlockCacheKey,
+        bytes: Arc<[u8]>,
+    ) -> TableRuntimeResult<CacheInsert> {
+        if bytes.is_empty() {
+            return Err(TableRuntimeError::InvalidRange {
+                field: "cache_charge",
+            });
+        }
+        let mut state = self.shard_for_key(&key).lock_state();
+        if !state.enabled {
+            state.stats.skipped_disabled = state.stats.skipped_disabled.saturating_add(1);
+            perf_trace::record_table_cache_skipped_insert();
+            return Ok(CacheInsert::SkippedDisabled(bytes));
+        }
+        if let Some(existing) = state.lru.get(&key) {
+            state.stats.duplicate_inserts = state.stats.duplicate_inserts.saturating_add(1);
+            return Ok(CacheInsert::DuplicateExisting(existing));
+        }
+        if bytes.len() > state.capacity_bytes {
+            state.stats.skipped_oversized = state.stats.skipped_oversized.saturating_add(1);
+            perf_trace::record_table_cache_skipped_insert();
+            return Ok(CacheInsert::SkippedOversized(bytes));
+        }
+        if state.lru.bytes().saturating_add(bytes.len()) > state.capacity_bytes {
+            state.stats.skipped_full = state.stats.skipped_full.saturating_add(1);
+            perf_trace::record_table_cache_skipped_insert();
+            return Ok(CacheInsert::SkippedFull(bytes));
+        }
         state.lru.insert(key, Arc::clone(&bytes));
         state.stats.inserts = state.stats.inserts.saturating_add(1);
         perf_trace::record_table_cache_insert();
@@ -889,6 +940,7 @@ fn merge_cache_stats(
         .skipped_oversized
         .saturating_add(right.skipped_oversized);
     left.skipped_disabled = left.skipped_disabled.saturating_add(right.skipped_disabled);
+    left.skipped_full = left.skipped_full.saturating_add(right.skipped_full);
     left.entries = left.entries.saturating_add(right.entries);
     left.bytes = left.bytes.saturating_add(right.bytes);
     left.capacity_bytes = left.capacity_bytes.saturating_add(right.capacity_bytes);

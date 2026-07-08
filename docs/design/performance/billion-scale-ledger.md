@@ -658,6 +658,18 @@ unchanged (28.4µs p50; losers die at range checks pre-filter; throughput 7,594 
 draw — miss/churn-bound, W2.4's lever). Memory line holds (~16.9GB post-run;
 filters ≈ 82KB per 64MB table, budget-charged via resident metadata).
 
+## W2.4: publish-time cache warming — read-tail collapse (2026-07-08)
+
+Rewrite + flush publishes now warm the block cache from the just-encoded bytes
+(no-evict `insert_if_free`; fresh blocks never displace demand-cached ones; full
+shards skip — scale-safe). Durable 10M C→B→A vs post-W2.2: C **11,455 ops/s**
+(campaign best; was 7,594) read p99 **704 → 430µs**, p99.9 2.28 → 1.17ms; A read
+p99 2.23ms → 827µs; B read p99 1.60 → 807µs; read p50s ~26-32µs across all three.
+SkippedFull 34K (C) / 107K (B) / 382K (A) — the no-evict gate works under churn.
+Cache pool now actually utilized (post-run allocated ~19GB, resident ~21GB, within
+32g). Recorded: two low load draws (80-87K vs 99-115K band) — W1.4 input; blended
+hit-rate counter mixes compaction cursor traffic (split before quoting).
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
