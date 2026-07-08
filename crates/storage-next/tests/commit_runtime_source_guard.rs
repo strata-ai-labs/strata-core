@@ -759,6 +759,12 @@ fn contains_forbidden_storage_path_for_file(line: &str, file: &Path) -> bool {
                 "",
             )
             .replace("usecrate::branch::read::BranchReadView;", "")
+            .replace(
+                "usecrate::branch::read::{BranchOwnRowMatch,BranchReadView};",
+                "",
+            )
+            .replace("crate::branch::BranchOwnRowMatch", "")
+            .replace("crate::branch::read::BranchOwnRowMatch", "")
             .replace("usecrate::branch::state::BranchLocalState;", "")
             .replace("usecrate::branch::BranchReadView;", "")
             .replace("crate::branch::BranchReadBound", "")
@@ -859,6 +865,7 @@ fn is_allowed_commit_runtime_boundary_line(file: &Path, line: &str) -> bool {
                 trimmed,
                 "use crate::branch::{BranchHistoryOptions, BranchReadView, BranchRowSource};"
                     | "use crate::branch::read::{BranchHistoryOptions, BranchReadView, BranchRowSource};"
+                    | "use crate::branch::read::{BranchOwnRowMatch, BranchReadView};"
                     | "use crate::format::WalRecord;"
             )
 }

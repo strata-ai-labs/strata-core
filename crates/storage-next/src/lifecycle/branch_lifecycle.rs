@@ -502,7 +502,7 @@ impl LifecycleBranchCatalog {
     /// BS5.4: check a branch's state OUT of the catalog by ownership transfer
     /// for the write group's parallel cross-branch apply. The caller (the
     /// group leader) holds the runtime mutex for the entire checkout window
-    /// and MUST restore with [`restore_branch_state`](Self::restore_branch_state)
+    /// and MUST hand it back with [`check_in_branch_state`](Self::check_in_branch_state)
     /// before releasing it; while checked out, every accessor fails closed.
     pub(crate) fn take_branch_state(
         &mut self,
@@ -527,11 +527,11 @@ impl LifecycleBranchCatalog {
 
     /// BS5.4: return a checked-out branch state (see
     /// [`take_branch_state`](Self::take_branch_state)).
-    pub(crate) fn restore_branch_state(&mut self, state: BranchLocalState) -> LifecycleResult<()> {
+    pub(crate) fn check_in_branch_state(&mut self, state: BranchLocalState) -> LifecycleResult<()> {
         let branch_id = state.branch_id();
         let Some(position) = self.checked_out.iter().position(|id| *id == branch_id) else {
             return Err(LifecycleError::InvalidLifecycleState {
-                reason: "restored branch state was not checked out",
+                reason: "checked-in branch state was not checked out",
             });
         };
         let index = self.active_entry_index(branch_id)?;

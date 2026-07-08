@@ -355,9 +355,9 @@ impl FrozenTable {
     }
 
     /// Stable identity of the sealed backing memtable across `FrozenTable` clones (BS5.3b):
-    /// snapshot clones share the `Arc`, so pointer identity proves "the same frozen table"
+    /// frozen-view clones share the `Arc`, so pointer identity proves "the same frozen table"
     /// strictly more precisely than row-by-row comparison — and in O(1). Valid only while the
-    /// identified table is alive (the prepared flush that captures it keeps its snapshot alive).
+    /// identified table is alive (the prepared flush that captures it keeps its clone alive).
     pub(crate) fn memory_state_identity(&self) -> usize {
         Arc::as_ptr(&self.inner) as usize
     }
