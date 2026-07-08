@@ -325,6 +325,10 @@ impl LifecycleBranchCatalog {
             None => {
                 let state =
                     BranchLocalState::new(branch_id, self.branch_config).map_err(branch_error)?;
+                // W3.1b: a branch born in-process has provably complete
+                // (empty) timeline coverage — checkpoints can persist its
+                // retained index without a seeding scan ever running.
+                state.retained_timeline().mark_complete_from_birth();
                 let descriptor =
                     LifecycleBranchDescriptor::active(branch_id, generation, created_at);
                 self.registry
@@ -389,6 +393,8 @@ impl LifecycleBranchCatalog {
         }
 
         let state = BranchLocalState::new(branch_id, self.branch_config).map_err(branch_error)?;
+        // W3.1b: rebirth is an empty in-process state — complete from birth.
+        state.retained_timeline().mark_complete_from_birth();
         let descriptor = LifecycleBranchDescriptor::active(branch_id, generation, created_at)
             .with_next_revision();
         self.registry
@@ -703,6 +709,8 @@ impl LifecycleBranchCatalog {
             .map_err(branch_error)?;
         let empty_state =
             BranchLocalState::new(branch_id, self.branch_config).map_err(branch_error)?;
+        // W3.1b: a cleared branch restarts with empty, complete coverage.
+        empty_state.retained_timeline().mark_complete_from_birth();
         let release_plan = self.release_plan_after_removing(branch_id, &old_snapshot)?;
 
         let active = descriptor.with_next_revision();

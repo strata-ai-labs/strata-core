@@ -110,8 +110,11 @@ fn checkpoint_recovery_ignores_opaque_snapshot_sections() {
         .expect("commit");
     let request = LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(16))
         .expect("request")
+        // Kind 0x7F is unassigned: recovery must ignore sections it does not
+        // understand (kind 2 became the retained-timeline section in W3.1b —
+        // a malformed ASSIGNED kind now fails recovery closed instead).
         .with_extra_sections(vec![crate::format::SnapshotSection::new(
-            2,
+            0x7F,
             b"unsupported".to_vec(),
         )
         .expect("extra section")]);

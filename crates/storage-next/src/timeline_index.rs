@@ -110,6 +110,35 @@ impl RetainedCommitTimeline {
         })
     }
 
+    /// W3.1b: a branch created in-process starts with provably complete
+    /// (empty) coverage — every later commit flows through the observation
+    /// hook, so completeness holds by construction and checkpoints can
+    /// persist the index without a scan ever having run. No-op unless the
+    /// index is empty and unseeded (a recovered branch must NOT be marked).
+    pub(crate) fn mark_complete_from_birth(&self) {
+        let mut state = self.inner.write();
+        if state.entries.is_empty() {
+            state.complete = true;
+        }
+    }
+
+    /// W3.1b: the persistable form — entries with version ≤ `bound`, in
+    /// version order. `None` unless the index is complete (persisting a
+    /// partial index would fabricate coverage at restore).
+    pub(crate) fn snapshot_entries(
+        &self,
+        bound: CommitVersion,
+    ) -> Option<Vec<RetainedTimelineEntry>> {
+        let state = self.inner.read();
+        if !state.complete {
+            return None;
+        }
+        let end = state
+            .entries
+            .partition_point(|entry| entry.commit_version().as_u64() <= bound.as_u64());
+        Some(state.entries[..end].to_vec())
+    }
+
     /// Record one applied commit. Called once per timeline row that reaches
     /// the branch append funnel — the second row of a commit's pair (same
     /// version, same timestamp) is deduplicated here. Anything inconsistent

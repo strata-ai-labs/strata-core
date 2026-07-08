@@ -17,8 +17,9 @@ use crate::branch::state::snapshot::{
 };
 use crate::branch::state::BranchLocalState;
 use crate::format::{
-    decode_snapshot_row_payload, encode_snapshot_row_section, FormatError, SnapshotContainer,
-    SnapshotSection, WalRecord, SNAPSHOT_ROW_SECTION_KIND,
+    decode_snapshot_row_payload, decode_snapshot_timeline_payload, encode_snapshot_row_section,
+    FormatError, SnapshotContainer, SnapshotSection, WalRecord, SNAPSHOT_ROW_SECTION_KIND,
+    SNAPSHOT_TIMELINE_SECTION_KIND,
 };
 use crate::object::ObjectName;
 use crate::row::StorageRow;
@@ -302,6 +303,15 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
             request.checkpoint_identity_seed(),
             seeded_rows,
         )?;
+        // W3.1b: restore the seeded branch's retained-timeline index from the
+        // snapshot's timeline section (validated ≤ watermark). WAL-tail replay
+        // observations extend it, so reopen never rescans the timeline space.
+        // An absent/foreign section leaves the index unseeded — the W3.1a
+        // scan fallback. Non-seeded branches keep the scan fallback until
+        // W3.1c extends per-branch restore.
+        if let Some(branch) = recovered_branch.as_ref() {
+            restore_retained_timeline(branch, container.sections(), watermark)?;
+        }
         Ok((
             LifecycleRecoveredCheckpoint {
                 snapshot_id: Some(snapshot_id),
@@ -749,6 +759,46 @@ pub(crate) fn encode_checkpoint_row_section(
     rows: &[StorageRow],
 ) -> Result<SnapshotSection, FormatError> {
     encode_snapshot_row_section(rows)
+}
+
+/// W3.1b: seed a recovered branch's retained-timeline index from the
+/// snapshot's timeline section. Entries above the snapshot watermark mean a
+/// corrupt or mismatched section — fail closed (the index stays unseeded and
+/// every lookup falls back to the scan).
+fn restore_retained_timeline(
+    branch: &BranchLocalState,
+    sections: &[SnapshotSection],
+    watermark: CommitVersion,
+) -> LifecycleResult<()> {
+    for section in sections {
+        if section.section_kind() != SNAPSHOT_TIMELINE_SECTION_KIND {
+            continue;
+        }
+        let groups = decode_snapshot_timeline_payload(section.payload()).map_err(format_error)?;
+        for group in groups {
+            if group.branch_id != branch.branch_id() {
+                continue;
+            }
+            if group
+                .entries
+                .last()
+                .is_some_and(|(version, _)| version.as_u64() > watermark.as_u64())
+            {
+                return Err(LifecycleError::RecoveryFailed {
+                    reason: "timeline section entry exceeds snapshot watermark",
+                });
+            }
+            let entries = group
+                .entries
+                .iter()
+                .map(|(version, timestamp)| {
+                    crate::timeline_index::RetainedTimelineEntry::new(*version, *timestamp)
+                })
+                .collect::<Vec<_>>();
+            branch.retained_timeline().seed_from_scan(&entries);
+        }
+    }
+    Ok(())
 }
 
 fn decode_checkpoint_rows(sections: &[SnapshotSection]) -> LifecycleResult<Vec<StorageRow>> {

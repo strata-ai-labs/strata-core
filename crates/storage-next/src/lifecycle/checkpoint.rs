@@ -1548,9 +1548,38 @@ pub(crate) fn checkpoint_durable_branch_with_budget(
                 branch.inherited_layers(),
                 visible_version,
             );
-            Ok((rows, branch.owned_table_count() > 0, flush_boundary))
+            // W3.1b: persist the retained timeline alongside the delta rows
+            // (only when provably complete; a fallback-scan reopen stays
+            // correct otherwise).
+            let timeline_groups = timeline_group_for_branch(branch, visible_version)
+                .into_iter()
+                .collect();
+            Ok((
+                rows,
+                branch.owned_table_count() > 0,
+                flush_boundary,
+                timeline_groups,
+            ))
         },
     )
+}
+
+/// W3.1b: the branch's persistable timeline group — `None` unless its
+/// retained index is complete at `visible_version`.
+fn timeline_group_for_branch(
+    branch: &BranchLocalState,
+    visible_version: CommitVersion,
+) -> Option<crate::format::SnapshotTimelineBranchGroup> {
+    let entries = branch
+        .retained_timeline()
+        .snapshot_entries(visible_version)?;
+    Some(crate::format::SnapshotTimelineBranchGroup {
+        branch_id: branch.branch_id(),
+        entries: entries
+            .iter()
+            .map(|entry| (entry.commit_version(), entry.commit_timestamp()))
+            .collect(),
+    })
 }
 
 /// Multi-branch checkpoint entry point: collect rows from every active
@@ -1590,6 +1619,7 @@ pub(crate) fn checkpoint_durable_runtime_with_budget(
             let mut combined = Vec::new();
             let mut has_durable_rows = false;
             let mut flush_boundary: Option<CommitVersion> = None;
+            let mut timeline_groups = Vec::new();
             for descriptor in &active_descriptors {
                 let branch = branch_catalog.branch_state(descriptor.branch_id())?;
                 has_durable_rows |= branch.owned_table_count() > 0;
@@ -1604,8 +1634,11 @@ pub(crate) fn checkpoint_durable_runtime_with_budget(
                     .checkpoint_rows(visible_version)
                     .map_err(branch_error)?;
                 combined.append(&mut rows);
+                if let Some(group) = timeline_group_for_branch(branch, visible_version) {
+                    timeline_groups.push(group);
+                }
             }
-            Ok((combined, has_durable_rows, flush_boundary))
+            Ok((combined, has_durable_rows, flush_boundary, timeline_groups))
         },
     )
 }
@@ -1653,6 +1686,7 @@ pub(crate) fn checkpoint_durable_rows_with_budget(
         request,
         budget,
         rows,
+        &[],
         has_durable_rows,
         flush_boundary,
     )
@@ -1670,6 +1704,7 @@ fn publish_checkpoint(
         Vec<crate::row::StorageRow>,
         bool,
         Option<CommitVersion>,
+        Vec<crate::format::SnapshotTimelineBranchGroup>,
     )>,
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
     let quiesce = guard_set.try_begin_quiesce().map_err(commit_error)?;
@@ -1682,7 +1717,7 @@ fn publish_checkpoint(
     // owned-level rows under the watermark (so an empty delta still advances the snapshot
     // watermark instead of deferring), and the snapshot's base floor (the highest durably
     // flushed commit it deltas over, `None` for a self-contained full snapshot).
-    let (rows, has_durable_rows, flush_boundary) = collect_rows(visible_version)?;
+    let (rows, has_durable_rows, flush_boundary, timeline_groups) = collect_rows(visible_version)?;
     drop(quiesce);
     publish_checkpoint_rows(
         services,
@@ -1690,6 +1725,7 @@ fn publish_checkpoint(
         request,
         budget,
         &rows,
+        &timeline_groups,
         has_durable_rows,
         flush_boundary,
     )
@@ -1701,6 +1737,7 @@ fn publish_checkpoint_rows(
     request: &LifecycleCheckpointRequest,
     budget: Option<&StorageBudgetLedger>,
     rows: &[crate::row::StorageRow],
+    timeline_groups: &[crate::format::SnapshotTimelineBranchGroup],
     has_durable_rows: bool,
     flush_boundary: Option<CommitVersion>,
 ) -> LifecycleResult<LifecycleCheckpointOutcome> {
@@ -1719,8 +1756,17 @@ fn publish_checkpoint_rows(
             reason: "checkpoint row count must fit in u64",
         })?;
     validate_snapshot_id_advances(services.manifest(), request.snapshot_id())?;
-    let mut sections = Vec::with_capacity(1 + request.extra_sections().len());
+    let mut sections = Vec::with_capacity(2 + request.extra_sections().len());
     sections.push(encode_checkpoint_row_section(rows).map_err(format_error)?);
+    // W3.1b: the retained-timeline section, only for branches whose index was
+    // provably complete at the watermark (absent = reopen falls back to the
+    // timeline-space scan, the W3.1a behavior).
+    if !timeline_groups.is_empty() {
+        sections.push(
+            crate::format::encode_snapshot_timeline_section(timeline_groups)
+                .map_err(format_error)?,
+        );
+    }
     sections.extend(request.extra_sections().iter().cloned());
     require_checkpoint_artifact_budget(budget, request, &sections)?;
     let active_wal_segment = services.wal().active_segment_id();
