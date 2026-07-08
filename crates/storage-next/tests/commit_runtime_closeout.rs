@@ -164,7 +164,7 @@ fn commit_runtime_closeout_replay_contracts_are_exercised() {
         "replay_exact_duplicate_is_idempotent_catches_up_and_clears_matching_gate",
         "replay_rejects_duplicate_mismatch_without_mutating_state",
         "replay_duplicate_mismatch_checks_timestamp_expiry_and_tombstone",
-        "replay_rejects_record_without_timeline_pair",
+        "replay_accepts_record_without_timeline_rows_and_rejects_partial_pair",
         "replay_rejects_timeline_pair_that_disagrees_with_wal_facts",
         "replay_apply_failure_records_durable_not_applied_gate_without_catch_up",
         "replay_visible_publish_failure_records_applied_not_visible_gate",

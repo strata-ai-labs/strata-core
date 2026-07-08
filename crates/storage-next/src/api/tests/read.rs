@@ -3,10 +3,8 @@ use super::*;
 use std::time::Duration;
 
 use crate::branch::read::BranchTimestampCoverage;
-use crate::commit::COMMIT_TIMELINE_SPACE;
 #[cfg(feature = "perf-trace")]
 use crate::observability::perf_trace;
-use crate::row::{PhysicalKey, StorageRow, StorageSpaceId as RowStorageSpaceId};
 
 fn open_runtime() -> StorageRuntime<'static> {
     StorageRuntime::open_ephemeral()
@@ -270,6 +268,65 @@ fn read_at_timestamp_resolves_to_commit_version() {
     let row = outcome.row().expect("row present");
     assert_eq!(read_value(row), b"old");
     assert_eq!(row.commit_version(), first.commit_version());
+}
+
+/// W3.1a oracle: timestamp reads answer identically before and after the
+/// retained-timeline index warms. The first probe pass runs on a cold index
+/// (scan fallback, which seeds it); the second pass takes the index fast
+/// path; the third pass runs after further commits extend the seeded index
+/// through the apply-funnel observations. Every answer is checked against
+/// the known committed history.
+#[test]
+fn retained_timeline_index_matches_history_before_and_after_warming() {
+    let mut runtime = open_runtime();
+    let stamps = [10u64, 11, 15, 40, 90, 200];
+    for (index, ts) in stamps.iter().enumerate() {
+        commit_put(&mut runtime, b"alpha", format!("v{index}").as_bytes(), *ts);
+    }
+
+    let expect_at = |runtime: &StorageRuntime<'static>, probe: u64, history: &[u64]| {
+        let outcome = runtime
+            .read_point(&point_request(
+                b"alpha",
+                ReadBound::AtTimestamp(Timestamp::from_micros(probe)),
+            ))
+            .expect("timestamp read");
+        let row = outcome.row().expect("row present");
+        let expected_index = history.iter().filter(|ts| **ts <= probe).count() - 1;
+        assert_eq!(
+            read_value(row),
+            format!("v{expected_index}").as_bytes(),
+            "probe {probe} must resolve to the last commit at or before it"
+        );
+    };
+    let expect_unavailable = |runtime: &StorageRuntime<'static>, probe: u64| {
+        let error = runtime
+            .read_point(&point_request(
+                b"alpha",
+                ReadBound::AtTimestamp(Timestamp::from_micros(probe)),
+            ))
+            .expect_err("out-of-history probe must reject");
+        assert_eq!(error.class(), StorageApiErrorClass::HistoryUnavailable);
+    };
+
+    // Pass 1 (cold index: scan fallback seeds it) and pass 2 (index fast
+    // path) must agree probe-for-probe.
+    for _pass in 0..2 {
+        expect_unavailable(&runtime, 9);
+        for probe in [10u64, 11, 12, 15, 39, 40, 89, 90, 199, 200] {
+            expect_at(&runtime, probe, &stamps);
+        }
+        expect_unavailable(&runtime, 201);
+    }
+
+    // Extend the history: the seeded index grows via apply-funnel
+    // observations and keeps answering exactly.
+    commit_put(&mut runtime, b"alpha", b"v6", 500);
+    let extended = [10u64, 11, 15, 40, 90, 200, 500];
+    for probe in [200u64, 250, 500] {
+        expect_at(&runtime, probe, &extended);
+    }
+    expect_unavailable(&runtime, 501);
 }
 
 #[test]
@@ -775,7 +832,7 @@ fn timestamp_lookup_after_latest_returns_matched_with_miss_flag() {
 }
 
 #[test]
-fn timeline_rows_commit_atomically_with_user_rows() {
+fn timeline_lookups_track_commits_without_timeline_rows() {
     let mut runtime = open_runtime();
     let commit = commit_put(&mut runtime, b"atomic-timeline", b"value", 70);
 
@@ -794,7 +851,7 @@ fn timeline_rows_commit_atomically_with_user_rows() {
 
     assert_eq!(commit.put_count(), 1);
     assert_eq!(commit.delete_count(), 0);
-    assert_eq!(commit.timeline_row_count(), 2);
+    assert_eq!(commit.timeline_row_count(), 0);
     assert_eq!(
         point.row().expect("user row").commit_version(),
         commit.commit_version()
@@ -893,6 +950,65 @@ fn timeline_lookup_survives_flush_and_compaction() {
     assert_eq!(after_reverse.timestamp(), second.commit_timestamp());
 }
 
+/// W3.1b oracle: a durable reopen restores the retained-timeline index
+/// COMPLETE from the checkpoint section, before any read runs a seeding
+/// scan — and the restored index answers exactly. The pre-close `as_of`
+/// seeds the fresh database's index (the durable-open initial branch is
+/// deliberately not complete-from-birth), so the close-time checkpoint
+/// persists it.
+#[cfg(feature = "localfs")]
+#[test]
+fn retained_timeline_restores_complete_across_durable_reopen() {
+    let root = temp_dir_for_api_test("read-timeline-restore-complete");
+    {
+        let mut runtime = open_durable_runtime(root.clone());
+        commit_put(&mut runtime, b"warm-a", b"old", 10);
+        commit_put(&mut runtime, b"warm-a", b"new", 30);
+        // Seed by scan (fresh durable DBs start unproven), so the close-time
+        // checkpoint persists the index.
+        let outcome = runtime
+            .read_point(&point_request(
+                b"warm-a",
+                ReadBound::AtTimestamp(Timestamp::from_micros(20)),
+            ))
+            .expect("pre-close timestamp read");
+        assert_eq!(read_value(outcome.row().expect("row")), b"old");
+        assert!(runtime
+            .retained_timeline_complete_for_test(branch())
+            .expect("inspect pre-close"));
+        // Explicit checkpoint: the close ladder's own checkpoint is
+        // policy-gated for tiny WAL tails, and the persistence path under
+        // test is checkpoint-time section writing.
+        let checkpoint = MaintenanceRequest::new(
+            MaintenanceTask::Checkpoint,
+            MaintenanceScope::Branch(branch()),
+        );
+        runtime.maintenance(&checkpoint).expect("checkpoint");
+        runtime.close().expect("close durable runtime");
+    }
+
+    let runtime = open_durable_runtime(root);
+    // Complete BEFORE any read: restored from the checkpoint section, not
+    // seeded by a scan.
+    assert!(runtime
+        .retained_timeline_complete_for_test(branch())
+        .expect("inspect post-reopen"));
+    let outcome = runtime
+        .read_point(&point_request(
+            b"warm-a",
+            ReadBound::AtTimestamp(Timestamp::from_micros(20)),
+        ))
+        .expect("post-reopen timestamp read");
+    assert_eq!(read_value(outcome.row().expect("row")), b"old");
+    let outcome = runtime
+        .read_point(&point_request(
+            b"warm-a",
+            ReadBound::AtTimestamp(Timestamp::from_micros(30)),
+        ))
+        .expect("post-reopen latest read");
+    assert_eq!(read_value(outcome.row().expect("row")), b"new");
+}
+
 #[cfg(feature = "localfs")]
 #[test]
 fn timeline_lookup_survives_durable_recovery() {
@@ -956,62 +1072,6 @@ fn timeline_lookup_over_many_user_rows_scans_no_user_rows() {
     assert_eq!(perf.commit_timeline_version_facts(), retained);
     assert_eq!(perf.commit_timeline_reconcile_entry_checks(), retained * 4);
     assert_eq!(perf.commit_timeline_lookup_entries_scanned(), 6);
-}
-
-#[test]
-fn timeline_corruption_maps_to_diagnostic_error() {
-    let mut runtime = open_runtime();
-    commit_put(&mut runtime, b"a", b"a", 10);
-    let bad_key = PhysicalKey::new(
-        branch(),
-        COMMIT_TIMELINE_SPACE,
-        RowStorageSpaceId::COMMIT_TIMELINE,
-        b"ts-v1\0short".to_vec(),
-    )
-    .expect("timeline key");
-    runtime
-        .append_raw_row_for_test(StorageRow::put(
-            bad_key,
-            CommitVersion::new(99),
-            Timestamp::from_micros(99),
-            Timestamp::EPOCH,
-            99_u64.to_be_bytes(),
-        ))
-        .expect("append corrupt timeline row");
-
-    let error = runtime
-        .timeline_bounds(TimelineBoundsRequest::new(branch()))
-        .expect_err("timeline corruption rejected");
-    assert_eq!(error.class(), StorageApiErrorClass::Internal);
-    assert!(error.source().is_some());
-}
-
-#[test]
-fn timeline_tombstone_corruption_maps_to_diagnostic_error() {
-    let mut runtime = open_runtime();
-    commit_put(&mut runtime, b"a", b"a", 10);
-    let mut user_key = b"ver-v1\0".to_vec();
-    user_key.extend_from_slice(&99_u64.to_be_bytes());
-    let bad_key = PhysicalKey::new(
-        branch(),
-        COMMIT_TIMELINE_SPACE,
-        RowStorageSpaceId::COMMIT_TIMELINE,
-        user_key,
-    )
-    .expect("timeline key");
-    runtime
-        .append_raw_row_for_test(StorageRow::tombstone(
-            bad_key,
-            CommitVersion::new(99),
-            Timestamp::from_micros(99),
-        ))
-        .expect("append corrupt timeline tombstone");
-
-    let error = runtime
-        .timeline_bounds(TimelineBoundsRequest::new(branch()))
-        .expect_err("timeline tombstone rejected");
-    assert_eq!(error.class(), StorageApiErrorClass::Internal);
-    assert!(error.source().is_some());
 }
 
 #[cfg(not(target_arch = "wasm32"))]

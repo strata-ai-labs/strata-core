@@ -336,7 +336,10 @@ fn bootstrap_rejects_timeline_only_wal_payload_before_open() {
 }
 
 #[test]
-fn bootstrap_rejects_log_record_without_timeline_rows_before_open() {
+fn bootstrap_accepts_log_record_without_timeline_rows_before_open() {
+    // W3.1c: commits no longer materialize timeline rows — a user-only WAL
+    // record is the normal shape and replays cleanly at open (the record's
+    // stamp is the timeline fact, observed into the retained index).
     let backend: &'static RecoveryTestBackend = Box::leak(Box::new(RecoveryTestBackend::new()));
     let branch = branch_id(0x48);
     let mut shell = assemble_shell(open_plan(RecoveryStrictness::Strict), branch, backend)
@@ -353,16 +356,51 @@ fn bootstrap_rejects_log_record_without_timeline_rows_before_open() {
         .recover(&request)
         .expect("WAL recovery outcome");
 
-    let error = shell
+    let reopened = shell
         .complete_recovery(&outcome)
-        .expect_err("missing timeline replay rejects");
-
+        .expect("stamp-only record replays and opens");
     assert_eq!(
-        error,
-        LifecycleError::TimelineRecoveryMismatch {
-            reason: "replay payload is missing commit timeline rows",
-        },
+        reopened.branch_state().max_commit_version(),
+        Some(CommitVersion::new(5))
     );
+}
+
+/// W3.1c: corrupt legacy timeline rows are decoded in exactly one place now —
+/// the recovery-time completeness bridge — and fail the open closed instead
+/// of seeding a wrong index. (Pre-W3.1c this surfaced at read time; the two
+/// api-level corruption tests moved here with the decode path.)
+#[test]
+fn timeline_bridge_rejects_corrupt_legacy_timeline_rows() {
+    let branch = branch_id(0x52);
+    let mut state = crate::branch::state::BranchLocalState::new(
+        branch,
+        crate::branch::config::BranchRuntimeConfig::default(),
+    )
+    .expect("state");
+    let bad_key = PhysicalKey::new(
+        branch,
+        crate::commit::COMMIT_TIMELINE_SPACE,
+        StorageSpaceId::COMMIT_TIMELINE,
+        b"ts-v1\0short".to_vec(),
+    )
+    .expect("timeline key");
+    state
+        .append_committed_row(StorageRow::put(
+            bad_key,
+            CommitVersion::new(99),
+            Timestamp::from_micros(99),
+            Timestamp::EPOCH,
+            99_u64.to_be_bytes().to_vec(),
+        ))
+        .expect("append corrupt legacy timeline row");
+    // The index never saw a completeness seed, so the bridge must scan — and
+    // the scan's decode fails closed on the malformed key.
+    let error = crate::lifecycle::recovery::ensure_branch_timeline_complete(&state)
+        .expect_err("corrupt legacy timeline row fails the bridge closed");
+    assert!(matches!(
+        error,
+        LifecycleError::LowerLayer { .. } | LifecycleError::TimelineRecoveryMismatch { .. }
+    ));
 }
 
 #[test]

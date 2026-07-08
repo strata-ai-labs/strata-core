@@ -17,8 +17,9 @@ use crate::branch::state::snapshot::{
 };
 use crate::branch::state::BranchLocalState;
 use crate::format::{
-    decode_snapshot_row_payload, encode_snapshot_row_section, FormatError, SnapshotContainer,
-    SnapshotSection, WalRecord, SNAPSHOT_ROW_SECTION_KIND,
+    decode_snapshot_row_payload, decode_snapshot_timeline_payload, encode_snapshot_row_section,
+    FormatError, SnapshotContainer, SnapshotSection, WalRecord, SNAPSHOT_ROW_SECTION_KIND,
+    SNAPSHOT_TIMELINE_SECTION_KIND,
 };
 use crate::object::ObjectName;
 use crate::row::StorageRow;
@@ -65,6 +66,11 @@ pub(crate) struct LifecycleRecoveredCheckpoint {
     // any catalog where the seeded branch is the only one with checkpoint
     // coverage.
     non_seeded_rows: Vec<StorageRow>,
+    // W3.1b: every branch's retained-timeline group from the snapshot's
+    // timeline section (validated ≤ watermark at decode). The seeded branch
+    // is seeded during `recover_checkpoint`; the rest are seeded post-
+    // catalog-build alongside the non-seeded row install.
+    timeline_groups: Vec<crate::format::SnapshotTimelineBranchGroup>,
     // Identity seed for L0 table materialization during post-catalog
     // install. Carried from the recovery request so the seeded and non-
     // seeded installs share the same derivation base.
@@ -302,6 +308,16 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
             request.checkpoint_identity_seed(),
             seeded_rows,
         )?;
+        // W3.1b: restore retained-timeline indexes from the snapshot's
+        // timeline section (validated ≤ watermark). The seeded branch seeds
+        // here; non-seeded branches seed post-catalog-build in bootstrap.
+        // WAL-tail replay observations extend every seeded index, so reopen
+        // never rescans the timeline space. An absent group leaves that
+        // branch's index unseeded — the W3.1a scan fallback.
+        let timeline_groups = decode_timeline_groups(container.sections(), watermark)?;
+        if let Some(branch) = recovered_branch.as_ref() {
+            seed_branch_timeline_from_groups(branch, &timeline_groups);
+        }
         Ok((
             LifecycleRecoveredCheckpoint {
                 snapshot_id: Some(snapshot_id),
@@ -310,6 +326,7 @@ impl<'shell, 'backend, S> LifecycleRecoveryRuntime<'shell, 'backend, S> {
                 row_count,
                 install_outcome: Some(install_outcome),
                 non_seeded_rows,
+                timeline_groups,
                 install_identity_seed: Some(request.checkpoint_identity_seed().clone()),
             },
             recovered_branch,
@@ -636,6 +653,7 @@ impl LifecycleRecoveredCheckpoint {
             row_count: 0,
             install_outcome: None,
             non_seeded_rows: Vec::new(),
+            timeline_groups: Vec::new(),
             install_identity_seed: None,
         }
     }
@@ -648,8 +666,15 @@ impl LifecycleRecoveredCheckpoint {
             row_count: 0,
             install_outcome: None,
             non_seeded_rows: Vec::new(),
+            timeline_groups: Vec::new(),
             install_identity_seed: None,
         }
+    }
+
+    /// W3.1b: every branch's decoded timeline group (seeded branch already
+    /// applied; non-seeded branches applied post-catalog-build).
+    pub(crate) fn timeline_groups(&self) -> &[crate::format::SnapshotTimelineBranchGroup] {
+        &self.timeline_groups
     }
 
     pub(crate) fn non_seeded_rows(&self) -> &[StorageRow] {
@@ -749,6 +774,102 @@ pub(crate) fn encode_checkpoint_row_section(
     rows: &[StorageRow],
 ) -> Result<SnapshotSection, FormatError> {
     encode_snapshot_row_section(rows)
+}
+
+/// W3.1b: decode every timeline group from the snapshot's timeline section,
+/// failing closed when any entry exceeds the snapshot watermark (a corrupt or
+/// mismatched section must not seed any index).
+fn decode_timeline_groups(
+    sections: &[SnapshotSection],
+    watermark: CommitVersion,
+) -> LifecycleResult<Vec<crate::format::SnapshotTimelineBranchGroup>> {
+    let mut groups = Vec::new();
+    for section in sections {
+        if section.section_kind() != SNAPSHOT_TIMELINE_SECTION_KIND {
+            continue;
+        }
+        let decoded = decode_snapshot_timeline_payload(section.payload()).map_err(format_error)?;
+        for group in &decoded {
+            if group
+                .entries
+                .last()
+                .is_some_and(|(version, _)| version.as_u64() > watermark.as_u64())
+            {
+                return Err(LifecycleError::RecoveryFailed {
+                    reason: "timeline section entry exceeds snapshot watermark",
+                });
+            }
+        }
+        groups.extend(decoded);
+    }
+    Ok(groups)
+}
+
+/// W3.1c: the completeness INVARIANT — every branch leaves recovery with a
+/// provably complete retained-timeline index. If the checkpoint section
+/// already seeded it, this is a no-op. Otherwise seed from a one-time scan of
+/// the branch's timeline-space rows: empty for a fresh branch (complete-empty
+/// is exact), and the full pre-elision history for databases created before
+/// W3.1c removed the rows (their rows still exist in tables). WAL-tail replay
+/// observations extend the result. After this, the index is the timeline's
+/// only read source — the scan never runs at read time again.
+pub(crate) fn ensure_branch_timeline_complete(branch: &BranchLocalState) -> LifecycleResult<()> {
+    if branch.retained_timeline().is_complete() {
+        return Ok(());
+    }
+    let view = branch.capture_read_view().map_err(branch_error)?;
+    let bounds = crate::branch::read::BranchScanBounds::unbounded(
+        branch.branch_id(),
+        crate::commit::COMMIT_TIMELINE_SPACE,
+        crate::row::StorageSpaceId::COMMIT_TIMELINE,
+    )
+    .map_err(branch_error)?;
+    let rows = view
+        .scan_range_including_tombstones(&bounds, crate::branch::read::BranchReadBound::Latest)
+        .map_err(branch_error)?;
+    let timeline = crate::commit::CommitTimelineView::from_rows(
+        branch.branch_id(),
+        rows.iter().map(crate::branch::read::BranchHistoryRow::row),
+    )
+    .map_err(|source| {
+        LifecycleError::lower_layer_with(
+            crate::lifecycle::LifecycleLowerLayer::CommitRuntime,
+            "commit runtime failed",
+            source,
+        )
+    })?;
+    let entries: Vec<crate::timeline_index::RetainedTimelineEntry> = timeline
+        .entries_by_version()
+        .iter()
+        .map(|entry| {
+            crate::timeline_index::RetainedTimelineEntry::new(
+                entry.commit_version(),
+                entry.commit_timestamp(),
+            )
+        })
+        .collect::<Vec<_>>();
+    branch.retained_timeline().seed_from_scan(&entries);
+    Ok(())
+}
+
+/// Seed a branch's retained-timeline index from its decoded group, if present.
+pub(crate) fn seed_branch_timeline_from_groups(
+    branch: &BranchLocalState,
+    groups: &[crate::format::SnapshotTimelineBranchGroup],
+) {
+    for group in groups {
+        if group.branch_id != branch.branch_id() {
+            continue;
+        }
+        let entries = group
+            .entries
+            .iter()
+            .map(|(version, timestamp)| {
+                crate::timeline_index::RetainedTimelineEntry::new(*version, *timestamp)
+            })
+            .collect::<Vec<_>>();
+        branch.retained_timeline().seed_from_scan(&entries);
+    }
 }
 
 fn decode_checkpoint_rows(sections: &[SnapshotSection]) -> LifecycleResult<Vec<StorageRow>> {

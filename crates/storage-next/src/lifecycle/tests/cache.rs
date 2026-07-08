@@ -225,7 +225,7 @@ fn cache_runtime_executes_cache_commit_and_reads_through_branch_state() {
         crate::commit::CommitDurabilityClass::NotDurable
     );
     assert_eq!(outcome.mutation_counts().puts(), 1);
-    assert_eq!(outcome.mutation_counts().timeline_rows(), 2);
+    assert_eq!(outcome.mutation_counts().timeline_rows(), 0);
     assert_eq!(runtime.visible_version(), CommitVersion::new(1));
     assert_eq!(
         runtime.branch_state().max_commit_version(),

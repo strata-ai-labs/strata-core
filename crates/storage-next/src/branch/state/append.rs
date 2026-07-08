@@ -109,6 +109,12 @@ impl BranchLocalState {
             .insert_row(row)
             .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
         self.track_committed_row(commit_version, commit_timestamp, is_tombstone);
+        // W3.1c: every applied row carries its commit's stamp — observing it
+        // here (the single apply funnel) keeps the retained-timeline index
+        // current on every path (durable, cache, replay, groups). Repeats of
+        // one commit's stamp deduplicate inside `observe`.
+        self.retained_timeline()
+            .observe(commit_version, commit_timestamp);
         self.rotate_active_if_size_threshold_reached();
 
         Ok(BranchAppendOutcome {
@@ -138,8 +144,16 @@ impl BranchLocalState {
         // condition before mutation. The rollback guard below handles any
         // unexpected table insertion rejection without cloning the full branch.
         let insert_timer = perf_trace::start_timer();
+        // W3.1c: stamps collected during the loop (deduplicated — a batch is
+        // normally one commit), observed only after the whole batch succeeds:
+        // a rolled-back batch must leave no timeline trace.
+        let mut timeline_stamps: Vec<(CommitVersion, Timestamp)> = Vec::new();
         for validated in validated_rows {
             let rollback_key = validated.table_row.key().clone();
+            let stamp = (validated.commit_version, validated.commit_timestamp);
+            if timeline_stamps.last() != Some(&stamp) {
+                timeline_stamps.push(stamp);
+            }
             if let Err(source) = self.active.insert_table_row(validated.table_row) {
                 perf_trace::record_append_insert_rows_elapsed(insert_timer);
                 rollback_direct_append(self, active_snapshot, metadata_snapshot, &inserted_keys);
@@ -156,6 +170,10 @@ impl BranchLocalState {
 
         perf_trace::record_append_rows_applied(inserted_keys.len());
         let appended_rows = inserted_keys.len();
+        for (commit_version, commit_timestamp) in timeline_stamps {
+            self.retained_timeline()
+                .observe(commit_version, commit_timestamp);
+        }
         self.rotate_active_if_size_threshold_reached();
         let outcome = BranchAppendBatchOutcome {
             branch_id: self.branch_id,

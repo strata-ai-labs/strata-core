@@ -19,6 +19,7 @@ mod retained_history_extension;
 mod segment_metadata;
 mod snapshot;
 mod snapshot_rows;
+mod snapshot_timeline;
 mod storage_row;
 mod table;
 mod table_manifest;
@@ -53,6 +54,10 @@ pub(crate) use snapshot::{
 };
 pub(crate) use snapshot_rows::{
     decode_snapshot_row_payload, encode_snapshot_row_section, SNAPSHOT_ROW_SECTION_KIND,
+};
+pub(crate) use snapshot_timeline::{
+    decode_snapshot_timeline_payload, encode_snapshot_timeline_section,
+    SnapshotTimelineBranchGroup, SNAPSHOT_TIMELINE_SECTION_KIND,
 };
 pub(crate) use storage_row::{decode_storage_row, encode_storage_row};
 #[expect(

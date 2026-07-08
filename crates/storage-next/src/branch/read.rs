@@ -971,6 +971,12 @@ pub(crate) struct BranchReadView {
     inherited_layers: Vec<BranchInheritedLayer>,
     facts: BranchStateFacts,
     timestamp_coverage: BranchTimestampCoverage,
+    /// W3.1a: the branch's retained-timeline index and whether this view
+    /// holds the LIVE active memtable (`capture_snapshot`) — live views may
+    /// serve the index tip; pinned views clamp to their captured facts.
+    /// `None` (constructors that never attach one, e.g. testkit) = always
+    /// fall back to the timeline-space scan.
+    retained_timeline: Option<(Arc<crate::timeline_index::RetainedCommitTimeline>, bool)>,
 }
 
 impl BranchReadView {
@@ -1008,6 +1014,7 @@ impl BranchReadView {
             inherited_layers,
             facts,
             timestamp_coverage: BranchTimestampCoverage::unknown(),
+            retained_timeline: None,
         })
     }
 
@@ -1035,6 +1042,7 @@ impl BranchReadView {
             inherited_layers,
             facts,
             timestamp_coverage: BranchTimestampCoverage::unknown(),
+            retained_timeline: None,
         })
     }
 
@@ -1056,6 +1064,29 @@ impl BranchReadView {
     ) -> Self {
         self.timestamp_coverage = timestamp_coverage;
         self
+    }
+
+    /// W3.1a: attach the branch's retained-timeline index. `live_active` is
+    /// true for `capture_snapshot` views (live memtable — lookups may serve
+    /// the index tip) and false for pinned captures (lookups clamp to the
+    /// view's captured max commit version).
+    pub(crate) fn with_retained_timeline(
+        mut self,
+        index: Arc<crate::timeline_index::RetainedCommitTimeline>,
+        live_active: bool,
+    ) -> Self {
+        self.retained_timeline = Some((index, live_active));
+        self
+    }
+
+    /// W3.1a: the attached retained-timeline index, if any, with the
+    /// live-active flag.
+    pub(crate) fn retained_timeline(
+        &self,
+    ) -> Option<(&Arc<crate::timeline_index::RetainedCommitTimeline>, bool)> {
+        self.retained_timeline
+            .as_ref()
+            .map(|(index, live)| (index, *live))
     }
 
     pub(crate) fn active_row_count(&self) -> usize {

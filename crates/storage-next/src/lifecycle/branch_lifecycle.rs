@@ -325,6 +325,10 @@ impl LifecycleBranchCatalog {
             None => {
                 let state =
                     BranchLocalState::new(branch_id, self.branch_config).map_err(branch_error)?;
+                // W3.1b: a branch born in-process has provably complete
+                // (empty) timeline coverage — checkpoints can persist its
+                // retained index without a seeding scan ever running.
+                state.retained_timeline().mark_complete_from_birth();
                 let descriptor =
                     LifecycleBranchDescriptor::active(branch_id, generation, created_at);
                 self.registry
@@ -389,6 +393,8 @@ impl LifecycleBranchCatalog {
         }
 
         let state = BranchLocalState::new(branch_id, self.branch_config).map_err(branch_error)?;
+        // W3.1b: rebirth is an empty in-process state — complete from birth.
+        state.retained_timeline().mark_complete_from_birth();
         let descriptor = LifecycleBranchDescriptor::active(branch_id, generation, created_at)
             .with_next_revision();
         self.registry
@@ -703,6 +709,8 @@ impl LifecycleBranchCatalog {
             .map_err(branch_error)?;
         let empty_state =
             BranchLocalState::new(branch_id, self.branch_config).map_err(branch_error)?;
+        // W3.1b: a cleared branch restarts with empty, complete coverage.
+        empty_state.retained_timeline().mark_complete_from_birth();
         let release_plan = self.release_plan_after_removing(branch_id, &old_snapshot)?;
 
         let active = descriptor.with_next_revision();
@@ -856,6 +864,16 @@ impl LifecycleBranchCatalog {
                 .expect("destination state is always present");
             (child, 0, 0)
         };
+        // W3.1c: the child's retained timeline = the parent's history at the
+        // fork point (its own commits observe from here on). The parent's
+        // index is the era-independent source — post-elision there are no
+        // timeline rows to copy. A rare incomplete parent falls back to
+        // scanning the child's own view (legacy rows), which is exact for
+        // pre-elision history.
+        match source.retained_timeline().snapshot_entries(fork_version) {
+            Some(entries) => child.retained_timeline().seed_from_scan(&entries),
+            None => crate::lifecycle::recovery::ensure_branch_timeline_complete(&child)?,
+        }
         let parent = LifecycleBranchParent::new(source_branch_id, fork_version);
         let descriptor = LifecycleBranchDescriptor::active(
             destination_branch_id,

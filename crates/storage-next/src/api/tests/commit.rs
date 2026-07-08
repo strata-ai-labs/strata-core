@@ -471,7 +471,7 @@ fn commit_outcome_reports_mutation_counts() {
     assert_eq!(summary.put_count(), 1);
     assert_eq!(summary.delete_count(), 1);
     assert_eq!(summary.mutation_count(), 2);
-    assert_eq!(summary.timeline_row_count(), 2);
+    assert_eq!(summary.timeline_row_count(), 0);
 }
 
 #[test]

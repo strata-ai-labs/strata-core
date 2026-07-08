@@ -189,6 +189,9 @@ pub(crate) enum DurableBackgroundMaintenanceBuilt {
         rows: Vec<crate::row::StorageRow>,
         has_durable_rows: bool,
         flush_boundary: Option<CommitVersion>,
+        /// W3.1b: per-branch retained-timeline groups (present only for
+        /// branches whose index is provably complete at the watermark).
+        timeline_groups: Vec<crate::format::SnapshotTimelineBranchGroup>,
     },
     WalTruncation {
         task: MaintenanceTask,
@@ -250,8 +253,15 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                 let mut rows = Vec::new();
                 let mut has_durable_rows = false;
                 let mut flush_boundary: Option<CommitVersion> = None;
+                let mut timeline_groups = Vec::new();
                 for branch in &branches {
                     has_durable_rows |= branch.owned_table_count() > 0;
+                    if let Some(group) = crate::lifecycle::checkpoint::timeline_group_for_branch(
+                        branch,
+                        visible_version,
+                    ) {
+                        timeline_groups.push(group);
+                    }
                     if let Some(boundary) = branch_checkpoint_flush_boundary(
                         branch.owned_levels(),
                         branch.inherited_layers(),
@@ -271,6 +281,7 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                     rows,
                     has_durable_rows,
                     flush_boundary,
+                    timeline_groups,
                 })
             }
             Self::WalTruncation { task, proof, wal } => {
@@ -1860,12 +1871,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 rows,
                 has_durable_rows,
                 flush_boundary,
+                timeline_groups,
             } => {
                 let checkpoint = checkpoint_durable_rows_with_budget(
                     &self.services,
                     &request,
                     visible_version,
                     &rows,
+                    &timeline_groups,
                     has_durable_rows,
                     flush_boundary,
                     Some(&self.budget),

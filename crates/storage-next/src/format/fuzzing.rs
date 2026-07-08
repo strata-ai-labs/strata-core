@@ -41,6 +41,10 @@ pub(crate) fn decode_snapshot_row_payload(bytes: &[u8]) -> bool {
     snapshot_rows::decode_snapshot_row_payload(bytes).is_ok()
 }
 
+pub(crate) fn decode_snapshot_timeline_payload(bytes: &[u8]) -> bool {
+    super::decode_snapshot_timeline_payload(bytes).is_ok()
+}
+
 pub(crate) fn decode_retained_history_extension_payload(bytes: &[u8]) -> bool {
     retained_history_extension::decode_retained_history_extension_payload(bytes).is_ok()
 }

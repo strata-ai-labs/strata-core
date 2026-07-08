@@ -407,6 +407,9 @@ impl<S> LifecycleCacheRuntime<S> {
         let branch_config = branch_config_with_storage_budget(branch_config, budget.budget())?;
         let branch = BranchLocalState::new(request.initial_branch_id(), branch_config)
             .map_err(branch_error)?;
+        // W3.1b: cache mode never recovers — the initial branch is born
+        // in-process with complete (empty) timeline coverage.
+        branch.retained_timeline().mark_complete_from_birth();
         let branch_catalog = LifecycleBranchCatalog::with_existing_branch(
             &branch,
             request.branch_generation(),
