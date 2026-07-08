@@ -297,6 +297,10 @@ impl CacheBackgroundMaintenanceBuild {
                         &branch_snapshot,
                         &request,
                         Some(&budget),
+                        // B2: the data-block byte target is a durable-read
+                        // knob; cache-mode tables are memory-resident and
+                        // keep the built-in default.
+                        None,
                     )?,
                     elapsed: started_at.elapsed(),
                 })
@@ -854,7 +858,7 @@ impl<S> LifecycleCacheRuntime<S> {
             let branch = self
                 .branch_catalog
                 .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
-            flush_cache_branch_with_budget(branch, request, Some(&self.budget))
+            flush_cache_branch_with_budget(branch, request, Some(&self.budget), None)
         };
         // BS2.3: flush sealed frozen into an L0 table; republish the branch snapshot.
         self.publish_branch_snapshot(branch_id);
@@ -2250,10 +2254,13 @@ impl MaintenanceTaskRunner for CacheCloseRunner<'_> {
                 }
                 Ok(
                     flush_branch_drain_with(self.branch, &request, |branch, request| {
-                        Ok(
-                            flush_cache_branch_with_budget(branch, request, Some(self.budget))?
-                                .maintenance_outcome(),
-                        )
+                        Ok(flush_cache_branch_with_budget(
+                            branch,
+                            request,
+                            Some(self.budget),
+                            None,
+                        )?
+                        .maintenance_outcome())
                     })?
                     .maintenance_outcome(),
                 )
@@ -2340,7 +2347,7 @@ impl MaintenanceTaskRunner for CacheFlushMaintenanceRunner<'_> {
                 &request,
                 |branch, request| {
                     Ok(
-                        flush_cache_branch_with_budget(branch, request, Some(self.budget))?
+                        flush_cache_branch_with_budget(branch, request, Some(self.budget), None)?
                             .maintenance_outcome(),
                     )
                 },

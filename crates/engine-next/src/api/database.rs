@@ -152,6 +152,7 @@ impl Database {
             DatabaseOpenTarget::Cache,
             options.into_default_branch(),
             memory_budget_bytes,
+            None,
         )
     }
 
@@ -161,11 +162,13 @@ impl Database {
         options: DurableLocalOpenOptions,
     ) -> EngineResult<DatabaseOpenOutcome> {
         let memory_budget_bytes = options.memory_budget_bytes();
+        let data_block_bytes = options.data_block_bytes();
         Self::open(
             PersistenceOpenTarget::DurableLocal(path.into()),
             DatabaseOpenTarget::DurableLocal,
             options.into_default_branch(),
             memory_budget_bytes,
+            data_block_bytes,
         )
     }
 
@@ -408,10 +411,11 @@ impl Database {
         open_target: DatabaseOpenTarget,
         default_branch: Option<BranchName>,
         memory_budget_bytes: Option<u64>,
+        data_block_bytes: Option<u32>,
     ) -> EngineResult<DatabaseOpenOutcome> {
         let vector_artifacts = vector_artifact_store_for_target(&target);
         let (mut persistence, persistence_summary) =
-            StoragePersistence::open_with_budget(target, memory_budget_bytes)?;
+            StoragePersistence::open_with_budget(target, memory_budget_bytes, data_block_bytes)?;
         let control = bootstrap_or_load(
             &mut persistence,
             persistence_summary.created(),

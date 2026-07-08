@@ -584,18 +584,19 @@ pub(crate) fn flush_cache_branch(
     branch: &mut BranchLocalState,
     request: &FlushFrozenRequest,
 ) -> LifecycleResult<FlushFrozenOutcome> {
-    flush_cache_branch_with_budget(branch, request, None)
+    flush_cache_branch_with_budget(branch, request, None, None)
 }
 
 pub(crate) fn flush_cache_branch_with_budget(
     branch: &mut BranchLocalState,
     request: &FlushFrozenRequest,
     budget: Option<&StorageBudgetLedger>,
+    data_block_bytes: Option<u32>,
 ) -> LifecycleResult<FlushFrozenOutcome> {
     let Some(frozen_index) = select_frozen_index(branch, request)? else {
         return Ok(FlushFrozenOutcome::deferred(request));
     };
-    let artifact = build_frozen_artifact(branch, request, frozen_index)?;
+    let artifact = build_frozen_artifact(branch, request, frozen_index, data_block_bytes)?;
     require_optional_generated_artifact_budget(
         budget,
         artifact.byte_count(),
@@ -639,11 +640,12 @@ pub(crate) fn prepare_cache_flush_with_budget(
     branch: &BranchLocalState,
     request: &FlushFrozenRequest,
     budget: Option<&StorageBudgetLedger>,
+    data_block_bytes: Option<u32>,
 ) -> LifecycleResult<Option<PreparedCacheFlush>> {
     let Some(frozen_index) = select_frozen_index(branch, request)? else {
         return Ok(None);
     };
-    let artifact = build_frozen_artifact(branch, request, frozen_index)?;
+    let artifact = build_frozen_artifact(branch, request, frozen_index, data_block_bytes)?;
     require_optional_generated_artifact_budget(
         budget,
         artifact.byte_count(),
@@ -703,7 +705,7 @@ pub(crate) fn flush_durable_branch(
     reader_service: &TableObjectReaderService<'static>,
     request: &FlushFrozenRequest,
 ) -> LifecycleResult<FlushFrozenOutcome> {
-    flush_durable_branch_with_budget(branch, table_service, reader_service, request, None)
+    flush_durable_branch_with_budget(branch, table_service, reader_service, request, None, None)
 }
 
 pub(crate) fn flush_durable_branch_with_budget(
@@ -712,9 +714,16 @@ pub(crate) fn flush_durable_branch_with_budget(
     reader_service: &TableObjectReaderService<'static>,
     request: &FlushFrozenRequest,
     budget: Option<&StorageBudgetLedger>,
+    data_block_bytes: Option<u32>,
 ) -> LifecycleResult<FlushFrozenOutcome> {
-    let Some(prepared) =
-        prepare_durable_flush_with_budget(branch, table_service, reader_service, request, budget)?
+    let Some(prepared) = prepare_durable_flush_with_budget(
+        branch,
+        table_service,
+        reader_service,
+        request,
+        budget,
+        data_block_bytes,
+    )?
     else {
         return Ok(FlushFrozenOutcome::deferred(request));
     };
@@ -727,11 +736,12 @@ pub(crate) fn prepare_durable_flush_with_budget(
     reader_service: &TableObjectReaderService<'static>,
     request: &FlushFrozenRequest,
     budget: Option<&StorageBudgetLedger>,
+    data_block_bytes: Option<u32>,
 ) -> LifecycleResult<Option<PreparedDurableFlush>> {
     let Some(frozen_index) = select_frozen_index(branch, request)? else {
         return Ok(None);
     };
-    let artifact = build_frozen_artifact(branch, request, frozen_index)?;
+    let artifact = build_frozen_artifact(branch, request, frozen_index, data_block_bytes)?;
     require_optional_generated_artifact_budget(
         budget,
         artifact.byte_count(),
@@ -885,6 +895,7 @@ pub(crate) fn prepare_durable_flush_drain_with_budget(
     reader_service: &TableObjectReaderService<'static>,
     request: &FlushDrainRequest,
     budget: Option<&StorageBudgetLedger>,
+    data_block_bytes: Option<u32>,
 ) -> LifecycleResult<PreparedDurableFlushDrain> {
     if branch.branch_id() != request.branch_id() {
         return Err(LifecycleError::MaintenanceTaskFailed {
@@ -907,6 +918,7 @@ pub(crate) fn prepare_durable_flush_drain_with_budget(
             reader_service,
             &flush_request,
             budget,
+            data_block_bytes,
         )?
         else {
             let maintenance = FlushFrozenOutcome::deferred(&flush_request).maintenance_outcome();
@@ -1247,6 +1259,7 @@ fn build_frozen_artifact(
     branch: &BranchLocalState,
     request: &FlushFrozenRequest,
     frozen_index: usize,
+    data_block_bytes: Option<u32>,
 ) -> LifecycleResult<crate::table::BuiltTableArtifact> {
     let frozen =
         branch
@@ -1256,10 +1269,12 @@ fn build_frozen_artifact(
                 reason: "flush frozen index must exist",
             })?;
     let identity = derived_table_identity(request, frozen)?;
-    ImmutableTableBuilder::new(super::compaction::lifecycle_table_builder_config())
-        .map_err(table_error)?
-        .build_from_frozen(identity, frozen)
-        .map_err(table_error)
+    ImmutableTableBuilder::new(super::compaction::lifecycle_table_builder_config(
+        data_block_bytes,
+    )?)
+    .map_err(table_error)?
+    .build_from_frozen(identity, frozen)
+    .map_err(table_error)
 }
 
 fn derived_table_identity(

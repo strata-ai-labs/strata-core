@@ -44,6 +44,10 @@ pub(crate) struct LifecycleConfig {
     maintenance_scheduling_policy: LifecycleMaintenanceSchedulingPolicy,
     compaction_io_policy: LifecycleCompactionIoPolicy,
     write_throttle_policy: LifecycleWriteThrottlePolicy,
+    // B2: per-database data-block byte target for lifecycle-built tables;
+    // None = the table runtime's built-in default. Validated at the options
+    // layer (4 KiB minimum, encoded-block ceiling).
+    data_block_bytes: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -213,9 +217,20 @@ impl LifecycleConfig {
             maintenance_scheduling_policy: LifecycleMaintenanceSchedulingPolicy::default(),
             compaction_io_policy: LifecycleCompactionIoPolicy::default(),
             write_throttle_policy: LifecycleWriteThrottlePolicy::default(),
+            data_block_bytes: None,
         };
         config.validate()?;
         Ok(config)
+    }
+
+    /// B2: override the data-block byte target for lifecycle-built tables.
+    pub(crate) fn with_data_block_bytes(
+        mut self,
+        data_block_bytes: Option<u32>,
+    ) -> LifecycleResult<Self> {
+        self.data_block_bytes = data_block_bytes;
+        self.validate()?;
+        Ok(self)
     }
 
     pub(crate) fn with_storage_budget(
@@ -283,6 +298,10 @@ impl LifecycleConfig {
 
     pub(crate) const fn lossy_recovery(self) -> LifecycleLossyRecoveryPolicy {
         self.lossy_recovery
+    }
+
+    pub(crate) const fn data_block_bytes(self) -> Option<u32> {
+        self.data_block_bytes
     }
 
     pub(crate) const fn storage_budget(self) -> StorageRuntimeBudget {

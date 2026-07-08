@@ -359,10 +359,14 @@ fn open_database(config: &Config, mode: BenchMode, path: &Path) -> EngineResult<
         BenchMode::Cache => Database::open_cache(
             CacheOpenOptions::new().with_memory_budget(config.memory_budget_bytes),
         )?,
-        BenchMode::Durable => Database::open_local(
-            path,
-            DurableLocalOpenOptions::new().with_memory_budget(config.memory_budget_bytes),
-        )?,
+        BenchMode::Durable => {
+            let mut options =
+                DurableLocalOpenOptions::new().with_memory_budget(config.memory_budget_bytes);
+            if let Some(bytes) = config.data_block_bytes {
+                options = options.with_data_block_bytes(bytes);
+            }
+            Database::open_local(path, options)?
+        }
     };
     Ok(outcome.into_database())
 }
@@ -679,6 +683,7 @@ struct Config {
     /// Print the storage perf-trace attribution after each durable run phase.
     perf_breakdown: bool,
     settle_secs: u64,
+    data_block_bytes: Option<u32>,
 }
 
 impl Config {
@@ -694,6 +699,7 @@ impl Config {
             memory_budget_bytes: DEFAULT_MEMORY_BUDGET_BYTES,
             perf_breakdown: false,
             settle_secs: 0,
+            data_block_bytes: None,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -714,6 +720,12 @@ impl Config {
                 "--scan-max" => config.scan_max = parse_positive_usize(&arg, args.next())?,
                 "--load-batch" => config.load_batch = parse_positive_usize(&arg, args.next())?,
                 "--memory-budget" => config.memory_budget_bytes = parse_size(&arg, args.next())?,
+                "--block-bytes" => {
+                    config.data_block_bytes = Some(
+                        u32::try_from(parse_size(&arg, args.next())?)
+                            .map_err(|_| format!("`{arg}` value too large"))?,
+                    );
+                }
                 "--perf-breakdown" => config.perf_breakdown = true,
                 "--settle-secs" => {
                     config.settle_secs = arg_value(&arg, args.next())?

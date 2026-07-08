@@ -291,12 +291,13 @@ impl StoragePersistence {
     pub(crate) fn open(
         target: PersistenceOpenTarget,
     ) -> EngineResult<(Self, PersistenceOpenSummary)> {
-        Self::open_with_budget(target, None)
+        Self::open_with_budget(target, None, None)
     }
 
     pub(crate) fn open_with_budget(
         target: PersistenceOpenTarget,
         memory_budget_bytes: Option<u64>,
+        data_block_bytes: Option<u32>,
     ) -> EngineResult<(Self, PersistenceOpenSummary)> {
         let (runtime, summary, durable) = match target {
             PersistenceOpenTarget::Cache => {
@@ -307,10 +308,14 @@ impl StoragePersistence {
                 (runtime, summary, false)
             }
             PersistenceOpenTarget::DurableLocal(path) => {
-                let options = apply_memory_budget(
+                let mut options = apply_memory_budget(
                     StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard),
                     memory_budget_bytes,
                 )?;
+                if let Some(bytes) = data_block_bytes {
+                    // B2: durable-only data-block byte target (see options doc).
+                    options = options.with_data_block_bytes(bytes);
+                }
                 let outcome = StorageRuntime::open_durable_local_with_options(path, options)
                     .map_err(map_storage_error)?;
                 let (runtime, summary) = outcome.into_parts();

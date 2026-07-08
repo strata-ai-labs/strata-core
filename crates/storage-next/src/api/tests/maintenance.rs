@@ -1535,3 +1535,42 @@ fn api_reopen_reconciles_stale_table_objects() {
         .to_vec();
     assert_eq!(value, b"live");
 }
+
+/// B2: a durable runtime opened with a custom data-block byte target builds
+/// flush tables at that granularity — many small blocks instead of one big
+/// one — and the rows read back identically.
+#[test]
+#[cfg(feature = "localfs")]
+fn api_flush_honors_configured_data_block_bytes() {
+    let mut runtime = open_durable_runtime_with_options(
+        "maintenance-data-block-bytes",
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_data_block_bytes(4 * 1024),
+    );
+    // ~64KB of rows: one block at the 64KB default, ~16 blocks at 4KB.
+    let payload = vec![0x42u8; 2 * 1024];
+    for index in 0..32u8 {
+        let key = format!("block-bytes-{index:02}");
+        runtime
+            .commit(&put_batch(key.as_bytes(), &payload))
+            .expect("commit row");
+    }
+    let request =
+        MaintenanceRequest::new(MaintenanceTask::Flush, MaintenanceScope::Branch(branch()));
+    let outcome = runtime.maintenance(&request).expect("flush outcome");
+    assert_eq!(outcome.status(), MaintenanceSummaryStatus::Completed);
+
+    for index in 0..32u8 {
+        let key = format!("block-bytes-{index:02}");
+        let outcome = runtime
+            .read_point(&PointReadRequest::new(
+                branch(),
+                engine_space(),
+                api_key(key.as_bytes()),
+                ReadBound::Latest,
+            ))
+            .expect("read flushed row");
+        let row = outcome.row().expect("row present");
+        assert_eq!(row.value().expect("value").as_bytes(), payload.as_slice());
+    }
+}

@@ -227,3 +227,22 @@ fn open_options_preserves_explicit_maintenance_policy() {
     );
     assert!(options.validate().is_ok());
 }
+
+/// B2: the data-block byte target is bounded (4 KiB..=1 MiB); in-range values
+/// validate and out-of-range values reject with the argument error class.
+#[test]
+fn open_options_bound_the_data_block_byte_target() {
+    for bytes in [4 * 1024, 8 * 1024, 64 * 1024, 1024 * 1024] {
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_data_block_bytes(bytes)
+            .validate()
+            .expect("in-range data block byte target validates");
+    }
+    for bytes in [0, 1, 4 * 1024 - 1, 1024 * 1024 + 1, u32::MAX] {
+        let error = StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_data_block_bytes(bytes)
+            .validate()
+            .expect_err("out-of-range data block byte target is rejected");
+        assert_eq!(error.code(), "invalid_argument.storage_api.argument");
+    }
+}

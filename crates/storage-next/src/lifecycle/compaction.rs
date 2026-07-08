@@ -85,8 +85,26 @@ const TABLE_FILTER_BITS_PER_KEY: usize = 10;
 /// elsewhere (materialization, snapshot install — W2.2 follow-up) stay
 /// unfiltered; the reader treats a missing filter as `Unavailable` and probes
 /// normally, so mixed tables are fine.
-pub(super) fn lifecycle_table_builder_config() -> TableBuilderConfig {
-    TableBuilderConfig::default().with_filter_bits_per_key(Some(TABLE_FILTER_BITS_PER_KEY))
+pub(super) fn lifecycle_table_builder_config(
+    data_block_bytes: Option<u32>,
+) -> LifecycleResult<TableBuilderConfig> {
+    // B2: the per-database data-block byte target (configured at open,
+    // carried by the lifecycle config) overrides the built-in default; the
+    // open-time validation bounds it, so a failure here is an internal
+    // invariant break.
+    let base = match data_block_bytes {
+        Some(bytes) => TableBuilderConfig::new(
+            bytes,
+            TableBuilderConfig::default().rows_per_block(),
+            crate::format::TableCompression::Uncompressed,
+        )
+        .map_err(|_| LifecycleError::InvalidConfig {
+            field: "data_block_bytes",
+            reason: "table builder rejected the configured block byte target",
+        })?,
+        None => TableBuilderConfig::default(),
+    };
+    Ok(base.with_filter_bits_per_key(Some(TABLE_FILTER_BITS_PER_KEY)))
 }
 
 const NONZERO_LEVEL_COMPACTION_THRESHOLD: usize = 4;
@@ -134,6 +152,7 @@ pub(crate) struct LifecycleCompactionRequest {
     /// tests and the W1.4 pacing calibration can vary it per request; every
     /// constructor seeds the default.
     l0_pass_max_input_bytes: u64,
+    data_block_bytes: Option<u32>,
     /// W1.3a: per-output grandparent-overlap bound applied to every
     /// table-rewrite request (see `OUTPUT_GRANDPARENT_OVERLAP_MAX_BYTES`);
     /// same field-over-constant rationale as the L0 pass bound.
@@ -342,9 +361,18 @@ impl LifecycleCompactionRequest {
             pruning_proof: None,
             l0_pass_max_input_bytes: L0_PASS_MAX_INPUT_BYTES,
             output_grandparent_overlap_max_bytes: OUTPUT_GRANDPARENT_OVERLAP_MAX_BYTES,
+            data_block_bytes: None,
         };
         request.branch_request()?;
         Ok(request)
+    }
+
+    /// B2: stamp the per-database data-block byte target onto the request
+    /// (None = built-in default). Set at runtime dispatch from
+    /// `LifecycleConfig::data_block_bytes`.
+    pub(crate) const fn with_data_block_bytes(mut self, data_block_bytes: Option<u32>) -> Self {
+        self.data_block_bytes = data_block_bytes;
+        self
     }
 
     /// W1.1b: override the per-pass L0→L1 input byte bound (tests and pacing
@@ -455,7 +483,8 @@ impl LifecycleCompactionRequest {
             request = request.with_max_pass_input_bytes(self.l0_pass_max_input_bytes);
         }
         // W2.2: every lifecycle-built table persists a bloom filter.
-        request = request.with_table_builder_config(lifecycle_table_builder_config());
+        request = request
+            .with_table_builder_config(lifecycle_table_builder_config(self.data_block_bytes)?);
         // W1.3a: every pass cuts its outputs by grandparent overlap. Kinds
         // whose output level is bottommost get no hints downstream (the
         // grandparent level is empty), so applying the bound universally is

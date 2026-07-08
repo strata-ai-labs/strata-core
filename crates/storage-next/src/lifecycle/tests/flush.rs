@@ -1699,6 +1699,7 @@ fn prepared_durable_flush_installs_by_identity_after_frozen_set_shifts() {
         &TableObjectReaderService::new(backend),
         &request,
         None,
+        None,
     )
     .expect("prepare flush")
     .expect("prepared flush");
@@ -1740,6 +1741,7 @@ fn prepared_durable_flush_fails_closed_when_its_frozen_table_is_gone() {
         &TableObjectService::new(backend),
         &TableObjectReaderService::new(backend),
         &request,
+        None,
         None,
     )
     .expect("prepare flush")
@@ -1840,11 +1842,13 @@ fn branch_id(byte: u8) -> BranchId {
 
 fn build_bytes_from_frozen(identity: TableIdentity, frozen: &crate::table::FrozenTable) -> Vec<u8> {
     // W2.2: mirror the production flush build (bloom filter included).
-    ImmutableTableBuilder::new(crate::lifecycle::compaction::lifecycle_table_builder_config())
-        .expect("builder")
-        .build_from_frozen(identity, frozen)
-        .expect("built table")
-        .into_bytes()
+    ImmutableTableBuilder::new(
+        crate::lifecycle::compaction::lifecycle_table_builder_config(None).expect("builder config"),
+    )
+    .expect("builder")
+    .build_from_frozen(identity, frozen)
+    .expect("built table")
+    .into_bytes()
 }
 
 fn built_bytes_for_row(identity: &str, row: StorageRow) -> Vec<u8> {
@@ -1852,11 +1856,13 @@ fn built_bytes_for_row(identity: &str, row: StorageRow) -> Vec<u8> {
     let mut rows = vec![TableRow::new(row)];
     sort_table_rows_by_key(&mut rows);
     // W2.2: mirror the production flush build (bloom filter included).
-    ImmutableTableBuilder::new(crate::lifecycle::compaction::lifecycle_table_builder_config())
-        .expect("builder")
-        .build_from_rows(identity, &rows)
-        .expect("built table")
-        .into_bytes()
+    ImmutableTableBuilder::new(
+        crate::lifecycle::compaction::lifecycle_table_builder_config(None).expect("builder config"),
+    )
+    .expect("builder")
+    .build_from_rows(identity, &rows)
+    .expect("built table")
+    .into_bytes()
 }
 
 fn owned_table_for_row(
