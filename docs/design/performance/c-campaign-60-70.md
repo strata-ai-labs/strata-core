@@ -18,19 +18,33 @@ reads, bisected seeks) and lays out the path from today's ~19.5K to the
 
 ## Evidence (2026-07-08 night, fresh experiments)
 
-### Finding 1 — the RocksDB reference is compression-flattered (re-baseline required)
+### Finding 1 — compression-flattered reference: HYPOTHESISED, then FALSIFIED (C1)
 
-The rocksdb-ycsb harness builds RocksDB **with LZ4** and never disables
-compression, while both harnesses use `vec![0x42; 1000]` values — constant
-bytes that compress ~perfectly. RocksDB's "10GB" dataset is a few hundred MB
-on disk at most; its 1M rows/s load and 428K C are measurements of a
-cache-resident, decompress-cheap workload that our raw 11GB never gets to
-play. (Our numbers are unaffected — Strata does not compress.)
+The rocksdb-ycsb harness builds RocksDB with the lz4 feature and both
+harnesses used `vec![0x42; 1000]` constant values, so the working hypothesis
+was that RocksDB's dataset compressed to ~nothing and its 428K C was a
+cache-resident artifact. **C1's measured matrix killed this** (10M × 1KB,
+500K-op C, on-disk probe post-load):
 
-**Consequence: every gap ratio in the ledger overstates the true gap.** The
-fix is C1 below: incompressible (seeded-random) values in both harnesses, and
-a compression-off RocksDB variant as a second reference point. Standard YCSB
-uses random field payloads — constant bytes were our harness's shortcut.
+| fill | compression | on-disk | run C | read p50 | read max |
+|---|---|---|---|---|---|
+| constant | default | 9.59GB | 435K | 2.16µs | 30.8µs |
+| random | default | 9.59GB | 428K | 2.29µs | 34.2µs |
+| random | none | 9.59GB | 434K | 2.19µs | 44.6µs |
+| random | lz4 | 9.55GB | 425K | 2.18µs | 232µs |
+
+Stock `Options::default()` in rust-rocksdb writes **uncompressed** — 9.59GB
+raw regardless of fill, and all four cells sit within 2.4%. The reference is
+honest and insensitive to value content.
+
+The sharper reading: RocksDB serves its entire raw ~9.6GB dataset from the
+OS page cache — read **max** ~34µs means zero disk misses across 500K reads.
+Its 13s load with modest churn leaves the freshly written files cache-warm.
+Strata's misses hit real disk not because the comparison was rigged but
+because our own load churn evicts our tables and the block cache never fills
+— Finding 2 is the whole miss story. Incompressible values are still the
+right protocol (standard YCSB uses random payloads; guards future compressed
+references) and are now the harness default.
 
 ### Finding 2 — the miss term is disk-bound and the cache-fill gap is the cause
 
@@ -72,15 +86,17 @@ read) worth one look.
 
 ## The plan
 
-### C1 — fair baseline (protocol slice, no product code)
+### C1 — fair baseline (protocol slice, no product code) — DONE
 
-Seeded-incompressible values in engine-ycsb and rocksdb-ycsb (shared
-generator); re-run the three-way; add a compression-off RocksDB point.
-Re-baseline the ledger reference row. Exit: the honest reference and gap
-table everything below is measured against. Expectation: RocksDB's C drops
-(its dataset becomes 10GB real; on this 61GB box it likely stays largely
-page-cache-resident — but load and write-amp costs become honest), Strata
-unchanged.
+Landed: `ValueFill::Random` (unique splitmix64 payload per value) as the
+default in both harnesses with `--value-fill constant` retained, rocksdb-ycsb
+`--compression default|lz4|none`, and on-disk post-load probes in both bins.
+Outcome: the compression hypothesis was falsified (Finding 1's matrix) — the
+existing 428K reference stands as honest. The value of the slice is the
+falsification itself plus permanent harness hygiene: every future run records
+its effective dataset size, and the reference can never silently become
+compression-flattered. Ledger row records the matrix and the re-based
+protocol.
 
 ### C2 — fill the pool: h → 0.98 (the miss-rate slice)
 
@@ -134,6 +150,7 @@ Profile-ranked, in order:
   demand-cached blocks; don't compete with foreground IO — idle-gated).
 - The allocator findings suggest wider wins (writes allocate too); keep the
   scope to the read path per this campaign, record the rest.
-- 238GB of stale engine-ycsb tempdirs accumulated under
-  /data2/strata-bench/ycsb10m/.benchmark — clean before the C1 re-baseline
-  so disk state is comparable.
+- 238GB of stale engine-ycsb tempdirs had accumulated under
+  /data2/strata-bench/ycsb10m/.benchmark (leftovers from killed runs —
+  tempfile only cleans on normal exit). Cleaned during C1. Watch for
+  re-accumulation after any killed bench run.
