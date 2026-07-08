@@ -848,6 +848,27 @@ copies, 5 key copies, branch-by-string lookup, ~1-2µs) + probe/bisect/window
 + per-op fixed costs. C's MEAN remains miss-IO-dominated (~20% × 64KB) — B2
 (block-size sweep) owns the next throughput bite; B4 owns the next p50 bite.
 
+## B4: move-don't-copy point reads — landed, measured ~nil; the C picture is now miss-IO (2026-07-08)
+
+The read path sheds 3 value copies, 3 key copies, and the per-read branch
+record clone (moves through every layer; parity-asserted refactor, both crate
+batteries green). Same-session interleaved A/B (settled C, T1-C1-T2-C2-T3):
+control p50 9.97/10.37us vs treatment 10.65/10.79/10.77us, throughput
+15.5-16.5K both sides — **no measurable movement**. Second B1-class outcome:
+the audit's 1-2us engine-tax estimate was high, and the new
+api_read_point_runtime_ns probe (Phase A of this slice) shows why — the
+engine layer above the storage api costs only **~0.3-1us mean**; the layers
+were already thin. B4 stays as hygiene (fewer allocs/copies = CPU + allocator
+headroom, matters under concurrency and bigger values), cost ~0 risk.
+
+**The standing C@10M picture the probe pair now gives** (mean ~62us/read):
+- hit path (79%): ~10us p50 -> ~8us of the mean
+- miss path (21%): ~250us each -> **~52us of the 62us mean**
+B2 (block-size sweep: 64KB per miss, miss RATE from blocks-per-pool-byte) is
+now overwhelmingly the C-throughput lever. The hit p50's own next terms
+(bisect+window ~1-2us, candidate decode, cache shard ops, source-walk
+machinery) need a fresh stack profile if a sub-5us hit becomes the goal.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
