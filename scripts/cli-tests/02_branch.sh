@@ -26,7 +26,7 @@ expect_ok "fork feature -> feature-child" -- "$DB" branch fork feature feature-c
 # loses the middle branch's inherited state (reads (nil) instead of the
 # fork's value). Same family as the timeline-index pin in 08_time_travel —
 # the fork-COW plan's deferred "inherited-source re-clamping". Unlike that
-# pin this one is silent wrong data, not a fail-closed error.
+# pin this one is silent wrong data, not a fail-closed error. Issue #2521.
 expect_known_bug "grandchild inherits the fork's state" "tokyo" -- "$DB" kv get city --branch feature-child
 seed "$DB" kv put city berlin --branch feature-child
 expect_out "grandchild write stays on the grandchild" "berlin" -- "$DB" kv get city --branch feature-child

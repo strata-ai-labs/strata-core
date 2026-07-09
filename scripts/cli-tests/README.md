@@ -47,12 +47,14 @@ Current pins:
   inherited state (the grandchild reads `(nil)` where the fork's value should
   show). Silent wrong data — the most severe pin in this ledger. Owned by the
   storage workstream (fork-COW plan's deferred "inherited-source re-clamping").
+  Tracked in #2521.
 - `08_time_travel` · **fork as-of a pre-fork commit** — regression from the
   read-path perf campaign (W3.1b retained-timeline index): the fork's timeline
   index lacks pre-fork coverage floor seeding, so `--as-of <pre-fork ts>` on a
   fork fails closed with `history_unavailable.engine.persistence_history`
   instead of reading inherited history. Owned by the storage workstream (the
-  fork-COW plan's deferred "timestamp_coverage floor seeding" item).
+  fork-COW plan's deferred "timestamp_coverage floor seeding" item). Tracked
+  in #2522.
 
 (The event time-travel domain defect this mechanism was built for —
 `event len --as-of` filtering on wall-clock payload timestamps instead of the

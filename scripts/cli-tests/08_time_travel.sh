@@ -80,6 +80,7 @@ seed "$DB" kv put city tokyo --branch tt-fork
 # history_unavailable.engine.persistence_history instead of resolving through
 # inherited history. The fork-COW plan lists "timestamp_coverage floor
 # seeding" as the deferred fix; this pin fails loudly the day it lands.
+# Issue #2522.
 expect_known_bug "fork as-of a pre-fork commit reads pre-fork state" "paris" -- "$DB" kv get city --branch tt-fork --as-of "$t1"
 expect_out "fork current read gets the fork's write" "tokyo" -- "$DB" kv get city --branch tt-fork
 
