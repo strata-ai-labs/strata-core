@@ -120,6 +120,56 @@ impl Plan {
 #[derive(Clone)]
 pub struct CudaFence(pub(crate) Arc<Event>);
 
+/// Device-time measurements of the most recent selection — the
+/// kernel-benchmarking endpoint. All values are microseconds of device
+/// execution on the tier's stream (CUDA event timestamps), independent of
+/// host enqueue overhead, so a replacement selection module can be compared
+/// against the baseline on the workload that actually runs.
+///
+/// Totals (`selection_us`, `materialize_us`) are always measured. The
+/// per-stage fields are populated only when profiling is enabled
+/// ([`CudaBackend::enable_profiling`]); expansion stages additionally
+/// require an expansion budget on the `topk` call. Values describe the most
+/// recent `topk`/`materialize_topk` enqueue and reset at the next `topk`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SelectionTimings {
+    /// The whole selection pipeline: query staging, scratch zeroing, and
+    /// every selection kernel, in enqueue order.
+    pub selection_us: f64,
+    /// The `gather_pages` materialization — `None` until one was enqueued
+    /// after the selection and has completed.
+    pub materialize_us: Option<f64>,
+    /// Query staging + cursor/bitmap zeroing (profile mode).
+    pub stage_query_us: Option<f64>,
+    /// `score_slots` (profile mode).
+    pub score_us: Option<f64>,
+    /// `block_topk` (profile mode).
+    pub block_topk_us: Option<f64>,
+    /// All `merge_topk` rounds together (profile mode).
+    pub merge_us: Option<f64>,
+    /// `seed_bitmap` (profile mode, expansion requested).
+    pub seed_us: Option<f64>,
+    /// `expand` (profile mode, expansion requested).
+    pub expand_us: Option<f64>,
+}
+
+/// Timestamp events bracketing the most recent selection pipeline. The
+/// boundary pair is always recorded; the interior stage events only in
+/// profile mode. Reset at each `topk`.
+#[derive(Default)]
+struct SelectionEvents {
+    start: Option<Event>,
+    staged: Option<Event>,
+    scored: Option<Event>,
+    block: Option<Event>,
+    merged: Option<Event>,
+    seeded: Option<Event>,
+    expanded: Option<Event>,
+    end: Option<Arc<Event>>,
+    mat_start: Option<Event>,
+    mat_end: Option<Arc<Event>>,
+}
+
 impl CopyFence for CudaFence {
     fn is_complete(&self) -> bool {
         // A query failure is unrecoverable driver trouble; treating it as
@@ -147,6 +197,12 @@ pub struct CudaBackend {
     /// Registered replacement for the baseline selection module (design D3:
     /// consumers replace kernels by registration, not by forking the tier).
     selection_ptx: Option<String>,
+    /// Timestamp events for [`Self::last_selection_timings`]. Declared
+    /// before `context` (events must drop while the context is alive).
+    timing: SelectionEvents,
+    /// Record an event after every selection stage, so
+    /// [`Self::last_selection_timings`] carries the per-stage breakdown.
+    profile: bool,
     context: GpuContext,
 }
 
@@ -167,7 +223,18 @@ impl CudaBackend {
             staging,
             slab_busy_until: None,
             selection_ptx: None,
+            timing: SelectionEvents::default(),
+            profile: false,
         })
+    }
+
+    /// Enables per-stage selection timing: subsequent `topk` calls record a
+    /// timestamp event after each kernel stage, and
+    /// [`Self::last_selection_timings`] reports the breakdown alongside the
+    /// totals. Costs a handful of event records per `topk` enqueue —
+    /// benchmarking and tuning runs, not the steady-state decode loop.
+    pub fn enable_profiling(&mut self) {
+        self.profile = true;
     }
 
     /// Registers a replacement selection module (Moho's fused kernels). The
@@ -391,6 +458,11 @@ impl DeviceBackend for CudaBackend {
         let scratch = self.region_base(Region::Scratch)?;
         let pages_capacity = u32::try_from(plan.capacity).expect("capacity fits u32");
 
+        // Timestamp the pipeline (device time, read back by
+        // `last_selection_timings` after the fence completes — no syncs).
+        self.timing = SelectionEvents::default();
+        self.timing.start = Some(self.stream.record()?);
+
         // Stage the query into scratch (stream-ordered before the kernels).
         let mut query_bytes = Vec::with_capacity(query.len() * 4);
         for q in query {
@@ -401,6 +473,9 @@ impl DeviceBackend for CudaBackend {
         // Zero the cursor + dedup bitmap (contiguous by layout).
         self.stream
             .memset(scratch.base + plan.cursor_off, 0, 4 + plan.bitmap_len)?;
+        if self.profile {
+            self.timing.staged = Some(self.stream.record()?);
+        }
 
         let module = self.module.as_ref().expect("loaded at reserve");
         let summaries = self.region_base(Region::Summaries)?.base;
@@ -441,6 +516,9 @@ impl DeviceBackend for CudaBackend {
                 &mut score_params,
             )?;
         }
+        if self.profile {
+            self.timing.scored = Some(self.stream.record()?);
+        }
 
         // Exact hierarchical top-k: per-block bitonic shortlists, then
         // merge rounds over 256-candidate windows (the grid shrinks ~4x per
@@ -465,6 +543,9 @@ impl DeviceBackend for CudaBackend {
                 &self.stream,
                 &mut block_params,
             )?;
+        }
+        if self.profile {
+            self.timing.block = Some(self.stream.record()?);
         }
 
         let buffers = [
@@ -514,6 +595,9 @@ impl DeviceBackend for CudaBackend {
             count = grid * u32::from(k);
             source = 1 - source;
         }
+        if self.profile {
+            self.timing.merged = Some(self.stream.record()?);
+        }
 
         if expand_budget.is_some() {
             let mut p_bitmap = scratch.base + plan.bitmap_off;
@@ -532,6 +616,9 @@ impl DeviceBackend for CudaBackend {
                     &self.stream,
                     &mut seed_params,
                 )?;
+            }
+            if self.profile {
+                self.timing.seeded = Some(self.stream.record()?);
             }
 
             let mut p_adj = adjacency;
@@ -563,10 +650,15 @@ impl DeviceBackend for CudaBackend {
                     &mut expand_params,
                 )?;
             }
+            if self.profile {
+                self.timing.expanded = Some(self.stream.record()?);
+            }
         }
 
         self.last_topk = Some((k, expand_budget));
-        self.fence_now()
+        let fence = self.fence_now()?;
+        self.timing.end = Some(Arc::clone(&fence.0));
+        Ok(fence)
     }
 
     fn read_topk(&mut self) -> Result<TopkReadback, GpuError> {
@@ -620,6 +712,7 @@ impl DeviceBackend for CudaBackend {
         let pool = self.region_base(Region::Pages)?;
         let out = self.region_base(Region::Materialize)?;
         let words = u32::try_from(plan.page_bytes / 4).expect("page words fit u32");
+        self.timing.mat_start = Some(self.stream.record()?);
 
         let mut p_slots = scratch.base + plan.sel_slots_off;
         let mut p_k = u32::from(k);
@@ -648,7 +741,9 @@ impl DeviceBackend for CudaBackend {
                 &mut params,
             )?;
         }
-        self.fence_now()
+        let fence = self.fence_now()?;
+        self.timing.mat_end = Some(Arc::clone(&fence.0));
+        Ok(fence)
     }
 }
 
@@ -687,6 +782,44 @@ pub struct SelectionAddresses {
 }
 
 impl CudaBackend {
+    /// Device-time measurements of the most recent selection, or `None`
+    /// while its pipeline is still executing (and before any `topk`).
+    /// Non-blocking: event timestamps are probed, never waited on, so the
+    /// sync counter stays untouched.
+    ///
+    /// `materialize_us` stays `None` until a `materialize_topk` enqueued
+    /// after the selection has completed — probe again once its fence is
+    /// done. Values reset at the next `topk`.
+    pub fn last_selection_timings(&self) -> Result<Option<SelectionTimings>, GpuError> {
+        self.context.make_current()?;
+        let (Some(start), Some(end)) = (&self.timing.start, &self.timing.end) else {
+            return Ok(None);
+        };
+        let Some(selection_us) = end.elapsed_micros_since(start)? else {
+            return Ok(None);
+        };
+        let materialize_us = match (&self.timing.mat_start, &self.timing.mat_end) {
+            (Some(from), Some(to)) => to.elapsed_micros_since(from)?,
+            _ => None,
+        };
+        let span = |from: &Option<Event>, to: &Option<Event>| -> Result<Option<f64>, GpuError> {
+            match (from, to) {
+                (Some(from), Some(to)) => to.elapsed_micros_since(from),
+                _ => Ok(None),
+            }
+        };
+        Ok(Some(SelectionTimings {
+            selection_us,
+            materialize_us,
+            stage_query_us: span(&self.timing.start, &self.timing.staged)?,
+            score_us: span(&self.timing.staged, &self.timing.scored)?,
+            block_topk_us: span(&self.timing.scored, &self.timing.block)?,
+            merge_us: span(&self.timing.block, &self.timing.merged)?,
+            seed_us: span(&self.timing.merged, &self.timing.seeded)?,
+            expand_us: span(&self.timing.seeded, &self.timing.expanded)?,
+        }))
+    }
+
     /// Addresses of the most recent selection's device buffers.
     pub fn selection_addresses(&self) -> Result<SelectionAddresses, GpuError> {
         let plan = self.plan.ok_or_else(|| GpuError::InvalidConfig {

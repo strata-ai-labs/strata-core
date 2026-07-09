@@ -26,6 +26,12 @@ machinery's own cost.
 
 Run (needs an NVIDIA GPU + CUDA torch):
     PYTHONPATH=<dir with strata_tier.so> python decode_driver.py [--quick]
+
+A replacement selection module (the Moho seam) runs the same loop and the
+same gates with --ptx:
+    python decode_driver.py --ptx moho_selection.ptx
+Selection device time (CUDA event timestamps, host overhead excluded) is
+sampled and reported either way — the number that changes with the kernels.
 """
 
 import argparse
@@ -96,6 +102,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--quick", action="store_true",
                         help="8k-slot smoke run instead of the 64k gate run")
+    parser.add_argument("--ptx", type=Path, default=None,
+                        help="selection PTX module to register in place of "
+                             "the baseline (the Moho kernel seam)")
     args = parser.parse_args()
 
     target = Path(__file__).resolve().parents[3] / "target"
@@ -115,6 +124,8 @@ def run(args, workdir):
     store_pages = slots * 8
     rng = np.random.default_rng(0xB13B)
 
+    selection_ptx = args.ptx.read_text() if args.ptx else None
+    print(f"selection module: {args.ptx if args.ptx else 'baseline'}")
     tier = strata_tier.Tier(
         path=workdir,
         space="driver",
@@ -125,6 +136,7 @@ def run(args, workdir):
         promotion_batch=8,
         write_behind_batch=256,
         write_backlog_cap=1024,
+        selection_ptx=selection_ptx,
     )
 
     # ---- Setup: seed the store of record at 8x the resident pool. --------
@@ -180,6 +192,8 @@ def run(args, workdir):
     overhead_us = []
     maintain_us = []
     ready_us = []
+    device_sel_us = []
+    device_mat_us = []
     next_page = store_pages
     step_index = 0
 
@@ -237,6 +251,13 @@ def run(args, workdir):
                 while not selection.ready():
                     pass
                 ready_us.append((time.perf_counter() - waited) * 1e6)
+                # Device time of the selection kernels themselves (CUDA
+                # event timestamps) — the number a replacement module moves.
+                timings = selection.timings()
+                if timings is not None:
+                    device_sel_us.append(timings["selection_us"])
+                    if timings["materialize_us"] is not None:
+                        device_mat_us.append(timings["materialize_us"])
             else:
                 overhead_us.append(((t1 - t0) + (t3 - t2)) * 1e6)
             step_index += 1
@@ -277,6 +298,12 @@ def run(args, workdir):
     print(f"maintain+append    p50 {m50:6.1f} us   p95 {m95:6.1f} us "
           f"(overlapped; engine-store-bound at scale, reported not gated)")
     print(f"enqueue-to-ready   p95 {ready_p95:6.1f} us (sampled)")
+    if device_sel_us:
+        d50 = percentile(device_sel_us, 50)
+        d95 = percentile(device_sel_us, 95)
+        m_us = percentile(device_mat_us, 50) if device_mat_us else 0.0
+        print(f"selection device   p50 {d50:6.1f} us   p95 {d95:6.1f} us "
+              f"(sampled; materialize p50 {m_us:.1f} us)")
     print(f"decode promotions  {decode_promotions}, "
           f"evictions {stats['evictions'] - baseline_stats['evictions']}")
     print(f"cold fetch         {cold_hot}/32 promoted in {cold_ms:.0f} ms")

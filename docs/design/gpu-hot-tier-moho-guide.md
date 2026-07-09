@@ -3,8 +3,9 @@
 **Audience:** the Moho team (fused-kernel layer) and anyone consuming
 `crates/gpu-cache` from a decode loop.
 **Status:** current as of the GT5 unlock (2026-07-08) plus the kernel
-registration seam. Companion design: `docs/design/gpu-hot-tier.md` — that
-document says *why*; this one says *how*.
+registration seam and the kernel-benchmarking endpoints (§5.7). Companion
+design: `docs/design/gpu-hot-tier.md` — that document says *why*; this one
+says *how*.
 
 The tier is unlocked and measured on the RTX 4070 Super: selection+expansion
 43 µs and materialization 10.5 µs at 64Ki resident pages (against a 400 µs
@@ -359,11 +360,13 @@ The tier ships the harness; point it at your module:
 2. **Seam behavior**: `tests/tier_custom_kernels.rs` shows the fail-fast
    contract (missing entry, non-ASCII, late registration).
 3. **Performance**: `cargo run -p strata-gpu-cache --release --example
-   microbench` prints per-op latencies; swap the registration in
-   `seeded_backend`. Budgets below.
+   microbench -- --ptx moho_selection.ptx` runs the per-op suite with your
+   module registered; add `--compare` for a baseline-vs-yours table on
+   identically seeded state, `--json` for machine-readable output. §5.7 has
+   the methodology; budgets below.
 4. **End to end**: `python crates/gpu-cache/python/decode_driver.py
-   [--quick]` runs the full decode loop with acceptance gates
-   (`selection_ptx=` plumbs through `Tier(...)`).
+   [--quick] --ptx moho_selection.ptx` runs the full decode loop and its
+   acceptance gates against your module.
 
 ### 5.6 Budgets to stay inside (4070S baselines)
 
@@ -377,6 +380,69 @@ The tier ships the harness; point it at your module:
 
 A replacement that is *slower* than baseline but semantically richer can
 still be fine — the gate is the 400 µs envelope, not the baseline.
+
+### 5.7 Measuring your module against the baseline
+
+Wall-clocking `topk()` from Python measures nothing about your kernels —
+it is host-async and returns in microseconds regardless of what the device
+does. The measurement endpoints below all read CUDA event timestamps:
+device execution time, free of host enqueue overhead, probed without a
+single host sync.
+
+**In your own loop — `sel.timings()`.** Available on every selection, no
+flags needed:
+
+```python
+sel = tier.topk(query, k=64, expand=128)
+...                                   # your compute, maintain(), etc.
+t = sel.timings()                     # None until the pipeline completes
+# {'selection_us': 43.1, 'materialize_us': 10.5}
+```
+
+Non-blocking: returns `None` while the pipeline is in flight, so poll it
+where you poll `sel.ready()`. Values describe the most recent `topk` and
+reset at the next one — read before enqueuing the next step. Open the tier
+with `profile=True` and the dict adds the per-stage breakdown
+(`stage_query_us`, `score_us`, `block_topk_us`, `merge_us`, `seed_us`,
+`expand_us`) so you can see *where* you won or lost. Profile mode costs a
+few extra event records per step — benchmarking runs, not production.
+Rust equivalents: `CudaBackend::enable_profiling()` and
+`CudaBackend::last_selection_timings() -> Option<SelectionTimings>`.
+
+**Synthetic apples-to-apples — `microbench --compare`.**
+
+```bash
+cargo run -p strata-gpu-cache --release --example microbench -- \
+    --ptx moho_selection.ptx --compare [--json]
+```
+
+Runs the selection suite twice — baseline then your module — on
+identically seeded (deterministic LCG) state and prints per-op deltas,
+including the per-stage device times. One module per tier open is the
+registration rule, so A/B is two backends over identical state; the
+seeding guarantees they see the same summaries, validity, and adjacency.
+
+**End to end — `decode_driver.py --ptx`.** The acceptance gates (p95 host
+overhead, zero syncs, effective context, promotion rate) against your
+module, plus sampled `selection device p50/p95` — the line that moves with
+kernel quality while the host-overhead line stays put.
+
+Methodology, learned the hard way:
+
+- **Correctness before speed.** Run the oracle-equivalence suite first
+  (§5.5); a fast wrong selection is not a win.
+- **Never compare against published numbers** (this guide's table
+  included) — different box, clocks, driver. `--compare` measures both
+  modules in one process on one warmed device; that is the number.
+- **Know the noise floor.** Feed `--compare` a copy of the baseline PTX:
+  the deltas you see (~±1% after warm-up on the 4070S) are measurement
+  noise, and any real win must clear them. The harness pre-warms the GPU
+  for exactly this reason — cold boost clocks made the second-run module
+  look 5-12% faster than an identical first-run module.
+- **The decision number is in-situ.** The microbench uses synthetic
+  summaries and queries; your real page contents, summary distribution,
+  and query stream can shift the picture. `sel.timings()` percentiles from
+  your actual decode loop are what to put in the PR description.
 
 ## 6. Gotchas (each one cost us a debugging session)
 
@@ -404,20 +470,23 @@ still be fine — the gate is the 400 µs envelope, not the baseline.
 
 Python (`strata_tier`): `Tier(path, space, page_bytes, summary_bytes,
 page_slots, adjacency_degree=32, promotion_batch=8, write_behind_batch=8,
-write_backlog_cap=64, selection_ptx=None)`; methods `append(bytes, summary,
-tags=None, edges=None) -> id`, `request(id, priority) -> bool`,
-`maintain()`, `step_begin() -> epoch`, `flush() -> (version, ts) | None`,
-`is_selectable(id)`, `topk(query, k, expand=None, filter_index=None,
-filter_value=None) -> Selection`, `pool() -> DeviceTensor`,
-`selection_ready()`, `selection_page_ids()` *(sync)*, `stats()`,
-`sync_calls()`, `write_backlog()`. `Selection`: `block_table()`,
-`scores()`, `pages()`, `ready()`.
+write_backlog_cap=64, selection_ptx=None, profile=False)`; methods
+`append(bytes, summary, tags=None, edges=None) -> id`, `request(id,
+priority) -> bool`, `maintain()`, `step_begin() -> epoch`, `flush() ->
+(version, ts) | None`, `is_selectable(id)`, `topk(query, k, expand=None,
+filter_index=None, filter_value=None) -> Selection`, `pool() ->
+DeviceTensor`, `selection_ready()`, `selection_page_ids()` *(sync)*,
+`stats()`, `sync_calls()`, `write_backlog()`. `Selection`:
+`block_table()`, `scores()`, `pages()`, `ready()`, `timings() -> dict |
+None` *(non-blocking device times, §5.7)*.
 
 Rust: `Tier<CudaBackend, EnginePageStore>` mirrors the above
 (`topk_enqueue`/`materialize_enqueue`/`selection_fence`/`page_of_slot`);
-`CudaBackend::{new, register_selection_ptx, selection_addresses,
-pool_address, wait_external_stream, context}`; crate root exports
-`BASELINE_SELECTION_PTX`, `SELECTION_KERNEL_NAMES`, `GpuError`.
+`CudaBackend::{new, register_selection_ptx, enable_profiling,
+last_selection_timings, selection_addresses, pool_address,
+wait_external_stream, context}`; crate root exports
+`BASELINE_SELECTION_PTX`, `SELECTION_KERNEL_NAMES`, `SelectionTimings`
+(via `tier`), `GpuError`.
 
 Errors are typed and coded (`unavailable.gpu.driver_missing`,
 `invalid_argument.gpu.config`, `resource_exhausted.gpu.arena`,

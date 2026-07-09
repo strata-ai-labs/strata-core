@@ -25,6 +25,6 @@ pub mod store;
 pub mod tier;
 
 pub use crate::device::cuda_backend::{
-    CudaBackend, CudaFence, PagePoolAddress, SelectionAddresses,
+    CudaBackend, CudaFence, PagePoolAddress, SelectionAddresses, SelectionTimings,
 };
 pub use tier::TierStats;

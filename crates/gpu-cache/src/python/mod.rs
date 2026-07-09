@@ -51,11 +51,15 @@ impl Tier {
     /// kernels) in place of the baseline — it must define every baseline
     /// entry point with the baseline ABI; a missing entry fails here, not
     /// at the first decode step.
+    ///
+    /// `profile=True` records a timestamp event after every selection
+    /// stage, so `Selection.timings()` carries the per-stage breakdown —
+    /// benchmarking runs, not the steady-state decode loop.
     #[new]
     #[pyo3(signature = (path, space, page_bytes, summary_bytes, page_slots,
                         adjacency_degree = 32, promotion_batch = 8,
                         write_behind_batch = 8, write_backlog_cap = 64,
-                        selection_ptx = None))]
+                        selection_ptx = None, profile = false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         path: &str,
@@ -68,12 +72,16 @@ impl Tier {
         write_behind_batch: usize,
         write_backlog_cap: usize,
         selection_ptx: Option<String>,
+        profile: bool,
     ) -> PyResult<Self> {
         let staging = usize::try_from(page_bytes)
             .map_err(|_| PyValueError::new_err("page_bytes exceeds the address width"))?;
         let mut backend = CudaBackend::new(staging).map_err(gpu_err)?;
         if let Some(ptx) = selection_ptx {
             backend.register_selection_ptx(ptx).map_err(gpu_err)?;
+        }
+        if profile {
+            backend.enable_profiling();
         }
         let device_id = backend.device_ordinal();
         let store = EnginePageStore::open(path, space).map_err(gpu_err)?;
@@ -310,6 +318,44 @@ impl Selection {
     /// Non-blocking readiness probe.
     fn ready(&self, py: Python<'_>) -> bool {
         self.tier.borrow(py).inner.selection_ready()
+    }
+
+    /// Device-time measurements for this selection (the kernel-benchmarking
+    /// endpoint), or `None` while the pipeline is still in flight.
+    /// Non-blocking: CUDA event timestamps are probed, never waited on.
+    ///
+    /// Keys: `selection_us` (whole pipeline), `materialize_us` (the page
+    /// gather; `None` until it completes), and — when the tier was opened
+    /// with `profile=True` — `stage_query_us`, `score_us`, `block_topk_us`,
+    /// `merge_us`, plus `seed_us`/`expand_us` when expansion was requested.
+    /// Values describe the most recent `topk` and reset at the next one —
+    /// read them before enqueuing the next step.
+    fn timings<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let tier = self.tier.borrow(py);
+        let Some(timings) = tier
+            .inner
+            .backend()
+            .last_selection_timings()
+            .map_err(gpu_err)?
+        else {
+            return Ok(None);
+        };
+        let dict = PyDict::new(py);
+        dict.set_item("selection_us", timings.selection_us)?;
+        dict.set_item("materialize_us", timings.materialize_us)?;
+        for (key, value) in [
+            ("stage_query_us", timings.stage_query_us),
+            ("score_us", timings.score_us),
+            ("block_topk_us", timings.block_topk_us),
+            ("merge_us", timings.merge_us),
+            ("seed_us", timings.seed_us),
+            ("expand_us", timings.expand_us),
+        ] {
+            if let Some(micros) = value {
+                dict.set_item(key, micros)?;
+            }
+        }
+        Ok(Some(dict))
     }
 }
 

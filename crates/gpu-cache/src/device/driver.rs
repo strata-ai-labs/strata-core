@@ -23,9 +23,10 @@ pub(crate) type CuDevice = c_int;
 
 pub(crate) const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR: c_int = 75;
 pub(crate) const CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR: c_int = 76;
-/// `CU_EVENT_DEFAULT` — event timing enabled is not needed; default is fine
-/// for fencing (timing events add overhead only when both record+elapsed
-/// are used).
+/// `CU_EVENT_DEFAULT` — timing-capable. Fencing pays nothing for it (the
+/// timestamp cost lands only when `cuEventElapsedTime` is actually called),
+/// and the selection-timing endpoint relies on it, so every event keeps the
+/// default flags.
 const CU_EVENT_DEFAULT: c_uint = 0;
 /// `cuMemHostAlloc` flag: portable across contexts.
 const CU_MEMHOSTALLOC_PORTABLE: c_uint = 0x01;
@@ -60,6 +61,7 @@ type FnCuEventDestroy = unsafe extern "C" fn(CuEvent) -> c_int;
 type FnCuEventRecord = unsafe extern "C" fn(CuEvent, CuStream) -> c_int;
 type FnCuEventQuery = unsafe extern "C" fn(CuEvent) -> c_int;
 type FnCuEventSynchronize = unsafe extern "C" fn(CuEvent) -> c_int;
+type FnCuEventElapsedTime = unsafe extern "C" fn(*mut f32, CuEvent, CuEvent) -> c_int;
 type FnCuModuleLoadData = unsafe extern "C" fn(*mut CuModule, *const c_void) -> c_int;
 type FnCuModuleUnload = unsafe extern "C" fn(CuModule) -> c_int;
 type FnCuModuleGetFunction =
@@ -149,6 +151,7 @@ pub(crate) struct DriverApi {
     cu_event_record: FnCuEventRecord,
     cu_event_query: FnCuEventQuery,
     cu_event_synchronize: FnCuEventSynchronize,
+    cu_event_elapsed_time: FnCuEventElapsedTime,
     cu_module_load_data: FnCuModuleLoadData,
     cu_module_unload: FnCuModuleUnload,
     cu_module_get_function: FnCuModuleGetFunction,
@@ -237,6 +240,7 @@ impl DriverApi {
             cu_event_record: load_sym!(lib, "cuEventRecord", FnCuEventRecord),
             cu_event_query: load_sym!(lib, "cuEventQuery", FnCuEventQuery),
             cu_event_synchronize: load_sym!(lib, "cuEventSynchronize", FnCuEventSynchronize),
+            cu_event_elapsed_time: load_sym!(lib, "cuEventElapsedTime", FnCuEventElapsedTime),
             cu_module_load_data: load_sym!(lib, "cuModuleLoadData", FnCuModuleLoadData),
             cu_module_unload: load_sym!(lib, "cuModuleUnload", FnCuModuleUnload),
             cu_module_get_function: load_sym!(lib, "cuModuleGetFunction", FnCuModuleGetFunction),
@@ -543,6 +547,25 @@ impl DriverApi {
                 Ok(true)
             }
         }
+    }
+
+    /// Milliseconds of device time between two completed events. `Ok(None)`
+    /// when either event is still pending (`CUDA_ERROR_NOT_READY`) — a
+    /// non-blocking probe, never a wait, so it is not a counted sync.
+    pub(crate) fn event_elapsed_time(
+        &self,
+        start: CuEvent,
+        end: CuEvent,
+    ) -> Result<Option<f32>, GpuError> {
+        let mut millis = 0f32;
+        // SAFETY: both handles are live; the out-pointer is valid for the
+        // call duration.
+        let rc = unsafe { (self.cu_event_elapsed_time)(&raw mut millis, start, end) };
+        if rc == 600 {
+            return Ok(None);
+        }
+        self.check("cuEventElapsedTime", rc)?;
+        Ok(Some(millis))
     }
 
     /// Blocks until the event completes. Counted: this is a synchronous wait.

@@ -162,6 +162,16 @@ impl Event {
     pub fn synchronize(&self) -> Result<(), GpuError> {
         self.api.event_synchronize(self.raw)
     }
+
+    /// Device time in microseconds from `start` to this event, or `None`
+    /// while either event is still pending. Non-blocking (never a counted
+    /// sync); both events must be recorded on the same device.
+    pub fn elapsed_micros_since(&self, start: &Event) -> Result<Option<f64>, GpuError> {
+        Ok(self
+            .api
+            .event_elapsed_time(start.raw, self.raw)?
+            .map(|millis| f64::from(millis) * 1e3))
+    }
 }
 
 impl Event {
