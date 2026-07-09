@@ -24,5 +24,7 @@ pub mod store;
 #[allow(clippy::module_inception)]
 pub mod tier;
 
-pub use crate::device::cuda_backend::{CudaBackend, CudaFence};
+pub use crate::device::cuda_backend::{
+    CudaBackend, CudaFence, PagePoolAddress, SelectionAddresses,
+};
 pub use tier::TierStats;

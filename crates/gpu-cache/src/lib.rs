@@ -34,6 +34,9 @@ pub use device::arena::{DeviceArena, RegionSpec, SlotAllocator, SlotRegion};
 pub use device::context::{DeviceFacts, GpuContext};
 pub use device::driver::DevicePtr;
 pub use device::error::GpuError;
+pub use device::kernels::{
+    KERNELS as SELECTION_KERNEL_NAMES, SELECTION_PTX as BASELINE_SELECTION_PTX,
+};
 pub use device::module::PtxModule;
 pub use device::pinned::PinnedBuffer;
 pub use device::stream::{Event, Stream};

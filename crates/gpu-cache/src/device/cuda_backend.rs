@@ -144,6 +144,9 @@ pub struct CudaBackend {
     staging: PinnedBuffer,
     /// The most recent copy's event: the slab is reusable once it completes.
     slab_busy_until: Option<CudaFence>,
+    /// Registered replacement for the baseline selection module (design D3:
+    /// consumers replace kernels by registration, not by forking the tier).
+    selection_ptx: Option<String>,
     context: GpuContext,
 }
 
@@ -163,7 +166,25 @@ impl CudaBackend {
             last_topk: None,
             staging,
             slab_busy_until: None,
+            selection_ptx: None,
         })
+    }
+
+    /// Registers a replacement selection module (Moho's fused kernels). The
+    /// PTX must define every entry point in
+    /// [`SELECTION_KERNEL_NAMES`](crate::SELECTION_KERNEL_NAMES) with the
+    /// baseline ABI documented in the Moho guide; resolution is eager at
+    /// [`DeviceBackend::reserve`], so a missing or misnamed entry fails the
+    /// tier's `open`, never the first decode step. Must be called before
+    /// `reserve`.
+    pub fn register_selection_ptx(&mut self, ptx: impl Into<String>) -> Result<(), GpuError> {
+        if self.module.is_some() {
+            return Err(GpuError::InvalidConfig {
+                detail: "selection kernels must be registered before reserve".to_owned(),
+            });
+        }
+        self.selection_ptx = Some(ptx.into());
+        Ok(())
     }
 
     /// Device context facts (for logs and tests).
@@ -249,7 +270,8 @@ impl DeviceBackend for CudaBackend {
         let validity = arena.region("validity").expect("just carved");
         arena.zero_region(validity)?;
         self.plan = Some(Plan::derive(bytes)?);
-        self.module = Some(PtxModule::load(&self.context, SELECTION_PTX, KERNELS)?);
+        let source = self.selection_ptx.as_deref().unwrap_or(SELECTION_PTX);
+        self.module = Some(PtxModule::load(&self.context, source, KERNELS)?);
         self.arena = Some(arena);
         Ok(())
     }
@@ -630,6 +652,22 @@ impl DeviceBackend for CudaBackend {
     }
 }
 
+/// Static geometry of the device page pool, for consumers that gather
+/// pages directly via the block table (fused paged-attention kernels)
+/// instead of the materialized copy. The base is valid from `reserve` to
+/// drop (the arena never moves); a *slot's contents* are stable only under
+/// the epoch contract — a selected slot cannot be evicted or overwritten
+/// while its epoch is pinned.
+#[derive(Clone, Copy, Debug)]
+pub struct PagePoolAddress {
+    /// Device base address of slot 0.
+    pub base: u64,
+    /// Slot count.
+    pub slots: u32,
+    /// Bytes per slot (the page size).
+    pub page_bytes: usize,
+}
+
 /// Device-address handles for the most recent selection — the raw material
 /// of the GT4 `DLPack` seam. Addresses stay valid until the next `reserve`
 /// (the arena never moves); *contents* are stable until the next `topk`.
@@ -664,6 +702,20 @@ impl CudaBackend {
             scores_ptr: scratch.base + plan.sel_scores_off,
             materialized_ptr: out.base,
             k,
+            page_bytes: plan.page_bytes,
+        })
+    }
+
+    /// Device address and geometry of the page pool (the zero-copy
+    /// consumption path — see [`PagePoolAddress`]).
+    pub fn pool_address(&self) -> Result<PagePoolAddress, GpuError> {
+        let plan = self.plan.ok_or_else(|| GpuError::InvalidConfig {
+            detail: "pool_address before reserve".to_owned(),
+        })?;
+        let pool = self.region_base(Region::Pages)?;
+        Ok(PagePoolAddress {
+            base: pool.base,
+            slots: u32::try_from(plan.capacity).unwrap_or(u32::MAX),
             page_bytes: plan.page_bytes,
         })
     }

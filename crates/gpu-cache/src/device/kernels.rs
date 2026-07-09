@@ -20,8 +20,11 @@
 //! - `expand` — one thread per (selection, edge) pair: bounded one-hop
 //!   adjacency walk with atomic bitmap dedup and an atomic output cursor.
 
-/// Kernel entry names, resolved eagerly at module load.
-pub(crate) const KERNELS: &[&str] = &[
+/// Kernel entry names, resolved eagerly at module load. This list is the
+/// registration contract: a replacement module (Moho) must define every
+/// name with the baseline ABI. Re-exported as
+/// `strata_gpu_cache::SELECTION_KERNEL_NAMES`.
+pub const KERNELS: &[&str] = &[
     "score_slots",
     "block_topk",
     "merge_topk",
@@ -30,8 +33,10 @@ pub(crate) const KERNELS: &[&str] = &[
     "gather_pages",
 ];
 
-/// The PTX module source.
-pub(crate) const SELECTION_PTX: &str = r"
+/// The baseline PTX module source. Re-exported as
+/// `strata_gpu_cache::BASELINE_SELECTION_PTX` so replacement modules can
+/// start from (or fall back to) the reference implementation.
+pub const SELECTION_PTX: &str = r"
 .version 7.0
 .target sm_80
 .address_size 64

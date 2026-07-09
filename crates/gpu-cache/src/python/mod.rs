@@ -46,10 +46,16 @@ struct Tier {
 impl Tier {
     /// Opens the tier: a CUDA device context plus a durable-local Strata
     /// database at `path` (created if absent).
+    ///
+    /// `selection_ptx` registers a replacement selection module (Moho's
+    /// kernels) in place of the baseline — it must define every baseline
+    /// entry point with the baseline ABI; a missing entry fails here, not
+    /// at the first decode step.
     #[new]
     #[pyo3(signature = (path, space, page_bytes, summary_bytes, page_slots,
                         adjacency_degree = 32, promotion_batch = 8,
-                        write_behind_batch = 8, write_backlog_cap = 64))]
+                        write_behind_batch = 8, write_backlog_cap = 64,
+                        selection_ptx = None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         path: &str,
@@ -61,10 +67,14 @@ impl Tier {
         promotion_batch: usize,
         write_behind_batch: usize,
         write_backlog_cap: usize,
+        selection_ptx: Option<String>,
     ) -> PyResult<Self> {
         let staging = usize::try_from(page_bytes)
             .map_err(|_| PyValueError::new_err("page_bytes exceeds the address width"))?;
-        let backend = CudaBackend::new(staging).map_err(gpu_err)?;
+        let mut backend = CudaBackend::new(staging).map_err(gpu_err)?;
+        if let Some(ptx) = selection_ptx {
+            backend.register_selection_ptx(ptx).map_err(gpu_err)?;
+        }
         let device_id = backend.device_ordinal();
         let store = EnginePageStore::open(path, space).map_err(gpu_err)?;
         let inner = RustTier::open(
@@ -176,6 +186,28 @@ impl Tier {
         Ok(Selection {
             tier: slf.unbind(),
             addresses,
+            device_id,
+        })
+    }
+
+    /// The whole device page pool as `uint8 [slots, page_bytes]` — the
+    /// zero-copy path for fused kernels that gather via `block_table()`
+    /// themselves, skipping materialization. A slot's contents are stable
+    /// only under the epoch contract: read only slots named by the current
+    /// step's selection.
+    fn pool(slf: Bound<'_, Self>) -> PyResult<DeviceTensor> {
+        let (address, device_id) = {
+            let tier = slf.borrow();
+            let address = tier.inner.backend().pool_address().map_err(gpu_err)?;
+            (address, tier.device_id)
+        };
+        let page_bytes = i64::try_from(address.page_bytes)
+            .map_err(|_| PyValueError::new_err("page_bytes exceeds i64"))?;
+        Ok(DeviceTensor {
+            tier: slf.unbind(),
+            ptr: address.base,
+            shape: vec![i64::from(address.slots), page_bytes],
+            dtype: dlpack::DType::Uint8,
             device_id,
         })
     }
