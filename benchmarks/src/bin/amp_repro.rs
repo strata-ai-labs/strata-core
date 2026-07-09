@@ -27,7 +27,7 @@ use std::process;
 use std::time::Instant;
 
 use strata_engine_next::{
-    Database, DurableLocalOpenOptions, EngineResult, KvKey, KvValue, ProductSpace,
+    BranchName, Database, DurableLocalOpenOptions, EngineResult, KvKey, KvValue, ProductSpace,
 };
 
 #[allow(dead_code)]
@@ -79,6 +79,10 @@ struct Config {
     settle_secs: u64,
     memory_budget_bytes: Option<u64>,
     read_rounds: usize,
+    /// #2527: time `fork_current` calls after seed+settle (a small commit
+    /// precedes each fork so the memtable is dirty — the shape that forced
+    /// the O(dataset) eager fork).
+    fork_rounds: usize,
 }
 
 fn main() {
@@ -109,6 +113,7 @@ fn parse_args() -> Result<Config, String> {
         settle_secs: DEFAULT_SETTLE_SECS,
         memory_budget_bytes: None,
         read_rounds: 64,
+        fork_rounds: 0,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -132,6 +137,7 @@ fn parse_args() -> Result<Config, String> {
                 config.memory_budget_bytes = Some(parse_size(&value("--memory-budget")?)?);
             }
             "--reads" => config.read_rounds = parse_count(&value("--reads")?)?,
+            "--forks" => config.fork_rounds = parse_count(&value("--forks")?)?,
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -288,6 +294,38 @@ fn run(config: &Config) -> EngineResult<()> {
         println!(
             "[reads] rounds={} pages_per_round={} round_p50={}us round_p99={}us",
             config.read_rounds, READ_ROUND_PAGES, p50, p99,
+        );
+    }
+
+    // #2527: fork latency + disk growth. One small commit before each fork
+    // keeps the memtable dirty — the GT5 rollout shape that forced the
+    // eager O(dataset) fork (~1.9s + a full duplicate per fork).
+    if config.fork_rounds > 0 {
+        let fork_base = dir_size_bytes(path);
+        let dirty_branch = database.default_branch().clone();
+        let mut fork_ms: Vec<u128> = Vec::with_capacity(config.fork_rounds);
+        for round in 0..config.fork_rounds {
+            let mut dirty_kv = database.kv(dirty_branch.clone(), ProductSpace::new("tier")?)?;
+            dirty_kv.put(
+                KvKey::new(format!("fork-dirty-{round}").into_bytes()).expect("valid key"),
+                KvValue::new(vec![0xF0; 64]),
+            )?;
+            drop(dirty_kv);
+            let fork_start = Instant::now();
+            database.branches()?.fork_current(
+                &BranchName::new("default")?,
+                BranchName::new(format!("rollout-{round}"))?,
+            )?;
+            fork_ms.push(fork_start.elapsed().as_millis());
+        }
+        let grown = dir_size_bytes(path).saturating_sub(fork_base);
+        fork_ms.sort_unstable();
+        println!(
+            "[forks] rounds={} p50_ms={} max_ms={} disk_growth={}",
+            config.fork_rounds,
+            fork_ms[fork_ms.len() / 2],
+            fork_ms.last().copied().unwrap_or(0),
+            format_bytes(grown),
         );
     }
 

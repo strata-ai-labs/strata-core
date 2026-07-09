@@ -3891,3 +3891,81 @@ impl Drop for HeldWriterLock {
         self.locked.store(false, Ordering::SeqCst);
     }
 }
+
+/// #2527: a fork with unflushed rows takes the HYBRID COW path — the
+/// outcome carries an inherited layer over the parent's sealed tables (the
+/// eager path reported 0/0 and materialized the whole store).
+#[test]
+fn fork_with_unsealed_rows_builds_a_cow_child() {
+    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let branch = branch_id(0x91);
+    let child = branch_id(0x92);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"sealed-row", b"sealed"),
+            generation_guard(),
+        )
+        .expect("sealed commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+    let flush = runtime
+        .flush_frozen(&flush_request(branch, "fork-cow-seal"))
+        .expect("flush sealed rows");
+    assert!(flush.completed());
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"unsealed-row", b"unsealed"),
+            generation_guard(),
+        )
+        .expect("unsealed commit");
+
+    let fork_version = runtime.visible_version();
+    let outcome = runtime
+        .fork_at_retained_version(
+            branch,
+            child,
+            CommitBranchGeneration::new(1).expect("generation"),
+            fork_version,
+            CommitVersion::ZERO,
+        )
+        .expect("hybrid fork");
+    assert_eq!(
+        outcome.inherited_layer_count(),
+        1,
+        "unsealed rows no longer force the eager whole-store materialization",
+    );
+    assert!(outcome.inherited_table_count() >= 1);
+}
+
+/// #2527: a source whose rows are ALL unsealed (no owned table to
+/// reference) keeps the eager path — there is nothing to COW.
+#[test]
+fn fork_of_an_all_unsealed_source_stays_eager() {
+    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let branch = branch_id(0x93);
+    let child = branch_id(0x94);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"only-unsealed", b"value"),
+            generation_guard(),
+        )
+        .expect("unsealed commit");
+
+    let fork_version = runtime.visible_version();
+    let outcome = runtime
+        .fork_at_retained_version(
+            branch,
+            child,
+            CommitBranchGeneration::new(1).expect("generation"),
+            fork_version,
+            CommitVersion::ZERO,
+        )
+        .expect("eager fork");
+    assert_eq!(outcome.inherited_layer_count(), 0, "no table to reference");
+    assert_eq!(outcome.inherited_table_count(), 0);
+}
