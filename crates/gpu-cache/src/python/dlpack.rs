@@ -4,15 +4,28 @@
 //! consumed; the versioned form is a follow-up): the capsule owns a boxed
 //! manager whose context keeps the producing [`Tier`](super::Tier) alive —
 //! a torch tensor built from this capsule extends the tier's lifetime, so
-//! the arena the data lives in cannot be freed under it. The deleter runs
-//! on the consumer's thread and reacquires the GIL to drop the keepalive.
+//! the arena the data lives in cannot be freed under it.
+//!
+//! The deleter runs on the consumer's thread — possibly during interpreter
+//! finalization (torch tears tensors down inside `Py_FinalizeEx`), where
+//! acquiring the GIL aborts the process. So the deleter never touches the
+//! GIL: it moves the keepalive into a graveyard that the next capsule
+//! creation drains under the GIL it already holds. Keepalives still buried
+//! at process exit leak to the OS, intentionally. (The graveyard is
+//! resource reclamation, not semantic state — the per-database rule is
+//! about the latter.)
 //!
 //! This module and `device/` are the crate's only unsafe territory (see
 //! `lib.rs`).
 
 use std::ffi::{c_void, CStr};
+use std::sync::Mutex;
 
 use pyo3::prelude::*;
+
+/// Keepalives whose tensors died on threads (or in interpreter phases)
+/// where the GIL could not be taken. Drained by [`capsule`].
+static GRAVEYARD: Mutex<Vec<Py<PyAny>>> = Mutex::new(Vec::new());
 
 /// `kDLCUDA`.
 const DL_DEVICE_CUDA: i32 = 2;
@@ -85,7 +98,7 @@ struct DLManagedTensor {
 /// Everything the tensor borrows: the shape array the `DLTensor` points at
 /// and the Python object that owns the device memory.
 struct ManagerCtx {
-    _keepalive: Py<PyAny>,
+    keepalive: Py<PyAny>,
     shape: Box<[i64]>,
 }
 
@@ -98,10 +111,14 @@ unsafe extern "C" fn deleter(managed: *mut DLManagedTensor) {
     let managed = unsafe { Box::from_raw(managed) };
     let ctx = managed.manager_ctx.cast::<ManagerCtx>();
     if !ctx.is_null() {
-        // SAFETY: paired Box::into_raw in `capsule`; dropping the keepalive
-        // requires the GIL (the consumer may call us from any thread).
+        // SAFETY: paired Box::into_raw in `capsule`. No GIL here — a panic
+        // in this extern "C" fn aborts, and taking the GIL can do exactly
+        // that during interpreter finalization. Bury the keepalive instead.
         let ctx = unsafe { Box::from_raw(ctx) };
-        Python::with_gil(move |_| drop(ctx));
+        GRAVEYARD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(ctx.keepalive);
     }
 }
 
@@ -128,9 +145,18 @@ pub(crate) fn capsule(
     device_id: i32,
     keepalive: Py<PyAny>,
 ) -> PyResult<PyObject> {
+    // Drop keepalives of tensors that died where the GIL was off-limits
+    // (we hold it here). Steady-state decode never accumulates more than
+    // the tensors of one step.
+    let dead: Vec<Py<PyAny>> = std::mem::take(
+        &mut GRAVEYARD
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+    );
+    drop(dead);
     let shape_box: Box<[i64]> = shape.into();
     let ctx = Box::new(ManagerCtx {
-        _keepalive: keepalive,
+        keepalive,
         shape: shape_box,
     });
     let shape_ptr = ctx.shape.as_ptr().cast_mut();

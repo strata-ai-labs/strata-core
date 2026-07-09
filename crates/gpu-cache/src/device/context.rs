@@ -26,11 +26,14 @@ pub struct DeviceFacts {
 
 /// One initialized device context.
 ///
-/// Owns the driver handle and the CUDA context for device 0 (edge is
-/// single-GPU by design — multi-device is out of scope for the tier).
+/// Owns the driver handle and a retained reference to device 0's *primary*
+/// context — the context the CUDA runtime shares, so torch and the tier see
+/// one context and handles stay valid regardless of who initialized last.
+/// (Edge is single-GPU by design — multi-device is out of scope.)
 pub struct GpuContext {
     api: Arc<DriverApi>,
     ctx: CuContext,
+    device: crate::device::driver::CuDevice,
     facts: DeviceFacts,
 }
 
@@ -59,7 +62,8 @@ impl GpuContext {
         }
         let name = api.device_name(device)?;
         let total_memory = api.device_total_mem(device)? as u64;
-        let ctx = api.ctx_create(device)?;
+        let ctx = api.primary_ctx_retain(device)?;
+        api.ctx_set_current(ctx)?;
         info!(
             device = %name,
             compute_capability = format_args!("{major}.{minor}"),
@@ -69,6 +73,7 @@ impl GpuContext {
         Ok(Self {
             api,
             ctx,
+            device,
             facts: DeviceFacts {
                 name,
                 compute_capability: (major, minor),
@@ -102,6 +107,13 @@ impl GpuContext {
         self.api.ctx_synchronize()
     }
 
+    /// Re-binds the shared primary context as this thread's current
+    /// context. Backend entry points call this because interop consumers
+    /// (torch) rebind the current context between our calls.
+    pub(crate) fn make_current(&self) -> Result<(), GpuError> {
+        self.api.ctx_set_current(self.ctx)
+    }
+
     pub(crate) fn api(&self) -> &Arc<DriverApi> {
         &self.api
     }
@@ -109,8 +121,8 @@ impl GpuContext {
 
 impl Drop for GpuContext {
     fn drop(&mut self) {
-        if let Err(error) = self.api.ctx_destroy(self.ctx) {
-            tracing::warn!(%error, "failed to destroy GPU context");
+        if let Err(error) = self.api.primary_ctx_release(self.device) {
+            tracing::warn!(%error, "failed to release the GPU primary context");
         }
     }
 }

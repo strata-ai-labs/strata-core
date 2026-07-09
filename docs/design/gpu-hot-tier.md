@@ -1,6 +1,29 @@
 # Strata GPU Hot Tier — Design (2026-07-08)
 
-**Status: DESIGN.** This is the Strata-side design answering the requirements
+**Status: UNLOCKED (GT0-GT5 landed, 2026-07-08).** All six milestones shipped
+on the `gpu-hot-tier` branch and the §13 acceptance gates pass on the RTX
+4070 Super:
+
+- **Microbench** (64Ki resident slots, 16-dim summaries): top-k k=64 40.3 µs,
+  +expand F=32 43.0 µs, materialize k=64×64KiB 10.5 µs / 398 GB/s — the full
+  decode-path chain ≈ 54 µs against the 400 µs budget. Selection is exact
+  hierarchical top-k (bitonic per-256 shortlists + shrinking merge rounds),
+  bitwise-equal to the host-sim oracle including ties. Promotion pipeline
+  1.55 GB/s; append (hot) mean 157 µs.
+- **Decode driver** (Python, stock torch; 64Ki resident × 4KiB pages, 512Ki-page
+  durable store = 8×; zipfian/window/graph-walk traces, 1536 steps): decode-path
+  host overhead p50 52 µs / p95 69 µs; **zero** decode-path host syncs;
+  cold fetch 32/32 promoted on demand; 3.9 pages/step promotion sustained.
+- Maintenance (overlapped, off the decode path) is reported, not gated: at the
+  full-scale store it is bound by engine read latency and a ~20× on-disk
+  amplification under thousands of small batch commits — an **engine-side
+  finding** for the storage-next scaling work, not tier machinery (the quick
+  run's nominal store shows machinery-only rounds at ~1 ms).
+
+Lithos can adopt via `materialize()` + DLPack with zero custom kernels; Moho
+can start MO-2/MO-1 against this measured baseline.
+
+This is the Strata-side design answering the requirements
 recorded in `lithos/docs/strata-gpu-hot-tier.md` (HT-1..10, 2026-07-04) and the
 open questions its §8 deferred. Companion requirement docs: `lithos/docs/moho.md`
 (the kernel layer that consumes this tier), Lithos implementation plan §R1/R2.

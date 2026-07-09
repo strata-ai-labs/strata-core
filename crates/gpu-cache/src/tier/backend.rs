@@ -20,13 +20,17 @@ pub const MAX_EXPAND: u16 = 256;
 #[must_use]
 pub const fn scratch_bytes(capacity: u64, summary_bytes: u64) -> u64 {
     let dim = summary_bytes / 4;
+    let cand_a = capacity.div_ceil(256) * (MAX_K as u64);
+    let cand_b = cand_a.div_ceil(256) * (MAX_K as u64);
     capacity * 4                    // scores
         + (MAX_K as u64) * 4        // selected slots
         + (MAX_K as u64) * 4        // selected scores
         + (MAX_EXPAND as u64) * 4   // expansion output
         + 4                         // cursor
         + capacity.div_ceil(32) * 4 // dedup bitmap, word padded
-        + dim * 4 // staged query
+        + dim * 4                   // staged query
+        + cand_a * 8                // per-block shortlists (scores + slots)
+        + cand_b * 8 // merge-round ping-pong (scores + slots)
 }
 
 /// An exact-match predicate over one of a page's four metadata tags.

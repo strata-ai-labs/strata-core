@@ -36,8 +36,9 @@ type FnCuDeviceGet = unsafe extern "C" fn(*mut CuDevice, c_int) -> c_int;
 type FnCuDeviceGetName = unsafe extern "C" fn(*mut c_char, c_int, CuDevice) -> c_int;
 type FnCuDeviceGetAttribute = unsafe extern "C" fn(*mut c_int, c_int, CuDevice) -> c_int;
 type FnCuDeviceTotalMem = unsafe extern "C" fn(*mut usize, CuDevice) -> c_int;
-type FnCuCtxCreate = unsafe extern "C" fn(*mut CuContext, c_uint, CuDevice) -> c_int;
-type FnCuCtxDestroy = unsafe extern "C" fn(CuContext) -> c_int;
+type FnCuDevicePrimaryCtxRetain = unsafe extern "C" fn(*mut CuContext, CuDevice) -> c_int;
+type FnCuDevicePrimaryCtxRelease = unsafe extern "C" fn(CuDevice) -> c_int;
+type FnCuCtxSetCurrent = unsafe extern "C" fn(CuContext) -> c_int;
 type FnCuCtxSynchronize = unsafe extern "C" fn() -> c_int;
 type FnCuMemGetInfo = unsafe extern "C" fn(*mut usize, *mut usize) -> c_int;
 type FnCuMemAlloc = unsafe extern "C" fn(*mut DevicePtr, usize) -> c_int;
@@ -125,8 +126,9 @@ pub(crate) struct DriverApi {
     cu_device_get_name: FnCuDeviceGetName,
     cu_device_get_attribute: FnCuDeviceGetAttribute,
     cu_device_total_mem: FnCuDeviceTotalMem,
-    cu_ctx_create: FnCuCtxCreate,
-    cu_ctx_destroy: FnCuCtxDestroy,
+    cu_primary_ctx_retain: FnCuDevicePrimaryCtxRetain,
+    cu_primary_ctx_release: FnCuDevicePrimaryCtxRelease,
+    cu_ctx_set_current: FnCuCtxSetCurrent,
     cu_ctx_synchronize: FnCuCtxSynchronize,
     cu_mem_get_info: FnCuMemGetInfo,
     cu_mem_alloc: FnCuMemAlloc,
@@ -204,8 +206,17 @@ impl DriverApi {
             cu_device_get_name: load_sym!(lib, "cuDeviceGetName", FnCuDeviceGetName),
             cu_device_get_attribute: load_sym!(lib, "cuDeviceGetAttribute", FnCuDeviceGetAttribute),
             cu_device_total_mem: load_sym!(lib, "cuDeviceTotalMem_v2", FnCuDeviceTotalMem),
-            cu_ctx_create: load_sym!(lib, "cuCtxCreate_v2", FnCuCtxCreate),
-            cu_ctx_destroy: load_sym!(lib, "cuCtxDestroy_v2", FnCuCtxDestroy),
+            cu_primary_ctx_retain: load_sym!(
+                lib,
+                "cuDevicePrimaryCtxRetain",
+                FnCuDevicePrimaryCtxRetain
+            ),
+            cu_primary_ctx_release: load_sym!(
+                lib,
+                "cuDevicePrimaryCtxRelease_v2",
+                FnCuDevicePrimaryCtxRelease
+            ),
+            cu_ctx_set_current: load_sym!(lib, "cuCtxSetCurrent", FnCuCtxSetCurrent),
             cu_ctx_synchronize: load_sym!(lib, "cuCtxSynchronize", FnCuCtxSynchronize),
             cu_mem_get_info: load_sym!(lib, "cuMemGetInfo_v2", FnCuMemGetInfo),
             cu_mem_alloc: load_sym!(lib, "cuMemAlloc_v2", FnCuMemAlloc),
@@ -316,18 +327,31 @@ impl DriverApi {
         Ok(bytes)
     }
 
-    pub(crate) fn ctx_create(&self, device: CuDevice) -> Result<CuContext, GpuError> {
+    /// Retains the device's *primary* context — the same context the CUDA
+    /// runtime (and so torch) uses. Sharing it is the documented interop
+    /// path: every consumer sees one context, so handles stay valid no
+    /// matter who initialized last. Reference-counted by the driver.
+    pub(crate) fn primary_ctx_retain(&self, device: CuDevice) -> Result<CuContext, GpuError> {
         let mut ctx = std::ptr::null_mut();
-        // SAFETY: out-pointer valid; flags 0 = default scheduling.
-        let rc = unsafe { (self.cu_ctx_create)(&raw mut ctx, 0, device) };
-        self.check("cuCtxCreate", rc)?;
+        // SAFETY: out-pointer valid for the call duration.
+        let rc = unsafe { (self.cu_primary_ctx_retain)(&raw mut ctx, device) };
+        self.check("cuDevicePrimaryCtxRetain", rc)?;
         Ok(ctx)
     }
 
-    pub(crate) fn ctx_destroy(&self, ctx: CuContext) -> Result<(), GpuError> {
-        // SAFETY: ctx came from ctx_create and is destroyed once.
-        let rc = unsafe { (self.cu_ctx_destroy)(ctx) };
-        self.check("cuCtxDestroy", rc)
+    pub(crate) fn primary_ctx_release(&self, device: CuDevice) -> Result<(), GpuError> {
+        // SAFETY: paired with primary_ctx_retain, released exactly once.
+        let rc = unsafe { (self.cu_primary_ctx_release)(device) };
+        self.check("cuDevicePrimaryCtxRelease", rc)
+    }
+
+    /// Binds `ctx` as this thread's current context. Cheap; called at
+    /// backend entry points because interop consumers (torch) rebind the
+    /// current context under us.
+    pub(crate) fn ctx_set_current(&self, ctx: CuContext) -> Result<(), GpuError> {
+        // SAFETY: ctx is a live context handle from primary_ctx_retain.
+        let rc = unsafe { (self.cu_ctx_set_current)(ctx) };
+        self.check("cuCtxSetCurrent", rc)
     }
 
     /// Full-context synchronize. Counted: this is a synchronous wait.

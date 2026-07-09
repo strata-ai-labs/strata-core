@@ -8,10 +8,13 @@
 //! - `score_slots` — one thread per slot: validity + tag-filter mask, then
 //!   an f32 dot product of the query against the slot's summary. Masked
 //!   slots score `f32::MIN` so selection never picks them.
-//! - `select_topk` — one 256-thread block, k sequential arg-max passes with
-//!   a shared-memory tree reduction. Ties break toward the lower slot
-//!   (ascending scan keeps the first maximum; the reduction prefers the
-//!   lower slot on equal scores) — matching the host-sim oracle exactly.
+//! - `block_topk` + `merge_topk` — exact hierarchical top-k: every block
+//!   bitonic-sorts its 256-slot slice by (score desc, slot asc) and emits
+//!   its local top-k (any global top-k element is necessarily in its
+//!   window's top-k, so each round is exact); `merge_topk` then sorts
+//!   256-candidate windows round by round until one block writes the final
+//!   selection. The comparator is a total order, so ties match the
+//!   host-sim oracle bitwise. No k-sequential passes anywhere.
 //! - `seed_bitmap` — marks the selected slots in the dedup bitmap before
 //!   expansion.
 //! - `expand` — one thread per (selection, edge) pair: bounded one-hop
@@ -20,7 +23,8 @@
 /// Kernel entry names, resolved eagerly at module load.
 pub(crate) const KERNELS: &[&str] = &[
     "score_slots",
-    "select_topk",
+    "block_topk",
+    "merge_topk",
     "seed_bitmap",
     "expand",
     "gather_pages",
@@ -121,31 +125,37 @@ DONE:
     ret;
 }
 
-// k arg-max passes over scores; one 256-thread block. Selected slots are
-// marked taken (f32::MIN) so later passes skip them. Pads with 0xFFFFFFFF
-// when fewer than k slots score above f32::MIN.
-.visible .entry select_topk(
+// Stage 1: each 256-thread block bitonic-sorts its 256-slot slice by
+// (score desc, slot asc) in shared memory -- 36 compare-exchange substages,
+// one barrier each -- and threads 0..k emit the block's best (score, slot)
+// candidates. Out-of-range lanes and exhausted entries carry
+// f32::MIN / 0xFFFFFFFF.
+.visible .entry block_topk(
     .param .u64 p_scores,
     .param .u32 p_capacity,
     .param .u32 p_k,
-    .param .u64 p_out_slots,
-    .param .u64 p_out_scores
+    .param .u64 p_cand_scores,
+    .param .u64 p_cand_slots
 )
 {
-    .reg .pred  %p<10>;
-    .reg .b32   %r<24>;
+    .reg .pred  %p<12>;
+    .reg .b32   %r<20>;
     .reg .b64   %rd<24>;
-    .reg .f32   %f<10>;
+    .reg .f32   %f<8>;
     .shared .align 4 .b8 s_score[1024];
     .shared .align 4 .b8 s_slot[1024];
 
     ld.param.u64    %rd1, [p_scores];
     ld.param.u32    %r1, [p_capacity];
     ld.param.u32    %r2, [p_k];
-    ld.param.u64    %rd2, [p_out_slots];
-    ld.param.u64    %rd3, [p_out_scores];
+    ld.param.u64    %rd2, [p_cand_scores];
+    ld.param.u64    %rd3, [p_cand_slots];
 
     mov.u32         %r3, %tid.x;
+    mov.u32         %r4, %ctaid.x;
+    shl.b32         %r5, %r4, 8;            // block base slot
+    add.u32         %r6, %r5, %r3;          // this thread's global slot
+
     cvt.u64.u32     %rd4, %r3;
     shl.b64         %rd5, %rd4, 2;
     mov.u64         %rd6, s_score;
@@ -153,92 +163,203 @@ DONE:
     mov.u64         %rd8, s_slot;
     add.u64         %rd9, %rd8, %rd5;       // &s_slot[tid]
 
-    mov.u32         %r4, 0;                 // pass
-PASS:
-    setp.ge.u32     %p1, %r4, %r2;
-    @%p1 bra        FIN;
-
-    // Local strided scan: ascending order keeps the lowest slot on ties.
-    mov.f32         %f1, 0fFF7FFFFF;        // best score
-    mov.u32         %r5, 0xFFFFFFFF;        // best slot
-    mov.u32         %r6, %r3;               // i = tid
-SCAN:
-    setp.ge.u32     %p2, %r6, %r1;
-    @%p2 bra        SCanD;
+    // Load the slice; out-of-range lanes hold (f32::MIN, 0xFFFFFFFF).
+    mov.f32         %f1, 0fFF7FFFFF;
+    mov.u32         %r7, 0xFFFFFFFF;
+    setp.ge.u32     %p1, %r6, %r1;
+    @%p1 bra        BLOADED;
     cvt.u64.u32     %rd10, %r6;
     shl.b64         %rd11, %rd10, 2;
     add.u64         %rd12, %rd1, %rd11;
-    ld.global.f32   %f2, [%rd12];
-    setp.gt.f32     %p3, %f2, %f1;
-    @!%p3 bra       NEXT;
-    mov.f32         %f1, %f2;
-    mov.u32         %r5, %r6;
-NEXT:
-    add.u32         %r6, %r6, 256;
-    bra             SCAN;
-SCanD:
+    ld.global.f32   %f1, [%rd12];
+    mov.u32         %r7, %r6;
+BLOADED:
     st.shared.f32   [%rd7], %f1;
-    st.shared.u32   [%rd9], %r5;
+    st.shared.u32   [%rd9], %r7;
     bar.sync        0;
 
-    // Tree reduction, preferring the lower slot on equal scores.
-    mov.u32         %r7, 128;
-REDUCE:
-    setp.eq.u32     %p4, %r7, 0;
-    @%p4 bra        PICK;
-    setp.ge.u32     %p5, %r3, %r7;
-    @%p5 bra        RSYNC;
-    add.u32         %r8, %r3, %r7;
-    cvt.u64.u32     %rd13, %r8;
+    // Bitonic sort, 256 elements: the lower lane of each pair owns the
+    // compare-exchange, so one barrier per substage suffices.
+    mov.u32         %r8, 2;                 // size
+BSIZE:
+    setp.gt.u32     %p1, %r8, 256;
+    @%p1 bra        BSORTED;
+    shr.u32         %r9, %r8, 1;            // stride
+BSTRIDE:
+    setp.eq.u32     %p1, %r9, 0;
+    @%p1 bra        BSIZENEXT;
+    and.b32         %r10, %r3, %r9;
+    setp.ne.u32     %p1, %r10, 0;
+    @%p1 bra        BSKIP;                  // upper lane idles this substage
+    add.u32         %r11, %r3, %r9;         // partner = tid + stride
+    cvt.u64.u32     %rd13, %r11;
     shl.b64         %rd14, %rd13, 2;
     mov.u64         %rd15, s_score;
-    add.u64         %rd16, %rd15, %rd14;
-    ld.shared.f32   %f3, [%rd16];
+    add.u64         %rd16, %rd15, %rd14;    // &s_score[partner]
     mov.u64         %rd17, s_slot;
-    add.u64         %rd18, %rd17, %rd14;
-    ld.shared.u32   %r9, [%rd18];
-    ld.shared.f32   %f4, [%rd7];
-    ld.shared.u32   %r10, [%rd9];
-    setp.gt.f32     %p6, %f3, %f4;
-    @%p6 bra        TAKEB;
-    setp.neu.f32    %p7, %f3, %f4;
-    @%p7 bra        RSYNC;
-    setp.ge.u32     %p8, %r9, %r10;
-    @%p8 bra        RSYNC;
-TAKEB:
+    add.u64         %rd18, %rd17, %rd14;    // &s_slot[partner]
+    ld.shared.f32   %f2, [%rd7];
+    ld.shared.u32   %r12, [%rd9];
+    ld.shared.f32   %f3, [%rd16];
+    ld.shared.u32   %r13, [%rd18];
+    // a-before-b: higher score first, lower slot on ties (total order).
+    setp.gt.f32     %p2, %f2, %f3;
+    setp.eq.f32     %p3, %f2, %f3;
+    setp.lt.u32     %p4, %r12, %r13;
+    and.pred        %p5, %p3, %p4;
+    or.pred         %p6, %p2, %p5;
+    // Ascending run iff (tid & size) == 0; swap when order disagrees.
+    and.b32         %r14, %r3, %r8;
+    setp.eq.u32     %p7, %r14, 0;
+    xor.pred        %p8, %p7, %p6;
+    @!%p8 bra       BSKIP;
     st.shared.f32   [%rd7], %f3;
-    st.shared.u32   [%rd9], %r9;
-RSYNC:
+    st.shared.u32   [%rd9], %r13;
+    st.shared.f32   [%rd16], %f2;
+    st.shared.u32   [%rd18], %r12;
+BSKIP:
     bar.sync        0;
-    shr.u32         %r7, %r7, 1;
-    bra             REDUCE;
+    shr.u32         %r9, %r9, 1;
+    bra             BSTRIDE;
+BSIZENEXT:
+    shl.b32         %r8, %r8, 1;
+    bra             BSIZE;
+BSORTED:
 
-PICK:
-    setp.ne.u32     %p9, %r3, 0;
-    @%p9 bra        PSYNC;
-    mov.u64         %rd19, s_slot;
-    ld.shared.u32   %r11, [%rd19];
-    mov.u64         %rd20, s_score;
-    ld.shared.f32   %f5, [%rd20];
-    cvt.u64.u32     %rd21, %r4;
+    // Threads 0..k emit the candidates at block*k + tid; pads (score still
+    // f32::MIN) carry slot 0xFFFFFFFF.
+    setp.ge.u32     %p1, %r3, %r2;
+    @%p1 bra        BDONE;
+    ld.shared.f32   %f4, [%rd7];
+    ld.shared.u32   %r15, [%rd9];
+    mov.f32         %f5, 0fFF7FFFFF;
+    setp.eq.f32     %p2, %f4, %f5;
+    @%p2 mov.u32    %r15, 0xFFFFFFFF;
+    mad.lo.s32      %r16, %r4, %r2, %r3;
+    cvt.u64.u32     %rd19, %r16;
+    shl.b64         %rd20, %rd19, 2;
+    add.u64         %rd21, %rd2, %rd20;
+    st.global.f32   [%rd21], %f4;
+    add.u64         %rd21, %rd3, %rd20;
+    st.global.u32   [%rd21], %r15;
+BDONE:
+    ret;
+}
+
+// Stage 2+: each block bitonic-sorts a 256-candidate window of the
+// (score, slot) list and emits its top k -- applied round by round (the
+// grid shrinks ~4x per round at k=64) until a single block writes the
+// final selection. Same comparator as stage 1, so ties stay deterministic.
+.visible .entry merge_topk(
+    .param .u64 p_src_scores,
+    .param .u64 p_src_slots,
+    .param .u32 p_count,
+    .param .u32 p_k,
+    .param .u64 p_out_slots,
+    .param .u64 p_out_scores
+)
+{
+    .reg .pred  %p<12>;
+    .reg .b32   %r<20>;
+    .reg .b64   %rd<26>;
+    .reg .f32   %f<8>;
+    .shared .align 4 .b8 m_score[1024];
+    .shared .align 4 .b8 m_slot[1024];
+
+    ld.param.u64    %rd1, [p_src_scores];
+    ld.param.u64    %rd2, [p_src_slots];
+    ld.param.u32    %r1, [p_count];
+    ld.param.u32    %r2, [p_k];
+    ld.param.u64    %rd3, [p_out_slots];
+    ld.param.u64    %rd4, [p_out_scores];
+
+    mov.u32         %r3, %tid.x;
+    mov.u32         %r4, %ctaid.x;
+    shl.b32         %r5, %r4, 8;
+    add.u32         %r6, %r5, %r3;          // this thread's candidate index
+
+    cvt.u64.u32     %rd5, %r3;
+    shl.b64         %rd6, %rd5, 2;
+    mov.u64         %rd7, m_score;
+    add.u64         %rd8, %rd7, %rd6;       // &m_score[tid]
+    mov.u64         %rd9, m_slot;
+    add.u64         %rd10, %rd9, %rd6;      // &m_slot[tid]
+
+    // Load the window; out-of-range lanes hold (f32::MIN, 0xFFFFFFFF).
+    mov.f32         %f1, 0fFF7FFFFF;
+    mov.u32         %r7, 0xFFFFFFFF;
+    setp.ge.u32     %p1, %r6, %r1;
+    @%p1 bra        MLOADED;
+    cvt.u64.u32     %rd11, %r6;
+    shl.b64         %rd12, %rd11, 2;
+    add.u64         %rd13, %rd1, %rd12;
+    ld.global.f32   %f1, [%rd13];
+    add.u64         %rd14, %rd2, %rd12;
+    ld.global.u32   %r7, [%rd14];
+MLOADED:
+    st.shared.f32   [%rd8], %f1;
+    st.shared.u32   [%rd10], %r7;
+    bar.sync        0;
+
+    mov.u32         %r8, 2;                 // size
+MSIZE:
+    setp.gt.u32     %p1, %r8, 256;
+    @%p1 bra        MSORTED;
+    shr.u32         %r9, %r8, 1;            // stride
+MSTRIDE:
+    setp.eq.u32     %p1, %r9, 0;
+    @%p1 bra        MSIZENEXT;
+    and.b32         %r10, %r3, %r9;
+    setp.ne.u32     %p1, %r10, 0;
+    @%p1 bra        MSKIP;
+    add.u32         %r11, %r3, %r9;
+    cvt.u64.u32     %rd15, %r11;
+    shl.b64         %rd16, %rd15, 2;
+    mov.u64         %rd17, m_score;
+    add.u64         %rd18, %rd17, %rd16;
+    mov.u64         %rd19, m_slot;
+    add.u64         %rd20, %rd19, %rd16;
+    ld.shared.f32   %f2, [%rd8];
+    ld.shared.u32   %r12, [%rd10];
+    ld.shared.f32   %f3, [%rd18];
+    ld.shared.u32   %r13, [%rd20];
+    setp.gt.f32     %p2, %f2, %f3;
+    setp.eq.f32     %p3, %f2, %f3;
+    setp.lt.u32     %p4, %r12, %r13;
+    and.pred        %p5, %p3, %p4;
+    or.pred         %p6, %p2, %p5;
+    and.b32         %r14, %r3, %r8;
+    setp.eq.u32     %p7, %r14, 0;
+    xor.pred        %p8, %p7, %p6;
+    @!%p8 bra       MSKIP;
+    st.shared.f32   [%rd8], %f3;
+    st.shared.u32   [%rd10], %r13;
+    st.shared.f32   [%rd18], %f2;
+    st.shared.u32   [%rd20], %r12;
+MSKIP:
+    bar.sync        0;
+    shr.u32         %r9, %r9, 1;
+    bra             MSTRIDE;
+MSIZENEXT:
+    shl.b32         %r8, %r8, 1;
+    bra             MSIZE;
+MSORTED:
+
+    setp.ge.u32     %p1, %r3, %r2;
+    @%p1 bra        MDONE;
+    ld.shared.f32   %f4, [%rd8];
+    ld.shared.u32   %r15, [%rd10];
+    mov.f32         %f5, 0fFF7FFFFF;
+    setp.eq.f32     %p2, %f4, %f5;
+    @%p2 mov.u32    %r15, 0xFFFFFFFF;
+    mad.lo.s32      %r16, %r4, %r2, %r3;
+    cvt.u64.u32     %rd21, %r16;
     shl.b64         %rd22, %rd21, 2;
-    add.u64         %rd23, %rd2, %rd22;
-    st.global.u32   [%rd23], %r11;
     add.u64         %rd23, %rd3, %rd22;
-    st.global.f32   [%rd23], %f5;
-    setp.eq.u32     %p9, %r11, 0xFFFFFFFF;
-    @%p9 bra        PSYNC;
-    cvt.u64.u32     %rd21, %r11;
-    shl.b64         %rd22, %rd21, 2;
-    add.u64         %rd23, %rd1, %rd22;
-    mov.f32         %f6, 0fFF7FFFFF;
-    st.global.f32   [%rd23], %f6;           // mark taken
-PSYNC:
-    bar.sync        0;
-    add.u32         %r4, %r4, 1;
-    bra             PASS;
-
-FIN:
+    st.global.u32   [%rd23], %r15;
+    add.u64         %rd23, %rd4, %rd22;
+    st.global.f32   [%rd23], %f4;
+MDONE:
     ret;
 }
 

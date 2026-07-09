@@ -40,9 +40,18 @@ struct Plan {
     bitmap_off: u64,
     bitmap_len: usize,
     query_off: u64,
+    cand_a_scores_off: u64,
+    cand_a_slots_off: u64,
+    cand_b_scores_off: u64,
+    cand_b_slots_off: u64,
+    blocks: u32,
 }
 
 impl Plan {
+    #[allow(
+        clippy::similar_names,
+        reason = "cand_a_*/cand_b_* are the two halves of one ping-pong pair"
+    )]
     fn derive(bytes: RegionBytes) -> Result<Self, GpuError> {
         let capacity = usize::try_from(bytes.validity).map_err(|_| GpuError::InvalidConfig {
             detail: "validity region exceeds host width".to_owned(),
@@ -63,7 +72,20 @@ impl Plan {
         let bitmap_off = cursor_off + 4;
         let bitmap_len = capacity.div_ceil(32) * 4;
         let query_off = bitmap_off + bitmap_len as u64;
-        let needed = query_off + (dim as u64) * 4;
+        let blocks =
+            u32::try_from(capacity.div_ceil(256)).map_err(|_| GpuError::InvalidConfig {
+                detail: "capacity exceeds the block-count width".to_owned(),
+            })?;
+        // Merge-round ping-pong buffers: A holds the per-block shortlists
+        // (blocks * MAX_K), B the next round's output (one entry set per
+        // 256-candidate window).
+        let a_entries = u64::from(blocks) * (MAX_K as u64);
+        let b_entries = a_entries.div_ceil(256) * (MAX_K as u64);
+        let cand_a_scores_off = query_off + (dim as u64) * 4;
+        let cand_a_slots_off = cand_a_scores_off + a_entries * 4;
+        let cand_b_scores_off = cand_a_slots_off + a_entries * 4;
+        let cand_b_slots_off = cand_b_scores_off + b_entries * 4;
+        let needed = cand_b_slots_off + b_entries * 4;
         if needed > bytes.scratch {
             return Err(GpuError::InvalidConfig {
                 detail: format!(
@@ -85,6 +107,11 @@ impl Plan {
             bitmap_off,
             bitmap_len,
             query_off,
+            cand_a_scores_off,
+            cand_a_slots_off,
+            cand_b_scores_off,
+            cand_b_slots_off,
+            blocks,
         })
     }
 }
@@ -178,6 +205,7 @@ impl DeviceBackend for CudaBackend {
     type Fence = CudaFence;
 
     fn reserve(&mut self, bytes: RegionBytes) -> Result<(), GpuError> {
+        self.context.make_current()?;
         if self.arena.is_some() {
             return Err(GpuError::InvalidConfig {
                 detail: "reserve called twice".to_owned(),
@@ -232,6 +260,7 @@ impl DeviceBackend for CudaBackend {
         offset: u64,
         bytes: &[u8],
     ) -> Result<Self::Fence, GpuError> {
+        self.context.make_current()?;
         if bytes.len() > self.staging.len() {
             return Err(GpuError::InvalidConfig {
                 detail: format!(
@@ -266,10 +295,12 @@ impl DeviceBackend for CudaBackend {
     }
 
     fn fence_now(&mut self) -> Result<Self::Fence, GpuError> {
+        self.context.make_current()?;
         Ok(CudaFence(Arc::new(self.stream.record()?)))
     }
 
     fn read_back(&mut self, region: Region, offset: u64, len: usize) -> Result<Vec<u8>, GpuError> {
+        self.context.make_current()?;
         let base = self.region_base(region)?;
         if offset + len as u64 > base.len {
             return Err(GpuError::InvalidConfig {
@@ -310,6 +341,7 @@ impl DeviceBackend for CudaBackend {
         expand_budget: Option<u16>,
         filter: Option<TagFilter>,
     ) -> Result<Self::Fence, GpuError> {
+        self.context.make_current()?;
         let plan = self.plan.ok_or_else(|| GpuError::InvalidConfig {
             detail: "topk before reserve".to_owned(),
         })?;
@@ -388,26 +420,77 @@ impl DeviceBackend for CudaBackend {
             )?;
         }
 
+        // Exact hierarchical top-k: per-block bitonic shortlists, then
+        // merge rounds over 256-candidate windows (the grid shrinks ~4x per
+        // round at k=64) until a single block writes the final selection.
         let mut p_k = u32::from(k);
-        let mut p_sel_slots = scratch.base + plan.sel_slots_off;
-        let mut p_sel_scores = scratch.base + plan.sel_scores_off;
-        let mut select_params: [*mut c_void; 5] = [
+        let mut p_cand_scores = scratch.base + plan.cand_a_scores_off;
+        let mut p_cand_slots = scratch.base + plan.cand_a_slots_off;
+        let mut block_params: [*mut c_void; 5] = [
             (&raw mut p_scores).cast(),
             (&raw mut p_capacity).cast(),
             (&raw mut p_k).cast(),
-            (&raw mut p_sel_slots).cast(),
-            (&raw mut p_sel_scores).cast(),
+            (&raw mut p_cand_scores).cast(),
+            (&raw mut p_cand_slots).cast(),
         ];
         // SAFETY: as above.
         unsafe {
             module.launch(
-                "select_topk",
-                (1, 1, 1),
+                "block_topk",
+                (plan.blocks, 1, 1),
                 (256, 1, 1),
                 0,
                 &self.stream,
-                &mut select_params,
+                &mut block_params,
             )?;
+        }
+
+        let buffers = [
+            (plan.cand_a_scores_off, plan.cand_a_slots_off),
+            (plan.cand_b_scores_off, plan.cand_b_slots_off),
+        ];
+        let mut p_sel_slots = scratch.base + plan.sel_slots_off;
+        let p_sel_scores = scratch.base + plan.sel_scores_off;
+        let mut source = 0usize;
+        let mut count = plan.blocks * u32::from(k);
+        loop {
+            let grid = count.div_ceil(256).max(1);
+            let last_round = grid == 1;
+            let mut p_src_scores = scratch.base + buffers[source].0;
+            let mut p_src_slots = scratch.base + buffers[source].1;
+            let mut p_count = count;
+            let (mut p_out_slots, mut p_out_scores) = if last_round {
+                (p_sel_slots, p_sel_scores)
+            } else {
+                (
+                    scratch.base + buffers[1 - source].1,
+                    scratch.base + buffers[1 - source].0,
+                )
+            };
+            let mut merge_params: [*mut c_void; 6] = [
+                (&raw mut p_src_scores).cast(),
+                (&raw mut p_src_slots).cast(),
+                (&raw mut p_count).cast(),
+                (&raw mut p_k).cast(),
+                (&raw mut p_out_slots).cast(),
+                (&raw mut p_out_scores).cast(),
+            ];
+            // SAFETY: as above.
+            unsafe {
+                module.launch(
+                    "merge_topk",
+                    (grid, 1, 1),
+                    (256, 1, 1),
+                    0,
+                    &self.stream,
+                    &mut merge_params,
+                )?;
+            }
+            if last_round {
+                break;
+            }
+            count = grid * u32::from(k);
+            source = 1 - source;
         }
 
         if expand_budget.is_some() {
@@ -465,6 +548,7 @@ impl DeviceBackend for CudaBackend {
     }
 
     fn read_topk(&mut self) -> Result<TopkReadback, GpuError> {
+        self.context.make_current()?;
         let plan = self.plan.ok_or_else(|| GpuError::InvalidConfig {
             detail: "read_topk before reserve".to_owned(),
         })?;
@@ -503,6 +587,7 @@ impl DeviceBackend for CudaBackend {
     }
 
     fn materialize_topk(&mut self) -> Result<Self::Fence, GpuError> {
+        self.context.make_current()?;
         let plan = self.plan.ok_or_else(|| GpuError::InvalidConfig {
             detail: "materialize before reserve".to_owned(),
         })?;
@@ -601,6 +686,7 @@ impl CudaBackend {
         raw_stream: u64,
         fence: &CudaFence,
     ) -> Result<(), GpuError> {
+        self.context.make_current()?;
         // SAFETY: forwarded contract — see function docs; the event is live
         // for the fence's lifetime.
         unsafe { fence.0.wait_on_raw_stream(raw_stream, self.context.api()) }

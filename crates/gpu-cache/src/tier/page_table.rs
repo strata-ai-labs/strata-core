@@ -54,6 +54,8 @@ pub struct PageTable<F: CopyFence> {
     epoch_fences: BTreeMap<Epoch, F>,
     /// Evicted slots waiting for their epoch's fence.
     reuse_gates: Vec<(u32, Epoch)>,
+    /// Rotating start position for [`Self::sample_candidates`].
+    scan_cursor: usize,
 }
 
 impl<F: CopyFence> PageTable<F> {
@@ -73,6 +75,7 @@ impl<F: CopyFence> PageTable<F> {
             epoch: 0,
             epoch_fences: BTreeMap::new(),
             reuse_gates: Vec::new(),
+            scan_cursor: 0,
         })
     }
 
@@ -179,6 +182,43 @@ impl<F: CopyFence> PageTable<F> {
                 .filter(|state| state.valid && !state.dirty)
                 .map(|state| (u32::try_from(slot).unwrap_or(u32::MAX), state))
         })
+    }
+
+    /// Bounded eviction-candidate sample: up to `budget` valid, clean slots
+    /// collected from a rotating cursor, so successive calls sweep the whole
+    /// table. Evicting the minimum of a sample is the standard trade at
+    /// scale — a full scan per eviction is O(capacity) and dominates
+    /// maintenance once pools reach tens of thousands of slots. Tables that
+    /// fit within the budget always yield every candidate (exact eviction,
+    /// deterministic small-scale tests). The full circle is walked only when
+    /// clean pages are scarce.
+    pub fn sample_candidates(&mut self, budget: usize) -> Vec<(u32, &SlotState)> {
+        let len = self.entries.len();
+        if len == 0 {
+            return Vec::new();
+        }
+        let start = self.scan_cursor % len;
+        let mut picked: Vec<u32> = Vec::with_capacity(budget.min(len));
+        let mut visited = 0;
+        while visited < len && picked.len() < budget {
+            let slot = (start + visited) % len;
+            visited += 1;
+            let qualifies = self.entries[slot]
+                .as_ref()
+                .is_some_and(|state| state.valid && !state.dirty);
+            if qualifies {
+                picked.push(u32::try_from(slot).unwrap_or(u32::MAX));
+            }
+        }
+        self.scan_cursor = (start + visited) % len;
+        picked
+            .into_iter()
+            .filter_map(|slot| {
+                self.entries[slot as usize]
+                    .as_ref()
+                    .map(|state| (slot, state))
+            })
+            .collect()
     }
 
     /// Rolls back a placement whose copy never started or failed. The slot

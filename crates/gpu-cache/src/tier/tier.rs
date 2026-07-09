@@ -583,7 +583,8 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
                 return;
             }
             let now = self.table.epoch();
-            let Some(victim) = eviction::pick_victim(self.table.candidates(), now) else {
+            let sample = self.table.sample_candidates(eviction::SAMPLE_BUDGET);
+            let Some(victim) = eviction::pick_victim(sample.into_iter(), now) else {
                 return; // nothing evictable: degrade, never stall
             };
             // Unselectable on the device first, then host bookkeeping.

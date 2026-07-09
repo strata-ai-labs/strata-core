@@ -8,6 +8,14 @@
 
 use crate::tier::page_table::{Epoch, SlotState};
 
+/// Candidates examined per eviction pick. Evicting the minimum of a
+/// bounded rotating sample keeps eviction O(1) in pool size (a full scan
+/// per eviction dominates maintenance at 64k+ slots); the minimum of 64
+/// near-uniform samples sits around the bottom 1-2% of priorities, which
+/// is all a cache victim needs to be. Tables at or below the budget are
+/// scanned exactly.
+pub(super) const SAMPLE_BUDGET: usize = 64;
+
 /// How strongly resident-neighbor count protects a page from eviction.
 const NEIGHBOR_WEIGHT: f32 = 0.25;
 /// How quickly recency decays, per epoch since last touch.
