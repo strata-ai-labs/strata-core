@@ -11,7 +11,7 @@ use strata_gpu_cache::tier::backend::{DeviceBackend, Region};
 use strata_gpu_cache::tier::engine_store::EnginePageStore;
 use strata_gpu_cache::tier::host_sim::HostSimBackend;
 use strata_gpu_cache::tier::page_table::PageId;
-use strata_gpu_cache::tier::store::PageBlob;
+use strata_gpu_cache::tier::store::{PageBlob, PageStore};
 use strata_gpu_cache::tier::tier::{Tier, TierConfig};
 
 const PAGE_BYTES: u64 = 256;
@@ -125,6 +125,138 @@ fn geometry_change_is_refused_on_reopen() {
         panic!("mismatched geometry must refuse");
     };
     assert_eq!(error.code(), "failed_precondition.tier.geometry_mismatch");
+}
+
+#[test]
+fn fork_branches_the_store_of_record() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = EnginePageStore::open(dir.path(), "tier").expect("store opens");
+    let mut parent = Tier::open(
+        HostSimBackend::new(),
+        store,
+        TierConfig {
+            page_slots: 8,
+            ..config()
+        },
+    )
+    .expect("tier opens");
+
+    // Durable shared history, then fork: branch + handle in two calls.
+    let shared: Vec<PageId> = (0..3)
+        .map(|i| parent.append(&blob_for(i)).expect("append"))
+        .collect();
+    parent.maintain();
+    parent.flush().expect("flush");
+    let mut child = parent.fork_branch("rollout-1").expect("fork");
+
+    // The child branch carries the shared history: the manifest passed the
+    // fork's geometry check, and the pre-fork pages read back through the
+    // child's store.
+    let blobs = child.store_mut().read_pages(&shared).expect("read");
+    assert!(
+        blobs.iter().all(Option::is_some),
+        "shared history visible on the child branch"
+    );
+
+    // Divergence: post-fork appends land on their own branch only.
+    let parent_new = parent.append(&blob_for(10)).expect("parent append");
+    let child_new = child.append(&blob_for(20)).expect("child append");
+    assert_ne!(parent_new, child_new, "family id clock stays unique");
+    parent.flush().expect("parent flush");
+    child.flush().expect("child flush");
+
+    let cross = child.store_mut().read_pages(&[parent_new]).expect("read");
+    assert_eq!(
+        cross,
+        vec![None],
+        "parent's post-fork page is invisible to the child branch"
+    );
+    let cross = parent.store_mut().read_pages(&[child_new]).expect("read");
+    assert_eq!(
+        cross,
+        vec![None],
+        "child's post-fork page is invisible to the parent branch"
+    );
+    child.store_mut().close().expect("close");
+}
+
+#[test]
+fn refused_fork_leaves_no_orphaned_branch() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = EnginePageStore::open(dir.path(), "tier").expect("store opens");
+    let mut tier = Tier::open(HostSimBackend::new(), store, config()).expect("tier opens");
+    tier.append(&blob_for(0)).expect("append");
+
+    // fork_branch checks the backlog before creating the branch...
+    let Err(error) = tier.fork_branch("rollout-1") else {
+        panic!("unflushed parent must refuse");
+    };
+    assert_eq!(error.code(), "failed_precondition.tier.fork_unflushed");
+
+    // ...so after flushing, the same name is still available.
+    tier.flush().expect("flush");
+    let child = tier.fork_branch("rollout-1").expect("no orphaned branch");
+    drop(child);
+    tier.store_mut().close().expect("close");
+}
+
+#[test]
+fn fork_onto_an_existing_branch_is_refused() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let store = EnginePageStore::open(dir.path(), "tier").expect("store opens");
+    let mut tier = Tier::open(HostSimBackend::new(), store, config()).expect("tier opens");
+    tier.flush().expect("flush");
+
+    let first = tier.store().fork("dup").expect("first fork");
+    drop(first);
+    let Err(error) = tier.store().fork("dup") else {
+        panic!("duplicate branch must refuse");
+    };
+    assert_eq!(error.code(), "unavailable.tier.store");
+    tier.store_mut().close().expect("close");
+}
+
+#[test]
+fn forked_branch_reopens_with_continuity() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (shared_id, child_id) = {
+        let store = EnginePageStore::open(dir.path(), "tier").expect("store opens");
+        let mut parent = Tier::open(HostSimBackend::new(), store, config()).expect("tier opens");
+        let shared_id = parent.append(&blob_for(0)).expect("append");
+        parent.append(&blob_for(1)).expect("append");
+        parent.maintain(); // batch of 2 commits
+        parent.flush().expect("flush");
+
+        let mut child = parent.fork_branch("rollout-1").expect("fork");
+        let child_id = child.append(&blob_for(5)).expect("child append");
+        child.flush().expect("child flush");
+        child.store_mut().close().expect("close");
+        (shared_id, child_id)
+    };
+
+    // Reopen the forked branch as its own tier: geometry validates, the
+    // branch-local watermark continues, and both pre-fork and post-fork
+    // pages promote out of the child's branch of record.
+    let store =
+        EnginePageStore::open_on_branch(dir.path(), "tier", "rollout-1").expect("branch reopens");
+    let mut tier = Tier::open(HostSimBackend::new(), store, config()).expect("tier reopens");
+    let next = tier.append(&blob_for(9)).expect("append");
+    assert_eq!(
+        next.0,
+        child_id.0 + 1,
+        "child branch watermark continues past its own appends"
+    );
+    tier.request(shared_id, 1);
+    tier.request(child_id, 1);
+    for _ in 0..4 {
+        tier.maintain();
+    }
+    assert!(
+        tier.is_selectable(shared_id),
+        "pre-fork page promotes on the child branch"
+    );
+    assert!(tier.is_selectable(child_id), "child's own page promotes");
+    tier.store_mut().close().expect("close");
 }
 
 #[test]

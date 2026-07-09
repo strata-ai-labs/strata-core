@@ -14,6 +14,7 @@
 //!    — i.e. after every step that could have selected the slot has drained.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::device::arena::{SlotAllocator, SlotRegion};
 use crate::tier::backend::CopyFence;
@@ -43,9 +44,96 @@ pub struct SlotState {
     pub resident_neighbors: u32,
 }
 
-/// The host-authoritative page table.
-pub struct PageTable<F: CopyFence> {
+/// The shared slot authority: one per device pool, shared by every tier
+/// handle over it (HT-11). Owns which slots are allocated and how many
+/// handles reference each one — the design's "table-count". A slot returns
+/// to the allocator only when its last reference is released; per-handle
+/// fence gating stays in each handle's [`PageTable`], so the reuse
+/// invariant (§5) is enforced by the releasing handle before it releases.
+pub(crate) struct SlotPool {
     slots: SlotAllocator,
+    /// Handle references per slot.
+    refs: Vec<u32>,
+}
+
+impl SlotPool {
+    fn new(region_len: u64, page_bytes: u64) -> Result<Self, GpuError> {
+        let region = SlotRegion {
+            name: "pages",
+            base: 0, // the pool speaks region *offsets*; the backend owns bases
+            len: region_len,
+        };
+        let slots = SlotAllocator::new(region, page_bytes)?;
+        let capacity = slots.capacity() as usize;
+        Ok(Self {
+            slots,
+            refs: vec![0; capacity],
+        })
+    }
+
+    /// Takes a free slot with one reference (the placing handle's).
+    fn alloc(&mut self) -> Option<u32> {
+        let slot = self.slots.alloc()?;
+        self.refs[slot as usize] = 1;
+        Some(slot)
+    }
+
+    /// Drops one handle's reference. The slot returns to the allocator at
+    /// zero; `true` reports that it actually freed.
+    fn release(&mut self, slot: u32) -> bool {
+        let refs = &mut self.refs[slot as usize];
+        debug_assert!(*refs > 0, "release of unreferenced slot {slot}");
+        *refs = refs.saturating_sub(1);
+        if *refs == 0 {
+            self.slots.release(slot);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Adds a handle's reference to an allocated slot (fork adoption).
+    fn add_ref(&mut self, slot: u32) {
+        debug_assert!(
+            self.refs[slot as usize] > 0,
+            "add_ref on unallocated slot {slot}"
+        );
+        self.refs[slot as usize] += 1;
+    }
+
+    fn refs(&self, slot: u32) -> u32 {
+        self.refs[slot as usize]
+    }
+
+    fn allocated(&self) -> u32 {
+        self.slots.allocated()
+    }
+}
+
+/// What an eviction did, given the slot's reference count (HT-11).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EvictOutcome {
+    /// Other handles still reference the slot: this handle's reference was
+    /// released immediately — the slot stays resident, valid, and
+    /// selectable for the union, so no device write and no reuse gate. It
+    /// frees when the last referencing handle evicts it.
+    SharedRelease,
+    /// This was the last reference: the slot is unselectable now and
+    /// reusable only after this handle's current epoch fence completes.
+    /// The reuse gate holds the final reference until the sweep releases
+    /// it. Because every handle's work shares one device stream, that
+    /// fence also covers the other handles' earlier-enqueued selections.
+    LastGated,
+}
+
+/// The host-authoritative page table: one per tier handle. Slot allocation
+/// goes through the [`SlotPool`] shared across handles; everything else —
+/// id→slot mapping, per-slot metadata, epoch pinning, fence-gated reuse —
+/// is this handle's own view.
+pub struct PageTable<F: CopyFence> {
+    pool: Arc<Mutex<SlotPool>>,
+    page_bytes: u64,
+    capacity: u32,
     entries: Vec<Option<SlotState>>,
     id_to_slot: HashMap<PageId, u32>,
     epoch: Epoch,
@@ -59,24 +147,97 @@ pub struct PageTable<F: CopyFence> {
 }
 
 impl<F: CopyFence> PageTable<F> {
-    /// Builds a table over a page region with `page_bytes` slots.
+    /// Builds a table over a page region with `page_bytes` slots, creating
+    /// a fresh slot pool (HT-11 fork shares the pool instead).
     pub fn new(region_len: u64, page_bytes: u64) -> Result<Self, GpuError> {
-        let region = SlotRegion {
-            name: "pages",
-            base: 0, // the table speaks region *offsets*; the backend owns bases
-            len: region_len,
-        };
-        let slots = SlotAllocator::new(region, page_bytes)?;
-        let capacity = slots.capacity() as usize;
+        let pool = SlotPool::new(region_len, page_bytes)?;
+        let capacity = pool.slots.capacity();
         Ok(Self {
-            slots,
-            entries: vec![None; capacity],
-            id_to_slot: HashMap::with_capacity(capacity),
+            pool: Arc::new(Mutex::new(pool)),
+            page_bytes,
+            capacity,
+            entries: vec![None; capacity as usize],
+            id_to_slot: HashMap::with_capacity(capacity as usize),
             epoch: 0,
             epoch_fences: BTreeMap::new(),
             reuse_gates: Vec::new(),
             scan_cursor: 0,
         })
+    }
+
+    /// Locks the shared pool. Scoped to one operation at every call site —
+    /// never held across other table calls.
+    fn pool(&self) -> MutexGuard<'_, SlotPool> {
+        self.pool.lock().expect("slot pool lock poisoned")
+    }
+
+    /// Forks this handle's view (HT-11): clones the id→slot map and
+    /// per-slot state into a new table sharing the same slot pool, bumping
+    /// each cloned slot's reference count. Only *activated* placements are
+    /// shared — an in-flight copy is tracked by the parent's scheduler
+    /// alone, and a cloned-but-never-activated entry could never become
+    /// selectable in the child. The child starts with the parent's epoch
+    /// value, fresh fences, and no reuse gates.
+    #[must_use]
+    pub fn fork(&self) -> Self {
+        let mut entries = vec![None; self.entries.len()];
+        let mut id_to_slot = HashMap::with_capacity(self.id_to_slot.len());
+        {
+            let mut pool = self.pool();
+            for (slot, entry) in self.entries.iter().enumerate() {
+                if let Some(state) = entry.as_ref().filter(|state| state.valid) {
+                    debug_assert!(!state.dirty, "fork requires a flushed parent");
+                    let slot_index = u32::try_from(slot).expect("capacity fits u32");
+                    pool.add_ref(slot_index);
+                    entries[slot] = Some(state.clone());
+                    id_to_slot.insert(state.page_id, slot_index);
+                }
+            }
+        }
+        Self {
+            pool: Arc::clone(&self.pool),
+            page_bytes: self.page_bytes,
+            capacity: self.capacity,
+            entries,
+            id_to_slot,
+            epoch: self.epoch,
+            epoch_fences: BTreeMap::new(),
+            reuse_gates: Vec::new(),
+            scan_cursor: self.scan_cursor,
+        }
+    }
+
+    /// How many handles currently reference `slot` (HT-11: eviction of a
+    /// shared slot releases a reference; only the last flips validity).
+    #[must_use]
+    pub fn shared_references(&self, slot: u32) -> u32 {
+        self.pool().refs(slot)
+    }
+
+    /// Releases this handle's references to slots it shares with other
+    /// handles (drop path). Exclusive slots and pending reuse gates are
+    /// deliberately left allocated: freeing them safely needs a fence this
+    /// handle can no longer wait on, so they stay pinned until the family
+    /// tears down (v0.5 contract; orphan-gate handoff is the follow-up).
+    pub(crate) fn drop_shared_references(&mut self) {
+        let pool = Arc::clone(&self.pool);
+        // Drop path: a poisoned pool (a panic elsewhere in the family)
+        // must not double-panic here — leak the references instead.
+        let Ok(mut pool) = pool.lock() else {
+            return;
+        };
+        for (slot, entry) in self.entries.iter_mut().enumerate() {
+            if entry.is_none() {
+                continue;
+            }
+            let slot_index = u32::try_from(slot).expect("capacity fits u32");
+            if pool.refs(slot_index) > 1 {
+                pool.release(slot_index);
+                if let Some(state) = entry.take() {
+                    self.id_to_slot.remove(&state.page_id);
+                }
+            }
+        }
     }
 
     /// Current epoch.
@@ -88,13 +249,13 @@ impl<F: CopyFence> PageTable<F> {
     /// Total slot capacity.
     #[must_use]
     pub const fn capacity(&self) -> u32 {
-        self.slots.capacity()
+        self.capacity
     }
 
-    /// Resident (placed) pages, selectable or not.
+    /// Pages resident in *this handle's* table (selectable or not).
     #[must_use]
     pub fn resident(&self) -> u32 {
-        self.slots.allocated() - u32::try_from(self.reuse_gates.len()).unwrap_or(u32::MAX)
+        u32::try_from(self.id_to_slot.len()).unwrap_or(u32::MAX)
     }
 
     /// Begins the next step: installs `fence` for the epoch that just
@@ -105,10 +266,11 @@ impl<F: CopyFence> PageTable<F> {
         self.epoch
     }
 
-    /// Byte offset of a slot in the page region.
+    /// Byte offset of a slot in the page region (offsets are pure geometry:
+    /// slot × page size from a zero base).
     #[must_use]
     pub const fn slot_offset(&self, slot: u32) -> u64 {
-        self.slots.slot_ptr(slot)
+        slot as u64 * self.page_bytes
     }
 
     /// Takes a free slot for `page_id` (unselectable until [`Self::activate`]).
@@ -118,7 +280,7 @@ impl<F: CopyFence> PageTable<F> {
         if self.id_to_slot.contains_key(&page_id) {
             return None; // already resident or in flight; callers dedup, this backstops
         }
-        let slot = self.slots.alloc()?;
+        let slot = self.pool().alloc()?;
         self.entries[slot as usize] = Some(SlotState {
             page_id,
             valid: false,
@@ -228,14 +390,19 @@ impl<F: CopyFence> PageTable<F> {
         if let Some(state) = self.entries[slot as usize].take() {
             debug_assert!(!state.valid, "abort_place on an activated slot");
             self.id_to_slot.remove(&state.page_id);
-            self.slots.release(slot);
+            self.pool().release(slot);
         }
     }
 
-    /// Evicts a slot: unselectable immediately, reusable only after the
-    /// current epoch's fence completes. Dirty slots are refused — the
-    /// write-behind owns them until [`Self::mark_clean`].
-    pub fn evict(&mut self, slot: u32) -> Result<(), GpuError> {
+    /// Evicts a slot from this handle's view. Dirty slots are refused —
+    /// the write-behind owns them until [`Self::mark_clean`].
+    ///
+    /// The outcome depends on the slot's reference count: a shared slot
+    /// releases this handle's reference and stays live for the union; the
+    /// last reference stages a reuse gate on the current epoch (the gate
+    /// holds that final reference until [`Self::sweep_reusable`] opens it).
+    /// The caller flips device validity only on [`EvictOutcome::LastGated`].
+    pub fn evict(&mut self, slot: u32) -> Result<EvictOutcome, GpuError> {
         let Some(state) = self.entries[slot as usize].as_ref() else {
             return Err(GpuError::InvalidConfig {
                 detail: format!("evict of empty slot {slot}"),
@@ -249,16 +416,24 @@ impl<F: CopyFence> PageTable<F> {
         let page_id = state.page_id;
         self.id_to_slot.remove(&page_id);
         self.entries[slot as usize] = None;
-        self.reuse_gates.push((slot, self.epoch));
-        Ok(())
+        let mut pool = self.pool();
+        if pool.refs(slot) > 1 {
+            pool.release(slot);
+            Ok(EvictOutcome::SharedRelease)
+        } else {
+            drop(pool);
+            self.reuse_gates.push((slot, self.epoch));
+            Ok(EvictOutcome::LastGated)
+        }
     }
 
     /// Opens reuse gates whose epoch fence has completed, returning slots to
     /// the allocator. Returns how many opened.
     pub fn sweep_reusable(&mut self) -> u32 {
         let mut opened = 0;
-        let mut remaining = Vec::with_capacity(self.reuse_gates.len());
-        for (slot, gate_epoch) in self.reuse_gates.drain(..) {
+        let gates = std::mem::take(&mut self.reuse_gates);
+        let mut remaining = Vec::with_capacity(gates.len());
+        for (slot, gate_epoch) in gates {
             // The gate's fence is installed by step_begin(gate_epoch + 1);
             // until then the epoch is still producing work and the gate holds.
             let complete = self
@@ -266,7 +441,7 @@ impl<F: CopyFence> PageTable<F> {
                 .get(&gate_epoch)
                 .is_some_and(CopyFence::is_complete);
             if complete {
-                self.slots.release(slot);
+                self.pool().release(slot);
                 opened += 1;
             } else {
                 remaining.push((slot, gate_epoch));
@@ -288,10 +463,11 @@ impl<F: CopyFence> PageTable<F> {
         self.reuse_gates.len()
     }
 
-    /// Free slots available right now.
+    /// Free slots available right now (pool-wide: a slot referenced by any
+    /// handle is not free).
     #[must_use]
     pub fn free_now(&self) -> u32 {
-        self.capacity() - self.slots.allocated()
+        self.capacity() - self.pool().allocated()
     }
 }
 
@@ -300,7 +476,7 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    use super::{PageId, PageTable};
+    use super::{EvictOutcome, PageId, PageTable};
     use crate::tier::backend::CopyFence;
 
     /// Manually-completed fence for direct mechanics tests.
@@ -416,5 +592,98 @@ mod tests {
             table.capacity(),
             table.free_now() + u32::try_from(table.gated()).unwrap() + table.resident()
         );
+    }
+
+    #[test]
+    fn fork_shares_activated_entries_and_bumps_references() {
+        let mut parent = table(4);
+        let active = parent.place(PageId(1), false).unwrap();
+        parent.activate(active);
+        let inflight = parent.place(PageId(2), false).unwrap();
+
+        let child = parent.fork();
+        assert_eq!(child.slot_of(PageId(1)), Some(active), "warm set shared");
+        assert_eq!(
+            child.slot_of(PageId(2)),
+            None,
+            "in-flight placement stays the parent's"
+        );
+        assert_eq!(parent.shared_references(active), 2);
+        assert_eq!(parent.shared_references(inflight), 1);
+        assert_eq!(
+            parent.free_now(),
+            child.free_now(),
+            "one pool: both handles see the same free space"
+        );
+    }
+
+    #[test]
+    fn shared_evict_releases_without_gate_or_free() {
+        let mut parent = table(2);
+        let slot = parent.place(PageId(1), false).unwrap();
+        parent.activate(slot);
+        let mut child = parent.fork();
+
+        assert_eq!(
+            parent.evict(slot).unwrap(),
+            EvictOutcome::SharedRelease,
+            "child still references the slot"
+        );
+        assert_eq!(parent.gated(), 0, "no reuse gate for a shared release");
+        assert_eq!(parent.free_now(), 1, "slot stays allocated for the child");
+        assert_eq!(child.slot_of(PageId(1)), Some(slot), "child unaffected");
+
+        assert_eq!(
+            child.evict(slot).unwrap(),
+            EvictOutcome::LastGated,
+            "last reference gates"
+        );
+        assert_eq!(child.gated(), 1);
+    }
+
+    #[test]
+    fn last_release_frees_only_after_its_fence() {
+        let mut parent = table(1);
+        let slot = parent.place(PageId(1), false).unwrap();
+        parent.activate(slot);
+        let mut child = parent.fork();
+
+        parent.evict(slot).unwrap();
+        child.evict(slot).unwrap();
+        assert_eq!(child.sweep_reusable(), 0, "gate holds before any fence");
+
+        let fence = ManualFence::default();
+        child.step_begin(fence.clone());
+        assert_eq!(child.sweep_reusable(), 0, "epoch work still in flight");
+
+        fence.complete();
+        assert_eq!(child.sweep_reusable(), 1);
+        assert!(
+            parent.place(PageId(9), false).is_some(),
+            "freed slot is reusable by any handle"
+        );
+    }
+
+    #[test]
+    fn drop_shared_references_leaves_exclusive_slots_pinned() {
+        let mut parent = table(3);
+        let shared = parent.place(PageId(1), false).unwrap();
+        parent.activate(shared);
+        let mut child = parent.fork();
+        let exclusive = child.place(PageId(2), false).unwrap();
+        child.activate(exclusive);
+
+        child.drop_shared_references();
+        assert_eq!(
+            parent.shared_references(shared),
+            1,
+            "child's shared reference released"
+        );
+        assert_eq!(
+            parent.shared_references(exclusive),
+            1,
+            "exclusive slot stays pinned (v0.5 leak contract)"
+        );
+        assert_eq!(parent.free_now(), 1, "only the never-used slot is free");
     }
 }

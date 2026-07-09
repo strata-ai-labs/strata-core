@@ -110,6 +110,113 @@ fn tier_flow_on_real_hardware() {
     assert_eq!(syncs, 4, "exactly the four deliberate read_back waits");
 }
 
+/// HT-11 hardware mirror: fork a GPU tier over durable Strata, prove the
+/// warm set is shared without device copies, then drive a family-wide
+/// eviction so slot reuse crosses handles under real CUDA event fencing.
+#[test]
+#[ignore = "requires an NVIDIA GPU (Ampere or newer)"]
+fn fork_family_on_real_hardware() {
+    use strata_gpu_cache::tier::engine_store::EnginePageStore;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let backend = CudaBackend::new(usize::try_from(PAGE_BYTES).unwrap()).expect("device");
+    let store = EnginePageStore::open(dir.path(), "tier").expect("store opens");
+    let mut parent = Tier::open(
+        backend,
+        store,
+        TierConfig {
+            page_bytes: PAGE_BYTES,
+            summary_bytes: SUMMARY_BYTES,
+            page_slots: 3,
+            promotion_batch: 4,
+            adjacency_degree: 8,
+            write_behind_batch: 2,
+            write_backlog_cap: 8,
+        },
+    )
+    .expect("tier opens");
+
+    // Warm set: three appended pages fill the pool; durable at flush.
+    for id in 0..3 {
+        parent.append(&blob_for(id)).expect("append");
+    }
+    for _ in 0..10_000 {
+        parent.maintain();
+        if (0..3).all(|id| parent.is_selectable(PageId(id))) {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    parent.flush().expect("flush");
+
+    // Fork: branch + handle. Metadata only — the child starts warm with
+    // zero promotions and the sync counter untouched.
+    let syncs_before = parent.backend().context().sync_call_count();
+    let mut child = parent.fork_branch("rollout-1").expect("fork");
+    for id in 0..3 {
+        assert!(child.is_selectable(PageId(id)), "page {id} warm in child");
+    }
+    assert_eq!(child.stats().promotions_started, 0, "no copies at fork");
+    assert_eq!(
+        parent.backend().context().sync_call_count(),
+        syncs_before,
+        "fork issues no device waits"
+    );
+
+    // Keep pages 1 and 2 hot in the child; family-wide eviction of page 0:
+    // the parent's releases are shared (no device writes), the child's is
+    // the last reference — its reuse gate rides a real CUDA event fence.
+    child.touch(PageId(1), 1.0);
+    child.touch(PageId(2), 1.0);
+    parent.append(&blob_for(3)).expect("parent append"); // strips parent's shared view
+    parent.flush().expect("parent flush");
+    let child_page = child.append(&blob_for(4)).expect("child append");
+    child.flush().expect("child flush");
+    for _ in 0..10_000 {
+        child.step_begin().expect("step");
+        child.request(child_page, 1);
+        child.maintain();
+        if child.is_selectable(child_page) {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    assert!(
+        child.is_selectable(child_page),
+        "child's page landed after cross-handle fenced reuse"
+    );
+    assert!(child.is_selectable(PageId(1)), "hot shared page survived");
+    assert!(!child.is_selectable(PageId(0)), "cold page left the union");
+
+    // Byte identity through the fork: the child's new page and a shared
+    // page both read back exactly from VRAM (two deliberate syncs).
+    let slot_of = |tier: &Tier<CudaBackend, EnginePageStore>, id: u64| {
+        (0..tier.capacity())
+            .find(|slot| tier.page_of_slot(*slot) == Some(PageId(id)))
+            .expect("page resident")
+    };
+    let new_slot = slot_of(&child, child_page.0);
+    let shared_slot = slot_of(&child, 1);
+    assert_eq!(
+        parent.backend().context().sync_call_count(),
+        syncs_before,
+        "the whole fork/evict/reuse flow issued zero device waits"
+    );
+    for (slot, id) in [(new_slot, child_page.0), (shared_slot, 1)] {
+        let bytes = child
+            .backend_mut()
+            .read_back(
+                Region::Pages,
+                u64::from(slot) * PAGE_BYTES,
+                usize::try_from(PAGE_BYTES).unwrap(),
+            )
+            .expect("read back from VRAM");
+        assert_eq!(bytes, blob_for(id).bytes, "page {id} bytes in VRAM");
+    }
+
+    child.store_mut().close().expect("close");
+}
+
 /// The full stack in one test: pages appended through the tier land in a
 /// real durable Strata database (T2) and in real VRAM (T0); after a flush
 /// and reopen they promote back onto the GPU with byte identity.

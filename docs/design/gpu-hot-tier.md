@@ -259,6 +259,32 @@ Because pages are immutable, forking working memory is metadata-only:
   decisions), implemented at v0.5 after the microbench gates pass. The API
   reserves the call.
 
+**Status (landed 2026-07-09, slices HT-11a–d).** `Tier::fork_branch(name)`
+is the canonical call (Python: `tier.fork(branch)`); the generic
+`Tier::fork(store)` is the machinery seam for test backends. As-built
+contracts on top of the design above:
+
+- Eviction is reference release: a shared slot releases the handle's
+  reference with **no device writes** (the union keeps it valid and
+  selectable); the last reference takes the original path — validity flip,
+  full union unlink, fence-gated reuse. One shared device FIFO means any
+  handle's fence covers every handle's earlier-enqueued work, so
+  cross-handle quiescence needs no extra machinery.
+- Adjacency mirrors and the page-id clock are family-shared (`TierUnion`):
+  device rows are global state, and unlink-at-death needs every handle's
+  links; the shared clock keeps ids unique once branches diverge.
+- Fork refuses an unflushed parent (`failed_precondition.tier.
+  fork_unflushed`) — a fork never references pages that are not durable on
+  the parent branch. `fork_branch` checks this *before* creating the
+  branch, so a refusal strands nothing.
+- One thread drives a handle family (v0.5). Selections run over the union
+  working set; tag filters scope isolation; readbacks name only the
+  handle's own pages. Dropping a handle releases its shared references;
+  exclusive slots and pending gates stay pinned until family teardown.
+- Deferred, documented: slot adoption (re-requesting a union-resident page
+  duplicates the copy), cross-handle `resident_neighbors` drift as an
+  eviction-policy input, orphan-gate handoff at drop.
+
 ## 10. T2 schema
 
 One dedicated product space per tier instance (default `_tier/<name>`):
@@ -333,7 +359,7 @@ impl Tier {
     pub fn prefetch(&self, pages: &[PageId]);          // promotion hints
     pub fn flush(&self) -> Result<CommitReceipt>;      // durability point (sync)
     pub fn stats(&self) -> TierStats;                  // HT-9 counters
-    pub fn fork(&self) -> Result<Tier>;                // HT-11, v0.5
+    pub fn fork_branch(&self, name: &str) -> Result<Tier>; // HT-11 (landed v0.5)
 }
 ```
 

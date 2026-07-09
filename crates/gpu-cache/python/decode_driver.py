@@ -10,11 +10,14 @@ Store of record holds 8x the resident pool: the effective-context gate is
 proven by cold-fetching never-touched pages back out of Strata after the
 traces run.
 
-Gates (design section 13):
+Gates (design section 13, plus the HT-11 fork gate):
   1. p95 decode-path host overhead per step <= 400 us (20% of a 2 ms step)
   2. zero host synchronizations across every decode step
   3. store = 8x resident, and cold pages are promotable on demand
   4. sustained promotion throughput during decode (>= 2 pages/step)
+  5. fork is metadata-only: N rollout handles share the warm pool with
+     zero page copies, select over the union, and append divergent pages
+     durably onto their own branches
 
 Maintenance (async promotion staging + write-behind, HT-5) runs where a
 serving loop runs it: after the model compute is enqueued, so its host time
@@ -264,13 +267,64 @@ def run(args, workdir):
         print(f"trace {name:8s}: request hit rate "
               f"{trace_hits / (STEPS * REQUESTS_PER_STEP):5.1%}")
 
+    # ---- Fork phase (HT-11): GRPO-shaped rollouts over the shared set. --
+    # At steady state every slot is family-shared, so rollout residency
+    # cannot grow; what forking buys here is N handles selecting the warm
+    # union at zero copy cost while their appends diverge DURABLY onto
+    # their own branches (write-behind needs no VRAM headroom). Runs
+    # before the sync reading: the whole phase must stay sync-free.
+    ROLLOUTS, ROLLOUT_STEPS = 4, 16
+    tier.flush()                              # fork contract: flushed parent
+    stats_pre_fork = tier.stats()
+    fork_ms, rollouts = [], []
+    for r in range(ROLLOUTS):
+        f0 = time.perf_counter()
+        rollouts.append(tier.fork(f"rollout-{r}"))
+        fork_ms.append((time.perf_counter() - f0) * 1e3)
+    fork_copies = (tier.stats()["promotions_started"]
+                   - stats_pre_fork["promotions_started"])
+
+    receipts = []
+    for r, rollout in enumerate(rollouts):
+        for step in range(ROLLOUT_STEPS):
+            rollout.step_begin()
+            sel = rollout.topk(
+                queries[(r * ROLLOUT_STEPS + step) % len(queries)].tolist(),
+                k=K)
+            pages = torch.from_dlpack(sel.pages())
+            if step % 4 == 0:
+                rollout.append(
+                    payloads[(r * ROLLOUT_STEPS + step) % 64],
+                    summaries[(r * ROLLOUT_STEPS + step) % store_pages]
+                    .tobytes(),
+                    tags=[100 + r, 0, 0, 0])
+            rollout.maintain()
+            del pages, sel
+        # Tag-scoped selection: the isolation mechanism for fused/rollout
+        # kernels (host-async; completion polled, never waited).
+        scoped = rollout.topk(queries[r].tolist(), k=8,
+                              filter_index=0, filter_value=100 + r)
+        while not scoped.ready():
+            pass
+        del scoped
+        receipts.append(rollout.flush())
+    assert all(r is not None for r in receipts), "rollout durability points"
+    del rollouts  # drop releases shared references (HT-11 v0.5 contract)
+
     decode_syncs = tier.sync_calls() - baseline_syncs
     stats = tier.stats()
     decode_promotions = (stats["promotions_completed"]
                          - baseline_stats["promotions_completed"])
 
     # Post-trace verification (documented syncs, after the gate readings):
-    # the most recent selection is sane, and cold pages promote on demand.
+    # a fresh parent selection is sane (the fork phase's tag-scoped rollout
+    # selection was the backend's most recent one), and cold pages promote
+    # on demand.
+    tier.step_begin()
+    fresh = tier.topk(queries[0].tolist(), k=K)
+    while not fresh.ready():
+        pass
+    del fresh
     selected = tier.selection_page_ids()
     assert 0 < len(selected) <= K, f"selection size {len(selected)}"
     assert all(0 <= p < next_page for p in selected), "selected ids valid"
@@ -308,6 +362,9 @@ def run(args, workdir):
           f"evictions {stats['evictions'] - baseline_stats['evictions']}")
     print(f"cold fetch         {cold_hot}/32 promoted in {cold_ms:.0f} ms")
     print(f"write backlog      {tier.write_backlog()} (cap 1024)")
+    print(f"fork               {ROLLOUTS} rollouts x {ROLLOUT_STEPS} steps, "
+          f"mean {sum(fork_ms) / len(fork_ms):.1f} ms, max {max(fork_ms):.1f} ms, "
+          f"{fork_copies} page copies")
     print()
 
     promotion_rate = decode_promotions / step_index
@@ -320,6 +377,9 @@ def run(args, workdir):
          ratio >= 8.0 and cold_hot == 32),
         ("promotion", f"{promotion_rate:.1f} pages/step sustained >= 2",
          promotion_rate >= 2.0),
+        ("fork", f"{ROLLOUTS} rollouts warm, {fork_copies} copies, "
+         f"max {max(fork_ms):.1f} ms",
+         fork_copies == 0),
     ]
     failed = False
     for gate, detail, ok in gates:

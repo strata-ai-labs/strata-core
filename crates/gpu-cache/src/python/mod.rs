@@ -154,6 +154,23 @@ impl Tier {
         self.inner.is_selectable(PageId(page_id))
     }
 
+    /// Forks this handle and its branch of record (HT-11): the child
+    /// shares the device pool and starts with this handle's activated
+    /// working set — metadata only, no page copies — while durable history
+    /// diverges on `branch`. Refuses
+    /// `failed_precondition.tier.fork_unflushed` until `flush()`, and
+    /// refuses an existing branch name. Fork at a step boundary; one
+    /// thread drives a handle family. Selections see the union working
+    /// set — scope with tag filters where isolation matters. Dropping a
+    /// forked handle releases the slots it shares with survivors.
+    fn fork(&self, branch: &str) -> PyResult<Self> {
+        let inner = self.inner.fork_branch(branch).map_err(gpu_err)?;
+        Ok(Self {
+            inner,
+            device_id: self.device_id,
+        })
+    }
+
     /// Enqueues selection (+ contiguous materialization) on the device and
     /// returns the handle. Host-async: nothing here blocks.
     #[pyo3(signature = (query, k, expand = None, filter_index = None, filter_value = None))]

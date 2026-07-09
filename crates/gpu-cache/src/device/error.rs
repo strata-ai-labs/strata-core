@@ -55,6 +55,13 @@ pub enum GpuError {
         /// Configured cap.
         cap: usize,
     },
+    /// Fork requires a durably-flushed parent: the write-behind queue must
+    /// be empty so a forked handle never references pages that are not
+    /// durable on the parent branch (the COW GC soundness rule).
+    ForkUnflushed {
+        /// Entries still awaiting their durable commit.
+        queued: usize,
+    },
     /// The store's persisted geometry differs from this tier's config.
     GeometryMismatch {
         /// Persisted (`page_bytes`, `summary_bytes`).
@@ -84,6 +91,7 @@ impl GpuError {
             Self::ArenaExhausted { .. } => "resource_exhausted.gpu.arena",
             Self::InvalidConfig { .. } => "invalid_argument.gpu.config",
             Self::WriteBacklog { .. } => "resource_exhausted.tier.write_backlog",
+            Self::ForkUnflushed { .. } => "failed_precondition.tier.fork_unflushed",
             Self::GeometryMismatch { .. } => "failed_precondition.tier.geometry_mismatch",
             Self::Store { .. } => "unavailable.tier.store",
         }
@@ -124,6 +132,11 @@ impl fmt::Display for GpuError {
             Self::WriteBacklog { queued, cap } => write!(
                 f,
                 "{}: {queued} entries queued at cap {cap}; flush or wait for maintenance",
+                self.code()
+            ),
+            Self::ForkUnflushed { queued } => write!(
+                f,
+                "{}: fork with {queued} uncommitted write-behind entries; flush() first",
                 self.code()
             ),
             Self::GeometryMismatch { stored, configured } => write!(
