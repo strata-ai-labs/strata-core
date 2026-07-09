@@ -129,6 +129,21 @@ impl InMemoryStore {
     pub const fn commits(&self) -> u64 {
         self.commit_counter
     }
+
+    /// Branch-fork fake (HT-11): the child starts with the parent's
+    /// durable history and diverges after — commits land in one store
+    /// only. Fault knobs start clear.
+    #[must_use]
+    pub fn fork(&self) -> Self {
+        Self {
+            pages: self.pages.clone(),
+            manifest: self.manifest,
+            watermark: self.watermark,
+            commit_counter: self.commit_counter,
+            fail_reads: Cell::new(0),
+            fail_commits: 0,
+        }
+    }
 }
 
 impl PageStore for InMemoryStore {
