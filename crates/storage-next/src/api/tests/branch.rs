@@ -285,17 +285,24 @@ fn branch_fork_at_unretained_version_rejects() {
 }
 
 #[test]
-fn branch_fork_from_empty_source_rejects() {
+fn branch_fork_from_empty_source_creates_empty_parented_child() {
+    // #2521: forking a history-less source is the legitimate empty-fork case
+    // — an empty child at version zero with parent linkage intact. The old
+    // rejection forced the engine into a silent `create_branch` fallback
+    // that produced an UNPARENTED child (the silent-data-loss half of the
+    // fork-of-a-fork regression).
     let runtime = open_runtime();
 
-    let error = runtime
+    let outcome = runtime
         .branch(&branch_request(
             branch_with(0x5a),
             BranchAction::ForkCurrent { source: branch() },
         ))
-        .expect_err("empty source history rejected");
-
-    assert_eq!(error.class(), StorageApiErrorClass::HistoryUnavailable);
+        .expect("empty source forks at version zero");
+    let child = outcome.branches().first().expect("forked child");
+    let parent = child.parent().expect("parent linkage survives");
+    assert_eq!(parent.source_branch_id(), branch());
+    assert_eq!(parent.fork_version(), CommitVersion::ZERO);
 }
 
 #[test]

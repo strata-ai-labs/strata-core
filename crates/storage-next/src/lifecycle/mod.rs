@@ -132,9 +132,9 @@ pub(crate) use compaction::{
     reason = "lifecycle scaffold exports define the local surface for later slices"
 )]
 pub(crate) use config::{
-    LifecycleCloseTimeoutPolicy, LifecycleCompactionIoPolicy, LifecycleConfig,
-    LifecycleLossyRecoveryPolicy, LifecycleMaintenanceSchedulingPolicy, LifecycleWalGrowthPolicy,
-    LifecycleWriteThrottlePolicy,
+    LifecycleCachePreheatPolicy, LifecycleCloseTimeoutPolicy, LifecycleCompactionIoPolicy,
+    LifecycleConfig, LifecycleLossyRecoveryPolicy, LifecycleMaintenanceSchedulingPolicy,
+    LifecycleWalGrowthPolicy, LifecycleWriteThrottlePolicy,
 };
 #[allow(
     unused_imports,

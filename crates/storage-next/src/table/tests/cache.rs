@@ -1055,3 +1055,66 @@ fn empty_bloom_filter_survives_frame_round_trip() {
         TableBloomProbe::DefinitelyAbsent
     );
 }
+
+/// C2: the preheat presence probe must not rewrite recency with scan order —
+/// a probed entry keeps its LRU position (it evicts first) and the hit/miss
+/// stats stay untouched.
+#[test]
+fn contains_quiet_does_not_promote_recency_or_record_stats() {
+    let cache = enabled_cache(64 * 1024);
+    let first = key("quiet", TableBlockCacheKind::Data, 0, 4);
+    let shard = cache.shard_index_for_test(&first);
+    let mut same_shard_keys = (0..200_000u64)
+        .map(|index| {
+            key(
+                "quiet",
+                TableBlockCacheKind::Data,
+                index.saturating_mul(4),
+                4,
+            )
+        })
+        .filter(|candidate| cache.shard_index_for_test(candidate) == shard);
+
+    // Fill one shard to capacity with the fair insert.
+    let mut resident = Vec::new();
+    let overflow_key = loop {
+        let candidate = same_shard_keys.next().expect("same-shard key supply");
+        match cache
+            .insert_if_free(candidate.clone(), bytes(0xBB, 1024))
+            .expect("insert_if_free")
+        {
+            CacheInsert::Inserted(_) => resident.push(candidate),
+            CacheInsert::SkippedFull(_) => break candidate,
+            other => panic!("unexpected insert outcome: {other:?}"),
+        }
+        assert!(resident.len() < 1_000, "shard must fill within capacity");
+    };
+    assert!(resident.len() >= 2, "need an LRU order to observe");
+    let oldest = resident[0].clone();
+
+    // Probe the OLDEST entry; a promoting lookup would move it to MRU.
+    let hits_before = cache.stats().hits();
+    let misses_before = cache.stats().misses();
+    assert!(cache.contains_quiet(&oldest));
+    assert!(!cache.contains_quiet(&overflow_key));
+    assert_eq!(cache.stats().hits(), hits_before, "no hit recorded");
+    assert_eq!(cache.stats().misses(), misses_before, "no miss recorded");
+
+    // A fair insert now evicts to fit: the probed entry is still the LRU
+    // victim, proving the probe did not touch recency.
+    match cache
+        .insert(overflow_key, bytes(0xCC, 1024))
+        .expect("fair insert")
+    {
+        CacheInsert::Inserted(_) => {}
+        other => panic!("fair insert must evict to fit: {other:?}"),
+    }
+    assert!(
+        !cache.contains_quiet(&oldest),
+        "the probed entry must still evict first"
+    );
+    assert!(
+        cache.contains_quiet(&resident[1]),
+        "the next-oldest entry survives"
+    );
+}

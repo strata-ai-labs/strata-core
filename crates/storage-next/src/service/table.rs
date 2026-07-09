@@ -567,6 +567,12 @@ impl<'a> TableObjectService<'a> {
         self
     }
 
+    /// The shared block cache handle, when one is installed (C2: the sweep
+    /// stage invalidates dead tables' blocks through it).
+    pub(crate) fn block_cache(&self) -> Option<&Arc<TableBlockCache>> {
+        self.block_cache.as_ref()
+    }
+
     /// Bytes currently resident in the block cache, or 0 when no cache is installed. Folded into
     /// the database-wide memory total so cached blocks count against the budget.
     pub(crate) fn block_cache_resident_bytes(&self) -> u64 {

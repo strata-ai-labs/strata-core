@@ -197,6 +197,7 @@ pub(crate) enum MaintenanceTaskKind {
     Purge,
     Repair,
     HealthCollection,
+    CachePreheat,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

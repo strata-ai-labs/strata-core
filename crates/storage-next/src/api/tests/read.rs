@@ -1071,12 +1071,17 @@ fn timeline_lookup_over_many_user_rows_scans_no_user_rows() {
         .expect("timeline lookup");
 
     let perf = perf_trace::snapshot();
-    let retained = u64::try_from(retained_commits).expect("retained count fits u64");
     assert_eq!(lookup.matched_version(), CommitVersion::new(17));
-    assert_eq!(perf.commit_timeline_view_rows_scanned(), retained * 2);
-    assert_eq!(perf.commit_timeline_timestamp_facts(), retained);
-    assert_eq!(perf.commit_timeline_version_facts(), retained);
-    assert_eq!(perf.commit_timeline_reconcile_entry_checks(), retained * 4);
+    // W3.1a-c: the lookup is served entirely by the retained in-memory index
+    // — no stored rows are scanned, no view is materialized, no reconcile
+    // runs. These counters pinned the pre-index scan-and-reconcile path; the
+    // test's thesis ("scans no user rows") is now strictly stronger: it
+    // scans no stored rows at all.
+    assert_eq!(perf.commit_timeline_view_rows_scanned(), 0);
+    assert_eq!(perf.commit_timeline_timestamp_facts(), 0);
+    assert_eq!(perf.commit_timeline_version_facts(), 0);
+    assert_eq!(perf.commit_timeline_reconcile_entry_checks(), 0);
+    // The index's own bisect still probes entries: ~log2(32)+1.
     assert_eq!(perf.commit_timeline_lookup_entries_scanned(), 6);
 }
 

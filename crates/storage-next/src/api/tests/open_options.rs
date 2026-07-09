@@ -246,3 +246,26 @@ fn open_options_bound_the_data_block_byte_target() {
         assert_eq!(error.code(), "invalid_argument.storage_api.argument");
     }
 }
+
+/// C2: the cache preheat policy round-trips through the builder and defaults
+/// to `WhenIdle` on every constructor.
+#[test]
+fn open_options_cache_preheat_policy_round_trips() {
+    let default_options = StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard);
+    assert_eq!(
+        default_options.cache_preheat_policy(),
+        StorageCachePreheatPolicy::WhenIdle
+    );
+    assert_eq!(
+        StorageOpenOptions::cache().cache_preheat_policy(),
+        StorageCachePreheatPolicy::WhenIdle
+    );
+    let disabled = default_options.with_cache_preheat_policy(StorageCachePreheatPolicy::Disabled);
+    assert_eq!(
+        disabled.cache_preheat_policy(),
+        StorageCachePreheatPolicy::Disabled
+    );
+    disabled
+        .validate()
+        .expect("preheat policy needs no validation");
+}

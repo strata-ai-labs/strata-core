@@ -337,6 +337,11 @@ impl MaintenanceTaskRunner for DurableCloseMaintenanceRunner<'_, '_> {
                 MaintenanceOutcomeStatus::Deferred,
             )
             .with_reason("flush watermark maintenance is deferred during close")),
+            MaintenanceTaskKind::CachePreheat => Ok(MaintenanceOutcome::new(
+                MaintenanceTaskKind::CachePreheat,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason("cache preheat is deferred during close")),
             MaintenanceTaskKind::WalTruncation => self.run_wal_truncation(task),
             MaintenanceTaskKind::Compaction => {
                 let Some(request) =

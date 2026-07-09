@@ -947,11 +947,13 @@ fn checkpoint_delta_rows(
 
 /// BS4.4c: walk a durable table's rows through its cursor (ascending internal-key order), applying `f`
 /// per row without materializing the whole table. Cursor failures map to a recovery error.
+/// C2: no-fill cursor (BS4.4g) — a one-shot recovery walk must not seed the
+/// block cache in scan order; deliberate fill is the preheat's job.
 fn for_each_reader_row(
     reader: &ImmutableTableReader<'_>,
     mut f: impl FnMut(&TableRow),
 ) -> LifecycleResult<()> {
-    let mut cursor = reader.cursor();
+    let mut cursor = reader.cursor_without_cache_fill();
     cursor
         .seek_to_first()
         .map_err(|_| checkpoint_delta_scan_failed())?;

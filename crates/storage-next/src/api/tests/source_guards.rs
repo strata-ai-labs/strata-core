@@ -67,9 +67,9 @@ fn source_guard_background_priority_maps_lifecycle_work_by_pressure_cost() {
     );
     assert!(
         compact_source.contains(
-            "LifecycleMaintenanceTaskKind::HealthCollection|LifecycleMaintenanceTaskKind::Retention|LifecycleMaintenanceTaskKind::SnapshotPruning|LifecycleMaintenanceTaskKind::Quarantine|LifecycleMaintenanceTaskKind::Purge|LifecycleMaintenanceTaskKind::Repair=>BackgroundTaskPriority::Low"
+            "LifecycleMaintenanceTaskKind::HealthCollection|LifecycleMaintenanceTaskKind::Retention|LifecycleMaintenanceTaskKind::SnapshotPruning|LifecycleMaintenanceTaskKind::Quarantine|LifecycleMaintenanceTaskKind::Purge|LifecycleMaintenanceTaskKind::Repair|LifecycleMaintenanceTaskKind::CachePreheat=>BackgroundTaskPriority::Low"
         ),
-        "health, retention, pruning, quarantine, purge, and repair work must stay low priority"
+        "health, retention, pruning, quarantine, purge, repair, and preheat work must stay low priority"
     );
 }
 

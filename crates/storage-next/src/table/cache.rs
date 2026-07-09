@@ -291,6 +291,11 @@ impl LruSlab {
         self.bytes
     }
 
+    /// Presence check without recency movement or byte access (C2 preheat probe).
+    fn contains(&self, key: &TableBlockCacheKey) -> bool {
+        self.index.contains_key(key)
+    }
+
     /// Look up `key`, moving it to the MRU end (touch-on-hit). Returns a clone of the cached bytes.
     fn get(&mut self, key: &TableBlockCacheKey) -> Option<Arc<[u8]>> {
         let idx = *self.index.get(key)?;
@@ -515,6 +520,14 @@ impl TableBlockCache {
     /// per-seek accelerator probe.
     pub(crate) fn get_quiet(&self, key: &TableBlockCacheKey) -> Option<Arc<[u8]>> {
         self.shard_for_key(key).lock_state().lru.get(key)
+    }
+
+    /// C2: a recency-neutral presence probe for the preheat sweep. Records no
+    /// hit/miss and does NOT touch the LRU — a sweep that promoted every block
+    /// it inspected would overwrite demand recency with scan order, so `get` /
+    /// `get_quiet` are unusable here.
+    pub(crate) fn contains_quiet(&self, key: &TableBlockCacheKey) -> bool {
+        self.shard_for_key(key).lock_state().lru.contains(key)
     }
 
     pub(crate) fn insert(
