@@ -269,13 +269,24 @@ impl BranchLocalState {
     /// "the same frozen table" strictly more precisely than the row-by-row walk in
     /// [`replace_frozen_with_level_zero_table`] — which ran under the runtime lock at
     /// ~7.5 ms per install (measured), the dominant remaining flush publish-lock cost
-    /// after BS5.3a. Row equality of the BUILT table against that same sealed input is
+    /// after BS5.3a. Row equality of the BUILT tables against that same sealed input is
     /// verified off-lock in the prepare phase; a cheap row-count cross-check stays here.
-    pub(crate) fn replace_frozen_with_level_zero_table_by_identity(
+    ///
+    /// A1 (#2524): installs the frozen memtable's N key-disjoint output tables
+    /// atomically — every table is validated BEFORE any mutation, so an
+    /// identity collision or range violation on table k leaves the branch
+    /// untouched. L0 legality: key-disjoint same-flush siblings cannot shadow
+    /// each other, and L0 permits overlapping tables regardless.
+    pub(crate) fn replace_frozen_with_level_zero_tables_by_identity(
         &mut self,
         frozen_identity: usize,
-        table: BranchOwnedTable,
+        tables: Vec<BranchOwnedTable>,
     ) -> BranchRuntimeResult<BranchImmutableInstallOutcome> {
+        if tables.is_empty() {
+            return Err(BranchRuntimeError::InvalidBranchState {
+                reason: "frozen replacement requires at least one table",
+            });
+        }
         let Some(replacement_index) = self
             .frozen
             .iter()
@@ -285,12 +296,51 @@ impl BranchLocalState {
                 reason: "frozen replacement identity must match a frozen table",
             });
         };
-        if self.frozen[replacement_index].len() as u64 != table.facts().row_count() {
+        let total_rows: u64 = tables.iter().map(|table| table.facts().row_count()).sum();
+        if self.frozen[replacement_index].len() as u64 != total_rows {
             return Err(BranchRuntimeError::InvalidBranchState {
                 reason: "frozen replacement table rows must match a frozen table",
             });
         }
-        self.install_level_zero_replacement(replacement_index, table)
+        // Validate ALL tables (identity uniqueness against the branch AND
+        // within this batch) before mutating anything.
+        let mut level_index = 0;
+        for (offset, table) in tables.iter().enumerate() {
+            level_index = self.validate_install_identity_and_range(BranchLevel::ZERO, table)?;
+            if tables[..offset]
+                .iter()
+                .any(|earlier| earlier.descriptor().identity() == table.descriptor().identity())
+            {
+                return Err(BranchRuntimeError::InvalidBranchState {
+                    reason: "frozen replacement tables must have distinct identities",
+                });
+            }
+        }
+        let new_l0_resident: u64 = tables
+            .iter()
+            .map(BranchOwnedTable::approximate_size_bytes)
+            .sum();
+        let new_l0_logical: u64 = tables.iter().map(|table| table.facts().byte_count()).sum();
+        let installed_tables = tables.len();
+        let removed_frozen_resident =
+            u64::try_from(self.frozen[replacement_index].approximate_size_bytes())
+                .unwrap_or(u64::MAX);
+        // Insert in reverse so the outputs land at L0 indices 0..N in key
+        // order (L0 is newest-first; same-flush siblings are key-disjoint,
+        // so their relative order cannot affect shadowing).
+        let levels = Arc::make_mut(&mut self.layout).levels_mut();
+        for table in tables.into_iter().rev() {
+            levels[level_index].insert(0, table);
+        }
+        self.frozen.remove(replacement_index);
+        self.apply_flush_install_shape_delta(
+            level_index,
+            new_l0_resident,
+            new_l0_logical,
+            installed_tables,
+            removed_frozen_resident,
+        );
+        Ok(self.install_outcome(BranchLevel::ZERO, 0, Some(replacement_index)))
     }
 
     fn install_level_zero_replacement(
@@ -319,6 +369,7 @@ impl BranchLocalState {
             level_index,
             new_l0_resident,
             new_l0_logical,
+            1,
             removed_frozen_resident,
         );
         Ok(self.install_outcome(BranchLevel::ZERO, 0, Some(replacement_index)))
@@ -609,13 +660,14 @@ impl BranchLocalState {
         level_index: usize,
         new_l0_resident: u64,
         new_l0_logical: u64,
+        installed_tables: usize,
         removed_frozen_resident: u64,
     ) {
         self.shape.owned_bytes = self.shape.owned_bytes.saturating_add(new_l0_resident);
         if let Some(level) = self.shape.per_level_bytes.get_mut(level_index) {
             *level = level.saturating_add(new_l0_logical);
         }
-        self.shape.owned_tables = self.shape.owned_tables.saturating_add(1);
+        self.shape.owned_tables = self.shape.owned_tables.saturating_add(installed_tables);
         self.shape.frozen_bytes = self
             .shape
             .frozen_bytes
@@ -820,6 +872,36 @@ fn insert_sorted_by_range(
 /// Row-for-row equality of a built table (read back through its reader) against a sealed
 /// memtable. BS5.3b moved the hot durable-flush call OFF the runtime lock into the prepare
 /// phase; the install matches by memtable identity instead.
+/// A1 (#2524): do the tables' rows — concatenated in the given order —
+/// partition the frozen memtable exactly? Key-disjoint flush outputs are
+/// emitted in key order, and frozen iteration is key-ordered, so sequential
+/// lockstep over each table's cursor against the shared frozen iterator
+/// checks disjointness, totality, and per-row equality in one pass. Any
+/// shortfall, surplus, misorder, or cursor error fails closed.
+pub(crate) fn frozen_rows_match_tables(tables: &[&BranchOwnedTable], frozen: &FrozenTable) -> bool {
+    let total_rows: u64 = tables.iter().map(|table| table.facts().row_count()).sum();
+    if total_rows != frozen.len() as u64 {
+        return false;
+    }
+    let mut frozen_rows = frozen.iter();
+    for table in tables {
+        let mut cursor = table.reader().cursor();
+        if cursor.seek_to_first().is_err() {
+            return false;
+        }
+        while let Some(left) = cursor.current() {
+            match frozen_rows.next() {
+                Some(right) if left.row() == right.row() => {}
+                _ => return false,
+            }
+            if cursor.advance().is_err() {
+                return false;
+            }
+        }
+    }
+    frozen_rows.next().is_none()
+}
+
 pub(crate) fn frozen_rows_match_table(table: &BranchOwnedTable, frozen: &FrozenTable) -> bool {
     if table.facts().row_count() != frozen.len() as u64 {
         return false;
