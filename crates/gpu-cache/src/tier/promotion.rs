@@ -1,23 +1,14 @@
-//! The promotion scheduler: store → staging → device, never stalling.
+//! The promotion scheduler: request queue, in-flight tracking, activation.
 //!
-//! Requests queue with priorities; draining reads batches from the store of
-//! record and enqueues staged copies; completion polling activates pages.
-//! Every failure path degrades (the page just isn't resident this step) —
-//! nothing here ever blocks the decode loop (HT-4).
+//! GT3 slimmed this to pure bookkeeping — the *tier* owns store reads and
+//! device writes (structure installs happen in exactly one place). The
+//! scheduler dedups requests by priority, tracks staged copies, and reports
+//! which slots' fences completed so the tier can flip their validity.
 
 use std::collections::{BinaryHeap, HashSet};
 
-use crate::tier::backend::{CopyFence, DeviceBackend, Region};
+use crate::tier::backend::CopyFence;
 use crate::tier::page_table::{PageId, PageTable};
-use crate::tier::store::PageStore;
-use crate::tier::TierStats;
-
-/// Byte layout facts the scheduler needs for offsets.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct OffsetPlan {
-    pub page_bytes: u64,
-    pub summary_bytes: u64,
-}
 
 #[derive(Debug, Eq, PartialEq)]
 struct Queued {
@@ -77,7 +68,21 @@ impl<F: CopyFence> PromotionScheduler<F> {
         }
     }
 
-    /// Tracks an already-enqueued copy (the append path).
+    /// Pops up to `batch` non-resident requests for the tier to fetch.
+    pub(crate) fn take_batch(&mut self, batch: usize, table: &PageTable<F>) -> Vec<PageId> {
+        let mut ids = Vec::with_capacity(batch);
+        while ids.len() < batch {
+            let Some(next) = self.queue.pop() else { break };
+            self.queued.remove(&next.page_id);
+            // Already resident (raced with an append or a duplicate request).
+            if table.slot_of(next.page_id).is_none() {
+                ids.push(next.page_id);
+            }
+        }
+        ids
+    }
+
+    /// Tracks a staged copy awaiting its fence.
     pub(crate) fn track(&mut self, page_id: PageId, slot: u32, fence: F) {
         self.in_flight.push(InFlight {
             page_id,
@@ -90,95 +95,24 @@ impl<F: CopyFence> PromotionScheduler<F> {
         self.queue.len()
     }
 
-    /// Drains up to `batch` requests through the store into staged copies.
-    /// Failures degrade and are counted; they never propagate.
-    pub(crate) fn drain<B, S>(
-        &mut self,
-        batch: usize,
-        plan: OffsetPlan,
-        table: &mut PageTable<F>,
-        backend: &mut B,
-        store: &mut S,
-        stats: &mut TierStats,
-    ) where
-        B: DeviceBackend<Fence = F>,
-        S: PageStore + ?Sized,
-    {
-        let mut ids = Vec::with_capacity(batch);
-        while ids.len() < batch {
-            let Some(next) = self.queue.pop() else { break };
-            self.queued.remove(&next.page_id);
-            // Already resident (raced with an append or a duplicate request).
-            if table.slot_of(next.page_id).is_none() {
-                ids.push(next.page_id);
-            }
-        }
-        if ids.is_empty() {
-            return;
-        }
-
-        let Ok(blobs) = store.read_pages(&ids) else {
-            // The whole batch degrades; pages stay cold until re-requested.
-            stats.promotion_failures += ids.len() as u64;
-            return;
-        };
-
-        for (page_id, blob) in ids.into_iter().zip(blobs) {
-            let Some(blob) = blob else {
-                stats.store_misses += 1;
-                continue;
-            };
-            let Some(slot) = table.place(page_id, false) else {
-                // Pool full right now (victims may still be fence-gated):
-                // degrade, the caller re-requests next step if still hot.
-                stats.degraded_placements += 1;
-                continue;
-            };
-            let page_offset = table.slot_offset(slot);
-            let summary_offset = u64::from(slot) * plan.summary_bytes;
-            debug_assert_eq!(blob.bytes.len() as u64, plan.page_bytes);
-            let copied = backend
-                .copy_in(Region::Pages, page_offset, &blob.bytes)
-                .and_then(|_| backend.copy_in(Region::Summaries, summary_offset, &blob.summary))
-                .and_then(|_| backend.fence_now());
-            if let Ok(fence) = copied {
-                self.in_flight.push(InFlight {
-                    page_id,
-                    slot,
-                    fence,
-                });
-                stats.promotions_started += 1;
-            } else {
-                // The slot was never activated — no step could have seen
-                // it, so it returns to the pool immediately.
-                table.abort_place(slot);
-                stats.promotion_failures += 1;
-            }
-        }
-    }
-
-    /// Activates pages whose copies completed. Returns how many activated.
-    pub(crate) fn poll(&mut self, table: &mut PageTable<F>, stats: &mut TierStats) -> u32 {
-        let mut activated = 0;
+    /// Returns the slots whose copies completed and still hold their page
+    /// (eviction may race an in-flight promotion); the tier activates them.
+    pub(crate) fn poll(&mut self, table: &PageTable<F>) -> Vec<u32> {
+        let mut ready = Vec::new();
         let mut remaining = Vec::with_capacity(self.in_flight.len());
         for entry in self.in_flight.drain(..) {
             if entry.fence.is_complete() {
-                // The page may have been evicted while in flight (possible
-                // once eviction races promotion); activate only if it still
-                // owns the slot.
                 if table
                     .state(entry.slot)
                     .is_some_and(|s| s.page_id == entry.page_id)
                 {
-                    table.activate(entry.slot);
-                    activated += 1;
-                    stats.promotions_completed += 1;
+                    ready.push(entry.slot);
                 }
             } else {
                 remaining.push(entry);
             }
         }
         self.in_flight = remaining;
-        activated
+        ready
     }
 }

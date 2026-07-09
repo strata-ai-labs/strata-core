@@ -5,12 +5,14 @@
 //! contract those layers sit on: request/append/maintain with the fence
 //! discipline, and stats that make degradation observable (HT-9).
 
-use crate::tier::backend::{DeviceBackend, Region, RegionBytes};
+use crate::tier::backend::{DeviceBackend, Region, RegionBytes, TagFilter};
 use crate::tier::eviction;
 use crate::tier::page_table::{Epoch, PageId, PageTable};
-use crate::tier::promotion::{OffsetPlan, PromotionScheduler};
+use crate::tier::promotion::PromotionScheduler;
 use crate::tier::store::{CommitReceipt, PageBlob, PageStore, TierManifest};
 use crate::GpuError;
+
+pub use crate::tier::backend::{MAX_EXPAND, MAX_K};
 
 /// Tier geometry and behavior, fixed at open.
 #[derive(Clone, Copy, Debug)]
@@ -23,6 +25,8 @@ pub struct TierConfig {
     pub page_slots: u32,
     /// Max promotions drained from the queue per maintain call.
     pub promotion_batch: usize,
+    /// Bounded adjacency degree: resident-neighbor entries per slot.
+    pub adjacency_degree: u16,
     /// Write-behind entries per durable batch commit.
     pub write_behind_batch: usize,
     /// Max entries the write-behind queue may hold before appends refuse
@@ -58,6 +62,15 @@ pub struct TierStats {
     pub write_commit_failures: u64,
 }
 
+/// A selection result mapped back to page ids (the GT3 test surface).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TierTopk {
+    /// Selected pages, best first, with their scores.
+    pub selected: Vec<(PageId, f32)>,
+    /// One-hop expansion of the selection (deduplicated).
+    pub expanded: Vec<PageId>,
+}
+
 /// Outcome of a page request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequestOutcome {
@@ -84,6 +97,12 @@ pub struct Tier<B: DeviceBackend, S: PageStore> {
     next_page_id: u64,
     /// Receipt of the most recent durable batch commit.
     last_receipt: Option<CommitReceipt>,
+    /// Per-slot edge ids of the resident page (for unlink bookkeeping).
+    slot_edges: Vec<Vec<PageId>>,
+    /// Per-slot resident-adjacency mirror (what the device row holds).
+    slot_adj: Vec<Vec<u32>>,
+    /// Edges whose target is not resident yet: target id -> waiting slots.
+    waiting_edges: std::collections::HashMap<PageId, Vec<u32>>,
 }
 
 impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
@@ -102,6 +121,7 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
             || config.promotion_batch == 0
             || config.write_behind_batch == 0
             || config.write_backlog_cap < config.write_behind_batch
+            || config.adjacency_degree == 0
         {
             return Err(GpuError::InvalidConfig {
                 detail: "summary_bytes, page_slots, promotion_batch, and write_behind_batch \
@@ -128,13 +148,19 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
         }
         let next_page_id = store.watermark()?.map_or(0, |w| w.0 + 1);
 
+        if config.summary_bytes % 4 != 0 {
+            return Err(GpuError::InvalidConfig {
+                detail: "summary_bytes must be a multiple of 4 (f32 summaries)".to_owned(),
+            });
+        }
         let slots = u64::from(config.page_slots);
         backend.reserve(RegionBytes {
             pages: slots * config.page_bytes,
             summaries: slots * config.summary_bytes,
-            // GT3 sizes this from the adjacency degree; a placeholder row of
-            // 8 bytes/slot keeps the region present and the math exercised.
-            adjacency: slots * 8,
+            adjacency: slots * u64::from(config.adjacency_degree) * 4,
+            validity: slots,
+            tags: slots * 32,
+            scratch: crate::tier::backend::scratch_bytes(slots, config.summary_bytes),
         })?;
         let table = PageTable::new(slots * config.page_bytes, config.page_bytes)?;
         Ok(Self {
@@ -147,6 +173,9 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
             write_behind: std::collections::VecDeque::new(),
             next_page_id,
             last_receipt: None,
+            slot_edges: vec![Vec::new(); config.page_slots as usize],
+            slot_adj: vec![Vec::new(); config.page_slots as usize],
+            waiting_edges: std::collections::HashMap::new(),
         })
     }
 
@@ -193,33 +222,20 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
                 cap: self.config.write_backlog_cap,
             });
         }
+        if blob.edges.len() > usize::from(self.config.adjacency_degree) {
+            return Err(GpuError::InvalidConfig {
+                detail: format!(
+                    "page has {} edges; the adjacency degree is {}",
+                    blob.edges.len(),
+                    self.config.adjacency_degree
+                ),
+            });
+        }
         let page_id = PageId(self.next_page_id);
         self.next_page_id += 1;
         self.write_behind.push_back((page_id, blob.clone()));
         self.ensure_headroom(1);
-        let Some(slot) = self.table.place(page_id, true) else {
-            // Queued for durability but not hot (victims still fence-gated):
-            // a degradation, not a failure.
-            self.stats.degraded_placements += 1;
-            return Ok(page_id);
-        };
-        let page_offset = self.table.slot_offset(slot);
-        let summary_offset = u64::from(slot) * self.config.summary_bytes;
-        let copied = self
-            .backend
-            .copy_in(Region::Pages, page_offset, &blob.bytes)
-            .and_then(|_| {
-                self.backend
-                    .copy_in(Region::Summaries, summary_offset, &blob.summary)
-            })
-            .and_then(|_| self.backend.fence_now());
-        if let Ok(fence) = copied {
-            self.scheduler.track(page_id, slot, fence);
-            self.stats.promotions_started += 1;
-        } else {
-            self.table.abort_place(slot);
-            self.stats.promotion_failures += 1;
-        }
+        self.install_page(page_id, blob, true);
         Ok(page_id)
     }
 
@@ -236,19 +252,32 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
         self.stats.slots_reused += u64::from(self.table.sweep_reusable());
         let wanted = self.scheduler.queue_len().min(self.config.promotion_batch);
         self.ensure_headroom(wanted);
-        let plan = OffsetPlan {
-            page_bytes: self.config.page_bytes,
-            summary_bytes: self.config.summary_bytes,
-        };
-        self.scheduler.drain(
-            self.config.promotion_batch,
-            plan,
-            &mut self.table,
-            &mut self.backend,
-            &mut self.store,
-            &mut self.stats,
-        );
-        self.scheduler.poll(&mut self.table, &mut self.stats);
+
+        let ids = self
+            .scheduler
+            .take_batch(self.config.promotion_batch, &self.table);
+        if !ids.is_empty() {
+            match self.store.read_pages(&ids) {
+                Ok(blobs) => {
+                    for (page_id, blob) in ids.into_iter().zip(blobs) {
+                        let Some(blob) = blob else {
+                            self.stats.store_misses += 1;
+                            continue;
+                        };
+                        self.install_page(page_id, &blob, false);
+                    }
+                }
+                Err(_) => {
+                    // The whole batch degrades; pages stay cold until
+                    // re-requested.
+                    self.stats.promotion_failures += ids.len() as u64;
+                }
+            }
+        }
+
+        for slot in self.scheduler.poll(&self.table) {
+            self.activate_slot(slot);
+        }
     }
 
     /// Drains the entire write-behind queue and returns the durability
@@ -303,6 +332,190 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
         self.write_behind.len()
     }
 
+    /// Places a page and stages every device write except validity: page
+    /// bytes, summary, tags, adjacency links (with symmetric neighbor-row
+    /// updates and edge-driven prefetch). Validity flips only at
+    /// [`Self::activate_slot`], once the fence completes. Failures degrade
+    /// and roll back; nothing stalls.
+    fn install_page(&mut self, page_id: PageId, blob: &PageBlob, dirty: bool) {
+        debug_assert_eq!(blob.bytes.len() as u64, self.config.page_bytes);
+        let Some(slot) = self.table.place(page_id, dirty) else {
+            // Pool full right now (victims may still be fence-gated):
+            // degrade; hot pages get re-requested.
+            self.stats.degraded_placements += 1;
+            return;
+        };
+
+        // Structure bookkeeping first (host mirrors + neighbor rows).
+        let index = slot as usize;
+        self.slot_edges[index].clone_from(&blob.edges);
+        let mut linked = Vec::new();
+        for edge in &blob.edges {
+            if let Some(neighbor) = self.table.slot_of(*edge) {
+                if neighbor != slot {
+                    linked.push(neighbor);
+                }
+            } else {
+                self.waiting_edges.entry(*edge).or_default().push(slot);
+                // Edge-driven prefetch (HT-4): graph neighbors of a touched
+                // page are promotion candidates the moment it is placed.
+                self.scheduler.request(*edge, 0);
+            }
+        }
+        // Pages waiting for *this* page link up now.
+        if let Some(waiters) = self.waiting_edges.remove(&page_id) {
+            for waiter in waiters {
+                if waiter != slot && self.table.state(waiter).is_some() {
+                    linked.push(waiter);
+                }
+            }
+        }
+        linked.sort_unstable();
+        linked.dedup();
+        let degree = usize::from(self.config.adjacency_degree);
+        let mut dirty_rows = vec![slot];
+        for neighbor in linked {
+            if self.slot_adj[index].len() < degree {
+                self.slot_adj[index].push(neighbor);
+                self.table.add_resident_neighbor(slot, 1);
+            }
+            let neighbor_index = neighbor as usize;
+            if self.slot_adj[neighbor_index].len() < degree {
+                self.slot_adj[neighbor_index].push(slot);
+                self.table.add_resident_neighbor(neighbor, 1);
+                dirty_rows.push(neighbor);
+            }
+        }
+
+        // Device writes: blob, summary, tags, adjacency rows; validity stays
+        // 0 until activation.
+        let page_offset = self.table.slot_offset(slot);
+        let summary_offset = u64::from(slot) * self.config.summary_bytes;
+        let mut tag_bytes = [0u8; 32];
+        for (i, tag) in blob.tags.iter().enumerate() {
+            tag_bytes[i * 8..i * 8 + 8].copy_from_slice(&tag.to_le_bytes());
+        }
+        let copied = (|| {
+            self.backend
+                .copy_in(Region::Pages, page_offset, &blob.bytes)?;
+            self.backend
+                .copy_in(Region::Summaries, summary_offset, &blob.summary)?;
+            self.backend
+                .copy_in(Region::Tags, u64::from(slot) * 32, &tag_bytes)?;
+            for row in dirty_rows {
+                self.write_adjacency_row(row)?;
+            }
+            self.backend.fence_now()
+        })();
+        if let Ok(fence) = copied {
+            self.scheduler.track(page_id, slot, fence);
+            self.stats.promotions_started += 1;
+        } else {
+            self.uninstall_structures(slot);
+            self.table.abort_place(slot);
+            self.stats.promotion_failures += 1;
+        }
+    }
+
+    /// Flips a slot selectable: host state plus the device validity byte —
+    /// the last write, so kernels never see a partially-installed page.
+    fn activate_slot(&mut self, slot: u32) {
+        if self
+            .backend
+            .copy_in(Region::Validity, u64::from(slot), &[1])
+            .is_err()
+        {
+            // The page stays resident but unselectable; a future request
+            // re-queues it after eviction. Counted as a failure.
+            self.stats.promotion_failures += 1;
+            return;
+        }
+        self.table.activate(slot);
+        self.stats.promotions_completed += 1;
+    }
+
+    /// Unlinks a slot from the adjacency structures: neighbor rows lose the
+    /// entry (host + device), waiting registrations are dropped. Idempotent.
+    fn uninstall_structures(&mut self, slot: u32) {
+        let index = slot as usize;
+        for edge in std::mem::take(&mut self.slot_edges[index]) {
+            if let Some(waiters) = self.waiting_edges.get_mut(&edge) {
+                waiters.retain(|&w| w != slot);
+                if waiters.is_empty() {
+                    self.waiting_edges.remove(&edge);
+                }
+            }
+        }
+        let neighbors = std::mem::take(&mut self.slot_adj[index]);
+        for neighbor in neighbors {
+            let neighbor_index = neighbor as usize;
+            let before = self.slot_adj[neighbor_index].len();
+            self.slot_adj[neighbor_index].retain(|&n| n != slot);
+            if self.slot_adj[neighbor_index].len() != before {
+                self.table.add_resident_neighbor(neighbor, -1);
+                let _ = self.write_adjacency_row(neighbor);
+            }
+        }
+    }
+
+    /// Rewrites one slot's device adjacency row from the host mirror
+    /// (`u32::MAX` pads empty entries).
+    fn write_adjacency_row(&mut self, slot: u32) -> Result<(), GpuError> {
+        let degree = usize::from(self.config.adjacency_degree);
+        let mut row = vec![0xFFu8; degree * 4];
+        for (j, neighbor) in self.slot_adj[slot as usize].iter().enumerate() {
+            row[j * 4..j * 4 + 4].copy_from_slice(&neighbor.to_le_bytes());
+        }
+        self.backend
+            .copy_in(
+                Region::Adjacency,
+                u64::from(slot) * (degree as u64) * 4,
+                &row,
+            )
+            .map(|_| ())
+    }
+
+    /// Baseline device selection (HT-2): scores every selectable page,
+    /// returns the top `k` (and a bounded one-hop expansion when asked) as
+    /// page ids. This readback form is the GT3 test surface; GT4 exposes
+    /// the device-resident result instead.
+    pub fn topk_pages(
+        &mut self,
+        query: &[f32],
+        k: u16,
+        expand_budget: Option<u16>,
+        filter: Option<TagFilter>,
+    ) -> Result<TierTopk, GpuError> {
+        if k == 0 || k > MAX_K {
+            return Err(GpuError::InvalidConfig {
+                detail: format!("k must be in 1..={MAX_K}, got {k}"),
+            });
+        }
+        if let Some(budget) = expand_budget {
+            if budget > MAX_EXPAND {
+                return Err(GpuError::InvalidConfig {
+                    detail: format!("expansion budget must be <= {MAX_EXPAND}, got {budget}"),
+                });
+            }
+        }
+        self.backend.topk(query, k, expand_budget, filter)?;
+        let readback = self.backend.read_topk()?;
+        let mut selected = Vec::with_capacity(readback.selected.len());
+        for (slot, score) in readback.selected {
+            if let Some(state) = self.table.state(slot) {
+                selected.push((state.page_id, score));
+                self.table.touch(slot, 1.0);
+            }
+        }
+        let mut expanded = Vec::with_capacity(readback.expanded.len());
+        for slot in readback.expanded {
+            if let Some(state) = self.table.state(slot) {
+                expanded.push(state.page_id);
+            }
+        }
+        Ok(TierTopk { selected, expanded })
+    }
+
     /// Stages evictions until free + gated slots cover `wanted`. Gated
     /// slots are not free *yet* (their fence must open first) — eviction
     /// provides future headroom; the present round degrades if none is free.
@@ -317,6 +530,15 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
             let Some(victim) = eviction::pick_victim(self.table.candidates(), now) else {
                 return; // nothing evictable: degrade, never stall
             };
+            // Unselectable on the device first, then host bookkeeping.
+            if self
+                .backend
+                .copy_in(Region::Validity, u64::from(victim), &[0])
+                .is_err()
+            {
+                return; // cannot make it unselectable: do not evict
+            }
+            self.uninstall_structures(victim);
             if self.table.evict(victim).is_err() {
                 return;
             }

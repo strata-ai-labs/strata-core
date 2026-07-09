@@ -95,6 +95,56 @@ fn store_error(
     }
 }
 
+/// Meta row layout (self-describing):
+/// `summary_len (u32 LE) || summary || tags (4 x u64 LE) ||
+/// edge_count (u16 LE) || edges (u64 LE each)`.
+fn encode_meta(blob: &PageBlob) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(4 + blob.summary.len() + 32 + 2 + blob.edges.len() * 8);
+    bytes.extend_from_slice(
+        &u32::try_from(blob.summary.len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(&blob.summary);
+    for tag in &blob.tags {
+        bytes.extend_from_slice(&tag.to_le_bytes());
+    }
+    bytes.extend_from_slice(
+        &u16::try_from(blob.edges.len())
+            .unwrap_or(u16::MAX)
+            .to_le_bytes(),
+    );
+    for edge in &blob.edges {
+        bytes.extend_from_slice(&edge.0.to_le_bytes());
+    }
+    bytes
+}
+
+/// Inverse of [`encode_meta`]; `None` on any structural inconsistency (the
+/// caller treats it as a miss and degrades rather than serving half a page).
+fn decode_meta(bytes: &[u8]) -> Option<(Vec<u8>, [u64; 4], Vec<PageId>)> {
+    let summary_len =
+        usize::try_from(u32::from_le_bytes(bytes.get(0..4)?.try_into().ok()?)).ok()?;
+    let mut at = 4;
+    let summary = bytes.get(at..at + summary_len)?.to_vec();
+    at += summary_len;
+    let mut tags = [0u64; 4];
+    for tag in &mut tags {
+        *tag = u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?);
+        at += 8;
+    }
+    let edge_count = usize::from(u16::from_le_bytes(bytes.get(at..at + 2)?.try_into().ok()?));
+    at += 2;
+    let mut edges = Vec::with_capacity(edge_count);
+    for _ in 0..edge_count {
+        edges.push(PageId(u64::from_le_bytes(
+            bytes.get(at..at + 8)?.try_into().ok()?,
+        )));
+        at += 8;
+    }
+    (at == bytes.len()).then_some((summary, tags, edges))
+}
+
 fn kv_key(bytes: &[u8]) -> Result<KvKey, GpuError> {
     KvKey::new(bytes).map_err(store_error("key"))
 }
@@ -126,10 +176,14 @@ impl PageStore for EnginePageStore {
         let mut blobs = Vec::with_capacity(ids.len());
         for pair in rows.chunks_exact(2) {
             let blob = match (&pair[0], &pair[1]) {
-                (Some(page), Some(meta)) => Some(PageBlob {
-                    bytes: page.value().as_bytes().to_vec(),
-                    summary: meta.value().as_bytes().to_vec(),
-                }),
+                (Some(page), Some(meta)) => {
+                    decode_meta(meta.value().as_bytes()).map(|(summary, tags, edges)| PageBlob {
+                        bytes: page.value().as_bytes().to_vec(),
+                        summary,
+                        tags,
+                        edges,
+                    })
+                }
                 // A page without its meta row (or vice versa) cannot happen
                 // through commit_batch; treat any asymmetry as a miss and
                 // let the caller degrade rather than serve half a page.
@@ -148,7 +202,7 @@ impl PageStore for EnginePageStore {
         let mut rows: Vec<(KvKey, KvValue)> = Vec::with_capacity(entries.len() * 2 + 1);
         for (id, blob) in entries {
             rows.push((page_key(*id)?, KvValue::new(blob.bytes.clone())));
-            rows.push((meta_key(*id)?, KvValue::new(blob.summary.clone())));
+            rows.push((meta_key(*id)?, KvValue::new(encode_meta(blob))));
         }
         rows.push((
             kv_key(WATERMARK_KEY)?,

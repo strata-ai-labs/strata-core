@@ -9,6 +9,47 @@
 
 use crate::GpuError;
 
+/// Selection k ceiling (scratch layouts reserve for it).
+pub const MAX_K: u16 = 64;
+/// Expansion budget ceiling (scratch layouts reserve for it).
+pub const MAX_EXPAND: u16 = 256;
+
+/// The canonical scratch-region size for a given geometry: scores, selected
+/// slots + scores, expansion output, cursor, dedup bitmap (word padded), and
+/// the staged query vector. Every sizing site uses this one formula.
+#[must_use]
+pub const fn scratch_bytes(capacity: u64, summary_bytes: u64) -> u64 {
+    let dim = summary_bytes / 4;
+    capacity * 4                    // scores
+        + (MAX_K as u64) * 4        // selected slots
+        + (MAX_K as u64) * 4        // selected scores
+        + (MAX_EXPAND as u64) * 4   // expansion output
+        + 4                         // cursor
+        + capacity.div_ceil(32) * 4 // dedup bitmap, word padded
+        + dim * 4 // staged query
+}
+
+/// An exact-match predicate over one of a page's four metadata tags.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TagFilter {
+    /// Which tag (0..=3).
+    pub index: u8,
+    /// The value it must equal.
+    pub value: u64,
+}
+
+/// One selection request (HT-2: results stay on device; this readback type
+/// is the test/oracle path until the GT4 `DLPack` seam).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TopkReadback {
+    /// Selected `(slot, score)`, best first (score-descending, lower slot
+    /// on ties).
+    pub selected: Vec<(u32, f32)>,
+    /// One-hop expansion of the selected set (deduplicated, order
+    /// unspecified), when an expansion budget was given.
+    pub expanded: Vec<u32>,
+}
+
 /// Identifies one of the tier's fixed regions on the device.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Region {
@@ -16,8 +57,15 @@ pub enum Region {
     Pages,
     /// Per-slot summary blobs.
     Summaries,
-    /// Per-slot bounded-degree adjacency rows.
+    /// Per-slot bounded-degree adjacency rows (`degree` u32 slots each;
+    /// `u32::MAX` marks an empty entry).
     Adjacency,
+    /// Per-slot selectability byte (1 = selectable by kernels).
+    Validity,
+    /// Per-slot metadata tags (4 × u64).
+    Tags,
+    /// Kernel scratch: scores, selection output, cursor, dedup bitmap.
+    Scratch,
 }
 
 /// Byte sizes for the tier's regions, fixed at open.
@@ -29,6 +77,12 @@ pub struct RegionBytes {
     pub summaries: u64,
     /// Adjacency region bytes.
     pub adjacency: u64,
+    /// Validity region bytes (one byte per slot).
+    pub validity: u64,
+    /// Tags region bytes (32 per slot).
+    pub tags: u64,
+    /// Kernel scratch bytes.
+    pub scratch: u64,
 }
 
 /// A pending copy's completion handle. Non-blocking by construction: the
@@ -69,4 +123,22 @@ pub trait DeviceBackend {
     /// write-behind path; never the decode loop). Takes `&mut self`: real
     /// backends stage through their pinned slab.
     fn read_back(&mut self, region: Region, offset: u64, len: usize) -> Result<Vec<u8>, GpuError>;
+
+    /// Runs baseline selection over the resident set: scores every
+    /// selectable slot (dot product of `query` against its summary,
+    /// masked by `filter`), takes the top `k`, and — when `expand_budget`
+    /// is given — expands one hop through the adjacency table, deduplicated
+    /// against the selection. Results land in device scratch (HT-2); the
+    /// returned fence completes when they are consumable.
+    fn topk(
+        &mut self,
+        query: &[f32],
+        k: u16,
+        expand_budget: Option<u16>,
+        filter: Option<TagFilter>,
+    ) -> Result<Self::Fence, GpuError>;
+
+    /// Reads the most recent selection back to the host (test/oracle path;
+    /// GT4 exposes the device-resident form instead). Blocks until ready.
+    fn read_topk(&mut self) -> Result<TopkReadback, GpuError>;
 }

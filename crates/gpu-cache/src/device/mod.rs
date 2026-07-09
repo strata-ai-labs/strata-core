@@ -13,6 +13,7 @@ pub(crate) mod cuda_backend;
 pub(crate) mod dl;
 pub(crate) mod driver;
 pub(crate) mod error;
+pub(crate) mod kernels;
 pub(crate) mod module;
 pub(crate) mod pinned;
 pub(crate) mod stream;

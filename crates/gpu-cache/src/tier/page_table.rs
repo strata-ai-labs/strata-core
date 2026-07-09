@@ -144,6 +144,14 @@ impl<F: CopyFence> PageTable<F> {
         }
     }
 
+    /// Adjusts a slot's resident-neighbor count (the eviction policy's
+    /// edge-awareness input). Saturating in both directions.
+    pub fn add_resident_neighbor(&mut self, slot: u32, delta: i32) {
+        if let Some(state) = self.entries[slot as usize].as_mut() {
+            state.resident_neighbors = state.resident_neighbors.saturating_add_signed(delta);
+        }
+    }
+
     /// Marks a slot's page durable (write-behind completed).
     pub fn mark_clean(&mut self, slot: u32) {
         if let Some(state) = self.entries[slot as usize].as_mut() {

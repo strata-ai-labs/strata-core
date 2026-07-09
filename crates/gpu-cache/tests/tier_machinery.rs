@@ -21,6 +21,8 @@ fn blob_for(id: u64) -> PageBlob {
             u8::try_from((id * 7) % 251).unwrap();
             usize::try_from(SUMMARY_BYTES).unwrap()
         ],
+        tags: [id, id * 2, 0, 0],
+        edges: Vec::new(),
     }
 }
 
@@ -37,6 +39,7 @@ fn tier_with(slots: u32, seeded: u64) -> Tier<HostSimBackend, InMemoryStore> {
             summary_bytes: SUMMARY_BYTES,
             page_slots: slots,
             promotion_batch: 4,
+            adjacency_degree: 8,
             write_behind_batch: 4,
             write_backlog_cap: 8,
         },
@@ -100,7 +103,7 @@ fn held_copies_delay_selectability_never_stall() {
     tier.maintain();
     assert!(!tier.is_selectable(PageId(0)));
 
-    tier.backend_mut().complete_pending(2); // page + summary
+    tier.backend_mut().complete_pending(4); // page + summary + tags + adjacency
     tier.maintain();
     assert!(tier.is_selectable(PageId(0)), "selectable after completion");
     assert_conservation(&tier);
@@ -138,7 +141,7 @@ fn evicted_slot_reuse_waits_for_the_epoch_fence() {
     tier.maintain();
     assert_eq!(tier.gated(), 1, "gate holds while step work is in flight");
 
-    tier.backend_mut().complete_pending(1); // the epoch's work drains
+    tier.backend_mut().complete_pending(2); // epoch work + eviction validity write drain
     tier.maintain(); // gate opens
     assert_eq!(tier.gated(), 0);
     assert_eq!(tier.stats().slots_reused, 1);
@@ -146,7 +149,7 @@ fn evicted_slot_reuse_waits_for_the_epoch_fence() {
     tier.request(PageId(2), 1);
     tier.maintain(); // places; copies are still lane-held
     assert!(!tier.is_selectable(PageId(2)), "copy in flight");
-    tier.backend_mut().complete_pending(2); // page + summary
+    tier.backend_mut().complete_pending(4); // page + summary + tags + adjacency
     tier.maintain();
     assert!(
         tier.is_selectable(PageId(2)),
@@ -202,6 +205,8 @@ fn append_validates_geometry_and_lands_hot() {
     let bad = tier.append(&PageBlob {
         bytes: vec![0; 128],
         summary: vec![0; usize::try_from(SUMMARY_BYTES).unwrap()],
+        tags: [0; 4],
+        edges: Vec::new(),
     });
     let error = bad.expect_err("geometry mismatch must be refused");
     assert_eq!(error.code(), "invalid_argument.gpu.config");
@@ -429,6 +434,7 @@ fn geometry_mismatch_is_refused_at_open() {
             summary_bytes: SUMMARY_BYTES,
             page_slots: 2,
             promotion_batch: 4,
+            adjacency_degree: 8,
             write_behind_batch: 4,
             write_backlog_cap: 8,
         },
@@ -451,6 +457,7 @@ fn page_ids_continue_from_the_watermark() {
             summary_bytes: SUMMARY_BYTES,
             page_slots: 2,
             promotion_batch: 4,
+            adjacency_degree: 8,
             write_behind_batch: 4,
             write_backlog_cap: 8,
         },
@@ -458,4 +465,85 @@ fn page_ids_continue_from_the_watermark() {
     .expect("tier opens");
     let id = tier.append(&blob_for(7)).expect("append");
     assert_eq!(id, PageId(42), "ids continue past the durable watermark");
+}
+
+#[test]
+fn topk_pages_selects_filters_and_expands_through_the_tier() {
+    use strata_gpu_cache::tier::backend::TagFilter;
+
+    let mut tier = tier_with(8, 0);
+    // Three pages with orthogonal f32 summaries; page B links to page C.
+    let unit = |axis: usize, tag: u64, edges: Vec<PageId>| {
+        let mut summary = vec![0u8; usize::try_from(SUMMARY_BYTES).unwrap()];
+        summary[axis * 4..axis * 4 + 4].copy_from_slice(&8.0f32.to_le_bytes());
+        PageBlob {
+            bytes: vec![7; usize::try_from(PAGE_BYTES).unwrap()],
+            summary,
+            tags: [tag, 0, 0, 0],
+            edges,
+        }
+    };
+    let a = tier.append(&unit(0, 1, Vec::new())).expect("a");
+    let b = tier.append(&unit(1, 2, Vec::new())).expect("b");
+    let c = tier.append(&unit(2, 2, vec![PageId(1)])).expect("c"); // c -> b
+    tier.maintain();
+    for id in [a, b, c] {
+        assert!(tier.is_selectable(id));
+    }
+
+    // Query along axis 1 → b wins; the axis-0 page scores zero but still
+    // ranks by tie-break.
+    let mut query = vec![0.0f32; usize::try_from(SUMMARY_BYTES).unwrap() / 4];
+    query[1] = 4.0;
+    let result = tier.topk_pages(&query, 1, None, None).expect("topk");
+    assert_eq!(result.selected.len(), 1);
+    assert_eq!(result.selected[0].0, b);
+    assert!((result.selected[0].1 - 32.0).abs() < f32::EPSILON);
+
+    // Tag filter excludes b's tag → a is the only qualifier along axis 0.
+    let mut query0 = vec![0.0f32; usize::try_from(SUMMARY_BYTES).unwrap() / 4];
+    query0[0] = 1.0;
+    let filtered = tier
+        .topk_pages(&query0, 4, None, Some(TagFilter { index: 0, value: 1 }))
+        .expect("filtered");
+    assert_eq!(filtered.selected.len(), 1);
+    assert_eq!(filtered.selected[0].0, a);
+
+    // Selecting c with expansion surfaces its resident neighbor b.
+    let mut query2 = vec![0.0f32; usize::try_from(SUMMARY_BYTES).unwrap() / 4];
+    query2[2] = 1.0;
+    let expanded = tier.topk_pages(&query2, 1, Some(8), None).expect("expand");
+    assert_eq!(expanded.selected[0].0, c);
+    assert_eq!(
+        expanded.expanded,
+        vec![b],
+        "edge c->b surfaced by expansion"
+    );
+
+    // Evict b (make it cold): expansion must stop surfacing it — the
+    // validity guard defeats stale adjacency entries.
+    tier.flush().expect("flush");
+    for _ in 0..3 {
+        tier.step_begin().expect("step");
+        tier.touch(a, 1.0);
+        tier.touch(c, 1.0);
+        tier.maintain();
+    }
+    // Force pressure: fill remaining slots so b (cold) is evicted.
+    for i in 0..6 {
+        tier.append(&unit(3, 9, Vec::new())).expect("filler");
+        let _ = i;
+    }
+    tier.flush().expect("flush");
+    tier.step_begin().expect("step");
+    tier.maintain();
+    tier.step_begin().expect("step");
+    tier.maintain();
+    if !tier.is_selectable(b) {
+        let after = tier.topk_pages(&query2, 1, Some(8), None).expect("expand");
+        assert!(
+            !after.expanded.contains(&b),
+            "evicted neighbor must not be expanded into"
+        );
+    }
 }

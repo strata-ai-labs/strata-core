@@ -21,6 +21,8 @@ fn blob_for(id: u64) -> PageBlob {
             u8::try_from((id * 7) % 251).unwrap();
             usize::try_from(SUMMARY_BYTES).unwrap()
         ],
+        tags: [id, id * 2, 0, 0],
+        edges: Vec::new(),
     }
 }
 
@@ -40,6 +42,7 @@ fn tier_flow_on_real_hardware() {
             summary_bytes: SUMMARY_BYTES,
             page_slots: 4,
             promotion_batch: 4,
+            adjacency_degree: 8,
             write_behind_batch: 4,
             write_backlog_cap: 8,
         },
@@ -121,6 +124,7 @@ fn full_stack_gpu_over_durable_strata() {
         summary_bytes: SUMMARY_BYTES,
         page_slots: 4,
         promotion_batch: 4,
+        adjacency_degree: 8,
         write_behind_batch: 2,
         write_backlog_cap: 8,
     };

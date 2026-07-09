@@ -47,6 +47,7 @@ type FnCuMemFreeHost = unsafe extern "C" fn(*mut c_void) -> c_int;
 type FnCuMemcpyHtoDAsync = unsafe extern "C" fn(DevicePtr, *const c_void, usize, CuStream) -> c_int;
 type FnCuMemcpyDtoHAsync = unsafe extern "C" fn(*mut c_void, DevicePtr, usize, CuStream) -> c_int;
 type FnCuMemsetD8 = unsafe extern "C" fn(DevicePtr, u8, usize) -> c_int;
+type FnCuMemsetD8Async = unsafe extern "C" fn(DevicePtr, u8, usize, CuStream) -> c_int;
 type FnCuStreamCreate = unsafe extern "C" fn(*mut CuStream, c_uint) -> c_int;
 type FnCuStreamDestroy = unsafe extern "C" fn(CuStream) -> c_int;
 type FnCuStreamSynchronize = unsafe extern "C" fn(CuStream) -> c_int;
@@ -135,6 +136,7 @@ pub(crate) struct DriverApi {
     cu_memcpy_h_to_d_async: FnCuMemcpyHtoDAsync,
     cu_memcpy_d_to_h_async: FnCuMemcpyDtoHAsync,
     cu_memset_d8: FnCuMemsetD8,
+    cu_memset_d8_async: FnCuMemsetD8Async,
     cu_stream_create: FnCuStreamCreate,
     cu_stream_destroy: FnCuStreamDestroy,
     cu_stream_synchronize: FnCuStreamSynchronize,
@@ -213,6 +215,7 @@ impl DriverApi {
             cu_memcpy_h_to_d_async: load_sym!(lib, "cuMemcpyHtoDAsync_v2", FnCuMemcpyHtoDAsync),
             cu_memcpy_d_to_h_async: load_sym!(lib, "cuMemcpyDtoHAsync_v2", FnCuMemcpyDtoHAsync),
             cu_memset_d8: load_sym!(lib, "cuMemsetD8_v2", FnCuMemsetD8),
+            cu_memset_d8_async: load_sym!(lib, "cuMemsetD8Async", FnCuMemsetD8Async),
             cu_stream_create: load_sym!(lib, "cuStreamCreate", FnCuStreamCreate),
             cu_stream_destroy: load_sym!(lib, "cuStreamDestroy_v2", FnCuStreamDestroy),
             cu_stream_synchronize: load_sym!(lib, "cuStreamSynchronize", FnCuStreamSynchronize),
@@ -412,6 +415,19 @@ impl DriverApi {
         // SAFETY: ptr..ptr+len lies inside an arena region at all call sites.
         let rc = unsafe { (self.cu_memset_d8)(ptr, value, len) };
         self.check("cuMemsetD8", rc)
+    }
+
+    /// Stream-ordered fill.
+    pub(crate) fn memset_d8_async(
+        &self,
+        ptr: DevicePtr,
+        value: u8,
+        len: usize,
+        stream: CuStream,
+    ) -> Result<(), GpuError> {
+        // SAFETY: ptr..ptr+len lies inside an arena region at all call sites.
+        let rc = unsafe { (self.cu_memset_d8_async)(ptr, value, len, stream) };
+        self.check("cuMemsetD8Async", rc)
     }
 
     pub(crate) fn stream_create(&self) -> Result<CuStream, GpuError> {

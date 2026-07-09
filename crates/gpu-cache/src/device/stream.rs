@@ -106,6 +106,11 @@ impl Stream {
         result
     }
 
+    /// Enqueues a stream-ordered byte fill.
+    pub fn memset(&self, dst: DevicePtr, value: u8, len: usize) -> Result<(), GpuError> {
+        self.api.memset_d8_async(dst, value, len, self.raw)
+    }
+
     /// Blocks the host until this stream drains. Counted as a sync wait —
     /// test and shutdown paths only, never the decode loop.
     pub fn synchronize(&self) -> Result<(), GpuError> {

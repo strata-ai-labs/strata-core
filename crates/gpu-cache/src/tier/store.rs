@@ -23,6 +23,14 @@ pub struct PageBlob {
     pub bytes: Vec<u8>,
     /// The page's summary blob (fixed size per tier instance).
     pub summary: Vec<u8>,
+    /// Metadata tags (layer, sequence, position range — the tier stores,
+    /// never interprets; `topk` filters match them exactly).
+    pub tags: [u64; 4],
+    /// Graph neighbors (bounded by the tier's adjacency degree). Persisted
+    /// with the page; mirrored into the device adjacency table while
+    /// resident. (Mirroring into the engine graph capability for
+    /// auditability is deferred — the meta row is the source of truth.)
+    pub edges: Vec<PageId>,
 }
 
 /// Tier geometry as persisted in the store's manifest row.

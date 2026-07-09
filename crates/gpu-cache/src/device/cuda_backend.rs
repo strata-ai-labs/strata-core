@@ -7,12 +7,84 @@
 
 use std::sync::Arc;
 
+use std::os::raw::c_void;
+
 use crate::device::arena::{DeviceArena, RegionSpec, SlotRegion};
 use crate::device::context::GpuContext;
 use crate::device::error::GpuError;
+use crate::device::kernels::{KERNELS, SELECTION_PTX};
+use crate::device::module::PtxModule;
 use crate::device::pinned::PinnedBuffer;
 use crate::device::stream::{Event, Stream};
-use crate::tier::backend::{CopyFence, DeviceBackend, Region, RegionBytes};
+use crate::tier::backend::{
+    CopyFence, DeviceBackend, Region, RegionBytes, TagFilter, TopkReadback,
+};
+
+use crate::tier::backend::{MAX_EXPAND as MAX_EXPAND_U16, MAX_K as MAX_K_U16};
+
+const MAX_K: usize = MAX_K_U16 as usize;
+const MAX_EXPAND: usize = MAX_EXPAND_U16 as usize;
+
+/// Geometry derived from the reserved regions, plus the scratch layout.
+#[derive(Clone, Copy, Debug)]
+struct Plan {
+    capacity: usize,
+    dim: usize,
+    degree: usize,
+    scores_off: u64,
+    sel_slots_off: u64,
+    sel_scores_off: u64,
+    out_off: u64,
+    cursor_off: u64,
+    bitmap_off: u64,
+    bitmap_len: usize,
+    query_off: u64,
+}
+
+impl Plan {
+    fn derive(bytes: RegionBytes) -> Result<Self, GpuError> {
+        let capacity = usize::try_from(bytes.validity).map_err(|_| GpuError::InvalidConfig {
+            detail: "validity region exceeds host width".to_owned(),
+        })?;
+        if capacity == 0 {
+            return Err(GpuError::InvalidConfig {
+                detail: "empty validity region".to_owned(),
+            });
+        }
+        let dim = usize::try_from(bytes.summaries).unwrap_or(0) / capacity / 4;
+        let degree = usize::try_from(bytes.adjacency).unwrap_or(0) / capacity / 4;
+        let scores_off = 0u64;
+        let sel_slots_off = scores_off + (capacity as u64) * 4;
+        let sel_scores_off = sel_slots_off + (MAX_K as u64) * 4;
+        let out_off = sel_scores_off + (MAX_K as u64) * 4;
+        let cursor_off = out_off + (MAX_EXPAND as u64) * 4;
+        let bitmap_off = cursor_off + 4;
+        let bitmap_len = capacity.div_ceil(32) * 4;
+        let query_off = bitmap_off + bitmap_len as u64;
+        let needed = query_off + (dim as u64) * 4;
+        if needed > bytes.scratch {
+            return Err(GpuError::InvalidConfig {
+                detail: format!(
+                    "scratch region of {} bytes cannot hold the {needed}-byte selection layout",
+                    bytes.scratch
+                ),
+            });
+        }
+        Ok(Self {
+            capacity,
+            dim,
+            degree,
+            scores_off,
+            sel_slots_off,
+            sel_scores_off,
+            out_off,
+            cursor_off,
+            bitmap_off,
+            bitmap_len,
+            query_off,
+        })
+    }
+}
 
 /// Completion fence over a CUDA event (polled, never blocked on).
 #[derive(Clone)]
@@ -35,6 +107,10 @@ impl CopyFence for CudaFence {
 pub struct CudaBackend {
     stream: Stream,
     arena: Option<DeviceArena>,
+    module: Option<PtxModule>,
+    plan: Option<Plan>,
+    /// The (k, expand budget) of the most recent `topk`, for readback.
+    last_topk: Option<(u16, Option<u16>)>,
     staging: PinnedBuffer,
     /// The most recent copy's event: the slab is reusable once it completes.
     slab_busy_until: Option<CudaFence>,
@@ -52,6 +128,9 @@ impl CudaBackend {
             context,
             stream,
             arena: None,
+            module: None,
+            plan: None,
+            last_topk: None,
             staging,
             slab_busy_until: None,
         })
@@ -71,6 +150,9 @@ impl CudaBackend {
             Region::Pages => "pages",
             Region::Summaries => "summaries",
             Region::Adjacency => "adjacency",
+            Region::Validity => "validity",
+            Region::Tags => "tags",
+            Region::Scratch => "scratch",
         };
         arena.region(name).ok_or_else(|| GpuError::InvalidConfig {
             detail: format!("region `{name}` missing from the arena"),
@@ -112,8 +194,26 @@ impl DeviceBackend for CudaBackend {
                     name: "adjacency",
                     bytes: bytes.adjacency,
                 },
+                RegionSpec {
+                    name: "validity",
+                    bytes: bytes.validity,
+                },
+                RegionSpec {
+                    name: "tags",
+                    bytes: bytes.tags,
+                },
+                RegionSpec {
+                    name: "scratch",
+                    bytes: bytes.scratch,
+                },
             ],
         )?;
+        // Kernels never select a slot whose validity byte is zero; zero the
+        // region so freshly reserved slots are unselectable.
+        let validity = arena.region("validity").expect("just carved");
+        arena.zero_region(validity)?;
+        self.plan = Some(Plan::derive(bytes)?);
+        self.module = Some(PtxModule::load(&self.context, SELECTION_PTX, KERNELS)?);
         self.arena = Some(arena);
         Ok(())
     }
@@ -189,5 +289,208 @@ impl DeviceBackend for CudaBackend {
         // SAFETY: the stream drained; no copy references the slab.
         let bytes = unsafe { self.staging.as_slice()[..len].to_vec() };
         Ok(bytes)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one linear kernel pipeline: stage query, zero scratch, score, select, seed, expand"
+    )]
+    fn topk(
+        &mut self,
+        query: &[f32],
+        k: u16,
+        expand_budget: Option<u16>,
+        filter: Option<TagFilter>,
+    ) -> Result<Self::Fence, GpuError> {
+        let plan = self.plan.ok_or_else(|| GpuError::InvalidConfig {
+            detail: "topk before reserve".to_owned(),
+        })?;
+        if query.len() != plan.dim {
+            return Err(GpuError::InvalidConfig {
+                detail: format!(
+                    "query has {} dims, summaries have {}",
+                    query.len(),
+                    plan.dim
+                ),
+            });
+        }
+        if usize::from(k) > MAX_K {
+            return Err(GpuError::InvalidConfig {
+                detail: format!("k {k} exceeds the scratch ceiling {MAX_K}"),
+            });
+        }
+        let budget = expand_budget.map_or(0, usize::from);
+        if budget > MAX_EXPAND {
+            return Err(GpuError::InvalidConfig {
+                detail: format!("budget {budget} exceeds the scratch ceiling {MAX_EXPAND}"),
+            });
+        }
+
+        let scratch = self.region_base(Region::Scratch)?;
+        let pages_capacity = u32::try_from(plan.capacity).expect("capacity fits u32");
+
+        // Stage the query into scratch (stream-ordered before the kernels).
+        let mut query_bytes = Vec::with_capacity(query.len() * 4);
+        for q in query {
+            query_bytes.extend_from_slice(&q.to_le_bytes());
+        }
+        self.copy_in(Region::Scratch, plan.query_off, &query_bytes)?;
+
+        // Zero the cursor + dedup bitmap (contiguous by layout).
+        self.stream
+            .memset(scratch.base + plan.cursor_off, 0, 4 + plan.bitmap_len)?;
+
+        let module = self.module.as_ref().expect("loaded at reserve");
+        let summaries = self.region_base(Region::Summaries)?.base;
+        let valid = self.region_base(Region::Validity)?.base;
+        let tags = self.region_base(Region::Tags)?.base;
+        let adjacency = self.region_base(Region::Adjacency)?.base;
+
+        let mut p_scores = scratch.base + plan.scores_off;
+        let mut p_summaries = summaries;
+        let mut p_valid = valid;
+        let mut p_tags = tags;
+        let mut p_query = scratch.base + plan.query_off;
+        let mut p_capacity = pages_capacity;
+        let mut p_dim = u32::try_from(plan.dim).expect("dim fits u32");
+        let (mut p_findex, mut p_fvalue) =
+            filter.map_or((u32::MAX, 0u64), |f| (u32::from(f.index), f.value));
+        let mut score_params: [*mut c_void; 9] = [
+            (&raw mut p_scores).cast(),
+            (&raw mut p_summaries).cast(),
+            (&raw mut p_valid).cast(),
+            (&raw mut p_tags).cast(),
+            (&raw mut p_query).cast(),
+            (&raw mut p_capacity).cast(),
+            (&raw mut p_dim).cast(),
+            (&raw mut p_findex).cast(),
+            (&raw mut p_fvalue).cast(),
+        ];
+        let grid = (pages_capacity.div_ceil(256).max(1), 1, 1);
+        // SAFETY: parameter layouts match the kernel signatures in
+        // kernels.rs; all addresses lie inside reserved regions.
+        unsafe {
+            module.launch(
+                "score_slots",
+                grid,
+                (256, 1, 1),
+                0,
+                &self.stream,
+                &mut score_params,
+            )?;
+        }
+
+        let mut p_k = u32::from(k);
+        let mut p_sel_slots = scratch.base + plan.sel_slots_off;
+        let mut p_sel_scores = scratch.base + plan.sel_scores_off;
+        let mut select_params: [*mut c_void; 5] = [
+            (&raw mut p_scores).cast(),
+            (&raw mut p_capacity).cast(),
+            (&raw mut p_k).cast(),
+            (&raw mut p_sel_slots).cast(),
+            (&raw mut p_sel_scores).cast(),
+        ];
+        // SAFETY: as above.
+        unsafe {
+            module.launch(
+                "select_topk",
+                (1, 1, 1),
+                (256, 1, 1),
+                0,
+                &self.stream,
+                &mut select_params,
+            )?;
+        }
+
+        if expand_budget.is_some() {
+            let mut p_bitmap = scratch.base + plan.bitmap_off;
+            let mut seed_params: [*mut c_void; 3] = [
+                (&raw mut p_sel_slots).cast(),
+                (&raw mut p_k).cast(),
+                (&raw mut p_bitmap).cast(),
+            ];
+            // SAFETY: as above.
+            unsafe {
+                module.launch(
+                    "seed_bitmap",
+                    (1, 1, 1),
+                    (u32::from(k).max(1), 1, 1),
+                    0,
+                    &self.stream,
+                    &mut seed_params,
+                )?;
+            }
+
+            let mut p_adj = adjacency;
+            let mut p_degree = u32::try_from(plan.degree).expect("degree fits u32");
+            let mut p_out = scratch.base + plan.out_off;
+            let mut p_cursor = scratch.base + plan.cursor_off;
+            let mut p_budget = u32::try_from(budget).expect("budget fits u32");
+            let mut expand_params: [*mut c_void; 9] = [
+                (&raw mut p_sel_slots).cast(),
+                (&raw mut p_k).cast(),
+                (&raw mut p_adj).cast(),
+                (&raw mut p_degree).cast(),
+                (&raw mut p_valid).cast(),
+                (&raw mut p_bitmap).cast(),
+                (&raw mut p_out).cast(),
+                (&raw mut p_cursor).cast(),
+                (&raw mut p_budget).cast(),
+            ];
+            let work = u32::from(k) * u32::try_from(plan.degree).expect("degree fits u32");
+            let expand_grid = (work.div_ceil(256).max(1), 1, 1);
+            // SAFETY: as above.
+            unsafe {
+                module.launch(
+                    "expand",
+                    expand_grid,
+                    (256, 1, 1),
+                    0,
+                    &self.stream,
+                    &mut expand_params,
+                )?;
+            }
+        }
+
+        self.last_topk = Some((k, expand_budget));
+        self.fence_now()
+    }
+
+    fn read_topk(&mut self) -> Result<TopkReadback, GpuError> {
+        let plan = self.plan.ok_or_else(|| GpuError::InvalidConfig {
+            detail: "read_topk before reserve".to_owned(),
+        })?;
+        let (k, expand_budget) = self.last_topk.ok_or_else(|| GpuError::InvalidConfig {
+            detail: "read_topk before any topk".to_owned(),
+        })?;
+
+        let slots_raw = self.read_back(Region::Scratch, plan.sel_slots_off, usize::from(k) * 4)?;
+        let scores_raw =
+            self.read_back(Region::Scratch, plan.sel_scores_off, usize::from(k) * 4)?;
+        let mut selected = Vec::with_capacity(usize::from(k));
+        for i in 0..usize::from(k) {
+            let slot = u32::from_le_bytes(slots_raw[i * 4..i * 4 + 4].try_into().expect("u32"));
+            if slot == u32::MAX {
+                break; // fewer than k selectable slots: padded tail
+            }
+            let score = f32::from_le_bytes(scores_raw[i * 4..i * 4 + 4].try_into().expect("f32"));
+            selected.push((slot, score));
+        }
+
+        let mut expanded = Vec::new();
+        if let Some(budget) = expand_budget {
+            let cursor_raw = self.read_back(Region::Scratch, plan.cursor_off, 4)?;
+            let cursor = u32::from_le_bytes(cursor_raw.try_into().expect("u32"));
+            let count = cursor.min(u32::from(budget)) as usize;
+            if count > 0 {
+                let out_raw = self.read_back(Region::Scratch, plan.out_off, count * 4)?;
+                for i in 0..count {
+                    expanded.push(u32::from_le_bytes(
+                        out_raw[i * 4..i * 4 + 4].try_into().expect("u32"),
+                    ));
+                }
+            }
+        }
+        Ok(TopkReadback { selected, expanded })
     }
 }
