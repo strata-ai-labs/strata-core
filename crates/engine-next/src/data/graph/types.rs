@@ -545,7 +545,7 @@ impl GraphBatchWrite {
     }
 }
 
-fn validate_text_component(
+pub(super) fn validate_text_component(
     value: &str,
     max_bytes: usize,
     code: &'static str,

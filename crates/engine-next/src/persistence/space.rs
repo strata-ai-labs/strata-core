@@ -15,6 +15,7 @@ pub(crate) enum RowClass {
     GraphEdge,
     GraphReverseEdge,
     GraphBindingIndex,
+    GraphOntology,
     BranchControl,
     SpaceControl,
     Registry,
@@ -41,6 +42,10 @@ impl RowClass {
             Self::GraphEdge => 0x3a,
             Self::GraphReverseEdge => 0x3c,
             Self::GraphBindingIndex => 0x3e,
+            // Authored ontology rows: the first source-row byte past the
+            // 0x40..=0x45 derived-row families reserved by the storage-space
+            // registry.
+            Self::GraphOntology => 0x46,
         }
     }
 }
@@ -75,6 +80,7 @@ mod tests {
             RowClass::GraphEdge.storage_space_id(),
             RowClass::GraphReverseEdge.storage_space_id(),
             RowClass::GraphBindingIndex.storage_space_id(),
+            RowClass::GraphOntology.storage_space_id(),
             RowClass::BranchControl.storage_space_id(),
             RowClass::SpaceControl.storage_space_id(),
             RowClass::Registry.storage_space_id(),

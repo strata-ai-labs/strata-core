@@ -16,20 +16,22 @@ use crate::persistence::{
     encode_graph_binding_space_prefix, encode_graph_binding_target_prefix, encode_graph_edge_key,
     encode_graph_edge_prefix, encode_graph_incoming_edge_prefix, encode_graph_metadata_key,
     encode_graph_metadata_prefix, encode_graph_node_key, encode_graph_node_prefix,
-    encode_graph_outgoing_edge_prefix, encode_graph_reverse_edge_key,
+    encode_graph_ontology_key, encode_graph_outgoing_edge_prefix, encode_graph_reverse_edge_key,
     encode_graph_reverse_edge_prefix, CommitPlan, PersistenceReadRow, ReadSelector, RowAddress,
     RowClass, RowMutation, StoragePersistence,
 };
 
 use super::{
     decode_graph_binding_record, decode_graph_edge_record, decode_graph_metadata_record,
-    decode_graph_node_record, encode_graph_binding_record, encode_graph_edge_record,
-    encode_graph_metadata_record, encode_graph_node_record, GraphBatchOpOutcome,
-    GraphBatchOperation, GraphBatchWrite, GraphBatchWriteOutcome, GraphBinding, GraphBindingPage,
-    GraphBindingRecord, GraphBindingTarget, GraphDeleteOutcome, GraphDirection, GraphEdge,
-    GraphEdgeRecord, GraphEdgeType, GraphEdgeWriteOutcome, GraphInfo, GraphName, GraphNamePage,
-    GraphNeighbor, GraphNeighborPage, GraphNode, GraphNodeId, GraphNodePage, GraphNodeRecord,
-    GraphWriteOutcome,
+    decode_graph_node_record, decode_graph_ontology_record, encode_graph_binding_record,
+    encode_graph_edge_record, encode_graph_metadata_record, encode_graph_node_record,
+    encode_graph_ontology_record, GraphBatchOpOutcome, GraphBatchOperation, GraphBatchWrite,
+    GraphBatchWriteOutcome, GraphBinding, GraphBindingPage, GraphBindingRecord, GraphBindingTarget,
+    GraphDeleteOutcome, GraphDirection, GraphEdge, GraphEdgeRecord, GraphEdgeType,
+    GraphEdgeWriteOutcome, GraphInfo, GraphLinkTypeDef, GraphName, GraphNamePage, GraphNeighbor,
+    GraphNeighborPage, GraphNode, GraphNodeId, GraphNodePage, GraphNodeRecord, GraphObjectTypeDef,
+    GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyRecord, GraphOntologyWriteOutcome,
+    GraphTypeName, GraphWriteOutcome,
 };
 
 type EdgeIdentity = (GraphNodeId, GraphEdgeType, GraphNodeId);
@@ -103,6 +105,12 @@ impl<'a> GraphService<'a> {
 
         let mut mutations = Vec::new();
         mutations.push(RowMutation::delete(self.metadata_address(&record, name)));
+        if self
+            .ontology_row(&record, name, ReadSelector::Latest)?
+            .is_some()
+        {
+            mutations.push(RowMutation::delete(self.ontology_address(&record, name)));
+        }
         for row in self.node_rows(&record, name, ReadSelector::Latest)? {
             if !row.is_tombstone() {
                 mutations.push(RowMutation::delete(RowAddress::new(
@@ -909,6 +917,228 @@ impl<'a> GraphService<'a> {
         ))
     }
 
+    /// Returns the graph's ontology, or `None` before any type was defined.
+    pub fn ontology(&mut self, graph: &GraphName) -> EngineResult<Option<GraphOntology>> {
+        self.ontology_with_selector(graph, ReadSelector::Latest)
+    }
+
+    /// Returns the ontology visible at a commit version.
+    pub fn ontology_at_version(
+        &mut self,
+        graph: &GraphName,
+        version: CommitVersion,
+    ) -> EngineResult<Option<GraphOntology>> {
+        self.ontology_with_selector(graph, ReadSelector::AtVersion(version))
+    }
+
+    /// Returns the ontology visible at a timestamp.
+    pub fn ontology_at(
+        &mut self,
+        graph: &GraphName,
+        timestamp: Timestamp,
+    ) -> EngineResult<Option<GraphOntology>> {
+        self.ontology_with_selector(graph, ReadSelector::AtTimestamp(timestamp))
+    }
+
+    fn ontology_with_selector(
+        &mut self,
+        graph: &GraphName,
+        selector: ReadSelector,
+    ) -> EngineResult<Option<GraphOntology>> {
+        let record = self.branch_record()?;
+        self.require_graph_with_selector(&record, graph, selector)?;
+        let Some(row) = self.ontology_row(&record, graph, selector)? else {
+            return Ok(None);
+        };
+        let ontology = Self::ontology_record_from_row(graph, &row)?;
+        Ok(Some(GraphOntology::new(
+            graph.clone(),
+            ontology.status(),
+            ontology.object_types().values().cloned().collect(),
+            ontology.link_types().values().cloned().collect(),
+            row.commit_version(),
+            row.commit_timestamp(),
+        )))
+    }
+
+    /// Defines (or, while the ontology is Draft, redefines) an object type.
+    /// The first definition puts the graph's ontology in Draft; a Frozen
+    /// ontology refuses with `failed_precondition.engine.graph_ontology_frozen`.
+    pub fn define_object_type(
+        &mut self,
+        graph: &GraphName,
+        def: GraphObjectTypeDef,
+    ) -> EngineResult<GraphOntologyWriteOutcome> {
+        let record = self.branch_record()?;
+        self.require_graph(&record, graph)?;
+        let mut ontology = self.mutable_ontology(&record, graph)?;
+        let type_name = def.name().clone();
+        let created = ontology.put_object_type(def);
+        let commit = self.write_ontology(&record, graph, &ontology)?;
+        Ok(GraphOntologyWriteOutcome::new(
+            graph.clone(),
+            type_name,
+            created,
+            commit,
+        ))
+    }
+
+    /// Defines (or, while Draft, redefines) a link type. Endpoint object
+    /// types need not exist yet — freeze validates them.
+    pub fn define_link_type(
+        &mut self,
+        graph: &GraphName,
+        def: GraphLinkTypeDef,
+    ) -> EngineResult<GraphOntologyWriteOutcome> {
+        let record = self.branch_record()?;
+        self.require_graph(&record, graph)?;
+        let mut ontology = self.mutable_ontology(&record, graph)?;
+        let type_name = def.name().clone();
+        let created = ontology.put_link_type(def);
+        let commit = self.write_ontology(&record, graph, &ontology)?;
+        Ok(GraphOntologyWriteOutcome::new(
+            graph.clone(),
+            type_name,
+            created,
+            commit,
+        ))
+    }
+
+    /// Deletes an object type (Draft only). `deleted` is false when the
+    /// type was never defined. A link type may still reference the deleted
+    /// name in Draft — freeze validation catches the dangling endpoint.
+    pub fn delete_object_type(
+        &mut self,
+        graph: &GraphName,
+        name: &GraphTypeName,
+    ) -> EngineResult<GraphDeleteOutcome> {
+        let record = self.branch_record()?;
+        self.require_graph(&record, graph)?;
+        let mut ontology = self.mutable_ontology(&record, graph)?;
+        if !ontology.remove_object_type(name) {
+            return Ok(GraphDeleteOutcome::new(graph.clone(), false, None));
+        }
+        let commit = self.write_ontology(&record, graph, &ontology)?;
+        Ok(GraphDeleteOutcome::new(graph.clone(), true, Some(commit)))
+    }
+
+    /// Deletes a link type (Draft only). `deleted` is false when absent.
+    pub fn delete_link_type(
+        &mut self,
+        graph: &GraphName,
+        name: &GraphTypeName,
+    ) -> EngineResult<GraphDeleteOutcome> {
+        let record = self.branch_record()?;
+        self.require_graph(&record, graph)?;
+        let mut ontology = self.mutable_ontology(&record, graph)?;
+        if !ontology.remove_link_type(name) {
+            return Ok(GraphDeleteOutcome::new(graph.clone(), false, None));
+        }
+        let commit = self.write_ontology(&record, graph, &ontology)?;
+        Ok(GraphDeleteOutcome::new(graph.clone(), true, Some(commit)))
+    }
+
+    /// Freezes the ontology: validates that at least one type is declared
+    /// and every link endpoint references a declared object type
+    /// (`failed_precondition.engine.graph_ontology_freeze` otherwise), then
+    /// flips the status to Frozen in one atomic row update. A Frozen
+    /// ontology refuses to freeze again.
+    pub fn freeze_ontology(
+        &mut self,
+        graph: &GraphName,
+    ) -> EngineResult<GraphOntologyFreezeOutcome> {
+        let record = self.branch_record()?;
+        self.require_graph(&record, graph)?;
+        let mut ontology = self.mutable_ontology(&record, graph)?;
+        ontology.validate_for_freeze().map_err(|detail| {
+            EngineError::conflict(
+                "failed_precondition.engine.graph_ontology_freeze",
+                format!("ontology cannot freeze: {detail}"),
+            )
+        })?;
+        ontology.freeze();
+        let object_types = ontology.object_types().len();
+        let link_types = ontology.link_types().len();
+        let commit = self.write_ontology(&record, graph, &ontology)?;
+        Ok(GraphOntologyFreezeOutcome::new(
+            graph.clone(),
+            object_types,
+            link_types,
+            commit,
+        ))
+    }
+
+    fn ontology_address(&self, record: &BranchCatalogRecord, graph: &GraphName) -> RowAddress {
+        RowAddress::new(
+            record.storage_branch_id(),
+            RowClass::GraphOntology,
+            encode_graph_ontology_key(&self.space, graph),
+        )
+    }
+
+    fn ontology_row(
+        &mut self,
+        record: &BranchCatalogRecord,
+        graph: &GraphName,
+        selector: ReadSelector,
+    ) -> EngineResult<Option<PersistenceReadRow>> {
+        let address = self.ontology_address(record, graph);
+        Ok(self
+            .persistence
+            .read_row(address, selector)?
+            .filter(|row| !row.is_tombstone()))
+    }
+
+    fn ontology_record_from_row(
+        graph: &GraphName,
+        row: &PersistenceReadRow,
+    ) -> EngineResult<GraphOntologyRecord> {
+        let value = row.value().ok_or_else(|| {
+            EngineError::corruption(
+                "data_loss.engine.graph_ontology_record",
+                "stored graph ontology row is missing a value",
+            )
+        })?;
+        decode_graph_ontology_record(graph, value)
+    }
+
+    /// Loads the ontology for mutation: the stored record, or an empty
+    /// Draft when none exists yet. Frozen ontologies are immutable —
+    /// every mutation (freeze included) refuses.
+    fn mutable_ontology(
+        &mut self,
+        record: &BranchCatalogRecord,
+        graph: &GraphName,
+    ) -> EngineResult<GraphOntologyRecord> {
+        let ontology = match self.ontology_row(record, graph, ReadSelector::Latest)? {
+            Some(row) => Self::ontology_record_from_row(graph, &row)?,
+            None => GraphOntologyRecord::empty_draft(graph.clone()),
+        };
+        if ontology.is_frozen() {
+            return Err(EngineError::conflict(
+                "failed_precondition.engine.graph_ontology_frozen",
+                "graph ontology is frozen and cannot change",
+            ));
+        }
+        Ok(ontology)
+    }
+
+    fn write_ontology(
+        &mut self,
+        record: &BranchCatalogRecord,
+        graph: &GraphName,
+        ontology: &GraphOntologyRecord,
+    ) -> EngineResult<CommitOutcome> {
+        debug_assert_eq!(ontology.graph(), graph);
+        self.commit_batch(
+            record,
+            vec![RowMutation::put(
+                self.ontology_address(record, graph),
+                encode_graph_ontology_record(ontology)?,
+            )],
+        )
+    }
+
     fn branch_record(&self) -> EngineResult<BranchCatalogRecord> {
         self.control.require_healthy()?;
         self.control
@@ -1516,12 +1746,16 @@ impl<'a> GraphService<'a> {
 }
 
 /// Returns true for graph row classes that represent authored data (metadata,
-/// nodes, forward edges) as opposed to engine-derived rows (reverse edges,
-/// binding index) that must not be counted in user-facing commit outcomes.
+/// ontology, nodes, forward edges) as opposed to engine-derived rows (reverse
+/// edges, binding index) that must not be counted in user-facing commit
+/// outcomes.
 const fn is_authored_graph_row(row_class: RowClass) -> bool {
     matches!(
         row_class,
-        RowClass::GraphMetadata | RowClass::GraphNode | RowClass::GraphEdge
+        RowClass::GraphMetadata
+            | RowClass::GraphOntology
+            | RowClass::GraphNode
+            | RowClass::GraphEdge
     )
 }
 

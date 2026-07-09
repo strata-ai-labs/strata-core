@@ -24,6 +24,7 @@ const GRAPH_NODE_DISCRIMINATOR: u8 = b'n';
 const GRAPH_EDGE_DISCRIMINATOR: u8 = b'o';
 const GRAPH_REVERSE_EDGE_DISCRIMINATOR: u8 = b'r';
 const GRAPH_BINDING_INDEX_DISCRIMINATOR: u8 = b'b';
+const GRAPH_ONTOLOGY_DISCRIMINATOR: u8 = b'y';
 
 pub(crate) fn encode_kv_key(space: &ProductSpace, key: &KvKey) -> Vec<u8> {
     encode_kv_key_bytes(space, key.as_bytes())
@@ -295,6 +296,16 @@ pub(crate) fn encode_graph_metadata_key(space: &ProductSpace, graph: &GraphName)
     let mut suffix = Vec::new();
     encode_length_prefixed_text(&mut suffix, graph.as_str());
     encode_user_key(GRAPH_METADATA_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_graph_ontology_key(space: &ProductSpace, graph: &GraphName) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, graph.as_str());
+    encode_user_key(GRAPH_ONTOLOGY_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_graph_ontology_space_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(GRAPH_ONTOLOGY_DISCRIMINATOR, space, &[])
 }
 
 pub(crate) fn encode_graph_metadata_prefix(space: &ProductSpace) -> Vec<u8> {
