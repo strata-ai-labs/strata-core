@@ -1,7 +1,8 @@
 use super::super::{
-    key::{decode_internal_key, encode_internal_key},
+    key::{decode_internal_key, encode_internal_key, internal_key_commit_version},
     storage_row::{
-        decode_storage_row, encode_storage_row, encode_storage_row_with_physical_key_bytes_into,
+        decode_storage_row, decode_storage_row_matching_key, encode_storage_row,
+        encode_storage_row_with_physical_key_bytes_into,
     },
     ByteReader, FormatError,
 };
@@ -417,9 +418,46 @@ pub(crate) fn build_data_block_entry_offsets(bytes: &[u8]) -> Result<Vec<u32>, F
 /// the equivalence property tests. Offsets are validated defensively — a
 /// malformed accelerator yields a structural error (the caller rebuilds from
 /// the payload), never a panic and never a wrong answer.
+/// C3b: a borrowed probe over the accelerator's LE-u32 offset payload — the
+/// cached bytes are bisected in place, with every access bounds-checked
+/// (no alignment assumption, no per-seek materialization).
+#[derive(Clone, Copy)]
+pub(crate) struct EntryOffsetsView<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> EntryOffsetsView<'a> {
+    /// Shape check only (non-empty, whole u32s); content is validated by the
+    /// indexed probe against the payload. `None` sends the caller to the
+    /// rebuild path, exactly like the old shape-checked decode.
+    pub(crate) fn new(bytes: &'a [u8]) -> Option<Self> {
+        if bytes.is_empty() || bytes.len() % 4 != 0 {
+            return None;
+        }
+        Some(Self { bytes })
+    }
+
+    pub(crate) fn len(self) -> usize {
+        self.bytes.len() / 4
+    }
+
+    fn get(self, index: usize) -> Result<u32, FormatError> {
+        let start = index.checked_mul(4).ok_or(FormatError::InvalidLength {
+            field: "entry_offsets",
+        })?;
+        let chunk = self
+            .bytes
+            .get(start..start + 4)
+            .ok_or(FormatError::InvalidLength {
+                field: "entry_offsets",
+            })?;
+        Ok(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+    }
+}
+
 pub(crate) fn seek_table_data_block_point_indexed(
     bytes: &[u8],
-    offsets: &[u32],
+    offsets: EntryOffsetsView<'_>,
     seek_key: &[u8],
     target_physical_key: &[u8],
     max_commit_version: Option<CommitVersion>,
@@ -431,7 +469,7 @@ pub(crate) fn seek_table_data_block_point_indexed(
             field: "entry_count",
         })?;
     validate_count(entry_count)?;
-    if offsets.len() != entry_count || offsets.first().is_some_and(|first| *first != 4) {
+    if offsets.len() != entry_count || (entry_count > 0 && offsets.get(0)? != 4) {
         return Err(FormatError::InvalidLength {
             field: "entry_offsets",
         });
@@ -444,13 +482,15 @@ pub(crate) fn seek_table_data_block_point_indexed(
     let payload_len = u32::try_from(bytes.len()).map_err(|_| FormatError::InvalidLength {
         field: "entry_offsets",
     })?;
-    if offsets
-        .windows(2)
-        .any(|pair| pair[0] >= pair[1] || pair[1] >= payload_len)
-    {
-        return Err(FormatError::InvalidLength {
-            field: "entry_offsets",
-        });
+    let mut previous = 0u32;
+    for index in 0..entry_count {
+        let offset = offsets.get(index)?;
+        if (index > 0 && offset <= previous) || offset >= payload_len {
+            return Err(FormatError::InvalidLength {
+                field: "entry_offsets",
+            });
+        }
+        previous = offset;
     }
 
     // Lower bound over full internal keys (inverted-version suffix included) —
@@ -474,7 +514,7 @@ pub(crate) fn seek_table_data_block_point_indexed(
     let mut candidate_rows_decoded = 0usize;
 
     if low < entry_count {
-        let start = usize::try_from(offsets[low]).map_err(|_| FormatError::InvalidLength {
+        let start = usize::try_from(offsets.get(low)?).map_err(|_| FormatError::InvalidLength {
             field: "entry_offsets",
         })?;
         let window = bytes.get(start..).ok_or(FormatError::InvalidLength {
@@ -484,7 +524,6 @@ pub(crate) fn seek_table_data_block_point_indexed(
         for _ in low..entry_count {
             let internal_key_len = read_len(&mut reader, MAX_TABLE_KEY_BYTES, "internal_key_len")?;
             let internal_key_bytes = reader.read_exact(internal_key_len)?;
-            let internal_key = decode_internal_key(internal_key_bytes)?;
             let row_len = read_len(&mut reader, MAX_TABLE_ROW_BYTES, "row_len")?;
             let row_bytes = reader.read_exact(row_len)?;
 
@@ -493,7 +532,14 @@ pub(crate) fn seek_table_data_block_point_indexed(
             }
 
             rows_visited = rows_visited.saturating_add(1);
-            match internal_key_physical_key_bytes(internal_key_bytes).cmp(target_physical_key) {
+            // C3b: entries this walk merely steps over are COMPARED, never
+            // decoded — the full internal-key decode allocated a space
+            // String and user-key Vec per visited entry whose only consumed
+            // field was the commit version, and that version parses from
+            // the suffix without materializing anything.
+            match internal_key_physical_key_bytes_checked(internal_key_bytes)?
+                .cmp(target_physical_key)
+            {
                 std::cmp::Ordering::Less => {
                     saw_target_at_block_tail = false;
                 }
@@ -503,12 +549,19 @@ pub(crate) fn seek_table_data_block_point_indexed(
                 }
                 std::cmp::Ordering::Equal => {
                     saw_target_at_block_tail = true;
-                    if max_commit_version
-                        .is_some_and(|max_version| internal_key.commit_version() > max_version)
-                    {
+                    let entry_version = internal_key_commit_version(internal_key_bytes)?;
+                    if max_commit_version.is_some_and(|max_version| entry_version > max_version) {
                         continue;
                     }
-                    let candidate = decode_storage_row_for_internal_key(&internal_key, row_bytes)?;
+                    // The matched row's cross-check compares the row's
+                    // embedded encoded key region byte-for-byte against the
+                    // entry key — canonical encoding makes that exactly the
+                    // decoded-struct equality it replaces.
+                    let candidate = decode_storage_row_matching_key(
+                        row_bytes,
+                        internal_key_physical_key_bytes(internal_key_bytes),
+                        entry_version,
+                    )?;
                     candidate_rows_decoded = candidate_rows_decoded.saturating_add(1);
                     if max_commit_timestamp
                         .is_none_or(|max_timestamp| candidate.commit_timestamp() <= max_timestamp)
@@ -533,10 +586,10 @@ pub(crate) fn seek_table_data_block_point_indexed(
 /// every access bounds-checked (offsets come from a cached artifact).
 fn entry_key_at_offset<'a>(
     bytes: &'a [u8],
-    offsets: &[u32],
+    offsets: EntryOffsetsView<'_>,
     index: usize,
 ) -> Result<&'a [u8], FormatError> {
-    let start = usize::try_from(offsets[index]).map_err(|_| FormatError::InvalidLength {
+    let start = usize::try_from(offsets.get(index)?).map_err(|_| FormatError::InvalidLength {
         field: "entry_offsets",
     })?;
     let window = bytes.get(start..).ok_or(FormatError::InvalidLength {

@@ -43,6 +43,28 @@ pub(crate) fn encode_internal_key(key: &InternalKey) -> Vec<u8> {
     bytes
 }
 
+/// C3b: parse ONLY the commit version from an encoded internal key — the
+/// inverted big-endian suffix — without materializing the physical key. The
+/// trusted indexed block probe reads versions per visited entry; the full
+/// decode allocated a space String and user-key Vec it never used.
+pub(crate) fn internal_key_commit_version(bytes: &[u8]) -> Result<CommitVersion, FormatError> {
+    let split =
+        bytes
+            .len()
+            .checked_sub(INTERNAL_KEY_SUFFIX_LEN)
+            .ok_or(FormatError::InsufficientBytes {
+                format: INTERNAL_KEY_FORMAT,
+                needed: INTERNAL_KEY_SUFFIX_LEN,
+                actual: bytes.len(),
+            })?;
+    let suffix = <[u8; INTERNAL_KEY_SUFFIX_LEN]>::try_from(&bytes[split..]).map_err(|_| {
+        FormatError::InvalidLength {
+            field: INTERNAL_KEY_FORMAT,
+        }
+    })?;
+    Ok(CommitVersion::new(!u64::from_be_bytes(suffix)))
+}
+
 pub(crate) fn decode_internal_key(bytes: &[u8]) -> Result<InternalKey, FormatError> {
     if bytes.len() < BranchId::BYTE_LEN + 1 + 1 + 2 + INTERNAL_KEY_SUFFIX_LEN {
         return Err(FormatError::InsufficientBytes {
@@ -163,7 +185,7 @@ fn format_error_from_row_error(error: RowError) -> FormatError {
 mod tests {
     use super::{
         decode_internal_key, decode_physical_key, encode_internal_key, encode_physical_key,
-        FormatError, PHYSICAL_KEY_FORMAT,
+        internal_key_commit_version, FormatError, PHYSICAL_KEY_FORMAT,
     };
     use crate::row::{InternalKey, PhysicalKey, StorageSpaceId};
     use strata_core_next::{BranchId, CommitVersion};
@@ -200,6 +222,33 @@ mod tests {
         let older = encode_internal_key(&InternalKey::new(key, CommitVersion::new(7)));
 
         assert!(newer < older);
+    }
+
+    /// C3b: the suffix-only version parse agrees with the full decode for
+    /// every version shape, without materializing the key.
+    #[test]
+    fn internal_key_commit_version_matches_full_decode() {
+        for version in [0u64, 1, 7, 42, u64::MAX - 1, u64::MAX] {
+            let internal = InternalKey::new(key(b"alpha".to_vec()), CommitVersion::new(version));
+            let bytes = encode_internal_key(&internal);
+            assert_eq!(
+                internal_key_commit_version(&bytes),
+                Ok(CommitVersion::new(version))
+            );
+            assert_eq!(
+                decode_internal_key(&bytes).map(|key| key.commit_version()),
+                Ok(CommitVersion::new(version))
+            );
+        }
+    }
+
+    /// C3b: inputs shorter than the version suffix fail closed.
+    #[test]
+    fn internal_key_commit_version_rejects_short_input() {
+        assert!(matches!(
+            internal_key_commit_version(&[0u8; 7]),
+            Err(FormatError::InsufficientBytes { .. })
+        ));
     }
 
     #[test]

@@ -1028,7 +1028,7 @@ fn decode_exact_frame(
 pub(crate) fn seek_immutable_table_data_block_point_indexed(
     index_entry: &TableIndexEntry,
     frame_bytes: &[u8],
-    offsets: &[u32],
+    offsets: super::data::EntryOffsetsView<'_>,
     seek_key: &[u8],
     target_physical_key: &[u8],
     max_commit_version: Option<CommitVersion>,

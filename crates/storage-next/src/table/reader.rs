@@ -15,7 +15,7 @@ use super::{
 use crate::format::seek_immutable_table_data_block_point;
 use crate::format::{
     build_immutable_table_data_block_entry_offsets, decode_immutable_table_data_block_trusted,
-    seek_immutable_table_data_block_point_indexed, FormatError,
+    seek_immutable_table_data_block_point_indexed, EntryOffsetsView, FormatError,
 };
 use crate::format::{
     decode_filter_frame, decode_immutable_table, decode_immutable_table_data_block,
@@ -890,7 +890,7 @@ impl LazyTableState<'_> {
         frame: &DataBlockFrame,
         lookup: &TablePreparedPointLookup,
     ) -> Result<TableDataBlockPointSeek, FormatError> {
-        let indexed = |offsets: &[u32]| {
+        let indexed = |offsets: EntryOffsetsView<'_>| {
             seek_immutable_table_data_block_point_indexed(
                 entry,
                 frame.bytes.as_ref(),
@@ -901,35 +901,44 @@ impl LazyTableState<'_> {
                 lookup.max_commit_timestamp(),
             )
         };
-        let cached_offsets = self.cache.as_ref().and_then(|cache| {
+        // C3b: the cached accelerator bytes are bisected IN PLACE — no
+        // per-seek Vec<u32> materialization. A shape failure (`None`) or a
+        // content failure from the probe both fall through to the rebuild,
+        // exactly the old self-heal semantics.
+        let cached_bytes = self.cache.as_ref().and_then(|cache| {
             let key = accelerator_key_for_entry(&cache.table, entry, block_index).ok()?;
-            let bytes = cache.cache.get_quiet(&key)?;
-            decode_entry_offsets(&bytes)
+            cache.cache.get_quiet(&key)
         });
-        if let Some(offsets) = cached_offsets {
-            perf_trace::record_table_indexed_block_seek();
-            match indexed(&offsets) {
-                Ok(seek) => return Ok(seek),
-                Err(_) => {
-                    // Malformed accelerator (e.g. in-memory corruption):
-                    // rebuild from the verified payload below.
-                    perf_trace::record_table_accelerator_rebuild();
+        if let Some(bytes) = &cached_bytes {
+            if let Some(offsets) = EntryOffsetsView::new(bytes) {
+                perf_trace::record_table_indexed_block_seek();
+                match indexed(offsets) {
+                    Ok(seek) => return Ok(seek),
+                    Err(_) => {
+                        // Malformed accelerator (e.g. in-memory corruption):
+                        // rebuild from the verified payload below.
+                        perf_trace::record_table_accelerator_rebuild();
+                    }
                 }
             }
         }
         let offsets = build_immutable_table_data_block_entry_offsets(frame.bytes.as_ref())?;
+        let encoded = encode_entry_offsets(&offsets);
         perf_trace::record_table_accelerator_build();
         if self.fill_cache {
             if let Some(cache) = &self.cache {
                 if let Ok(key) = accelerator_key_for_entry(&cache.table, entry, block_index) {
                     // Rationale: accelerator admission is best-effort — a full
                     // shard costs a rebuild on the next hit, nothing more.
-                    let _ = cache.cache.insert(key, encode_entry_offsets(&offsets));
+                    let _ = cache.cache.insert(key, Arc::clone(&encoded));
                 }
             }
         }
         perf_trace::record_table_indexed_block_seek();
-        indexed(&offsets)
+        let offsets = EntryOffsetsView::new(&encoded).ok_or(FormatError::InvalidLength {
+            field: "entry_offsets",
+        })?;
+        indexed(offsets)
     }
 
     /// W2.3 (B3): derive + admit the accelerator for a block that just passed
@@ -2392,21 +2401,6 @@ fn encode_entry_offsets(offsets: &[u32]) -> Arc<[u8]> {
         bytes.extend_from_slice(&offset.to_le_bytes());
     }
     Arc::from(bytes)
-}
-
-/// Decode cached accelerator bytes; shape errors yield `None` (the caller
-/// rebuilds from the verified payload — the indexed seek re-validates the
-/// offsets against the payload regardless).
-fn decode_entry_offsets(bytes: &[u8]) -> Option<Vec<u32>> {
-    if bytes.is_empty() || bytes.len() % 4 != 0 {
-        return None;
-    }
-    Some(
-        bytes
-            .chunks_exact(4)
-            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect(),
-    )
 }
 
 fn table_facts_from_metadata(
