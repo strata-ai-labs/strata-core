@@ -108,13 +108,26 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     /// chunks continue instead of re-walking. In-memory only — restart just
     /// restarts the fill (the reopen trigger re-arms it).
     pub(super) cache_preheat_cursor: Option<super::maintenance::CachePreheatCursor>,
-    /// C2: dirty flag armed by structural changes (flush/compaction installs,
-    /// reopen). A flag rather than a standing queued task: the queue stays
-    /// noise-free (a coalescing task pending after every publish would leak
-    /// into every queue-shape assertion and close drain), and a bool is the
-    /// ultimate coalescer. The ladder's low tier claims it by enqueueing and
-    /// starting the transient task in one lock hold.
-    pub(super) cache_preheat_pending: bool,
+    /// C3a: "one fresh pass owed" — armed by structural changes
+    /// (flush/compaction installs, reopen, sweep reclaim). A flag rather
+    /// than a standing queued task: the queue stays noise-free and a bool is
+    /// the ultimate coalescer. Consumed ONLY when a fresh pass begins
+    /// (cursor empty); an in-flight pass chains on the cursor, so a trigger
+    /// landing mid-pass survives to start a follow-up pass that walks the
+    /// fresh tables (C2's chunk-scoped consume ate those triggers — the
+    /// ~15% never-walked block population behind the miss floor).
+    pub(super) cache_preheat_rearm: bool,
+    /// C3a: an in-flight pass is suspended (saturated shards or a deferral)
+    /// awaiting the next trigger; the kept cursor resumes it.
+    pub(super) cache_preheat_paused: bool,
+    /// C3a: blocks covered so far by the pass in flight
+    /// (admitted + present + rejects), accumulated across chunks; published
+    /// as the coverage-numerator gauge when the pass completes.
+    pub(super) cache_preheat_pass_blocks: u64,
+    /// Test seam: shrink the per-chunk byte budget so multi-chunk passes are
+    /// constructible on tiny fixtures.
+    #[cfg(test)]
+    pub(crate) cache_preheat_chunk_bytes_for_test: Option<u64>,
     pub(super) admission_current_rate: Cell<u64>,
     pub(super) admission_last_debt: Cell<u64>,
     pub(super) admission_bucket: Cell<WriteRateBucket>,
@@ -305,7 +318,11 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             admission_mode: admission_mode_from_env(),
             coverage_completed_watermark: None,
             cache_preheat_cursor: None,
-            cache_preheat_pending: false,
+            cache_preheat_rearm: false,
+            cache_preheat_paused: false,
+            cache_preheat_pass_blocks: 0,
+            #[cfg(test)]
+            cache_preheat_chunk_bytes_for_test: None,
             admission_clock,
             admission_current_rate: Cell::new(admission_initial_rate),
             admission_last_debt: Cell::new(0),
@@ -342,7 +359,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             if runtime.open_plan.lifecycle_config().cache_preheat_policy()
                 == crate::lifecycle::LifecycleCachePreheatPolicy::WhenIdle
             {
-                runtime.cache_preheat_pending = true;
+                runtime.cache_preheat_rearm = true;
             }
         }
         Ok(runtime)

@@ -1536,10 +1536,15 @@ impl<'a> ImmutableTableReader<'a> {
             let frame: Arc<[u8]> = Arc::from(slice);
             match cache.cache.insert_if_free(key, frame)? {
                 CacheInsert::Inserted(_) => admitted = admitted.saturating_add(1),
+                CacheInsert::SkippedFull(_) => {
+                    // C3a: a full shard rejected a publish-time warm — this
+                    // fresh table's block lands cold and becomes a run-phase
+                    // first-touch miss unless a later preheat pass covers it.
+                    perf_trace::record_table_warm_publish_skipped_full();
+                }
                 CacheInsert::DuplicateExisting(_)
                 | CacheInsert::SkippedDisabled(_)
-                | CacheInsert::SkippedOversized(_)
-                | CacheInsert::SkippedFull(_) => {}
+                | CacheInsert::SkippedOversized(_) => {}
             }
         }
         Ok(admitted)

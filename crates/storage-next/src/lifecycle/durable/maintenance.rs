@@ -3332,18 +3332,22 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         if self.open_plan.lifecycle_config().cache_preheat_policy()
             == LifecycleCachePreheatPolicy::WhenIdle
         {
-            self.cache_preheat_pending = true;
+            self.cache_preheat_rearm = true;
+            // A suspended pass (saturation/deferral) resumes on any trigger.
+            self.cache_preheat_paused = false;
         }
     }
 
-    /// C2: whether a preheat trigger is armed (feeds the drain-round re-arm
-    /// accounting so an idle runtime keeps chaining fill chunks).
+    /// C3a: preheat work exists when a fresh pass is owed (`rearm`) or an
+    /// in-flight pass has a runnable cursor. Feeds the drain-round re-arm
+    /// accounting and the low-tier interleave.
     pub(crate) fn cache_preheat_work_pending(&self) -> bool {
-        self.cache_preheat_pending
+        self.cache_preheat_rearm
+            || (self.cache_preheat_cursor.is_some() && !self.cache_preheat_paused)
     }
 
     pub(crate) fn has_pending_low_tier_maintenance(&self) -> bool {
-        self.cache_preheat_pending
+        self.cache_preheat_work_pending()
             || self.maintenance.pending_tasks().iter().any(|task| {
                 matches!(
                     task.kind(),
@@ -3706,32 +3710,35 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     pub(crate) fn start_next_background_cache_preheat(
         &mut self,
     ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
-        if !self.cache_preheat_pending {
+        if !self.cache_preheat_work_pending() {
             return Ok(None);
         }
         if self.open_plan.lifecycle_config().cache_preheat_policy()
             == LifecycleCachePreheatPolicy::Disabled
         {
             // Belt over the trigger gates (they are policy-checked too).
-            self.cache_preheat_pending = false;
+            self.cache_preheat_rearm = false;
+            self.cache_preheat_cursor = None;
+            self.cache_preheat_paused = false;
             return Ok(None);
         }
         self.refresh_runtime_memory_total();
         if self.budget.global_pressure().defers_optional_maintenance()
             || self.maintenance.has_active_build_task()
         {
-            // Disarm rather than retry: a deferral loop under pressure or a
-            // long build would spin the low tier; the next structural change
-            // or reopen re-arms the flag.
-            self.cache_preheat_pending = false;
+            // Pause rather than retry (a deferral loop would spin the low
+            // tier) — but KEEP the cursor: the next trigger resumes the pass
+            // where it stopped instead of losing the fill progress.
+            self.cache_preheat_rearm = false;
+            self.cache_preheat_paused = true;
             crate::observability::perf_trace::record_table_preheat_deferred();
             return Ok(None);
         }
         let state = self.state;
         let enqueued = self.enqueue_maintenance(MaintenanceTaskRequest::cache_preheat());
         let Ok(outcome) = enqueued else {
-            // Best-effort (queue full / draining for close): stay armed so an
-            // idle retry or the next trigger picks it up.
+            // Best-effort (queue full / draining for close): state unchanged;
+            // an idle retry or the next trigger picks it up.
             return Ok(None);
         };
         let task_id = outcome.task_id();
@@ -3741,7 +3748,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         else {
             return Ok(None);
         };
-        self.cache_preheat_pending = false;
+        // Consume the fresh-pass trigger ONLY when actually beginning a
+        // fresh pass. A chunk of an in-flight pass leaves `rearm` untouched,
+        // so a publish landing mid-pass still gets its follow-up pass — the
+        // convergence property behind ~100% coverage at quiesce.
+        if self.cache_preheat_cursor.is_none() {
+            self.cache_preheat_rearm = false;
+            self.cache_preheat_pass_blocks = 0;
+        }
         let layouts = self
             .branch_catalog
             .list_branches(false)
@@ -3760,12 +3774,18 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                     })
             })
             .collect();
+        #[cfg(test)]
+        let chunk_max_bytes = self
+            .cache_preheat_chunk_bytes_for_test
+            .unwrap_or(CACHE_PREHEAT_CHUNK_MAX_BYTES);
+        #[cfg(not(test))]
+        let chunk_max_bytes = CACHE_PREHEAT_CHUNK_MAX_BYTES;
         Ok(Some(DurableBackgroundMaintenanceStep::PreheatStage(
             Box::new(PreheatStageInputs {
                 task,
                 layouts,
                 cursor: self.cache_preheat_cursor.take(),
-                chunk_max_bytes: CACHE_PREHEAT_CHUNK_MAX_BYTES,
+                chunk_max_bytes,
             }),
         )))
     }
@@ -3785,7 +3805,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         );
         self.refresh_runtime_memory_total();
         if let Some(error) = staged.stage_error {
+            // Abandon the pass; a trigger set mid-pass (rearm) still starts
+            // a fresh one.
             self.cache_preheat_cursor = None;
+            self.cache_preheat_paused = false;
             let outcome = MaintenanceOutcome::new(
                 MaintenanceTaskKind::CachePreheat,
                 MaintenanceOutcomeStatus::Failed,
@@ -3797,15 +3820,30 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
             return Ok(outcome);
         }
-        let chain_next = staged.next_cursor.is_some() && !staged.stopped_full;
+        self.cache_preheat_pass_blocks = self
+            .cache_preheat_pass_blocks
+            .saturating_add(staged.admitted)
+            .saturating_add(staged.skipped_present);
+        let pass_complete = staged.next_cursor.is_none();
         self.cache_preheat_cursor = staged.next_cursor;
+        // Chaining rides the CURSOR: a kept cursor with `paused == false` is
+        // pending work by itself (`cache_preheat_work_pending`), so no flag
+        // re-arm happens here — the flag stays reserved for fresh-pass
+        // triggers. Saturation suspends the pass until the next trigger
+        // (the sweep that frees dead-block capacity re-arms).
+        self.cache_preheat_paused = staged.stopped_full;
         let reason = if staged.stopped_full {
             "cache preheat stopped: shards saturated"
-        } else if chain_next {
-            "cache preheat chunk complete, more pending"
-        } else {
+        } else if pass_complete {
             "cache preheat pass complete"
+        } else {
+            "cache preheat chunk complete, more pending"
         };
+        if pass_complete {
+            crate::observability::perf_trace::set_table_preheat_last_pass_blocks(
+                self.cache_preheat_pass_blocks,
+            );
+        }
         let outcome = MaintenanceOutcome::new(
             MaintenanceTaskKind::CachePreheat,
             MaintenanceOutcomeStatus::Completed,
@@ -3816,11 +3854,6 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             .maintenance
             .finish_started(staged.task, outcome, false)?;
         self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
-        if chain_next && !self.budget.global_pressure().defers_optional_maintenance() {
-            // Re-arm for the next chunk (the cursor is kept); the drain-round
-            // re-arm accounting counts the flag as pending work.
-            self.cache_preheat_pending = true;
-        }
         Ok(outcome)
     }
 

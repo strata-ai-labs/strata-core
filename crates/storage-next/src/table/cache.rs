@@ -461,6 +461,7 @@ struct CacheState {
 impl TableBlockCache {
     pub(crate) fn new(config: TableCacheConfig) -> Self {
         let capacities = shard_capacities(config.capacity_bytes(), cache_shard_count(config));
+        perf_trace::set_table_cache_capacity_gauge(capacities.iter().sum::<usize>() as u64);
         Self {
             shards: capacities
                 .into_iter()
@@ -658,6 +659,7 @@ impl TableBlockCache {
 
     pub(crate) fn resize(&self, capacity_bytes: usize) {
         let capacities = shard_capacities(capacity_bytes, self.shards.len());
+        perf_trace::set_table_cache_capacity_gauge(capacities.iter().sum::<usize>() as u64);
         let mut states = self.lock_all_states();
         for (state, capacity_bytes) in states.iter_mut().zip(capacities) {
             state.capacity_bytes = capacity_bytes;
@@ -896,6 +898,7 @@ fn evict_to_capacity(state: &mut CacheState) {
 fn evict_one(state: &mut CacheState) -> bool {
     if state.lru.evict_lru() {
         state.stats.evictions = state.stats.evictions.saturating_add(1);
+        perf_trace::record_table_cache_eviction();
         refresh_gauges(state);
         true
     } else {
@@ -904,6 +907,13 @@ fn evict_one(state: &mut CacheState) -> bool {
 }
 
 fn refresh_gauges(state: &mut CacheState) {
+    // C3a: occupancy gauges advance by two's-complement delta so the
+    // process-wide atomics track absolute bytes/entries without a
+    // full-shard sweep.
+    perf_trace::adjust_table_cache_occupancy(
+        (state.lru.bytes() as u64).wrapping_sub(state.stats.bytes as u64),
+        (state.lru.len() as u64).wrapping_sub(state.stats.entries as u64),
+    );
     state.stats.entries = state.lru.len();
     state.stats.bytes = state.lru.bytes();
     state.stats.capacity_bytes = state.capacity_bytes;
