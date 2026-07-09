@@ -71,6 +71,10 @@ name = "engine-ycsb"
 path = "src/bin/engine_ycsb.rs"
 
 [[bin]]
+name = "amp-repro"
+path = "src/bin/amp_repro.rs"
+
+[[bin]]
 name = "rocksdb-ycsb"
 path = "src/bin/rocksdb_ycsb.rs"
 required-features = ["rocksdb-compare"]
