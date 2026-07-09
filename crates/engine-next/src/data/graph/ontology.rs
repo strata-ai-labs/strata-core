@@ -308,6 +308,126 @@ impl GraphOntology {
     }
 }
 
+/// One object type with its visible node count (GO3 summary).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphObjectTypeSummary {
+    def: GraphObjectTypeDef,
+    node_count: u64,
+}
+
+impl GraphObjectTypeSummary {
+    pub(crate) const fn new(def: GraphObjectTypeDef, node_count: u64) -> Self {
+        Self { def, node_count }
+    }
+
+    #[must_use]
+    /// Returns the type definition.
+    pub const fn def(&self) -> &GraphObjectTypeDef {
+        &self.def
+    }
+
+    #[must_use]
+    /// Returns the number of visible nodes declaring this type.
+    pub const fn node_count(&self) -> u64 {
+        self.node_count
+    }
+}
+
+/// One link type with its visible edge count (GO3 summary).
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphLinkTypeSummary {
+    def: GraphLinkTypeDef,
+    edge_count: u64,
+}
+
+impl GraphLinkTypeSummary {
+    pub(crate) const fn new(def: GraphLinkTypeDef, edge_count: u64) -> Self {
+        Self { def, edge_count }
+    }
+
+    #[must_use]
+    /// Returns the type definition.
+    pub const fn def(&self) -> &GraphLinkTypeDef {
+        &self.def
+    }
+
+    #[must_use]
+    /// Returns the number of visible edges carrying this type.
+    pub const fn edge_count(&self) -> u64 {
+        self.edge_count
+    }
+}
+
+/// The ontology with per-type usage counts: every declared object type
+/// with its visible node count, every declared link type with its visible
+/// edge count. Counts are computed exactly at read time (type-index
+/// prefix counts and one edge scan) — there are no counter rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphOntologySummary {
+    graph: GraphName,
+    status: GraphOntologyStatus,
+    object_types: Vec<GraphObjectTypeSummary>,
+    link_types: Vec<GraphLinkTypeSummary>,
+    version: CommitVersion,
+    timestamp: Timestamp,
+}
+
+impl GraphOntologySummary {
+    pub(crate) const fn new(
+        graph: GraphName,
+        status: GraphOntologyStatus,
+        object_types: Vec<GraphObjectTypeSummary>,
+        link_types: Vec<GraphLinkTypeSummary>,
+        version: CommitVersion,
+        timestamp: Timestamp,
+    ) -> Self {
+        Self {
+            graph,
+            status,
+            object_types,
+            link_types,
+            version,
+            timestamp,
+        }
+    }
+
+    #[must_use]
+    /// Returns the graph.
+    pub const fn graph(&self) -> &GraphName {
+        &self.graph
+    }
+
+    #[must_use]
+    /// Returns the lifecycle status.
+    pub const fn status(&self) -> GraphOntologyStatus {
+        self.status
+    }
+
+    #[must_use]
+    /// Returns object type summaries, ordered by name.
+    pub fn object_types(&self) -> &[GraphObjectTypeSummary] {
+        &self.object_types
+    }
+
+    #[must_use]
+    /// Returns link type summaries, ordered by name.
+    pub fn link_types(&self) -> &[GraphLinkTypeSummary] {
+        &self.link_types
+    }
+
+    #[must_use]
+    /// Returns the commit version of the visible ontology row.
+    pub const fn version(&self) -> CommitVersion {
+        self.version
+    }
+
+    #[must_use]
+    /// Returns the commit timestamp of the visible ontology row.
+    pub const fn timestamp(&self) -> Timestamp {
+        self.timestamp
+    }
+}
+
 /// Outcome of defining an object or link type.
 #[derive(Clone, Debug)]
 pub struct GraphOntologyWriteOutcome {

@@ -17,21 +17,24 @@ use crate::persistence::{
     encode_graph_edge_prefix, encode_graph_incoming_edge_prefix, encode_graph_metadata_key,
     encode_graph_metadata_prefix, encode_graph_node_key, encode_graph_node_prefix,
     encode_graph_ontology_key, encode_graph_outgoing_edge_prefix, encode_graph_reverse_edge_key,
-    encode_graph_reverse_edge_prefix, CommitPlan, PersistenceReadRow, ReadSelector, RowAddress,
-    RowClass, RowMutation, StoragePersistence,
+    encode_graph_reverse_edge_prefix, encode_graph_type_index_graph_prefix,
+    encode_graph_type_index_key, encode_graph_type_index_type_prefix, CommitPlan,
+    PersistenceReadRow, ReadSelector, RowAddress, RowClass, RowMutation, StoragePersistence,
 };
 
 use super::{
     decode_graph_binding_record, decode_graph_edge_record, decode_graph_metadata_record,
-    decode_graph_node_record, decode_graph_ontology_record, encode_graph_binding_record,
-    encode_graph_edge_record, encode_graph_metadata_record, encode_graph_node_record,
-    encode_graph_ontology_record, GraphBatchOpOutcome, GraphBatchOperation, GraphBatchWrite,
-    GraphBatchWriteOutcome, GraphBinding, GraphBindingPage, GraphBindingRecord, GraphBindingTarget,
-    GraphDeleteOutcome, GraphDirection, GraphEdge, GraphEdgeRecord, GraphEdgeType,
-    GraphEdgeWriteOutcome, GraphInfo, GraphLinkTypeDef, GraphName, GraphNamePage, GraphNeighbor,
+    decode_graph_node_record, decode_graph_ontology_record, decode_graph_type_index_record,
+    encode_graph_binding_record, encode_graph_edge_record, encode_graph_metadata_record,
+    encode_graph_node_record, encode_graph_ontology_record, encode_graph_type_index_record,
+    GraphBatchOpOutcome, GraphBatchOperation, GraphBatchWrite, GraphBatchWriteOutcome,
+    GraphBinding, GraphBindingPage, GraphBindingRecord, GraphBindingTarget, GraphDeleteOutcome,
+    GraphDirection, GraphEdge, GraphEdgeRecord, GraphEdgeType, GraphEdgeWriteOutcome, GraphInfo,
+    GraphLinkTypeDef, GraphLinkTypeSummary, GraphName, GraphNamePage, GraphNeighbor,
     GraphNeighborPage, GraphNode, GraphNodeId, GraphNodePage, GraphNodeRecord, GraphObjectTypeDef,
-    GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyRecord, GraphOntologyWriteOutcome,
-    GraphTypeName, GraphWriteOutcome,
+    GraphObjectTypeSummary, GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyRecord,
+    GraphOntologySummary, GraphOntologyWriteOutcome, GraphTypeIndexRecord, GraphTypeName,
+    GraphWriteOutcome,
 };
 
 type EdgeIdentity = (GraphNodeId, GraphEdgeType, GraphNodeId);
@@ -147,6 +150,15 @@ impl<'a> GraphService<'a> {
                 mutations.push(RowMutation::delete(RowAddress::new(
                     record.storage_branch_id(),
                     RowClass::GraphBindingIndex,
+                    row.key().to_vec(),
+                )));
+            }
+        }
+        for row in self.type_index_rows(&record, name, ReadSelector::Latest)? {
+            if !row.is_tombstone() {
+                mutations.push(RowMutation::delete(RowAddress::new(
+                    record.storage_branch_id(),
+                    RowClass::GraphTypeIndex,
                     row.key().to_vec(),
                 )));
             }
@@ -305,6 +317,29 @@ impl<'a> GraphService<'a> {
                 )));
             }
         }
+        // Derived type-index maintenance: drop the old row on retype or
+        // untype, (re)write the row while the node declares a type.
+        let old_type = current
+            .as_ref()
+            .and_then(|record| record.data().object_type());
+        let new_type = new_record.data().object_type();
+        if let Some(old_type) = old_type {
+            if Some(old_type) != new_type {
+                mutations.push(RowMutation::delete(
+                    self.type_index_address(&record, graph, old_type, &node_id),
+                ));
+            }
+        }
+        if let Some(new_type) = new_type {
+            mutations.push(RowMutation::put(
+                self.type_index_address(&record, graph, new_type, &node_id),
+                encode_graph_type_index_record(&GraphTypeIndexRecord::new(
+                    graph.clone(),
+                    new_type.clone(),
+                    node_id.clone(),
+                ))?,
+            ));
+        }
         mutations.push(RowMutation::put(
             self.node_address(&record, graph, &node_id),
             encode_graph_node_record(&new_record)?,
@@ -383,6 +418,9 @@ impl<'a> GraphService<'a> {
         mutations.delete(self.node_address(&record, graph, node_id));
         if let Some(binding) = current.data().binding() {
             mutations.delete(self.binding_address(&record, binding.target(), graph, node_id));
+        }
+        if let Some(object_type) = current.data().object_type() {
+            mutations.delete(self.type_index_address(&record, graph, object_type, node_id));
         }
         for edge in self
             .edge_record_map(&record, graph, ReadSelector::Latest)?
@@ -828,6 +866,25 @@ impl<'a> GraphService<'a> {
                             ));
                         }
                     }
+                    let old_type = nodes
+                        .get(node_id)
+                        .and_then(|record| record.data().object_type());
+                    if let Some(old_type) = old_type {
+                        if Some(old_type) != data.object_type() {
+                            mutations
+                                .delete(self.type_index_address(&record, graph, old_type, node_id));
+                        }
+                    }
+                    if let Some(new_type) = data.object_type() {
+                        mutations.put(
+                            self.type_index_address(&record, graph, new_type, node_id),
+                            encode_graph_type_index_record(&GraphTypeIndexRecord::new(
+                                graph.clone(),
+                                new_type.clone(),
+                                node_id.clone(),
+                            ))?,
+                        );
+                    }
                     let node = GraphNodeRecord::new(graph.clone(), node_id.clone(), data.clone());
                     mutations.put(
                         self.node_address(&record, graph, node_id),
@@ -857,6 +914,14 @@ impl<'a> GraphService<'a> {
                                 &record,
                                 binding.target(),
                                 graph,
+                                node_id,
+                            ));
+                        }
+                        if let Some(object_type) = removed.data().object_type() {
+                            mutations.delete(self.type_index_address(
+                                &record,
+                                graph,
+                                object_type,
                                 node_id,
                             ));
                         }
@@ -1083,6 +1148,237 @@ impl<'a> GraphService<'a> {
             link_types,
             commit,
         ))
+    }
+
+    /// Lists visible nodes declaring `object_type`, node-id ordered, via
+    /// the derived type index. The index tracks whatever type nodes carry
+    /// regardless of ontology status, so this works for draft-era and
+    /// undeclared types too.
+    pub fn nodes_by_type(
+        &mut self,
+        graph: &GraphName,
+        object_type: &GraphTypeName,
+        cursor: Option<&GraphNodeId>,
+        limit: usize,
+    ) -> EngineResult<GraphNodePage> {
+        self.nodes_by_type_with_selector(graph, object_type, cursor, limit, ReadSelector::Latest)
+    }
+
+    /// Lists nodes declaring `object_type` visible at a commit version.
+    pub fn nodes_by_type_at_version(
+        &mut self,
+        graph: &GraphName,
+        object_type: &GraphTypeName,
+        cursor: Option<&GraphNodeId>,
+        limit: usize,
+        version: CommitVersion,
+    ) -> EngineResult<GraphNodePage> {
+        self.nodes_by_type_with_selector(
+            graph,
+            object_type,
+            cursor,
+            limit,
+            ReadSelector::AtVersion(version),
+        )
+    }
+
+    /// Lists nodes declaring `object_type` visible at a timestamp.
+    pub fn nodes_by_type_at(
+        &mut self,
+        graph: &GraphName,
+        object_type: &GraphTypeName,
+        cursor: Option<&GraphNodeId>,
+        limit: usize,
+        timestamp: Timestamp,
+    ) -> EngineResult<GraphNodePage> {
+        self.nodes_by_type_with_selector(
+            graph,
+            object_type,
+            cursor,
+            limit,
+            ReadSelector::AtTimestamp(timestamp),
+        )
+    }
+
+    fn nodes_by_type_with_selector(
+        &mut self,
+        graph: &GraphName,
+        object_type: &GraphTypeName,
+        cursor: Option<&GraphNodeId>,
+        limit: usize,
+        selector: ReadSelector,
+    ) -> EngineResult<GraphNodePage> {
+        let record = self.branch_record()?;
+        self.require_graph_with_selector(&record, graph, selector)?;
+        if limit == 0 {
+            return Ok(GraphNodePage::new(Vec::new(), false, None));
+        }
+        let mut node_ids = Vec::new();
+        for row in self.persistence.scan_prefix(
+            record.storage_branch_id(),
+            RowClass::GraphTypeIndex,
+            encode_graph_type_index_type_prefix(&self.space, graph, object_type),
+            selector,
+            None,
+        )? {
+            if row.is_tombstone() {
+                continue;
+            }
+            let (row_graph, row_type, node_id) =
+                crate::persistence::decode_graph_type_index_key(&self.space, row.key())?;
+            let value = row.value().ok_or_else(|| {
+                EngineError::corruption(
+                    "data_loss.engine.graph_type_index_record",
+                    "stored graph type index row is missing a value",
+                )
+            })?;
+            decode_graph_type_index_record(&row_graph, &row_type, &node_id, value)?;
+            node_ids.push(node_id);
+        }
+        node_ids.sort();
+        if let Some(cursor) = cursor {
+            node_ids.retain(|node_id| node_id > cursor);
+        }
+        let has_more = node_ids.len() > limit;
+        if has_more {
+            node_ids.truncate(limit);
+        }
+        let mut nodes = Vec::with_capacity(node_ids.len());
+        for node_id in &node_ids {
+            let row = self
+                .node_row_with_selector(&record, graph, node_id, selector)?
+                .ok_or_else(|| {
+                    EngineError::corruption(
+                        "data_loss.engine.graph_index",
+                        "graph type index names a node with no visible row",
+                    )
+                })?;
+            nodes.push(self.node_from_row(&row)?);
+        }
+        let cursor = has_more.then(|| node_ids.last().expect("non-empty page").clone());
+        Ok(GraphNodePage::new(nodes, has_more, cursor))
+    }
+
+    /// Returns the ontology with per-type usage counts, or `None` before
+    /// any type was defined. Counts are exact at read time: node counts
+    /// from the type index, edge counts from one pass over the graph's
+    /// visible edges (no counter rows).
+    pub fn ontology_summary(
+        &mut self,
+        graph: &GraphName,
+    ) -> EngineResult<Option<GraphOntologySummary>> {
+        self.ontology_summary_with_selector(graph, ReadSelector::Latest)
+    }
+
+    /// Returns the ontology summary visible at a commit version.
+    pub fn ontology_summary_at_version(
+        &mut self,
+        graph: &GraphName,
+        version: CommitVersion,
+    ) -> EngineResult<Option<GraphOntologySummary>> {
+        self.ontology_summary_with_selector(graph, ReadSelector::AtVersion(version))
+    }
+
+    /// Returns the ontology summary visible at a timestamp.
+    pub fn ontology_summary_at(
+        &mut self,
+        graph: &GraphName,
+        timestamp: Timestamp,
+    ) -> EngineResult<Option<GraphOntologySummary>> {
+        self.ontology_summary_with_selector(graph, ReadSelector::AtTimestamp(timestamp))
+    }
+
+    fn ontology_summary_with_selector(
+        &mut self,
+        graph: &GraphName,
+        selector: ReadSelector,
+    ) -> EngineResult<Option<GraphOntologySummary>> {
+        let record = self.branch_record()?;
+        self.require_graph_with_selector(&record, graph, selector)?;
+        let Some(row) = self.ontology_row(&record, graph, selector)? else {
+            return Ok(None);
+        };
+        let ontology = Self::ontology_record_from_row(graph, &row)?;
+
+        let mut object_types = Vec::with_capacity(ontology.object_types().len());
+        for (name, def) in ontology.object_types() {
+            let count = self
+                .persistence
+                .scan_prefix(
+                    record.storage_branch_id(),
+                    RowClass::GraphTypeIndex,
+                    encode_graph_type_index_type_prefix(&self.space, graph, name),
+                    selector,
+                    None,
+                )?
+                .iter()
+                .filter(|row| !row.is_tombstone())
+                .count();
+            object_types.push(GraphObjectTypeSummary::new(
+                def.clone(),
+                u64::try_from(count).unwrap_or(u64::MAX),
+            ));
+        }
+
+        let mut edge_counts: BTreeMap<&GraphTypeName, u64> =
+            ontology.link_types().keys().map(|name| (name, 0)).collect();
+        for edge_row in self.edge_rows(&record, graph, selector)? {
+            if edge_row.is_tombstone() {
+                continue;
+            }
+            let (_, _, edge_type, _) = decode_graph_edge_key(&self.space, edge_row.key())?;
+            if let Some(count) = edge_counts
+                .iter_mut()
+                .find_map(|(name, count)| (name.as_str() == edge_type.as_str()).then_some(count))
+            {
+                *count += 1;
+            }
+        }
+        let link_types = ontology
+            .link_types()
+            .iter()
+            .map(|(name, def)| {
+                GraphLinkTypeSummary::new(def.clone(), edge_counts.get(name).copied().unwrap_or(0))
+            })
+            .collect();
+
+        Ok(Some(GraphOntologySummary::new(
+            graph.clone(),
+            ontology.status(),
+            object_types,
+            link_types,
+            row.commit_version(),
+            row.commit_timestamp(),
+        )))
+    }
+
+    fn type_index_address(
+        &self,
+        record: &BranchCatalogRecord,
+        graph: &GraphName,
+        object_type: &GraphTypeName,
+        node_id: &GraphNodeId,
+    ) -> RowAddress {
+        RowAddress::new(
+            record.storage_branch_id(),
+            RowClass::GraphTypeIndex,
+            encode_graph_type_index_key(&self.space, graph, object_type, node_id),
+        )
+    }
+
+    fn type_index_rows(
+        &mut self,
+        record: &BranchCatalogRecord,
+        graph: &GraphName,
+        selector: ReadSelector,
+    ) -> EngineResult<Vec<PersistenceReadRow>> {
+        self.persistence.scan_prefix(
+            record.storage_branch_id(),
+            RowClass::GraphTypeIndex,
+            encode_graph_type_index_graph_prefix(&self.space, graph),
+            selector,
+            None,
+        )
     }
 
     fn ontology_address(&self, record: &BranchCatalogRecord, graph: &GraphName) -> RowAddress {

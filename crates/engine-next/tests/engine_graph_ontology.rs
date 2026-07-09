@@ -463,6 +463,222 @@ fn exercise_batch_enforcement(mut database: Database) {
 }
 
 #[test]
+fn graph_type_index_tracks_node_types_in_cache_and_durable_modes() {
+    run_database_modes(exercise_type_index);
+}
+
+#[allow(clippy::too_many_lines)]
+fn exercise_type_index(mut database: Database) {
+    let mut graph = graph_service(&mut database, "default", "default");
+    let name = graph_name("deps");
+    graph.create_graph(name.clone()).expect("graph created");
+
+    // The index is ontology-status-agnostic: no ontology exists here.
+    for id in ["d1", "d2", "d3"] {
+        graph
+            .upsert_node(&name, node_id(id), typed_node("Document", Some(id)))
+            .expect("typed node");
+    }
+    let initial = graph
+        .upsert_node(&name, node_id("a1"), typed_node("Author", Some("Ada")))
+        .expect("author node");
+    let initial_version = initial.commit().version();
+    graph
+        .upsert_node(&name, node_id("free"), GraphNodeData::default())
+        .expect("untyped node");
+
+    // Typed upserts count one authored row: the derived index row is
+    // engine-maintained and excluded.
+    assert_eq!(initial.commit().put_count(), 1);
+
+    let page = graph
+        .nodes_by_type(&name, &type_name("Document"), None, 10)
+        .expect("nodes by type");
+    let ids: Vec<&str> = page
+        .nodes()
+        .iter()
+        .map(|node| node.node_id().as_str())
+        .collect();
+    assert_eq!(ids, vec!["d1", "d2", "d3"], "node-id ordered");
+    assert!(page
+        .nodes()
+        .iter()
+        .all(|node| node.data().object_type().map(GraphTypeName::as_str) == Some("Document")));
+
+    // Pagination through the index.
+    let first = graph
+        .nodes_by_type(&name, &type_name("Document"), None, 2)
+        .expect("first page");
+    assert_eq!(first.nodes().len(), 2);
+    assert!(first.has_more());
+    let second = graph
+        .nodes_by_type(&name, &type_name("Document"), first.cursor(), 2)
+        .expect("second page");
+    assert_eq!(second.nodes().len(), 1);
+    assert!(!second.has_more());
+
+    // Retype, untype, delete: the index follows.
+    graph
+        .upsert_node(&name, node_id("d2"), typed_node("Author", Some("d2")))
+        .expect("retype");
+    graph
+        .upsert_node(&name, node_id("d3"), GraphNodeData::default())
+        .expect("untype");
+    graph.delete_node(&name, &node_id("d1")).expect("delete");
+    let documents = graph
+        .nodes_by_type(&name, &type_name("Document"), None, 10)
+        .expect("documents");
+    assert!(documents.nodes().is_empty(), "all documents left the type");
+    let author_page = graph
+        .nodes_by_type(&name, &type_name("Author"), None, 10)
+        .expect("authors");
+    let authors: Vec<&str> = author_page
+        .nodes()
+        .iter()
+        .map(|node| node.node_id().as_str())
+        .collect();
+    assert_eq!(authors, vec!["a1", "d2"]);
+
+    // Temporal: the index answers as of the initial state.
+    let at_initial: Vec<String> = graph
+        .nodes_by_type_at_version(&name, &type_name("Document"), None, 10, initial_version)
+        .expect("temporal read")
+        .nodes()
+        .iter()
+        .map(|node| node.node_id().as_str().to_owned())
+        .collect();
+    assert_eq!(at_initial, vec!["d1", "d2", "d3"]);
+
+    // Batch maintenance is batch-local: an op sequence lands consistently.
+    let batch = GraphBatchWrite::new(vec![
+        GraphBatchOperation::UpsertNode {
+            node_id: node_id("x"),
+            data: typed_node("Document", Some("X")),
+        },
+        GraphBatchOperation::UpsertNode {
+            node_id: node_id("y"),
+            data: typed_node("Document", Some("Y")),
+        },
+        GraphBatchOperation::DeleteNode {
+            node_id: node_id("x"),
+        },
+    ]);
+    graph.batch_write(&name, &batch).expect("batch succeeds");
+    let document_page = graph
+        .nodes_by_type(&name, &type_name("Document"), None, 10)
+        .expect("documents");
+    let documents: Vec<&str> = document_page
+        .nodes()
+        .iter()
+        .map(|node| node.node_id().as_str())
+        .collect();
+    assert_eq!(documents, vec!["y"], "batch-local index maintenance");
+}
+
+#[test]
+fn graph_ontology_summary_reports_type_usage_in_cache_and_durable_modes() {
+    run_database_modes(exercise_ontology_summary);
+}
+
+fn exercise_ontology_summary(mut database: Database) {
+    let mut graph = graph_service(&mut database, "default", "default");
+    let name = graph_name("deps");
+
+    let error = graph
+        .ontology_summary(&name)
+        .expect_err("missing graph refuses");
+    assert_eq!(error.code(), "not_found.engine.graph");
+
+    graph.create_graph(name.clone()).expect("graph created");
+    assert!(
+        graph
+            .ontology_summary(&name)
+            .expect("read succeeds")
+            .is_none(),
+        "no summary before any definition"
+    );
+
+    freeze_author_document(&mut graph, &name);
+    let freeze_version = graph
+        .ontology(&name)
+        .expect("read succeeds")
+        .expect("ontology visible")
+        .version();
+
+    let empty = graph
+        .ontology_summary(&name)
+        .expect("read succeeds")
+        .expect("summary visible");
+    assert_eq!(empty.status(), GraphOntologyStatus::Frozen);
+    assert!(empty
+        .object_types()
+        .iter()
+        .all(|summary| summary.node_count() == 0));
+    assert!(empty
+        .link_types()
+        .iter()
+        .all(|summary| summary.edge_count() == 0));
+
+    // Populate: 1 Author, 2 Documents, 2 `wrote` edges, 1 untyped node.
+    graph
+        .upsert_node(&name, node_id("a1"), typed_node("Author", Some("Ada")))
+        .expect("author");
+    for id in ["d1", "d2"] {
+        graph
+            .upsert_node(&name, node_id(id), typed_node("Document", Some(id)))
+            .expect("document");
+    }
+    graph
+        .upsert_node(&name, node_id("free"), GraphNodeData::default())
+        .expect("untyped");
+    for dst in ["d1", "d2"] {
+        graph
+            .upsert_edge(
+                &name,
+                node_id("a1"),
+                edge_type("wrote"),
+                node_id(dst),
+                GraphEdgeData::new(1.0, None).expect("edge data"),
+            )
+            .expect("edge");
+    }
+
+    let summary = graph
+        .ontology_summary(&name)
+        .expect("read succeeds")
+        .expect("summary visible");
+    let object_counts: Vec<(&str, u64)> = summary
+        .object_types()
+        .iter()
+        .map(|entry| (entry.def().name().as_str(), entry.node_count()))
+        .collect();
+    assert_eq!(object_counts, vec![("Author", 1), ("Document", 2)]);
+    assert_eq!(summary.link_types().len(), 1);
+    assert_eq!(summary.link_types()[0].def().name().as_str(), "wrote");
+    assert_eq!(summary.link_types()[0].edge_count(), 2);
+
+    // Temporal: counts as of the freeze are zero.
+    let at_freeze = graph
+        .ontology_summary_at_version(&name, freeze_version)
+        .expect("read succeeds")
+        .expect("summary visible");
+    assert!(at_freeze
+        .object_types()
+        .iter()
+        .all(|entry| entry.node_count() == 0));
+
+    // Deletes are reflected exactly.
+    graph
+        .delete_edge(&name, &node_id("a1"), &edge_type("wrote"), &node_id("d2"))
+        .expect("delete edge");
+    let summary = graph
+        .ontology_summary(&name)
+        .expect("read succeeds")
+        .expect("summary visible");
+    assert_eq!(summary.link_types()[0].edge_count(), 1);
+}
+
+#[test]
 fn graph_ontology_space_isolation_reopen_and_delete_cleanup_on_durable() {
     let tempdir = tempfile::tempdir().expect("tempdir");
     let name = graph_name("deps");
@@ -474,6 +690,9 @@ fn graph_ontology_space_isolation_reopen_and_delete_cleanup_on_durable() {
             .define_object_type(&name, object_type("Document"))
             .expect("define succeeds");
         graph.freeze_ontology(&name).expect("freeze succeeds");
+        graph
+            .upsert_node(&name, node_id("d1"), typed_node("Document", Some("Spec")))
+            .expect("typed node");
 
         // The same graph name in another space has no ontology.
         let mut other = graph_service(&mut database, "default", "notes");
@@ -494,6 +713,10 @@ fn graph_ontology_space_isolation_reopen_and_delete_cleanup_on_durable() {
         .expect("ontology survives reopen");
     assert_eq!(ontology.status(), GraphOntologyStatus::Frozen);
     assert_eq!(ontology.object_types().len(), 1);
+    let documents = graph
+        .nodes_by_type(&name, &type_name("Document"), None, 10)
+        .expect("nodes by type after reopen");
+    assert_eq!(documents.nodes().len(), 1, "type index survives reopen");
 
     // Deleting the graph removes its ontology: a recreated graph starts
     // with no ontology and a mutable draft.

@@ -7,8 +7,9 @@ mod service;
 mod types;
 
 pub use ontology::{
-    GraphLinkTypeDef, GraphObjectTypeDef, GraphOntology, GraphOntologyFreezeOutcome,
-    GraphOntologyStatus, GraphOntologyWriteOutcome, GraphPropertyDef, GraphTypeName,
+    GraphLinkTypeDef, GraphLinkTypeSummary, GraphObjectTypeDef, GraphObjectTypeSummary,
+    GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyStatus, GraphOntologySummary,
+    GraphOntologyWriteOutcome, GraphPropertyDef, GraphTypeName,
 };
 pub use outcome::{
     GraphBatchOpOutcome, GraphBatchWriteOutcome, GraphBinding, GraphBindingPage,
@@ -27,7 +28,8 @@ pub(crate) use ontology::{
 };
 pub(crate) use record::{
     decode_graph_binding_record, decode_graph_edge_record, decode_graph_metadata_record,
-    decode_graph_node_record, encode_graph_binding_record, encode_graph_edge_record,
-    encode_graph_metadata_record, encode_graph_node_record, GraphBindingRecord, GraphEdgeRecord,
-    GraphMetadataRecord, GraphNodeRecord,
+    decode_graph_node_record, decode_graph_type_index_record, encode_graph_binding_record,
+    encode_graph_edge_record, encode_graph_metadata_record, encode_graph_node_record,
+    encode_graph_type_index_record, GraphBindingRecord, GraphEdgeRecord, GraphMetadataRecord,
+    GraphNodeRecord, GraphTypeIndexRecord,
 };

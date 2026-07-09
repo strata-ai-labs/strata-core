@@ -118,6 +118,12 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="data_loss.engine.graph_reverse_edge_key"></a>
 - `data_loss.engine.graph_reverse_edge_key`
 
+<a id="data_loss.engine.graph_type_index_key"></a>
+- `data_loss.engine.graph_type_index_key`
+
+<a id="data_loss.engine.graph_type_index_record"></a>
+- `data_loss.engine.graph_type_index_record`
+
 <a id="data_loss.engine.json_document"></a>
 - `data_loss.engine.json_document`
 
@@ -312,6 +318,9 @@ the public registry when adding, renaming, or removing a public error code.
 
 <a id="invalid_argument.engine.graph_type_hint"></a>
 - `invalid_argument.engine.graph_type_hint`
+
+<a id="invalid_argument.engine.graph_type_index_record"></a>
+- `invalid_argument.engine.graph_type_index_record`
 
 <a id="invalid_argument.engine.graph_type_name"></a>
 - `invalid_argument.engine.graph_type_name`
