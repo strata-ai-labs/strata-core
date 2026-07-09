@@ -98,7 +98,7 @@ impl<F: CopyFence> PromotionScheduler<F> {
         plan: OffsetPlan,
         table: &mut PageTable<F>,
         backend: &mut B,
-        store: &S,
+        store: &mut S,
         stats: &mut TierStats,
     ) where
         B: DeviceBackend<Fence = F>,

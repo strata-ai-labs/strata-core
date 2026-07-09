@@ -27,13 +27,18 @@ impl CopyFence for CudaFence {
 }
 
 /// The CUDA device backend.
+///
+/// Field order is load-bearing: Rust drops fields in declaration order, and
+/// every device resource here must be destroyed while the context is still
+/// alive — `context` is therefore the last field. (Violating this is a
+/// use-after-destroy inside the driver: a segfault, not an error return.)
 pub struct CudaBackend {
-    context: GpuContext,
     stream: Stream,
     arena: Option<DeviceArena>,
     staging: PinnedBuffer,
     /// The most recent copy's event: the slab is reusable once it completes.
     slab_busy_until: Option<CudaFence>,
+    context: GpuContext,
 }
 
 impl CudaBackend {

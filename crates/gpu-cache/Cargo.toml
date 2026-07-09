@@ -10,7 +10,13 @@ publish = false
 description = "GPU cache tier over the store of record: device runtime + hot-tier machinery"
 
 [dependencies]
+# The tier consumes engine-next's public (D4) surface only — a consumer
+# like the executor, never a storage-next importer (design §2).
+strata-engine-next = { path = "../engine-next" }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

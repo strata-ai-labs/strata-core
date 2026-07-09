@@ -47,6 +47,29 @@ pub enum GpuError {
         /// What was wrong.
         detail: String,
     },
+    /// The write-behind queue is at capacity; appends must wait for a
+    /// flush or maintenance commit.
+    WriteBacklog {
+        /// Entries queued.
+        queued: usize,
+        /// Configured cap.
+        cap: usize,
+    },
+    /// The store's persisted geometry differs from this tier's config.
+    GeometryMismatch {
+        /// Persisted (`page_bytes`, `summary_bytes`).
+        stored: (u64, u64),
+        /// Configured (`page_bytes`, `summary_bytes`).
+        configured: (u64, u64),
+    },
+    /// The store of record failed an operation the tier cannot degrade
+    /// around (manifest/commit paths surface through flush and open).
+    Store {
+        /// Which store operation.
+        operation: &'static str,
+        /// Underlying detail.
+        detail: String,
+    },
 }
 
 impl GpuError {
@@ -60,6 +83,9 @@ impl GpuError {
             Self::ComputeCapability { .. } => "failed_precondition.gpu.compute_capability",
             Self::ArenaExhausted { .. } => "resource_exhausted.gpu.arena",
             Self::InvalidConfig { .. } => "invalid_argument.gpu.config",
+            Self::WriteBacklog { .. } => "resource_exhausted.tier.write_backlog",
+            Self::GeometryMismatch { .. } => "failed_precondition.tier.geometry_mismatch",
+            Self::Store { .. } => "unavailable.tier.store",
         }
     }
 }
@@ -95,6 +121,23 @@ impl fmt::Display for GpuError {
                 self.code()
             ),
             Self::InvalidConfig { detail } => write!(f, "{}: {detail}", self.code()),
+            Self::WriteBacklog { queued, cap } => write!(
+                f,
+                "{}: {queued} entries queued at cap {cap}; flush or wait for maintenance",
+                self.code()
+            ),
+            Self::GeometryMismatch { stored, configured } => write!(
+                f,
+                "{}: store has page/summary bytes {}/{}, config asks {}/{}",
+                self.code(),
+                stored.0,
+                stored.1,
+                configured.0,
+                configured.1
+            ),
+            Self::Store { operation, detail } => {
+                write!(f, "{}: {operation} failed: {detail}", self.code())
+            }
         }
     }
 }

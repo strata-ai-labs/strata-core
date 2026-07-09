@@ -40,6 +40,8 @@ fn tier_flow_on_real_hardware() {
             summary_bytes: SUMMARY_BYTES,
             page_slots: 4,
             promotion_batch: 4,
+            write_behind_batch: 4,
+            write_backlog_cap: 8,
         },
     )
     .expect("tier opens on hardware");
@@ -103,4 +105,65 @@ fn tier_flow_on_real_hardware() {
     // deliberate synchronizes are counted.
     let syncs = tier.backend().context().sync_call_count();
     assert_eq!(syncs, 4, "exactly the four deliberate read_back waits");
+}
+
+/// The full stack in one test: pages appended through the tier land in a
+/// real durable Strata database (T2) and in real VRAM (T0); after a flush
+/// and reopen they promote back onto the GPU with byte identity.
+#[test]
+#[ignore = "requires an NVIDIA GPU (Ampere or newer)"]
+fn full_stack_gpu_over_durable_strata() {
+    use strata_gpu_cache::tier::engine_store::EnginePageStore;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let config = TierConfig {
+        page_bytes: PAGE_BYTES,
+        summary_bytes: SUMMARY_BYTES,
+        page_slots: 4,
+        promotion_batch: 4,
+        write_behind_batch: 2,
+        write_backlog_cap: 8,
+    };
+
+    // Session 1: append through the GPU tier, flush, close.
+    {
+        let backend = CudaBackend::new(usize::try_from(PAGE_BYTES).unwrap()).expect("device");
+        let store = EnginePageStore::open(dir.path(), "tier").expect("store opens");
+        let mut tier = Tier::open(backend, store, config).expect("tier opens");
+        for id in 0..4 {
+            tier.append(&blob_for(id)).expect("append");
+        }
+        tier.maintain();
+        let receipt = tier.flush().expect("flush").expect("durability point");
+        assert!(receipt.version > 0, "durable commit receipt");
+        tier.store_mut().close().expect("close");
+    }
+
+    // Session 2: cold start; promote from the durable store into VRAM.
+    let backend = CudaBackend::new(usize::try_from(PAGE_BYTES).unwrap()).expect("device");
+    let store = EnginePageStore::open(dir.path(), "tier").expect("store reopens");
+    let mut tier = Tier::open(backend, store, config).expect("tier reopens");
+    for id in 0..4 {
+        tier.request(PageId(id), 1);
+    }
+    for _ in 0..10_000 {
+        tier.maintain();
+        if (0..4).all(|id| tier.is_selectable(PageId(id))) {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    for id in 0..4u64 {
+        assert!(tier.is_selectable(PageId(id)), "page {id} back in VRAM");
+        let bytes = tier
+            .backend_mut()
+            .read_back(
+                Region::Pages,
+                id * PAGE_BYTES,
+                usize::try_from(PAGE_BYTES).unwrap(),
+            )
+            .expect("read back from VRAM");
+        assert_eq!(bytes, blob_for(id).bytes, "durable -> VRAM byte identity");
+    }
+    tier.store_mut().close().expect("close");
 }

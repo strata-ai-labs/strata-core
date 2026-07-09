@@ -9,7 +9,7 @@ use crate::tier::backend::{DeviceBackend, Region, RegionBytes};
 use crate::tier::eviction;
 use crate::tier::page_table::{Epoch, PageId, PageTable};
 use crate::tier::promotion::{OffsetPlan, PromotionScheduler};
-use crate::tier::store::{PageBlob, PageStore};
+use crate::tier::store::{CommitReceipt, PageBlob, PageStore, TierManifest};
 use crate::GpuError;
 
 /// Tier geometry and behavior, fixed at open.
@@ -23,6 +23,11 @@ pub struct TierConfig {
     pub page_slots: u32,
     /// Max promotions drained from the queue per maintain call.
     pub promotion_batch: usize,
+    /// Write-behind entries per durable batch commit.
+    pub write_behind_batch: usize,
+    /// Max entries the write-behind queue may hold before appends refuse
+    /// with `resource_exhausted.tier.write_backlog`.
+    pub write_backlog_cap: usize,
 }
 
 /// HT-9 counters. Degradation must be observable or the thesis is
@@ -47,6 +52,10 @@ pub struct TierStats {
     pub evictions: u64,
     /// Slots whose reuse gate opened.
     pub slots_reused: u64,
+    /// Durable write-behind batch commits.
+    pub write_commits: u64,
+    /// Batch commits that failed (entries requeued for retry).
+    pub write_commit_failures: u64,
 }
 
 /// Outcome of a page request.
@@ -59,18 +68,27 @@ pub enum RequestOutcome {
 }
 
 /// The GPU cache tier over a device backend and a store of record.
+/// Field order is load-bearing: the table and scheduler hold backend fences
+/// (device events), which must drop before the backend itself (see
+/// `CudaBackend`'s field-order note).
 pub struct Tier<B: DeviceBackend, S: PageStore> {
-    backend: B,
-    store: S,
     table: PageTable<B::Fence>,
     scheduler: PromotionScheduler<B::Fence>,
+    backend: B,
+    store: S,
     config: TierConfig,
     stats: TierStats,
+    /// Appended pages awaiting their durable batch commit (HT-6).
+    write_behind: std::collections::VecDeque<(PageId, PageBlob)>,
+    /// Next page id; seeded from the store watermark at open.
+    next_page_id: u64,
+    /// Receipt of the most recent durable batch commit.
+    last_receipt: Option<CommitReceipt>,
 }
 
 impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
     /// Opens the tier: validates geometry, reserves the device regions.
-    pub fn open(mut backend: B, store: S, config: TierConfig) -> Result<Self, GpuError> {
+    pub fn open(mut backend: B, mut store: S, config: TierConfig) -> Result<Self, GpuError> {
         if config.page_bytes == 0 || config.page_bytes % 256 != 0 {
             return Err(GpuError::InvalidConfig {
                 detail: format!(
@@ -79,11 +97,37 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
                 ),
             });
         }
-        if config.summary_bytes == 0 || config.page_slots == 0 || config.promotion_batch == 0 {
+        if config.summary_bytes == 0
+            || config.page_slots == 0
+            || config.promotion_batch == 0
+            || config.write_behind_batch == 0
+            || config.write_backlog_cap < config.write_behind_batch
+        {
             return Err(GpuError::InvalidConfig {
-                detail: "summary_bytes, page_slots, and promotion_batch must be nonzero".to_owned(),
+                detail: "summary_bytes, page_slots, promotion_batch, and write_behind_batch \
+                         must be nonzero, with write_backlog_cap >= write_behind_batch"
+                    .to_owned(),
             });
         }
+
+        // Geometry is a durable contract: reopening with different sizes is
+        // refused, never silently reinterpreted (design §10).
+        let configured = TierManifest {
+            page_bytes: config.page_bytes,
+            summary_bytes: config.summary_bytes,
+        };
+        match store.load_manifest()? {
+            Some(stored) if stored != configured => {
+                return Err(GpuError::GeometryMismatch {
+                    stored: (stored.page_bytes, stored.summary_bytes),
+                    configured: (configured.page_bytes, configured.summary_bytes),
+                });
+            }
+            Some(_) => {}
+            None => store.write_manifest(configured)?,
+        }
+        let next_page_id = store.watermark()?.map_or(0, |w| w.0 + 1);
+
         let slots = u64::from(config.page_slots);
         backend.reserve(RegionBytes {
             pages: slots * config.page_bytes,
@@ -100,6 +144,9 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
             scheduler: PromotionScheduler::new(),
             config,
             stats: TierStats::default(),
+            write_behind: std::collections::VecDeque::new(),
+            next_page_id,
+            last_receipt: None,
         })
     }
 
@@ -122,8 +169,10 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
         RequestOutcome::Queued
     }
 
-    /// Appends a new page: durable in the store first (GT2 moves this to
-    /// write-behind), then placed hot if a slot is available.
+    /// Appends a new page: hot in T0 immediately (dirty), durable at the
+    /// next batch commit or [`Self::flush`] (HT-6 write-behind). Refuses
+    /// with `resource_exhausted.tier.write_backlog` at the queue cap —
+    /// bounded loss, never silent loss.
     pub fn append(&mut self, blob: &PageBlob) -> Result<PageId, GpuError> {
         if blob.bytes.len() as u64 != self.config.page_bytes
             || blob.summary.len() as u64 != self.config.summary_bytes
@@ -138,11 +187,19 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
                 ),
             });
         }
-        let page_id = self.store.append_page(blob.clone())?; // GT2: write-behind
+        if self.write_behind.len() >= self.config.write_backlog_cap {
+            return Err(GpuError::WriteBacklog {
+                queued: self.write_behind.len(),
+                cap: self.config.write_backlog_cap,
+            });
+        }
+        let page_id = PageId(self.next_page_id);
+        self.next_page_id += 1;
+        self.write_behind.push_back((page_id, blob.clone()));
         self.ensure_headroom(1);
-        let Some(slot) = self.table.place(page_id, false) else {
-            // Durable but not hot (victims still fence-gated): a degradation,
-            // not a failure.
+        let Some(slot) = self.table.place(page_id, true) else {
+            // Queued for durability but not hot (victims still fence-gated):
+            // a degradation, not a failure.
             self.stats.degraded_placements += 1;
             return Ok(page_id);
         };
@@ -169,6 +226,13 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
     /// One maintenance round (between steps): open reuse gates, make
     /// headroom, drain promotions, activate completed copies.
     pub fn maintain(&mut self) {
+        // Opportunistic durability: full batches commit without waiting for
+        // an explicit flush.
+        while self.write_behind.len() >= self.config.write_behind_batch {
+            if self.commit_one_batch().is_err() {
+                break; // counted; entries requeued; retry next round
+            }
+        }
         self.stats.slots_reused += u64::from(self.table.sweep_reusable());
         let wanted = self.scheduler.queue_len().min(self.config.promotion_batch);
         self.ensure_headroom(wanted);
@@ -181,10 +245,62 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
             plan,
             &mut self.table,
             &mut self.backend,
-            &self.store,
+            &mut self.store,
             &mut self.stats,
         );
         self.scheduler.poll(&mut self.table, &mut self.stats);
+    }
+
+    /// Drains the entire write-behind queue and returns the durability
+    /// point: the receipt of the last committed batch (or the previous one
+    /// when nothing was pending). The one tier call where store errors
+    /// surface instead of degrading — a failed flush means the durability
+    /// point did not advance, and the caller must know.
+    pub fn flush(&mut self) -> Result<Option<CommitReceipt>, GpuError> {
+        while !self.write_behind.is_empty() {
+            self.commit_one_batch()?;
+        }
+        Ok(self.last_receipt)
+    }
+
+    /// Commits one write-behind batch atomically (pages + watermark).
+    /// On failure the entries return to the front of the queue for retry.
+    fn commit_one_batch(&mut self) -> Result<(), GpuError> {
+        let take = self.write_behind.len().min(self.config.write_behind_batch);
+        if take == 0 {
+            return Ok(());
+        }
+        let batch: Vec<(PageId, PageBlob)> = self.write_behind.drain(..take).collect();
+        let watermark = batch
+            .iter()
+            .map(|(id, _)| *id)
+            .max_by_key(|id| id.0)
+            .expect("nonempty batch");
+        match self.store.commit_batch(&batch, watermark) {
+            Ok(receipt) => {
+                self.last_receipt = Some(receipt);
+                self.stats.write_commits += 1;
+                for (id, _) in &batch {
+                    if let Some(slot) = self.table.slot_of(*id) {
+                        self.table.mark_clean(slot);
+                    }
+                }
+                Ok(())
+            }
+            Err(error) => {
+                self.stats.write_commit_failures += 1;
+                for entry in batch.into_iter().rev() {
+                    self.write_behind.push_front(entry);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Entries awaiting their durable commit.
+    #[must_use]
+    pub fn write_backlog(&self) -> usize {
+        self.write_behind.len()
     }
 
     /// Stages evictions until free + gated slots cover `wanted`. Gated

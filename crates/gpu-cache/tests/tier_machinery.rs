@@ -37,6 +37,8 @@ fn tier_with(slots: u32, seeded: u64) -> Tier<HostSimBackend, InMemoryStore> {
             summary_bytes: SUMMARY_BYTES,
             page_slots: slots,
             promotion_batch: 4,
+            write_behind_batch: 4,
+            write_backlog_cap: 8,
         },
     )
     .expect("tier opens")
@@ -205,9 +207,17 @@ fn append_validates_geometry_and_lands_hot() {
     assert_eq!(error.code(), "invalid_argument.gpu.config");
 
     let id = tier.append(&blob_for(42)).expect("append");
-    assert_eq!(tier.store().len(), 1, "durable in the store of record");
+    assert_eq!(tier.store().len(), 0, "write-behind: not durable yet");
+    assert_eq!(tier.write_backlog(), 1);
     tier.maintain();
-    assert!(tier.is_selectable(id), "appended page is hot");
+    assert!(
+        tier.is_selectable(id),
+        "appended page is hot before durability"
+    );
+    let receipt = tier.flush().expect("flush").expect("a durability point");
+    assert!(receipt.version > 0);
+    assert_eq!(tier.store().len(), 1, "durable after flush");
+    assert_eq!(tier.write_backlog(), 0);
     assert_conservation(&tier);
 }
 
@@ -294,7 +304,9 @@ fn randomized_soak_upholds_fence_and_accounting_invariants() {
             8 => {
                 tier.backend_mut().hold_completions(false);
             }
-            _ => {}
+            _ => {
+                tier.flush().expect("flush");
+            }
         }
         tier.maintain();
         assert_conservation(&tier);
@@ -321,4 +333,129 @@ fn randomized_soak_upholds_fence_and_accounting_invariants() {
     tier.maintain();
     assert_conservation(&tier);
     assert_eq!(tier.gated(), 0, "all gates open at quiescence");
+}
+
+#[test]
+fn write_behind_batches_commit_opportunistically() {
+    let mut tier = tier_with(8, 0);
+    for i in 0..3 {
+        tier.append(&blob_for(i)).expect("append");
+    }
+    tier.maintain();
+    assert_eq!(tier.store().len(), 0, "below batch size: still queued");
+    tier.append(&blob_for(3)).expect("append");
+    tier.maintain(); // 4 queued = one full batch
+    assert_eq!(tier.store().len(), 4, "full batch committed");
+    assert_eq!(tier.stats().write_commits, 1);
+    assert_eq!(tier.write_backlog(), 0);
+}
+
+#[test]
+fn backlog_cap_refuses_appends_with_the_typed_code() {
+    let mut tier = tier_with(16, 0);
+    tier.store_mut().fail_next_commits(u32::MAX); // nothing drains
+    let mut refused = None;
+    for i in 0..20 {
+        if let Err(error) = tier.append(&blob_for(i)) {
+            refused = Some((i, error));
+            break;
+        }
+        tier.maintain();
+    }
+    let (at, error) = refused.expect("the cap must refuse eventually");
+    assert_eq!(error.code(), "resource_exhausted.tier.write_backlog");
+    assert_eq!(at, 8, "refusal exactly at the configured cap");
+    assert!(
+        tier.stats().write_commit_failures > 0,
+        "retries were attempted"
+    );
+}
+
+#[test]
+fn commit_failure_requeues_and_retries() {
+    let mut tier = tier_with(8, 0);
+    for i in 0..4 {
+        tier.append(&blob_for(i)).expect("append");
+    }
+    tier.store_mut().fail_next_commits(1);
+    tier.maintain();
+    assert_eq!(tier.stats().write_commit_failures, 1);
+    assert_eq!(tier.write_backlog(), 4, "entries requeued in order");
+    assert_eq!(tier.store().len(), 0);
+
+    tier.maintain(); // knob exhausted: retry succeeds
+    assert_eq!(tier.store().len(), 4);
+    assert_eq!(tier.write_backlog(), 0);
+    assert_eq!(tier.stats().write_commits, 1);
+}
+
+#[test]
+fn dirty_pages_refuse_eviction_until_durable() {
+    // Pool of 2, both slots filled by dirty appends (batch of 4 never fills).
+    let mut tier = tier_with(2, 4);
+    tier.append(&blob_for(100)).expect("append");
+    tier.append(&blob_for(101)).expect("append");
+    tier.maintain();
+
+    // A promotion request cannot evict dirty pages: it degrades.
+    tier.request(PageId(0), 1);
+    tier.maintain();
+    assert_eq!(tier.stats().evictions, 0, "dirty pages are not victims");
+    assert!(!tier.is_selectable(PageId(0)));
+
+    // Durability makes them clean and evictable.
+    tier.flush().expect("flush");
+    tier.request(PageId(0), 1);
+    tier.maintain();
+    assert_eq!(tier.stats().evictions, 1, "clean page evicted");
+    assert_conservation(&tier);
+}
+
+#[test]
+fn geometry_mismatch_is_refused_at_open() {
+    use strata_gpu_cache::tier::store::{PageStore, TierManifest};
+    let mut store = InMemoryStore::new();
+    store
+        .write_manifest(TierManifest {
+            page_bytes: 512,
+            summary_bytes: 32,
+        })
+        .expect("seed manifest");
+    let error = Tier::open(
+        HostSimBackend::new(),
+        store,
+        TierConfig {
+            page_bytes: PAGE_BYTES,
+            summary_bytes: SUMMARY_BYTES,
+            page_slots: 2,
+            promotion_batch: 4,
+            write_behind_batch: 4,
+            write_backlog_cap: 8,
+        },
+    );
+    let Err(error) = error else {
+        panic!("mismatched geometry must refuse");
+    };
+    assert_eq!(error.code(), "failed_precondition.tier.geometry_mismatch");
+}
+
+#[test]
+fn page_ids_continue_from_the_watermark() {
+    let mut store = InMemoryStore::new();
+    store.seed(PageId(41), blob_for(41));
+    let mut tier = Tier::open(
+        HostSimBackend::new(),
+        store,
+        TierConfig {
+            page_bytes: PAGE_BYTES,
+            summary_bytes: SUMMARY_BYTES,
+            page_slots: 2,
+            promotion_batch: 4,
+            write_behind_batch: 4,
+            write_backlog_cap: 8,
+        },
+    )
+    .expect("tier opens");
+    let id = tier.append(&blob_for(7)).expect("append");
+    assert_eq!(id, PageId(42), "ids continue past the durable watermark");
 }

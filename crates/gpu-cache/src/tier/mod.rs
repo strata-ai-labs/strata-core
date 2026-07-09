@@ -15,6 +15,7 @@
 //!   `maintain`.
 
 pub mod backend;
+pub mod engine_store;
 mod eviction;
 pub mod host_sim;
 pub mod page_table;
