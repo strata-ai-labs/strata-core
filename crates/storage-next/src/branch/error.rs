@@ -79,6 +79,11 @@ pub(crate) enum BranchCompactionInvalidity {
     /// embedded string is for human consumption only; tests should not
     /// assert on it.
     Generic(&'static str),
+    /// The candidate references a table that is no longer part of the branch
+    /// layout — concurrent maintenance superseded it between scheduling and
+    /// execution. A benign race: the maintenance layer defers rather than
+    /// fails, and coverage re-derives fresh candidates.
+    StaleCandidate,
     /// A retention policy other than `KeepAll` was requested but no
     /// pruning proof was attached.
     ProofMissing,
@@ -150,6 +155,7 @@ impl BranchCompactionInvalidity {
     pub(crate) const fn code(self) -> &'static str {
         match self {
             Self::Generic(_) => "failed_precondition.branch.invalid_compaction",
+            Self::StaleCandidate => "failed_precondition.branch.compaction_candidate_stale",
             Self::ProofMissing => "failed_precondition.branch.row_pruning_proof_missing",
             Self::ProofStale => "failed_precondition.branch.row_pruning_proof_stale",
             Self::ProofBranchMismatch => {
@@ -218,6 +224,7 @@ impl BranchCompactionInvalidity {
     const fn detail(self) -> &'static str {
         match self {
             Self::Generic(message) => message,
+            Self::StaleCandidate => "compaction candidate superseded by concurrent maintenance",
             Self::ProofMissing => "branch compaction pruning requires an explicit retention proof",
             Self::ProofStale => "row pruning proof is stale",
             Self::ProofBranchMismatch => "row pruning proof branch must match branch state",

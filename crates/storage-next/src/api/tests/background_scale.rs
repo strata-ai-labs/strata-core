@@ -363,7 +363,12 @@ fn wal_retention_deletes_segments_without_public_drain() {
     let status = runtime
         .maintenance_status()
         .expect("WAL retention maintenance status");
-    assert_eq!(status.pending_tasks(), 0);
+    assert_eq!(
+        status.pending_tasks(),
+        0,
+        "pending kinds: {:?}",
+        runtime.pending_lifecycle_maintenance_kinds_for_test()
+    );
     assert_eq!(
         status.failed(),
         0,

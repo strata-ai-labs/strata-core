@@ -1141,6 +1141,29 @@ impl fmt::Display for DisplayCapabilities<'_> {
     }
 }
 
+impl LifecycleError {
+    /// Whether this error's chain bottoms out in a stale compaction candidate
+    /// (`BranchCompactionInvalidity::StaleCandidate`): concurrent maintenance
+    /// superseded the candidate's input tables between scheduling and
+    /// execution. The background dispatcher DEFERS this benign race instead
+    /// of recording a task failure — coverage re-derives fresh candidates.
+    pub(crate) fn is_stale_compaction_candidate(&self) -> bool {
+        let mut source: Option<&(dyn Error + 'static)> = self.source();
+        while let Some(error) = source {
+            if let Some(branch) = error.downcast_ref::<crate::branch::error::BranchRuntimeError>() {
+                return matches!(
+                    branch,
+                    crate::branch::error::BranchRuntimeError::InvalidCompaction {
+                        reason: crate::branch::error::BranchCompactionInvalidity::StaleCandidate,
+                    }
+                );
+            }
+            source = error.source();
+        }
+        false
+    }
+}
+
 impl Error for LifecycleError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {

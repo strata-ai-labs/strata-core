@@ -117,8 +117,7 @@ fn durable_blind_commit_does_not_capture_conflict_read_view() {
         .expect("blind durable commit succeeds");
 
     let perf = crate::observability::perf_trace::snapshot();
-    let timeline_row_count =
-        u64::try_from(CommitTimelineRows::timeline_row_count()).expect("timeline count fits u64");
+
     assert_eq!(perf.conflict_sources_built(), 0);
     assert_eq!(perf.commit_conflict_validation_calls(), 1);
     assert_eq!(perf.commit_conflict_validation_without_source(), 1);
@@ -128,10 +127,11 @@ fn durable_blind_commit_does_not_capture_conflict_read_view() {
     assert_eq!(perf.commit_conflicts_detected(), 0);
     assert_eq!(perf.commit_batches_prepared(), 1);
     assert_eq!(perf.commit_user_mutation_rows(), 1);
-    assert_eq!(perf.commit_timeline_rows_prepared(), timeline_row_count);
-    assert_eq!(perf.commit_rows_prepared(), 1 + timeline_row_count);
+    // W3.1c: timeline rows are elided — the retained index derives them.
+    assert_eq!(perf.commit_timeline_rows_prepared(), 0);
+    assert_eq!(perf.commit_rows_prepared(), 1);
     assert_eq!(perf.commit_wal_records_built(), 1);
-    assert_eq!(perf.commit_wal_record_rows(), 1 + timeline_row_count);
+    assert_eq!(perf.commit_wal_record_rows(), 1);
     assert_eq!(perf.commit_wal_appends(), 1);
     assert_eq!(perf.commit_wal_append_bytes(), 128);
     assert_eq!(perf.commit_visible_publish_attempts(), 1);
@@ -283,8 +283,7 @@ fn durable_blind_delete_does_not_capture_conflict_read_view() {
         .expect("blind durable delete succeeds");
 
     let perf = crate::observability::perf_trace::snapshot();
-    let timeline_row_count =
-        u64::try_from(CommitTimelineRows::timeline_row_count()).expect("timeline count fits u64");
+
     assert_eq!(perf.conflict_sources_built(), 0);
     assert_eq!(perf.commit_conflict_validation_calls(), 1);
     assert_eq!(perf.commit_conflict_validation_without_source(), 1);
@@ -294,10 +293,11 @@ fn durable_blind_delete_does_not_capture_conflict_read_view() {
     assert_eq!(perf.commit_conflicts_detected(), 0);
     assert_eq!(perf.commit_batches_prepared(), 1);
     assert_eq!(perf.commit_user_mutation_rows(), 1);
-    assert_eq!(perf.commit_timeline_rows_prepared(), timeline_row_count);
-    assert_eq!(perf.commit_rows_prepared(), 1 + timeline_row_count);
+    // W3.1c: timeline rows are elided — the retained index derives them.
+    assert_eq!(perf.commit_timeline_rows_prepared(), 0);
+    assert_eq!(perf.commit_rows_prepared(), 1);
     assert_eq!(perf.commit_wal_records_built(), 1);
-    assert_eq!(perf.commit_wal_record_rows(), 1 + timeline_row_count);
+    assert_eq!(perf.commit_wal_record_rows(), 1);
     assert_eq!(perf.commit_wal_appends(), 1);
     assert_eq!(perf.commit_visible_publish_attempts(), 1);
     assert_eq!(perf.commit_visible_publish_successes(), 1);
@@ -438,8 +438,7 @@ fn durable_read_and_cas_validation_perf_trace_builds_one_source_before_wal() {
         .expect("validated durable commit succeeds");
 
     let perf = crate::observability::perf_trace::snapshot();
-    let timeline_row_count =
-        u64::try_from(CommitTimelineRows::timeline_row_count()).expect("timeline count fits u64");
+
     assert_eq!(perf.conflict_sources_built(), 1);
     assert_eq!(perf.commit_conflict_validation_calls(), 1);
     assert_eq!(perf.commit_conflict_validation_without_source(), 0);
@@ -460,10 +459,11 @@ fn durable_read_and_cas_validation_perf_trace_builds_one_source_before_wal() {
     assert!(perf.table_point_lookup_key_builds() <= validation_fact_count);
     assert_eq!(perf.commit_batches_prepared(), 1);
     assert_eq!(perf.commit_user_mutation_rows(), 1);
-    assert_eq!(perf.commit_timeline_rows_prepared(), timeline_row_count);
-    assert_eq!(perf.commit_rows_prepared(), 1 + timeline_row_count);
+    // W3.1c: timeline rows are elided — the retained index derives them.
+    assert_eq!(perf.commit_timeline_rows_prepared(), 0);
+    assert_eq!(perf.commit_rows_prepared(), 1);
     assert_eq!(perf.commit_wal_records_built(), 1);
-    assert_eq!(perf.commit_wal_record_rows(), 1 + timeline_row_count);
+    assert_eq!(perf.commit_wal_record_rows(), 1);
     assert_eq!(perf.commit_wal_appends(), 1);
     assert_eq!(perf.commit_wal_append_bytes(), 128);
     assert_eq!(perf.commit_visible_publish_attempts(), 1);
@@ -1681,14 +1681,14 @@ fn durable_clean_wal_failure_leaves_no_visible_rows_but_allocation_may_gap() {
     #[cfg(feature = "perf-trace")]
     {
         let perf = crate::observability::perf_trace::snapshot();
-        let timeline_row_count = u64::try_from(CommitTimelineRows::timeline_row_count())
-            .expect("timeline count fits u64");
+
         assert_eq!(perf.commit_batches_prepared(), 1);
         assert_eq!(perf.commit_user_mutation_rows(), 1);
-        assert_eq!(perf.commit_timeline_rows_prepared(), timeline_row_count);
-        assert_eq!(perf.commit_rows_prepared(), 1 + timeline_row_count);
+        // W3.1c: timeline rows are elided — the retained index derives them.
+        assert_eq!(perf.commit_timeline_rows_prepared(), 0);
+        assert_eq!(perf.commit_rows_prepared(), 1);
         assert_eq!(perf.commit_wal_records_built(), 1);
-        assert_eq!(perf.commit_wal_record_rows(), 1 + timeline_row_count);
+        assert_eq!(perf.commit_wal_record_rows(), 1);
         assert_eq!(perf.commit_wal_appends(), 1);
         assert_eq!(perf.commit_wal_append_bytes(), 0);
         assert_eq!(perf.commit_visible_publish_attempts(), 0);
@@ -1908,15 +1908,13 @@ fn durable_apply_failure_after_wal_success_records_durable_not_applied_gate() {
     #[cfg(feature = "perf-trace")]
     {
         let perf = crate::observability::perf_trace::snapshot();
-        let timeline_row_count = u64::try_from(CommitTimelineRows::timeline_row_count())
-            .expect("timeline count fits u64");
         assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
         assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
         assert_eq!(perf.commit_unresolved_records(), 1);
         assert_eq!(perf.commit_unresolved_durable_not_applied_records(), 1);
         assert_eq!(perf.commit_unresolved_applied_not_visible_records(), 0);
         assert_eq!(perf.commit_wal_records_built(), 1);
-        assert_eq!(perf.commit_wal_record_rows(), 1 + timeline_row_count);
+        assert_eq!(perf.commit_wal_record_rows(), 1);
         assert_eq!(perf.commit_wal_appends(), 1);
         assert_eq!(perf.commit_wal_append_bytes(), 128);
         assert_eq!(perf.commit_visible_publish_attempts(), 0);
@@ -1989,15 +1987,13 @@ fn durable_visibility_failure_after_apply_records_applied_not_visible_gate() {
     #[cfg(feature = "perf-trace")]
     {
         let perf = crate::observability::perf_trace::snapshot();
-        let timeline_row_count = u64::try_from(CommitTimelineRows::timeline_row_count())
-            .expect("timeline count fits u64");
         assert_eq!(perf.commit_unresolved_gate_admission_attempts(), 1);
         assert_eq!(perf.commit_unresolved_gate_admission_acquired(), 1);
         assert_eq!(perf.commit_unresolved_records(), 1);
         assert_eq!(perf.commit_unresolved_durable_not_applied_records(), 0);
         assert_eq!(perf.commit_unresolved_applied_not_visible_records(), 1);
         assert_eq!(perf.commit_wal_records_built(), 1);
-        assert_eq!(perf.commit_wal_record_rows(), 1 + timeline_row_count);
+        assert_eq!(perf.commit_wal_record_rows(), 1);
         assert_eq!(perf.commit_wal_appends(), 1);
         assert_eq!(perf.commit_wal_append_bytes(), 128);
         assert_eq!(perf.commit_visible_publish_attempts(), 1);
@@ -2618,19 +2614,15 @@ fn assert_real_wal_commit_perf(
     perf: &crate::observability::perf_trace::StoragePerfSnapshot,
     user_rows: u64,
 ) {
-    let timeline_rows =
-        u64::try_from(CommitTimelineRows::timeline_row_count()).expect("timeline count fits u64");
-    let payload_rows = user_rows
-        .checked_add(timeline_rows)
-        .expect("payload row count fits u64");
+    // W3.1c: timeline rows are elided — the WAL payload is the user rows.
     assert_eq!(perf.commit_batches_prepared(), 1);
     assert_eq!(perf.commit_user_mutation_rows(), user_rows);
-    assert_eq!(perf.commit_timeline_rows_prepared(), timeline_rows);
-    assert_eq!(perf.commit_rows_prepared(), payload_rows);
+    assert_eq!(perf.commit_timeline_rows_prepared(), 0);
+    assert_eq!(perf.commit_rows_prepared(), user_rows);
     assert_eq!(perf.commit_wal_records_built(), 1);
-    assert_eq!(perf.commit_wal_record_rows(), payload_rows);
+    assert_eq!(perf.commit_wal_record_rows(), user_rows);
     assert_eq!(perf.commit_wal_appends(), 1);
-    assert_eq!(perf.append_rows_applied(), payload_rows);
+    assert_eq!(perf.append_rows_applied(), user_rows);
     assert!(perf.commit_wal_append_bytes() > 0);
     assert!(perf.commit_wal_record_bytes() > 0);
     assert!(perf.commit_wal_payload_bytes() > 0);

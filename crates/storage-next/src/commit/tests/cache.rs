@@ -93,8 +93,7 @@ fn cache_blind_commit_does_not_capture_conflict_read_view() {
     fixture.execute(batch).expect("blind cache commit succeeds");
 
     let perf = crate::observability::perf_trace::snapshot();
-    let timeline_row_count =
-        u64::try_from(CommitTimelineRows::timeline_row_count()).expect("timeline count fits u64");
+
     assert_eq!(perf.conflict_sources_built(), 0);
     assert_eq!(perf.commit_conflict_validation_calls(), 1);
     assert_eq!(perf.commit_conflict_validation_without_source(), 1);
@@ -104,8 +103,9 @@ fn cache_blind_commit_does_not_capture_conflict_read_view() {
     assert_eq!(perf.commit_conflicts_detected(), 0);
     assert_eq!(perf.commit_batches_prepared(), 1);
     assert_eq!(perf.commit_user_mutation_rows(), 1);
-    assert_eq!(perf.commit_timeline_rows_prepared(), timeline_row_count);
-    assert_eq!(perf.commit_rows_prepared(), 1 + timeline_row_count);
+    // W3.1c: timeline rows are elided — the retained index derives them.
+    assert_eq!(perf.commit_timeline_rows_prepared(), 0);
+    assert_eq!(perf.commit_rows_prepared(), 1);
     assert_eq!(perf.commit_wal_records_built(), 0);
     assert_eq!(perf.commit_wal_appends(), 0);
     assert_eq!(perf.commit_visible_publish_attempts(), 1);
@@ -240,8 +240,7 @@ fn cache_blind_delete_does_not_capture_conflict_read_view() {
     fixture.execute(batch).expect("blind cache delete succeeds");
 
     let perf = crate::observability::perf_trace::snapshot();
-    let timeline_row_count =
-        u64::try_from(CommitTimelineRows::timeline_row_count()).expect("timeline count fits u64");
+
     assert_eq!(perf.conflict_sources_built(), 0);
     assert_eq!(perf.commit_conflict_validation_calls(), 1);
     assert_eq!(perf.commit_conflict_validation_without_source(), 1);
@@ -251,8 +250,9 @@ fn cache_blind_delete_does_not_capture_conflict_read_view() {
     assert_eq!(perf.commit_conflicts_detected(), 0);
     assert_eq!(perf.commit_batches_prepared(), 1);
     assert_eq!(perf.commit_user_mutation_rows(), 1);
-    assert_eq!(perf.commit_timeline_rows_prepared(), timeline_row_count);
-    assert_eq!(perf.commit_rows_prepared(), 1 + timeline_row_count);
+    // W3.1c: timeline rows are elided — the retained index derives them.
+    assert_eq!(perf.commit_timeline_rows_prepared(), 0);
+    assert_eq!(perf.commit_rows_prepared(), 1);
     assert_eq!(perf.commit_visible_publish_attempts(), 1);
     assert_eq!(perf.commit_visible_publish_successes(), 1);
     assert_eq!(perf.read_view_captures(), 0);
@@ -374,8 +374,7 @@ fn cache_read_and_cas_validation_perf_trace_builds_one_conflict_source() {
         .expect("validated cache commit succeeds");
 
     let perf = crate::observability::perf_trace::snapshot();
-    let timeline_row_count =
-        u64::try_from(CommitTimelineRows::timeline_row_count()).expect("timeline count fits u64");
+
     assert_eq!(perf.conflict_sources_built(), 1);
     assert_eq!(perf.commit_conflict_validation_calls(), 1);
     assert_eq!(perf.commit_conflict_validation_without_source(), 0);
@@ -396,8 +395,9 @@ fn cache_read_and_cas_validation_perf_trace_builds_one_conflict_source() {
     assert!(perf.table_point_lookup_key_builds() <= validation_fact_count);
     assert_eq!(perf.commit_batches_prepared(), 1);
     assert_eq!(perf.commit_user_mutation_rows(), 1);
-    assert_eq!(perf.commit_timeline_rows_prepared(), timeline_row_count);
-    assert_eq!(perf.commit_rows_prepared(), 1 + timeline_row_count);
+    // W3.1c: timeline rows are elided — the retained index derives them.
+    assert_eq!(perf.commit_timeline_rows_prepared(), 0);
+    assert_eq!(perf.commit_rows_prepared(), 1);
     assert_eq!(perf.commit_visible_publish_attempts(), 1);
     assert_eq!(perf.commit_visible_publish_successes(), 1);
     assert_eq!(perf.commit_branch_guard_attempts(), 1);

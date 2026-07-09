@@ -2010,8 +2010,18 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         task: MaintenanceTask,
         error: LifecycleError,
     ) -> LifecycleResult<MaintenanceOutcome> {
-        let outcome = MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
-            .with_source_error(error);
+        // A stale compaction candidate is a benign scheduling race, not a
+        // task failure: concurrent maintenance superseded the candidate's
+        // inputs between enqueue and build, and coverage re-derives fresh
+        // candidates on the next pass. Everything else stays Failed.
+        let outcome = if error.is_stale_compaction_candidate() {
+            MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
+                .with_reason("compaction candidate superseded by concurrent maintenance")
+                .with_stats(LifecycleStats::new(0, 0, 1, 1, 0))
+        } else {
+            MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                .with_source_error(error)
+        };
         let outcome = self.maintenance.finish_started(task, outcome, false);
         self.record_optional_maintenance_health(&outcome.clone().map(Some));
         outcome
@@ -2106,9 +2116,19 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         let compaction = match install {
             Ok(compaction) => compaction,
             Err(error) => {
-                let outcome =
+                // Install re-validates the candidate against the CURRENT
+                // branch state; a candidate whose inputs were superseded by
+                // concurrent maintenance during the off-lock build is a
+                // benign scheduling race, not a task failure — coverage
+                // re-derives fresh candidates on the next pass.
+                let outcome = if error.is_stale_compaction_candidate() {
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
+                        .with_reason("compaction candidate superseded by concurrent maintenance")
+                        .with_stats(LifecycleStats::new(0, 0, 1, 1, 0))
+                } else {
                     MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
-                        .with_source_error(error);
+                        .with_source_error(error)
+                };
                 return self.finish_locked_publish(task, outcome);
             }
         };
@@ -2425,11 +2445,34 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         if let Some(outcome) = self.run_background_flush_watermark_if_checkpoint_covered(task)? {
             return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
         }
-        match self.capture_flush_watermark_coverage_inputs(task)? {
-            Some(inputs) => Ok(Some(
+        if let Some(inputs) = self.capture_flush_watermark_coverage_inputs(task)? {
+            Ok(Some(
                 DurableBackgroundMaintenanceStep::FlushWatermarkCompute(Box::new(inputs)),
-            )),
-            None => Ok(None),
+            ))
+        } else {
+            // Coverage is not provable NOW (no candidate at/below the
+            // durable boundary, no table manifest, or multi-branch). A
+            // pending task pinned here can never complete once the write
+            // load stops — the queue then never drains and the runtime
+            // reports "idle" over lifecycle debt. Defer (consume) it
+            // instead: every flush publish and WAL-growth evaluation
+            // re-enqueues a fresh coalescing candidate, so nothing is
+            // lost and the retry rides the next real trigger.
+            let state = self.state;
+            let Some(task) = self
+                .maintenance
+                .start_next_matching(state, |queued| queued.id() == task.id())?
+            else {
+                return Ok(None);
+            };
+            let outcome = MaintenanceOutcome::new(
+                MaintenanceTaskKind::FlushWatermark,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason("flush watermark deferred: coverage not provable")
+            .with_stats(LifecycleStats::new(0, 0, 1, 1, 0));
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)))
         }
     }
 
@@ -2508,17 +2551,34 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         }))
     }
 
-    /// Apply (under the runtime lock) the result of the off-lock coverage scan. `None`
-    /// means nothing was coverable — the task stays pending and the drain falls through.
-    /// Otherwise it claims the task, persists with the pre-built proof (re-validating
-    /// epochs and the memtable against current state), and finishes the task.
+    /// Apply (under the runtime lock) the result of the off-lock coverage scan. A
+    /// `None` compute (nothing coverable) DEFERS the task — a pinned pending task
+    /// can never complete once the write load stops, and every flush publish or
+    /// WAL-growth evaluation re-enqueues a fresh coalescing candidate (the same
+    /// liveness rule as the capture-time gate). Otherwise it claims the task,
+    /// persists with the pre-built proof (re-validating epochs and the memtable
+    /// against current state), and finishes the task.
     pub(crate) fn apply_flush_watermark_coverage(
         &mut self,
         inputs: &FlushWatermarkCoverageInputs,
         computed: Option<(CommitVersion, LifecycleTableManifestFlushCoverageProof)>,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let Some((candidate, proof)) = computed else {
-            return Ok(None);
+            let state = self.state;
+            let Some(task) = self
+                .maintenance
+                .start_next_matching(state, |queued| queued.id() == inputs.task.id())?
+            else {
+                return Ok(None);
+            };
+            let outcome = MaintenanceOutcome::new(
+                MaintenanceTaskKind::FlushWatermark,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason("flush watermark deferred: coverage not provable")
+            .with_stats(LifecycleStats::new(0, 0, 1, 1, 0));
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            return Ok(Some(outcome));
         };
         let state = self.state;
         let Some(task) = self
