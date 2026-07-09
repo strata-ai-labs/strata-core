@@ -1296,6 +1296,45 @@ InventoryAdvanced` -> Deferred WITHOUT health debt (the staging sweep's own
 follow-up purge covers the entries). Regression test pins the deferral;
 the closed-loop suite ran 7x green after the fix.
 
+## #2524 A3: input-edge output cuts — PARKED after falsification (2026-07-09)
+
+Fix A slice 3 (dissolve pre-A2 glued straddlers by cutting compaction
+outputs at input-table edges) was built, gated three times, and PARKED on
+branch `a3-input-edge-cuts-parked`. The mechanism WORKS — the dissolution
+test pins a straddler splitting at the zone boundary and the append zone
+reaching byte-free metadata promotion; repro cells kept residual 1.3x,
+wide passes 0, and trimmed cumulative churn — but the policy cannot be
+made safe for consolidation:
+
+1. Unconditional per-input edges: YCSB C **-28% throughput / +40% read
+   p50** (interleaved same-session T-C-T vs the A2 build). Mechanism: the
+   sequential YCSB load's narrow disjoint L0 tables look exactly like
+   zones, and edge cuts blocked CONSOLIDATION (merging small tables into
+   big ones) — L1 kept per-flush tables forever.
+2. Cluster gate (edges only from >=2 disjoint input clusters): -25%.
+3. Dissolve gate (edge must fall inside an overlap table's span): -6%,
+   with a deterministic 6 residual cuts per load.
+4. Straddler gate (overlap table must fully contain >=1 cluster AND
+   intersect >=2): STILL 6 deterministic cuts, still -5% / +0.44us —
+   because a legitimately CONSOLIDATED table (built by merging several
+   sequential flushes) fully contains multiple input clusters by
+   construction and is indistinguishable from a glued straddler at the
+   pass level.
+
+The missing discriminator is key-gap MASS — A2's flush policy has it
+(L1-skip bytes across the gap); the compaction pass does not. A shippable
+A3 must bring that signal to pass time (e.g., score the gap between
+adjacent input clusters by the bytes of overlap-table content strictly
+inside it, mirroring `flush_zone_cut_keys`). Parked with machinery,
+counters (`compaction_input_edge_cuts`, bench `[probe] a3:` line), and
+behavioral tests intact on the parked branch.
+
+Standing #2524 result WITHOUT A3 (all merged): load-time amp 1.8x,
+transient peak 2.5x, residual 1.3x converging ~30s, seed churn 2.4x
+(single-zone control 1.07x), YCSB C at its best-ever band. The remaining
+A3-class value (seed churn 2.4 -> ~2x) stays on the shelf until the
+gap-mass design.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
