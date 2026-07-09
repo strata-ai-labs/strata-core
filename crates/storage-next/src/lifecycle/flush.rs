@@ -10,7 +10,7 @@ use crate::backend::{PublishError, PublishFailureKind};
 use crate::branch::facts::{BranchLevel, BranchTableDescriptor};
 use crate::branch::read::BranchOwnedTable;
 use crate::branch::state::{
-    frozen_rows_match_table, BranchImmutableInstallOutcome, BranchLocalState,
+    frozen_rows_match_tables, BranchImmutableInstallOutcome, BranchLocalState,
 };
 use crate::object::ObjectName;
 use crate::service::{
@@ -38,15 +38,34 @@ pub(crate) struct FlushTableIdentitySeed(String);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FlushTableObjectId(String);
 
+/// One flushed table in a [`FlushFrozenOutcome`]. A1 (#2524): a flush
+/// produces exactly one; A2's zone cuts emit several key-disjoint tables
+/// per frozen memtable, in key order.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct FlushOutcomeTable {
+    table_identity: TableIdentity,
+    table_facts: TableRuntimeFacts,
+    table_object: Option<ObjectName>,
+    object_facts: Option<TableObjectFacts>,
+}
+
+impl FlushOutcomeTable {
+    pub(crate) fn table_identity(&self) -> &TableIdentity {
+        &self.table_identity
+    }
+
+    pub(crate) fn object_facts(&self) -> Option<&TableObjectFacts> {
+        self.object_facts.as_ref()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FlushFrozenOutcome {
     branch_id: BranchId,
     frozen_index: Option<usize>,
     rows_flushed: u64,
-    table_identity: Option<TableIdentity>,
-    table_facts: Option<TableRuntimeFacts>,
-    table_object: Option<ObjectName>,
-    object_facts: Option<TableObjectFacts>,
+    /// The flushed tables (empty on deferral or pre-publication failure).
+    tables: Vec<FlushOutcomeTable>,
     install_outcome: Option<BranchImmutableInstallOutcome>,
     failure: Option<LifecycleError>,
 }
@@ -86,6 +105,14 @@ pub(crate) struct PreparedCacheFlush {
     table: BranchOwnedTable,
 }
 
+/// One built, published, row-verified flush output awaiting install.
+#[derive(Clone, Debug)]
+pub(crate) struct PreparedFlushOutput {
+    table_facts: TableRuntimeFacts,
+    object_facts: TableObjectFacts,
+    table: BranchOwnedTable,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedDurableFlush {
     request: FlushFrozenRequest,
@@ -94,9 +121,10 @@ pub(crate) struct PreparedDurableFlush {
     /// the install matches by identity in O(1); row equality against this
     /// same sealed input is verified here in the (off-lock) prepare phase.
     frozen_identity: usize,
-    table_facts: TableRuntimeFacts,
-    object_facts: TableObjectFacts,
-    table: Result<BranchOwnedTable, FlushFrozenOutcome>,
+    /// The frozen memtable's outputs, key-disjoint and in key order — their
+    /// concatenation partitions the frozen rows (A1: exactly one; A2's zone
+    /// cuts emit several). `Err` carries a published-not-installed outcome.
+    outputs: Result<Vec<PreparedFlushOutput>, FlushFrozenOutcome>,
 }
 
 #[derive(Clone, Debug)]
@@ -249,10 +277,7 @@ impl FlushFrozenOutcome {
             branch_id: request.branch_id(),
             frozen_index: None,
             rows_flushed: 0,
-            table_identity: None,
-            table_facts: None,
-            table_object: None,
-            object_facts: None,
+            tables: Vec::new(),
             install_outcome: None,
             failure: None,
         }
@@ -261,20 +286,18 @@ impl FlushFrozenOutcome {
     fn completed_outcome(
         request: &FlushFrozenRequest,
         frozen_index: usize,
-        table_facts: TableRuntimeFacts,
-        object_facts: Option<TableObjectFacts>,
+        tables: Vec<FlushOutcomeTable>,
         install_outcome: BranchImmutableInstallOutcome,
     ) -> Self {
-        let table_identity = table_facts.identity().clone();
-        let table_object = object_facts.as_ref().map(|facts| facts.object().clone());
+        let rows_flushed = tables
+            .iter()
+            .map(|table| table.table_facts.row_count())
+            .sum();
         Self {
             branch_id: request.branch_id(),
             frozen_index: Some(frozen_index),
-            rows_flushed: table_facts.row_count(),
-            table_identity: Some(table_identity),
-            table_facts: Some(table_facts),
-            table_object,
-            object_facts,
+            rows_flushed,
+            tables,
             install_outcome: Some(install_outcome),
             failure: None,
         }
@@ -283,25 +306,37 @@ impl FlushFrozenOutcome {
     fn published_not_installed_outcome(
         request: &FlushFrozenRequest,
         frozen_index: usize,
-        table_facts: TableRuntimeFacts,
-        object_facts: TableObjectFacts,
+        published: Vec<(TableRuntimeFacts, TableObjectFacts)>,
         failure: LifecycleError,
     ) -> Self {
-        let table_identity = table_facts.identity().clone();
-        let table_object = object_facts.object().clone();
+        let tables: Vec<FlushOutcomeTable> = published
+            .into_iter()
+            .map(|(table_facts, object_facts)| FlushOutcomeTable {
+                table_identity: table_facts.identity().clone(),
+                table_facts,
+                table_object: Some(object_facts.object().clone()),
+                object_facts: Some(object_facts),
+            })
+            .collect();
+        let rows_flushed = tables
+            .iter()
+            .map(|table| table.table_facts.row_count())
+            .sum();
+        // The typed orphan error names the first published object; the
+        // maintenance outcome's affected names carry the full set.
         let failure = LifecycleError::flush_publication_orphaned_with(
-            Some(table_object.as_str().to_owned()),
+            tables
+                .first()
+                .and_then(|table| table.table_object.as_ref())
+                .map(|object| object.as_str().to_owned()),
             "flush published table object before install failed",
             failure,
         );
         Self {
             branch_id: request.branch_id(),
             frozen_index: Some(frozen_index),
-            rows_flushed: table_facts.row_count(),
-            table_identity: Some(table_identity),
-            table_facts: Some(table_facts),
-            table_object: Some(table_object),
-            object_facts: Some(object_facts),
+            rows_flushed,
+            tables,
             install_outcome: None,
             failure: Some(failure),
         }
@@ -316,10 +351,7 @@ impl FlushFrozenOutcome {
             branch_id: request.branch_id(),
             frozen_index,
             rows_flushed: 0,
-            table_identity: None,
-            table_facts: None,
-            table_object: None,
-            object_facts: None,
+            tables: Vec::new(),
             install_outcome: None,
             failure: Some(failure),
         }
@@ -330,18 +362,17 @@ impl FlushFrozenOutcome {
     }
 
     pub(crate) fn deferred_no_frozen_state(&self) -> bool {
-        self.install_outcome.is_none()
-            && self.failure.is_none()
-            && self.table_identity.is_none()
-            && self.table_object.is_none()
+        self.install_outcome.is_none() && self.failure.is_none() && self.tables.is_empty()
     }
 
     pub(crate) fn failed_before_publication(&self) -> bool {
-        self.failure.is_some() && self.table_object.is_none()
+        self.failure.is_some() && !self.tables.iter().any(|table| table.table_object.is_some())
     }
 
     pub(crate) fn published_not_installed(&self) -> bool {
-        self.failure.is_some() && self.table_object.is_some() && self.install_outcome.is_none()
+        self.failure.is_some()
+            && self.tables.iter().any(|table| table.table_object.is_some())
+            && self.install_outcome.is_none()
     }
 
     pub(crate) const fn branch_id(&self) -> BranchId {
@@ -356,20 +387,31 @@ impl FlushFrozenOutcome {
         self.rows_flushed
     }
 
+    /// The flushed tables, in key order (empty on deferral or
+    /// pre-publication failure).
+    pub(crate) fn tables(&self) -> &[FlushOutcomeTable] {
+        &self.tables
+    }
+
+    /// The first flushed table's identity (the only one until A2 cuts).
     pub(crate) fn table_identity(&self) -> Option<&TableIdentity> {
-        self.table_identity.as_ref()
+        self.tables.first().map(|table| &table.table_identity)
     }
 
     pub(crate) fn table_facts(&self) -> Option<&TableRuntimeFacts> {
-        self.table_facts.as_ref()
+        self.tables.first().map(|table| &table.table_facts)
     }
 
     pub(crate) fn table_object(&self) -> Option<&ObjectName> {
-        self.table_object.as_ref()
+        self.tables
+            .first()
+            .and_then(|table| table.table_object.as_ref())
     }
 
     pub(crate) fn object_facts(&self) -> Option<&TableObjectFacts> {
-        self.object_facts.as_ref()
+        self.tables
+            .first()
+            .and_then(|table| table.object_facts.as_ref())
     }
 
     pub(crate) const fn install_outcome(&self) -> Option<BranchImmutableInstallOutcome> {
@@ -388,16 +430,21 @@ impl FlushFrozenOutcome {
         } else {
             MaintenanceOutcomeStatus::Failed
         };
-        let affected_objects = usize::from(self.table_object.is_some());
+        let affected_objects = self
+            .tables
+            .iter()
+            .filter(|table| table.table_object.is_some())
+            .count();
         let retryable = self.published_not_installed()
             && self
                 .failure
                 .as_ref()
                 .is_some_and(published_not_installed_retryable);
         let bytes_reclaimed = if self.completed() {
-            self.table_facts
-                .as_ref()
-                .map_or(0, TableRuntimeFacts::byte_count)
+            self.tables
+                .iter()
+                .map(|table| table.table_facts.byte_count())
+                .sum()
         } else {
             0
         };
@@ -405,8 +452,14 @@ impl FlushFrozenOutcome {
             .with_effects(affected_objects, bytes_reclaimed, retryable)
             .with_state_changes(usize::from(self.install_outcome.is_some()))
             .with_stats(LifecycleStats::new(0, 0, 1, 0, 0));
-        if let Some(object) = &self.table_object {
-            outcome = outcome.with_affected_object_names(vec![object.as_str().to_owned()]);
+        let affected_names: Vec<String> = self
+            .tables
+            .iter()
+            .filter_map(|table| table.table_object.as_ref())
+            .map(|object| object.as_str().to_owned())
+            .collect();
+        if !affected_names.is_empty() {
+            outcome = outcome.with_affected_object_names(affected_names);
         }
         if self.deferred_no_frozen_state() {
             outcome = outcome.with_reason("flush has no frozen state to publish");
@@ -636,8 +689,12 @@ pub(crate) fn flush_cache_branch_with_budget(
     Ok(FlushFrozenOutcome::completed_outcome(
         request,
         frozen_index,
-        table_facts,
-        None,
+        vec![FlushOutcomeTable {
+            table_identity: table_facts.identity().clone(),
+            table_facts,
+            table_object: None,
+            object_facts: None,
+        }],
         install_outcome,
     ))
 }
@@ -699,8 +756,12 @@ pub(crate) fn install_prepared_cache_flush(
     FlushFrozenOutcome::completed_outcome(
         &request,
         frozen_index,
-        table_facts,
-        None,
+        vec![FlushOutcomeTable {
+            table_identity: table_facts.identity().clone(),
+            table_facts,
+            table_object: None,
+            object_facts: None,
+        }],
         install_outcome,
     )
 }
@@ -824,21 +885,25 @@ pub(crate) fn prepare_durable_flush_with_budget(
         )));
     }
     let extras = artifact.extras().clone();
-    let table = match branch_owned_table(branch.branch_id(), identity, reader, extras) {
+    let outputs = match branch_owned_table(branch.branch_id(), identity, reader, extras) {
         // BS5.3b: the row-equality verification moved OFF-lock from the
         // install (where it walked every row under the runtime lock, ~7.5 ms
-        // per flush): verify the built, published table's rows end to end
-        // through the reader against the sealed memtable the build consumed.
-        // The install then matches that memtable by O(1) identity.
+        // per flush): verify the built, published tables' rows end to end
+        // through the readers against the sealed memtable the build consumed
+        // (the outputs' concatenation must partition the frozen rows). The
+        // install then matches that memtable by O(1) identity.
         Ok(table) => {
-            if frozen_rows_match_table(&table, frozen) {
-                Ok(table)
+            if frozen_rows_match_tables(&[&table], frozen) {
+                Ok(vec![PreparedFlushOutput {
+                    table_facts,
+                    object_facts,
+                    table,
+                }])
             } else {
                 Err(FlushFrozenOutcome::published_not_installed_outcome(
                     request,
                     frozen_index,
-                    table_facts.clone(),
-                    object_facts.clone(),
+                    vec![(table_facts, object_facts)],
                     LifecycleError::MaintenanceTaskFailed {
                         reason: "flush artifact rows do not match the frozen table",
                     },
@@ -848,8 +913,7 @@ pub(crate) fn prepare_durable_flush_with_budget(
         Err(error) => Err(FlushFrozenOutcome::published_not_installed_outcome(
             request,
             frozen_index,
-            table_facts.clone(),
-            object_facts.clone(),
+            vec![(table_facts, object_facts)],
             error,
         )),
     };
@@ -857,9 +921,7 @@ pub(crate) fn prepare_durable_flush_with_budget(
         request: request.clone(),
         frozen_index,
         frozen_identity,
-        table_facts,
-        object_facts,
-        table,
+        outputs,
     }))
 }
 
@@ -871,34 +933,40 @@ pub(crate) fn install_prepared_durable_flush(
         request,
         frozen_index,
         frozen_identity,
-        table_facts,
-        object_facts,
-        table,
+        outputs,
     } = prepared;
-    let table = match table {
-        Ok(table) => table,
+    let outputs = match outputs {
+        Ok(outputs) => outputs,
         Err(outcome) => return outcome,
     };
+    // Keep the facts for the orphan outcome: the install consumes the tables.
+    let published: Vec<(TableRuntimeFacts, TableObjectFacts)> = outputs
+        .iter()
+        .map(|output| (output.table_facts.clone(), output.object_facts.clone()))
+        .collect();
+    let tables: Vec<BranchOwnedTable> = outputs.into_iter().map(|output| output.table).collect();
     let install_outcome =
-        match branch.replace_frozen_with_level_zero_table_by_identity(frozen_identity, table) {
+        match branch.replace_frozen_with_level_zero_tables_by_identity(frozen_identity, tables) {
             Ok(outcome) => outcome,
             Err(error) => {
                 return FlushFrozenOutcome::published_not_installed_outcome(
                     &request,
                     frozen_index,
-                    table_facts,
-                    object_facts,
+                    published,
                     branch_error(error),
                 );
             }
         };
-    FlushFrozenOutcome::completed_outcome(
-        &request,
-        frozen_index,
-        table_facts,
-        Some(object_facts),
-        install_outcome,
-    )
+    let tables = published
+        .into_iter()
+        .map(|(table_facts, object_facts)| FlushOutcomeTable {
+            table_identity: table_facts.identity().clone(),
+            table_facts,
+            table_object: Some(object_facts.object().clone()),
+            object_facts: Some(object_facts),
+        })
+        .collect();
+    FlushFrozenOutcome::completed_outcome(&request, frozen_index, tables, install_outcome)
 }
 
 #[allow(clippy::too_many_arguments, reason = "explicit build-input plumbing")]
@@ -1471,17 +1539,14 @@ fn published_not_installed_flush(
     let outcome = FlushFrozenOutcome::published_not_installed_outcome(
         request,
         frozen_index,
-        table_facts.clone(),
-        object_facts.clone(),
+        vec![(table_facts, object_facts)],
         error,
     );
     PreparedDurableFlush {
         request: request.clone(),
         frozen_index,
         frozen_identity,
-        table_facts,
-        object_facts,
-        table: Err(outcome),
+        outputs: Err(outcome),
     }
 }
 

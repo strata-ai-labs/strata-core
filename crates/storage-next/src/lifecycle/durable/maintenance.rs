@@ -2074,10 +2074,17 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                     let outcome = install_prepared_durable_flush(branch, prepared_flush);
                     let maintenance_outcome = outcome.maintenance_outcome();
                     if outcome.completed() {
-                        if let (Some(identity), Some(object_facts)) =
-                            (outcome.table_identity(), outcome.object_facts())
-                        {
-                            table_catalog.record_table(identity.clone(), object_facts.clone())?;
+                        // A1 (#2524): one catalog record per flushed table
+                        // (a frozen memtable flushes to N key-disjoint
+                        // tables once A2's zone cuts land).
+                        for table in outcome.tables() {
+                            let Some(object_facts) = table.object_facts() else {
+                                continue;
+                            };
+                            table_catalog.record_table(
+                                table.table_identity().clone(),
+                                object_facts.clone(),
+                            )?;
                             any_completed = true;
                         }
                     }
@@ -4117,12 +4124,21 @@ pub(super) fn publish_table_manifest_after_flush(
     if !outcome.completed() {
         return None;
     }
-    let (Some(identity), Some(object_facts)) = (outcome.table_identity(), outcome.object_facts())
-    else {
+    // A1 (#2524): one catalog record per flushed table.
+    let mut recorded = false;
+    for table in outcome.tables() {
+        let Some(object_facts) = table.object_facts() else {
+            continue;
+        };
+        if let Err(error) =
+            catalog.record_table(table.table_identity().clone(), object_facts.clone())
+        {
+            return Some(error);
+        }
+        recorded = true;
+    }
+    if !recorded {
         return None;
-    };
-    if let Err(error) = catalog.record_table(identity.clone(), object_facts.clone()) {
-        return Some(error);
     }
     publish_table_manifest_for_branch_with_budget(branch, service, catalog, budget)
         .map_or_else(Some, |_| None)

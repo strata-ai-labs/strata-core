@@ -56,6 +56,7 @@ fn keep_all_policy() -> impl TableCompactionPolicy {
 }
 
 mod facts_reachability;
+mod flush_install;
 #[cfg(feature = "perf-trace")]
 mod history_pruning;
 mod identity_state;
