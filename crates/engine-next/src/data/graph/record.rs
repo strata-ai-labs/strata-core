@@ -153,6 +153,8 @@ struct StoredGraphNode {
     node_id: String,
     properties: Option<serde_json::Value>,
     binding: Option<StoredGraphBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    object_type: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -227,6 +229,10 @@ pub(crate) fn encode_graph_node_record(record: &GraphNodeRecord) -> EngineResult
         node_id: record.node_id().as_str().to_owned(),
         properties: record.data().properties().map(GraphProperties::clone_inner),
         binding: record.data().binding().map(binding_to_stored),
+        object_type: record
+            .data()
+            .object_type()
+            .map(|object_type| object_type.as_str().to_owned()),
     };
     encode_json_record(
         GRAPH_NODE_FORMAT_VERSION,
@@ -291,11 +297,18 @@ pub(crate) fn decode_graph_node_record(
                 "stored graph node binding is invalid",
             )
         })?;
-    Ok(GraphNodeRecord::new(
-        graph,
-        node_id,
-        GraphNodeData::new(properties, binding),
-    ))
+    let mut data = GraphNodeData::new(properties, binding);
+    if let Some(object_type) = stored.object_type {
+        data = data.with_object_type(crate::data::graph::GraphTypeName::new(object_type).map_err(
+            |_| {
+                EngineError::corruption(
+                    "data_loss.engine.graph_node_record",
+                    "stored graph node object type is invalid",
+                )
+            },
+        )?);
+    }
+    Ok(GraphNodeRecord::new(graph, node_id, data))
 }
 
 pub(crate) fn encode_graph_edge_record(record: &GraphEdgeRecord) -> EngineResult<Vec<u8>> {
@@ -393,6 +406,7 @@ pub(crate) fn encode_graph_binding_record(record: &GraphBindingRecord) -> Engine
         node_id: record.node_id().as_str().to_owned(),
         properties: None,
         binding: Some(binding_to_stored(record.binding())),
+        object_type: None,
     };
     encode_json_record(
         GRAPH_BINDING_FORMAT_VERSION,

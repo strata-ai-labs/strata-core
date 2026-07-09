@@ -22,7 +22,7 @@ use crate::commit::CommitOutcome;
 use crate::diagnostics::{EngineError, EngineResult};
 
 use super::types::validate_text_component;
-use super::GraphName;
+use super::{GraphEdgeType, GraphName, GraphNodeData};
 
 const GRAPH_ONTOLOGY_FORMAT_VERSION: u8 = 1;
 const MAX_TYPE_NAME_BYTES: usize = 256;
@@ -65,6 +65,15 @@ impl TryFrom<&str> for GraphTypeName {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         Self::new(value)
+    }
+}
+
+impl<'de> Deserialize<'de> for GraphTypeName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Self::new(String::deserialize(deserializer)?).map_err(serde::de::Error::custom)
     }
 }
 
@@ -458,6 +467,83 @@ impl GraphOntologyRecord {
     /// Removes a link type. Returns true when it existed.
     pub(crate) fn remove_link_type(&mut self, name: &GraphTypeName) -> bool {
         self.link_types.remove(name).is_some()
+    }
+
+    /// GO2 write validation for a node under a frozen ontology: untyped
+    /// nodes always pass (AI-first light enforcement); a typed node must
+    /// name a declared object type and carry every required property.
+    pub(crate) fn validate_node(&self, data: &GraphNodeData) -> EngineResult<()> {
+        let Some(object_type) = data.object_type() else {
+            return Ok(());
+        };
+        let Some(def) = self.object_types.get(object_type) else {
+            return Err(EngineError::conflict(
+                "failed_precondition.engine.graph_ontology_node_type",
+                format!(
+                    "node object type `{}` is not declared in the frozen ontology",
+                    object_type.as_str()
+                ),
+            ));
+        };
+        for (name, property) in def.properties() {
+            let present = data
+                .properties()
+                .is_some_and(|properties| properties.contains_key(name));
+            if property.required() && !present {
+                return Err(EngineError::conflict(
+                    "failed_precondition.engine.graph_ontology_required_property",
+                    format!(
+                        "node is missing required property `{name}` of object type `{}`",
+                        object_type.as_str()
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// GO2 write validation for an edge under a frozen ontology: the edge
+    /// type must be a declared link type, and each *typed* endpoint must
+    /// match the link's declared source/target object type (untyped
+    /// endpoints skip the check).
+    pub(crate) fn validate_edge(
+        &self,
+        edge_type: &GraphEdgeType,
+        src: &GraphNodeData,
+        dst: &GraphNodeData,
+    ) -> EngineResult<()> {
+        let Some(link) = self
+            .link_types
+            .iter()
+            .find_map(|(name, def)| (name.as_str() == edge_type.as_str()).then_some(def))
+        else {
+            return Err(EngineError::conflict(
+                "failed_precondition.engine.graph_ontology_edge_type",
+                format!(
+                    "edge type `{}` is not a declared link type in the frozen ontology",
+                    edge_type.as_str()
+                ),
+            ));
+        };
+        for (role, declared, endpoint) in [
+            ("source", link.source(), src.object_type()),
+            ("target", link.target(), dst.object_type()),
+        ] {
+            if let Some(actual) = endpoint {
+                if actual != declared {
+                    return Err(EngineError::conflict(
+                        "failed_precondition.engine.graph_ontology_endpoint_type",
+                        format!(
+                            "edge `{}` {role} must be `{}`, node is `{}`",
+                            edge_type.as_str(),
+                            declared.as_str(),
+                            actual.as_str()
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Freeze-time validation: at least one type, and every link endpoint

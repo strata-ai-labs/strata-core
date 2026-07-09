@@ -288,6 +288,9 @@ impl<'a> GraphService<'a> {
         if let Some(binding) = data.binding() {
             self.validate_binding_target(binding.target())?;
         }
+        if let Some(ontology) = self.frozen_ontology(&record, graph)? {
+            ontology.validate_node(&data)?;
+        }
         let current = self.node_record(&record, graph, &node_id)?;
         let created = current.is_none();
         let new_record = GraphNodeRecord::new(graph.clone(), node_id.clone(), data);
@@ -485,8 +488,15 @@ impl<'a> GraphService<'a> {
     ) -> EngineResult<GraphEdgeWriteOutcome> {
         let record = self.branch_record()?;
         self.require_graph(&record, graph)?;
-        self.require_node(&record, graph, &src)?;
-        self.require_node(&record, graph, &dst)?;
+        let src_record = self
+            .node_record(&record, graph, &src)?
+            .ok_or_else(missing_edge_endpoint)?;
+        let dst_record = self
+            .node_record(&record, graph, &dst)?
+            .ok_or_else(missing_edge_endpoint)?;
+        if let Some(ontology) = self.frozen_ontology(&record, graph)? {
+            ontology.validate_edge(&edge_type, src_record.data(), dst_record.data())?;
+        }
         let created = self
             .edge_record(&record, graph, &src, &edge_type, &dst)?
             .is_none();
@@ -789,6 +799,7 @@ impl<'a> GraphService<'a> {
             return Ok(GraphBatchWriteOutcome::new(graph.clone(), Vec::new(), None));
         }
 
+        let frozen = self.frozen_ontology(&record, graph)?;
         let mut nodes = self.node_record_map(&record, graph, ReadSelector::Latest)?;
         let mut edges = self.edge_record_map(&record, graph, ReadSelector::Latest)?;
         let mut mutations = MutationMap::default();
@@ -799,6 +810,9 @@ impl<'a> GraphService<'a> {
                 GraphBatchOperation::UpsertNode { node_id, data } => {
                     if let Some(binding) = data.binding() {
                         self.validate_binding_target(binding.target())?;
+                    }
+                    if let Some(ontology) = frozen.as_ref() {
+                        ontology.validate_node(data)?;
                     }
                     let created = !nodes.contains_key(node_id);
                     if let Some(old) = nodes
@@ -864,11 +878,14 @@ impl<'a> GraphService<'a> {
                     dst,
                     data,
                 } => {
-                    if !nodes.contains_key(src) || !nodes.contains_key(dst) {
-                        return Err(EngineError::invalid_input(
-                            "invalid_argument.engine.graph_edge_endpoint",
-                            "graph edge endpoints must exist before an edge can be written",
-                        ));
+                    let (Some(src_record), Some(dst_record)) = (nodes.get(src), nodes.get(dst))
+                    else {
+                        return Err(missing_edge_endpoint());
+                    };
+                    if let Some(ontology) = frozen.as_ref() {
+                        // Validated against the batch-local state: a node
+                        // typed earlier in this batch governs its edges.
+                        ontology.validate_edge(edge_type, src_record.data(), dst_record.data())?;
                     }
                     let identity = (src.clone(), edge_type.clone(), dst.clone());
                     let created = !edges.contains_key(&identity);
@@ -1102,6 +1119,23 @@ impl<'a> GraphService<'a> {
         decode_graph_ontology_record(graph, value)
     }
 
+    /// The frozen ontology governing writes, if any: `None` while the
+    /// ontology is absent or still Draft (no write validation in either
+    /// case — GO2 enforcement is freeze-gated).
+    fn frozen_ontology(
+        &mut self,
+        record: &BranchCatalogRecord,
+        graph: &GraphName,
+    ) -> EngineResult<Option<GraphOntologyRecord>> {
+        match self.ontology_row(record, graph, ReadSelector::Latest)? {
+            Some(row) => {
+                let ontology = Self::ontology_record_from_row(graph, &row)?;
+                Ok(ontology.is_frozen().then_some(ontology))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Loads the ontology for mutation: the stored record, or an empty
     /// Draft when none exists yet. Frozen ontologies are immutable —
     /// every mutation (freeze included) refuses.
@@ -1258,21 +1292,6 @@ impl<'a> GraphService<'a> {
         })?;
         let _ = decode_graph_metadata_record(graph, value)?;
         Ok(())
-    }
-
-    fn require_node(
-        &mut self,
-        record: &BranchCatalogRecord,
-        graph: &GraphName,
-        node_id: &GraphNodeId,
-    ) -> EngineResult<()> {
-        if self.node_record(record, graph, node_id)?.is_some() {
-            return Ok(());
-        }
-        Err(EngineError::invalid_input(
-            "invalid_argument.engine.graph_edge_endpoint",
-            "graph edge endpoints must exist before an edge can be written",
-        ))
     }
 
     fn graph_info_from_row(
@@ -1782,6 +1801,13 @@ impl MutationMap {
 
 fn mutation_key(address: &RowAddress) -> MutationKey {
     (address.row_class(), address.key().to_vec())
+}
+
+fn missing_edge_endpoint() -> EngineError {
+    EngineError::invalid_input(
+        "invalid_argument.engine.graph_edge_endpoint",
+        "graph edge endpoints must exist before an edge can be written",
+    )
 }
 
 fn edge_identity(edge: &GraphEdgeRecord) -> EdgeIdentity {

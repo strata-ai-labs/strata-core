@@ -127,8 +127,12 @@ const CONFLICT_CODES: &[&str] = &[
     "already_exists.engine.vector_collection",
     "conflict.engine.branch_generation",
     "conflict.engine.persistence",
+    "failed_precondition.engine.graph_ontology_edge_type",
+    "failed_precondition.engine.graph_ontology_endpoint_type",
     "failed_precondition.engine.graph_ontology_freeze",
     "failed_precondition.engine.graph_ontology_frozen",
+    "failed_precondition.engine.graph_ontology_node_type",
+    "failed_precondition.engine.graph_ontology_required_property",
     "failed_precondition.engine.space_not_empty",
 ];
 

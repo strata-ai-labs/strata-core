@@ -362,6 +362,13 @@ impl GraphProperties {
     pub(crate) fn clone_inner(&self) -> Value {
         self.0.clone()
     }
+
+    #[must_use]
+    /// Returns true when the property key is present (any value counts,
+    /// including an explicit null).
+    pub fn contains_key(&self, key: &str) -> bool {
+        self.0.as_object().is_some_and(|map| map.contains_key(key))
+    }
 }
 
 impl TryFrom<Value> for GraphProperties {
@@ -388,10 +395,14 @@ pub struct GraphNodeData {
     properties: Option<GraphProperties>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     binding: Option<GraphEntityBinding>,
+    /// Declared object type (GO2). Untyped nodes are always accepted; a
+    /// typed node is validated against the graph's ontology once frozen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    object_type: Option<super::ontology::GraphTypeName>,
 }
 
 impl GraphNodeData {
-    /// Creates graph node data.
+    /// Creates graph node data (untyped; see [`Self::with_object_type`]).
     #[must_use]
     pub const fn new(
         properties: Option<GraphProperties>,
@@ -400,7 +411,15 @@ impl GraphNodeData {
         Self {
             properties,
             binding,
+            object_type: None,
         }
+    }
+
+    /// Declares the node's object type.
+    #[must_use]
+    pub fn with_object_type(mut self, object_type: super::ontology::GraphTypeName) -> Self {
+        self.object_type = Some(object_type);
+        self
     }
 
     #[must_use]
@@ -413,6 +432,12 @@ impl GraphNodeData {
     /// Returns optional entity binding.
     pub const fn binding(&self) -> Option<&GraphEntityBinding> {
         self.binding.as_ref()
+    }
+
+    #[must_use]
+    /// Returns the declared object type.
+    pub const fn object_type(&self) -> Option<&super::ontology::GraphTypeName> {
+        self.object_type.as_ref()
     }
 }
 

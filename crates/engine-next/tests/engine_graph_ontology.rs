@@ -4,9 +4,11 @@
 
 mod common;
 
+use serde_json::json;
 use strata_engine_next::{
-    Database, GraphLinkTypeDef, GraphName, GraphObjectTypeDef, GraphOntologyStatus,
-    GraphPropertyDef, GraphTypeName,
+    Database, GraphBatchOperation, GraphBatchWrite, GraphEdgeData, GraphEdgeType, GraphLinkTypeDef,
+    GraphName, GraphNodeData, GraphNodeId, GraphObjectTypeDef, GraphOntologyStatus,
+    GraphProperties, GraphPropertyDef, GraphTypeName,
 };
 
 use common::{branch, open_cache_database, open_durable_database, space};
@@ -56,6 +58,34 @@ fn link_type(name: &str, source: &str, target: &str) -> GraphLinkTypeDef {
         [],
     )
     .expect("link type")
+}
+
+fn node_id(value: &str) -> GraphNodeId {
+    GraphNodeId::new(value).expect("valid node id")
+}
+
+fn edge_type(value: &str) -> GraphEdgeType {
+    GraphEdgeType::new(value).expect("valid edge type")
+}
+
+fn typed_node(object_type_name: &str, title: Option<&str>) -> GraphNodeData {
+    let properties =
+        title.map(|title| GraphProperties::new(json!({ "title": title })).expect("properties"));
+    GraphNodeData::new(properties, None).with_object_type(type_name(object_type_name))
+}
+
+/// A frozen Author/Document/wrote ontology on graph `name`.
+fn freeze_author_document(graph: &mut strata_engine_next::GraphService<'_>, name: &GraphName) {
+    graph
+        .define_object_type(name, object_type("Author"))
+        .expect("author type");
+    graph
+        .define_object_type(name, object_type("Document"))
+        .expect("document type");
+    graph
+        .define_link_type(name, link_type("wrote", "Author", "Document"))
+        .expect("link type");
+    graph.freeze_ontology(name).expect("freeze succeeds");
 }
 
 #[test]
@@ -239,6 +269,197 @@ fn exercise_temporal_reads(mut database: Database) {
         .expect("ontology visible");
     assert_eq!(latest.status(), GraphOntologyStatus::Frozen);
     assert_eq!(latest.version(), frozen_version);
+}
+
+#[test]
+fn graph_ontology_enforces_writes_once_frozen_in_cache_and_durable_modes() {
+    run_database_modes(exercise_write_enforcement);
+}
+
+#[allow(clippy::too_many_lines)]
+fn exercise_write_enforcement(mut database: Database) {
+    let mut graph = graph_service(&mut database, "default", "default");
+    let name = graph_name("deps");
+    graph.create_graph(name.clone()).expect("graph created");
+
+    // Before any ontology, everything is accepted — including typed nodes
+    // naming types that do not exist yet.
+    graph
+        .upsert_node(&name, node_id("free"), GraphNodeData::default())
+        .expect("untyped node before ontology");
+    graph
+        .upsert_node(&name, node_id("early"), typed_node("Anything", None))
+        .expect("typed node before ontology is unvalidated");
+
+    freeze_author_document(&mut graph, &name);
+
+    // Untyped nodes still pass after the freeze (light enforcement).
+    graph
+        .upsert_node(&name, node_id("free2"), GraphNodeData::default())
+        .expect("untyped node after freeze");
+
+    // Typed writes validate.
+    graph
+        .upsert_node(&name, node_id("d1"), typed_node("Document", Some("Spec")))
+        .expect("declared type with required property");
+    let error = graph
+        .upsert_node(&name, node_id("x1"), typed_node("Reviewer", Some("T")))
+        .expect_err("undeclared object type refuses");
+    assert_eq!(
+        error.code(),
+        "failed_precondition.engine.graph_ontology_node_type"
+    );
+    let error = graph
+        .upsert_node(&name, node_id("d2"), typed_node("Document", None))
+        .expect_err("missing required property refuses");
+    assert_eq!(
+        error.code(),
+        "failed_precondition.engine.graph_ontology_required_property"
+    );
+
+    // The stored node round-trips its object type.
+    let node = graph
+        .get_node(&name, &node_id("d1"))
+        .expect("read succeeds")
+        .expect("node visible");
+    assert_eq!(
+        node.data().object_type().map(GraphTypeName::as_str),
+        Some("Document")
+    );
+
+    // Edge validation: declared link type, endpoint types must match.
+    graph
+        .upsert_node(&name, node_id("a1"), typed_node("Author", Some("Ada")))
+        .expect("author node");
+    graph
+        .upsert_edge(
+            &name,
+            node_id("a1"),
+            edge_type("wrote"),
+            node_id("d1"),
+            GraphEdgeData::new(1.0, None).expect("edge data"),
+        )
+        .expect("declared link with matching endpoints");
+    let error = graph
+        .upsert_edge(
+            &name,
+            node_id("a1"),
+            edge_type("cites"),
+            node_id("d1"),
+            GraphEdgeData::new(1.0, None).expect("edge data"),
+        )
+        .expect_err("undeclared edge type refuses");
+    assert_eq!(
+        error.code(),
+        "failed_precondition.engine.graph_ontology_edge_type"
+    );
+    let error = graph
+        .upsert_edge(
+            &name,
+            node_id("d1"),
+            edge_type("wrote"),
+            node_id("a1"),
+            GraphEdgeData::new(1.0, None).expect("edge data"),
+        )
+        .expect_err("mismatched endpoint types refuse");
+    assert_eq!(
+        error.code(),
+        "failed_precondition.engine.graph_ontology_endpoint_type"
+    );
+
+    // Untyped endpoints skip the endpoint check.
+    graph
+        .upsert_edge(
+            &name,
+            node_id("free"),
+            edge_type("wrote"),
+            node_id("d1"),
+            GraphEdgeData::new(1.0, None).expect("edge data"),
+        )
+        .expect("untyped source endpoint skips type matching");
+}
+
+#[test]
+fn graph_ontology_batch_writes_validate_against_pending_state() {
+    run_database_modes(exercise_batch_enforcement);
+}
+
+fn exercise_batch_enforcement(mut database: Database) {
+    let mut graph = graph_service(&mut database, "default", "default");
+    let name = graph_name("deps");
+    graph.create_graph(name.clone()).expect("graph created");
+    freeze_author_document(&mut graph, &name);
+
+    // An edge is validated against nodes typed earlier in the same batch.
+    let batch = GraphBatchWrite::new(vec![
+        GraphBatchOperation::UpsertNode {
+            node_id: node_id("a1"),
+            data: typed_node("Author", Some("Ada")),
+        },
+        GraphBatchOperation::UpsertNode {
+            node_id: node_id("d1"),
+            data: typed_node("Document", Some("Spec")),
+        },
+        GraphBatchOperation::UpsertEdge {
+            src: node_id("a1"),
+            edge_type: edge_type("wrote"),
+            dst: node_id("d1"),
+            data: GraphEdgeData::new(1.0, None).expect("edge data"),
+        },
+    ]);
+    let outcome = graph.batch_write(&name, &batch).expect("batch succeeds");
+    assert_eq!(outcome.results().len(), 3);
+
+    // A refused op refuses the whole batch: nothing lands (atomicity).
+    let batch = GraphBatchWrite::new(vec![
+        GraphBatchOperation::UpsertNode {
+            node_id: node_id("d9"),
+            data: typed_node("Document", Some("Nine")),
+        },
+        GraphBatchOperation::UpsertEdge {
+            src: node_id("d9"),
+            edge_type: edge_type("cites"),
+            dst: node_id("d9"),
+            data: GraphEdgeData::new(1.0, None).expect("edge data"),
+        },
+    ]);
+    let error = graph
+        .batch_write(&name, &batch)
+        .expect_err("undeclared edge type refuses the batch");
+    assert_eq!(
+        error.code(),
+        "failed_precondition.engine.graph_ontology_edge_type"
+    );
+    assert!(
+        graph
+            .get_node(&name, &node_id("d9"))
+            .expect("read succeeds")
+            .is_none(),
+        "refused batch landed nothing"
+    );
+
+    // A Draft ontology does not validate: same shapes pass on a fresh
+    // graph whose ontology was never frozen.
+    let draft = graph_name("draft");
+    graph.create_graph(draft.clone()).expect("graph created");
+    graph
+        .define_object_type(&draft, object_type("Author"))
+        .expect("draft type");
+    graph
+        .upsert_node(&draft, node_id("n1"), typed_node("Unheard", None))
+        .expect("draft ontology does not validate node types");
+    graph
+        .upsert_node(&draft, node_id("n2"), GraphNodeData::default())
+        .expect("untyped node");
+    graph
+        .upsert_edge(
+            &draft,
+            node_id("n1"),
+            edge_type("whatever"),
+            node_id("n2"),
+            GraphEdgeData::new(1.0, None).expect("edge data"),
+        )
+        .expect("draft ontology does not validate edge types");
 }
 
 #[test]

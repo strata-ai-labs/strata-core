@@ -175,11 +175,23 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="failed_precondition.engine.default_branch"></a>
 - `failed_precondition.engine.default_branch`
 
+<a id="failed_precondition.engine.graph_ontology_edge_type"></a>
+- `failed_precondition.engine.graph_ontology_edge_type`
+
+<a id="failed_precondition.engine.graph_ontology_endpoint_type"></a>
+- `failed_precondition.engine.graph_ontology_endpoint_type`
+
 <a id="failed_precondition.engine.graph_ontology_freeze"></a>
 - `failed_precondition.engine.graph_ontology_freeze`
 
 <a id="failed_precondition.engine.graph_ontology_frozen"></a>
 - `failed_precondition.engine.graph_ontology_frozen`
+
+<a id="failed_precondition.engine.graph_ontology_node_type"></a>
+- `failed_precondition.engine.graph_ontology_node_type`
+
+<a id="failed_precondition.engine.graph_ontology_required_property"></a>
+- `failed_precondition.engine.graph_ontology_required_property`
 
 <a id="failed_precondition.engine.layout_version"></a>
 - `failed_precondition.engine.layout_version`
