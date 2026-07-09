@@ -342,6 +342,23 @@ impl LruSlab {
 
     /// Remove every entry whose key belongs to `table`, refunding their byte charge. O(n) — used only
     /// for invalidation, never on the read hot path.
+    /// Drop every entry whose table is NOT in `live`, refunding byte
+    /// charges. O(n) — invalidation only, never the read hot path.
+    fn retain_tables(&mut self, live: &std::collections::BTreeSet<TableCacheTableId>) -> usize {
+        let victims: Vec<u32> = self
+            .index
+            .iter()
+            .filter(|(key, _)| !live.contains(key.table()))
+            .map(|(_, &idx)| idx)
+            .collect();
+        let removed = victims.len();
+        for idx in victims {
+            let key = self.detach_slot(idx);
+            self.index.remove(&key);
+        }
+        removed
+    }
+
     fn remove_table(&mut self, table: &TableCacheTableId) -> usize {
         let victims: Vec<u32> = self
             .index
@@ -624,6 +641,32 @@ impl TableBlockCache {
         } else {
             false
         }
+    }
+
+    /// C3a: drop every entry belonging to tables OUTSIDE the live set. The
+    /// capped quarantine sweep leaves dead-table blocks resident for many
+    /// cycles after compaction churn (measured: ~260K dead entries pinning
+    /// the pool at capacity, whose eviction churn WAS the residual miss
+    /// floor); a completed preheat pass knows the exact live set and cleans
+    /// in one shot.
+    pub(crate) fn retain_tables(
+        &self,
+        live: &std::collections::BTreeSet<TableCacheTableId>,
+    ) -> usize {
+        let mut removed = 0usize;
+        for shard in &self.shards {
+            let mut state = shard.lock_state();
+            let dropped = state.lru.retain_tables(live);
+            if dropped > 0 {
+                state.stats.table_invalidations = state
+                    .stats
+                    .table_invalidations
+                    .saturating_add(dropped as u64);
+                refresh_gauges(&mut state);
+                removed += dropped;
+            }
+        }
+        removed
     }
 
     pub(crate) fn remove_table(&self, table: &TableCacheTableId) -> usize {

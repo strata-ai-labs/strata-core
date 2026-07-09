@@ -665,6 +665,23 @@ impl StorageBudgetLedger {
         global_total_pressure_severity(self.total_used_bytes(), self.budget.total_bytes())
     }
 
+    /// C3a: global pressure with `excluded_bytes` carved out of the total.
+    /// The preheat gates on this with the block-cache resident bytes
+    /// excluded: the cache pool is self-evicting and budget-bounded by
+    /// construction, so a cache-at-capacity total is the pool's INTENDED
+    /// state — gating the fill on a total the fill itself raises was a
+    /// self-throttle that froze coverage at ~85% (measured: permanent
+    /// deferral once resident + cache crossed the 80% high water).
+    pub(crate) fn global_pressure_excluding(
+        &self,
+        excluded_bytes: u64,
+    ) -> StorageBudgetPressureSeverity {
+        global_total_pressure_severity(
+            self.total_used_bytes().saturating_sub(excluded_bytes),
+            self.budget.total_bytes(),
+        )
+    }
+
     /// Whether admitting `additional_bytes` would push the database-wide total over the budget.
     pub(crate) fn would_exceed_total(&self, additional_bytes: u64) -> bool {
         self.total_used_bytes().saturating_add(additional_bytes) > self.budget.total_bytes()

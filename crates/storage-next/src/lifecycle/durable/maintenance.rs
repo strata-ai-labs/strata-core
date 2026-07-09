@@ -3723,7 +3723,16 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             return Ok(None);
         }
         self.refresh_runtime_memory_total();
-        if self.budget.global_pressure().defers_optional_maintenance()
+        // Pressure gate EXCLUDES the block cache's own resident bytes: the
+        // pool is self-evicting and budget-bounded, so cache-at-capacity is
+        // its intended state — gating the fill on a total the fill itself
+        // raises froze coverage at ~85% (permanent deferral past the 80%
+        // high water). Non-cache pressure and in-flight builds still defer.
+        let cache_bytes = self.services.table_object().block_cache_resident_bytes();
+        if self
+            .budget
+            .global_pressure_excluding(cache_bytes)
+            .defers_optional_maintenance()
             || self.maintenance.has_active_build_task()
         {
             // Pause rather than retry (a deferral loop would spin the low
@@ -3786,6 +3795,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 layouts,
                 cursor: self.cache_preheat_cursor.take(),
                 chunk_max_bytes,
+                block_cache: self.services.table_object().block_cache().cloned(),
             }),
         )))
     }
@@ -4406,6 +4416,10 @@ pub(crate) struct PreheatStageInputs {
     layouts: Vec<(BranchId, Arc<BranchLayout>, Vec<BranchInheritedLayer>)>,
     cursor: Option<CachePreheatCursor>,
     chunk_max_bytes: u64,
+    // C3a: for the completed-pass dead-entry purge (`retain_tables`) — the
+    // capped quarantine sweep leaves compacted-away tables' blocks pinning
+    // the pool at capacity, whose eviction churn was the residual miss floor.
+    block_cache: Option<Arc<TableBlockCache>>,
 }
 
 /// The off-lock preheat result, folded back under the lock by
@@ -4419,6 +4433,8 @@ pub(crate) struct PreheatStaged {
     next_cursor: Option<CachePreheatCursor>,
     stopped_full: bool,
     stage_error: Option<LifecycleError>,
+    /// C3a: dead-table cache entries dropped by the completed-pass purge.
+    dead_entries_removed: u64,
 }
 
 impl PreheatStageInputs {
@@ -4426,7 +4442,7 @@ impl PreheatStageInputs {
     /// locks held. Admission is verify-then-no-evict (the W2.4 contract), so
     /// a concurrent demand reader can at worst race a duplicate insert, which
     /// the cache folds as `DuplicateExisting`.
-    pub(crate) fn stage(self) -> PreheatStaged {
+    pub(crate) fn stage(mut self) -> PreheatStaged {
         let mut staged = PreheatStaged {
             task: self.task,
             admitted: 0,
@@ -4436,8 +4452,19 @@ impl PreheatStageInputs {
             next_cursor: None,
             stopped_full: false,
             stage_error: None,
+            dead_entries_removed: 0,
         };
-        let cursor = self.cursor;
+        let cursor = self.cursor.take();
+        if cursor.is_none() {
+            // Fresh pass: purge dead-table entries BEFORE filling. Left in
+            // place they inflate occupancy by gigabytes and the fill's own
+            // fair inserts then evict the earliest-walked LIVE blocks once
+            // the pool saturates mid-pass (measured: ~100K live blocks lost
+            // to exactly that, re-appearing as run-phase first-touch
+            // misses). The completion purge below still handles tables
+            // compacted away DURING the pass.
+            staged.dead_entries_removed = self.purge_dead_table_entries();
+        }
         // Until the cursor's table is found, tables are skipped without IO;
         // a vanished cursor table restarts coverage (cheap: presence probes).
         let mut resuming = cursor.is_some();
@@ -4522,7 +4549,38 @@ impl PreheatStageInputs {
                 }
             }
         }
+        staged.dead_entries_removed = staged
+            .dead_entries_removed
+            .saturating_add(self.purge_dead_table_entries());
         staged
+    }
+
+    /// C3a: the pass covered the full walked set — purge every cache entry
+    /// whose table is OUTSIDE it. LRU alone cannot reclaim this garbage fast
+    /// enough (dead blocks only leave via the capped sweep or eviction
+    /// pressure, and that pressure evicts cold-but-LIVE victims too — the
+    /// measured miss floor). A table published DURING the walk is absent
+    /// from the snapshot and loses its warm blocks here; the trigger it
+    /// fired survives to the follow-up pass, which re-admits them.
+    fn purge_dead_table_entries(&self) -> u64 {
+        let Some(cache) = &self.block_cache else {
+            return 0;
+        };
+        let mut live = std::collections::BTreeSet::new();
+        for (_, layout, inherited) in &self.layouts {
+            let tables = layout.levels().iter().flatten().chain(
+                inherited
+                    .iter()
+                    .flat_map(|layer| layer.owned_levels().iter().flatten()),
+            );
+            for table in tables {
+                if let Ok(id) = TableCacheTableId::new(table.facts().identity().as_str().as_bytes())
+                {
+                    live.insert(id);
+                }
+            }
+        }
+        cache.retain_tables(&live) as u64
     }
 }
 
