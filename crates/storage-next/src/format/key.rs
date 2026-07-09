@@ -52,6 +52,10 @@ pub(crate) fn append_internal_key_from_physical(
     version: CommitVersion,
     bytes: &mut Vec<u8>,
 ) {
+    // Reserve the full encoding upfront: the escape encode pushes
+    // byte-by-byte, and growing from empty reallocs several times per key
+    // (measured as the allocator's top hot-path frames).
+    bytes.reserve(physical_key_encode_capacity(key) + INTERNAL_KEY_SUFFIX_LEN);
     append_physical_key(key, bytes);
     // Store the bitwise inverse as big-endian so ordinary ascending byte order
     // returns newest commit versions first for the same physical key.
