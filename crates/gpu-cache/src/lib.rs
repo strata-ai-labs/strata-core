@@ -24,6 +24,8 @@
 #[allow(unsafe_code)]
 mod device;
 
+pub mod tier;
+
 pub use device::arena::{DeviceArena, RegionSpec, SlotAllocator, SlotRegion};
 pub use device::context::{DeviceFacts, GpuContext};
 pub use device::driver::DevicePtr;

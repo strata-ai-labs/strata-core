@@ -9,6 +9,7 @@
 
 pub(crate) mod arena;
 pub(crate) mod context;
+pub(crate) mod cuda_backend;
 pub(crate) mod dl;
 pub(crate) mod driver;
 pub(crate) mod error;
