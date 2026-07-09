@@ -1123,6 +1123,96 @@ Settled C, same protocol, medians of 3 per group (same-session groups):
   observation (pass-boundary purge can lag run-phase table churn), not the
   dominant A term. No read-side regression in any cell.
 
+## 10M FULL YCSB suite (a-f), post-C3 baseline (2026-07-09, v1 @ 30021d5b, /data2)
+
+First full six-workload baseline, both modes, settled durable protocol
+(500K ops, 32g, settle 120s), medians of 3, rep-outer interleave. First
+ledger coverage of D (latest-distribution reads), E (scans), F (RMW).
+
+| workload | durable run (spread) | cache run | durable read p50 | vs RocksDB* |
+|---|---|---|---|---|
+| A 50/50 update | **8,510** (7.1-30.8K) | 348,325 | 7.4-9.1us | 36x |
+| B 95/5 read | **99,079** (71.8-139.1K) | 1,239,659 | 8.9-9.9us | 4.4x |
+| C 100 read | **111,051** (80.5-112.8K) | 1,750,882 | 8.9-9.1us | 3.9x |
+| D latest-read | **69,797** (61.0-96.4K) | 1,285,400 | 9.5-11.8us | n/a |
+| E scan(≤100) | **6,135** (5.3-6.5K) | 543,291 | scan p50 154-190us | n/a |
+| F read-RMW | **12,321** (10.1-12.7K) | 324,022 | 7.6-8.2us | n/a |
+
+*RocksDB refs from the C1-era scoreboard (A 304K / B 437K / C 432K);
+no D/E/F reference cells recorded yet.
+
+- **vs the 2026-07-08 post-campaign row** (durable A/B/C 17.8/54.5/19.5K):
+  C x5.7 (the C campaign), B x1.8, cache C +12% (the C3b strip reaches the
+  cache-mode read path too: 1.56M → 1.75M). A's median moved 17.8K → 8.5K
+  BUT the spread is 7.1-30.8K across reps — the documented write-stall
+  lottery (update p99.9 1-13ms, max 0.4-1.5s in every A cell) dominates A
+  at 10M; no read-side regression (read p50 improved in every cell).
+  Same for F (RMW = A-shaped).
+- Write-heavy workloads (A, F) are now the scoreboard's weak column, gated
+  on the W1.3-class stall lottery, not the read path.
+- E durable ≈ 6.1K ops/s ≈ ~300K rows/s scanned (avg scan ~50 rows) —
+  per-row cursor cost ~1.5-1.9us, consistent with the hot point path;
+  E's low ops/s is scan-length arithmetic, not a defect.
+- Every durable cell's on-disk probe: 24-39GiB post-load → **12GiB
+  post-settle** — settle reclaim converges for the YCSB shape on current
+  v1 within 120s (relevant baseline for #2524, where a multi-zone hot-key
+  shape reported non-converging 40-68GB).
+
+## #2524 attribution: zone-gluing churn convicted; reclaim starves under load; v1 converges (2026-07-09)
+
+New `amp-repro` bin (GT5 `EnginePageStore` shape: 2N+1 rows/commit — 4KiB
+`page/<BE u64>` + 150B `meta/<BE u64>` + per-commit `watermark` + `manifest`
+hot keys; sequential ids; default open options like GT5) + new perf-trace
+reclaim counters (sweep runs/deferrals by cause, objects+bytes quarantined,
+purge runs+bytes, retention runs). 2,048 commits x 256 = 2.07GiB logical.
+
+| cell | post-seed | settle peak | converged | seed compaction input | wide passes (>8 overlap) |
+|---|---|---|---|---|---|
+| full (GT5) | 10.1x | 15.3x @60s | **1.3x** @165s | 16.7GiB (8.1x) | 30/338 |
+| nowatermark | 10.9x | 15.4x @60s | **1.3x** @165s | 18.5GiB (8.9x) | 30/436 |
+| pagesonly | 2.7x | — | **1.3x** @30s | **2.21GiB (1.07x)** | **0**/285 |
+| full, settle-600 | 12.7x | 17.5x @75s | **1.3x** @195s, flat 400s | 22.6GiB (10.9x) | 36/426 |
+
+Verdicts against the three hypothesized mechanisms:
+
+1. **Zone-gluing churn (mechanism A): CONVICTED.** Multi-zone commits pay
+   8-11x compaction rewrite where the single-zone control pays 1.07x; the
+   wide-overlap pass fingerprint (30-36 passes pulling >8 L1 tables vs
+   ZERO) is the predicted gluing signature. Decisive refinement: the
+   watermark hot key is MARGINAL (nowatermark ≈ full) — the `meta/*` /
+   `page/*` prefix interleave alone glues every flush table's span across
+   all older pages. Any workload writing two key prefixes per commit pays
+   this. Trivial moves: 120 (pagesonly) vs 49-71 (glued).
+2. **Reclaim starvation under load (mechanism B): CONFIRMED, mechanism
+   re-scoped.** ZERO reclaim during every seed (retention_runs=0,
+   quarantined=0) even though rewrite publishes enqueue the retention mark
+   — the chain starves at the SCHEDULER (strict ladder + the low-tier
+   interleave's `!has_active_build_task()` gate), upstream of the sweep's
+   own builds_active defer (which never fired: deferred_builds=0). Preheat
+   ran fine during seed via its drain-hook bypass — proof the slots
+   existed. The plan's Fix B (de-gate interleave + registry pins for the
+   mark/sweep interlocks it then hits) targets the right chain.
+3. **GT5's non-convergence (mechanism C, pre-#2523): CONVICTED.** Current
+   v1 converges to 1.3x in ~3min of idle and stays flat for 400+ more
+   seconds. GT5's binary predated the #2523 queue-liveness fixes and
+   watched only 15s of settle — the ascending limb of the reclaim curve.
+
+New finding — **the reclaim transient overshoots**: during early settle the
+store GROWS from ~10x to 15-17.5x (36.3GiB peak for 2.07GiB logical)
+before collapsing — continued churn plus quarantine's copy-then-delete
+staging (29-35GiB copied per cell). On a nearly-full disk this transient
+is an ENOSPC hazard independent of convergence; Fix A removes most of the
+bytes that feed it.
+
+Reads (post-settle, converged store, DEFAULT budget = 240MiB cache vs
+2.7GiB live): round p50 534-651us ≈ 33-40us/read, p99 6-13ms — the
+issue's ms-scale read symptom is partly the default-budget miss regime
+(GT5 also opened with defaults) and partly the amplified store at the
+time. Guidance for the tier: set a memory budget ≥ the live set.
+
+Phase-1 gate: PR-2 (reclaim liveness) and PR-3/4/5 (flush zone cuts +
+compaction edge cuts) both proceed per the approved plan.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
