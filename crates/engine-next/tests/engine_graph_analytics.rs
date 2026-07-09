@@ -5,9 +5,11 @@
 
 mod common;
 
+use std::collections::HashMap;
+
 use strata_engine_next::{
-    Database, GraphAdjacencyEdge, GraphAnalyticsBudget, GraphDirection, GraphEdgeData,
-    GraphEdgeType, GraphName, GraphNodeData, GraphNodeId,
+    Database, GraphAdjacencyEdge, GraphAnalyticsBudget, GraphCdlpOptions, GraphDirection,
+    GraphEdgeData, GraphEdgeType, GraphName, GraphNodeData, GraphNodeId, GraphPageRankOptions,
 };
 
 use common::{branch, open_cache_database, open_durable_database, space};
@@ -356,4 +358,106 @@ fn exercise_exact_algorithms(mut database: Database) {
             .expect("historical sssp runs"),
         sssp
     );
+}
+
+#[test]
+fn iterative_algorithms_run_over_snapshots_in_cache_and_durable_modes() {
+    run_database_modes(exercise_iterative_algorithms);
+}
+
+/// web: bidirectional triangles {a, b, c} and {x, y, z} with bridge c -> x.
+fn exercise_iterative_algorithms(mut database: Database) {
+    let mut graph = graph_service(&mut database, "default", "default");
+    let name = graph_name("web");
+    graph.create_graph(name.clone()).expect("graph created");
+    for id in ["a", "b", "c", "x", "y", "z"] {
+        graph
+            .upsert_node(&name, node_id(id), GraphNodeData::default())
+            .expect("node");
+    }
+    let mut link = |src: &str, dst: &str| {
+        graph
+            .upsert_edge(
+                &name,
+                node_id(src),
+                edge_type("e"),
+                node_id(dst),
+                edge_data(1.0),
+            )
+            .expect("edge");
+    };
+    for (left, right) in [
+        ("a", "b"),
+        ("b", "c"),
+        ("a", "c"),
+        ("x", "y"),
+        ("y", "z"),
+        ("x", "z"),
+    ] {
+        link(left, right);
+        link(right, left);
+    }
+    link("c", "x");
+
+    let index = graph
+        .adjacency_index(&name, &GraphAnalyticsBudget::default())
+        .expect("index builds");
+    let at = |id: &str| index.node_index(&node_id(id)).expect("node indexed");
+
+    // Communities settle within each triangle.
+    let cdlp = index.cdlp(&GraphCdlpOptions::default());
+    assert_eq!(cdlp.label(at("a")), cdlp.label(at("b")));
+    assert_eq!(cdlp.label(at("a")), cdlp.label(at("c")));
+    assert_eq!(cdlp.label(at("x")), cdlp.label(at("y")));
+    assert_eq!(cdlp.label(at("x")), cdlp.label(at("z")));
+
+    // PageRank conserves mass, and the bridge makes x the top node.
+    let pagerank = index.pagerank(&GraphPageRankOptions::default());
+    let sum: f64 = pagerank.ranks().iter().sum();
+    assert!((sum - 1.0).abs() < 1e-6, "mass leaked: {sum}");
+    let x_rank = pagerank.rank(at("x")).expect("ranked");
+    for id in ["a", "b", "c", "y", "z"] {
+        assert!(x_rank > pagerank.rank(at(id)).expect("ranked"));
+    }
+
+    // Personalized PageRank concentrates mass on the seed's side, and
+    // an empty personalization refuses by code.
+    let seeded = index
+        .personalized_pagerank(
+            &GraphPageRankOptions::default(),
+            &HashMap::from([(node_id("a"), 1.0)]),
+        )
+        .expect("ppr runs");
+    assert!(seeded.rank(at("a")).expect("ranked") > seeded.rank(at("z")).expect("ranked"));
+    let error = index
+        .personalized_pagerank(&GraphPageRankOptions::default(), &HashMap::new())
+        .expect_err("empty personalization refuses");
+    assert_eq!(
+        error.code(),
+        "invalid_argument.engine.graph_personalization"
+    );
+
+    let seeded_version = graph
+        .graph_info(&name)
+        .expect("info reads")
+        .expect("graph visible")
+        .updated_version();
+
+    // Cut the bridge: the latest ranking changes, the historical
+    // snapshot reproduces every pre-mutation result exactly.
+    graph
+        .delete_edge(&name, &node_id("c"), &edge_type("e"), &node_id("x"))
+        .expect("delete edge");
+    let latest = graph
+        .adjacency_index(&name, &GraphAnalyticsBudget::default())
+        .expect("index builds");
+    assert_ne!(latest.pagerank(&GraphPageRankOptions::default()), pagerank);
+    let historical = graph
+        .adjacency_index_at_version(&name, &GraphAnalyticsBudget::default(), seeded_version)
+        .expect("historical index builds");
+    assert_eq!(
+        historical.pagerank(&GraphPageRankOptions::default()),
+        pagerank
+    );
+    assert_eq!(historical.cdlp(&GraphCdlpOptions::default()), cdlp);
 }

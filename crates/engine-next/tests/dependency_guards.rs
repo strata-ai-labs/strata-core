@@ -273,19 +273,12 @@ fn graph_service_keeps_storage_requests_in_persistence_modules() {
 fn graph_core_does_not_expose_deferred_graph_surface() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let roots = [root.join("api"), root.join("data").join("graph")];
-    // GO1 lifted the ontology deferral and GA2 lifted the exact-algorithm
-    // deferral (docs/design/graph-v1-port-gap-analysis.md); iterative
-    // algorithms, traversal, and search boosting stay deferred until the
-    // remaining GA/GS slices land and remove their tokens here.
-    let forbidden = [
-        "Cdlp",
-        "Pagerank",
-        "PageRank",
-        "Bfs",
-        "SemanticMerge",
-        "BranchDag",
-        "Boost",
-    ];
+    // GO1 lifted the ontology deferral, GA2 the exact-algorithm deferral,
+    // and GA3 the iterative-algorithm deferral
+    // (docs/design/graph-v1-port-gap-analysis.md); traversal, semantic
+    // merge, branch-DAG surfaces, and search boosting stay deferred until
+    // the remaining GA/GS slices land and remove their tokens here.
+    let forbidden = ["Bfs", "SemanticMerge", "BranchDag", "Boost"];
     let offenders: Vec<_> = roots
         .into_iter()
         .flat_map(|root| rust_files(&root))

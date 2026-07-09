@@ -62,6 +62,8 @@ const INVALID_INPUT_CODES: &[&str] = &[
     "invalid_argument.engine.graph_node_id",
     "invalid_argument.engine.graph_node_record",
     "invalid_argument.engine.graph_ontology_record",
+    "invalid_argument.engine.graph_pagerank_options",
+    "invalid_argument.engine.graph_personalization",
     "invalid_argument.engine.graph_properties",
     "invalid_argument.engine.graph_properties_too_large",
     "invalid_argument.engine.graph_property_name",

@@ -310,6 +310,12 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="invalid_argument.engine.graph_ontology_record"></a>
 - `invalid_argument.engine.graph_ontology_record`
 
+<a id="invalid_argument.engine.graph_pagerank_options"></a>
+- `invalid_argument.engine.graph_pagerank_options`
+
+<a id="invalid_argument.engine.graph_personalization"></a>
+- `invalid_argument.engine.graph_personalization`
+
 <a id="invalid_argument.engine.graph_properties"></a>
 - `invalid_argument.engine.graph_properties`
 

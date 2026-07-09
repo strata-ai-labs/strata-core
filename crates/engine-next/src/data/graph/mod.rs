@@ -2,6 +2,7 @@
 
 mod adjacency;
 mod analytics;
+mod iterative;
 mod ontology;
 mod outcome;
 mod record;
@@ -11,6 +12,7 @@ mod types;
 pub(crate) use adjacency::GraphAdjacencyIndexBuilder;
 pub use adjacency::{GraphAdjacencyEdge, GraphAdjacencyIndex, GraphAnalyticsBudget};
 pub use analytics::{GraphLccResult, GraphSsspResult, GraphWccResult};
+pub use iterative::{GraphCdlpOptions, GraphCdlpResult, GraphPageRankOptions, GraphPageRankResult};
 pub use ontology::{
     GraphLinkTypeDef, GraphLinkTypeSummary, GraphObjectTypeDef, GraphObjectTypeSummary,
     GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyStatus, GraphOntologySummary,
