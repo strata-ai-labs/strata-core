@@ -74,9 +74,14 @@ pub(super) fn graph_read_outputs() -> Vec<Output> {
             items: Vec::new(),
             page: PageInfo::terminal(),
         },
+        Output::GraphOntologyResult(Some(graph_ontology_output("draft"))),
+        Output::GraphOntologyResult(None),
+        Output::GraphOntologySummaryResult(Some(graph_ontology_summary_output())),
+        Output::GraphOntologySummaryResult(None),
     ]
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn graph_write_outputs() -> Vec<Output> {
     vec![
         Output::GraphNodeWriteResult {
@@ -168,6 +173,44 @@ pub(super) fn graph_write_outputs() -> Vec<Output> {
                 ),
                 GraphBatchItemResult::failed(2, "upsert_edge", "invalid graph edge"),
             ]),
+        },
+        Output::GraphOntologyWriteResult {
+            graph: "deps".to_owned(),
+            kind: "object".to_owned(),
+            type_name: "Document".to_owned(),
+            created: true,
+            effect: MutationEffect::created(),
+            commit: commit_receipt(5, 50, 1, 0),
+            version: 5,
+            timestamp: 50,
+        },
+        Output::GraphOntologyDeleteResult {
+            graph: "deps".to_owned(),
+            kind: "link".to_owned(),
+            type_name: "wrote".to_owned(),
+            deleted: true,
+            effect: MutationEffect::deleted(),
+            commit: Some(commit_receipt(6, 60, 1, 0)),
+            version: Some(6),
+            timestamp: Some(60),
+        },
+        Output::GraphOntologyDeleteResult {
+            graph: "deps".to_owned(),
+            kind: "object".to_owned(),
+            type_name: "Missing".to_owned(),
+            deleted: false,
+            effect: MutationEffect::not_found(),
+            commit: None,
+            version: None,
+            timestamp: None,
+        },
+        Output::GraphOntologyFreezeResult {
+            graph: "deps".to_owned(),
+            object_types: 2,
+            link_types: 1,
+            commit: commit_receipt(7, 70, 1, 0),
+            version: 7,
+            timestamp: 70,
         },
     ]
 }

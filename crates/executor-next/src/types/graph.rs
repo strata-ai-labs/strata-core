@@ -114,15 +114,26 @@ pub struct GraphNodeData {
     properties: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     binding: Option<GraphEntityBinding>,
+    /// Optional declared object type (validated against a frozen ontology).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    object_type: Option<String>,
 }
 
 impl GraphNodeData {
-    /// Creates graph node data.
+    /// Creates graph node data (untyped; see [`Self::with_object_type`]).
     pub const fn new(properties: Option<Value>, binding: Option<GraphEntityBinding>) -> Self {
         Self {
             properties,
             binding,
+            object_type: None,
         }
+    }
+
+    /// Declares the node's object type.
+    #[must_use]
+    pub fn with_object_type(mut self, object_type: impl Into<String>) -> Self {
+        self.object_type = Some(object_type.into());
+        self
     }
 
     /// Returns optional node properties.
@@ -135,9 +146,14 @@ impl GraphNodeData {
         self.binding.as_ref()
     }
 
+    /// Returns the declared object type.
+    pub fn object_type(&self) -> Option<&str> {
+        self.object_type.as_deref()
+    }
+
     /// Consumes the payload.
-    pub fn into_parts(self) -> (Option<Value>, Option<GraphEntityBinding>) {
-        (self.properties, self.binding)
+    pub fn into_parts(self) -> (Option<Value>, Option<GraphEntityBinding>, Option<String>) {
+        (self.properties, self.binding, self.object_type)
     }
 }
 
@@ -289,6 +305,8 @@ pub struct GraphNodeDataOutput {
     properties: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     binding: Option<GraphEntityBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    object_type: Option<String>,
     version: u64,
     timestamp: u64,
 }
@@ -300,6 +318,7 @@ impl GraphNodeDataOutput {
         node_id: String,
         properties: Option<Value>,
         binding: Option<GraphEntityBinding>,
+        object_type: Option<String>,
         version: u64,
         timestamp: u64,
     ) -> Self {
@@ -308,9 +327,15 @@ impl GraphNodeDataOutput {
             node_id,
             properties,
             binding,
+            object_type,
             version,
             timestamp,
         }
+    }
+
+    /// Returns the declared object type.
+    pub fn object_type(&self) -> Option<&str> {
+        self.object_type.as_deref()
     }
 
     /// Returns the graph name.
@@ -705,5 +730,302 @@ impl GraphBatchItemResult {
     /// Returns the structured item error status.
     pub const fn error_status(&self) -> Option<&ErrorStatus> {
         self.error.as_ref()
+    }
+}
+
+/// One declared property on a graph object or link type (wire form).
+/// `value_type` is a recorded hint, not an enforced constraint.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphPropertyDef {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    value_type: Option<String>,
+    #[serde(default)]
+    required: bool,
+}
+
+impl GraphPropertyDef {
+    /// Creates a property definition.
+    pub const fn new(value_type: Option<String>, required: bool) -> Self {
+        Self {
+            value_type,
+            required,
+        }
+    }
+
+    /// Returns the recorded value-type hint.
+    pub fn value_type(&self) -> Option<&str> {
+        self.value_type.as_deref()
+    }
+
+    /// Returns whether the property is required once the ontology freezes.
+    pub const fn required(&self) -> bool {
+        self.required
+    }
+
+    /// Consumes the definition.
+    pub fn into_parts(self) -> (Option<String>, bool) {
+        (self.value_type, self.required)
+    }
+}
+
+/// A declared object type (wire form).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphObjectTypeDefData {
+    name: String,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    properties: std::collections::BTreeMap<String, GraphPropertyDef>,
+}
+
+impl GraphObjectTypeDefData {
+    /// Creates an object type definition.
+    pub const fn new(
+        name: String,
+        properties: std::collections::BTreeMap<String, GraphPropertyDef>,
+    ) -> Self {
+        Self { name, properties }
+    }
+
+    /// Returns the type name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the declared properties, ordered by name.
+    pub const fn properties(&self) -> &std::collections::BTreeMap<String, GraphPropertyDef> {
+        &self.properties
+    }
+}
+
+/// A declared link type (wire form). `cardinality` is a recorded hint.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphLinkTypeDefData {
+    name: String,
+    source: String,
+    target: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cardinality: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    properties: std::collections::BTreeMap<String, GraphPropertyDef>,
+}
+
+impl GraphLinkTypeDefData {
+    /// Creates a link type definition.
+    pub const fn new(
+        name: String,
+        source: String,
+        target: String,
+        cardinality: Option<String>,
+        properties: std::collections::BTreeMap<String, GraphPropertyDef>,
+    ) -> Self {
+        Self {
+            name,
+            source,
+            target,
+            cardinality,
+            properties,
+        }
+    }
+
+    /// Returns the type name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Returns the declared source object type.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Returns the declared target object type.
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    /// Returns the recorded cardinality hint.
+    pub fn cardinality(&self) -> Option<&str> {
+        self.cardinality.as_deref()
+    }
+
+    /// Returns the declared properties, ordered by name.
+    pub const fn properties(&self) -> &std::collections::BTreeMap<String, GraphPropertyDef> {
+        &self.properties
+    }
+}
+
+/// A graph's ontology: status plus every declared type (wire form).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphOntologyData {
+    graph: String,
+    status: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    object_types: Vec<GraphObjectTypeDefData>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    link_types: Vec<GraphLinkTypeDefData>,
+    version: u64,
+    timestamp: u64,
+}
+
+impl GraphOntologyData {
+    /// Creates ontology output data.
+    pub const fn new(
+        graph: String,
+        status: String,
+        object_types: Vec<GraphObjectTypeDefData>,
+        link_types: Vec<GraphLinkTypeDefData>,
+        version: u64,
+        timestamp: u64,
+    ) -> Self {
+        Self {
+            graph,
+            status,
+            object_types,
+            link_types,
+            version,
+            timestamp,
+        }
+    }
+
+    /// Returns the graph name.
+    pub fn graph(&self) -> &str {
+        &self.graph
+    }
+
+    /// Returns the lifecycle status (`draft` or `frozen`).
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// Returns declared object types, ordered by name.
+    pub fn object_types(&self) -> &[GraphObjectTypeDefData] {
+        &self.object_types
+    }
+
+    /// Returns declared link types, ordered by name.
+    pub fn link_types(&self) -> &[GraphLinkTypeDefData] {
+        &self.link_types
+    }
+
+    /// Returns the commit version of the visible ontology row.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Returns the commit timestamp of the visible ontology row.
+    pub const fn timestamp(&self) -> u64 {
+        self.timestamp
+    }
+}
+
+/// One object type with its visible node count (wire form).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphObjectTypeSummaryData {
+    #[serde(flatten)]
+    def: GraphObjectTypeDefData,
+    node_count: u64,
+}
+
+impl GraphObjectTypeSummaryData {
+    /// Creates an object type summary.
+    pub const fn new(def: GraphObjectTypeDefData, node_count: u64) -> Self {
+        Self { def, node_count }
+    }
+
+    /// Returns the type definition.
+    pub const fn def(&self) -> &GraphObjectTypeDefData {
+        &self.def
+    }
+
+    /// Returns the number of visible nodes declaring this type.
+    pub const fn node_count(&self) -> u64 {
+        self.node_count
+    }
+}
+
+/// One link type with its visible edge count (wire form).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphLinkTypeSummaryData {
+    #[serde(flatten)]
+    def: GraphLinkTypeDefData,
+    edge_count: u64,
+}
+
+impl GraphLinkTypeSummaryData {
+    /// Creates a link type summary.
+    pub const fn new(def: GraphLinkTypeDefData, edge_count: u64) -> Self {
+        Self { def, edge_count }
+    }
+
+    /// Returns the type definition.
+    pub const fn def(&self) -> &GraphLinkTypeDefData {
+        &self.def
+    }
+
+    /// Returns the number of visible edges carrying this type.
+    pub const fn edge_count(&self) -> u64 {
+        self.edge_count
+    }
+}
+
+/// The ontology with per-type usage counts (wire form).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphOntologySummaryData {
+    graph: String,
+    status: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    object_types: Vec<GraphObjectTypeSummaryData>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    link_types: Vec<GraphLinkTypeSummaryData>,
+    version: u64,
+    timestamp: u64,
+}
+
+impl GraphOntologySummaryData {
+    /// Creates ontology summary output data.
+    pub const fn new(
+        graph: String,
+        status: String,
+        object_types: Vec<GraphObjectTypeSummaryData>,
+        link_types: Vec<GraphLinkTypeSummaryData>,
+        version: u64,
+        timestamp: u64,
+    ) -> Self {
+        Self {
+            graph,
+            status,
+            object_types,
+            link_types,
+            version,
+            timestamp,
+        }
+    }
+
+    /// Returns the graph name.
+    pub fn graph(&self) -> &str {
+        &self.graph
+    }
+
+    /// Returns the lifecycle status (`draft` or `frozen`).
+    pub fn status(&self) -> &str {
+        &self.status
+    }
+
+    /// Returns object type summaries, ordered by name.
+    pub fn object_types(&self) -> &[GraphObjectTypeSummaryData] {
+        &self.object_types
+    }
+
+    /// Returns link type summaries, ordered by name.
+    pub fn link_types(&self) -> &[GraphLinkTypeSummaryData] {
+        &self.link_types
+    }
+
+    /// Returns the commit version of the visible ontology row.
+    pub const fn version(&self) -> u64 {
+        self.version
+    }
+
+    /// Returns the commit timestamp of the visible ontology row.
+    pub const fn timestamp(&self) -> u64 {
+        self.timestamp
     }
 }

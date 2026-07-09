@@ -62,6 +62,139 @@ impl Executor {
             node_id: node_id.into(),
             properties,
             binding,
+            object_type: None,
+        })
+    }
+
+    /// Executes a default-branch typed graph node add command.
+    pub fn graph_add_typed_node(
+        &mut self,
+        graph: impl Into<String>,
+        node_id: impl Into<String>,
+        object_type: impl Into<String>,
+        properties: Option<serde_json::Value>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphAddNode {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            node_id: node_id.into(),
+            properties,
+            binding: None,
+            object_type: Some(object_type.into()),
+        })
+    }
+
+    /// Executes a default-branch object type definition command.
+    pub fn graph_define_object_type(
+        &mut self,
+        graph: impl Into<String>,
+        name: impl Into<String>,
+        properties: std::collections::BTreeMap<String, crate::types::GraphPropertyDef>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphDefineObjectType {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            name: name.into(),
+            properties,
+        })
+    }
+
+    /// Executes a default-branch link type definition command.
+    pub fn graph_define_link_type(
+        &mut self,
+        graph: impl Into<String>,
+        name: impl Into<String>,
+        source: impl Into<String>,
+        target: impl Into<String>,
+        cardinality: Option<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphDefineLinkType {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            name: name.into(),
+            source: source.into(),
+            target: target.into(),
+            cardinality,
+            properties: std::collections::BTreeMap::new(),
+        })
+    }
+
+    /// Executes a default-branch object type deletion command.
+    pub fn graph_delete_object_type(
+        &mut self,
+        graph: impl Into<String>,
+        name: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphDeleteObjectType {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            name: name.into(),
+        })
+    }
+
+    /// Executes a default-branch link type deletion command.
+    pub fn graph_delete_link_type(
+        &mut self,
+        graph: impl Into<String>,
+        name: impl Into<String>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphDeleteLinkType {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            name: name.into(),
+        })
+    }
+
+    /// Executes a default-branch ontology freeze command.
+    pub fn graph_freeze_ontology(&mut self, graph: impl Into<String>) -> ExecutorResult<Output> {
+        self.execute(Command::GraphFreezeOntology {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+        })
+    }
+
+    /// Executes a default-branch ontology read command.
+    pub fn graph_get_ontology(&mut self, graph: impl Into<String>) -> ExecutorResult<Output> {
+        self.execute(Command::GraphGetOntology {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch ontology summary command.
+    pub fn graph_ontology_summary(&mut self, graph: impl Into<String>) -> ExecutorResult<Output> {
+        self.execute(Command::GraphOntologySummary {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch nodes-by-type command.
+    pub fn graph_nodes_by_type(
+        &mut self,
+        graph: impl Into<String>,
+        object_type: impl Into<String>,
+        cursor: Option<String>,
+        limit: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphNodesByType {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            object_type: object_type.into(),
+            cursor,
+            limit,
+            as_of: None,
         })
     }
 

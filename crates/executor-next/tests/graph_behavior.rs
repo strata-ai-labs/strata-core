@@ -1030,6 +1030,7 @@ fn assert_graph_error_mapping(executor: &mut Executor) {
 
     let bad_node_props = executor
         .execute(Command::GraphAddNode {
+            object_type: None,
             branch: None,
             space: None,
             graph: "errors".to_owned(),
@@ -1072,6 +1073,7 @@ fn assert_graph_error_mapping(executor: &mut Executor) {
 
     let bad_binding = executor
         .execute(Command::GraphAddNode {
+            object_type: None,
             branch: None,
             space: None,
             graph: "errors".to_owned(),
@@ -1101,6 +1103,7 @@ fn assert_graph_error_mapping(executor: &mut Executor) {
 
     let missing_write = executor
         .execute(Command::GraphAddNode {
+            object_type: None,
             branch: None,
             space: None,
             graph: "missing".to_owned(),
@@ -1405,6 +1408,7 @@ fn add_node(
 ) {
     match executor
         .execute(Command::GraphAddNode {
+            object_type: None,
             branch: None,
             space: None,
             graph: graph.to_owned(),
@@ -1438,6 +1442,7 @@ fn graph_add_node_output(
 ) -> bool {
     match executor
         .execute(Command::GraphAddNode {
+            object_type: None,
             branch: None,
             space: None,
             graph: graph.to_owned(),
@@ -1481,6 +1486,7 @@ fn graph_add_node_in(
 ) {
     match executor
         .execute(Command::GraphAddNode {
+            object_type: None,
             branch: branch.map(str::to_owned),
             space: space.map(str::to_owned),
             graph: graph.to_owned(),
@@ -1506,6 +1512,7 @@ fn graph_add_node_with_binding_in(
 ) {
     match executor
         .execute(Command::GraphAddNode {
+            object_type: None,
             branch: branch.map(str::to_owned),
             space: space.map(str::to_owned),
             graph: graph.to_owned(),
@@ -1554,6 +1561,7 @@ fn add_node_capturing_timestamp(
 ) -> u64 {
     match executor
         .execute(Command::GraphAddNode {
+            object_type: None,
             branch: None,
             space: None,
             graph: graph.to_owned(),

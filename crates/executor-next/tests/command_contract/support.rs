@@ -11,7 +11,9 @@ pub(super) use strata_executor_next::{
     EventBatchAppendItemResult, EventChainVerification, EventData, EventRangeDirection,
     EventVersionedData, GraphBatchItemResult, GraphBatchOperation, GraphBindingHit,
     GraphBindingPrimitive, GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEdgeDataOutput,
-    GraphEntityBinding, GraphInfoData, GraphNeighborHit, GraphNodeData, GraphNodeDataOutput,
+    GraphEntityBinding, GraphInfoData, GraphLinkTypeDefData, GraphLinkTypeSummaryData,
+    GraphNeighborHit, GraphNodeData, GraphNodeDataOutput, GraphObjectTypeDefData,
+    GraphObjectTypeSummaryData, GraphOntologyData, GraphOntologySummaryData, GraphPropertyDef,
     HistoryItem, HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
     JsonIndexDefinition, JsonIndexType, JsonSampleItem, JsonVersionedValue, MaybeJsonValue,
     MaybeJsonVersionedValue, MutationEffect, MutationEffectKind, Output, PageInfo, SampleItem,
@@ -41,6 +43,7 @@ pub(super) fn response_fixture_texts() -> Vec<&'static str> {
         include_str!("../fixtures/responses/v1/branches/branch_get.json"),
         include_str!("../fixtures/responses/v1/event/append_applied.json"),
         include_str!("../fixtures/responses/v1/graph/node_write_applied.json"),
+        include_str!("../fixtures/responses/v1/graph/ontology_read.json"),
         include_str!("../fixtures/responses/v1/json/get_found.json"),
         include_str!("../fixtures/responses/v1/kv/delete_missing.json"),
         include_str!("../fixtures/responses/v1/kv/get_found.json"),
@@ -314,6 +317,51 @@ pub(super) fn graph_node_output(graph: &str, node_id: &str) -> GraphNodeDataOutp
         node_id.to_owned(),
         Some(json!({"kind": "node"})),
         Some(graph_binding()),
+        None,
+        2,
+        20,
+    )
+}
+
+pub(super) fn graph_object_type_def() -> GraphObjectTypeDefData {
+    GraphObjectTypeDefData::new(
+        "Document".to_owned(),
+        [(
+            "title".to_owned(),
+            GraphPropertyDef::new(Some("string".to_owned()), true),
+        )]
+        .into_iter()
+        .collect(),
+    )
+}
+
+pub(super) fn graph_link_type_def() -> GraphLinkTypeDefData {
+    GraphLinkTypeDefData::new(
+        "wrote".to_owned(),
+        "Author".to_owned(),
+        "Document".to_owned(),
+        Some("one-to-many".to_owned()),
+        std::collections::BTreeMap::new(),
+    )
+}
+
+pub(super) fn graph_ontology_output(status: &str) -> GraphOntologyData {
+    GraphOntologyData::new(
+        "deps".to_owned(),
+        status.to_owned(),
+        vec![graph_object_type_def()],
+        vec![graph_link_type_def()],
+        2,
+        20,
+    )
+}
+
+pub(super) fn graph_ontology_summary_output() -> GraphOntologySummaryData {
+    GraphOntologySummaryData::new(
+        "deps".to_owned(),
+        "frozen".to_owned(),
+        vec![GraphObjectTypeSummaryData::new(graph_object_type_def(), 2)],
+        vec![GraphLinkTypeSummaryData::new(graph_link_type_def(), 1)],
         2,
         20,
     )

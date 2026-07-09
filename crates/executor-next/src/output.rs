@@ -5,11 +5,12 @@ use crate::types::{
     ArrowImportResult, BatchGetItemResult, BatchItemResult, BatchResult, BranchCleanupItem,
     BranchItem, Bytes, CommitReceipt, EventBatchAppendItemResult, EventChainVerification,
     EventVersionedData, GraphBatchItemResult, GraphBindingHit, GraphEdgeDataOutput, GraphInfoData,
-    GraphNeighborHit, GraphNodeDataOutput, HistoryResult, JsonBatchGetItemResult,
-    JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition, JsonSampleItem, MaybeJsonValue,
-    MaybeJsonVersionedValue, MutationEffect, PageInfo, SampleItem, ScanItem,
-    VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorHistoryResult,
-    VectorIndexQueryResult, VectorMatch, VectorVersionedData, VersionedValue,
+    GraphNeighborHit, GraphNodeDataOutput, GraphOntologyData, GraphOntologySummaryData,
+    HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
+    JsonIndexDefinition, JsonSampleItem, MaybeJsonValue, MaybeJsonVersionedValue, MutationEffect,
+    PageInfo, SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult,
+    VectorCollectionInfo, VectorHistoryResult, VectorIndexQueryResult, VectorMatch,
+    VectorVersionedData, VersionedValue,
 };
 use serde::{Deserialize, Serialize};
 
@@ -511,6 +512,66 @@ pub enum Output {
         /// Shared batch result facts.
         #[serde(flatten)]
         batch: BatchResult<GraphBatchItemResult>,
+    },
+    /// Graph ontology read result (`None` before any type is defined).
+    GraphOntologyResult(Option<GraphOntologyData>),
+    /// Graph ontology summary result with per-type usage counts.
+    GraphOntologySummaryResult(Option<GraphOntologySummaryData>),
+    /// Graph ontology type definition acknowledgement.
+    GraphOntologyWriteResult {
+        /// Graph name.
+        graph: String,
+        /// Type kind: `object` or `link`.
+        kind: String,
+        /// Defined type name.
+        type_name: String,
+        /// True when the definition was new (false: redefined in draft).
+        created: bool,
+        /// Mutation effect facts.
+        effect: MutationEffect,
+        /// Commit receipt.
+        commit: CommitReceipt,
+        /// Commit version.
+        version: u64,
+        /// Commit timestamp.
+        timestamp: u64,
+    },
+    /// Graph ontology type deletion acknowledgement.
+    GraphOntologyDeleteResult {
+        /// Graph name.
+        graph: String,
+        /// Type kind: `object` or `link`.
+        kind: String,
+        /// Deleted type name.
+        type_name: String,
+        /// True when the type existed.
+        deleted: bool,
+        /// Mutation effect facts.
+        effect: MutationEffect,
+        /// Commit receipt when a row changed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<CommitReceipt>,
+        /// Commit version when a row changed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        /// Commit timestamp when a row changed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
+    },
+    /// Graph ontology freeze acknowledgement.
+    GraphOntologyFreezeResult {
+        /// Graph name.
+        graph: String,
+        /// Frozen object type count.
+        object_types: u64,
+        /// Frozen link type count.
+        link_types: u64,
+        /// Commit receipt.
+        commit: CommitReceipt,
+        /// Commit version.
+        version: u64,
+        /// Commit timestamp.
+        timestamp: u64,
     },
     /// Arrow import summary.
     ArrowImportResult(ArrowImportResult),

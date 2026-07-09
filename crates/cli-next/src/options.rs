@@ -897,6 +897,9 @@ pub(crate) enum GraphCommand {
         /// Read properties JSON from a file.
         #[arg(long)]
         properties_file: Option<PathBuf>,
+        /// Optional declared object type (validated once the ontology is frozen).
+        #[arg(long = "type")]
+        object_type: Option<String>,
     },
     /// Read a node.
     GetNode {
@@ -999,12 +1002,108 @@ pub(crate) enum GraphCommand {
         #[arg(long)]
         as_of: Option<u64>,
     },
-    /// Deferred graph ontology commands.
-    #[command(hide = true)]
-    Ontology(DeferredArgs),
+    /// List nodes declaring an object type.
+    NodesByType {
+        /// Graph name.
+        graph: String,
+        /// Object type name.
+        object_type: String,
+        /// Optional node cursor.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Optional item limit.
+        #[arg(long)]
+        limit: Option<u64>,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// Graph ontology commands.
+    Ontology(GraphOntologyArgs),
     /// Deferred graph analytics commands.
     #[command(hide = true)]
     Analytics(DeferredArgs),
+}
+
+/// Graph ontology command wrapper.
+#[derive(Debug, Args)]
+pub(crate) struct GraphOntologyArgs {
+    /// Ontology command.
+    #[command(subcommand)]
+    pub(crate) command: GraphOntologyCommand,
+}
+
+/// Graph ontology commands.
+#[derive(Debug, Subcommand)]
+pub(crate) enum GraphOntologyCommand {
+    /// Define (or, while draft, redefine) an object type.
+    DefineObjectType {
+        /// Graph name.
+        graph: String,
+        /// Object type name.
+        name: String,
+        /// Properties JSON, e.g. `{"prop": {"value_type": "string", "required": true}}`.
+        #[arg(long, conflicts_with = "properties_file")]
+        properties: Option<String>,
+        /// Read properties JSON from a file.
+        #[arg(long)]
+        properties_file: Option<PathBuf>,
+    },
+    /// Define (or, while draft, redefine) a link type.
+    DefineLinkType {
+        /// Graph name.
+        graph: String,
+        /// Link type name.
+        name: String,
+        /// Declared source object type.
+        source: String,
+        /// Declared target object type.
+        target: String,
+        /// Optional cardinality hint (e.g. one-to-many).
+        #[arg(long)]
+        cardinality: Option<String>,
+        /// Properties JSON, e.g. `{"prop": {"value_type": "string", "required": true}}`.
+        #[arg(long, conflicts_with = "properties_file")]
+        properties: Option<String>,
+        /// Read properties JSON from a file.
+        #[arg(long)]
+        properties_file: Option<PathBuf>,
+    },
+    /// Delete a draft object type.
+    DeleteObjectType {
+        /// Graph name.
+        graph: String,
+        /// Object type name.
+        name: String,
+    },
+    /// Delete a draft link type.
+    DeleteLinkType {
+        /// Graph name.
+        graph: String,
+        /// Link type name.
+        name: String,
+    },
+    /// Freeze the ontology; writes then validate against it.
+    Freeze {
+        /// Graph name.
+        graph: String,
+    },
+    /// Read the ontology (status plus every declared type).
+    Get {
+        /// Graph name.
+        graph: String,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// Read the ontology with per-type usage counts.
+    Summary {
+        /// Graph name.
+        graph: String,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
 }
 
 /// Graph direction.

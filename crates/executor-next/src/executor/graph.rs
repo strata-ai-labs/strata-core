@@ -1,13 +1,17 @@
 use super::{
     engine_graph_batch_operation, engine_graph_binding_target, engine_graph_direction,
-    engine_graph_edge_data, engine_graph_node_data, graph_batch_operation_name,
-    graph_batch_write_output, graph_binding_page_output, graph_delete_output,
-    graph_edge_data_output, graph_edge_type, graph_edge_write_output, graph_info_data, graph_name,
-    graph_name_page_output, graph_neighbor_page_output, graph_node_data_output, graph_node_id,
-    graph_node_page_output, graph_node_write_output, optional_graph_edge_type, optional_graph_name,
-    optional_graph_node_id, optional_limit, EngineGraphBatchWrite, Executor, ExecutorResult,
-    GraphBatchOperation, GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEntityBinding,
-    GraphNodeData, Output, Timestamp, DEFAULT_GRAPH_LIST_LIMIT,
+    engine_graph_edge_data, engine_graph_node_data, engine_graph_property_defs,
+    graph_batch_operation_name, graph_batch_write_output, graph_binding_page_output,
+    graph_delete_output, graph_edge_data_output, graph_edge_type, graph_edge_write_output,
+    graph_info_data, graph_name, graph_name_page_output, graph_neighbor_page_output,
+    graph_node_data_output, graph_node_id, graph_node_page_output, graph_node_write_output,
+    graph_ontology_delete_output, graph_ontology_freeze_output, graph_ontology_output,
+    graph_ontology_summary_output, graph_ontology_write_output, graph_type_name,
+    optional_graph_edge_type, optional_graph_name, optional_graph_node_id, optional_limit,
+    EngineGraphBatchWrite, EngineGraphLinkTypeDef, EngineGraphObjectTypeDef, Executor,
+    ExecutorResult, GraphBatchOperation, GraphBindingTarget, GraphDirection, GraphEdgeData,
+    GraphEntityBinding, GraphNodeData, GraphPropertyDef, Output, Timestamp,
+    DEFAULT_GRAPH_LIST_LIMIT,
 };
 
 impl Executor {
@@ -86,10 +90,15 @@ impl Executor {
         node_id: String,
         properties: Option<serde_json::Value>,
         binding: Option<GraphEntityBinding>,
+        object_type: Option<String>,
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let node_id = graph_node_id(node_id)?;
-        let data = engine_graph_node_data(GraphNodeData::new(properties, binding))?;
+        let mut data = GraphNodeData::new(properties, binding);
+        if let Some(object_type) = object_type {
+            data = data.with_object_type(object_type);
+        }
+        let data = engine_graph_node_data(data)?;
         let mut service = self.graph_service(branch, space)?;
         Ok(graph_node_write_output(
             &service.upsert_node(&graph, node_id, data)?,
@@ -330,5 +339,167 @@ impl Executor {
             &service.batch_write(&graph, &batch)?,
             &operation_names,
         ))
+    }
+
+    pub(super) fn execute_graph_define_object_type(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        name: String,
+        properties: std::collections::BTreeMap<String, GraphPropertyDef>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let def = EngineGraphObjectTypeDef::new(
+            graph_type_name(name)?,
+            engine_graph_property_defs(properties)?,
+        )?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_ontology_write_output(
+            &service.define_object_type(&graph, def)?,
+            "object",
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn execute_graph_define_link_type(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        name: String,
+        source: String,
+        target: String,
+        cardinality: Option<String>,
+        properties: std::collections::BTreeMap<String, GraphPropertyDef>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let def = EngineGraphLinkTypeDef::new(
+            graph_type_name(name)?,
+            graph_type_name(source)?,
+            graph_type_name(target)?,
+            cardinality,
+            engine_graph_property_defs(properties)?,
+        )?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_ontology_write_output(
+            &service.define_link_type(&graph, def)?,
+            "link",
+        ))
+    }
+
+    pub(super) fn execute_graph_delete_object_type(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        name: String,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let name = graph_type_name(name)?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_ontology_delete_output(
+            &service.delete_object_type(&graph, &name)?,
+            "object",
+            name.as_str(),
+        ))
+    }
+
+    pub(super) fn execute_graph_delete_link_type(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        name: String,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let name = graph_type_name(name)?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_ontology_delete_output(
+            &service.delete_link_type(&graph, &name)?,
+            "link",
+            name.as_str(),
+        ))
+    }
+
+    pub(super) fn execute_graph_freeze_ontology(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(graph_ontology_freeze_output(
+            &service.freeze_ontology(&graph)?,
+        ))
+    }
+
+    pub(super) fn execute_graph_get_ontology(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let mut service = self.graph_service(branch, space)?;
+        let ontology = if let Some(as_of) = as_of {
+            service.ontology_at(&graph, Timestamp::from_micros(as_of))?
+        } else {
+            service.ontology(&graph)?
+        };
+        Ok(Output::GraphOntologyResult(
+            ontology.as_ref().map(graph_ontology_output),
+        ))
+    }
+
+    pub(super) fn execute_graph_ontology_summary(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let mut service = self.graph_service(branch, space)?;
+        let summary = if let Some(as_of) = as_of {
+            service.ontology_summary_at(&graph, Timestamp::from_micros(as_of))?
+        } else {
+            service.ontology_summary(&graph)?
+        };
+        Ok(Output::GraphOntologySummaryResult(
+            summary.as_ref().map(graph_ontology_summary_output),
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn execute_graph_nodes_by_type(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        object_type: String,
+        cursor: Option<String>,
+        limit: Option<u64>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let object_type = graph_type_name(object_type)?;
+        let cursor = optional_graph_node_id(cursor)?;
+        let limit = optional_limit(limit)?.unwrap_or(DEFAULT_GRAPH_LIST_LIMIT);
+        let mut service = self.graph_service(branch, space)?;
+        let page = if let Some(as_of) = as_of {
+            service.nodes_by_type_at(
+                &graph,
+                &object_type,
+                cursor.as_ref(),
+                limit,
+                Timestamp::from_micros(as_of),
+            )?
+        } else {
+            service.nodes_by_type(&graph, &object_type, cursor.as_ref(), limit)?
+        };
+        Ok(graph_node_page_output(&page))
     }
 }
