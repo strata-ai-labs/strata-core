@@ -1249,6 +1249,53 @@ amp-repro `full` (GT5 shape), same protocol as the PR-1 attribution row:
   reachability at install); abandoned build releases pins and its outputs
   are reclaimed next cycle.
 
+## #2524 A2: flush zone cuts — the gluing churn collapses (2026-07-09)
+
+Fix A slice 2 (after A1's plural plumbing, merged #2532): flush cuts the
+frozen memtable BEFORE any key whose gap from its predecessor skips >=32MiB
+of whole L1 tables (largest gaps first, <=4 outputs, monotone two-pointer
+over the sorted L1 spans + frozen keys). Cuts land only at physical-key
+transitions; per-segment identities are content-derived (same recipe as the
+whole-memtable identity — idempotent retries, layout drift orphans safely);
+segments build+publish one at a time (artifact memory stays one segment);
+any post-publication failure reports every published name. Single-zone
+workloads measure gaps of ~0 and NEVER cut — today's one-table flush,
+byte-identical.
+
+amp-repro, same protocol as the PR-1/Fix-B rows (2.07GiB logical):
+
+| metric (full/GT5 shape) | Fix B only | A2 |
+|---|---|---|
+| seed compaction rewrite | 21.6GiB (10.4x) | **4.98GiB (2.4x)** |
+| wide-overlap passes (>8 tables) | 34 | **1** |
+| seed wall time | 107s | **28s** |
+| settle transient peak | 5.8x | **2.5x** |
+| converged 1.3x at | 75s | **~30s** |
+| trivial moves / metadata avoided (seed) | 69 / 2.1GiB | **147 / 4.3GiB** |
+
+- Cuts fire exactly where predicted: 41-44 cuts across ~77 flushes on the
+  multi-zone shapes (~1.5 outputs/flush); `nowatermark` matches `full`
+  (the meta/page interleave is the gluing, as the PR-1 attribution found).
+- **Zero-regression pin holds: `pagesonly` took 0 cuts** (57 flushes, 57
+  outputs, wide passes 0) — single-zone workloads are untouched by
+  construction.
+- The byte-free `MetadataPromotion` path is ALIVE for the glued shape:
+  trivial moves x2, metadata-avoided bytes x2 during seed.
+- Cumulative churn incl. settle: 31.4GiB -> 8.0GiB (3.9x logical). The
+  plan's A3 gate ("churn still > ~3x after A2") technically still fires —
+  residual disk (1.3x) and the transient (2.5x) are near-ideal, so A3's
+  marginal value is now mostly seed-churn CPU/IO, not disk.
+
+Rider (same PR): the Fix-B purge/sweep inventory race — reclaim now runs
+during builds, so a sweep can advance the quarantine inventory between a
+purge's token capture and its mutation; that hard-failed the purge task
+with health debt (the flaky `background_scale` closed-loop assert,
+reproduced on clean v1 HEAD 1-in-5). New typed
+`InventoryTokenMismatch` service error -> `LifecyclePurgeStatus::
+InventoryAdvanced` -> Deferred WITHOUT health debt (the staging sweep's own
+follow-up purge covers the entries). Regression test pins the deferral;
+the closed-loop suite ran 7x green after the fix.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

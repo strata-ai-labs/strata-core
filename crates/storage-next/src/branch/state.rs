@@ -872,9 +872,42 @@ fn insert_sorted_by_range(
 /// Row-for-row equality of a built table (read back through its reader) against a sealed
 /// memtable. BS5.3b moved the hot durable-flush call OFF the runtime lock into the prepare
 /// phase; the install matches by memtable identity instead.
+impl BranchLocalState {
+    /// A2 (#2524): the encoded-physical-key spans and logical byte counts of
+    /// the branch's level-1 tables, in key order — the flush zone-cut
+    /// policy's skip map. Tables whose facts carry no key range (empty) are
+    /// skipped. Encoded physical keys compare in logical key order (the
+    /// escape encoding is order-preserving), so callers can compare these
+    /// bounds directly against frozen rows' encoded physical keys.
+    pub(crate) fn level_one_physical_spans(&self) -> Vec<(Vec<u8>, Vec<u8>, u64)> {
+        let Some(level_one) = self.owned_levels().get(1) else {
+            return Vec::new();
+        };
+        level_one
+            .iter()
+            .filter_map(|table| {
+                let range = table.facts().key_range();
+                let (first, last) = (range.first_key(), range.last_key());
+                if first.is_empty() || last.is_empty() {
+                    return None;
+                }
+                Some((
+                    TablePhysicalKeyBytes::from_encoded_internal_key(first)
+                        .as_slice()
+                        .to_vec(),
+                    TablePhysicalKeyBytes::from_encoded_internal_key(last)
+                        .as_slice()
+                        .to_vec(),
+                    table.facts().byte_count(),
+                ))
+            })
+            .collect()
+    }
+}
+
 /// A1 (#2524): do the tables' rows — concatenated in the given order —
-/// partition the frozen memtable exactly? Key-disjoint flush outputs are
-/// emitted in key order, and frozen iteration is key-ordered, so sequential
+/// partition the frozen memtable exactly? The key-disjoint flush outputs
+/// arrive in key order, and frozen iteration is key-ordered, so sequential
 /// lockstep over each table's cursor against the shared frozen iterator
 /// checks disjointness, totality, and per-row equality in one pass. Any
 /// shortfall, surplus, misorder, or cursor error fails closed.

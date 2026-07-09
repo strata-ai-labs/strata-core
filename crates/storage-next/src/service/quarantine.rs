@@ -119,6 +119,13 @@ pub(crate) enum QuarantineServiceError {
         source_object: ObjectName,
         reason: &'static str,
     },
+    /// #2524 Fix B fallout: the inventory ADVANCED between the purge proof's
+    /// token capture and the mutation — a concurrent sweep staged new
+    /// entries. Not corruption: the caller defers and the staging sweep's
+    /// own follow-up purge covers the entries.
+    InventoryTokenMismatch {
+        inventory_object: ObjectName,
+    },
 }
 
 impl fmt::Display for QuarantineServiceError {
@@ -214,6 +221,10 @@ impl fmt::Display for QuarantineServiceError {
                 formatter,
                 "quarantine inventory entry {object_id} for {source_object} disagrees with {quarantine_object}: {reason}"
             ),
+            Self::InventoryTokenMismatch { inventory_object } => write!(
+                formatter,
+                "quarantine inventory {inventory_object} advanced past the purge proof token"
+            ),
         }
     }
 }
@@ -234,7 +245,8 @@ impl std::error::Error for QuarantineServiceError {
             | Self::InvalidRequest { .. }
             | Self::UnsafeGate { .. }
             | Self::BackendState { .. }
-            | Self::InventoryMismatch { .. } => None,
+            | Self::InventoryMismatch { .. }
+            | Self::InventoryTokenMismatch { .. } => None,
         }
     }
 }

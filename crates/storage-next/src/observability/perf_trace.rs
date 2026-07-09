@@ -252,6 +252,10 @@ pub struct StoragePerfSnapshot {
     quarantine_purge_reclaimed_bytes: u64,
     /// #2524: table-object retention (mark) passes completed.
     table_object_retention_runs: u64,
+    /// A2 (#2524): total flush output tables (one per zone segment).
+    flush_zone_output_tables: u64,
+    /// A2 (#2524): total flush zone cuts taken (outputs - flushes).
+    flush_zone_cuts: u64,
     /// W3.3a: WAL appends staged in the coalescing buffer.
     commit_wal_buffered_appends: u64,
     /// W3.3a: buffer drains by trigger, plus total drained bytes.
@@ -1318,6 +1322,16 @@ impl StoragePerfSnapshot {
     /// #2524: retention (mark) passes completed.
     pub const fn table_object_retention_runs(self) -> u64 {
         self.table_object_retention_runs
+    }
+
+    /// A2 (#2524): total flush output tables.
+    pub const fn flush_zone_output_tables(self) -> u64 {
+        self.flush_zone_output_tables
+    }
+
+    /// A2 (#2524): total flush zone cuts taken.
+    pub const fn flush_zone_cuts(self) -> u64 {
+        self.flush_zone_cuts
     }
 
     /// W3.3a: WAL appends staged in the coalescing buffer.
@@ -3000,6 +3014,10 @@ static QUARANTINE_PURGE_RECLAIMED_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_OBJECT_RETENTION_RUNS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static FLUSH_ZONE_OUTPUT_TABLES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static FLUSH_ZONE_CUTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_WAL_BUFFERED_APPENDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD: AtomicU64 = AtomicU64::new(0);
@@ -3766,6 +3784,8 @@ pub fn reset() {
     QUARANTINE_PURGE_RUNS.store(0, Ordering::Relaxed);
     QUARANTINE_PURGE_RECLAIMED_BYTES.store(0, Ordering::Relaxed);
     TABLE_OBJECT_RETENTION_RUNS.store(0, Ordering::Relaxed);
+    FLUSH_ZONE_OUTPUT_TABLES.store(0, Ordering::Relaxed);
+    FLUSH_ZONE_CUTS.store(0, Ordering::Relaxed);
     TABLE_WARM_PUBLISH_SKIPPED_FULL.store(0, Ordering::Relaxed);
     // Occupancy gauges deliberately NOT reset: they are absolute values kept
     // by signed deltas from the shard refresh; a phase that performs no
@@ -4299,6 +4319,8 @@ pub fn snapshot() -> StoragePerfSnapshot {
         quarantine_purge_runs: QUARANTINE_PURGE_RUNS.load(Ordering::Relaxed),
         quarantine_purge_reclaimed_bytes: QUARANTINE_PURGE_RECLAIMED_BYTES.load(Ordering::Relaxed),
         table_object_retention_runs: TABLE_OBJECT_RETENTION_RUNS.load(Ordering::Relaxed),
+        flush_zone_output_tables: FLUSH_ZONE_OUTPUT_TABLES.load(Ordering::Relaxed),
+        flush_zone_cuts: FLUSH_ZONE_CUTS.load(Ordering::Relaxed),
         commit_wal_buffered_appends: COMMIT_WAL_BUFFERED_APPENDS.load(Ordering::Relaxed),
         commit_wal_buffer_flushes_threshold: COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD
             .load(Ordering::Relaxed),
@@ -6042,6 +6064,18 @@ pub(crate) fn record_table_object_retention_run() {
         return;
     }
     TABLE_OBJECT_RETENTION_RUNS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_flush_zone_outputs(_output_tables: u64, _cuts: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_flush_zone_outputs(output_tables: u64, cuts: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    FLUSH_ZONE_OUTPUT_TABLES.fetch_add(output_tables, Ordering::Relaxed);
+    FLUSH_ZONE_CUTS.fetch_add(cuts, Ordering::Relaxed);
 }
 
 /// C3a: advance the occupancy gauges by the shard refresh's deltas, encoded

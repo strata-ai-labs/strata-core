@@ -138,6 +138,11 @@ pub(crate) enum LifecyclePurgeStatus {
     DeferredIncompleteProof,
     BlockedByRecoveryHealth,
     StaleProof,
+    /// #2524 Fix B: a concurrent sweep staged new entries between this
+    /// purge's token capture and its mutation. Normal under load — the
+    /// staging sweep's own follow-up purge covers the inventory; defer
+    /// WITHOUT health debt.
+    InventoryAdvanced,
     InventoryRewriteFailed,
 }
 
@@ -419,6 +424,7 @@ impl LifecycleQuarantineOutcome {
     ) -> Self {
         let status = match &source {
             QuarantineServiceError::InventoryMismatch { .. }
+            | QuarantineServiceError::InventoryTokenMismatch { .. }
             | QuarantineServiceError::Decode { .. }
             | QuarantineServiceError::DatabaseMismatch { .. }
             | QuarantineServiceError::BranchMismatch { .. }
@@ -871,7 +877,8 @@ impl LifecyclePurgeOutcome {
             | LifecyclePurgeStatus::CompletedWithHealthDebt => MaintenanceOutcomeStatus::Completed,
             LifecyclePurgeStatus::DeferredIncompleteProof
             | LifecyclePurgeStatus::BlockedByRecoveryHealth
-            | LifecyclePurgeStatus::StaleProof => MaintenanceOutcomeStatus::Deferred,
+            | LifecyclePurgeStatus::StaleProof
+            | LifecyclePurgeStatus::InventoryAdvanced => MaintenanceOutcomeStatus::Deferred,
             LifecyclePurgeStatus::InventoryRewriteFailed => MaintenanceOutcomeStatus::Failed,
         };
         let mut outcome = MaintenanceOutcome::new(MaintenanceTaskKind::Purge, status)
@@ -937,6 +944,9 @@ impl LifecyclePurgeOutcome {
             LifecyclePurgeStatus::DeferredIncompleteProof => Some("purge proof is incomplete"),
             LifecyclePurgeStatus::BlockedByRecoveryHealth => Some("recovery health blocks purge"),
             LifecyclePurgeStatus::StaleProof => Some("purge proof is stale"),
+            LifecyclePurgeStatus::InventoryAdvanced => {
+                Some("quarantine inventory advanced past the purge proof")
+            }
             LifecyclePurgeStatus::InventoryRewriteFailed => {
                 Some("quarantine inventory rewrite failed")
             }
@@ -1206,6 +1216,13 @@ pub(crate) fn purge_quarantine(
     );
     Ok(match service.purge_quarantine(service_request) {
         Ok(report) => LifecyclePurgeOutcome::from_report(&report),
+        Err(QuarantineServiceError::InventoryTokenMismatch { .. }) => {
+            LifecyclePurgeOutcome::deferred(
+                branch_id,
+                proof,
+                LifecyclePurgeStatus::InventoryAdvanced,
+            )
+        }
         Err(source) => LifecyclePurgeOutcome::failed_from_service(branch_id, source),
     })
 }
@@ -1569,6 +1586,7 @@ fn quarantine_service_error(source: QuarantineServiceError) -> LifecycleError {
             reason: "quarantine proof is not safe",
         },
         QuarantineServiceError::InventoryMismatch { .. }
+        | QuarantineServiceError::InventoryTokenMismatch { .. }
         | QuarantineServiceError::Decode { .. }
         | QuarantineServiceError::DatabaseMismatch { .. }
         | QuarantineServiceError::BranchMismatch { .. }

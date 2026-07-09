@@ -306,12 +306,14 @@ fn print_counters(phase: &str) {
     let perf = strata_storage_next::perf_trace::snapshot();
     println!(
         "[counters {phase}] compaction: input={} output={} metadata_avoided={} \
-         trivial_moves={} l0_to_l1_ops={}",
+         trivial_moves={} l0_to_l1_ops={} flush_outputs={} zone_cuts={}",
         format_bytes(perf.lifecycle_compaction_input_bytes()),
         format_bytes(perf.lifecycle_compaction_output_bytes()),
         format_bytes(perf.lifecycle_compaction_metadata_bytes_avoided()),
         perf.lifecycle_compaction_trivial_moves(),
         perf.lifecycle_compaction_l0_to_level_one_operations(),
+        perf.flush_zone_output_tables(),
+        perf.flush_zone_cuts(),
     );
     println!(
         "[counters {phase}] reclaim: retention_runs={} sweep_runs={} \

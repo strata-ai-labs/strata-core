@@ -375,11 +375,8 @@ fn validate_purge_inventory_token(
     if inventory.token() == expected {
         return Ok(());
     }
-    Err(QuarantineServiceError::InventoryMismatch {
-        object_id: ObjectLayout::quarantine_inventory_object_id().to_owned(),
-        quarantine_object: inventory.object().clone(),
-        source_object: inventory.object().clone(),
-        reason: "inventory token differs from purge proof",
+    Err(QuarantineServiceError::InventoryTokenMismatch {
+        inventory_object: inventory.object().clone(),
     })
 }
 
