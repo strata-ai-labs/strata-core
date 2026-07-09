@@ -146,6 +146,7 @@ fn build_flush_drain(
     request: &crate::lifecycle::flush::FlushDrainRequest,
     budget: &crate::lifecycle::StorageBudgetLedger,
     data_block_bytes: Option<u32>,
+    inflight: &super::inflight::InFlightTableOutputs,
 ) -> LifecycleResult<crate::lifecycle::flush::PreparedDurableFlushDrain> {
     prepare_durable_flush_drain_with_budget(
         branch_snapshot,
@@ -154,6 +155,7 @@ fn build_flush_drain(
         request,
         Some(budget),
         data_block_bytes,
+        Some(inflight),
     )
 }
 
@@ -168,6 +170,7 @@ pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
         budget: crate::lifecycle::StorageBudgetLedger,
         data_block_bytes: Option<u32>,
         started_at: std::time::Instant,
+        inflight: super::inflight::InFlightTableOutputs,
     },
     Checkpoint {
         task: MaintenanceTask,
@@ -189,6 +192,7 @@ pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
         table_object: TableObjectService<'static>,
         table_reader: TableObjectReaderService<'static>,
         budget: crate::lifecycle::StorageBudgetLedger,
+        inflight: super::inflight::InFlightTableOutputs,
     },
     Materialization {
         task: MaintenanceTask,
@@ -197,6 +201,7 @@ pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
         table_object: TableObjectService<'static>,
         table_reader: TableObjectReaderService<'static>,
         budget: crate::lifecycle::StorageBudgetLedger,
+        inflight: super::inflight::InFlightTableOutputs,
     },
 }
 
@@ -262,6 +267,7 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                 budget,
                 data_block_bytes,
                 started_at,
+                inflight,
             } => Ok(DurableBackgroundMaintenanceBuilt::Flush {
                 task,
                 branch_id,
@@ -272,6 +278,7 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                     &request,
                     &budget,
                     data_block_bytes,
+                    &inflight,
                 )?,
                 elapsed: started_at.elapsed(),
             }),
@@ -328,6 +335,7 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                 table_object,
                 table_reader,
                 budget,
+                inflight,
             } => Ok(DurableBackgroundMaintenanceBuilt::Compaction {
                 task,
                 branch_id,
@@ -338,6 +346,7 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                     &table_reader,
                     &request,
                     Some(&budget),
+                    Some(&inflight),
                 )?),
             }),
             Self::Materialization {
@@ -347,10 +356,16 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                 table_object,
                 table_reader,
                 budget,
+                inflight,
             } => Ok(DurableBackgroundMaintenanceBuilt::Materialization {
                 task,
                 branch_id,
-                prepared: Box::new(build.build(&table_object, &table_reader, Some(&budget))?),
+                prepared: Box::new(build.build(
+                    &table_object,
+                    &table_reader,
+                    Some(&budget),
+                    Some(&inflight),
+                )?),
             }),
         }
     }
@@ -1693,6 +1708,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 budget: self.budget.clone(),
                 data_block_bytes: self.open_plan.lifecycle_config().data_block_bytes(),
                 started_at: std::time::Instant::now(),
+                inflight: self.inflight_outputs.clone(),
             },
         ))))
     }
@@ -3094,6 +3110,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 table_object: self.services.table_object().clone(),
                 table_reader: self.services.table_reader().clone(),
                 budget: self.budget.clone(),
+                inflight: self.inflight_outputs.clone(),
             },
         ))))
     }
@@ -3305,6 +3322,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                         table_object: self.services.table_object().clone(),
                         table_reader: self.services.table_reader().clone(),
                         budget: self.budget.clone(),
+                        inflight: self.inflight_outputs.clone(),
                     },
                 ))))
             }
@@ -3380,17 +3398,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             return Ok(None);
         }
         let state = self.state;
-        // Defer the table-object mark outright while builds are in flight: the sweep would
-        // defer on the same condition anyway, so running the O(inventory + manifests) mark
-        // first only burns the drain slot (measured: enough wasted slots under a sustained
-        // load's 16 background workers to push compaction into the L0 admission wall). The
-        // deferral is cheap and the mark re-runs at the next lull, close, or reopen.
-        let builds_active = self.maintenance.has_active_build_task();
-        let pinned_objects = if builds_active {
-            Vec::new()
-        } else {
-            in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog)
-        };
+        // #2524: the mark runs DURING builds now — in-flight outputs are
+        // pinned by name (reserved before their bytes land), so the wholesale
+        // `has_active_build_task` defer that starved reclaim under sustained
+        // load (zero retention runs across a whole seed) is gone.
+        let mut pinned_objects =
+            in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
+        pinned_objects.extend(self.inflight_outputs.snapshot());
         let maintenance = &mut self.maintenance;
         let services = &self.services;
         let health = self.current_recovery_health.clone();
@@ -3404,7 +3418,6 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             pending_releases,
             pending_releases_sequence,
             pinned_objects,
-            builds_active,
         };
         let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             matches!(
@@ -3485,6 +3498,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         self.run_quarantine_maintenance_task(task.id())
     }
 
+    /// #2524 test seam: the in-flight build-output registry, so tests can
+    /// observe reservations and pin objects directly.
+    #[cfg(test)]
+    pub(crate) fn inflight_table_outputs(&self) -> &super::inflight::InFlightTableOutputs {
+        &self.inflight_outputs
+    }
+
     pub(crate) fn run_quarantine_maintenance_task(
         &mut self,
         task_id: MaintenanceTaskId,
@@ -3496,10 +3516,12 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             self.allocator.timestamp_guard().last_allocated(),
             self.recovered_checkpoint_timestamp_max,
         );
-        let builds_active = self.maintenance.has_active_build_task();
         let retired_readers_alive = self.snapshot_publisher.retired_views_alive();
-        let pinned_objects =
+        // #2524: in-flight build outputs are pinned by name (see the
+        // background sweep entry) — no wholesale build defer.
+        let mut pinned_objects =
             in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
+        pinned_objects.extend(self.inflight_outputs.snapshot());
         let mut runner = DurableTableObjectSweepRunner {
             services: &self.services,
             branch_id: self.initial_branch_id,
@@ -3507,7 +3529,6 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             database_id,
             codec_id,
             staged_at,
-            builds_active,
             retired_readers_alive,
             pinned_objects,
             quarantined_objects: 0,
@@ -3558,10 +3579,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             self.allocator.timestamp_guard().last_allocated(),
             self.recovered_checkpoint_timestamp_max,
         );
-        let builds_active = self.maintenance.has_active_build_task();
         let retired_readers_alive = self.snapshot_publisher.retired_views_alive();
-        let pinned_objects =
+        // #2524: in-flight build outputs are pinned by name (reserved before
+        // their bytes land), so the mark no longer defers wholesale on
+        // `has_active_build_task` — reclaim stays live under sustained load.
+        let mut pinned_objects =
             in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
+        pinned_objects.extend(self.inflight_outputs.snapshot());
         let Some(task) = self
             .maintenance
             .start_next_matching(state, |queued| queued.id() == pending.id())?
@@ -3606,21 +3630,18 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
             return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
         }
-        if builds_active || retired_readers_alive {
+        if retired_readers_alive {
             // Interlock deferral does NOT self-requeue (that would spin the retention →
             // quarantine chain against a long-held reader); the next rewrite publish, reopen,
-            // or explicit Reclaim re-triggers the cycle.
-            crate::observability::perf_trace::record_table_object_sweep_deferred(builds_active);
-            let reason = if builds_active {
-                "table-object sweep deferred: build task in flight"
-            } else {
-                "table-object sweep deferred: retired read view still held"
-            };
+            // or explicit Reclaim re-triggers the cycle. Retired readers remain a wholesale
+            // defer: they are name-addressed with no held fd, and no per-object bookkeeping
+            // says which candidate a live view might still fetch blocks from.
+            crate::observability::perf_trace::record_table_object_sweep_deferred(false);
             let outcome = MaintenanceOutcome::new(
                 MaintenanceTaskKind::Quarantine,
                 MaintenanceOutcomeStatus::Deferred,
             )
-            .with_reason(reason)
+            .with_reason("table-object sweep deferred: retired read view still held")
             .with_stats(LifecycleStats::new(0, 0, 1, 1, 0));
             let outcome = self.maintenance.finish_started(task, outcome, false)?;
             self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
@@ -4728,12 +4749,10 @@ struct DurableRetentionMaintenanceRunner<'a, 'b> {
     health: crate::lifecycle::RecoveryHealth,
     pending_releases: &'a mut Vec<crate::branch::facts::BranchReleasePlan>,
     pending_releases_sequence: &'a mut u64,
-    /// In-memory-reachable table objects, pinned live in the mark (COW crash windows) so the
-    /// report matches what the sweep will actually reclaim.
+    /// In-memory-reachable table objects plus in-flight build outputs
+    /// (#2524), pinned live in the mark so the report matches what the sweep
+    /// will actually reclaim.
     pinned_objects: Vec<crate::object::ObjectName>,
-    /// When a build is in flight the table-object mark defers before the O(inventory) listing —
-    /// the sweep would defer on the same condition, so the scan would be pure wasted slot time.
-    builds_active: bool,
 }
 
 impl DurableRetentionMaintenanceRunner<'_, '_> {
@@ -4842,17 +4861,6 @@ impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
             self.publish_pending_releases()?;
         }
         if let LifecycleRetentionScope::TableObjects { branch_id } = request.scope() {
-            if self.builds_active {
-                return Ok(append_released_table_names(
-                    MaintenanceOutcome::new(
-                        MaintenanceTaskKind::Retention,
-                        MaintenanceOutcomeStatus::Deferred,
-                    )
-                    .with_reason("table-object mark deferred: build task in flight")
-                    .with_stats(LifecycleStats::new(0, 0, 1, 1, 0)),
-                    &drained,
-                ));
-            }
             let table_retention =
                 table_object_retention_request(self.services, branch_id, &self.health)
                     .map(|request| request.with_pinned_objects(self.pinned_objects.clone()))
@@ -5012,10 +5020,11 @@ const TABLE_OBJECT_SWEEP_MAX_OBJECTS: usize = 32;
 /// or manifest advance to invalidate — then stages each unreachable object into quarantine (the
 /// existing two-phase copy-then-delete-source safety net; physical bytes are reclaimed by the
 /// follow-up Purge task). Never deletes an object that any branch can reach: the mark unions
-/// durable-manifest reachability with in-memory pins (COW crash windows), and the sweep defers
-/// outright while an off-lock build is in flight (its unpublished outputs are durably unreachable
-/// by construction) or while a retired read view is still held (durable readers are name-addressed
-/// with no held fd, so a source delete would break their block fetches).
+/// durable-manifest reachability with in-memory pins (COW crash windows) AND the in-flight
+/// build-output registry (#2524 — outputs reserve their names before their bytes land, so the
+/// sweep runs DURING builds instead of deferring wholesale). The one remaining wholesale defer
+/// is a held retired read view (durable readers are name-addressed with no held fd, so a source
+/// delete would break their block fetches).
 struct DurableTableObjectSweepRunner<'a, 'b> {
     services: &'a crate::lifecycle::LifecycleDurableLocalServices<'b>,
     branch_id: strata_core_next::BranchId,
@@ -5023,7 +5032,6 @@ struct DurableTableObjectSweepRunner<'a, 'b> {
     database_id: [u8; 16],
     codec_id: LifecycleCodecId,
     staged_at: Timestamp,
-    builds_active: bool,
     retired_readers_alive: bool,
     pinned_objects: Vec<crate::object::ObjectName>,
     /// Out: objects staged into quarantine this pass (drives the follow-up Purge enqueue).
@@ -5061,23 +5069,17 @@ impl MaintenanceTaskRunner for DurableTableObjectSweepRunner<'_, '_> {
             .with_reason("no unreachable table objects")
             .with_stats(LifecycleStats::new(0, 0, 1, 0, 0)));
         }
-        if self.builds_active || self.retired_readers_alive {
+        if self.retired_readers_alive {
             // Interlock deferral does NOT self-requeue (that would spin the retention →
             // quarantine chain against a long-held reader); the next rewrite publish, reopen,
-            // or explicit Reclaim re-triggers the cycle.
-            crate::observability::perf_trace::record_table_object_sweep_deferred(
-                self.builds_active,
-            );
-            let reason = if self.builds_active {
-                "table-object sweep deferred: build task in flight"
-            } else {
-                "table-object sweep deferred: retired read view still held"
-            };
+            // or explicit Reclaim re-triggers the cycle. In-flight build outputs are pinned
+            // by name (#2524), so builds no longer defer the sweep.
+            crate::observability::perf_trace::record_table_object_sweep_deferred(false);
             return Ok(MaintenanceOutcome::new(
                 MaintenanceTaskKind::Quarantine,
                 MaintenanceOutcomeStatus::Deferred,
             )
-            .with_reason(reason)
+            .with_reason("table-object sweep deferred: retired read view still held")
             .with_stats(LifecycleStats::new(0, 0, 1, 1, 0)));
         }
 

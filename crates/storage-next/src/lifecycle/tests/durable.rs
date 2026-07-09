@@ -2783,6 +2783,180 @@ fn assemble_shell(
     LifecycleDurableLocalShell::assemble(request(mode, branch)?, backend, timestamp_source())
 }
 
+/// #2524: the table-object mark and sweep run DURING an active off-lock
+/// build — the wholesale `has_active_build_task` defer starved reclaim
+/// under sustained load (zero retention passes across a whole seed). The
+/// build's published-not-yet-installed outputs are pinned by name in the
+/// in-flight registry: unreachable bait is reclaimed mid-build while the
+/// build's own outputs survive, and the pin hands off to manifest
+/// reachability at install.
+#[test]
+fn table_object_mark_and_sweep_run_during_active_build() {
+    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let branch = branch_id(0x77);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
+
+    // Unreachable bait the mid-build sweep should reclaim.
+    let orphan =
+        ObjectLayout::table_object(&branch.to_string(), 0, "mid-build-orphan").expect("orphan");
+    backend
+        .write_object(&orphan, b"orphan-table")
+        .expect("orphan write");
+
+    // A real off-lock flush build, started and HELD (the task stays active).
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"mid-build-row", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue flush");
+    let step = runtime
+        .start_next_background_flush_maintenance()
+        .expect("start background flush")
+        .expect("background flush step");
+    let pending_build = match step {
+        DurableBackgroundMaintenanceStep::Build(pending) => *pending,
+        _ => panic!("expected a build step"),
+    };
+    // Off-lock build: publishes the flush output and reserves its name.
+    let built = pending_build.build().expect("off-lock flush build");
+    let pinned = runtime.inflight_table_outputs().snapshot();
+    assert!(
+        !pinned.is_empty(),
+        "the build must reserve its published output names before install",
+    );
+
+    // Mark + sweep DURING the active build: both complete (pre-#2524 both
+    // deferred wholesale on the in-flight build).
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch))
+        .expect("enqueue retention");
+    let retention = runtime
+        .run_next_retention_maintenance()
+        .expect("run retention")
+        .expect("retention outcome");
+    assert_eq!(retention.status(), MaintenanceOutcomeStatus::Completed);
+    let sweep = runtime
+        .run_next_quarantine_maintenance()
+        .expect("run sweep")
+        .expect("sweep outcome");
+    assert_eq!(sweep.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        sweep.state_changes(),
+        1,
+        "exactly the unreachable bait is staged; the pinned build output is not",
+    );
+    assert!(
+        backend.object_metadata(&orphan).is_err(),
+        "the bait's source is deleted by quarantine staging mid-build",
+    );
+    for name in &pinned {
+        assert!(
+            backend.object_metadata(name).is_ok(),
+            "pinned in-flight output {name} must survive the mid-build sweep",
+        );
+    }
+
+    // Install: the surviving outputs publish normally, and the pin hands
+    // off to manifest reachability (registry drains).
+    let publish = runtime
+        .begin_publish_phase(built)
+        .expect("begin publish phase");
+    let outcome = match publish {
+        PreparedPublishStep::Done(result) => result.expect("publish done"),
+        PreparedPublishStep::OffLock(prepared) => {
+            let (prepared, write_result) = prepared.persist_off_lock();
+            runtime
+                .finish_publish_phase(prepared, write_result)
+                .expect("finish publish phase")
+        }
+    };
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+    assert!(
+        runtime.inflight_table_outputs().snapshot().is_empty(),
+        "reservations drain once the build is installed",
+    );
+    for name in &pinned {
+        assert!(
+            backend.object_metadata(name).is_ok(),
+            "installed output {name} is manifest-reachable and survives",
+        );
+    }
+}
+
+/// #2524: reservations release when a build is abandoned — the published
+/// outputs become ordinary orphans and the next mark/sweep cycle reclaims
+/// them (the crash-window analog: the registry is in-memory by design).
+#[test]
+fn abandoned_build_outputs_release_their_pins_and_get_reclaimed() {
+    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let branch = branch_id(0x78);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
+
+    runtime
+        .execute_durable_commit(
+            durable_put_batch(branch, b"abandoned-row", b"value"),
+            generation_guard(),
+        )
+        .expect("durable commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("rotate active");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("enqueue flush");
+    let step = runtime
+        .start_next_background_flush_maintenance()
+        .expect("start background flush")
+        .expect("background flush step");
+    let pending_build = match step {
+        DurableBackgroundMaintenanceStep::Build(pending) => *pending,
+        _ => panic!("expected a build step"),
+    };
+    let built = pending_build.build().expect("off-lock flush build");
+    let published = runtime.inflight_table_outputs().snapshot();
+    assert!(!published.is_empty(), "build published + reserved outputs");
+
+    // Abandon the build (publish never runs): the guard drops with it.
+    drop(built);
+    assert!(
+        runtime.inflight_table_outputs().snapshot().is_empty(),
+        "abandoning the build releases its reservations",
+    );
+
+    // The next mark/sweep cycle reclaims the now-orphaned outputs.
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch))
+        .expect("enqueue retention");
+    let retention = runtime
+        .run_next_retention_maintenance()
+        .expect("run retention")
+        .expect("retention outcome");
+    assert_eq!(retention.status(), MaintenanceOutcomeStatus::Completed);
+    let sweep = runtime
+        .run_next_quarantine_maintenance()
+        .expect("run sweep")
+        .expect("sweep outcome");
+    assert_eq!(sweep.status(), MaintenanceOutcomeStatus::Completed);
+    assert_eq!(
+        sweep.state_changes(),
+        published.len(),
+        "every abandoned output is staged for reclaim",
+    );
+    for name in &published {
+        assert!(
+            backend.object_metadata(name).is_err(),
+            "abandoned output {name} must be reclaimed once its pin is gone",
+        );
+    }
+}
+
 fn assemble_shell_with_config(
     mode: StorageMode,
     branch: BranchId,

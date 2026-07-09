@@ -76,6 +76,11 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     /// BS2.3: per-branch published `Arc<BranchReadView>` snapshots. Published under the lock at the
     /// mutation sites; in BS2.3 read only by the debug equivalence oracle (reads still lock).
     pub(super) snapshot_publisher: BranchSnapshotPublisher,
+    /// #2524: object names off-lock builds have published but not yet
+    /// installed. The table-object mark pins these instead of deferring
+    /// wholesale on `has_active_build_task` — reclaim stays live under
+    /// sustained load.
+    pub(super) inflight_outputs: super::inflight::InFlightTableOutputs,
     pub(super) durable_gate: CommitUnresolvedDurableGate,
     pub(super) commit_config: crate::commit::CommitRuntimeConfig,
     pub(super) table_catalog: LifecycleDurableTableCatalog,
@@ -302,6 +307,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             visible: self.visible,
             visible_commit_version: visible_version_mirror(self.visible),
             snapshot_publisher: BranchSnapshotPublisher::new(),
+            inflight_outputs: super::inflight::InFlightTableOutputs::default(),
             durable_gate: self.durable_gate,
             commit_config: self.commit_config,
             table_catalog: self.table_catalog,
