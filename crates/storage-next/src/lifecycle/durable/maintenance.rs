@@ -3422,6 +3422,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             Ok(Some(completed)) if completed.task_kind() == MaintenanceTaskKind::Retention
                 && completed.status() == MaintenanceOutcomeStatus::Completed
         ) {
+            crate::observability::perf_trace::record_table_object_retention_run();
             let _ = self.enqueue_maintenance(MaintenanceTaskRequest::quarantine());
         }
         outcome
@@ -3609,6 +3610,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             // Interlock deferral does NOT self-requeue (that would spin the retention →
             // quarantine chain against a long-held reader); the next rewrite publish, reopen,
             // or explicit Reclaim re-triggers the cycle.
+            crate::observability::perf_trace::record_table_object_sweep_deferred(builds_active);
             let reason = if builds_active {
                 "table-object sweep deferred: build task in flight"
             } else {
@@ -3663,6 +3665,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
             return Ok(outcome);
         }
+        crate::observability::perf_trace::record_table_object_sweep_run();
         let mut outcome = MaintenanceOutcome::new(
             MaintenanceTaskKind::Quarantine,
             MaintenanceOutcomeStatus::Completed,
@@ -4636,6 +4639,9 @@ impl SweepStageInputs {
             match quarantine_outcome.status() {
                 crate::lifecycle::LifecycleQuarantineStatus::QuarantinedSourceDeleted
                 | crate::lifecycle::LifecycleQuarantineStatus::SourceDeleteRetried => {
+                    crate::observability::perf_trace::record_table_object_quarantined(
+                        quarantine_outcome.byte_count(),
+                    );
                     quarantined_objects += 1;
                     staged_names.push(object.to_string());
                 }
@@ -4697,14 +4703,17 @@ impl PurgeStageInputs {
                 self.default_branch_id,
                 inventory.token(),
             )?;
-            Ok(purge_lifecycle_quarantine(
+            let purge_outcome = purge_lifecycle_quarantine(
                 &self.quarantine,
                 branch_id,
                 self.database_id,
                 &self.codec_id,
                 &proof,
-            )?
-            .maintenance_outcome())
+            )?;
+            crate::observability::perf_trace::record_quarantine_purge(
+                purge_outcome.reclaimed_bytes(),
+            );
+            Ok(purge_outcome.maintenance_outcome())
         })();
         PurgeStaged {
             task: self.task,
@@ -5056,6 +5065,9 @@ impl MaintenanceTaskRunner for DurableTableObjectSweepRunner<'_, '_> {
             // Interlock deferral does NOT self-requeue (that would spin the retention →
             // quarantine chain against a long-held reader); the next rewrite publish, reopen,
             // or explicit Reclaim re-triggers the cycle.
+            crate::observability::perf_trace::record_table_object_sweep_deferred(
+                self.builds_active,
+            );
             let reason = if self.builds_active {
                 "table-object sweep deferred: build task in flight"
             } else {
@@ -5092,6 +5104,9 @@ impl MaintenanceTaskRunner for DurableTableObjectSweepRunner<'_, '_> {
             match quarantine_outcome.status() {
                 crate::lifecycle::LifecycleQuarantineStatus::QuarantinedSourceDeleted
                 | crate::lifecycle::LifecycleQuarantineStatus::SourceDeleteRetried => {
+                    crate::observability::perf_trace::record_table_object_quarantined(
+                        quarantine_outcome.byte_count(),
+                    );
                     self.quarantined_objects += 1;
                     staged_names.push(object.to_string());
                 }
@@ -5112,6 +5127,7 @@ impl MaintenanceTaskRunner for DurableTableObjectSweepRunner<'_, '_> {
             .len()
             .saturating_sub(TABLE_OBJECT_SWEEP_MAX_OBJECTS.min(candidates.len()));
 
+        crate::observability::perf_trace::record_table_object_sweep_run();
         let mut outcome = MaintenanceOutcome::new(
             MaintenanceTaskKind::Quarantine,
             MaintenanceOutcomeStatus::Completed,
