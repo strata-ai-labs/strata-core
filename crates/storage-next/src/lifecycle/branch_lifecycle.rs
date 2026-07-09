@@ -773,6 +773,7 @@ impl LifecycleBranchCatalog {
         let (child, fork_outcome) = source
             .fork_into_empty_child(destination_branch_id)
             .map_err(branch_error)?;
+        Self::seed_child_timeline_from_parent(&source, &child, fork_outcome.fork_version());
         let parent = LifecycleBranchParent::new(source_branch_id, fork_outcome.fork_version());
         let descriptor = LifecycleBranchDescriptor::active(
             destination_branch_id,
@@ -788,6 +789,31 @@ impl LifecycleBranchCatalog {
             inherited_layer_count: fork_outcome.inherited_layer_count(),
             inherited_table_count: fork_outcome.inherited_table_count(),
         })
+    }
+
+    /// W3.1c: the child's retained timeline = the parent's history at the
+    /// fork point (its own commits observe from here on). The parent's index
+    /// is the era-independent source — post-elision there are no timeline
+    /// rows to copy. EVERY fork path must seed: `fork_current` skipped this
+    /// and a fork-at-head child failed closed on any pre-fork as-of read
+    /// (#2522).
+    ///
+    /// An incomplete parent (mid-WAL-replay forks — replay re-executes the
+    /// fork before the parent's index is re-completed) leaves the child
+    /// INCOMPLETE. Completing here from the child's own scan would mark an
+    /// empty index "complete from birth", permanently erasing the inherited
+    /// pre-fork coverage; recovery's fork-derivation pass re-seeds
+    /// incomplete children from the parent chain once the parents complete,
+    /// and an incomplete child still resolves legacy pre-elision rows
+    /// through the scan fallback.
+    fn seed_child_timeline_from_parent(
+        source: &BranchLocalState,
+        child: &BranchLocalState,
+        fork_version: CommitVersion,
+    ) {
+        if let Some(entries) = source.retained_timeline().snapshot_entries(fork_version) {
+            child.retained_timeline().seed_from_scan(&entries);
+        }
     }
 
     pub(crate) fn fork_at_retained_version(
@@ -807,13 +833,43 @@ impl LifecycleBranchCatalog {
         }
         let source = self.branch_state(source_branch_id)?;
         let source_facts = source.facts().map_err(branch_error)?;
-        let visible =
-            source_facts
-                .max_commit_version()
-                .ok_or(LifecycleError::BranchHistoryUnavailable {
+        // #2521: a rowless source forks only at version zero — the legitimate
+        // empty-fork case. There is nothing to inherit, so the child is a
+        // plain empty branch that keeps its parent linkage (the COW child
+        // builders rightly refuse an inherited layer over zero rows); its
+        // complete-from-birth timeline is exact because the parent has no
+        // history either. Any other version has no rows to cover it.
+        let visible = match source_facts.max_commit_version() {
+            Some(visible) => visible,
+            None if fork_version == CommitVersion::ZERO => {
+                let child = BranchLocalState::new(destination_branch_id, self.branch_config)
+                    .map_err(branch_error)?;
+                child.retained_timeline().mark_complete_from_birth();
+                let parent = LifecycleBranchParent::new(source_branch_id, CommitVersion::ZERO);
+                // `created_at` stays unset: the manifest codec reserves
+                // version zero (same as a branch created before any commit).
+                let descriptor = LifecycleBranchDescriptor::active(
+                    destination_branch_id,
+                    destination_generation,
+                    None,
+                )
+                .with_parent(parent);
+                self.install_new_branch_state(descriptor, child)?;
+                return Ok(LifecycleBranchForkOutcome {
+                    descriptor,
+                    source_branch_id,
+                    fork_version: CommitVersion::ZERO,
+                    inherited_layer_count: 0,
+                    inherited_table_count: 0,
+                });
+            }
+            None => {
+                return Err(LifecycleError::BranchHistoryUnavailable {
                     branch_id: source_branch_id,
                     reason: "source branch has no retained rows",
-                })?;
+                });
+            }
+        };
         if fork_version > visible {
             return Err(LifecycleError::BranchHistoryUnavailable {
                 branch_id: source_branch_id,
@@ -864,16 +920,7 @@ impl LifecycleBranchCatalog {
                 .expect("destination state is always present");
             (child, 0, 0)
         };
-        // W3.1c: the child's retained timeline = the parent's history at the
-        // fork point (its own commits observe from here on). The parent's
-        // index is the era-independent source — post-elision there are no
-        // timeline rows to copy. A rare incomplete parent falls back to
-        // scanning the child's own view (legacy rows), which is exact for
-        // pre-elision history.
-        match source.retained_timeline().snapshot_entries(fork_version) {
-            Some(entries) => child.retained_timeline().seed_from_scan(&entries),
-            None => crate::lifecycle::recovery::ensure_branch_timeline_complete(&child)?,
-        }
+        Self::seed_child_timeline_from_parent(source, &child, fork_version);
         let parent = LifecycleBranchParent::new(source_branch_id, fork_version);
         let descriptor = LifecycleBranchDescriptor::active(
             destination_branch_id,

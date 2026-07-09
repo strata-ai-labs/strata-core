@@ -21,8 +21,8 @@ use crate::persistence::{
 };
 
 use super::{
-    AdminService, BranchName, CacheOpenOptions, ControlDiagnostics, DurableLocalOpenOptions,
-    SpaceService,
+    AdminService, BranchName, CacheOpenOptions, CachePreheat, ControlDiagnostics,
+    DurableLocalOpenOptions, SpaceService,
 };
 
 /// Explicit storage target used to open a database.
@@ -153,6 +153,7 @@ impl Database {
             options.into_default_branch(),
             memory_budget_bytes,
             None,
+            CachePreheat::WhenIdle,
         )
     }
 
@@ -163,12 +164,14 @@ impl Database {
     ) -> EngineResult<DatabaseOpenOutcome> {
         let memory_budget_bytes = options.memory_budget_bytes();
         let data_block_bytes = options.data_block_bytes();
+        let cache_preheat = options.cache_preheat();
         Self::open(
             PersistenceOpenTarget::DurableLocal(path.into()),
             DatabaseOpenTarget::DurableLocal,
             options.into_default_branch(),
             memory_budget_bytes,
             data_block_bytes,
+            cache_preheat,
         )
     }
 
@@ -412,10 +415,15 @@ impl Database {
         default_branch: Option<BranchName>,
         memory_budget_bytes: Option<u64>,
         data_block_bytes: Option<u32>,
+        cache_preheat: CachePreheat,
     ) -> EngineResult<DatabaseOpenOutcome> {
         let vector_artifacts = vector_artifact_store_for_target(&target);
-        let (mut persistence, persistence_summary) =
-            StoragePersistence::open_with_budget(target, memory_budget_bytes, data_block_bytes)?;
+        let (mut persistence, persistence_summary) = StoragePersistence::open_with_budget(
+            target,
+            memory_budget_bytes,
+            data_block_bytes,
+            cache_preheat,
+        )?;
         let control = bootstrap_or_load(
             &mut persistence,
             persistence_summary.created(),

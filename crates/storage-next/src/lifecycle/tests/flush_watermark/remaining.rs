@@ -247,7 +247,7 @@ fn table_manifest_coverage_rejects_inherited_layer_gap() {
 }
 
 #[test]
-fn flush_watermark_rejects_table_manifest_candidate_below_current_as_stale() {
+fn flush_watermark_below_current_is_subsumed_as_already_persisted() {
     let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0xbb);
     let shell = assemble_shell(branch, backend).expect("shell");
@@ -274,16 +274,20 @@ fn flush_watermark_rejects_table_manifest_candidate_below_current_as_stale() {
     )
     .expect("proof");
 
-    let error = persist_table_manifest_watermark(
+    let outcome = persist_table_manifest_watermark(
         shell.services().manifest(),
         CommitVersion::new(5),
         CommitVersion::new(4),
         &LifecycleFlushWatermarkProof::TableManifestCovered(proof.clone()),
         &proof,
     )
-    .expect_err("below current rejects");
+    .expect("below current is subsumed");
 
-    assert_eq!(error.code(), "failed_precondition.lifecycle.wal_retention");
+    // Coverage is monotone: a candidate the persisted watermark already
+    // passed is a no-op success, not an error — a queued background task
+    // whose goal a concurrent checkpoint follow-up outran must not record a
+    // failure for work that is already done.
+    assert!(outcome.was_already_persisted());
 }
 
 #[test]

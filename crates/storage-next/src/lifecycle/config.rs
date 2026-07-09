@@ -48,6 +48,7 @@ pub(crate) struct LifecycleConfig {
     // None = the table runtime's built-in default. Validated at the options
     // layer (4 KiB minimum, encoded-block ceiling).
     data_block_bytes: Option<u32>,
+    cache_preheat_policy: LifecycleCachePreheatPolicy,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -200,6 +201,15 @@ pub(crate) enum LifecycleCompactionIoPolicy {
     PerTaskByteBudget { max_bytes: u64 },
 }
 
+/// C2: whether the durable runtime re-fills the block cache from live tables
+/// when background maintenance is otherwise idle. Configured at open.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum LifecycleCachePreheatPolicy {
+    #[default]
+    WhenIdle,
+    Disabled,
+}
+
 impl LifecycleConfig {
     pub(crate) fn new(
         max_maintenance_queue_depth: usize,
@@ -218,6 +228,7 @@ impl LifecycleConfig {
             compaction_io_policy: LifecycleCompactionIoPolicy::default(),
             write_throttle_policy: LifecycleWriteThrottlePolicy::default(),
             data_block_bytes: None,
+            cache_preheat_policy: LifecycleCachePreheatPolicy::default(),
         };
         config.validate()?;
         Ok(config)
@@ -229,6 +240,16 @@ impl LifecycleConfig {
         data_block_bytes: Option<u32>,
     ) -> LifecycleResult<Self> {
         self.data_block_bytes = data_block_bytes;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// C2: set the idle block-cache preheat policy (configured at open).
+    pub(crate) fn with_cache_preheat_policy(
+        mut self,
+        cache_preheat_policy: LifecycleCachePreheatPolicy,
+    ) -> LifecycleResult<Self> {
+        self.cache_preheat_policy = cache_preheat_policy;
         self.validate()?;
         Ok(self)
     }
@@ -302,6 +323,10 @@ impl LifecycleConfig {
 
     pub(crate) const fn data_block_bytes(self) -> Option<u32> {
         self.data_block_bytes
+    }
+
+    pub(crate) const fn cache_preheat_policy(self) -> LifecycleCachePreheatPolicy {
+        self.cache_preheat_policy
     }
 
     pub(crate) const fn storage_budget(self) -> StorageRuntimeBudget {

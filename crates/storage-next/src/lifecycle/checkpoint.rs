@@ -1919,7 +1919,7 @@ fn persist_flush_watermark_inner(
         });
     }
     let current = manifest.load_required().map_err(manifest_error)?;
-    if candidate_already_persisted(candidate, current.flushed_through_commit_id())? {
+    if candidate_already_persisted(candidate, current.flushed_through_commit_id()) {
         return Ok(LifecycleFlushWatermarkOutcome::already_persisted(candidate));
     }
     validate_flush_watermark_proof(candidate, proof, &current, table_manifest_context)?;
@@ -1929,21 +1929,13 @@ fn persist_flush_watermark_inner(
     Ok(LifecycleFlushWatermarkOutcome::persisted(candidate))
 }
 
-fn candidate_already_persisted(
-    candidate: CommitVersion,
-    persisted: Option<CommitVersion>,
-) -> LifecycleResult<bool> {
-    if let Some(persisted) = persisted {
-        if candidate < persisted {
-            return Err(LifecycleError::WalRetentionProofIncomplete {
-                reason: "flush watermark candidate is below current persisted watermark",
-            });
-        }
-        if candidate == persisted {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+fn candidate_already_persisted(candidate: CommitVersion, persisted: Option<CommitVersion>) -> bool {
+    // AT OR BELOW the persisted watermark = already covered: a concurrent
+    // checkpoint follow-up or a later candidate advanced the watermark past
+    // this task's goal while it was queued. Coverage is monotone, so the
+    // subsumed candidate is a no-op success — erroring here recorded a task
+    // FAILURE for work that is already done (background_scale flake).
+    persisted.is_some_and(|persisted| candidate <= persisted)
 }
 
 fn validate_flush_watermark_proof(

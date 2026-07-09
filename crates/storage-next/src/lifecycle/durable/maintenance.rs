@@ -69,9 +69,9 @@ use crate::lifecycle::{
     repair_quarantine_family as repair_lifecycle_quarantine_family,
     require_maintenance_enqueue_budget, require_rotate_budget, telemetry_health_debt,
     wal_retention_watermark, DurableMaterializationBegin, DurableMaterializationBuild,
-    FlushFrozenOutcome, FlushFrozenRequest, LifecycleCodecId, LifecycleCompactionDrainOutcome,
-    LifecycleCompactionDrainRequest, LifecycleCompactionIoPolicy, LifecycleCompactionOutcome,
-    LifecycleCompactionRequest, LifecycleError, LifecycleLowerLayer,
+    FlushFrozenOutcome, FlushFrozenRequest, LifecycleCachePreheatPolicy, LifecycleCodecId,
+    LifecycleCompactionDrainOutcome, LifecycleCompactionDrainRequest, LifecycleCompactionIoPolicy,
+    LifecycleCompactionOutcome, LifecycleCompactionRequest, LifecycleError, LifecycleLowerLayer,
     LifecycleMaintenanceSchedulingPolicy, LifecycleMaterializationOutcome,
     LifecycleMaterializationRequest, LifecycleOperationKind, LifecyclePostCommitMaintenanceOutcome,
     LifecyclePurgeOutcome, LifecycleQuarantineOutcome, LifecycleQuarantineRepairOutcome,
@@ -86,6 +86,7 @@ use crate::service::{
     QuarantineService, TableManifestService, TableManifestWrite, TableObjectReaderService,
     TableObjectService, WalGrowthFacts, WalRetentionProof, WalService,
 };
+use crate::table::{TableBlockCache, TableCacheTableId, TableIdentity};
 use std::sync::Arc;
 use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -105,6 +106,10 @@ pub(crate) enum DurableBackgroundMaintenanceStep<'a> {
     /// BS5.5: a quarantine purge whose inventory load and object deletes run
     /// off the runtime lock — purge only touches already-quarantined objects.
     PurgeStage(Box<PurgeStageInputs>),
+    /// C2: a block-cache preheat chunk whose table reads (the bulk IO) run
+    /// off the runtime lock. The layout snapshots are immutable Arcs and the
+    /// cache is internally synchronized, so staging cannot race a build.
+    PreheatStage(Box<PreheatStageInputs>),
 }
 
 impl DurableBackgroundMaintenanceStep<'_> {
@@ -522,6 +527,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         // BS2.3: flush installed an L0 table (rows stay visible even if the manifest publish is
         // deferred); republish the branch snapshot.
         self.publish_branch_snapshot(branch_id);
+        self.note_cache_preheat_trigger();
         Ok(outcome)
     }
 
@@ -617,6 +623,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         };
         // BS2.3: compaction promoted/rewrote the branch's tables; republish the branch snapshot.
         self.publish_branch_snapshot(branch_id);
+        self.note_cache_preheat_trigger();
         // Table-object GC: a fixed-point drain that ran passes dropped input refs; enqueue the
         // coalescing mark (best-effort — a rejected enqueue defers reclaim to the next cycle).
         if outcome
@@ -1473,6 +1480,21 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         self.record_optional_maintenance_health(&outcome);
         // BS2.3: the runner may have rewritten any branch's tables; republish snapshots.
         self.republish_all_branch_snapshots();
+        // C2: only table INSTALLS re-arm the preheat — repair/retention/GC
+        // tasks change no table content, and arming on them would re-walk
+        // the presence probes after every unrelated low-tier task.
+        if let Ok(Some(completed)) = &outcome {
+            if completed.status() == MaintenanceOutcomeStatus::Completed
+                && matches!(
+                    completed.task_kind(),
+                    MaintenanceTaskKind::Flush
+                        | MaintenanceTaskKind::Compaction
+                        | MaintenanceTaskKind::Materialization
+                )
+            {
+                self.note_cache_preheat_trigger();
+            }
+        }
         outcome
     }
 
@@ -1489,6 +1511,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         let outcome = self.run_flush_maintenance_task(task.id())?;
         // BS2.3: flush installed L0 tables (a global flush touches every active branch); republish.
         self.republish_all_branch_snapshots();
+        self.note_cache_preheat_trigger();
         // Flush-driven WAL reclaim for the inline scheduling path (the background path reclaims
         // in `finish_publish_phase`). Best-effort; only when the flush actually completed.
         if matches!(&outcome, Some(outcome) if outcome.status() == MaintenanceOutcomeStatus::Completed)
@@ -1987,8 +2010,18 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         task: MaintenanceTask,
         error: LifecycleError,
     ) -> LifecycleResult<MaintenanceOutcome> {
-        let outcome = MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
-            .with_source_error(error);
+        // A stale compaction candidate is a benign scheduling race, not a
+        // task failure: concurrent maintenance superseded the candidate's
+        // inputs between enqueue and build, and coverage re-derives fresh
+        // candidates on the next pass. Everything else stays Failed.
+        let outcome = if error.is_stale_compaction_candidate() {
+            MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
+                .with_reason("compaction candidate superseded by concurrent maintenance")
+                .with_stats(LifecycleStats::new(0, 0, 1, 1, 0))
+        } else {
+            MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
+                .with_source_error(error)
+        };
         let outcome = self.maintenance.finish_started(task, outcome, false);
         self.record_optional_maintenance_health(&outcome.clone().map(Some));
         outcome
@@ -2083,9 +2116,19 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         let compaction = match install {
             Ok(compaction) => compaction,
             Err(error) => {
-                let outcome =
+                // Install re-validates the candidate against the CURRENT
+                // branch state; a candidate whose inputs were superseded by
+                // concurrent maintenance during the off-lock build is a
+                // benign scheduling race, not a task failure — coverage
+                // re-derives fresh candidates on the next pass.
+                let outcome = if error.is_stale_compaction_candidate() {
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
+                        .with_reason("compaction candidate superseded by concurrent maintenance")
+                        .with_stats(LifecycleStats::new(0, 0, 1, 1, 0))
+                } else {
                     MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
-                        .with_source_error(error);
+                        .with_source_error(error)
+                };
                 return self.finish_locked_publish(task, outcome);
             }
         };
@@ -2320,6 +2363,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             let _ =
                 self.enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch_id));
         }
+        // C2: a background publish installed tables; re-arm the preheat.
+        self.note_cache_preheat_trigger();
         // BS2.3: the background publish phase installed flushed/compacted/materialized tables;
         // republish snapshots (a flush drain can touch several branches). BS3.4b's graded-admission
         // rate recompute rides inside `republish_all_branch_snapshots`, the one point both the
@@ -2400,11 +2445,34 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         if let Some(outcome) = self.run_background_flush_watermark_if_checkpoint_covered(task)? {
             return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
         }
-        match self.capture_flush_watermark_coverage_inputs(task)? {
-            Some(inputs) => Ok(Some(
+        if let Some(inputs) = self.capture_flush_watermark_coverage_inputs(task)? {
+            Ok(Some(
                 DurableBackgroundMaintenanceStep::FlushWatermarkCompute(Box::new(inputs)),
-            )),
-            None => Ok(None),
+            ))
+        } else {
+            // Coverage is not provable NOW (no candidate at/below the
+            // durable boundary, no table manifest, or multi-branch). A
+            // pending task pinned here can never complete once the write
+            // load stops — the queue then never drains and the runtime
+            // reports "idle" over lifecycle debt. Defer (consume) it
+            // instead: every flush publish and WAL-growth evaluation
+            // re-enqueues a fresh coalescing candidate, so nothing is
+            // lost and the retry rides the next real trigger.
+            let state = self.state;
+            let Some(task) = self
+                .maintenance
+                .start_next_matching(state, |queued| queued.id() == task.id())?
+            else {
+                return Ok(None);
+            };
+            let outcome = MaintenanceOutcome::new(
+                MaintenanceTaskKind::FlushWatermark,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason("flush watermark deferred: coverage not provable")
+            .with_stats(LifecycleStats::new(0, 0, 1, 1, 0));
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)))
         }
     }
 
@@ -2483,17 +2551,34 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         }))
     }
 
-    /// Apply (under the runtime lock) the result of the off-lock coverage scan. `None`
-    /// means nothing was coverable — the task stays pending and the drain falls through.
-    /// Otherwise it claims the task, persists with the pre-built proof (re-validating
-    /// epochs and the memtable against current state), and finishes the task.
+    /// Apply (under the runtime lock) the result of the off-lock coverage scan. A
+    /// `None` compute (nothing coverable) DEFERS the task — a pinned pending task
+    /// can never complete once the write load stops, and every flush publish or
+    /// WAL-growth evaluation re-enqueues a fresh coalescing candidate (the same
+    /// liveness rule as the capture-time gate). Otherwise it claims the task,
+    /// persists with the pre-built proof (re-validating epochs and the memtable
+    /// against current state), and finishes the task.
     pub(crate) fn apply_flush_watermark_coverage(
         &mut self,
         inputs: &FlushWatermarkCoverageInputs,
         computed: Option<(CommitVersion, LifecycleTableManifestFlushCoverageProof)>,
     ) -> LifecycleResult<Option<MaintenanceOutcome>> {
         let Some((candidate, proof)) = computed else {
-            return Ok(None);
+            let state = self.state;
+            let Some(task) = self
+                .maintenance
+                .start_next_matching(state, |queued| queued.id() == inputs.task.id())?
+            else {
+                return Ok(None);
+            };
+            let outcome = MaintenanceOutcome::new(
+                MaintenanceTaskKind::FlushWatermark,
+                MaintenanceOutcomeStatus::Deferred,
+            )
+            .with_reason("flush watermark deferred: coverage not provable")
+            .with_stats(LifecycleStats::new(0, 0, 1, 1, 0));
+            let outcome = self.maintenance.finish_started(task, outcome, false)?;
+            return Ok(Some(outcome));
         };
         let state = self.state;
         let Some(task) = self
@@ -2903,6 +2988,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         }?;
         // BS2.3: compaction rewrote the branch's tables; republish the branch snapshot.
         self.publish_branch_snapshot(branch_id);
+        self.note_cache_preheat_trigger();
         if outcome
             .as_ref()
             .is_some_and(table_rewrite_outcome_was_flush_preempted)
@@ -3238,18 +3324,38 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     /// Whether any low-tier maintenance (retention / pruning / quarantine / purge / repair /
     /// health) is queued. The background drain's anti-starvation interleave consults this so a
     /// sustained stream of upper-tier work cannot starve reclaim indefinitely.
+    /// C2: the durable table set changed; arm the preheat so the ladder's
+    /// low tier tops up the block cache once the queue is otherwise idle.
+    /// A flag, not an enqueue — the queue never holds a standing preheat
+    /// task (see the field rationale on the runtime struct).
+    pub(super) fn note_cache_preheat_trigger(&mut self) {
+        if self.open_plan.lifecycle_config().cache_preheat_policy()
+            == LifecycleCachePreheatPolicy::WhenIdle
+        {
+            self.cache_preheat_pending = true;
+        }
+    }
+
+    /// C2: whether a preheat trigger is armed (feeds the drain-round re-arm
+    /// accounting so an idle runtime keeps chaining fill chunks).
+    pub(crate) fn cache_preheat_work_pending(&self) -> bool {
+        self.cache_preheat_pending
+    }
+
     pub(crate) fn has_pending_low_tier_maintenance(&self) -> bool {
-        self.maintenance.pending_tasks().iter().any(|task| {
-            matches!(
-                task.kind(),
-                MaintenanceTaskKind::Retention
-                    | MaintenanceTaskKind::SnapshotPruning
-                    | MaintenanceTaskKind::Quarantine
-                    | MaintenanceTaskKind::Purge
-                    | MaintenanceTaskKind::Repair
-                    | MaintenanceTaskKind::HealthCollection
-            )
-        })
+        self.cache_preheat_pending
+            || self.maintenance.pending_tasks().iter().any(|task| {
+                matches!(
+                    task.kind(),
+                    MaintenanceTaskKind::Retention
+                        | MaintenanceTaskKind::SnapshotPruning
+                        | MaintenanceTaskKind::Quarantine
+                        | MaintenanceTaskKind::Purge
+                        | MaintenanceTaskKind::Repair
+                        | MaintenanceTaskKind::HealthCollection
+                        | MaintenanceTaskKind::CachePreheat
+                )
+            })
     }
 
     pub(crate) fn run_next_retention_maintenance(
@@ -3531,6 +3637,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 candidates: capped,
                 remaining_candidates,
                 quarantine: self.services.quarantine().clone(),
+                block_cache: self.services.table_object().block_cache().cloned(),
             }),
         )))
     }
@@ -3579,7 +3686,158 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 self.initial_branch_id,
             ));
         }
+        if staged.quarantined_objects > 0 {
+            // C2: sweeping dead tables dropped their cache blocks, freeing the
+            // very capacity a saturation-stopped preheat chain was waiting on —
+            // and late in a quiet period no publish will re-arm it. The sweep
+            // is that re-arm (the kept cursor resumes the walk).
+            self.note_cache_preheat_trigger();
+        }
         Ok(outcome)
+    }
+
+    /// C2 background preheat entry: when the trigger flag is armed, enqueue
+    /// and claim the transient task in this same lock hold (the queue never
+    /// observably holds a pending preheat), capture the owned inputs, and
+    /// return a [`DurableBackgroundMaintenanceStep::PreheatStage`]; the table
+    /// reads (the bulk IO) run off-lock. Optional work — a deferral (global
+    /// memory pressure, build task in flight) disarms the flag and waits for
+    /// the next trigger rather than spinning.
+    pub(crate) fn start_next_background_cache_preheat(
+        &mut self,
+    ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
+        if !self.cache_preheat_pending {
+            return Ok(None);
+        }
+        if self.open_plan.lifecycle_config().cache_preheat_policy()
+            == LifecycleCachePreheatPolicy::Disabled
+        {
+            // Belt over the trigger gates (they are policy-checked too).
+            self.cache_preheat_pending = false;
+            return Ok(None);
+        }
+        self.refresh_runtime_memory_total();
+        if self.budget.global_pressure().defers_optional_maintenance()
+            || self.maintenance.has_active_build_task()
+        {
+            // Disarm rather than retry: a deferral loop under pressure or a
+            // long build would spin the low tier; the next structural change
+            // or reopen re-arms the flag.
+            self.cache_preheat_pending = false;
+            crate::observability::perf_trace::record_table_preheat_deferred();
+            return Ok(None);
+        }
+        let state = self.state;
+        let enqueued = self.enqueue_maintenance(MaintenanceTaskRequest::cache_preheat());
+        let Ok(outcome) = enqueued else {
+            // Best-effort (queue full / draining for close): stay armed so an
+            // idle retry or the next trigger picks it up.
+            return Ok(None);
+        };
+        let task_id = outcome.task_id();
+        let Some(task) = self
+            .maintenance
+            .start_next_matching(state, |queued| queued.id() == task_id)?
+        else {
+            return Ok(None);
+        };
+        self.cache_preheat_pending = false;
+        let layouts = self
+            .branch_catalog
+            .list_branches(false)
+            .iter()
+            .filter_map(|descriptor| {
+                let branch_id = descriptor.branch_id();
+                self.branch_catalog
+                    .branch_state(branch_id)
+                    .ok()
+                    .map(|branch| {
+                        (
+                            branch_id,
+                            branch.layout_snapshot(),
+                            branch.inherited_layers().to_vec(),
+                        )
+                    })
+            })
+            .collect();
+        Ok(Some(DurableBackgroundMaintenanceStep::PreheatStage(
+            Box::new(PreheatStageInputs {
+                task,
+                layouts,
+                cursor: self.cache_preheat_cursor.take(),
+                chunk_max_bytes: CACHE_PREHEAT_CHUNK_MAX_BYTES,
+            }),
+        )))
+    }
+
+    /// Fold the off-lock preheat chunk back in under the lock: persist the
+    /// resume cursor, refresh the memory total the fill just raised, and
+    /// chain the next chunk while work remains.
+    pub(crate) fn finish_cache_preheat(
+        &mut self,
+        staged: PreheatStaged,
+    ) -> LifecycleResult<MaintenanceOutcome> {
+        crate::observability::perf_trace::record_table_preheat_pass(
+            staged.admitted,
+            staged.skipped_present,
+            staged.skipped_full,
+            staged.bytes_read,
+        );
+        self.refresh_runtime_memory_total();
+        if let Some(error) = staged.stage_error {
+            self.cache_preheat_cursor = None;
+            let outcome = MaintenanceOutcome::new(
+                MaintenanceTaskKind::CachePreheat,
+                MaintenanceOutcomeStatus::Failed,
+            )
+            .with_source_error(error);
+            let outcome = self
+                .maintenance
+                .finish_started(staged.task, outcome, false)?;
+            self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+            return Ok(outcome);
+        }
+        let chain_next = staged.next_cursor.is_some() && !staged.stopped_full;
+        self.cache_preheat_cursor = staged.next_cursor;
+        let reason = if staged.stopped_full {
+            "cache preheat stopped: shards saturated"
+        } else if chain_next {
+            "cache preheat chunk complete, more pending"
+        } else {
+            "cache preheat pass complete"
+        };
+        let outcome = MaintenanceOutcome::new(
+            MaintenanceTaskKind::CachePreheat,
+            MaintenanceOutcomeStatus::Completed,
+        )
+        .with_reason(reason)
+        .with_stats(LifecycleStats::new(0, 0, 1, 0, 0));
+        let outcome = self
+            .maintenance
+            .finish_started(staged.task, outcome, false)?;
+        self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
+        if chain_next && !self.budget.global_pressure().defers_optional_maintenance() {
+            // Re-arm for the next chunk (the cursor is kept); the drain-round
+            // re-arm accounting counts the flag as pending work.
+            self.cache_preheat_pending = true;
+        }
+        Ok(outcome)
+    }
+
+    /// Inline (non-background) preheat: one bounded chunk per call, for the
+    /// deterministic drain paths. Start and finish run back-to-back on the
+    /// caller's thread.
+    pub(crate) fn run_next_cache_preheat_maintenance(
+        &mut self,
+    ) -> LifecycleResult<Option<MaintenanceOutcome>> {
+        match self.start_next_background_cache_preheat()? {
+            None => Ok(None),
+            Some(DurableBackgroundMaintenanceStep::Completed(outcome)) => Ok(Some(*outcome)),
+            Some(DurableBackgroundMaintenanceStep::PreheatStage(inputs)) => {
+                Ok(Some(self.finish_cache_preheat(inputs.stage())?))
+            }
+            Some(_) => unreachable!("cache preheat start returns only preheat steps"),
+        }
     }
 
     /// BS5.5 background purge entry: capture the owned inputs under the lock
@@ -4068,6 +4326,11 @@ pub(crate) struct SweepStageInputs {
     candidates: Vec<crate::object::ObjectName>,
     remaining_candidates: usize,
     quarantine: QuarantineService<'static>,
+    // C2: dead tables' blocks are dropped from the cache as their objects are
+    // swept — without this, `remove_table` had no production caller and
+    // compacted-away blocks held pool capacity forever (starving the no-evict
+    // warm/preheat inserts).
+    block_cache: Option<Arc<TableBlockCache>>,
 }
 
 /// The off-lock sweep result, folded back under the lock by
@@ -4082,6 +4345,154 @@ pub(crate) struct SweepStaged {
     request_error: Option<LifecycleError>,
 }
 
+/// C2: one preheat chunk reads at most this many source bytes before folding
+/// back under the lock, so a drain round stays inside its runtime budget and
+/// commit waiters never sit behind a long fill.
+const CACHE_PREHEAT_CHUNK_MAX_BYTES: u64 = 128 * 1024 * 1024;
+/// C2: a run of this many consecutive full-shard skips means the walk is
+/// hashing into saturated shards everywhere (keys spread uniformly), so
+/// further passes only burn IO — stop and wait for the next trigger.
+const CACHE_PREHEAT_SKIPPED_FULL_STOP: usize = 512;
+
+/// C2: where a bounded preheat pass stopped, so the next chunk resumes
+/// instead of re-walking. Identity-addressed: if the table is compacted away
+/// between chunks the walk restarts from the beginning of the sequence, and
+/// the recency-neutral presence probe makes the re-walk ~free.
+#[derive(Debug)]
+pub(crate) struct CachePreheatCursor {
+    branch_id: BranchId,
+    table_identity: TableIdentity,
+    next_block: usize,
+}
+
+/// Inputs captured under the runtime lock for an off-lock block-cache
+/// preheat chunk. Layout snapshots are immutable and the readers inside them
+/// carry the shared cache handle, so the walk needs nothing else.
+pub(crate) struct PreheatStageInputs {
+    task: MaintenanceTask,
+    layouts: Vec<(BranchId, Arc<BranchLayout>, Vec<BranchInheritedLayer>)>,
+    cursor: Option<CachePreheatCursor>,
+    chunk_max_bytes: u64,
+}
+
+/// The off-lock preheat result, folded back under the lock by
+/// [`finish_cache_preheat`].
+pub(crate) struct PreheatStaged {
+    task: MaintenanceTask,
+    admitted: u64,
+    skipped_present: u64,
+    skipped_full: u64,
+    bytes_read: u64,
+    next_cursor: Option<CachePreheatCursor>,
+    stopped_full: bool,
+    stage_error: Option<LifecycleError>,
+}
+
+impl PreheatStageInputs {
+    /// Walk the captured layouts and warm the block cache — callable with NO
+    /// locks held. Admission is verify-then-no-evict (the W2.4 contract), so
+    /// a concurrent demand reader can at worst race a duplicate insert, which
+    /// the cache folds as `DuplicateExisting`.
+    pub(crate) fn stage(self) -> PreheatStaged {
+        let mut staged = PreheatStaged {
+            task: self.task,
+            admitted: 0,
+            skipped_present: 0,
+            skipped_full: 0,
+            bytes_read: 0,
+            next_cursor: None,
+            stopped_full: false,
+            stage_error: None,
+        };
+        let cursor = self.cursor;
+        // Until the cursor's table is found, tables are skipped without IO;
+        // a vanished cursor table restarts coverage (cheap: presence probes).
+        let mut resuming = cursor.is_some();
+        let mut full_streak = 0usize;
+        for (branch_id, layout, inherited) in &self.layouts {
+            if resuming && cursor.as_ref().map(|c| c.branch_id) != Some(*branch_id) {
+                continue;
+            }
+            // Deepest level first: L0/L1 blocks were publish-warmed recently;
+            // the deep levels are the cold mass a fill must cover.
+            let owned = layout.levels().iter().rev();
+            let inherited_levels = inherited
+                .iter()
+                .flat_map(|layer| layer.owned_levels().iter().rev());
+            for level in owned.chain(inherited_levels) {
+                for table in level {
+                    let mut start_block = 0usize;
+                    if resuming {
+                        match cursor.as_ref() {
+                            Some(c) if &c.table_identity == table.facts().identity() => {
+                                start_block = c.next_block;
+                                resuming = false;
+                            }
+                            _ => continue,
+                        }
+                    }
+                    let remaining = self.chunk_max_bytes.saturating_sub(staged.bytes_read);
+                    if remaining == 0 {
+                        staged.next_cursor = Some(CachePreheatCursor {
+                            branch_id: *branch_id,
+                            table_identity: table.facts().identity().clone(),
+                            next_block: start_block,
+                        });
+                        return staged;
+                    }
+                    let report = match table
+                        .reader()
+                        .warm_data_blocks_from_source(start_block, remaining)
+                    {
+                        Ok(report) => report,
+                        Err(error) => {
+                            staged.stage_error = Some(LifecycleError::lower_layer_with(
+                                LifecycleLowerLayer::TableRuntime,
+                                "table runtime failed",
+                                error,
+                            ));
+                            return staged;
+                        }
+                    };
+                    staged.admitted = staged.admitted.saturating_add(report.admitted as u64);
+                    staged.skipped_present = staged
+                        .skipped_present
+                        .saturating_add(report.skipped_present as u64);
+                    staged.skipped_full = staged
+                        .skipped_full
+                        .saturating_add(report.skipped_full as u64);
+                    staged.bytes_read = staged.bytes_read.saturating_add(report.bytes_read);
+                    // The streak carries across tables only when a table ended
+                    // in full-skips AND produced nothing else after them.
+                    if report.trailing_skipped_full > 0 {
+                        full_streak = full_streak.saturating_add(report.trailing_skipped_full);
+                    } else if report.admitted > 0 || report.skipped_present > 0 {
+                        full_streak = 0;
+                    }
+                    if full_streak >= CACHE_PREHEAT_SKIPPED_FULL_STOP {
+                        staged.stopped_full = true;
+                        staged.next_cursor = Some(CachePreheatCursor {
+                            branch_id: *branch_id,
+                            table_identity: table.facts().identity().clone(),
+                            next_block: report.next_block.unwrap_or(usize::MAX),
+                        });
+                        return staged;
+                    }
+                    if let Some(next_block) = report.next_block {
+                        staged.next_cursor = Some(CachePreheatCursor {
+                            branch_id: *branch_id,
+                            table_identity: table.facts().identity().clone(),
+                            next_block,
+                        });
+                        return staged;
+                    }
+                }
+            }
+        }
+        staged
+    }
+}
+
 impl SweepStageInputs {
     /// Stage every candidate into quarantine — callable with NO locks held.
     /// Each staging is idempotent (`AlreadyQuarantined` / source-missing fold
@@ -4093,6 +4504,21 @@ impl SweepStageInputs {
         let mut sweep_health = None;
         let mut request_error = None;
         for object in &self.candidates {
+            // C2: drop the dead table's blocks from the cache. Every candidate
+            // was proven unreachable by the under-lock mark and unreachability
+            // is monotone, so removal is safe even if the staging below
+            // faults. Identity == the table component of the object name ==
+            // the bytes the cache id was built from at reader open.
+            if let Some(cache) = &self.block_cache {
+                if let Ok(Some(crate::layout::TableObjectClassification::Data {
+                    table_id, ..
+                })) = crate::layout::ObjectLayout::classify_table_object(object)
+                {
+                    if let Ok(id) = TableCacheTableId::new(table_id.as_bytes()) {
+                        cache.remove_table(&id);
+                    }
+                }
+            }
             let proof = crate::lifecycle::LifecycleQuarantineProof::from_retention_decision(
                 crate::lifecycle::RetentionDecision::QuarantineCandidate,
                 self.health.clone(),

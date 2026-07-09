@@ -901,6 +901,128 @@ heat-aware admission), the ~10us hit path, and engine-level concurrency
 Subsumes task #72 (W2.1b calibration). Sweep protocol: settled C
 (`--settle-secs 120`), `--block-bytes` per point, same-session interleaved.
 
+## 10M three-way, post-campaign (2026-07-08 night, v1 @ f5940ddd, /data2, settled durable)
+
+The first three-way after the full W3 + read-path campaign (16 KiB blocks,
+settled durable protocol; single runs per cell — treat run cells as point
+samples per the standing caveat):
+
+| cell | Strata cache | Strata durable | RocksDB | durable gap | gap at campaign start |
+|---|---|---|---|---|---|
+| load 10M | 431-445K rows/s | 82-111K | 764K-1.0M | ~9-11x | — |
+| A run | **353,732** | 17,754 | 286,871 | **16x** | 62x |
+| B run | **1,167,803** | **54,509** | 436,638 | **8x** | 74x |
+| C run | **1,564,172** | 19,475 | 428,300 | **22x** | 37x |
+
+- **Cache mode beats RocksDB on every run cell** (reads ~600ns p50) — the
+  memory-first story holds.
+- **Durable B 54.5K is a new best by 2.5x** and exposes a mechanism worth
+  keeping in the model: under zipfian A/B the hot keys are continually
+  UPDATED, so their newest versions sit in the memtable and hot reads never
+  touch the block path; C pays the full table path on every read. B's read
+  p99 was 177us vs C's 294us.
+- Durable read tails post-B2: B p99.9 230us, C p99.9 318us. A's update max
+  drew 1.09s (the surviving shape lottery — W1.3's territory).
+- RocksDB measured 287/437/428K — consistent with the standing reference row
+  (304/437/426K).
+
+## C1 — fair-baseline re-base: compression hypothesis falsified (2026-07-08, b65207e5)
+
+Protocol slice (`c-campaign-60-70.md` C1): both harnesses now default to
+**incompressible values** (`ValueFill::Random`, unique splitmix64 payload per
+value; `--value-fill constant` kept for historical comparability), rocksdb-ycsb
+gained `--compression default|lz4|none`, and both bins print an on-disk
+post-load probe (engine-ycsb also post-settle).
+
+**The compression-flattered-reference hypothesis is falsified.** Fill ×
+compression matrix, RocksDB 10M × 1KB, 500K-op C:
+
+| fill | compression | on-disk | run C | read p50 | read max |
+|---|---|---|---|---|---|
+| constant | default | 9.59GB | 435K | 2.16us | 30.8us |
+| random | default | 9.59GB | 428K | 2.29us | 34.2us |
+| random | none | 9.59GB | 434K | 2.19us | 44.6us |
+| random | lz4 | 9.55GB | 425K | 2.18us | 232us |
+
+Stock rust-rocksdb writes uncompressed; all cells within 2.4%. RocksDB's C
+edge is **full page-cache residency** (read max ~34us across 500K reads =
+zero disk misses on a raw 9.6GB dataset), not compression.
+
+Re-based reference and parity cells (same session, interleaved):
+
+- **RocksDB C reference: 432K median** (428/432/448K), read p50 ~2.2us,
+  9.59GB on disk.
+- **Strata durable settled C, random fill: 19,244** (p50 12.45us, p99
+  295us) — inside the constant-fill band from the same session
+  (18,658-19,475). Value content costs nothing on the durable path.
+  Durable C gap: **22.4x**. The same-session constant control drew a
+  degraded shape (9.8K, p99 2.18ms, api_point_ms 2x — background compaction
+  overlapped the run window; shape lottery, not fill).
+- **Strata cache C: no fill effect** — interleaved constant 1.51M/1.53M vs
+  random 1.56M/1.43M (p50 611-671ns). A one-off 876K cache draw earlier in
+  the session was state, not protocol (2.5GB swap in use after the durable
+  marathon).
+- New probe, durable 10M load: on-disk **37GiB post-load → 12GiB
+  post-settle** — the load's transient churn (WAL + L0 + intermediate
+  tables) is ~3x the settled dataset, quantifying the page-cache eviction
+  mechanism behind C's ~150us misses (campaign doc Finding 2). Settled
+  Strata dataset 12GiB vs RocksDB 9.59GB (+25%, uncompressed both).
+
+Also: cleaned 229GB of stale engine-ycsb tempdirs (killed runs skip tempfile
+cleanup) from /data2/strata-bench/ycsb10m/.benchmark.
+
+C-campaign standing math after C1: target 60-70% of 432K = **259-302K**;
+today 19.2K = h 0.75 x 12.5us + 0.25 x ~110-150us. C2 (fill the 15GB pool →
+h≥0.98) then C3 (allocation-free hit path → ~3.5us) carry the plan.
+
+## C2 — background block-cache preheat (2026-07-09, 877d30ba + 365eba9d)
+
+`c-campaign-60-70.md` C2: fill the pool so C stops missing to disk. New
+`CachePreheat` low-tier maintenance (dirty-flag armed by table installs and
+reopen — never a standing queued task), off-lock 128 MiB chunks walking live
+tables deepest-first through `warm_data_blocks_from_source` (verify-then-
+insert, recency-neutral presence probe, cursor resume), sweep-time dead-table
+cache invalidation (`remove_table` had zero production callers), and
+recovery-time walks moved to no-fill cursors (reopen is now cache-neutral).
+Knob: `StorageCachePreheatPolicy` / engine `CachePreheat` / bench
+`--preheat on|off` (default on).
+
+Two measured design corrections: no-evict preheat inserts starved against
+dead-block pool pollution (full-shard skips at ~40% live occupancy → fair
+inserts; LRU displaces never-touched dead blocks first), and a saturation-
+stopped chain never resumed in a quiet settle (sweep completion now re-arms).
+
+Settled C, 10M x 1KB, 500K ops, 32g, settle 120s, same-session interleaved,
+medians of 3:
+
+| cell | run ops/s | miss rate | read p50 | read p99 |
+|---|---|---|---|---|
+| preheat off | **18,818** (16.1-18.9K) | 24-26% | 10.4-10.7us | 298-644us |
+| preheat on | **56,919** (54.9-58.1K) | **5.5-6.1%** | 9.3-10.4us | 204-217us |
+
+- **C x3.0** (18.8K → 56.9K). Preheat walks ~8.9GB in ~70 chunks during
+  settle (zero full-shard skips after the fair-insert fix), ~350-410
+  build-active/pressure deferrals absorbed harmlessly.
+- **ON cells are stable** (±3% spread vs the historical ~2x cell lottery) —
+  a full cache removes load-shape luck from the read path.
+- Regression cells (single runs): A on 29,356 vs off 6,099 (off drew a
+  lottery-bad cell; on is the best A ever recorded — 50% of A's ops are
+  reads), B on 53,386 vs off 21,199, read p99 improved in every cell, no
+  load regression beyond spread.
+- **Residual ~5.5-6% miss floor is structural**: settle-300 converges to the
+  same rate (55.8K, 6.0%), so it is not the late-compaction tail. Anatomy
+  (which blocks still miss with full walk coverage) → follow-up, folded into
+  C3's profiling pass.
+- Exit gate: miss ≤2-5% BORDERLINE (5.5-6.1%), C ≥ 60-80K NOT met (56.9K)
+  — the gate assumed mean ≈ H at h→1; the 6% floor at ~150us/miss costs
+  ~8-9us of the 17.6us mean. C3 (hit path ~10us → 3.5us) now carries the
+  260-300K target with h at 0.94: projected mean ≈ 0.94x3.5 + 0.06x~120 ≈
+  10.5us ≈ 95K without the floor fixed; **the miss-floor anatomy is
+  therefore on C3's critical path**, not optional.
+- Pre-existing (NOT this slice): 14 storage-next lib tests fail under
+  `--features perf-trace` at the C1 baseline too (commit/api perf-count
+  asserts); tracked for a separate fix.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

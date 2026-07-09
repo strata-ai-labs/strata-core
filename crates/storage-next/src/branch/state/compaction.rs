@@ -1513,7 +1513,7 @@ impl BranchLocalState {
         {
             let Some(table) = self.table_for_candidate_ref(candidate, table_ref) else {
                 return Err(BranchRuntimeError::InvalidCompaction {
-                    reason: BranchCompactionInvalidity::Generic("compaction candidate is stale"),
+                    reason: BranchCompactionInvalidity::StaleCandidate,
                 });
             };
             match table_ref.reference_kind() {

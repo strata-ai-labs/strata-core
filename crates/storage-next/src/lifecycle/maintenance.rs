@@ -201,6 +201,7 @@ enum MaintenanceTaskLane {
     Retention,
     Quarantine,
     Health,
+    Preheat,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -436,6 +437,20 @@ impl MaintenanceTaskRequest {
             MaintenanceTaskPolicy::coalescing(),
         )
         .expect("quarantine task request is valid")
+    }
+
+    /// C2: background block-cache preheat. Low priority + a dedicated lane
+    /// keeps it strictly behind flush/checkpoint/WAL/rewrite work, and
+    /// coalescing keeps the steady state at one pending task no matter how
+    /// many publishes trigger it.
+    pub(crate) fn cache_preheat() -> Self {
+        Self::new(
+            MaintenanceTaskKind::CachePreheat,
+            MaintenanceTaskPriority::Low,
+            MaintenanceTaskScope::Global,
+            MaintenanceTaskPolicy::coalescing(),
+        )
+        .expect("cache preheat task request is valid")
     }
 
     pub(crate) fn purge_quarantine(branch_id: BranchId) -> Self {
@@ -740,6 +755,7 @@ impl MaintenanceTask {
             | MaintenanceTaskKind::Purge
             | MaintenanceTaskKind::Repair => MaintenanceTaskLane::Quarantine,
             MaintenanceTaskKind::HealthCollection => MaintenanceTaskLane::Health,
+            MaintenanceTaskKind::CachePreheat => MaintenanceTaskLane::Preheat,
         }
     }
 }
@@ -1634,7 +1650,9 @@ fn scope_matches_kind(kind: MaintenanceTaskKind, scope: MaintenanceTaskScope) ->
             MaintenanceTaskKind::Flush | MaintenanceTaskKind::Purge | MaintenanceTaskKind::Repair,
             MaintenanceTaskScope::Branch(_)
         ) | (
-            MaintenanceTaskKind::Flush | MaintenanceTaskKind::HealthCollection,
+            MaintenanceTaskKind::Flush
+                | MaintenanceTaskKind::HealthCollection
+                | MaintenanceTaskKind::CachePreheat,
             MaintenanceTaskScope::Global
         ) | (
             MaintenanceTaskKind::Checkpoint,

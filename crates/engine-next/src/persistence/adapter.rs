@@ -10,10 +10,10 @@ use strata_storage_next::api::{
     BranchRequest, BranchStatus as StorageBranchStatus, BranchSummary as StorageBranchSummary,
     CommitBatch, CommitDurabilitySummary, CommitMutation, CommitOptions, HistoryReadRequest,
     ImmutableSourceScanReadRequest, PointReadRequest, PrefixScanReadRequest, ReadBound, ReadLimit,
-    ScanRange, ScanReadRequest, StorageApiError, StorageApiErrorClass, StorageCloseSummary,
-    StorageDurabilityPolicy, StorageImmutableSource, StorageKey, StorageMemoryBudget,
-    StorageOpenDisposition, StorageOpenOptions, StorageReadRow, StorageRuntime,
-    StorageRuntimeState, StorageSpaceId, StorageValue,
+    ScanRange, ScanReadRequest, StorageApiError, StorageApiErrorClass, StorageCachePreheatPolicy,
+    StorageCloseSummary, StorageDurabilityPolicy, StorageImmutableSource, StorageKey,
+    StorageMemoryBudget, StorageOpenDisposition, StorageOpenOptions, StorageReadRow,
+    StorageRuntime, StorageRuntimeState, StorageSpaceId, StorageValue,
 };
 #[cfg(any(test, feature = "testkit"))]
 use strata_storage_next::api::{MaintenanceRequest, MaintenanceScope, MaintenanceTask};
@@ -291,13 +291,14 @@ impl StoragePersistence {
     pub(crate) fn open(
         target: PersistenceOpenTarget,
     ) -> EngineResult<(Self, PersistenceOpenSummary)> {
-        Self::open_with_budget(target, None, None)
+        Self::open_with_budget(target, None, None, crate::api::CachePreheat::WhenIdle)
     }
 
     pub(crate) fn open_with_budget(
         target: PersistenceOpenTarget,
         memory_budget_bytes: Option<u64>,
         data_block_bytes: Option<u32>,
+        cache_preheat: crate::api::CachePreheat,
     ) -> EngineResult<(Self, PersistenceOpenSummary)> {
         let (runtime, summary, durable) = match target {
             PersistenceOpenTarget::Cache => {
@@ -316,6 +317,12 @@ impl StoragePersistence {
                     // B2: durable-only data-block byte target (see options doc).
                     options = options.with_data_block_bytes(bytes);
                 }
+                // C2: durable-only idle cache preheat (cache mode has no
+                // disk-resident tables to warm from).
+                options = options.with_cache_preheat_policy(match cache_preheat {
+                    crate::api::CachePreheat::WhenIdle => StorageCachePreheatPolicy::WhenIdle,
+                    crate::api::CachePreheat::Disabled => StorageCachePreheatPolicy::Disabled,
+                });
                 let outcome = StorageRuntime::open_durable_local_with_options(path, options)
                     .map_err(map_storage_error)?;
                 let (runtime, summary) = outcome.into_parts();

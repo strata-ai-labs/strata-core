@@ -4860,3 +4860,169 @@ fn malformed_accelerator_self_heals() {
         );
     }
 }
+
+/// C2: the preheat warm path reads frames back from the source, verifies,
+/// and admits with no-evict inserts; a re-walk is pure presence probes (no
+/// IO), and a subsequent trusting point read hits the cache.
+#[test]
+fn warm_from_source_admits_all_blocks_from_disk() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+        put_row(b"echo".to_vec(), 5),
+        put_row(b"foxtrot".to_vec(), 6),
+    ];
+    let (artifact, table_rows) = build_artifact(
+        "reader-warm-source",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let cache = enabled_block_cache(1 << 20);
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-warm-source"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader")
+    .with_block_cache(Arc::clone(&cache))
+    .expect("attach block cache");
+
+    let block_count = usize::try_from(reader.facts().data_block_count()).expect("count");
+    assert!(block_count >= 3, "fixture must span several blocks");
+    let report = reader
+        .warm_data_blocks_from_source(0, u64::MAX)
+        .expect("warm from source");
+    assert_eq!(report.admitted, block_count);
+    assert_eq!(report.skipped_present, 0);
+    assert_eq!(report.skipped_full, 0);
+    assert!(report.next_block.is_none(), "one pass covers the table");
+    assert!(report.bytes_read > 0);
+    assert_eq!(cache.stats().inserts(), block_count as u64);
+
+    // A re-walk is presence probes only: nothing admitted, nothing read.
+    let second = reader
+        .warm_data_blocks_from_source(0, u64::MAX)
+        .expect("second pass");
+    assert_eq!(second.admitted, 0);
+    assert_eq!(second.skipped_present, block_count);
+    assert_eq!(second.bytes_read, 0);
+
+    // A trusting point read is now a cache hit — no source read.
+    let target = table_rows[0].physical_key().clone();
+    reader
+        .try_seek_physical_key(&target, None, None)
+        .expect("point read");
+    assert!(cache.stats().hits() >= 1, "warmed block must serve the hit");
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert!(perf.table_trusted_block_seeks() >= 1);
+        assert_eq!(perf.table_warm_insert_rejects(), 0);
+    }
+}
+
+/// C2: the byte bound stops the walk mid-table with a resume block, and the
+/// resumed call covers each remaining block exactly once.
+#[test]
+fn warm_from_source_respects_byte_bound_and_resumes() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+        put_row(b"echo".to_vec(), 5),
+        put_row(b"foxtrot".to_vec(), 6),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-warm-source-bound",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    let source = TestSource::exact(artifact.bytes().to_vec());
+    let cache = enabled_block_cache(1 << 20);
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-warm-source-bound"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader")
+    .with_block_cache(Arc::clone(&cache))
+    .expect("attach block cache");
+
+    let block_count = usize::try_from(reader.facts().data_block_count()).expect("count");
+    // A 1-byte budget admits exactly one block (the bound is checked before
+    // each read, and the first read always proceeds).
+    let first = reader
+        .warm_data_blocks_from_source(0, 1)
+        .expect("bounded warm");
+    assert_eq!(first.admitted, 1);
+    assert_eq!(first.next_block, Some(1));
+
+    let resumed = reader
+        .warm_data_blocks_from_source(first.next_block.expect("resume block"), u64::MAX)
+        .expect("resumed warm");
+    assert_eq!(resumed.admitted, block_count - 1);
+    assert!(resumed.next_block.is_none());
+    assert_eq!(resumed.skipped_present, 0, "no block is walked twice");
+    assert_eq!(cache.stats().inserts(), block_count as u64);
+}
+
+/// C2: a corrupt on-disk frame is rejected (counted, never inserted) and the
+/// walk continues — a silent preheat must not turn one bad block into a
+/// failed sweep, and the demand path still surfaces the typed error.
+#[test]
+fn warm_from_source_rejects_corrupt_frame_and_continues() {
+    let rows = vec![
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+    ];
+    let (artifact, _) = build_artifact(
+        "reader-warm-source-corrupt",
+        &rows,
+        2,
+        TableCompression::Uncompressed,
+    );
+    // Corrupt one byte inside the first data block's frame on the "disk"
+    // copy, located via the decoded index (offset arithmetic stays
+    // format-owned).
+    let decoded = crate::format::decode_immutable_table(artifact.bytes()).expect("decode table");
+    let entry = decoded.index().entries().first().expect("one entry");
+    let flip_at = usize::try_from(entry.block_offset()).expect("offset") + 20;
+    let mut corrupted = artifact.bytes().to_vec();
+    corrupted[flip_at] ^= 0xFF;
+
+    let source = TestSource::exact(corrupted);
+    let cache = enabled_block_cache(1 << 20);
+    #[cfg(feature = "perf-trace")]
+    let _capture = crate::observability::perf_trace::begin_test_capture();
+    let reader = ImmutableTableReader::open_source(
+        identity("reader-warm-source-corrupt"),
+        source,
+        TableReaderConfig::default(),
+    )
+    .expect("open lazy reader")
+    .with_block_cache(Arc::clone(&cache))
+    .expect("attach block cache");
+
+    let block_count = usize::try_from(reader.facts().data_block_count()).expect("count");
+    let report = reader
+        .warm_data_blocks_from_source(0, u64::MAX)
+        .expect("warm survives a corrupt frame");
+    assert_eq!(report.admitted, block_count - 1);
+    assert!(report.next_block.is_none());
+    assert_eq!(cache.stats().inserts(), (block_count - 1) as u64);
+    #[cfg(feature = "perf-trace")]
+    {
+        let perf = crate::observability::perf_trace::snapshot();
+        assert_eq!(perf.table_warm_insert_rejects(), 1);
+    }
+}

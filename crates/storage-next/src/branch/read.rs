@@ -3727,11 +3727,15 @@ fn collect_immutable_table_rows(
 /// order `rows()` yields — applying `f` to each row without materializing the whole table. `f` returning
 /// `Err` stops the walk early (so `.any()`-style validations map to an error-returning closure). Cursor
 /// seek/advance failures map to `InvalidBranchState`, matching `collect_immutable_table_rows`.
+/// C2: no-fill cursor (BS4.4g) — every caller is a full-table streaming walk
+/// (observation, validation, snapshot materialization); filling the cache in
+/// scan order would overwrite demand recency, and deliberate fill is the
+/// preheat's job.
 pub(crate) fn try_for_each_reader_row(
     reader: &ImmutableTableReader<'_>,
     mut f: impl FnMut(&TableRow) -> BranchRuntimeResult<()>,
 ) -> BranchRuntimeResult<()> {
-    let mut cursor = reader.cursor();
+    let mut cursor = reader.cursor_without_cache_fill();
     cursor
         .seek_to_first()
         .map_err(|_| BranchRuntimeError::InvalidBranchState {

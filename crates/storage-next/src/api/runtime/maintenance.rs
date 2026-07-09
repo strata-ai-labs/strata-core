@@ -250,10 +250,13 @@ pub(super) fn request_for_outcome(outcome: &LifecycleMaintenanceOutcome) -> Main
         (LifecycleMaintenanceTaskKind::Quarantine, _) => MaintenanceTask::Quarantine,
         (LifecycleMaintenanceTaskKind::Purge, _) => MaintenanceTask::Purge,
         (LifecycleMaintenanceTaskKind::Repair, _) => MaintenanceTask::Repair,
+        // C2: no dedicated public task variant (D4 discipline) — preheat
+        // outcomes ride the same low-tier summary bucket as health/watermark.
         (
             LifecycleMaintenanceTaskKind::WalTruncation
             | LifecycleMaintenanceTaskKind::FlushWatermark
-            | LifecycleMaintenanceTaskKind::HealthCollection,
+            | LifecycleMaintenanceTaskKind::HealthCollection
+            | LifecycleMaintenanceTaskKind::CachePreheat,
             _,
         ) => MaintenanceTask::WalGrowth,
     };
@@ -346,7 +349,8 @@ pub(super) const fn background_priority_for_task_request(
         | LifecycleMaintenanceTaskKind::SnapshotPruning
         | LifecycleMaintenanceTaskKind::Quarantine
         | LifecycleMaintenanceTaskKind::Purge
-        | LifecycleMaintenanceTaskKind::Repair => BackgroundTaskPriority::Low,
+        | LifecycleMaintenanceTaskKind::Repair
+        | LifecycleMaintenanceTaskKind::CachePreheat => BackgroundTaskPriority::Low,
     }
 }
 
@@ -555,8 +559,16 @@ pub(super) fn run_next_durable_maintenance(
     {
         return Ok(Some(outcome));
     }
-    runtime
+    if let Some(outcome) = runtime
         .run_next_quarantine_repair_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(outcome));
+    }
+    // C2: preheat runs strictly last — a pure cache fill must never delay
+    // reclaim or repair work.
+    runtime
+        .run_next_cache_preheat_maintenance()
         .map_err(map_lifecycle_error)
 }
 
@@ -586,10 +598,18 @@ pub(super) fn run_next_background_durable_maintenance(
     {
         return Ok(Some(step));
     }
-    runtime
+    if let Some(outcome) = runtime
         .run_next_quarantine_repair_maintenance()
+        .map_err(map_lifecycle_error)?
+    {
+        return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
+    }
+    // C2: preheat runs strictly last in the low tier — the ladder only
+    // reaches here when flush/checkpoint/WAL/rewrite have nothing startable,
+    // and reclaim (which frees the very capacity the fill needs) goes first.
+    runtime
+        .start_next_background_cache_preheat()
         .map_err(map_lifecycle_error)
-        .map(|outcome| outcome.map(DurableBackgroundMaintenanceStep::completed))
 }
 
 /// How many upper-tier tasks a drain round may complete before it services one pending
@@ -879,6 +899,35 @@ pub(super) fn drain_durable_background_round(
                     break;
                 }
             }
+            DurableBackgroundMaintenanceStep::PreheatStage(inputs) => {
+                // The table reads (the preheat's bulk IO) run with the runtime
+                // lock RELEASED (C2); the layout snapshots are immutable and
+                // the cache is internally synchronized.
+                let stage_start = perf_trace::start_timer();
+                let staged = inputs.stage();
+                perf_trace::record_lifecycle_background_task_unlocked_build(
+                    perf_trace::timer_elapsed(stage_start),
+                );
+                let finish = {
+                    let mut runtime = runtime.lock();
+                    runtime.finish_cache_preheat(staged)
+                };
+                perf_trace::record_lifecycle_background_task_total(perf_trace::timer_elapsed(
+                    task_start,
+                ));
+                if finish.is_ok() {
+                    tasks_completed += 1;
+                    made_progress = true;
+                    if serviced_low_tier {
+                        upper_tier_since_low = 0;
+                    } else {
+                        upper_tier_since_low += 1;
+                    }
+                } else {
+                    perf_trace::record_lifecycle_background_task_publish_failure();
+                    break;
+                }
+            }
             DurableBackgroundMaintenanceStep::FlushWatermarkCompute(inputs) => {
                 // The O(rows) flush-watermark coverage scan runs with the runtime lock
                 // RELEASED (D.2b-2); only the O(1) capture and apply take the lock.
@@ -913,7 +962,13 @@ pub(super) fn drain_durable_background_round(
             }
         }
     }
-    let mut pending_tasks = runtime.lock().maintenance_status().pending_tasks();
+    let mut pending_tasks = {
+        let runtime = runtime.lock();
+        // C2: the armed preheat flag counts as pending work so an idle
+        // runtime keeps re-arming drain rounds until the fill chain ends.
+        runtime.maintenance_status().pending_tasks()
+            + usize::from(runtime.cache_preheat_work_pending())
+    };
     if tasks_completed > 0 && pending_tasks == 0 {
         let coverage_scheduled = {
             let mut runtime = runtime.lock();

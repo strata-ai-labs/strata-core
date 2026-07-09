@@ -134,6 +134,18 @@ impl RetainedCommitTimeline {
         }
     }
 
+    /// #2521/#2522: a forked branch restored from the catalog manifest must
+    /// not keep `create_branch`'s complete-from-birth marking — "empty is
+    /// exact" only holds for branches created from birth, and a false
+    /// complete-empty index permanently erases the fork's inherited pre-fork
+    /// coverage (`snapshot_entries` would return `Some([])`, defeating every
+    /// downstream guard). Recovery re-completes it from the parent chain
+    /// after WAL replay.
+    pub(crate) fn mark_incomplete_for_fork_recovery(&self) {
+        let mut state = self.inner.write();
+        state.complete = false;
+    }
+
     /// W3.1b: the persistable form — entries with version ≤ `bound`, in
     /// version order. `None` unless the index is complete (persisting a
     /// partial index would fabricate coverage at restore).
