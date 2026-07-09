@@ -48,12 +48,12 @@ pub(crate) use cache::{
     )
 )]
 pub(crate) use compaction::{
-    CompactionCutBoundary, CompactionOutputCutHints, TableCompactionDecision,
+    CompactionCutBoundary, CompactionOutputCutHints, InputEdgeCutHints, TableCompactionDecision,
     TableCompactionDropReason, TableCompactionDropSummary, TableCompactionInput,
     TableCompactionMergeCursor, TableCompactionOutput, TableCompactionPolicy,
     TableCompactionReport, TableCompactionRowContext, TableCompactionSource,
     TableCompactionSourceId, TableCompactor, TableStreamingArtifactBuilder,
-    TableStreamingArtifactReport,
+    TableStreamingArtifactReport, INPUT_EDGE_CUT_MIN_OUTPUT_BYTES,
 };
 #[cfg_attr(
     all(not(test), not(feature = "testkit")),

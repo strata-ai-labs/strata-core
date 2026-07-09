@@ -18,6 +18,7 @@ pub(crate) struct TableCompactor {
     config: TableCompactionConfig,
     builder_config: TableBuilderConfig,
     output_cut_hints: Option<CompactionOutputCutHints>,
+    input_edge_cut_hints: Option<InputEdgeCutHints>,
 }
 
 impl TableCompactor {
@@ -31,6 +32,7 @@ impl TableCompactor {
             config,
             builder_config,
             output_cut_hints: None,
+            input_edge_cut_hints: None,
         })
     }
 
@@ -38,6 +40,13 @@ impl TableCompactor {
     /// level below the output level (see [`CompactionOutputCutHints`]).
     pub(crate) fn with_output_cut_hints(mut self, hints: CompactionOutputCutHints) -> Self {
         self.output_cut_hints = Some(hints);
+        self
+    }
+
+    /// A3 (#2524): also cut output tables at the pass's input-table edges
+    /// (see [`InputEdgeCutHints`]).
+    pub(crate) fn with_input_edge_cut_hints(mut self, hints: InputEdgeCutHints) -> Self {
+        self.input_edge_cut_hints = Some(hints);
         self
     }
 
@@ -285,6 +294,99 @@ impl<'a> GrandparentCutTracker<'a> {
             Some(containing) => self.hints.boundaries[containing].byte_count,
             None => 0,
         };
+    }
+}
+
+/// A3 (#2524): a pending output below this many bytes ignores input-edge cut
+/// points — many tiny inputs must not shred outputs into degenerate tables.
+/// One default data block is the smallest self-respecting output.
+pub(crate) const INPUT_EDGE_CUT_MIN_OUTPUT_BYTES: u64 = 16 * 1024;
+
+/// A3 (#2524): forced output cut points at the pass's input-table edges
+/// (each input's first key and the successor of its last key). A2's zone
+/// cuts make new flush tables narrow, but tables born from earlier GLUED
+/// flushes still straddle keyspace zones and get merged by every
+/// neighboring pass. Cutting the merge outputs at the narrow inputs'
+/// edges dissolves a straddler the FIRST time a pass consumes it: the
+/// outputs align to the zones and later passes touch only their own zone.
+/// Converges from any state — including stores seeded before the zone
+/// cuts existed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct InputEdgeCutHints {
+    /// Encoded physical cut keys, sorted ascending, deduplicated. An output
+    /// is cut BEFORE the first row at/after each edge.
+    edges: Vec<Vec<u8>>,
+    /// Anti-shred floor: edges inside an output smaller than this are
+    /// consumed without cutting.
+    min_output_bytes: u64,
+}
+
+impl InputEdgeCutHints {
+    pub(crate) fn new(mut edges: Vec<Vec<u8>>, min_output_bytes: u64) -> TableRuntimeResult<Self> {
+        if min_output_bytes == 0 {
+            return Err(TableRuntimeError::InvalidConfig {
+                field: "min_output_bytes",
+                reason: "must be nonzero",
+            });
+        }
+        edges.sort();
+        edges.dedup();
+        Ok(Self {
+            edges,
+            min_output_bytes,
+        })
+    }
+
+    fn is_empty(&self) -> bool {
+        self.edges.is_empty()
+    }
+}
+
+/// Walks the sorted input edges alongside the merged-row cursor. Cuts before
+/// the first row at/after an edge, provided the pending output already holds
+/// at least `min_output_bytes` (skipped edges are consumed — the next edge
+/// can still cut). Never cuts inside one physical key and never cuts an
+/// empty output, matching the size and grandparent cutters.
+struct InputEdgeCutTracker<'a> {
+    hints: &'a InputEdgeCutHints,
+    /// First edge the merged-row cursor has not yet reached.
+    next_edge: usize,
+}
+
+impl<'a> InputEdgeCutTracker<'a> {
+    fn new(hints: &'a InputEdgeCutHints) -> Option<Self> {
+        if hints.is_empty() {
+            return None;
+        }
+        Some(Self {
+            hints,
+            next_edge: 0,
+        })
+    }
+
+    fn should_cut_before(
+        &mut self,
+        row_physical_key: &[u8],
+        pending_has_rows: bool,
+        pending_last_physical_key: Option<&[u8]>,
+        pending_bytes: u64,
+    ) -> bool {
+        let mut crossed = false;
+        while self.next_edge < self.hints.edges.len()
+            && row_physical_key >= self.hints.edges[self.next_edge].as_slice()
+        {
+            if pending_has_rows {
+                crossed = true;
+            }
+            self.next_edge = self.next_edge.saturating_add(1);
+        }
+        if !pending_has_rows {
+            return false;
+        }
+        if pending_last_physical_key == Some(row_physical_key) {
+            return false;
+        }
+        crossed && pending_bytes >= self.hints.min_output_bytes
     }
 }
 
@@ -546,6 +648,7 @@ pub(crate) struct TableCompactionReport {
     /// W1.3a: output cuts forced by the grandparent-overlap bound (a subset of
     /// `split_count`'s output boundaries).
     grandparent_cut_count: u64,
+    input_edge_cut_count: u64,
     peak_buffered_rows: usize,
     drop_summaries: Vec<TableCompactionDropSummary>,
 }
@@ -561,6 +664,7 @@ impl TableCompactionReport {
             output_bytes: 0,
             split_count: 0,
             grandparent_cut_count: 0,
+            input_edge_cut_count: 0,
             peak_buffered_rows: 0,
             drop_summaries: Vec::new(),
         }
@@ -596,6 +700,11 @@ impl TableCompactionReport {
 
     pub(crate) const fn grandparent_cut_count(&self) -> u64 {
         self.grandparent_cut_count
+    }
+
+    /// A3 (#2524): output cuts taken at input-table edges.
+    pub(crate) const fn input_edge_cut_count(&self) -> u64 {
+        self.input_edge_cut_count
     }
 
     pub(crate) const fn peak_buffered_rows(&self) -> usize {
@@ -642,6 +751,9 @@ impl TableCompactionReport {
         self.grandparent_cut_count = self
             .grandparent_cut_count
             .saturating_add(other.grandparent_cut_count);
+        self.input_edge_cut_count = self
+            .input_edge_cut_count
+            .saturating_add(other.input_edge_cut_count);
         self.peak_buffered_rows = self.peak_buffered_rows.max(other.peak_buffered_rows);
         for summary in &other.drop_summaries {
             if let Some(existing) = self
@@ -826,6 +938,10 @@ fn compact_table_inputs_into(
         .output_cut_hints
         .as_ref()
         .and_then(GrandparentCutTracker::new);
+    let mut edge_tracker = compactor
+        .input_edge_cut_hints
+        .as_ref()
+        .and_then(InputEdgeCutTracker::new);
     let merge_timer = perf_trace::start_timer();
 
     while let Some(current) = merged.current() {
@@ -857,11 +973,22 @@ fn compact_table_inputs_into(
                         pending_output.last_physical_key(),
                     )
                 });
-                if size_split || grandparent_cut {
+                let input_edge_cut = edge_tracker.as_mut().is_some_and(|tracker| {
+                    tracker.should_cut_before(
+                        current_physical_key,
+                        pending_output.has_rows(),
+                        pending_output.last_physical_key(),
+                        pending_output.approximate_bytes(),
+                    )
+                });
+                if size_split || grandparent_cut || input_edge_cut {
                     pending_output.finish_current(sink, &mut report)?;
                     if grandparent_cut {
                         report.grandparent_cut_count =
                             report.grandparent_cut_count.saturating_add(1);
+                    }
+                    if input_edge_cut {
+                        report.input_edge_cut_count = report.input_edge_cut_count.saturating_add(1);
                     }
                     if let Some(tracker) = cut_tracker.as_mut() {
                         tracker.rebase_to_containing_interval();

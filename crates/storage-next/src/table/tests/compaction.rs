@@ -4,12 +4,12 @@ use crate::format::{decode_immutable_table, TableCompression};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::table::{
     sort_table_rows_by_key, validate_strictly_sorted_unique_rows, BuiltTableArtifact,
-    CompactionCutBoundary, CompactionOutputCutHints, ImmutableTableReader, MutableTable,
-    TableBuilderConfig, TableCompactionConfig, TableCompactionDecision, TableCompactionDropReason,
-    TableCompactionDropSummary, TableCompactionInput, TableCompactionOutput, TableCompactionPolicy,
-    TableCompactionReport, TableCompactionRowContext, TableCompactionSource,
-    TableCompactionSourceId, TableCompactor, TableCursor, TableIdentity, TableInternalKeyBytes,
-    TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeError,
+    CompactionCutBoundary, CompactionOutputCutHints, ImmutableTableReader, InputEdgeCutHints,
+    MutableTable, TableBuilderConfig, TableCompactionConfig, TableCompactionDecision,
+    TableCompactionDropReason, TableCompactionDropSummary, TableCompactionInput,
+    TableCompactionOutput, TableCompactionPolicy, TableCompactionReport, TableCompactionRowContext,
+    TableCompactionSource, TableCompactionSourceId, TableCompactor, TableCursor, TableIdentity,
+    TableInternalKeyBytes, TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeError,
 };
 use std::cell::Cell;
 use std::rc::Rc;
@@ -2161,4 +2161,138 @@ fn streaming_compaction_output_ranges_are_sorted_and_non_overlapping() {
     assert_output_key_ranges_are_non_overlapping(&output);
     assert_artifact_facts_match_rows(&output, "stream-output-ranges");
     assert_eq!(output_storage_rows(&output), sorted_storage_rows(&rows));
+}
+
+// ---- A3 (#2524): input-edge output cuts ----
+
+/// Edge cut keys from user keys in the shared test keyspace.
+fn edge_hints(user_keys: &[&[u8]], min_output_bytes: u64) -> InputEdgeCutHints {
+    InputEdgeCutHints::new(
+        user_keys
+            .iter()
+            .map(|user_key| {
+                TablePhysicalKeyBytes::from_physical_key(&physical_key(1, 0x20, user_key.to_vec()))
+                    .as_slice()
+                    .to_vec()
+            })
+            .collect(),
+        min_output_bytes,
+    )
+    .expect("edge hints")
+}
+
+/// A3: cutting outputs at input-table edges changes only WHERE tables are
+/// cut — the merged row stream is byte-identical to the uncut run, and each
+/// edge crossing cuts exactly once.
+#[test]
+fn input_edge_cutting_preserves_the_uncut_row_stream() {
+    let rows = [
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+        put_row(b"delta".to_vec(), 4),
+        put_row(b"echo".to_vec(), 5),
+        put_row(b"foxtrot".to_vec(), 6),
+    ];
+    let mut policy = keep_all_policy();
+    let uncut = compactor(1 << 20, 16)
+        .compact(
+            &identity("edge-uncut"),
+            &[source("edge", &rows)],
+            &mut policy,
+        )
+        .expect("uncut run");
+    assert_eq!(uncut.report().output_tables(), 1);
+    assert_eq!(uncut.report().input_edge_cut_count(), 0);
+
+    let cut = compactor(1 << 20, 16)
+        .with_input_edge_cut_hints(edge_hints(&[b"charlie", b"echo"], 1))
+        .compact(&identity("edge-cut"), &[source("edge", &rows)], &mut policy)
+        .expect("cut run");
+    assert_eq!(cut.report().output_tables(), 3);
+    assert_eq!(cut.report().input_edge_cut_count(), 2);
+    assert_eq!(output_storage_rows(&cut), output_storage_rows(&uncut));
+    let per_output_rows = cut
+        .artifacts()
+        .iter()
+        .map(|artifact| {
+            ImmutableTableReader::open_bytes(
+                artifact.facts().identity().clone(),
+                artifact.bytes().to_vec(),
+                TableReaderConfig::default(),
+            )
+            .expect("cut output")
+            .rows()
+            .len()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(per_output_rows, vec![2, 2, 2], "cuts land AT the edges");
+}
+
+/// A3: an edge cut never separates versions of one physical key.
+#[test]
+fn input_edge_cut_never_splits_one_physical_key() {
+    let mike = physical_key(1, 0x20, b"mike".to_vec());
+    let rows = [
+        put_row(b"alpha".to_vec(), 1),
+        put_row_for_key(mike.clone(), 3, vec![3; 16]),
+        put_row_for_key(mike, 5, vec![5; 16]),
+        put_row(b"zulu".to_vec(), 7),
+    ];
+    let mut policy = keep_all_policy();
+    let cut = compactor(1 << 20, 16)
+        .with_input_edge_cut_hints(edge_hints(&[b"mike"], 1))
+        .compact(
+            &identity("edge-grouped"),
+            &[source("edge-grouped", &rows)],
+            &mut policy,
+        )
+        .expect("cut run");
+    assert_eq!(cut.report().output_tables(), 2);
+    assert_eq!(cut.report().input_edge_cut_count(), 1);
+    let per_output_rows = cut
+        .artifacts()
+        .iter()
+        .map(|artifact| {
+            ImmutableTableReader::open_bytes(
+                artifact.facts().identity().clone(),
+                artifact.bytes().to_vec(),
+                TableReaderConfig::default(),
+            )
+            .expect("cut output")
+            .rows()
+            .len()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        per_output_rows,
+        vec![1, 3],
+        "both mike versions stay together after the edge cut",
+    );
+}
+
+/// A3: the anti-shred floor — an edge inside a below-minimum output is
+/// consumed without cutting, so many tiny inputs cannot shred outputs.
+#[test]
+fn input_edge_cut_respects_the_min_output_floor() {
+    let rows = [
+        put_row(b"alpha".to_vec(), 1),
+        put_row(b"bravo".to_vec(), 2),
+        put_row(b"charlie".to_vec(), 3),
+    ];
+    let mut policy = keep_all_policy();
+    let floored = compactor(1 << 20, 16)
+        .with_input_edge_cut_hints(edge_hints(&[b"bravo"], 1 << 20))
+        .compact(
+            &identity("edge-floored"),
+            &[source("edge-floored", &rows)],
+            &mut policy,
+        )
+        .expect("floored run");
+    assert_eq!(
+        floored.report().output_tables(),
+        1,
+        "below the floor: no cut"
+    );
+    assert_eq!(floored.report().input_edge_cut_count(), 0);
 }

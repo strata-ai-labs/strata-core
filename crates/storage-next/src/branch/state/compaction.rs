@@ -16,8 +16,8 @@ use crate::observability::perf_trace;
 use crate::table::TableInternalKeyBytes;
 use crate::table::{
     BuiltTableArtifact, CompactionCutBoundary, CompactionOutputCutHints, ImmutableTableReader,
-    TableBuilderConfig, TableCompactionConfig, TableCompactionDecision, TableCompactionInput,
-    TableCompactionPolicy, TableCompactionReport, TableCompactionRowContext,
+    InputEdgeCutHints, TableBuilderConfig, TableCompactionConfig, TableCompactionDecision,
+    TableCompactionInput, TableCompactionPolicy, TableCompactionReport, TableCompactionRowContext,
     TableCompactionSourceId, TableCompactor, TableCursor, TableIdentity, TableKeyBounds,
     TablePhysicalKeyBound, TablePhysicalKeyBytes, TableReaderConfig, TableRow, TableRuntimeResult,
 };
@@ -605,6 +605,12 @@ impl BranchLocalState {
         .map_err(|source| BranchRuntimeError::TableRuntime { source })?;
         let compactor = match self.grandparent_cut_hints(candidate, request)? {
             Some(hints) => compactor.with_output_cut_hints(hints),
+            None => compactor,
+        };
+        // A3 (#2524): cut outputs at the input tables' edges so a
+        // zone-straddling table dissolves on its first rewrite.
+        let compactor = match self.input_edge_cut_hints(candidate)? {
+            Some(hints) => compactor.with_input_edge_cut_hints(hints),
             None => compactor,
         };
         // Salt the output-table identity seed per subcompaction so parallel ranges (each of which
@@ -1230,6 +1236,114 @@ impl BranchLocalState {
     /// overlap bound, the output level is bottommost, or the grandparent
     /// level is empty (nothing to bound against — behavior is then identical
     /// to pre-W1.3a).
+    /// A3 (#2524): forced output cut points at the bounds of the pass's
+    /// disjoint input CLUSTERS (overlapping inputs merge into one cluster;
+    /// a cluster's edges are its lowest first key and the successor of its
+    /// highest last key). Only genuinely zoned inputs carry cut
+    /// information: narrow post-A2 zone tables form >=2 disjoint clusters
+    /// and their edges dissolve glued straddlers, while full-span inputs
+    /// (random-key workloads) collapse into ONE cluster and emit no edges
+    /// at all — measured: per-input edges shredded random-key levels and
+    /// cost YCSB C ~25% throughput / +35% read p50.
+    fn input_edge_cut_hints(
+        &self,
+        candidate: &BranchCompactionCandidate,
+    ) -> BranchRuntimeResult<Option<InputEdgeCutHints>> {
+        let mut spans: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(candidate.input_refs().len());
+        for input_ref in candidate.input_refs() {
+            let Some(table) = self.table_for_ref(input_ref) else {
+                continue;
+            };
+            let (Some(first), Some(last)) = (
+                table_physical_first_key(table),
+                table_physical_last_key(table),
+            ) else {
+                continue;
+            };
+            spans.push((first.as_slice().to_vec(), last.as_slice().to_vec()));
+        }
+        if spans.len() < 2 {
+            return Ok(None);
+        }
+        spans.sort();
+        let mut clusters: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(spans.len());
+        for (first, last) in spans {
+            match clusters.last_mut() {
+                Some((_, cluster_last)) if first.as_slice() <= cluster_last.as_slice() => {
+                    if last > *cluster_last {
+                        *cluster_last = last;
+                    }
+                }
+                _ => clusters.push((first, last)),
+            }
+        }
+        if clusters.len() < 2 {
+            return Ok(None);
+        }
+        // An edge may only cut what it DISSOLVES: it must fall strictly
+        // inside a genuine STRADDLER — an overlap table that fully contains
+        // at least one input cluster and intersects at least two. Passes
+        // whose overlap is empty, input-aligned, or merely boundary-adjacent
+        // — every consolidation pass on a sequential workload — emit
+        // nothing, so merging small tables into big ones stays intact
+        // (measured in two steps: unconditional cluster edges cost YCSB C
+        // ~28% throughput / +40% read p50; edges inside boundary-adjacent
+        // overlap tables still cost ~7%).
+        let mut straddler_spans: Vec<(Vec<u8>, Vec<u8>)> =
+            Vec::with_capacity(candidate.overlap_refs().len());
+        for overlap_ref in candidate.overlap_refs() {
+            let Some(table) = self.table_for_ref(overlap_ref) else {
+                continue;
+            };
+            let (Some(first), Some(last)) = (
+                table_physical_first_key(table),
+                table_physical_last_key(table),
+            ) else {
+                continue;
+            };
+            let (first, last) = (first.as_slice().to_vec(), last.as_slice().to_vec());
+            let contains_a_cluster = clusters.iter().any(|(cluster_first, cluster_last)| {
+                first.as_slice() <= cluster_first.as_slice()
+                    && cluster_last.as_slice() <= last.as_slice()
+            });
+            let intersected_clusters = clusters
+                .iter()
+                .filter(|(cluster_first, cluster_last)| {
+                    cluster_first.as_slice() <= last.as_slice()
+                        && first.as_slice() <= cluster_last.as_slice()
+                })
+                .count();
+            if contains_a_cluster && intersected_clusters >= 2 {
+                straddler_spans.push((first, last));
+            }
+        }
+        if straddler_spans.is_empty() {
+            return Ok(None);
+        }
+        let dissolves = |edge: &[u8]| {
+            straddler_spans
+                .iter()
+                .any(|(first, last)| first.as_slice() < edge && edge <= last.as_slice())
+        };
+        let mut edges: Vec<Vec<u8>> = Vec::with_capacity(clusters.len() * 2);
+        for (first, last) in clusters {
+            if dissolves(&first) {
+                edges.push(first);
+            }
+            let mut successor = last;
+            successor.push(0x00);
+            if dissolves(&successor) {
+                edges.push(successor);
+            }
+        }
+        if edges.is_empty() {
+            return Ok(None);
+        }
+        InputEdgeCutHints::new(edges, crate::table::INPUT_EDGE_CUT_MIN_OUTPUT_BYTES)
+            .map(Some)
+            .map_err(|source| BranchRuntimeError::TableRuntime { source })
+    }
+
     fn grandparent_cut_hints(
         &self,
         candidate: &BranchCompactionCandidate,

@@ -5463,3 +5463,193 @@ fn midlevel_subcompaction_ranges_reunite_into_the_serial_output() {
         "mid-level subcompaction ranges did not reunite into the serial output"
     );
 }
+
+/// A3 (#2524): the first rewrite of a zone-straddling table dissolves it at
+/// the narrow inputs' edges, and the dissolution opens the byte-free
+/// metadata-promotion path for the zone between them — the end state the
+/// zone-glued write amplification (#2524) could never reach.
+#[test]
+fn input_edge_cuts_dissolve_a_zone_straddler_and_open_metadata_promotion() {
+    let branch = branch_id(0xa3);
+    let mut state = BranchLocalState::empty(branch);
+    let big = |byte: u8| vec![byte; 20_000]; // above the 16KiB anti-shred floor
+
+    // A glued L1 table born before A2's zone cuts: one table spanning both
+    // keyspace zones (the low "meta" zone and the high "watermark" zone).
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "glued-l1",
+                vec![
+                    storage_row_with(branch, b"aa-meta".to_vec(), 1, 10, Timestamp::EPOCH, big(1)),
+                    // An OLDER version of the hot key the wm-zone input
+                    // rewrites — the straddler genuinely reaches into that
+                    // zone (the GT5 watermark key never changes).
+                    storage_row_with(
+                        branch,
+                        b"zz-watermark2".to_vec(),
+                        2,
+                        20,
+                        Timestamp::EPOCH,
+                        big(2),
+                    ),
+                ],
+            ),
+        )
+        .expect("install glued L1 straddler");
+    // Narrow post-A2 L0 inputs, one per zone.
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "l0-meta-zone",
+            vec![storage_row_with(
+                branch,
+                b"aa-meta2".to_vec(),
+                3,
+                30,
+                Timestamp::EPOCH,
+                big(3),
+            )],
+        ))
+        .expect("install meta-zone input");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "l0-wm-zone",
+            vec![storage_row_with(
+                branch,
+                b"zz-watermark2".to_vec(),
+                4,
+                40,
+                Timestamp::EPOCH,
+                big(4),
+            )],
+        ))
+        .expect("install wm-zone input");
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "edge-dissolve-output",
+    )
+    .expect("request");
+    let plan = state.plan_branch_compaction(&request).expect("plan");
+    let candidate = plan.candidate().expect("candidate");
+    assert_eq!(candidate.input_refs().len(), 2);
+    assert_eq!(
+        candidate.overlap_refs().len(),
+        1,
+        "the straddler overlaps both narrow inputs' span",
+    );
+
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("dissolving rewrite");
+    let report = outcome.table_report().expect("report");
+    assert_eq!(
+        report.input_edge_cut_count(),
+        2,
+        "cuts at the meta-zone input's edges inside the straddler's span",
+    );
+    assert_eq!(
+        state.owned_levels()[1].len(),
+        3,
+        "the straddler dissolved at the zone boundary",
+    );
+
+    // The zone BETWEEN the dissolved tables is now overlap-free: a narrow L0
+    // landing there promotes byte-free instead of rewriting the straddler.
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "l0-page-zone",
+            vec![storage_row_with(
+                branch,
+                b"mm-page".to_vec(),
+                5,
+                50,
+                Timestamp::EPOCH,
+                big(5),
+            )],
+        ))
+        .expect("install page-zone input");
+    let promotion_plan = state
+        .plan_branch_compaction(&request)
+        .expect("promotion plan");
+    let promotion = promotion_plan.candidate().expect("promotion candidate");
+    assert!(
+        promotion.is_metadata_promotion(),
+        "the middle zone reaches the byte-free promotion path after dissolution",
+    );
+}
+
+/// A3 (#2524): mutually overlapping inputs collapse into one cluster and
+/// emit NO edge cuts — full-span random-key workloads keep today's output
+/// shape exactly (per-input edges measured -25% YCSB C throughput before
+/// this gate).
+#[test]
+fn overlapping_inputs_emit_no_input_edge_cuts() {
+    let branch = branch_id(0xa4);
+    let mut state = BranchLocalState::empty(branch);
+    let big = |byte: u8| vec![byte; 20_000];
+    // A wide L1 target so the pass is a genuine merge, not a promotion.
+    state
+        .install_owned_table_at_level(
+            BranchLevel::new(1),
+            branch_owned_table(
+                branch,
+                BranchLevel::new(1),
+                "wide-l1",
+                vec![
+                    storage_row_with(branch, b"bb".to_vec(), 1, 10, Timestamp::EPOCH, big(1)),
+                    storage_row_with(branch, b"yy".to_vec(), 2, 20, Timestamp::EPOCH, big(2)),
+                ],
+            ),
+        )
+        .expect("install wide L1");
+    // Two FULL-SPAN L0 inputs (each covers aa..zz): one overlap cluster.
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "l0-fullspan-a",
+            vec![
+                storage_row_with(branch, b"aa".to_vec(), 3, 30, Timestamp::EPOCH, big(3)),
+                storage_row_with(branch, b"zz".to_vec(), 4, 40, Timestamp::EPOCH, big(4)),
+            ],
+        ))
+        .expect("install full-span a");
+    state
+        .install_l0_table(branch_owned_table(
+            branch,
+            BranchLevel::ZERO,
+            "l0-fullspan-b",
+            vec![
+                storage_row_with(branch, b"ab".to_vec(), 5, 50, Timestamp::EPOCH, big(5)),
+                storage_row_with(branch, b"zy".to_vec(), 6, 60, Timestamp::EPOCH, big(6)),
+            ],
+        ))
+        .expect("install full-span b");
+
+    let request = BranchCompactionRequest::new(
+        branch,
+        BranchCompactionKind::CompactL0ToLevelOne,
+        "edge-gate-output",
+    )
+    .expect("request");
+    let outcome = state
+        .compact_branch_owned_tables(&request)
+        .expect("full-span merge");
+    let report = outcome.table_report().expect("report");
+    assert_eq!(
+        report.input_edge_cut_count(),
+        0,
+        "one overlap cluster carries no zone information — no edge cuts",
+    );
+}

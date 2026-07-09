@@ -316,6 +316,10 @@ fn print_counters(phase: &str) {
         perf.flush_zone_cuts(),
     );
     println!(
+        "[counters {phase}] edge_cuts={}",
+        perf.compaction_input_edge_cuts(),
+    );
+    println!(
         "[counters {phase}] reclaim: retention_runs={} sweep_runs={} \
          sweep_deferred_builds={} sweep_deferred_readers={} quarantined={} \
          quarantine_bytes={} purge_runs={} purged_bytes={} low_tier_runs={}",

@@ -1552,6 +1552,12 @@ pub(crate) fn record_lifecycle_compaction_outcome(outcome: &LifecycleCompactionO
         .branch_outcome()
         .table_report()
         .map_or(0, crate::table::TableCompactionReport::output_bytes);
+    crate::observability::perf_trace::record_lifecycle_compaction_input_edge_cuts(
+        outcome
+            .branch_outcome()
+            .table_report()
+            .map_or(0, crate::table::TableCompactionReport::input_edge_cut_count),
+    );
     let operation_kind = match outcome.plan().kind() {
         BranchCompactionKind::CompactL0 => {
             crate::observability::perf_trace::LifecycleCompactionOperationKind::L0

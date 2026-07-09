@@ -180,6 +180,16 @@ fn run_workload(
                 "  [probe] on-disk post-settle: {}",
                 format_bytes(dir_size_bytes(path))
             );
+            {
+                // A3 (#2524): did zone/edge cuts fire on this workload?
+                let perf = strata_storage_next::perf_trace::snapshot();
+                eprintln!(
+                    "  [probe] a3: edge_cuts={} zone_cuts={} flush_outputs={}",
+                    perf.compaction_input_edge_cuts(),
+                    perf.flush_zone_cuts(),
+                    perf.flush_zone_output_tables(),
+                );
+            }
             if config.perf_breakdown {
                 // Printed BEFORE the run-phase counter reset: the settle
                 // window is where the preheat fill happens.

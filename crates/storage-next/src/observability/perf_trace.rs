@@ -256,6 +256,8 @@ pub struct StoragePerfSnapshot {
     flush_zone_output_tables: u64,
     /// A2 (#2524): total flush zone cuts taken (outputs - flushes).
     flush_zone_cuts: u64,
+    /// A3 (#2524): compaction output cuts taken at input-table edges.
+    compaction_input_edge_cuts: u64,
     /// W3.3a: WAL appends staged in the coalescing buffer.
     commit_wal_buffered_appends: u64,
     /// W3.3a: buffer drains by trigger, plus total drained bytes.
@@ -1332,6 +1334,11 @@ impl StoragePerfSnapshot {
     /// A2 (#2524): total flush zone cuts taken.
     pub const fn flush_zone_cuts(self) -> u64 {
         self.flush_zone_cuts
+    }
+
+    /// A3 (#2524): compaction output cuts taken at input-table edges.
+    pub const fn compaction_input_edge_cuts(self) -> u64 {
+        self.compaction_input_edge_cuts
     }
 
     /// W3.3a: WAL appends staged in the coalescing buffer.
@@ -3018,6 +3025,8 @@ static FLUSH_ZONE_OUTPUT_TABLES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static FLUSH_ZONE_CUTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static COMPACTION_INPUT_EDGE_CUTS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_WAL_BUFFERED_APPENDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD: AtomicU64 = AtomicU64::new(0);
@@ -3786,6 +3795,7 @@ pub fn reset() {
     TABLE_OBJECT_RETENTION_RUNS.store(0, Ordering::Relaxed);
     FLUSH_ZONE_OUTPUT_TABLES.store(0, Ordering::Relaxed);
     FLUSH_ZONE_CUTS.store(0, Ordering::Relaxed);
+    COMPACTION_INPUT_EDGE_CUTS.store(0, Ordering::Relaxed);
     TABLE_WARM_PUBLISH_SKIPPED_FULL.store(0, Ordering::Relaxed);
     // Occupancy gauges deliberately NOT reset: they are absolute values kept
     // by signed deltas from the shard refresh; a phase that performs no
@@ -4321,6 +4331,7 @@ pub fn snapshot() -> StoragePerfSnapshot {
         table_object_retention_runs: TABLE_OBJECT_RETENTION_RUNS.load(Ordering::Relaxed),
         flush_zone_output_tables: FLUSH_ZONE_OUTPUT_TABLES.load(Ordering::Relaxed),
         flush_zone_cuts: FLUSH_ZONE_CUTS.load(Ordering::Relaxed),
+        compaction_input_edge_cuts: COMPACTION_INPUT_EDGE_CUTS.load(Ordering::Relaxed),
         commit_wal_buffered_appends: COMMIT_WAL_BUFFERED_APPENDS.load(Ordering::Relaxed),
         commit_wal_buffer_flushes_threshold: COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD
             .load(Ordering::Relaxed),
@@ -6064,6 +6075,17 @@ pub(crate) fn record_table_object_retention_run() {
         return;
     }
     TABLE_OBJECT_RETENTION_RUNS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_lifecycle_compaction_input_edge_cuts(_cuts: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_lifecycle_compaction_input_edge_cuts(cuts: u64) {
+    if !recording_enabled() {
+        return;
+    }
+    COMPACTION_INPUT_EDGE_CUTS.fetch_add(cuts, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]
