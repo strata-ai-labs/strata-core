@@ -18,6 +18,7 @@ use crate::lifecycle::flush::{
     flush_branch_drain_with, flush_cache_branch, flush_durable_branch,
     install_prepared_durable_flush, prepare_durable_flush_with_budget, FlushDrainRequest,
 };
+use crate::lifecycle::flush::{flush_zone_cut_keys, prepare_durable_flush_with_cuts_for_test};
 use crate::object::{ObjectName, ObjectPrefix};
 use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
 use crate::service::{
@@ -1917,6 +1918,9 @@ struct FlushBackend {
     operations: Mutex<Vec<FlushOperation>>,
     lock_held: Arc<AtomicBool>,
     publish_failure: Option<PublishFailureKind>,
+    /// A2 (#2524): fail table-object publishes AFTER this many succeed —
+    /// the multi-output orphan arm (segment k fails with k-1 published).
+    publish_failure_after: Option<usize>,
     table_manifest_publish_failure: Option<PublishFailureKind>,
     range_failure: bool,
     invalid_publish_metadata: bool,
@@ -1954,6 +1958,7 @@ impl FlushBackend {
             operations: Mutex::new(Vec::new()),
             lock_held: Arc::new(AtomicBool::new(false)),
             publish_failure: None,
+            publish_failure_after: None,
             table_manifest_publish_failure: None,
             range_failure: false,
             invalid_publish_metadata: false,
@@ -1964,6 +1969,13 @@ impl FlushBackend {
     fn with_publish_failure(kind: PublishFailureKind) -> Self {
         Self {
             publish_failure: Some(kind),
+            ..Self::new()
+        }
+    }
+
+    fn with_publish_failure_after(successes: usize) -> Self {
+        Self {
+            publish_failure_after: Some(successes),
             ..Self::new()
         }
     }
@@ -2134,6 +2146,16 @@ impl Backend for FlushBackend {
                 BackendError::new(BackendErrorKind::Unavailable, "publish failed"),
             ));
         }
+        if let Some(successes) = self.publish_failure_after {
+            let published = self.objects.lock().expect("objects").len();
+            if published >= successes {
+                return Err(PublishError::new(
+                    name.clone(),
+                    PublishFailureKind::FailedBeforeVisibility,
+                    BackendError::new(BackendErrorKind::Unavailable, "publish failed"),
+                ));
+            }
+        }
         let mut objects = self.objects.lock().expect("objects");
         if mode == PublishMode::Create && objects.contains_key(name) {
             return Err(PublishError::precondition_failed(
@@ -2180,4 +2202,229 @@ impl MaintenanceTaskRunner for FailedFlushRunner {
             MaintenanceOutcomeStatus::Failed,
         ))
     }
+}
+
+// ---- A2 (#2524): flush zone cuts ----
+
+/// The encoded physical key of a test row — the comparison space the cut
+/// policy and L1 span map share.
+fn encoded_physical(branch: BranchId, user_key: &[u8]) -> Vec<u8> {
+    crate::table::TableRow::new(put_row(branch, user_key, 1, 1, b"x"))
+        .key()
+        .physical_key_bytes()
+        .to_vec()
+}
+
+fn one_frozen_table_branch(branch: BranchId, rows: Vec<StorageRow>) -> BranchLocalState {
+    let mut state = BranchLocalState::empty(branch);
+    for row in rows {
+        state.append_committed_row(row).expect("append row");
+    }
+    state.rotate_active();
+    state
+}
+
+#[test]
+fn flush_zone_cut_keys_cut_where_whole_tables_are_skipped() {
+    let branch = branch_id(0x80);
+    let state = one_frozen_table_branch(
+        branch,
+        vec![
+            put_row(branch, b"aa", 1, 100, b"low"),
+            put_row(branch, b"zz", 2, 200, b"high"),
+        ],
+    );
+    let frozen = &state.frozen()[0];
+    let spans = vec![
+        (
+            encoded_physical(branch, b"bb"),
+            encoded_physical(branch, b"cc"),
+            40,
+        ),
+        (
+            encoded_physical(branch, b"dd"),
+            encoded_physical(branch, b"ee"),
+            40,
+        ),
+    ];
+
+    // Both tables sit entirely inside the (aa, zz) gap: 80 bytes skipped.
+    assert_eq!(
+        flush_zone_cut_keys(&spans, frozen, 64, 4),
+        vec![encoded_physical(branch, b"zz")],
+    );
+    // Below the threshold: no cut.
+    assert!(flush_zone_cut_keys(&spans, frozen, 81, 4).is_empty());
+    // No L1 at all (cold start): no cut.
+    assert!(flush_zone_cut_keys(&[], frozen, 1, 4).is_empty());
+    // A single output slot leaves nothing to cut.
+    assert!(flush_zone_cut_keys(&spans, frozen, 64, 1).is_empty());
+}
+
+#[test]
+fn flush_zone_cut_keys_ignore_edge_straddling_tables() {
+    let branch = branch_id(0x81);
+    let state = one_frozen_table_branch(
+        branch,
+        vec![
+            put_row(branch, b"gg", 1, 100, b"low"),
+            put_row(branch, b"pp", 2, 200, b"high"),
+        ],
+    );
+    let frozen = &state.frozen()[0];
+    // Straddles the lower edge (first key sorts at/below "gg").
+    let lower_straddler = vec![(
+        encoded_physical(branch, b"aa"),
+        encoded_physical(branch, b"hh"),
+        1_000,
+    )];
+    assert!(flush_zone_cut_keys(&lower_straddler, frozen, 1, 4).is_empty());
+    // Straddles the upper edge (last key sorts at/above "pp").
+    let upper_straddler = vec![(
+        encoded_physical(branch, b"hh"),
+        encoded_physical(branch, b"zz"),
+        1_000,
+    )];
+    assert!(flush_zone_cut_keys(&upper_straddler, frozen, 1, 4).is_empty());
+}
+
+#[test]
+fn flush_zone_cut_keys_pick_the_largest_gaps_within_the_output_cap() {
+    let branch = branch_id(0x82);
+    let state = one_frozen_table_branch(
+        branch,
+        vec![
+            put_row(branch, b"aa", 1, 100, b"a"),
+            put_row(branch, b"gg", 2, 200, b"g"),
+            put_row(branch, b"mm", 3, 300, b"m"),
+            put_row(branch, b"tt", 4, 400, b"t"),
+        ],
+    );
+    let frozen = &state.frozen()[0];
+    let spans = vec![
+        // Inside (aa, gg): 32 bytes.
+        (
+            encoded_physical(branch, b"bb"),
+            encoded_physical(branch, b"cc"),
+            32,
+        ),
+        // Inside (gg, mm): 96 bytes.
+        (
+            encoded_physical(branch, b"hh"),
+            encoded_physical(branch, b"ii"),
+            96,
+        ),
+        // Inside (mm, tt): 64 bytes.
+        (
+            encoded_physical(branch, b"nn"),
+            encoded_physical(branch, b"oo"),
+            64,
+        ),
+    ];
+
+    // Three qualifying gaps, two cut slots: the two largest win, returned in
+    // ascending key order.
+    assert_eq!(
+        flush_zone_cut_keys(&spans, frozen, 32, 3),
+        vec![
+            encoded_physical(branch, b"mm"),
+            encoded_physical(branch, b"tt"),
+        ],
+    );
+}
+
+#[test]
+fn segmented_flush_installs_key_disjoint_outputs() {
+    let branch = branch_id(0x83);
+    let backend: &'static FlushBackend = Box::leak(Box::new(FlushBackend::new()));
+    // Two versions of the low key prove a cut can never split one physical
+    // key; the high key lands in its own segment.
+    let mut state = one_frozen_table_branch(
+        branch,
+        vec![
+            put_row(branch, b"aa", 1, 100, b"low-v1"),
+            put_row(branch, b"aa", 3, 300, b"low-v3"),
+            put_row(branch, b"zz", 2, 200, b"high"),
+        ],
+    );
+    let request = flush_request(branch, None);
+
+    let prepared = prepare_durable_flush_with_cuts_for_test(
+        &state.clone(),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
+        &request,
+        None,
+        None,
+        None,
+        &[encoded_physical(branch, b"zz")],
+    )
+    .expect("prepare segmented flush")
+    .expect("prepared flush");
+
+    let outcome = install_prepared_durable_flush(&mut state, prepared);
+    assert!(outcome.completed());
+    assert_eq!(outcome.tables().len(), 2, "one output table per segment");
+    assert_eq!(outcome.rows_flushed(), 3);
+    assert_eq!(state.frozen_table_count(), 0);
+    assert_eq!(state.owned_table_count(), 2);
+    // A2's watermark invariant: the segments' commit ranges interleave
+    // ([1,3] and [2,2]) yet their union covers every version — the
+    // recovery release fail-safe must accept the interval.
+    assert!(
+        crate::lifecycle::checkpoint::branch_durable_ranges_cover_interval(
+            state.owned_levels(),
+            state.inherited_layers(),
+            CommitVersion::ZERO,
+            CommitVersion::new(3),
+        ),
+        "interleaved segment commit ranges must union-cover the flushed interval",
+    );
+}
+
+#[test]
+fn segmented_flush_publish_failure_reports_every_published_output() {
+    let branch = branch_id(0x84);
+    // First table-object publish succeeds; the second fails — the orphan
+    // outcome must name the published first segment.
+    let backend: &'static FlushBackend =
+        Box::leak(Box::new(FlushBackend::with_publish_failure_after(1)));
+    let mut state = one_frozen_table_branch(
+        branch,
+        vec![
+            put_row(branch, b"aa", 1, 100, b"low"),
+            put_row(branch, b"zz", 2, 200, b"high"),
+        ],
+    );
+    let request = flush_request(branch, None);
+
+    let prepared = prepare_durable_flush_with_cuts_for_test(
+        &state.clone(),
+        &TableObjectService::new(backend),
+        &TableObjectReaderService::new(backend),
+        &request,
+        None,
+        None,
+        None,
+        &[encoded_physical(branch, b"zz")],
+    )
+    .expect("prepare segmented flush")
+    .expect("prepared flush");
+
+    let outcome = install_prepared_durable_flush(&mut state, prepared);
+    assert!(!outcome.completed());
+    assert!(outcome.published_not_installed());
+    let maintenance = outcome.maintenance_outcome();
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Failed);
+    assert_eq!(
+        maintenance.affected_object_names().len(),
+        1,
+        "the one published segment is reported for reclaim accounting",
+    );
+    assert_eq!(
+        state.frozen_table_count(),
+        1,
+        "the frozen input survives a failed segmented flush",
+    );
+    assert_eq!(state.owned_table_count(), 0);
 }

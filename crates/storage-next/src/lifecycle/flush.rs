@@ -19,7 +19,7 @@ use crate::service::{
 };
 use crate::table::{
     FrozenTable, ImmutableTableBuilder, ImmutableTableReader, TableIdentity, TableReaderConfig,
-    TableRuntimeFacts, TableSummaryExtras,
+    TableRow, TableRuntimeFacts, TableSummaryExtras,
 };
 use strata_core_next::BranchId;
 
@@ -141,6 +141,89 @@ pub(crate) struct PreparedDurableFlushDrain {
 
 const DEFAULT_FLUSH_DRAIN_FREEZE_RETRY_LIMIT: usize = 4;
 const MEMORY_RELEASE_REEVALUATION_RETAINED_BYTES: u64 = 512 * 1024 * 1024;
+
+/// A2 (#2524): minimum L1 bytes a key gap must skip to earn a flush cut.
+/// The zone-gluing pathology jumps whole keyspace zones — hundreds of MiB of
+/// L1 between consecutive memtable keys; single-zone workloads' gaps skip
+/// ~0-1 tables and never reach this, so they keep today's one-table flush.
+const FLUSH_ZONE_CUT_MIN_SKIP_BYTES: u64 = 32 * 1024 * 1024;
+
+/// A2 (#2524): output-table cap per flushed memtable (largest gaps win).
+/// Bounds the L0 count inflation against the count-based severity
+/// thresholds; a multi-zone commit shape needs one cut per zone boundary,
+/// so 4 outputs cover three zones (e.g. meta / page / hot keys).
+const FLUSH_MAX_OUTPUT_TABLES: usize = 4;
+
+/// A2 (#2524): cut keys — cut BEFORE each returned encoded physical key —
+/// where the frozen memtable's key sequence jumps over at least
+/// `min_skip_bytes` of WHOLE level-1 tables. Cutting there unglues
+/// multi-zone flushes: each output's span stops covering the L1 bytes the
+/// gap skipped, so L0→L1 passes stop dragging the whole level in as
+/// overlap and narrow outputs regain the byte-free metadata-promotion path.
+///
+/// Both sequences are key-ordered (frozen iteration and the disjoint sorted
+/// L1 spans), so one monotone two-pointer walk with prefix sums scores every
+/// gap in O(rows + tables). Only tables ENTIRELY inside the open gap count —
+/// edge-straddling tables get rewritten by a neighboring pass regardless, so
+/// counting them would over-cut. Ties break toward the smaller key; the
+/// selected cuts return in ascending key order. Cuts land only at physical
+/// key transitions, so one key's versions can never split.
+pub(crate) fn flush_zone_cut_keys(
+    level_one_spans: &[(Vec<u8>, Vec<u8>, u64)],
+    frozen: &FrozenTable,
+    min_skip_bytes: u64,
+    max_outputs: usize,
+) -> Vec<Vec<u8>> {
+    if level_one_spans.is_empty() || max_outputs <= 1 {
+        return Vec::new();
+    }
+    let mut prefix_bytes = Vec::with_capacity(level_one_spans.len() + 1);
+    prefix_bytes.push(0_u64);
+    for (_, _, bytes) in level_one_spans {
+        let last = *prefix_bytes.last().unwrap_or(&0);
+        prefix_bytes.push(last.saturating_add(*bytes));
+    }
+    // (skip_bytes, cut_key): every distinct-key transition whose gap fully
+    // contains >= min_skip_bytes of L1.
+    let mut candidates: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut previous_key: Option<Vec<u8>> = None;
+    // Monotone bounds over the sorted spans: `low` = first span whose FIRST
+    // key sorts above the gap's lower edge; `high` = first span whose LAST
+    // key sorts at/above the gap's upper edge. Both only move forward.
+    let mut low = 0_usize;
+    let mut high = 0_usize;
+    for row in frozen.iter() {
+        let key = row.key().physical_key_bytes();
+        let Some(previous) = previous_key.as_deref() else {
+            previous_key = Some(key.to_vec());
+            continue;
+        };
+        if key == previous {
+            continue;
+        }
+        while low < level_one_spans.len() && level_one_spans[low].0.as_slice() <= previous {
+            low = low.saturating_add(1);
+        }
+        high = high.max(low);
+        while high < level_one_spans.len() && level_one_spans[high].1.as_slice() < key {
+            high = high.saturating_add(1);
+        }
+        if high > low {
+            let skipped = prefix_bytes[high].saturating_sub(prefix_bytes[low]);
+            if skipped >= min_skip_bytes {
+                candidates.push((skipped, key.to_vec()));
+            }
+        }
+        previous_key = Some(key.to_vec());
+    }
+    // Largest gaps win the (max_outputs - 1) cut slots; ties toward the
+    // smaller key keep the selection deterministic across retries.
+    candidates.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    candidates.truncate(max_outputs.saturating_sub(1));
+    let mut cut_keys: Vec<Vec<u8>> = candidates.into_iter().map(|(_, key)| key).collect();
+    cut_keys.sort();
+    cut_keys
+}
 
 impl FlushFrozenRequest {
     pub(crate) fn new(
@@ -813,6 +896,46 @@ pub(crate) fn prepare_durable_flush_with_budget(
     let Some(frozen_index) = select_frozen_index(branch, request)? else {
         return Ok(None);
     };
+    // A2 (#2524): cut the memtable at zone jumps. Zero cuts — every
+    // single-zone workload — takes today's single-output path unchanged
+    // (byte-identical artifact and identity).
+    let cut_keys = planned_flush_zone_cut_keys(branch, frozen_index)?;
+    if !cut_keys.is_empty() {
+        return prepare_segmented_flush(
+            branch,
+            table_service,
+            reader_service,
+            request,
+            budget,
+            data_block_bytes,
+            inflight,
+            frozen_index,
+            &cut_keys,
+        );
+    }
+    prepare_single_output_flush(
+        branch,
+        table_service,
+        reader_service,
+        request,
+        budget,
+        data_block_bytes,
+        inflight,
+        frozen_index,
+    )
+}
+
+#[allow(clippy::too_many_arguments, reason = "explicit build-input plumbing")]
+fn prepare_single_output_flush(
+    branch: &BranchLocalState,
+    table_service: &TableObjectService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
+    request: &FlushFrozenRequest,
+    budget: Option<&StorageBudgetLedger>,
+    data_block_bytes: Option<u32>,
+    inflight: Option<&super::durable::InFlightOutputsGuard>,
+    frozen_index: usize,
+) -> LifecycleResult<Option<PreparedDurableFlush>> {
     let artifact = build_frozen_artifact(branch, request, frozen_index, data_block_bytes)?;
     require_optional_generated_artifact_budget(
         budget,
@@ -916,6 +1039,231 @@ pub(crate) fn prepare_durable_flush_with_budget(
             vec![(table_facts, object_facts)],
             error,
         )),
+    };
+    Ok(Some(PreparedDurableFlush {
+        request: request.clone(),
+        frozen_index,
+        frozen_identity,
+        outputs,
+    }))
+}
+
+/// A2 (#2524): the planned zone cuts for one frozen memtable, with the
+/// outputs/cuts counters recorded at plan time.
+fn planned_flush_zone_cut_keys(
+    branch: &BranchLocalState,
+    frozen_index: usize,
+) -> LifecycleResult<Vec<Vec<u8>>> {
+    let frozen =
+        branch
+            .frozen()
+            .get(frozen_index)
+            .ok_or(LifecycleError::MaintenanceTaskFailed {
+                reason: "flush frozen index must exist",
+            })?;
+    let cut_keys = flush_zone_cut_keys(
+        &branch.level_one_physical_spans(),
+        frozen,
+        FLUSH_ZONE_CUT_MIN_SKIP_BYTES,
+        FLUSH_MAX_OUTPUT_TABLES,
+    );
+    crate::observability::perf_trace::record_lifecycle_flush_zone_outputs(
+        cut_keys.len() as u64 + 1,
+        cut_keys.len() as u64,
+    );
+    Ok(cut_keys)
+}
+
+/// A2 test seam: the segmented path with explicit cut keys, so tests can
+/// exercise multi-output flushes without constructing >=32MiB of L1.
+#[cfg(test)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test seam mirrors the production signature"
+)]
+pub(crate) fn prepare_durable_flush_with_cuts_for_test(
+    branch: &BranchLocalState,
+    table_service: &TableObjectService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
+    request: &FlushFrozenRequest,
+    budget: Option<&StorageBudgetLedger>,
+    data_block_bytes: Option<u32>,
+    inflight: Option<&super::durable::InFlightOutputsGuard>,
+    cut_keys: &[Vec<u8>],
+) -> LifecycleResult<Option<PreparedDurableFlush>> {
+    let Some(frozen_index) = select_frozen_index(branch, request)? else {
+        return Ok(None);
+    };
+    prepare_segmented_flush(
+        branch,
+        table_service,
+        reader_service,
+        request,
+        budget,
+        data_block_bytes,
+        inflight,
+        frozen_index,
+        cut_keys,
+    )
+}
+
+/// A2 (#2524): the multi-output flush — one segment per zone, built,
+/// published, and verified per segment so transient artifact memory stays
+/// bounded to one segment's encoding. Any post-publication failure reports
+/// EVERY name published so far (the outputs are unreachable orphans the
+/// sweep reclaims). The outputs' ordered concatenation must partition the
+/// frozen rows — the same off-lock verify contract as the single path.
+#[allow(clippy::too_many_arguments, reason = "explicit build-input plumbing")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one publish pipeline per segment, kept linear"
+)]
+fn prepare_segmented_flush(
+    branch: &BranchLocalState,
+    table_service: &TableObjectService<'_>,
+    reader_service: &TableObjectReaderService<'static>,
+    request: &FlushFrozenRequest,
+    budget: Option<&StorageBudgetLedger>,
+    data_block_bytes: Option<u32>,
+    inflight: Option<&super::durable::InFlightOutputsGuard>,
+    frozen_index: usize,
+    cut_keys: &[Vec<u8>],
+) -> LifecycleResult<Option<PreparedDurableFlush>> {
+    let frozen =
+        branch
+            .frozen()
+            .get(frozen_index)
+            .ok_or(LifecycleError::MaintenanceTaskFailed {
+                reason: "flush frozen index must exist",
+            })?;
+    let frozen_identity = frozen.memory_state_identity();
+    let rows: Vec<TableRow> = frozen.iter().map(|row| row.as_ref().clone()).collect();
+    // Segment bounds: cut BEFORE each cut key. Cuts derive from observed
+    // physical-key transitions, so every segment is non-empty and one key's
+    // versions never split.
+    let mut segments: Vec<&[TableRow]> = Vec::with_capacity(cut_keys.len() + 1);
+    let mut start = 0_usize;
+    for cut in cut_keys {
+        let end = start
+            + rows[start..].partition_point(|row| row.key().physical_key_bytes() < cut.as_slice());
+        if end > start {
+            segments.push(&rows[start..end]);
+            start = end;
+        }
+    }
+    segments.push(&rows[start..]);
+    let branch_component = request.branch_id().to_string();
+    let mut outputs: Vec<PreparedFlushOutput> = Vec::with_capacity(segments.len());
+    let mut published: Vec<(TableRuntimeFacts, TableObjectFacts)> = Vec::new();
+    for segment in segments {
+        if segment.is_empty() {
+            continue;
+        }
+        let identity = derived_segment_identity(request, segment)?;
+        let artifact = ImmutableTableBuilder::new(
+            super::compaction::lifecycle_table_builder_config(data_block_bytes)?,
+        )
+        .map_err(table_error)?
+        .build_from_rows(identity.clone(), segment)
+        .map_err(table_error)?;
+        require_optional_generated_artifact_budget(
+            budget,
+            artifact.byte_count(),
+            "flush artifact exceeds generated artifact budget",
+        )?;
+        require_optional_table_reader_budget(
+            budget,
+            artifact.resident_metadata_bytes(),
+            "flush table reader exceeds storage budget",
+        )?;
+        let table_facts = artifact.facts().clone();
+        let object_id = derived_object_id(request, &table_facts);
+        reserve_inflight_flush_output(inflight, request, &branch_component, &object_id)?;
+        let publish = publish_or_load_existing(
+            table_service,
+            &branch_component,
+            request.target_level().raw().into(),
+            &object_id,
+            artifact.bytes(),
+            &table_facts,
+        );
+        let object_facts = match publish {
+            Ok(facts) => facts,
+            // Nothing published yet: propagate like the single path.
+            Err(error) if published.is_empty() => return Err(error),
+            Err(error) => {
+                return Ok(Some(published_not_installed_flush_outputs(
+                    request,
+                    frozen_index,
+                    frozen_identity,
+                    published,
+                    error,
+                )));
+            }
+        };
+        let reader = match reader_service.open_reader(
+            identity.clone(),
+            &object_facts,
+            TableReaderConfig::default()
+                .with_eager_filter_unavailable()
+                .deny_runtime_materialization(),
+        ) {
+            Ok(reader) => reader,
+            Err(error) => {
+                published.push((table_facts, object_facts));
+                return Ok(Some(published_not_installed_flush_outputs(
+                    request,
+                    frozen_index,
+                    frozen_identity,
+                    published,
+                    table_read_error(error),
+                )));
+            }
+        };
+        if let Err(error) = reader.warm_data_blocks_from_encoded(artifact.bytes()) {
+            published.push((table_facts, object_facts));
+            return Ok(Some(published_not_installed_flush_outputs(
+                request,
+                frozen_index,
+                frozen_identity,
+                published,
+                table_error(error),
+            )));
+        }
+        let extras = artifact.extras().clone();
+        match branch_owned_table(branch.branch_id(), identity, reader, extras) {
+            Ok(table) => {
+                published.push((table_facts.clone(), object_facts.clone()));
+                outputs.push(PreparedFlushOutput {
+                    table_facts,
+                    object_facts,
+                    table,
+                });
+            }
+            Err(error) => {
+                published.push((table_facts, object_facts));
+                return Ok(Some(published_not_installed_flush_outputs(
+                    request,
+                    frozen_index,
+                    frozen_identity,
+                    published,
+                    error,
+                )));
+            }
+        }
+    }
+    let refs: Vec<&BranchOwnedTable> = outputs.iter().map(|output| &output.table).collect();
+    let outputs = if frozen_rows_match_tables(&refs, frozen) {
+        Ok(outputs)
+    } else {
+        Err(FlushFrozenOutcome::published_not_installed_outcome(
+            request,
+            frozen_index,
+            published,
+            LifecycleError::MaintenanceTaskFailed {
+                reason: "flush artifact rows do not match the frozen table",
+            },
+        ))
     };
     Ok(Some(PreparedDurableFlush {
         request: request.clone(),
@@ -1383,6 +1731,37 @@ fn derived_table_identity(
     .map_err(table_error)
 }
 
+/// A2 (#2524): per-segment identity — the whole-memtable recipe above,
+/// derived from the segment's own rows (count, commit range, key-span
+/// digest). Content-derived, never index-salted: a retry with the same
+/// content and cuts idempotently loads the existing object, while layout
+/// drift after recovery changes the cuts and orphans the old objects for
+/// the sweep.
+fn derived_segment_identity(
+    request: &FlushFrozenRequest,
+    rows: &[TableRow],
+) -> LifecycleResult<TableIdentity> {
+    let mut min_commit: Option<u64> = None;
+    let mut max_commit: Option<u64> = None;
+    for row in rows {
+        let version = row.row().commit_version().as_u64();
+        min_commit = Some(min_commit.map_or(version, |current| current.min(version)));
+        max_commit = Some(max_commit.map_or(version, |current| current.max(version)));
+    }
+    let first_key = rows.first().map(|row| row.key().as_slice());
+    let last_key = rows.last().map(|row| row.key().as_slice());
+    TableIdentity::new(format!(
+        "{}-{}-frozen-{}-{}-{}-{:016x}",
+        request.table_identity_seed().as_str(),
+        request.branch_id(),
+        rows.len(),
+        min_commit.unwrap_or(0),
+        max_commit.unwrap_or(0),
+        key_span_digest(first_key, last_key),
+    ))
+    .map_err(table_error)
+}
+
 /// FNV-1a-64 over the frozen table's physical key span (first key, a separator, then last key).
 ///
 /// The flush object id derives from the table identity (`derived_object_id`), and
@@ -1394,6 +1773,18 @@ fn derived_table_identity(
 /// row count and commit range collide (e.g. raw same-version rows). It is idempotent — the same
 /// frozen span yields the same digest — so retry-load stays sound.
 fn frozen_key_span_digest(frozen: &FrozenTable) -> u64 {
+    let first = frozen.first_key();
+    let last = frozen.last_key();
+    key_span_digest(
+        first
+            .as_ref()
+            .map(super::super::table::TableInternalKeyBytes::as_slice),
+        last.as_ref()
+            .map(super::super::table::TableInternalKeyBytes::as_slice),
+    )
+}
+
+fn key_span_digest(first_key: Option<&[u8]>, last_key: Option<&[u8]>) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
     fn mix(mut hash: u64, bytes: &[u8]) -> u64 {
@@ -1404,13 +1795,13 @@ fn frozen_key_span_digest(frozen: &FrozenTable) -> u64 {
         hash
     }
     let mut hash = FNV_OFFSET;
-    if let Some(first) = frozen.first_key() {
-        hash = mix(hash, first.as_slice());
+    if let Some(first) = first_key {
+        hash = mix(hash, first);
     }
     // Unit separator so an empty last key cannot alias a first key that ends where last begins.
     hash = mix(hash, b"\x1f");
-    if let Some(last) = frozen.last_key() {
-        hash = mix(hash, last.as_slice());
+    if let Some(last) = last_key {
+        hash = mix(hash, last);
     }
     hash
 }
@@ -1536,10 +1927,28 @@ fn published_not_installed_flush(
     object_facts: TableObjectFacts,
     error: LifecycleError,
 ) -> PreparedDurableFlush {
+    published_not_installed_flush_outputs(
+        request,
+        frozen_index,
+        frozen_identity,
+        vec![(table_facts, object_facts)],
+        error,
+    )
+}
+
+/// A2 (#2524): the multi-output orphan arm — the outcome names EVERY object
+/// published before the failure so reclaim accounting sees the full set.
+fn published_not_installed_flush_outputs(
+    request: &FlushFrozenRequest,
+    frozen_index: usize,
+    frozen_identity: usize,
+    published: Vec<(crate::table::TableRuntimeFacts, TableObjectFacts)>,
+    error: LifecycleError,
+) -> PreparedDurableFlush {
     let outcome = FlushFrozenOutcome::published_not_installed_outcome(
         request,
         frozen_index,
-        vec![(table_facts, object_facts)],
+        published,
         error,
     );
     PreparedDurableFlush {
