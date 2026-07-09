@@ -23,7 +23,7 @@ unlock depends on Lithos's models or Moho's kernels existing.
 
 | # | Deferred question (req. §8) | Decision | §
 |---|---|---|---|
-| D1 | Rust↔CUDA story | Extract strata-inference's dlopen driver-API pattern into `strata-gpu`; no cudarc/cust, no link-time CUDA dependency | 3 |
+| D1 | Rust↔CUDA story | Extract strata-inference's dlopen driver-API pattern into the `device/` module; no cudarc/cust, no link-time CUDA dependency | 3 |
 | D2 | Page size | Init-time constant per tier instance (not build-time); opaque fixed-size blob; content schema owned by the consumer via metadata tags | 4 |
 | D3 | Index form | Deferred as required — but the *contract* is fixed now: per-page summary blobs in a device-resident parallel array, scoring kernel pluggable; baseline = mean-vector max-inner-product | 7 |
 | D4 | HMM/unified memory vs explicit staging | Explicit staging (T2→T1 pinned→T0 arena). HMM on consumer parts is unpredictable under pressure; explicit staging is measurable and portable | 6 |
@@ -31,7 +31,7 @@ unlock depends on Lithos's models or Moho's kernels existing.
 | D6 | fp8 pages / attention numerics | Not the tier's decision: pages are opaque bytes. The tier guarantees alignment and size only. (Quantization is Moho/Lithos co-design.) | 4 |
 | D7 | Eviction safety (HT-1 refcounting) | Epoch pinning + event-fenced slot reuse instead of per-page device refcounts — no host syncs, satisfies "never evicted under an in-flight step" | 5 |
 | D8 | Adjacency form | Bounded-degree adjacency table (slot-major, fixed fan-out F) at v0, not general CSR; one-hop bounded expansion is the requirement, the table is the simplest structure that serves it | 8 |
-| D9 | Where the code lives | ONE in-workspace non-default crate (`crates/strata-gpu`) holding the whole GPU workstream — `device/` runtime + `tier/` semantics as modules; the workspace stays product-shaped | 2 |
+| D9 | Where the code lives | ONE in-workspace non-default crate (`crates/gpu-cache`, package `strata-gpu-cache`) holding the whole GPU workstream — `device/` runtime + `tier/` semantics as modules; the workspace stays product-shaped | 2 |
 | D10 | Testing without a GPU fleet | Backend trait with `cuda` and `host-sim` implementations; all machinery testable in CI on CPU, CUDA specifics tested on the dev 4070S | 11 |
 | D11 | New (not in requirements) | **HT-11: COW page-table fork** — forkable working memory. Designed in from day 0 via page immutability; implemented after the core loop | 9 |
 
@@ -40,14 +40,17 @@ unlock depends on Lithos's models or Moho's kernels existing.
 ## 2. Crate architecture
 
 ```text
-crates/strata-gpu     ONE crate for the whole GPU workstream (the workspace
-                      stays product-shaped; Strata is more than this track):
+crates/gpu-cache      ONE crate (package strata-gpu-cache) for the whole GPU
+                      workstream. Plainly descriptive on purpose: evocative
+                      names (Lithos, Moho, Petra) belong to ecosystem
+                      projects; strata-core crates say what they do. Moho is
+                      the named boundary; this is Strata's GPU cache.
   src/device/         runtime: driver loading, context, streams, events,
                       arena + pinned pools, PTX JIT     (the only unsafe)
   src/tier/           page pool, page table, promotion/eviction, summaries,
                       adjacency, write-behind, API      (safe Rust)
                         └── consumes engine-next public surface
-python: strata_tier   PyO3 binding over strata-gpu: DLPack, numpy-free
+python: strata_tier   PyO3 binding over strata-gpu-cache: DLPack, numpy-free
 ```
 
 Rules:
@@ -71,7 +74,7 @@ Rules:
   `failed_precondition.tier.geometry_mismatch`). Executor/CLI command surface
   is explicitly **post-v0**; the tier is a library API.
 
-## 3. Device runtime (`strata-gpu`)
+## 3. Device runtime (`device/`)
 
 Extraction of the proven strata-inference pattern, generalized:
 
@@ -255,7 +258,7 @@ sizes).
 
 The tier layer is written against a `DeviceBackend` trait implemented twice:
 
-- **`cuda`** — real: `strata-gpu` arena, streams, events, kernels.
+- **`cuda`** — real: the `device/` arena, streams, events, kernels.
 - **`host-sim`** — plain host memory; "streams" are FIFO queues drained
   synchronously or step-wise under test control; "events" are counters;
   kernels are Rust functions with identical semantics.
@@ -348,7 +351,7 @@ requirements' §5 restated as numbers the harness enforces:
 
 | Milestone | Delivers | Exit gate |
 |---|---|---|
-| GT0 | Design accepted; `strata-gpu` extracted (arena, streams, events, PTX smoke on 4070S) | device smoke green |
+| GT0 | Design accepted; device runtime extracted (arena, streams, events, PTX smoke on 4070S) | device smoke green |
 | GT1 | Page pool, page table, epoch fencing, promotion/eviction on `host-sim` | CI-green machinery incl. fault injection |
 | GT2 | T2 schema, write-behind, flush, backpressure | durability tests green (sim + real) |
 | GT3 | Summaries, baseline top-k, adjacency, expansion on device | kernel correctness vs sim oracle |

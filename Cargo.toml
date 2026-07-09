@@ -17,7 +17,7 @@ members = [
     "crates/inference-next",
     "crates/cli-next",
     "crates/wasm-next",
-    "crates/strata-gpu",
+    "crates/gpu-cache",
 ]
 
 [workspace.package]

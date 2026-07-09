@@ -4,14 +4,14 @@
 //! machines without one skip them; the acceptance gate runs them explicitly:
 //!
 //! ```bash
-//! cargo test -p strata-gpu --test device_smoke -- --ignored
+//! cargo test -p strata-gpu-cache --test device_smoke -- --ignored
 //! ```
 
 use std::os::raw::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use strata_gpu::{
+use strata_gpu_cache::{
     DeviceArena, GpuContext, PinnedBuffer, PtxModule, RegionSpec, SlotAllocator, Stream,
 };
 

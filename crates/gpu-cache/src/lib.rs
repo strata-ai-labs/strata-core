@@ -1,4 +1,5 @@
-//! The GPU workstream crate: everything Strata runs on a device lives here.
+//! Strata's GPU cache: a device-resident hot tier over the store of
+//! record. Everything Strata runs on a GPU lives in this one crate.
 //!
 //! One crate, two layers (`docs/design/gpu-hot-tier.md` §2):
 //!

@@ -39,6 +39,9 @@ AGENT_MENTAL_MODEL.md
 ARCHITECTURE.md
 architecture-plan.md
 
+# Old-CLI cwd-relative database artifacts (testing the frozen main binary)
+.strata/
+
 # Claude Code and local development
 .claude
 github-issues/

@@ -1,5 +1,5 @@
 [package]
-name = "strata-gpu"
+name = "strata-gpu-cache"
 version = "1.0.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "Device runtime for the GPU hot tier: dlopen'd CUDA driver, arena, streams, PTX"
+description = "GPU cache tier over the store of record: device runtime + hot-tier machinery"
 
 [dependencies]
 tracing = { workspace = true }
