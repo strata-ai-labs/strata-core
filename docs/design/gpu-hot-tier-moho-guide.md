@@ -444,7 +444,37 @@ Methodology, learned the hard way:
   and query stream can shift the picture. `sel.timings()` percentiles from
   your actual decode loop are what to put in the PR description.
 
-## 6. Gotchas (each one cost us a debugging session)
+## 6. Forking working memory (HT-11)
+
+`tier.fork(branch)` (Rust: `Tier::fork_branch`) forks the handle *and* its
+Strata branch in one step: the child starts with the parent's activated
+working set — metadata only, zero page copies, measured as a gate in the
+decode driver — and its appends land durably on its own branch. The
+GRPO/tree-of-thought pattern: fork N rollouts off a shared prefix, step
+them round-robin, drop the losers.
+
+Rules that matter to a kernel consumer:
+
+- **Flush before forking.** An unflushed parent refuses with
+  `failed_precondition.tier.fork_unflushed` (a fork must never reference
+  pages that aren't durable on the parent branch). `fork()` checks before
+  creating the branch, so a refusal strands nothing.
+- **Selections see the union.** Device arrays are shared across the
+  family, so every handle's `topk` scores the union working set. Scope
+  with tag filters (e.g. tag a rollout's appends with its id) where strict
+  isolation matters; readback paths (`selection_page_ids`) name only the
+  calling handle's pages, but `block_table()` slots are union slots.
+- **One thread drives a family** (v0.5), and fork at a step boundary.
+- **Eviction is cooperative.** A slot frees only when every handle has
+  evicted it (and the last handle's epoch fence completes — which, on the
+  shared stream, also covers your earlier-enqueued kernels). Dropping a
+  rollout handle releases its shared references; slots exclusive to a
+  dropped handle stay pinned until the family tears down (v0.5).
+- At a full pool, a forked handle cannot *grow* residency until slots free
+  family-wide — appends still commit durably (write-behind needs no VRAM
+  headroom); their pages promote once references release.
+
+## 7. Gotchas (each one cost us a debugging session)
 
 - **CUDA context:** the tier retains the device's *primary* context and
   rebinds it at entry points, so it coexists with torch in either init
@@ -466,23 +496,25 @@ Methodology, learned the hard way:
   small commits amplify on-disk size and slow promotion reads. Prefer
   larger `write_behind_batch` (256+) for ingest-heavy phases.
 
-## 7. API quick reference
+## 8. API quick reference
 
 Python (`strata_tier`): `Tier(path, space, page_bytes, summary_bytes,
 page_slots, adjacency_degree=32, promotion_batch=8, write_behind_batch=8,
 write_backlog_cap=64, selection_ptx=None, profile=False)`; methods
 `append(bytes, summary, tags=None, edges=None) -> id`, `request(id,
 priority) -> bool`, `maintain()`, `step_begin() -> epoch`, `flush() ->
-(version, ts) | None`, `is_selectable(id)`, `topk(query, k, expand=None,
-filter_index=None, filter_value=None) -> Selection`, `pool() ->
-DeviceTensor`, `selection_ready()`, `selection_page_ids()` *(sync)*,
-`stats()`, `sync_calls()`, `write_backlog()`. `Selection`:
-`block_table()`, `scores()`, `pages()`, `ready()`, `timings() -> dict |
-None` *(non-blocking device times, §5.7)*.
+(version, ts) | None`, `is_selectable(id)`, `fork(branch) -> Tier` *(§6)*,
+`topk(query, k, expand=None, filter_index=None, filter_value=None) ->
+Selection`, `pool() -> DeviceTensor`, `selection_ready()`,
+`selection_page_ids()` *(sync)*, `stats()`, `sync_calls()`,
+`write_backlog()`. `Selection`: `block_table()`, `scores()`, `pages()`,
+`ready()`, `timings() -> dict | None` *(non-blocking device times, §5.7)*.
 
 Rust: `Tier<CudaBackend, EnginePageStore>` mirrors the above
-(`topk_enqueue`/`materialize_enqueue`/`selection_fence`/`page_of_slot`);
-`CudaBackend::{new, register_selection_ptx, enable_profiling,
+(`topk_enqueue`/`materialize_enqueue`/`selection_fence`/`page_of_slot`;
+`fork_branch(name)` is the canonical fork, `fork(store)` the generic
+seam); `EnginePageStore::{open, open_on_branch, from_database, fork,
+branch}`; `CudaBackend::{new, register_selection_ptx, enable_profiling,
 last_selection_timings, selection_addresses, pool_address,
 wait_external_stream, context}`; crate root exports
 `BASELINE_SELECTION_PTX`, `SELECTION_KERNEL_NAMES`, `SelectionTimings`
@@ -491,5 +523,6 @@ wait_external_stream, context}`; crate root exports
 Errors are typed and coded (`unavailable.gpu.driver_missing`,
 `invalid_argument.gpu.config`, `resource_exhausted.gpu.arena`,
 `resource_exhausted.tier.write_backlog`,
+`failed_precondition.tier.fork_unflushed`,
 `failed_precondition.tier.geometry_mismatch`, `unavailable.tier.store`) —
 match on codes, not message text.
