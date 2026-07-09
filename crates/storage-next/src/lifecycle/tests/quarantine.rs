@@ -1189,3 +1189,80 @@ fn fresh_purge_proof(
         .token();
     LifecyclePurgeProof::fresh(recovery_health, token)
 }
+
+/// #2524 Fix B fallout: reclaim runs during load, so a sweep can stage new
+/// inventory entries between a purge's token capture and its mutation. The
+/// advanced token must DEFER the purge (the staging sweep enqueues its own
+/// follow-up purge) — pre-fix it hard-failed the maintenance task with
+/// health debt (the flaky `background_scale` closed-loop failure).
+#[test]
+fn purge_with_advanced_inventory_token_defers_without_health_debt() {
+    let branch = branch_id();
+    let backend: &'static QuarantineTestBackend =
+        Box::leak(Box::new(QuarantineTestBackend::durable()));
+    let service = QuarantineService::new(backend);
+
+    // Stage object A: the inventory gains its first entry.
+    let source_a = ObjectLayout::table_object(&branch.to_string(), 0, "raced-a").expect("object a");
+    backend
+        .write_object(&source_a, b"raced-table-a")
+        .expect("source a write");
+    let request_a = LifecycleQuarantineRequest::from_source_object(
+        branch,
+        DATABASE_ID,
+        LifecycleCodecId::identity(),
+        source_a,
+        Timestamp::from_micros(10),
+        LifecycleQuarantineProof::safe(RecoveryHealth::Healthy),
+    )
+    .expect("request a");
+    assert_eq!(
+        quarantine_object(&service, &request_a).status(),
+        LifecycleQuarantineStatus::QuarantinedSourceDeleted
+    );
+
+    // A purge proof captures the CURRENT token...
+    let stale_token = service
+        .load_inventory(branch, DATABASE_ID, LifecycleCodecId::identity().as_str())
+        .expect("inventory load")
+        .token();
+    let proof =
+        LifecyclePurgeProof::fresh_for_candidate(RecoveryHealth::Healthy, stale_token, branch);
+
+    // ...then a concurrent sweep stages object B, advancing the inventory.
+    let source_b = ObjectLayout::table_object(&branch.to_string(), 0, "raced-b").expect("object b");
+    backend
+        .write_object(&source_b, b"raced-table-b")
+        .expect("source b write");
+    let request_b = LifecycleQuarantineRequest::from_source_object(
+        branch,
+        DATABASE_ID,
+        LifecycleCodecId::identity(),
+        source_b,
+        Timestamp::from_micros(11),
+        LifecycleQuarantineProof::safe(RecoveryHealth::Healthy),
+    )
+    .expect("request b");
+    assert_eq!(
+        quarantine_object(&service, &request_b).status(),
+        LifecycleQuarantineStatus::QuarantinedSourceDeleted
+    );
+
+    let outcome = purge_quarantine(
+        &service,
+        branch,
+        DATABASE_ID,
+        &LifecycleCodecId::identity(),
+        &proof,
+    )
+    .expect("purge with advanced token");
+
+    assert_eq!(outcome.status(), LifecyclePurgeStatus::InventoryAdvanced);
+    let maintenance = outcome.maintenance_outcome();
+    assert_eq!(maintenance.status(), MaintenanceOutcomeStatus::Deferred);
+    assert!(
+        maintenance.recovery_health().is_none(),
+        "a raced purge is normal operation, not health debt",
+    );
+    assert_eq!(maintenance.bytes_reclaimed(), 0);
+}

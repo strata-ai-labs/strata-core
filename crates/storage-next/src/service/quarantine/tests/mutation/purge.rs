@@ -139,9 +139,12 @@ fn purge_rejects_stale_inventory_token_before_delete() {
         ))
         .expect_err("stale proof rejected");
 
+    // #2524 Fix B fallout: the advanced token is its own typed variant so the
+    // lifecycle layer can DEFER (a concurrent sweep raced the purge) instead
+    // of failing the task; the service still refuses before deleting anything.
     assert!(matches!(
         purge,
-        QuarantineServiceError::InventoryMismatch { .. }
+        QuarantineServiceError::InventoryTokenMismatch { .. }
     ));
     assert!(backend.contains(&listed_object));
     assert!(backend.contains(&later_quarantine));
