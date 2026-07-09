@@ -1,12 +1,13 @@
-//! GA1 exit gate: adjacency snapshots built from storage at a consistent
-//! read — correctness (isolated nodes, self-loops, weights, edge types),
-//! temporal snapshots, determinism, and budget refusals by error code.
+//! GA1/GA2 exit gates: adjacency snapshots built from storage at a
+//! consistent read — correctness (isolated nodes, self-loops, weights,
+//! edge types), temporal snapshots, determinism, budget refusals by
+//! error code — and the exact algorithms computed over those snapshots.
 
 mod common;
 
 use strata_engine_next::{
-    Database, GraphAdjacencyEdge, GraphAnalyticsBudget, GraphEdgeData, GraphEdgeType, GraphName,
-    GraphNodeData, GraphNodeId,
+    Database, GraphAdjacencyEdge, GraphAnalyticsBudget, GraphDirection, GraphEdgeData,
+    GraphEdgeType, GraphName, GraphNodeData, GraphNodeId,
 };
 
 use common::{branch, open_cache_database, open_durable_database, space};
@@ -231,4 +232,128 @@ fn exercise_budget_refusals(mut database: Database) {
     assert!(graph
         .adjacency_index(&name, &GraphAnalyticsBudget::new(4, 3))
         .is_ok());
+}
+
+#[test]
+fn exact_algorithms_run_over_snapshots_in_cache_and_durable_modes() {
+    run_database_modes(exercise_exact_algorithms);
+}
+
+/// net: a -1-> b -2-> c, a -10-> c, c -1-> d, plus isolated node `lone`.
+fn exercise_exact_algorithms(mut database: Database) {
+    let mut graph = graph_service(&mut database, "default", "default");
+    let name = graph_name("net");
+    graph.create_graph(name.clone()).expect("graph created");
+    for id in ["a", "b", "c", "d", "lone"] {
+        graph
+            .upsert_node(&name, node_id(id), GraphNodeData::default())
+            .expect("node");
+    }
+    for (src, dst, weight) in [
+        ("a", "b", 1.0),
+        ("b", "c", 2.0),
+        ("a", "c", 10.0),
+        ("c", "d", 1.0),
+    ] {
+        graph
+            .upsert_edge(
+                &name,
+                node_id(src),
+                edge_type("e"),
+                node_id(dst),
+                edge_data(weight),
+            )
+            .expect("edge");
+    }
+
+    let index = graph
+        .adjacency_index(&name, &GraphAnalyticsBudget::default())
+        .expect("index builds");
+    let at = |id: &str| index.node_index(&node_id(id)).expect("node indexed");
+
+    // Components: {a, b, c, d} joined regardless of direction, lone apart.
+    let wcc = index.wcc();
+    assert_eq!(wcc.component_count(), 2);
+    let connected = wcc.component(at("a")).expect("labeled");
+    for id in ["b", "c", "d"] {
+        assert_eq!(wcc.component(at(id)), Some(connected));
+    }
+    assert_ne!(wcc.component(at("lone")), Some(connected));
+
+    // Clustering: a and b close the a-b-c triangle; c has one closed
+    // pair of three; d and lone have fewer than two neighbors.
+    let lcc = index.lcc();
+    assert!((lcc.coefficient(at("a")).expect("scored") - 1.0).abs() < 1e-10);
+    assert!((lcc.coefficient(at("b")).expect("scored") - 1.0).abs() < 1e-10);
+    assert!((lcc.coefficient(at("c")).expect("scored") - 1.0 / 3.0).abs() < 1e-10);
+    assert!(lcc.coefficient(at("d")).expect("scored").abs() < 1e-10);
+    assert!(lcc.coefficient(at("lone")).expect("scored").abs() < 1e-10);
+
+    // Shortest paths from a: the two-hop route to c beats the direct
+    // edge; lone stays unreachable; a missing source refuses by code.
+    let sssp = index
+        .sssp(&node_id("a"), GraphDirection::Outgoing)
+        .expect("sssp runs");
+    assert_eq!(sssp.distance(at("a")), Some(0.0));
+    assert_eq!(sssp.distance(at("b")), Some(1.0));
+    assert_eq!(sssp.distance(at("c")), Some(3.0));
+    assert_eq!(sssp.distance(at("d")), Some(4.0));
+    assert_eq!(sssp.distance(at("lone")), None);
+    assert_eq!(sssp.reachable_count(), 4);
+    let error = index
+        .sssp(&node_id("ghost"), GraphDirection::Outgoing)
+        .expect_err("missing source refuses");
+    assert_eq!(error.code(), "not_found.engine.graph_node");
+
+    let seeded_version = graph
+        .graph_info(&name)
+        .expect("info reads")
+        .expect("graph visible")
+        .updated_version();
+
+    // Mutate: cut c-d and bridge d to lone with a negative weight.
+    graph
+        .delete_edge(&name, &node_id("c"), &edge_type("e"), &node_id("d"))
+        .expect("delete edge");
+    graph
+        .upsert_edge(
+            &name,
+            node_id("d"),
+            edge_type("e"),
+            node_id("lone"),
+            edge_data(-2.0),
+        )
+        .expect("edge");
+
+    // Latest state: the partition regrouped, and the negative weight
+    // makes shortest paths refuse by code.
+    let latest = graph
+        .adjacency_index(&name, &GraphAnalyticsBudget::default())
+        .expect("index builds");
+    let latest_wcc = latest.wcc();
+    assert_eq!(latest_wcc.component_count(), 2);
+    let d = latest.node_index(&node_id("d")).expect("d indexed");
+    let lone = latest.node_index(&node_id("lone")).expect("lone indexed");
+    let a = latest.node_index(&node_id("a")).expect("a indexed");
+    assert_eq!(latest_wcc.component(d), latest_wcc.component(lone));
+    assert_ne!(latest_wcc.component(d), latest_wcc.component(a));
+    let error = latest
+        .sssp(&node_id("a"), GraphDirection::Outgoing)
+        .expect_err("negative weight refuses");
+    assert_eq!(
+        error.code(),
+        "failed_precondition.engine.graph_negative_weight"
+    );
+
+    // The historical snapshot still answers with the seeded state.
+    let historical = graph
+        .adjacency_index_at_version(&name, &GraphAnalyticsBudget::default(), seeded_version)
+        .expect("historical index builds");
+    assert_eq!(historical.wcc(), wcc);
+    assert_eq!(
+        historical
+            .sssp(&node_id("a"), GraphDirection::Outgoing)
+            .expect("historical sssp runs"),
+        sssp
+    );
 }
