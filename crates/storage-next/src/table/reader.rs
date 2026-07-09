@@ -1601,7 +1601,16 @@ impl<'a> ImmutableTableReader<'a> {
                 report.trailing_skipped_full = 0;
                 continue;
             }
-            match cache.cache.insert_if_free(key, Arc::from(frame_bytes))? {
+            // FAIR insert, unlike the publish-time warm above (W2.4's
+            // no-evict rule protects the demand set from UNPROVEN fresh
+            // blocks mid-load). The preheat walks the LIVE canonical table
+            // set while maintenance is idle: whatever LRU evicts to admit a
+            // live block is colder by recency — dead tables' blocks from
+            // load-churn publishes are never touched again, so they age to
+            // the LRU end and are displaced first. No-evict here starved the
+            // fill against exactly that garbage (measured: full-shard skips
+            // at ~40% live occupancy).
+            match cache.cache.insert(key, Arc::from(frame_bytes))? {
                 CacheInsert::Inserted(_) => {
                     report.admitted = report.admitted.saturating_add(1);
                     report.trailing_skipped_full = 0;

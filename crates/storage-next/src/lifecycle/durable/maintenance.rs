@@ -3626,6 +3626,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 self.initial_branch_id,
             ));
         }
+        if staged.quarantined_objects > 0 {
+            // C2: sweeping dead tables dropped their cache blocks, freeing the
+            // very capacity a saturation-stopped preheat chain was waiting on —
+            // and late in a quiet period no publish will re-arm it. The sweep
+            // is that re-arm (the kept cursor resumes the walk).
+            self.note_cache_preheat_trigger();
+        }
         Ok(outcome)
     }
 
