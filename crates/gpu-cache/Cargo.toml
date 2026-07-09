@@ -9,7 +9,17 @@ repository.workspace = true
 publish = false
 description = "GPU cache tier over the store of record: device runtime + hot-tier machinery"
 
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+# The Python seam (design §12): PyO3 classes + DLPack capsules. Off by
+# default so plain builds stay pyo3-free; build the extension module with
+#   cargo build -p strata-gpu-cache --release --features python
+python = ["dep:pyo3"]
+
 [dependencies]
+pyo3 = { version = "0.23", optional = true }
 # The tier consumes engine-next's public (D4) surface only — a consumer
 # like the executor, never a storage-next importer (design §2).
 strata-engine-next = { path = "../engine-next" }

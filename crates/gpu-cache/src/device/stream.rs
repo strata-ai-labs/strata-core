@@ -164,6 +164,23 @@ impl Event {
     }
 }
 
+impl Event {
+    /// Enqueues a wait for this event on an externally-owned raw stream
+    /// (the `DLPack` consumer's stream). No host blocking.
+    ///
+    /// # Safety
+    ///
+    /// `raw_stream` must be a valid stream handle in the same context.
+    pub(crate) unsafe fn wait_on_raw_stream(
+        &self,
+        raw_stream: u64,
+        api: &std::sync::Arc<crate::device::driver::DriverApi>,
+    ) -> Result<(), GpuError> {
+        let stream = raw_stream as crate::device::driver::CuStream;
+        api.stream_wait_event(stream, self.raw)
+    }
+}
+
 impl Drop for Event {
     fn drop(&mut self) {
         if let Err(error) = self.api.event_destroy(self.raw) {

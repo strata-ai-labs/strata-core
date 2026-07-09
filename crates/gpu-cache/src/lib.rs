@@ -24,6 +24,10 @@
 #[allow(unsafe_code)]
 mod device;
 
+#[cfg(feature = "python")]
+#[allow(unsafe_code)] // DLPack capsule FFI; every block carries a SAFETY note
+mod python;
+
 pub mod tier;
 
 pub use device::arena::{DeviceArena, RegionSpec, SlotAllocator, SlotRegion};

@@ -66,6 +66,9 @@ pub enum Region {
     Tags,
     /// Kernel scratch: scores, selection output, cursor, dedup bitmap.
     Scratch,
+    /// Materialized selection: the top-k pages gathered contiguously
+    /// (`MAX_K * page_bytes`; the stock-attention consumption path).
+    Materialize,
 }
 
 /// Byte sizes for the tier's regions, fixed at open.
@@ -83,6 +86,8 @@ pub struct RegionBytes {
     pub tags: u64,
     /// Kernel scratch bytes.
     pub scratch: u64,
+    /// Materialize region bytes (`MAX_K * page_bytes`).
+    pub materialize: u64,
 }
 
 /// A pending copy's completion handle. Non-blocking by construction: the
@@ -141,4 +146,10 @@ pub trait DeviceBackend {
     /// Reads the most recent selection back to the host (test/oracle path;
     /// GT4 exposes the device-resident form instead). Blocks until ready.
     fn read_topk(&mut self) -> Result<TopkReadback, GpuError>;
+
+    /// Gathers the most recent selection's pages contiguously into the
+    /// materialize region, in selection order (pad slots zero-fill). The
+    /// stock-attention path: consumers read `[k, page_bytes]` without any
+    /// custom kernel. Stream-ordered after the selection.
+    fn materialize_topk(&mut self) -> Result<Self::Fence, GpuError>;
 }

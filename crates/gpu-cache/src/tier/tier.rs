@@ -97,6 +97,8 @@ pub struct Tier<B: DeviceBackend, S: PageStore> {
     next_page_id: u64,
     /// Receipt of the most recent durable batch commit.
     last_receipt: Option<CommitReceipt>,
+    /// Fence of the most recent selection/materialization enqueue.
+    selection_fence: Option<B::Fence>,
     /// Per-slot edge ids of the resident page (for unlink bookkeeping).
     slot_edges: Vec<Vec<PageId>>,
     /// Per-slot resident-adjacency mirror (what the device row holds).
@@ -161,6 +163,7 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
             validity: slots,
             tags: slots * 32,
             scratch: crate::tier::backend::scratch_bytes(slots, config.summary_bytes),
+            materialize: u64::from(MAX_K) * config.page_bytes,
         })?;
         let table = PageTable::new(slots * config.page_bytes, config.page_bytes)?;
         Ok(Self {
@@ -173,6 +176,7 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
             write_behind: std::collections::VecDeque::new(),
             next_page_id,
             last_receipt: None,
+            selection_fence: None,
             slot_edges: vec![Vec::new(); config.page_slots as usize],
             slot_adj: vec![Vec::new(); config.page_slots as usize],
             waiting_edges: std::collections::HashMap::new(),
@@ -473,6 +477,58 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
                 &row,
             )
             .map(|_| ())
+    }
+
+    /// Enqueues selection without reading back (the GT4 device-resident
+    /// path): results land in device scratch; readiness is polled via
+    /// [`Self::selection_ready`], never blocked on.
+    pub fn topk_enqueue(
+        &mut self,
+        query: &[f32],
+        k: u16,
+        expand_budget: Option<u16>,
+        filter: Option<TagFilter>,
+    ) -> Result<(), GpuError> {
+        if k == 0 || k > MAX_K {
+            return Err(GpuError::InvalidConfig {
+                detail: format!("k must be in 1..={MAX_K}, got {k}"),
+            });
+        }
+        let fence = self.backend.topk(query, k, expand_budget, filter)?;
+        self.selection_fence = Some(fence);
+        Ok(())
+    }
+
+    /// Enqueues the contiguous gather of the most recent selection into the
+    /// materialize region (`[k, page_bytes]`, pad rows zeroed).
+    pub fn materialize_enqueue(&mut self) -> Result<(), GpuError> {
+        let fence = self.backend.materialize_topk()?;
+        self.selection_fence = Some(fence);
+        Ok(())
+    }
+
+    /// Non-blocking: true when the most recent selection/materialization
+    /// has fully landed on the device.
+    #[must_use]
+    pub fn selection_ready(&self) -> bool {
+        use crate::tier::backend::CopyFence;
+        self.selection_fence
+            .as_ref()
+            .is_none_or(CopyFence::is_complete)
+    }
+
+    /// The most recent selection/materialization fence (the `DLPack` seam
+    /// orders consumer streams against it).
+    #[must_use]
+    pub fn selection_fence(&self) -> Option<&B::Fence> {
+        self.selection_fence.as_ref()
+    }
+
+    /// Maps device slots of the most recent selection to page ids (host
+    /// bookkeeping only; no device access).
+    #[must_use]
+    pub fn page_of_slot(&self, slot: u32) -> Option<PageId> {
+        self.table.state(slot).map(|state| state.page_id)
     }
 
     /// Baseline device selection (HT-2): scores every selectable page,

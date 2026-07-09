@@ -53,6 +53,7 @@ pub struct HostSimBackend {
     validity: Vec<u8>,
     tags: Vec<u8>,
     scratch: Vec<u8>,
+    materialize: Vec<u8>,
     /// The most recent selection (the sim's "device scratch").
     last_topk: Option<TopkReadback>,
     state: Rc<RefCell<CompletionState>>,
@@ -125,6 +126,7 @@ impl HostSimBackend {
             Region::Validity => &mut self.validity,
             Region::Tags => &mut self.tags,
             Region::Scratch => &mut self.scratch,
+            Region::Materialize => &mut self.materialize,
         }
     }
 
@@ -136,6 +138,7 @@ impl HostSimBackend {
             Region::Validity => &self.validity,
             Region::Tags => &self.tags,
             Region::Scratch => &self.scratch,
+            Region::Materialize => &self.materialize,
         }
     }
 
@@ -192,6 +195,7 @@ impl DeviceBackend for HostSimBackend {
         self.validity = alloc(bytes.validity)?;
         self.tags = alloc(bytes.tags)?;
         self.scratch = alloc(bytes.scratch)?;
+        self.materialize = alloc(bytes.materialize)?;
         Ok(())
     }
 
@@ -343,5 +347,24 @@ impl DeviceBackend for HostSimBackend {
             .ok_or_else(|| GpuError::InvalidConfig {
                 detail: "read_topk before any topk".to_owned(),
             })
+    }
+
+    fn materialize_topk(&mut self) -> Result<Self::Fence, GpuError> {
+        let selection = self
+            .last_topk
+            .clone()
+            .ok_or_else(|| GpuError::InvalidConfig {
+                detail: "materialize before any topk".to_owned(),
+            })?;
+        let capacity = self.capacity();
+        let page_bytes = self.pages.len() / capacity;
+        self.materialize.fill(0);
+        for (i, (slot, _)) in selection.selected.iter().enumerate() {
+            let src = (*slot as usize) * page_bytes;
+            let dst = i * page_bytes;
+            let page = self.pages[src..src + page_bytes].to_vec();
+            self.materialize[dst..dst + page_bytes].copy_from_slice(&page);
+        }
+        self.fence_now()
     }
 }

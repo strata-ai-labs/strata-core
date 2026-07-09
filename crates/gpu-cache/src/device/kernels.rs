@@ -18,7 +18,13 @@
 //!   adjacency walk with atomic bitmap dedup and an atomic output cursor.
 
 /// Kernel entry names, resolved eagerly at module load.
-pub(crate) const KERNELS: &[&str] = &["score_slots", "select_topk", "seed_bitmap", "expand"];
+pub(crate) const KERNELS: &[&str] = &[
+    "score_slots",
+    "select_topk",
+    "seed_bitmap",
+    "expand",
+    "gather_pages",
+];
 
 /// The PTX module source.
 pub(crate) const SELECTION_PTX: &str = r"
@@ -355,6 +361,65 @@ DONE:
     shl.b64         %rd18, %rd17, 2;
     add.u64         %rd19, %rd5, %rd18;
     st.global.u32   [%rd19], %r13;
+DONE:
+    ret;
+}
+
+// Gathers the selected pages contiguously: out[i] = pool[sel[i]], one u32
+// word per thread; pad selections (0xFFFFFFFF) zero-fill their row.
+.visible .entry gather_pages(
+    .param .u64 p_slots,
+    .param .u32 p_k,
+    .param .u64 p_pool,
+    .param .u32 p_words,
+    .param .u64 p_out
+)
+{
+    .reg .pred  %p<4>;
+    .reg .b32   %r<14>;
+    .reg .b64   %rd<14>;
+
+    ld.param.u64    %rd1, [p_slots];
+    ld.param.u32    %r1, [p_k];
+    ld.param.u64    %rd2, [p_pool];
+    ld.param.u32    %r2, [p_words];
+    ld.param.u64    %rd3, [p_out];
+
+    mov.u32         %r3, %ctaid.x;
+    mov.u32         %r4, %ntid.x;
+    mov.u32         %r5, %tid.x;
+    mad.lo.s32      %r6, %r3, %r4, %r5;
+    mul.lo.u32      %r7, %r1, %r2;
+    setp.ge.u32     %p1, %r6, %r7;
+    @%p1 bra        DONE;
+
+    div.u32         %r8, %r6, %r2;          // selection index
+    rem.u32         %r9, %r6, %r2;          // word index
+
+    cvt.u64.u32     %rd4, %r8;
+    shl.b64         %rd5, %rd4, 2;
+    add.u64         %rd6, %rd1, %rd5;
+    ld.global.u32   %r10, [%rd6];           // slot
+
+    cvt.u64.u32     %rd7, %r6;
+    shl.b64         %rd8, %rd7, 2;
+    add.u64         %rd9, %rd3, %rd8;       // &out word
+
+    setp.eq.u32     %p2, %r10, 0xFFFFFFFF;
+    @%p2 bra        PAD;
+
+    mul.lo.u32      %r11, %r10, %r2;
+    add.u32         %r11, %r11, %r9;
+    cvt.u64.u32     %rd10, %r11;
+    shl.b64         %rd11, %rd10, 2;
+    add.u64         %rd12, %rd2, %rd11;
+    ld.global.u32   %r12, [%rd12];
+    st.global.u32   [%rd9], %r12;
+    ret;
+
+PAD:
+    mov.u32         %r13, 0;
+    st.global.u32   [%rd9], %r13;
 DONE:
     ret;
 }

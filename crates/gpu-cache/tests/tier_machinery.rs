@@ -547,3 +547,39 @@ fn topk_pages_selects_filters_and_expands_through_the_tier() {
         );
     }
 }
+
+#[test]
+fn materialize_gathers_selected_pages_in_order() {
+    use strata_gpu_cache::tier::backend::{DeviceBackend, Region};
+
+    let mut tier = tier_with(4, 0);
+    let page = |fill: u8, axis: usize| {
+        let mut summary = vec![0u8; usize::try_from(SUMMARY_BYTES).unwrap()];
+        summary[axis * 4..axis * 4 + 4].copy_from_slice(&4.0f32.to_le_bytes());
+        PageBlob {
+            bytes: vec![fill; usize::try_from(PAGE_BYTES).unwrap()],
+            summary,
+            tags: [0; 4],
+            edges: Vec::new(),
+        }
+    };
+    tier.append(&page(0xAA, 0)).expect("a");
+    tier.append(&page(0xBB, 1)).expect("b");
+    tier.maintain();
+
+    // Query favoring axis 1 then axis 0: selection order is b, a.
+    let mut query = vec![0.0f32; usize::try_from(SUMMARY_BYTES).unwrap() / 4];
+    query[1] = 2.0;
+    query[0] = 1.0;
+    tier.topk_enqueue(&query, 2, None, None).expect("topk");
+    tier.materialize_enqueue().expect("materialize");
+    assert!(tier.selection_ready(), "sim completes immediately");
+
+    let page_len = usize::try_from(PAGE_BYTES).unwrap();
+    let bytes = tier
+        .backend_mut()
+        .read_back(Region::Materialize, 0, page_len * 2)
+        .expect("read");
+    assert!(bytes[..page_len].iter().all(|&b| b == 0xBB), "rank 0 = b");
+    assert!(bytes[page_len..].iter().all(|&b| b == 0xAA), "rank 1 = a");
+}

@@ -31,6 +31,7 @@ struct Plan {
     capacity: usize,
     dim: usize,
     degree: usize,
+    page_bytes: usize,
     scores_off: u64,
     sel_slots_off: u64,
     sel_scores_off: u64,
@@ -53,6 +54,7 @@ impl Plan {
         }
         let dim = usize::try_from(bytes.summaries).unwrap_or(0) / capacity / 4;
         let degree = usize::try_from(bytes.adjacency).unwrap_or(0) / capacity / 4;
+        let page_bytes = usize::try_from(bytes.pages).unwrap_or(0) / capacity;
         let scores_off = 0u64;
         let sel_slots_off = scores_off + (capacity as u64) * 4;
         let sel_scores_off = sel_slots_off + (MAX_K as u64) * 4;
@@ -74,6 +76,7 @@ impl Plan {
             capacity,
             dim,
             degree,
+            page_bytes,
             scores_off,
             sel_slots_off,
             sel_scores_off,
@@ -88,7 +91,7 @@ impl Plan {
 
 /// Completion fence over a CUDA event (polled, never blocked on).
 #[derive(Clone)]
-pub struct CudaFence(Arc<Event>);
+pub struct CudaFence(pub(crate) Arc<Event>);
 
 impl CopyFence for CudaFence {
     fn is_complete(&self) -> bool {
@@ -153,6 +156,7 @@ impl CudaBackend {
             Region::Validity => "validity",
             Region::Tags => "tags",
             Region::Scratch => "scratch",
+            Region::Materialize => "materialize",
         };
         arena.region(name).ok_or_else(|| GpuError::InvalidConfig {
             detail: format!("region `{name}` missing from the arena"),
@@ -205,6 +209,10 @@ impl DeviceBackend for CudaBackend {
                 RegionSpec {
                     name: "scratch",
                     bytes: bytes.scratch,
+                },
+                RegionSpec {
+                    name: "materialize",
+                    bytes: bytes.materialize,
                 },
             ],
         )?;
@@ -492,5 +500,109 @@ impl DeviceBackend for CudaBackend {
             }
         }
         Ok(TopkReadback { selected, expanded })
+    }
+
+    fn materialize_topk(&mut self) -> Result<Self::Fence, GpuError> {
+        let plan = self.plan.ok_or_else(|| GpuError::InvalidConfig {
+            detail: "materialize before reserve".to_owned(),
+        })?;
+        let (k, _) = self.last_topk.ok_or_else(|| GpuError::InvalidConfig {
+            detail: "materialize before any topk".to_owned(),
+        })?;
+        let scratch = self.region_base(Region::Scratch)?;
+        let pool = self.region_base(Region::Pages)?;
+        let out = self.region_base(Region::Materialize)?;
+        let words = u32::try_from(plan.page_bytes / 4).expect("page words fit u32");
+
+        let mut p_slots = scratch.base + plan.sel_slots_off;
+        let mut p_k = u32::from(k);
+        let mut p_pool = pool.base;
+        let mut p_words = words;
+        let mut p_out = out.base;
+        let mut params: [*mut c_void; 5] = [
+            (&raw mut p_slots).cast(),
+            (&raw mut p_k).cast(),
+            (&raw mut p_pool).cast(),
+            (&raw mut p_words).cast(),
+            (&raw mut p_out).cast(),
+        ];
+        let work = u32::from(k) * words;
+        let grid = (work.div_ceil(256).max(1), 1, 1);
+        let module = self.module.as_ref().expect("loaded at reserve");
+        // SAFETY: parameter layout matches gather_pages in kernels.rs; all
+        // addresses lie inside reserved regions.
+        unsafe {
+            module.launch(
+                "gather_pages",
+                grid,
+                (256, 1, 1),
+                0,
+                &self.stream,
+                &mut params,
+            )?;
+        }
+        self.fence_now()
+    }
+}
+
+/// Device-address handles for the most recent selection — the raw material
+/// of the GT4 `DLPack` seam. Addresses stay valid until the next `reserve`
+/// (the arena never moves); *contents* are stable until the next `topk`.
+#[derive(Clone, Copy, Debug)]
+pub struct SelectionAddresses {
+    /// Selected slot indices (i32; -1 pads), `k` entries.
+    pub slots_ptr: u64,
+    /// Selection scores (f32), `k` entries.
+    pub scores_ptr: u64,
+    /// Materialized pages (u8), `k * page_bytes` (valid after
+    /// `materialize_topk`).
+    pub materialized_ptr: u64,
+    /// The `k` of the most recent selection.
+    pub k: u16,
+    /// Page size in bytes.
+    pub page_bytes: usize,
+}
+
+impl CudaBackend {
+    /// Addresses of the most recent selection's device buffers.
+    pub fn selection_addresses(&self) -> Result<SelectionAddresses, GpuError> {
+        let plan = self.plan.ok_or_else(|| GpuError::InvalidConfig {
+            detail: "selection_addresses before reserve".to_owned(),
+        })?;
+        let (k, _) = self.last_topk.ok_or_else(|| GpuError::InvalidConfig {
+            detail: "selection_addresses before any topk".to_owned(),
+        })?;
+        let scratch = self.region_base(Region::Scratch)?;
+        let out = self.region_base(Region::Materialize)?;
+        Ok(SelectionAddresses {
+            slots_ptr: scratch.base + plan.sel_slots_off,
+            scores_ptr: scratch.base + plan.sel_scores_off,
+            materialized_ptr: out.base,
+            k,
+            page_bytes: plan.page_bytes,
+        })
+    }
+
+    /// CUDA device ordinal (for the `__dlpack_device__` protocol).
+    #[must_use]
+    pub fn device_ordinal(&self) -> i32 {
+        0 // single-device by design (edge)
+    }
+
+    /// Makes an external (consumer) stream wait for `fence` without any
+    /// host synchronization — the `__dlpack__(stream=...)` contract.
+    ///
+    /// # Safety
+    ///
+    /// `raw_stream` must be a valid CUDA stream handle in this context (the
+    /// integer torch passes to `__dlpack__`).
+    pub unsafe fn wait_external_stream(
+        &self,
+        raw_stream: u64,
+        fence: &CudaFence,
+    ) -> Result<(), GpuError> {
+        // SAFETY: forwarded contract — see function docs; the event is live
+        // for the fence's lifetime.
+        unsafe { fence.0.wait_on_raw_stream(raw_stream, self.context.api()) }
     }
 }

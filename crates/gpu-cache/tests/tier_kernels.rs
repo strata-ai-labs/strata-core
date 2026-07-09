@@ -28,6 +28,7 @@ fn region_bytes() -> RegionBytes {
         validity: CAPACITY as u64,
         tags: (CAPACITY * 32) as u64,
         scratch: scratch_bytes(CAPACITY as u64, (DIM * 4) as u64),
+        materialize: 64 * 256, // MAX_K pages of 256 bytes
     }
 }
 
@@ -211,5 +212,43 @@ fn truncated_expansion_stays_within_the_oracle_superset() {
             superset.contains(&slot),
             "budgeted entries come from the true expansion"
         );
+    }
+}
+
+#[test]
+#[ignore = "requires an NVIDIA GPU (Ampere or newer)"]
+fn materialized_pages_match_the_oracle() {
+    let mut cuda = CudaBackend::new(1 << 16).expect("device present");
+    let mut sim = HostSimBackend::new();
+    seed_state(&mut cuda, 0x9A6E5);
+    seed_state(&mut sim, 0x9A6E5);
+
+    // Give each slot's page distinct content so gather order is provable.
+    for slot in 0..CAPACITY {
+        let fill = u8::try_from(slot % 251).unwrap();
+        let bytes = vec![fill; 256];
+        cuda.copy_in(Region::Pages, (slot * 256) as u64, &bytes)
+            .expect("cuda page");
+        sim.copy_in(Region::Pages, (slot * 256) as u64, &bytes)
+            .expect("sim page");
+    }
+
+    let mut rng = Lcg(0x60D);
+    for case in 0..6 {
+        let query = query_from(&mut rng);
+        let k = 8u16;
+        let (gpu, oracle) = run_both(&mut cuda, &mut sim, &query, k, None, None);
+        assert_eq!(gpu.selected, oracle.selected, "case {case}: selection");
+
+        cuda.materialize_topk().expect("cuda materialize");
+        sim.materialize_topk().expect("sim materialize");
+        let len = usize::from(k) * 256;
+        let gpu_bytes = cuda
+            .read_back(Region::Materialize, 0, len)
+            .expect("gpu read");
+        let sim_bytes = sim
+            .read_back(Region::Materialize, 0, len)
+            .expect("sim read");
+        assert_eq!(gpu_bytes, sim_bytes, "case {case}: materialized bytes");
     }
 }
