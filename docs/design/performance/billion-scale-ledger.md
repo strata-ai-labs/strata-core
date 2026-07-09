@@ -1213,6 +1213,42 @@ time. Guidance for the tier: set a memory budget ≥ the live set.
 Phase-1 gate: PR-2 (reclaim liveness) and PR-3/4/5 (flush zone cuts +
 compaction edge cuts) both proceed per the approved plan.
 
+## #2524 Fix B: reclaim lives under load — in-flight output registry (2026-07-09)
+
+The wholesale `has_active_build_task` interlock is replaced with precise
+pins: builds reserve each output's object name in a runtime-owned in-flight
+registry BEFORE publishing its bytes (`reserve_inflight_flush_output` /
+`reserve_inflight_rewrite_output`); the table-object mark unions the
+registry into its pinned set; reservations release when the prepared build
+value is consumed (install → in-memory pins take over under the same lock
+hold) or abandoned (orphans become sweepable — the crash-window analog,
+since the registry is in-memory by design). De-gated: the sweep + retention
+build defers and the low-tier interleave's `!has_active_build_task()` skip.
+Kept: the retired-read-view defer (correct interlock), the 32-object cap.
+
+amp-repro `full` (GT5 shape), same protocol as the PR-1 attribution row:
+
+| metric | pre-Fix-B | Fix B |
+|---|---|---|
+| post-seed amp | 10.1-12.7x | **1.9x** |
+| reclaim during seed | ZERO (retention_runs=0) | **87 retention / 46 sweeps / 21.1GiB purged** |
+| settle transient peak | 15.3-17.5x (36GiB) | **5.8x** |
+| converged 1.3-1.4x at | 165-195s | **75s** |
+| post-settle read round p99 | 6-13ms | **744us** |
+
+- YCSB regression spots (10M, settled): C 109.6K run / read p50 9.12us
+  (suite baseline median 111.1K — parity); A 10.6K inside the documented
+  7.1-30.8K write-stall lottery, A load 107.6K (top of range). Side
+  benefit: **post-load on-disk 14GiB vs 24-39GiB** — mid-load reclaim keeps
+  the store near live size during YCSB loads too.
+- Zone-gluing churn is UNCHANGED as predicted (wide-overlap passes 34,
+  seed compaction input 21.6GiB) — that is Fix A's target (flush zone cuts
+  + compaction input-edge cuts).
+- New behavioral tests: mark+sweep complete during a held off-lock build
+  (bait reclaimed, pinned outputs survive, pins hand off to manifest
+  reachability at install); abandoned build releases pins and its outputs
+  are reclaimed next cycle.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
