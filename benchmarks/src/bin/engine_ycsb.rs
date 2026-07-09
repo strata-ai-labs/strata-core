@@ -25,8 +25,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
 use strata_engine_next::{
-    BranchName, CacheOpenOptions, Database, DurableLocalOpenOptions, EngineResult, KvKey, KvValue,
-    ProductSpace,
+    BranchName, CacheOpenOptions, CachePreheat, Database, DurableLocalOpenOptions, EngineResult,
+    KvKey, KvValue, ProductSpace,
 };
 
 // Shared YCSB workload definitions and distribution generators (no churn to the
@@ -180,6 +180,11 @@ fn run_workload(
                 "  [probe] on-disk post-settle: {}",
                 format_bytes(dir_size_bytes(path))
             );
+            if config.perf_breakdown {
+                // Printed BEFORE the run-phase counter reset: the settle
+                // window is where the preheat fill happens.
+                print_preheat_probe("post-settle");
+            }
         }
     }
 
@@ -349,6 +354,7 @@ fn run_workload(
             perf.table_index_read_bytes() as f64 / (1024.0 * 1024.0),
             perf.table_metadata_read_bytes() as f64 / (1024.0 * 1024.0),
         );
+        print_preheat_probe("post-run");
         print_jemalloc_split("post-run");
     }
 
@@ -370,14 +376,28 @@ fn run_workload(
     })
 }
 
+fn print_preheat_probe(label: &str) {
+    let perf = strata_storage_next::perf_trace::snapshot();
+    eprintln!(
+        "  [probe] preheat {label}: passes={} admitted={} present={} full={} read_mb={:.1} deferred={}",
+        perf.table_preheat_passes(),
+        perf.table_preheat_blocks_admitted(),
+        perf.table_preheat_blocks_skipped_present(),
+        perf.table_preheat_blocks_skipped_full(),
+        perf.table_preheat_bytes_read() as f64 / (1024.0 * 1024.0),
+        perf.table_preheat_deferred(),
+    );
+}
+
 fn open_database(config: &Config, mode: BenchMode, path: &Path) -> EngineResult<Database> {
     let outcome = match mode {
         BenchMode::Cache => Database::open_cache(
             CacheOpenOptions::new().with_memory_budget(config.memory_budget_bytes),
         )?,
         BenchMode::Durable => {
-            let mut options =
-                DurableLocalOpenOptions::new().with_memory_budget(config.memory_budget_bytes);
+            let mut options = DurableLocalOpenOptions::new()
+                .with_memory_budget(config.memory_budget_bytes)
+                .with_cache_preheat(config.cache_preheat);
             if let Some(bytes) = config.data_block_bytes {
                 options = options.with_data_block_bytes(bytes);
             }
@@ -714,6 +734,7 @@ struct Config {
     perf_breakdown: bool,
     settle_secs: u64,
     data_block_bytes: Option<u32>,
+    cache_preheat: CachePreheat,
 }
 
 impl Config {
@@ -731,6 +752,7 @@ impl Config {
             perf_breakdown: false,
             settle_secs: 0,
             data_block_bytes: None,
+            cache_preheat: CachePreheat::WhenIdle,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -761,6 +783,13 @@ impl Config {
                         u32::try_from(parse_size(&arg, args.next())?)
                             .map_err(|_| format!("`{arg}` value too large"))?,
                     );
+                }
+                "--preheat" => {
+                    config.cache_preheat = match arg_value(&arg, args.next())?.as_str() {
+                        "on" => CachePreheat::WhenIdle,
+                        "off" => CachePreheat::Disabled,
+                        _ => return Err(format!("`{arg}` takes `on` or `off`")),
+                    };
                 }
                 "--perf-breakdown" => config.perf_breakdown = true,
                 "--settle-secs" => {
@@ -858,7 +887,7 @@ fn usage() -> String {
     "usage: engine-ycsb [--workload a,b,c,d,e,f] [--mode cache|durable|both] \
      [--records N] [--ops N] [--value-bytes N] [--value-fill constant|random] \
      [--scan-max N] [--load-batch N] \
-     [--memory-budget SIZE] [--perf-breakdown] [-q]\n  \
+     [--memory-budget SIZE] [--preheat on|off] [--perf-breakdown] [-q]\n  \
      records/ops accept k/m suffixes (decimal); SIZE accepts k/m/g (binary)."
         .to_owned()
 }

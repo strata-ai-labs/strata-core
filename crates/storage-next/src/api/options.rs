@@ -106,6 +106,20 @@ pub enum StorageMaintenanceSchedulingPolicy {
     Disabled,
 }
 
+/// C2: whether the durable runtime re-fills the block cache from live tables
+/// while background maintenance is otherwise idle (publish- and reopen-
+/// triggered). `Disabled` is the measurement/opt-out side; the default keeps
+/// read-heavy reopens and post-load steady states warm without user action.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum StorageCachePreheatPolicy {
+    /// Fill the block cache in the background whenever maintenance is idle.
+    #[default]
+    WhenIdle,
+    /// Never preheat; the cache fills from demand misses only.
+    Disabled,
+}
+
 /// B2: bounds for the configurable data-block byte target.
 const MIN_DATA_BLOCK_BYTES: u32 = 4 * 1024;
 const MAX_DATA_BLOCK_BYTES: u32 = 1024 * 1024;
@@ -121,6 +135,7 @@ pub struct StorageOpenOptions {
     background_maintenance: StorageBackgroundMaintenanceOptions,
     wal_segment_size_for_test: Option<u64>,
     data_block_bytes: Option<u32>,
+    cache_preheat_policy: StorageCachePreheatPolicy,
     #[cfg(any(test, feature = "testkit"))]
     storage_budget_for_test: Option<StorageRuntimeBudget>,
 }
@@ -234,6 +249,7 @@ impl StorageOpenOptions {
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
             data_block_bytes: None,
+            cache_preheat_policy: StorageCachePreheatPolicy::WhenIdle,
             #[cfg(any(test, feature = "testkit"))]
             storage_budget_for_test: None,
         }
@@ -260,6 +276,7 @@ impl StorageOpenOptions {
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
             data_block_bytes: None,
+            cache_preheat_policy: StorageCachePreheatPolicy::WhenIdle,
             #[cfg(any(test, feature = "testkit"))]
             storage_budget_for_test: None,
         }
@@ -277,6 +294,7 @@ impl StorageOpenOptions {
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
             data_block_bytes: None,
+            cache_preheat_policy: StorageCachePreheatPolicy::WhenIdle,
             #[cfg(any(test, feature = "testkit"))]
             storage_budget_for_test: None,
         }
@@ -294,6 +312,7 @@ impl StorageOpenOptions {
             background_maintenance: StorageBackgroundMaintenanceOptions::product_default(),
             wal_segment_size_for_test: None,
             data_block_bytes: None,
+            cache_preheat_policy: StorageCachePreheatPolicy::WhenIdle,
             #[cfg(any(test, feature = "testkit"))]
             storage_budget_for_test: None,
         }
@@ -395,6 +414,21 @@ impl StorageOpenOptions {
 
     pub(crate) const fn data_block_bytes(&self) -> Option<u32> {
         self.data_block_bytes
+    }
+
+    /// C2: set the idle block-cache preheat policy (durable modes; cache mode
+    /// has no disk-resident tables to warm from).
+    #[must_use]
+    pub const fn with_cache_preheat_policy(
+        mut self,
+        cache_preheat_policy: StorageCachePreheatPolicy,
+    ) -> Self {
+        self.cache_preheat_policy = cache_preheat_policy;
+        self
+    }
+
+    pub(crate) const fn cache_preheat_policy(&self) -> StorageCachePreheatPolicy {
+        self.cache_preheat_policy
     }
 
     #[cfg(any(test, feature = "testkit"))]

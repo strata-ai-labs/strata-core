@@ -1033,6 +1033,26 @@ enum TableReadTrust {
     AlwaysVerify,
 }
 
+/// C2: outcome of one bounded `warm_data_blocks_from_source` call.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct TableWarmFromSourceReport {
+    /// Blocks verified and admitted this call.
+    pub(crate) admitted: usize,
+    /// Blocks skipped because they were already cached.
+    pub(crate) skipped_present: usize,
+    /// No-evict admissions skipped on a full shard.
+    pub(crate) skipped_full: usize,
+    /// Source bytes read (verification rejects included — the frame was read).
+    pub(crate) bytes_read: u64,
+    /// Resume point: `Some(i)` when the byte bound stopped the walk before
+    /// block `i`; `None` when the table is fully covered.
+    pub(crate) next_block: Option<usize>,
+    /// Length of the trailing run of consecutive full-shard skips, for the
+    /// caller's saturation stop (a long streak means every shard the walk is
+    /// hashing into is full, so further passes only burn IO).
+    pub(crate) trailing_skipped_full: usize,
+}
+
 #[derive(Clone)]
 struct SharedTableSource<'a> {
     inner: Arc<dyn TableByteSource + Send + Sync + 'a>,
@@ -1523,6 +1543,81 @@ impl<'a> ImmutableTableReader<'a> {
             }
         }
         Ok(admitted)
+    }
+
+    /// C2: warm the block cache with this table's data blocks read back from
+    /// its SOURCE (the background preheat path — the bytes are no longer in
+    /// hand, unlike the publish-time write-through above). Same admission
+    /// contract as W2.4: verify every frame before insertion, no-evict
+    /// inserts only, reject-and-continue on verification failure. Bounded:
+    /// stops once `max_bytes` of source bytes have been read and reports the
+    /// resume block, so one call is one polite chunk of a larger sweep.
+    /// No-op (all-zero report) for eager readers and readers without an
+    /// attached cache.
+    pub(crate) fn warm_data_blocks_from_source(
+        &self,
+        start_block: usize,
+        max_bytes: u64,
+    ) -> TableRuntimeResult<TableWarmFromSourceReport> {
+        let mut report = TableWarmFromSourceReport::default();
+        let TableReaderRows::Lazy(lazy) = &self.rows else {
+            return Ok(report);
+        };
+        let state = &lazy.state;
+        let Some(cache) = &state.cache else {
+            return Ok(report);
+        };
+        let entries = state.metadata.index().entries();
+        for (block_index, entry) in entries.iter().enumerate().skip(start_block) {
+            if report.bytes_read >= max_bytes {
+                report.next_block = Some(block_index);
+                return Ok(report);
+            }
+            let key = cache_key_for_entry(&cache.table, entry, block_index)?;
+            if cache.cache.contains_quiet(&key) {
+                report.skipped_present = report.skipped_present.saturating_add(1);
+                report.trailing_skipped_full = 0;
+                continue;
+            }
+            let frame_len = usize::try_from(entry.block_frame_len()).map_err(|_| {
+                TableRuntimeError::InvalidRange {
+                    field: "block_frame_len",
+                }
+            })?;
+            let frame_bytes = read_exact_source(
+                &state.source,
+                entry.block_offset(),
+                frame_len,
+                "short table data block preheat read",
+            )?;
+            report.bytes_read = report.bytes_read.saturating_add(frame_bytes.len() as u64);
+            // W2.6 (B1): "only checked frames enter the cache" holds on this
+            // path too — the frame came off disk, so a failure here IS
+            // possible corruption. Reject-and-continue: the demand path
+            // re-reads and surfaces the typed error to a real reader; a
+            // silent preheat must not turn one bad block into a failed sweep.
+            if decode_immutable_table_data_block(entry, &frame_bytes).is_err() {
+                perf_trace::record_table_warm_insert_reject();
+                report.trailing_skipped_full = 0;
+                continue;
+            }
+            match cache.cache.insert_if_free(key, Arc::from(frame_bytes))? {
+                CacheInsert::Inserted(_) => {
+                    report.admitted = report.admitted.saturating_add(1);
+                    report.trailing_skipped_full = 0;
+                }
+                CacheInsert::SkippedFull(_) => {
+                    report.skipped_full = report.skipped_full.saturating_add(1);
+                    report.trailing_skipped_full = report.trailing_skipped_full.saturating_add(1);
+                }
+                CacheInsert::DuplicateExisting(_)
+                | CacheInsert::SkippedDisabled(_)
+                | CacheInsert::SkippedOversized(_) => {
+                    report.trailing_skipped_full = 0;
+                }
+            }
+        }
+        Ok(report)
     }
 
     pub(crate) fn with_table_filter(

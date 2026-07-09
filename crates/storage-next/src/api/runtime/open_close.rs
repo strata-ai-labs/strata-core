@@ -1,14 +1,15 @@
 use super::background::{BackgroundExecutorMode, BackgroundShutdownStats};
 use super::error::{map_lifecycle_error, map_recovery_health};
 use super::{
-    perf_trace, CloseOutcome, CloseOutcomeStatus, LifecycleCodecId, LifecycleConfig,
-    LifecycleError, LifecycleMaintenanceSchedulingPolicy, LifecycleMaintenanceStats,
-    LifecycleStorageMode, LifecycleStorageOpenOutcome, LifecycleWalGrowthPolicy,
-    MaintenanceExecutorStats, RecoveryStrictness, StorageApiError, StorageApiResult,
-    StorageBackend, StorageBudgetPolicy, StorageCloseEffects, StorageCloseSummary,
-    StorageDurabilityPolicy, StorageMaintenanceSchedulingPolicy, StorageMode,
-    StorageOpenDisposition, StorageOpenOptions, StorageOpenPlan, StorageOpenSummary,
-    StorageRuntimeBudget, StorageRuntimeState, StorageWalGrowthPolicy,
+    perf_trace, CloseOutcome, CloseOutcomeStatus, LifecycleCachePreheatPolicy, LifecycleCodecId,
+    LifecycleConfig, LifecycleError, LifecycleMaintenanceSchedulingPolicy,
+    LifecycleMaintenanceStats, LifecycleStorageMode, LifecycleStorageOpenOutcome,
+    LifecycleWalGrowthPolicy, MaintenanceExecutorStats, RecoveryStrictness, StorageApiError,
+    StorageApiResult, StorageBackend, StorageBudgetPolicy, StorageCachePreheatPolicy,
+    StorageCloseEffects, StorageCloseSummary, StorageDurabilityPolicy,
+    StorageMaintenanceSchedulingPolicy, StorageMode, StorageOpenDisposition, StorageOpenOptions,
+    StorageOpenPlan, StorageOpenSummary, StorageRuntimeBudget, StorageRuntimeState,
+    StorageWalGrowthPolicy,
 };
 use crate::backend::BackendHandle;
 
@@ -87,8 +88,20 @@ pub(super) fn lifecycle_plan(options: StorageOpenOptions) -> StorageApiResult<St
             options.maintenance_scheduling_policy(),
         ))
         .map_err(map_lifecycle_error)?;
+    config = config
+        .with_cache_preheat_policy(map_cache_preheat_policy(options.cache_preheat_policy()))
+        .map_err(map_lifecycle_error)?;
     StorageOpenPlan::new(mode, LifecycleCodecId::identity(), recovery, config)
         .map_err(map_lifecycle_error)
+}
+
+pub(super) const fn map_cache_preheat_policy(
+    policy: StorageCachePreheatPolicy,
+) -> LifecycleCachePreheatPolicy {
+    match policy {
+        StorageCachePreheatPolicy::WhenIdle => LifecycleCachePreheatPolicy::WhenIdle,
+        StorageCachePreheatPolicy::Disabled => LifecycleCachePreheatPolicy::Disabled,
+    }
 }
 
 pub(super) fn durable_backend_handle_for_open(

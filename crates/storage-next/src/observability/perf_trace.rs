@@ -208,6 +208,19 @@ pub struct StoragePerfSnapshot {
     table_checked_block_seeks: u64,
     /// W2.6 (B1): publish-time warm inserts rejected by verification.
     table_warm_insert_rejects: u64,
+    /// C2: preheat chunks completed (one bounded off-lock stage each).
+    table_preheat_passes: u64,
+    /// C2: blocks verified and admitted by the preheat sweep.
+    table_preheat_blocks_admitted: u64,
+    /// C2: preheat probes that found the block already cached.
+    table_preheat_blocks_skipped_present: u64,
+    /// C2: preheat no-evict admissions skipped on a full shard.
+    table_preheat_blocks_skipped_full: u64,
+    /// C2: source bytes the preheat sweep read.
+    table_preheat_bytes_read: u64,
+    /// C2: preheat starts deferred by global memory pressure or an active
+    /// build task.
+    table_preheat_deferred: u64,
     /// W3.3a: WAL appends staged in the coalescing buffer.
     commit_wal_buffered_appends: u64,
     /// W3.3a: buffer drains by trigger, plus total drained bytes.
@@ -1174,6 +1187,36 @@ impl StoragePerfSnapshot {
     /// W2.6 (B1): warm inserts rejected by pre-insert verification.
     pub const fn table_warm_insert_rejects(self) -> u64 {
         self.table_warm_insert_rejects
+    }
+
+    /// C2: preheat chunks completed.
+    pub const fn table_preheat_passes(self) -> u64 {
+        self.table_preheat_passes
+    }
+
+    /// C2: blocks admitted by the preheat sweep.
+    pub const fn table_preheat_blocks_admitted(self) -> u64 {
+        self.table_preheat_blocks_admitted
+    }
+
+    /// C2: preheat probes that found the block already cached.
+    pub const fn table_preheat_blocks_skipped_present(self) -> u64 {
+        self.table_preheat_blocks_skipped_present
+    }
+
+    /// C2: preheat no-evict admissions skipped on a full shard.
+    pub const fn table_preheat_blocks_skipped_full(self) -> u64 {
+        self.table_preheat_blocks_skipped_full
+    }
+
+    /// C2: source bytes read by the preheat sweep.
+    pub const fn table_preheat_bytes_read(self) -> u64 {
+        self.table_preheat_bytes_read
+    }
+
+    /// C2: preheat starts deferred (pressure or active build).
+    pub const fn table_preheat_deferred(self) -> u64 {
+        self.table_preheat_deferred
     }
 
     /// W3.3a: WAL appends staged in the coalescing buffer.
@@ -2814,6 +2857,18 @@ static TABLE_CHECKED_BLOCK_SEEKS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_WARM_INSERT_REJECTS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static TABLE_PREHEAT_PASSES: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_PREHEAT_BLOCKS_ADMITTED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_PREHEAT_BLOCKS_SKIPPED_PRESENT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_PREHEAT_BLOCKS_SKIPPED_FULL: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_PREHEAT_BYTES_READ: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_PREHEAT_DEFERRED: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_WAL_BUFFERED_APPENDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD: AtomicU64 = AtomicU64::new(0);
@@ -3565,6 +3620,12 @@ pub fn reset() {
     TABLE_TRUSTED_BLOCK_SEEKS.store(0, Ordering::Relaxed);
     TABLE_CHECKED_BLOCK_SEEKS.store(0, Ordering::Relaxed);
     TABLE_WARM_INSERT_REJECTS.store(0, Ordering::Relaxed);
+    TABLE_PREHEAT_PASSES.store(0, Ordering::Relaxed);
+    TABLE_PREHEAT_BLOCKS_ADMITTED.store(0, Ordering::Relaxed);
+    TABLE_PREHEAT_BLOCKS_SKIPPED_PRESENT.store(0, Ordering::Relaxed);
+    TABLE_PREHEAT_BLOCKS_SKIPPED_FULL.store(0, Ordering::Relaxed);
+    TABLE_PREHEAT_BYTES_READ.store(0, Ordering::Relaxed);
+    TABLE_PREHEAT_DEFERRED.store(0, Ordering::Relaxed);
     COMMIT_WAL_BUFFERED_APPENDS.store(0, Ordering::Relaxed);
     COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD.store(0, Ordering::Relaxed);
     COMMIT_WAL_BUFFER_FLUSHES_CAPTURE.store(0, Ordering::Relaxed);
@@ -4070,6 +4131,14 @@ pub fn snapshot() -> StoragePerfSnapshot {
         table_trusted_block_seeks: TABLE_TRUSTED_BLOCK_SEEKS.load(Ordering::Relaxed),
         table_checked_block_seeks: TABLE_CHECKED_BLOCK_SEEKS.load(Ordering::Relaxed),
         table_warm_insert_rejects: TABLE_WARM_INSERT_REJECTS.load(Ordering::Relaxed),
+        table_preheat_passes: TABLE_PREHEAT_PASSES.load(Ordering::Relaxed),
+        table_preheat_blocks_admitted: TABLE_PREHEAT_BLOCKS_ADMITTED.load(Ordering::Relaxed),
+        table_preheat_blocks_skipped_present: TABLE_PREHEAT_BLOCKS_SKIPPED_PRESENT
+            .load(Ordering::Relaxed),
+        table_preheat_blocks_skipped_full: TABLE_PREHEAT_BLOCKS_SKIPPED_FULL
+            .load(Ordering::Relaxed),
+        table_preheat_bytes_read: TABLE_PREHEAT_BYTES_READ.load(Ordering::Relaxed),
+        table_preheat_deferred: TABLE_PREHEAT_DEFERRED.load(Ordering::Relaxed),
         commit_wal_buffered_appends: COMMIT_WAL_BUFFERED_APPENDS.load(Ordering::Relaxed),
         commit_wal_buffer_flushes_threshold: COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD
             .load(Ordering::Relaxed),
@@ -5690,6 +5759,44 @@ pub(crate) fn record_table_warm_insert_reject() {
         return;
     }
     TABLE_WARM_INSERT_REJECTS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// C2: one preheat chunk completed, with its per-block outcome totals.
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_preheat_pass(
+    _admitted: u64,
+    _skipped_present: u64,
+    _skipped_full: u64,
+    _bytes_read: u64,
+) {
+}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_preheat_pass(
+    admitted: u64,
+    skipped_present: u64,
+    skipped_full: u64,
+    bytes_read: u64,
+) {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_PREHEAT_PASSES.fetch_add(1, Ordering::Relaxed);
+    TABLE_PREHEAT_BLOCKS_ADMITTED.fetch_add(admitted, Ordering::Relaxed);
+    TABLE_PREHEAT_BLOCKS_SKIPPED_PRESENT.fetch_add(skipped_present, Ordering::Relaxed);
+    TABLE_PREHEAT_BLOCKS_SKIPPED_FULL.fetch_add(skipped_full, Ordering::Relaxed);
+    TABLE_PREHEAT_BYTES_READ.fetch_add(bytes_read, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_preheat_deferred() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_preheat_deferred() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_PREHEAT_DEFERRED.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]

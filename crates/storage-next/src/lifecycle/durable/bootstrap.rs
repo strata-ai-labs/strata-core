@@ -104,6 +104,17 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     /// the maintenance `completed` count at the last coverage attempt. `None`
     /// until the first attempt, so the first coverage always fires.
     pub(super) coverage_completed_watermark: Option<usize>,
+    /// C2: resume point of an in-flight block-cache preheat pass, so chained
+    /// chunks continue instead of re-walking. In-memory only — restart just
+    /// restarts the fill (the reopen trigger re-arms it).
+    pub(super) cache_preheat_cursor: Option<super::maintenance::CachePreheatCursor>,
+    /// C2: dirty flag armed by structural changes (flush/compaction installs,
+    /// reopen). A flag rather than a standing queued task: the queue stays
+    /// noise-free (a coalescing task pending after every publish would leak
+    /// into every queue-shape assertion and close drain), and a bool is the
+    /// ultimate coalescer. The ladder's low tier claims it by enqueueing and
+    /// starting the transient task in one lock hold.
+    pub(super) cache_preheat_pending: bool,
     pub(super) admission_current_rate: Cell<u64>,
     pub(super) admission_last_debt: Cell<u64>,
     pub(super) admission_bucket: Cell<WriteRateBucket>,
@@ -293,6 +304,8 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             pipeline_frontier: CommitVersion::ZERO,
             admission_mode: admission_mode_from_env(),
             coverage_completed_watermark: None,
+            cache_preheat_cursor: None,
+            cache_preheat_pending: false,
             admission_clock,
             admission_current_rate: Cell::new(admission_initial_rate),
             admission_last_debt: Cell::new(0),
@@ -323,6 +336,14 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
                     runtime.initial_branch_id,
                 ),
             );
+            // C2: a reopen starts with a cold block cache and may never see a
+            // publish (read-only workloads) — arm the preheat here so the
+            // fill happens as soon as recovery-driven maintenance quiesces.
+            if runtime.open_plan.lifecycle_config().cache_preheat_policy()
+                == crate::lifecycle::LifecycleCachePreheatPolicy::WhenIdle
+            {
+                runtime.cache_preheat_pending = true;
+            }
         }
         Ok(runtime)
     }

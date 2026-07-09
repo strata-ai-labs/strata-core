@@ -453,11 +453,14 @@ pub(crate) fn preflight_table_manifest_with_checkpoint(
 
 /// BS4.4c: walk a durable table's rows through its cursor (ascending internal-key order), applying the
 /// fallible `f` per row without materializing the whole table. Cursor failures map to a manifest error.
+/// C2: no-fill cursor (BS4.4g) — a one-shot recovery-time validation walk
+/// must not seed the block cache in scan order; deliberate fill is the
+/// preheat's job.
 fn try_for_each_reader_row(
     reader: &ImmutableTableReader<'_>,
     mut f: impl FnMut(&TableRow) -> LifecycleResult<()>,
 ) -> LifecycleResult<()> {
-    let mut cursor = reader.cursor();
+    let mut cursor = reader.cursor_without_cache_fill();
     cursor
         .seek_to_first()
         .map_err(|_| manifest_reader_scan_failed())?;

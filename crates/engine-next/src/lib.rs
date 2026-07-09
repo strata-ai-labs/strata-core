@@ -29,7 +29,7 @@ pub use api::{
     AdminHealthStatus, AdminHealthSummary, AdminMetricsSummary, AdminPingSummary,
     AdminPrimitiveSummary, AdminService, AdminVectorCollectionSummary, BranchCleanupSummary,
     BranchCreateOutcome, BranchDeleteOutcome, BranchName, BranchParentSummary, BranchService,
-    BranchStatus, BranchSummary, CacheOpenOptions, CloseOutcome, CommitOutcomeStatus,
+    BranchStatus, BranchSummary, CacheOpenOptions, CachePreheat, CloseOutcome, CommitOutcomeStatus,
     ControlDiagnostics, ControlHealthStatus, Database, DatabaseOpenOutcome, DatabaseOpenSummary,
     DatabaseOpenTarget, DurableLocalOpenOptions, EngineError, EngineErrorClass, EngineErrorStatus,
     EngineResult, ErrorClass, ErrorCodeRegistryEntry, ErrorDetail, EventAppendOutcome,

@@ -26,6 +26,8 @@ mod off_lock_interleaving;
 mod off_lock_perf;
 mod open_close;
 mod open_options;
+#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+mod preheat;
 mod read;
 mod source_guards;
 mod surface;
