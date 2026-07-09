@@ -27,6 +27,7 @@ pub(super) fn graph_commands() -> Vec<Command> {
             as_of: None,
         },
         Command::GraphAddNode {
+            object_type: None,
             branch: Some("feature".to_owned()),
             space: Some("space-a".to_owned()),
             graph: "deps".to_owned(),
@@ -108,6 +109,66 @@ pub(super) fn graph_commands() -> Vec<Command> {
             graph: "deps".to_owned(),
             operations: Vec::new(),
         },
+        Command::GraphDefineObjectType {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            name: "Document".to_owned(),
+            properties: [(
+                "title".to_owned(),
+                GraphPropertyDef::new(Some("string".to_owned()), true),
+            )]
+            .into_iter()
+            .collect(),
+        },
+        Command::GraphDefineLinkType {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            name: "wrote".to_owned(),
+            source: "Author".to_owned(),
+            target: "Document".to_owned(),
+            cardinality: Some("one-to-many".to_owned()),
+            properties: std::collections::BTreeMap::new(),
+        },
+        Command::GraphDeleteObjectType {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            name: "Document".to_owned(),
+        },
+        Command::GraphDeleteLinkType {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            name: "wrote".to_owned(),
+        },
+        Command::GraphFreezeOntology {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+        },
+        Command::GraphGetOntology {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            as_of: Some(9),
+        },
+        Command::GraphOntologySummary {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            as_of: None,
+        },
+        Command::GraphNodesByType {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            object_type: "Document".to_owned(),
+            cursor: Some("node-a".to_owned()),
+            limit: Some(5),
+            as_of: None,
+        },
     ]
 }
 
@@ -119,6 +180,7 @@ pub(super) fn graph_round_trip_edge_commands() -> Vec<Command> {
             graph: "wide".to_owned(),
         },
         Command::GraphAddNode {
+            object_type: None,
             branch: Some("feature".to_owned()),
             space: Some("space-a".to_owned()),
             graph: "wide".to_owned(),

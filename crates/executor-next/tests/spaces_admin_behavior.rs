@@ -531,6 +531,7 @@ fn populate_rebuilt_primitives_in_space(executor: &mut Executor, space: &str) {
         .expect("graph create succeeds");
     executor
         .execute(Command::GraphAddNode {
+            object_type: None,
             branch: None,
             space: Some(space.to_owned()),
             graph: "deps".to_owned(),

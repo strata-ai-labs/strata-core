@@ -21,6 +21,7 @@ fn every_output_round_trips_through_json() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn command_names_cover_every_variant() {
     let names = all_commands()
         .into_iter()
@@ -118,6 +119,14 @@ fn command_names_cover_every_variant() {
             "graph_neighbors",
             "graph_bindings_for_entity",
             "graph_batch_write",
+            "graph_define_object_type",
+            "graph_define_link_type",
+            "graph_delete_object_type",
+            "graph_delete_link_type",
+            "graph_freeze_ontology",
+            "graph_get_ontology",
+            "graph_ontology_summary",
+            "graph_nodes_by_type",
             "arrow_import",
             "arrow_export",
         ]

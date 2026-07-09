@@ -161,6 +161,10 @@ fn public_response_family_goldens_match_public_json() {
             include_str!("../fixtures/responses/v1/graph/node_write_applied.json"),
         ),
         (
+            Output::GraphOntologyResult(Some(graph_ontology_output("frozen"))),
+            include_str!("../fixtures/responses/v1/graph/ontology_read.json"),
+        ),
+        (
             Output::ArrowImportResult(ArrowImportResult::new(
                 ArrowImportTarget::Kv,
                 "input.parquet".to_owned(),

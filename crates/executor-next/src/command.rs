@@ -7,7 +7,8 @@ use crate::types::{
     ArrowExportPrimitive, ArrowFileFormat, ArrowImportTarget, BatchEventEntry,
     BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry, Bytes,
     EventRangeDirection, GraphBatchOperation, GraphBindingTarget, GraphDirection,
-    GraphEntityBinding, JsonIndexType, VectorDistanceMetric, VectorMetadataFilter,
+    GraphEntityBinding, GraphPropertyDef, JsonIndexType, VectorDistanceMetric,
+    VectorMetadataFilter,
 };
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -965,6 +966,9 @@ pub enum Command {
         /// Optional entity binding.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         binding: Option<GraphEntityBinding>,
+        /// Optional declared object type (validated once the ontology is frozen).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        object_type: Option<String>,
     },
     /// Reads a graph node.
     GraphGetNode {
@@ -1137,6 +1141,132 @@ pub enum Command {
         graph: String,
         /// Batch operations.
         operations: Vec<GraphBatchOperation>,
+    },
+    /// Defines (or, while the ontology is draft, redefines) an object type.
+    GraphDefineObjectType {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Object type name.
+        name: String,
+        /// Declared properties by name.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        properties: std::collections::BTreeMap<String, GraphPropertyDef>,
+    },
+    /// Defines (or, while the ontology is draft, redefines) a link type.
+    GraphDefineLinkType {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Link type name.
+        name: String,
+        /// Declared source object type.
+        source: String,
+        /// Declared target object type.
+        target: String,
+        /// Optional cardinality hint (e.g. `one-to-many`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cardinality: Option<String>,
+        /// Declared properties by name.
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        properties: std::collections::BTreeMap<String, GraphPropertyDef>,
+    },
+    /// Deletes a draft object type.
+    GraphDeleteObjectType {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Object type name.
+        name: String,
+    },
+    /// Deletes a draft link type.
+    GraphDeleteLinkType {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Link type name.
+        name: String,
+    },
+    /// Freezes the ontology after validating it; writes then enforce it.
+    GraphFreezeOntology {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+    },
+    /// Reads the graph's ontology (status plus every declared type).
+    GraphGetOntology {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Reads the ontology with per-type node and edge usage counts.
+    GraphOntologySummary {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Lists nodes declaring an object type (node-id ordered).
+    GraphNodesByType {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Object type name.
+        object_type: String,
+        /// Optional exclusive node id cursor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<String>,
+        /// Optional item limit. Defaults to 100.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u64>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
     },
     /// Imports an Arrow-compatible file into a product primitive.
     ArrowImport {
@@ -1366,6 +1496,14 @@ impl Command {
             Self::GraphNeighbors { .. } => "graph_neighbors",
             Self::GraphBindingsForEntity { .. } => "graph_bindings_for_entity",
             Self::GraphBatchWrite { .. } => "graph_batch_write",
+            Self::GraphDefineObjectType { .. } => "graph_define_object_type",
+            Self::GraphDefineLinkType { .. } => "graph_define_link_type",
+            Self::GraphDeleteObjectType { .. } => "graph_delete_object_type",
+            Self::GraphDeleteLinkType { .. } => "graph_delete_link_type",
+            Self::GraphFreezeOntology { .. } => "graph_freeze_ontology",
+            Self::GraphGetOntology { .. } => "graph_get_ontology",
+            Self::GraphOntologySummary { .. } => "graph_ontology_summary",
+            Self::GraphNodesByType { .. } => "graph_nodes_by_type",
             Self::ArrowImport { .. } => "arrow_import",
             Self::ArrowExport { .. } => "arrow_export",
             #[cfg(feature = "inference")]
@@ -1434,6 +1572,11 @@ impl Command {
                 | Self::GraphAddEdge { .. }
                 | Self::GraphRemoveEdge { .. }
                 | Self::GraphBatchWrite { .. }
+                | Self::GraphDefineObjectType { .. }
+                | Self::GraphDefineLinkType { .. }
+                | Self::GraphDeleteObjectType { .. }
+                | Self::GraphDeleteLinkType { .. }
+                | Self::GraphFreezeOntology { .. }
                 | Self::ArrowImport { .. }
         )
     }

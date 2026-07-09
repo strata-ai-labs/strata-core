@@ -12,7 +12,8 @@ use crate::persistence::{
     decode_vector_index_manifest_key, encode_event_meta_space_prefix, encode_event_space_prefix,
     encode_event_type_index_space_prefix, encode_graph_binding_space_prefix,
     encode_graph_edge_space_prefix, encode_graph_metadata_prefix, encode_graph_node_space_prefix,
-    encode_graph_reverse_edge_space_prefix, encode_json_index_entry_space_prefix,
+    encode_graph_ontology_space_prefix, encode_graph_reverse_edge_space_prefix,
+    encode_graph_type_index_space_prefix, encode_json_index_entry_space_prefix,
     encode_json_index_meta_prefix, encode_json_space_prefix, encode_kv_space_prefix,
     encode_vector_collection_prefix, encode_vector_space_prefix, vector_index_manifest_prefix,
     CommitPlan, ReadSelector, RowAddress, RowClass, RowMutation, StoragePersistence,
@@ -527,6 +528,14 @@ fn data_delete_prefixes(space: &ProductSpace) -> Vec<(RowClass, Vec<u8>)> {
         (
             RowClass::GraphBindingIndex,
             encode_graph_binding_space_prefix(space),
+        ),
+        (
+            RowClass::GraphOntology,
+            encode_graph_ontology_space_prefix(space),
+        ),
+        (
+            RowClass::GraphTypeIndex,
+            encode_graph_type_index_space_prefix(space),
         ),
     ]
 }

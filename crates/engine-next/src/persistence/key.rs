@@ -2,7 +2,7 @@
 
 use crate::data::event::{EventSequence, EventType};
 use crate::data::graph::{
-    GraphBindingPrimitive, GraphBindingTarget, GraphEdgeType, GraphName, GraphNodeId,
+    GraphBindingPrimitive, GraphBindingTarget, GraphEdgeType, GraphName, GraphNodeId, GraphTypeName,
 };
 use crate::data::json::{JsonDocumentId, JsonIndexName};
 use crate::data::kv::{KvKey, ProductSpace};
@@ -24,6 +24,8 @@ const GRAPH_NODE_DISCRIMINATOR: u8 = b'n';
 const GRAPH_EDGE_DISCRIMINATOR: u8 = b'o';
 const GRAPH_REVERSE_EDGE_DISCRIMINATOR: u8 = b'r';
 const GRAPH_BINDING_INDEX_DISCRIMINATOR: u8 = b'b';
+const GRAPH_ONTOLOGY_DISCRIMINATOR: u8 = b'y';
+const GRAPH_TYPE_INDEX_DISCRIMINATOR: u8 = b'T';
 
 pub(crate) fn encode_kv_key(space: &ProductSpace, key: &KvKey) -> Vec<u8> {
     encode_kv_key_bytes(space, key.as_bytes())
@@ -295,6 +297,107 @@ pub(crate) fn encode_graph_metadata_key(space: &ProductSpace, graph: &GraphName)
     let mut suffix = Vec::new();
     encode_length_prefixed_text(&mut suffix, graph.as_str());
     encode_user_key(GRAPH_METADATA_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_graph_ontology_key(space: &ProductSpace, graph: &GraphName) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, graph.as_str());
+    encode_user_key(GRAPH_ONTOLOGY_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_graph_ontology_space_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(GRAPH_ONTOLOGY_DISCRIMINATOR, space, &[])
+}
+
+pub(crate) fn encode_graph_type_index_key(
+    space: &ProductSpace,
+    graph: &GraphName,
+    object_type: &GraphTypeName,
+    node_id: &GraphNodeId,
+) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, graph.as_str());
+    encode_length_prefixed_text(&mut suffix, object_type.as_str());
+    encode_length_prefixed_text(&mut suffix, node_id.as_str());
+    encode_user_key(GRAPH_TYPE_INDEX_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_graph_type_index_type_prefix(
+    space: &ProductSpace,
+    graph: &GraphName,
+    object_type: &GraphTypeName,
+) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, graph.as_str());
+    encode_length_prefixed_text(&mut suffix, object_type.as_str());
+    encode_user_key(GRAPH_TYPE_INDEX_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_graph_type_index_graph_prefix(
+    space: &ProductSpace,
+    graph: &GraphName,
+) -> Vec<u8> {
+    let mut suffix = Vec::new();
+    encode_length_prefixed_text(&mut suffix, graph.as_str());
+    encode_user_key(GRAPH_TYPE_INDEX_DISCRIMINATOR, space, &suffix)
+}
+
+pub(crate) fn encode_graph_type_index_space_prefix(space: &ProductSpace) -> Vec<u8> {
+    encode_user_key(GRAPH_TYPE_INDEX_DISCRIMINATOR, space, &[])
+}
+
+pub(crate) fn decode_graph_type_index_key(
+    space: &ProductSpace,
+    encoded: &[u8],
+) -> EngineResult<(GraphName, GraphTypeName, GraphNodeId)> {
+    let bytes = decode_user_key(
+        space,
+        encoded,
+        GRAPH_TYPE_INDEX_DISCRIMINATOR,
+        "data_loss.engine.graph_type_index_key",
+        "stored graph type index row key is not valid for the selected product space",
+    )?;
+    let (graph, rest) = decode_length_prefixed_text(
+        bytes,
+        "data_loss.engine.graph_type_index_key",
+        "stored graph type index row key is missing a graph name",
+    )?;
+    let (object_type, rest) = decode_length_prefixed_text(
+        rest,
+        "data_loss.engine.graph_type_index_key",
+        "stored graph type index row key is missing an object type",
+    )?;
+    let (node_id, rest) = decode_length_prefixed_text(
+        rest,
+        "data_loss.engine.graph_type_index_key",
+        "stored graph type index row key is missing a node id",
+    )?;
+    if !rest.is_empty() {
+        return Err(EngineError::corruption(
+            "data_loss.engine.graph_type_index_key",
+            "stored graph type index row key has trailing bytes",
+        ));
+    }
+    Ok((
+        GraphName::new(graph).map_err(|_| {
+            EngineError::corruption(
+                "data_loss.engine.graph_type_index_key",
+                "stored graph type index row key contains an invalid graph name",
+            )
+        })?,
+        GraphTypeName::new(object_type).map_err(|_| {
+            EngineError::corruption(
+                "data_loss.engine.graph_type_index_key",
+                "stored graph type index row key contains an invalid object type",
+            )
+        })?,
+        GraphNodeId::new(node_id).map_err(|_| {
+            EngineError::corruption(
+                "data_loss.engine.graph_type_index_key",
+                "stored graph type index row key contains an invalid node id",
+            )
+        })?,
+    ))
 }
 
 pub(crate) fn encode_graph_metadata_prefix(space: &ProductSpace) -> Vec<u8> {
