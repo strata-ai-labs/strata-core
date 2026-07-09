@@ -8,8 +8,9 @@ mod common;
 use std::collections::HashMap;
 
 use strata_engine_next::{
-    Database, GraphAdjacencyEdge, GraphAnalyticsBudget, GraphCdlpOptions, GraphDirection,
-    GraphEdgeData, GraphEdgeType, GraphName, GraphNodeData, GraphNodeId, GraphPageRankOptions,
+    Database, GraphAdjacencyEdge, GraphAnalyticsBudget, GraphBfsOptions, GraphCdlpOptions,
+    GraphDirection, GraphEdgeData, GraphEdgeType, GraphName, GraphNodeData, GraphNodeId,
+    GraphPageRankOptions,
 };
 
 use common::{branch, open_cache_database, open_durable_database, space};
@@ -460,4 +461,112 @@ fn exercise_iterative_algorithms(mut database: Database) {
         pagerank
     );
     assert_eq!(historical.cdlp(&GraphCdlpOptions::default()), cdlp);
+}
+
+#[test]
+fn traversal_runs_over_snapshots_in_cache_and_durable_modes() {
+    run_database_modes(exercise_traversal);
+}
+
+/// paths: a -e-> b, b -e-> c, b -f-> d, plus isolated node `lone`.
+fn exercise_traversal(mut database: Database) {
+    let mut graph = graph_service(&mut database, "default", "default");
+    let name = graph_name("paths");
+    graph.create_graph(name.clone()).expect("graph created");
+    for id in ["a", "b", "c", "d", "lone"] {
+        graph
+            .upsert_node(&name, node_id(id), GraphNodeData::default())
+            .expect("node");
+    }
+    for (src, kind, dst) in [("a", "e", "b"), ("b", "e", "c"), ("b", "f", "d")] {
+        graph
+            .upsert_edge(
+                &name,
+                node_id(src),
+                edge_type(kind),
+                node_id(dst),
+                edge_data(1.0),
+            )
+            .expect("edge");
+    }
+
+    let index = graph
+        .adjacency_index(&name, &GraphAnalyticsBudget::default())
+        .expect("index builds");
+    let at = |id: &str| index.node_index(&node_id(id)).expect("node indexed");
+
+    // Breadth-first from a: level order, depths, isolated node untouched.
+    let bfs = index
+        .bfs(&node_id("a"), &GraphBfsOptions::default())
+        .expect("bfs runs");
+    assert_eq!(bfs.visited(), &[at("a"), at("b"), at("c"), at("d")]);
+    assert_eq!(bfs.depth(at("a")), Some(0));
+    assert_eq!(bfs.depth(at("b")), Some(1));
+    assert_eq!(bfs.depth(at("c")), Some(2));
+    assert_eq!(bfs.depth(at("d")), Some(2));
+    assert_eq!(bfs.depth(at("lone")), None);
+    assert_eq!(bfs.edges().len(), 3, "tree edges only");
+
+    // The edge-type restriction applies at every hop.
+    let filtered = index
+        .bfs(
+            &node_id("a"),
+            &GraphBfsOptions::new(
+                10,
+                None,
+                Some(vec![edge_type("e")]),
+                GraphDirection::Outgoing,
+            ),
+        )
+        .expect("bfs runs");
+    assert_eq!(filtered.visited(), &[at("a"), at("b"), at("c")]);
+
+    // A start node outside the snapshot refuses by code.
+    let error = index
+        .bfs(&node_id("ghost"), &GraphBfsOptions::default())
+        .expect_err("missing start refuses");
+    assert_eq!(error.code(), "not_found.engine.graph_node");
+
+    // Degree per direction.
+    assert_eq!(index.degree(at("b"), GraphDirection::Outgoing), 2);
+    assert_eq!(index.degree(at("b"), GraphDirection::Incoming), 1);
+    assert_eq!(index.degree(at("b"), GraphDirection::Both), 3);
+    assert_eq!(index.degree(at("lone"), GraphDirection::Both), 0);
+
+    // Subgraph keeps only edges among the selected nodes.
+    let subgraph = index.subgraph(&[node_id("a"), node_id("b"), node_id("d")]);
+    assert_eq!(subgraph.node_count(), 3);
+    assert_eq!(subgraph.edge_count(), 2, "a->b and b->d survive");
+
+    let seeded_version = graph
+        .graph_info(&name)
+        .expect("info reads")
+        .expect("graph visible")
+        .updated_version();
+
+    // Cut b -f-> d: the latest traversal shrinks, the historical
+    // snapshot reproduces the original walk exactly.
+    graph
+        .delete_edge(&name, &node_id("b"), &edge_type("f"), &node_id("d"))
+        .expect("delete edge");
+    let latest = graph
+        .adjacency_index(&name, &GraphAnalyticsBudget::default())
+        .expect("index builds");
+    let latest_bfs = latest
+        .bfs(&node_id("a"), &GraphBfsOptions::default())
+        .expect("bfs runs");
+    assert_eq!(latest_bfs.visited().len(), 3);
+    let historical = graph
+        .adjacency_index_at_version(&name, &GraphAnalyticsBudget::default(), seeded_version)
+        .expect("historical index builds");
+    assert_eq!(
+        historical
+            .bfs(&node_id("a"), &GraphBfsOptions::default())
+            .expect("historical bfs runs"),
+        bfs
+    );
+    assert_eq!(
+        historical.subgraph(&[node_id("a"), node_id("b"), node_id("d")]),
+        subgraph
+    );
 }

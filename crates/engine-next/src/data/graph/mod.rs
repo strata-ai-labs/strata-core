@@ -7,6 +7,7 @@ mod ontology;
 mod outcome;
 mod record;
 mod service;
+mod traversal;
 mod types;
 
 pub(crate) use adjacency::GraphAdjacencyIndexBuilder;
@@ -24,6 +25,7 @@ pub use outcome::{
     GraphNeighborPage, GraphNode, GraphNodePage, GraphWriteOutcome,
 };
 pub use service::GraphService;
+pub use traversal::{GraphBfsOptions, GraphBfsResult, GraphSubgraphResult, GraphTraversalEdge};
 pub use types::{
     GraphBatchOperation, GraphBatchWrite, GraphBindingPrimitive, GraphBindingTarget,
     GraphDirection, GraphEdgeData, GraphEdgeType, GraphEntityBinding, GraphName, GraphNodeData,

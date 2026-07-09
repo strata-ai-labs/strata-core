@@ -148,6 +148,14 @@ impl GraphAdjacencyIndex {
     }
 
     #[must_use]
+    /// Returns the interned index of `edge_type`, when this snapshot
+    /// contains at least one edge of that type.
+    pub fn edge_type_index(&self, edge_type: &GraphEdgeType) -> Option<usize> {
+        // Interned edge types are name-sorted by the builder.
+        self.edge_types.binary_search(edge_type).ok()
+    }
+
+    #[must_use]
     /// Returns the outgoing edges of the node at `index` (empty when out
     /// of range).
     pub fn outgoing(&self, index: usize) -> &[GraphAdjacencyEdge] {
