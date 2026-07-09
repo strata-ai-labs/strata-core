@@ -67,6 +67,22 @@ fn render_human(value: &Value) -> Result<(), CliError> {
             "json_value" | "json_versioned_value" => print_maybe_json(kind, data)?,
             "json_version_history" => print_bare_items(data),
             "vector_matches" => print_matches_data(data),
+            "inference_generation" => print_inference_generation(data, true),
+            "inference_text" => println!("{}", data.as_str().unwrap_or_default()),
+            "inference_token_ids" => print_token_ids(data),
+            "inference_embedding" => print_embedding_summary(data),
+            "inference_embeddings" => print_embeddings_summary(data),
+            "inference_ranking" => print_ranking(data),
+            "inference_models" => print_inference_models(data),
+            "inference_model_pulled" => print_model_pulled(data),
+            "inference_unload_result" => println!(
+                "{}",
+                if data.get("unloaded").and_then(Value::as_bool) == Some(true) {
+                    "unloaded"
+                } else {
+                    "no cached entry"
+                }
+            ),
             _ => render_human_data(data)?,
         }
         return Ok(());
@@ -146,6 +162,22 @@ fn render_raw(value: &Value) {
             print_count(data);
             return;
         }
+        "inference_generation" => {
+            print_inference_generation(data, false);
+            return;
+        }
+        "inference_text" => {
+            println!("{}", data.as_str().unwrap_or_default());
+            return;
+        }
+        "inference_token_ids" => {
+            print_token_ids(data);
+            return;
+        }
+        "inference_embedding" => {
+            print_embedding_values(data);
+            return;
+        }
         _ => {}
     }
 
@@ -186,6 +218,164 @@ fn tagged_output(value: &Value) -> Option<(&str, &Value)> {
     let kind = object.get("type")?.as_str()?;
     let data = object.get("data").unwrap_or(&Value::Null);
     Some((kind, data))
+}
+
+/// Prints generated text; with `stats` a trailing summary line follows so the
+/// human can see why generation stopped (raw mode prints the text alone).
+fn print_inference_generation(data: &Value, stats: bool) {
+    println!("{}", data.get("text").and_then(Value::as_str).unwrap_or(""));
+    if stats {
+        let stop = data
+            .get("stop_reason")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let prompt = data
+            .get("prompt_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let completion = data
+            .get("completion_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        println!("-- stop: {stop} · prompt {prompt} tok · completion {completion} tok");
+    }
+}
+
+fn print_token_ids(data: &Value) {
+    let ids = data
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_u64)
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    println!("{ids}");
+}
+
+fn print_embedding_summary(data: &Value) {
+    let Some(values) = data.as_array() else {
+        println!("(nil)");
+        return;
+    };
+    let preview = values
+        .iter()
+        .take(6)
+        .filter_map(Value::as_f64)
+        .map(|v| format!("{v:.4}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ellipsis = if values.len() > 6 { ", …" } else { "" };
+    println!("dim {}: [{preview}{ellipsis}]", values.len());
+}
+
+fn print_embedding_values(data: &Value) {
+    let values = data
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_f64)
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+    println!("{values}");
+}
+
+fn print_embeddings_summary(data: &Value) {
+    let dimension = data.get("dimension").and_then(Value::as_u64).unwrap_or(0);
+    let items = data
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let ok = items
+        .iter()
+        .filter(|item| item.get("status").and_then(Value::as_str) == Some("ok"))
+        .count();
+    println!("{ok}/{} embeddings · dim {dimension}", items.len());
+    for (index, item) in items.iter().enumerate() {
+        if item.get("status").and_then(Value::as_str) == Some("error") {
+            let code = item.get("code").and_then(Value::as_str).unwrap_or("error");
+            println!("  [{index}] failed: {code}");
+        }
+    }
+}
+
+fn print_ranking(data: &Value) {
+    let Some(items) = data.get("items").and_then(Value::as_array) else {
+        println!("(nil)");
+        return;
+    };
+    let mut scored: Vec<(u64, f64)> = items
+        .iter()
+        .filter(|item| item.get("status").and_then(Value::as_str) == Some("ok"))
+        .filter_map(|item| {
+            Some((
+                item.get("index").and_then(Value::as_u64)?,
+                item.get("score").and_then(Value::as_f64)?,
+            ))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    for (index, score) in scored {
+        println!("{index}\t{score:.6}");
+    }
+    for item in items {
+        if item.get("status").and_then(Value::as_str) == Some("error") {
+            let code = item.get("code").and_then(Value::as_str).unwrap_or("error");
+            println!("failed: {code}");
+        }
+    }
+}
+
+fn print_inference_models(data: &Value) {
+    const MIB: u64 = 1_048_576;
+    let Some(items) = data.get("items").and_then(Value::as_array) else {
+        println!("(nil)");
+        return;
+    };
+    if items.is_empty() {
+        println!("(none)");
+        return;
+    }
+    for item in items {
+        let text = |key: &str| {
+            item.get(key)
+                .and_then(Value::as_str)
+                .unwrap_or("-")
+                .to_owned()
+        };
+        let local = if item.get("is_local").and_then(Value::as_bool) == Some(true) {
+            "local"
+        } else {
+            "remote"
+        };
+        let size = item.get("size_bytes").and_then(Value::as_u64).map_or_else(
+            || "-".to_owned(),
+            |bytes| format!("{}.{} MB", bytes / MIB, (bytes % MIB) * 10 / MIB),
+        );
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            text("name"),
+            text("task"),
+            text("architecture"),
+            text("default_quant"),
+            local,
+            size
+        );
+    }
+}
+
+fn print_model_pulled(data: &Value) {
+    let model = data.get("model").and_then(Value::as_str).unwrap_or("model");
+    let path = data.get("path").and_then(Value::as_str).unwrap_or("-");
+    println!("pulled {model} -> {path}");
 }
 
 fn print_optional_data(data: &Value) {

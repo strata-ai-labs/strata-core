@@ -1,11 +1,18 @@
 //! Shared llama.cpp model/context lifecycle and tokenization helpers.
+//!
+//! llama.cpp reports counts as `i32`; converting them to `usize` at this
+//! boundary is the interface, not an accident.
+#![allow(clippy::cast_sign_loss)]
 
 use std::path::Path;
 use std::sync::Arc;
 
 use tracing::info;
 
-use super::ffi::*;
+use super::ffi::{
+    llama_api_lock, LlamaContext, LlamaCppApi, LlamaModel, LlamaToken, LlamaVocab,
+    LLAMA_POOLING_TYPE_MEAN, LLAMA_POOLING_TYPE_RANK,
+};
 use crate::InferenceError;
 
 /// Shared llama.cpp model and context state.
@@ -313,10 +320,11 @@ impl Drop for LlamaCppContext {
 /// Convert a Path to a CString for C API calls.
 fn path_to_cstring(path: &Path) -> Result<std::ffi::CString, InferenceError> {
     let path_str = path.to_str().ok_or_else(|| {
-        InferenceError::LlamaCpp(format!("path contains invalid UTF-8: {:?}", path))
+        InferenceError::LlamaCpp(format!("path contains invalid UTF-8: {}", path.display()))
     })?;
-    std::ffi::CString::new(path_str)
-        .map_err(|_| InferenceError::LlamaCpp(format!("path contains null byte: {:?}", path)))
+    std::ffi::CString::new(path_str).map_err(|_| {
+        InferenceError::LlamaCpp(format!("path contains null byte: {}", path.display()))
+    })
 }
 
 #[cfg(test)]

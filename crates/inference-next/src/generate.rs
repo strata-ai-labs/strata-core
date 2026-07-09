@@ -28,8 +28,8 @@ use crate::StopReason;
 ///
 /// ```no_run
 /// # #[cfg(feature = "local")]
-/// # fn example() -> Result<(), strata_inference::InferenceError> {
-/// use strata_inference::{GenerationEngine, GenerateRequest};
+/// # fn example() -> Result<(), strata_inference_next::InferenceError> {
+/// use strata_inference_next::{GenerationEngine, GenerateRequest};
 ///
 /// let mut engine = GenerationEngine::from_gguf("model.gguf")?;
 /// let response = engine.generate(&GenerateRequest {

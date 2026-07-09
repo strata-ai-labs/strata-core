@@ -243,6 +243,10 @@ pub(crate) fn execute_parsed_command(
             executor.execute(graph_command(args.command, scope)?)?
         }
         options::TopCommand::Arrow(args) => executor.execute(arrow_command(args.command, scope))?,
+        #[cfg(feature = "inference")]
+        options::TopCommand::Inference(args) => {
+            executor.execute(inference_command(args.command))?
+        }
         options::TopCommand::Command(args) => executor.execute(raw_command(args.command)?)?,
         options::TopCommand::Search(_)
         | options::TopCommand::Recipe(_)
@@ -978,6 +982,74 @@ fn arrow_command(command: ArrowCommand, scope: &Scope) -> Command {
             graph,
             event_type,
         },
+    }
+}
+
+/// Builds executor commands for the inference family. Inference is
+/// database-independent (models are process state), so no scope is injected.
+#[cfg(feature = "inference")]
+fn inference_command(command: options::InferenceCommand) -> Command {
+    use options::{InferenceCommand as Inf, InferenceModelsCommand as Models};
+    match command {
+        Inf::Models(args) => match args.command {
+            Models::List => Command::InferenceModelsList,
+            Models::Local => Command::InferenceModelsLocal,
+            Models::Pull { model } => Command::InferenceModelsPull { model },
+        },
+        Inf::Capability { model } => Command::InferenceModelCapability { model },
+        Inf::Generate {
+            model,
+            prompt,
+            max_tokens,
+            temperature,
+            top_k,
+            top_p,
+            seed,
+            stop_sequences,
+            stop_tokens,
+            grammar,
+        } => {
+            let defaults = strata_executor_next::InferenceGenerateRequest::default();
+            Command::InferenceGenerate {
+                model,
+                request: strata_executor_next::InferenceGenerateRequest {
+                    prompt,
+                    max_tokens: max_tokens.unwrap_or(defaults.max_tokens),
+                    temperature: temperature.unwrap_or(defaults.temperature),
+                    top_k: top_k.unwrap_or(defaults.top_k),
+                    top_p: top_p.unwrap_or(defaults.top_p),
+                    seed,
+                    stop_sequences,
+                    stop_tokens,
+                    grammar,
+                },
+            }
+        }
+        Inf::Tokenize {
+            model,
+            text,
+            special,
+        } => Command::InferenceTokenize {
+            model,
+            text,
+            add_special: special,
+        },
+        Inf::Detokenize { model, ids } => Command::InferenceDetokenize { model, ids },
+        Inf::Embed { model, text } => Command::InferenceEmbed {
+            model,
+            request: strata_executor_next::InferenceEmbedRequest { text },
+        },
+        Inf::EmbedBatch { model, texts } => Command::InferenceEmbedBatch { model, texts },
+        Inf::Rank {
+            model,
+            query,
+            passages,
+        } => Command::InferenceRank {
+            model,
+            request: strata_executor_next::InferenceRankRequest { query, passages },
+        },
+        Inf::Unload { model } => Command::InferenceUnload { model },
+        Inf::CacheStatus => Command::InferenceCacheStatus,
     }
 }
 

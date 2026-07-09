@@ -26,12 +26,12 @@ use crate::InferenceError;
 /// # Example
 ///
 /// ```no_run
-/// use strata_inference::RankingEngine;
+/// use strata_inference_next::RankingEngine;
 ///
 /// let engine = RankingEngine::from_gguf("reranker.gguf")?;
 /// let scores = engine.rank("what is rust?", &["Rust is a language", "Python is great"])?;
 /// assert_eq!(scores.len(), 2);
-/// # Ok::<(), strata_inference::InferenceError>(())
+/// # Ok::<(), strata_inference_next::InferenceError>(())
 /// ```
 pub struct RankingEngine {
     ctx: Mutex<LlamaCppContext>,
@@ -146,12 +146,9 @@ impl RankingEngine {
         // query already provides one (non-empty query_tokens starts with BOS).
         let mut tokens = query_tokens;
         let has_query_bos = !tokens.is_empty() && tokens[0] == ctx.bos_id;
-        let passage_start =
-            if has_query_bos && !passage_tokens.is_empty() && passage_tokens[0] == ctx.bos_id {
-                1
-            } else {
-                0
-            };
+        let passage_start = usize::from(
+            has_query_bos && !passage_tokens.is_empty() && passage_tokens[0] == ctx.bos_id,
+        );
         tokens.extend_from_slice(&passage_tokens[passage_start..]);
 
         // Truncate to context size, preserving the trailing [SEP] when

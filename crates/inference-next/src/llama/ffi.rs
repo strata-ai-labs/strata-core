@@ -5,7 +5,10 @@
 //! once and runs layout probes, then returns a zero-sized handle whose methods
 //! call directly into the extern symbols.
 
+// The llama.cpp C API speaks i32 lengths and mutable pointers; the casts
+// at this boundary are the interface, not accidents.
 #![allow(dead_code, missing_docs, unreachable_pub)]
+#![allow(clippy::cast_possible_wrap, clippy::ptr_as_ptr)]
 
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_void};
