@@ -224,3 +224,123 @@ fn fork_of_an_empty_branch_keeps_parent_linkage() {
     assert_eq!(parent.fork_version(), CommitVersion::ZERO);
     assert_eq!(read_at(&runtime, child, ReadBound::Latest), None);
 }
+
+fn put_key(
+    runtime: &mut StorageRuntime<'static>,
+    branch_id: BranchId,
+    key: &[u8],
+    value: &[u8],
+    ts: u64,
+) {
+    let batch = CommitBatch::new(
+        branch_id,
+        vec![CommitMutation::Put {
+            storage_space: engine_space(),
+            key: api_key(key),
+            value: StorageValue::new(value.to_vec()),
+            ttl: None,
+        }],
+        CommitOptions::default().require_conflict_check(false),
+    )
+    .expect("valid put batch");
+    runtime
+        .commit_for_test(&batch, Timestamp::from_micros(ts))
+        .expect("commit put");
+}
+
+fn read_key_at(
+    runtime: &StorageRuntime<'static>,
+    branch_id: BranchId,
+    key: &[u8],
+    bound: ReadBound,
+) -> Option<Vec<u8>> {
+    runtime
+        .read_point(&PointReadRequest::new(
+            branch_id,
+            engine_space(),
+            api_key(key),
+            bound,
+        ))
+        .expect("point read")
+        .row()
+        .map(|row| row.value().expect("put row").as_bytes().to_vec())
+}
+
+/// #2527: `fork_current` with unflushed rows takes the HYBRID COW path —
+/// sealed rows ride the inherited layer, the unsealed slice becomes one
+/// durably-published child L0 table — and the child reads BOTH across a
+/// reopen (the slice is covered by the fork-time child manifest; recovery's
+/// rebuild correctly skips layered children).
+#[test]
+fn fork_with_unflushed_rows_is_cow_and_survives_reopen() {
+    let root = temp_dir_for_api_test("hybrid-fork-reopen");
+    let child = fork_branch_id(0x31);
+    {
+        let mut runtime = open_durable_runtime(root.clone());
+        put_key(
+            &mut runtime,
+            default_branch(),
+            b"sealed",
+            b"sealed-val",
+            1_000,
+        );
+        runtime
+            .flush_default_branch_for_test()
+            .expect("flush sealed rows");
+        put_key(
+            &mut runtime,
+            default_branch(),
+            b"unsealed",
+            b"unsealed-val",
+            2_000,
+        );
+        fork_current(&mut runtime, child, default_branch());
+
+        // The child sees the sealed row (via the COW layer) AND the unsealed
+        // row (via the published slice) at fork time.
+        assert_eq!(
+            read_key_at(&runtime, child, b"sealed", ReadBound::Latest),
+            Some(b"sealed-val".to_vec()),
+        );
+        assert_eq!(
+            read_key_at(&runtime, child, b"unsealed", ReadBound::Latest),
+            Some(b"unsealed-val".to_vec()),
+        );
+
+        // Post-fork divergence stays isolated in both directions.
+        put_key(
+            &mut runtime,
+            default_branch(),
+            b"unsealed",
+            b"parent-after",
+            3_000,
+        );
+        put_key(&mut runtime, child, b"sealed", b"child-after", 3_500);
+        assert_eq!(
+            read_key_at(&runtime, child, b"unsealed", ReadBound::Latest),
+            Some(b"unsealed-val".to_vec()),
+            "parent writes after the fork must not leak into the child",
+        );
+        assert_eq!(
+            read_key_at(&runtime, default_branch(), b"sealed", ReadBound::Latest),
+            Some(b"sealed-val".to_vec()),
+            "child writes must not leak into the parent",
+        );
+        runtime.close().expect("close before reopen");
+    }
+
+    // The CLI shape: a fresh process. The child's unsealed slice must be
+    // durable (tiny sessions never checkpoint; the parent's WAL replays into
+    // the PARENT, so only the fork-time manifest covers the child).
+    let runtime = open_durable_runtime(root);
+    assert_eq!(
+        read_key_at(&runtime, child, b"sealed", ReadBound::Latest),
+        Some(b"child-after".to_vec()),
+        "the child's own post-fork write survives the reopen",
+    );
+    assert_eq!(
+        read_key_at(&runtime, child, b"unsealed", ReadBound::Latest),
+        Some(b"unsealed-val".to_vec()),
+        "the fork-time unsealed slice survives the reopen",
+    );
+}

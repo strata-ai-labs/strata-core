@@ -1842,7 +1842,7 @@ fn derived_object_id(request: &FlushFrozenRequest, table_facts: &TableRuntimeFac
     )
 }
 
-fn publish_or_load_existing(
+pub(crate) fn publish_or_load_existing(
     table_service: &TableObjectService<'_>,
     branch_component: &str,
     level: u32,
@@ -1862,7 +1862,7 @@ fn publish_or_load_existing(
     }
 }
 
-fn branch_owned_table(
+pub(crate) fn branch_owned_table(
     branch_id: BranchId,
     identity: TableIdentity,
     reader: ImmutableTableReader<'static>,
@@ -1959,7 +1959,7 @@ fn published_not_installed_flush_outputs(
     }
 }
 
-fn table_error(error: impl std::error::Error + Send + Sync + 'static) -> LifecycleError {
+pub(crate) fn table_error(error: impl std::error::Error + Send + Sync + 'static) -> LifecycleError {
     LifecycleError::lower_layer_with(
         LifecycleLowerLayer::TableRuntime,
         "table runtime failed",

@@ -1285,13 +1285,36 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
-        let outcome = self.branch_catalog.fork_at_retained_version(
-            source,
-            destination,
-            destination_generation,
-            fork_version,
-            retained_floor,
-        )?;
+        let mut published_slice = None;
+        let outcome = {
+            let services = &self.services;
+            let budget = &self.budget;
+            let data_block_bytes = self.open_plan.lifecycle_config().data_block_bytes();
+            let published_slice = &mut published_slice;
+            let mut builder = |child: BranchId,
+                               fork_version: CommitVersion,
+                               rows: Vec<crate::row::StorageRow>| {
+                build_and_publish_fork_unsealed_table(
+                    services,
+                    budget,
+                    data_block_bytes,
+                    child,
+                    fork_version,
+                    &rows,
+                    published_slice,
+                )
+            };
+            self.branch_catalog
+                .fork_at_retained_version_with_unsealed_builder(
+                    source,
+                    destination,
+                    destination_generation,
+                    fork_version,
+                    retained_floor,
+                    Some(&mut builder),
+                )?
+        };
+        self.record_fork_unsealed_slice(published_slice);
         self.publish_branch_catalog()?;
         self.publish_fork_child_table_manifest(&outcome);
         self.republish_all_branch_snapshots(); // BS2.3: publish the new/forked branch snapshot.
@@ -1308,17 +1331,67 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
     ) -> LifecycleResult<crate::lifecycle::LifecycleBranchForkOutcome> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let _quiesce = self.guard_set.try_begin_quiesce().map_err(commit_error)?;
-        let outcome = self.branch_catalog.fork_at_retained_timestamp(
-            source,
-            destination,
-            destination_generation,
-            timestamp,
-            retained_floor,
-        )?;
+        let mut published_slice = None;
+        let outcome = {
+            let services = &self.services;
+            let budget = &self.budget;
+            let data_block_bytes = self.open_plan.lifecycle_config().data_block_bytes();
+            let published_slice = &mut published_slice;
+            let mut builder = |child: BranchId,
+                               fork_version: CommitVersion,
+                               rows: Vec<crate::row::StorageRow>| {
+                build_and_publish_fork_unsealed_table(
+                    services,
+                    budget,
+                    data_block_bytes,
+                    child,
+                    fork_version,
+                    &rows,
+                    published_slice,
+                )
+            };
+            self.branch_catalog
+                .fork_at_retained_timestamp_with_unsealed_builder(
+                    source,
+                    destination,
+                    destination_generation,
+                    timestamp,
+                    retained_floor,
+                    Some(&mut builder),
+                )?
+        };
+        self.record_fork_unsealed_slice(published_slice);
         self.publish_branch_catalog()?;
         self.publish_fork_child_table_manifest(&outcome);
         self.republish_all_branch_snapshots(); // BS2.3: publish the new/forked branch snapshot.
         Ok(outcome)
+    }
+
+    /// #2527: record the fork's published unsealed-slice table in the
+    /// durable table catalog BEFORE the child manifest publish references
+    /// it. Best-effort like the manifest itself: on failure the recovered
+    /// child is layer-less and the recovery rebuild re-materializes it.
+    fn record_fork_unsealed_slice(
+        &mut self,
+        published: Option<(
+            crate::table::TableIdentity,
+            crate::service::TableObjectFacts,
+        )>,
+    ) {
+        let Some((identity, object_facts)) = published else {
+            return;
+        };
+        if self
+            .table_catalog
+            .record_table(identity, object_facts)
+            .is_err()
+        {
+            if let Ok(health) = crate::lifecycle::telemetry_health_debt(
+                "fork unsealed-slice catalog record failed; recovery falls back to fork rebuild",
+            ) {
+                self.record_recovery_health(Some(&health));
+            }
+        }
     }
 
     pub(crate) fn clear_branch(
@@ -2946,6 +3019,106 @@ fn install_non_seeded_checkpoint_rows(
         branch_catalog.replace_active_branch_state_with_descriptor(descriptor, branch)?;
     }
     Ok(())
+}
+
+/// #2527: build and durably publish the hybrid COW fork's unsealed-slice
+/// table — ONE child L0 table over the source's unsealed `<= V` rows
+/// (bounded by the rotation threshold, so this is a small build + one
+/// publish fsync instead of the eager path's O(dataset) materialization).
+/// Runs under the runtime lock, so the table-object mark cannot observe the
+/// published-but-unreferenced object mid-fork; if the fork fails after the
+/// publish, the object is unreachable and the sweep reclaims it. The
+/// identity is content-derived: a replayed fork with identical rows
+/// idempotently loads the existing object.
+fn build_and_publish_fork_unsealed_table(
+    services: &crate::lifecycle::LifecycleDurableLocalServices<'_>,
+    budget: &crate::lifecycle::StorageBudgetLedger,
+    data_block_bytes: Option<u32>,
+    child: BranchId,
+    fork_version: CommitVersion,
+    rows: &[crate::row::StorageRow],
+    published_slice: &mut Option<(
+        crate::table::TableIdentity,
+        crate::service::TableObjectFacts,
+    )>,
+) -> LifecycleResult<Option<crate::branch::read::BranchOwnedTable>> {
+    use crate::lifecycle::flush::{branch_owned_table, publish_or_load_existing};
+
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let identity = crate::table::TableIdentity::new(format!(
+        "fork-{}-{}-{}-{:016x}",
+        child,
+        fork_version.as_u64(),
+        rows.len(),
+        fork_rows_span_digest(rows),
+    ))
+    .map_err(crate::lifecycle::flush::table_error)?;
+    let artifact = crate::table::ImmutableTableBuilder::new(
+        crate::lifecycle::compaction::lifecycle_table_builder_config(data_block_bytes)?,
+    )
+    .map_err(crate::lifecycle::flush::table_error)?
+    .build_from_storage_rows(identity.clone(), rows)
+    .map_err(crate::lifecycle::flush::table_error)?;
+    crate::lifecycle::budget::require_generated_artifact_budget(
+        budget,
+        artifact.byte_count(),
+        "fork unsealed slice exceeds generated artifact budget",
+    )?;
+    let branch_component = child.to_string();
+    let object_facts = publish_or_load_existing(
+        services.table_object(),
+        &branch_component,
+        0,
+        identity.as_str(),
+        artifact.bytes(),
+        artifact.facts(),
+    )?;
+    let reader = services
+        .table_reader()
+        .open_reader(
+            identity.clone(),
+            &object_facts,
+            crate::table::TableReaderConfig::default()
+                .with_eager_filter_unavailable()
+                .deny_runtime_materialization(),
+        )
+        .map_err(crate::lifecycle::flush::table_error)?;
+    let extras = artifact.extras().clone();
+    let table = branch_owned_table(child, identity.clone(), reader, extras)?;
+    *published_slice = Some((identity, object_facts));
+    Ok(Some(table))
+}
+
+/// FNV-1a over the unsealed slice's first and last internal keys — the same
+/// span-digest idea the flush identity uses, keeping fork replays idempotent
+/// without hashing every row.
+fn fork_rows_span_digest(rows: &[crate::row::StorageRow]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    fn mix(mut hash: u64, bytes: &[u8]) -> u64 {
+        for &byte in bytes {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        hash
+    }
+    let mut hash = FNV_OFFSET;
+    if let Some(first) = rows.first() {
+        hash = mix(
+            hash,
+            crate::table::TableInternalKeyBytes::from_row(first).as_slice(),
+        );
+    }
+    hash = mix(hash, b"\x1f");
+    if let Some(last) = rows.last() {
+        hash = mix(
+            hash,
+            crate::table::TableInternalKeyBytes::from_row(last).as_slice(),
+        );
+    }
+    hash
 }
 
 fn rebuild_fork_snapshot_rows(branch_catalog: &mut LifecycleBranchCatalog) -> LifecycleResult<()> {

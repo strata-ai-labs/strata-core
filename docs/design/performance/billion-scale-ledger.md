@@ -1335,6 +1335,54 @@ transient peak 2.5x, residual 1.3x converging ~30s, seed churn 2.4x
 A3-class value (seed churn 2.4 -> ~2x) stays on the shelf until the
 gap-mass design.
 
+## #2527: hybrid COW fork — unflushed rows no longer force O(dataset) forks (2026-07-09)
+
+Diagnosis: the COW fork gate required `inherited_layers().is_empty() &&
+!has_in_fork_unsealed_rows(V)` — ONE unflushed row at fork time demoted
+the whole fork to `fork_snapshot_rows`, an eager O(dataset)
+materialization (full reader scan of the source plus a physical duplicate
+written through the child). Any warm writer therefore forks eagerly:
+GT5's rollout forks always carry a hot unsealed watermark row, so every
+fork paid seconds of latency and duplicated the store.
+
+Fix (hybrid COW): sealed rows ride the inherited COW layer exactly as
+before; the unsealed slice (rows <= fork version still in the
+active/frozen memtable — bounded by the memory budget, not the dataset)
+is built into ONE durably published child-owned L0 table at fork time.
+Content-derived identity (child, version, row count, span digest) keeps
+replays idempotent through `publish_or_load_existing`; the table is
+recorded in the table catalog before the fork-time child manifest
+publish; recovery restores layered children from the child manifest, so
+the slice is durable before the fork commits. Fork runs under the runtime
+lock, so the new object cannot race the sweep. Cache-mode forks and the
+eager fallbacks (fork-of-fork with inherited layers, all-unsealed
+sources) are unchanged.
+
+A/B (same box, same session, `amp-repro --shape full --settle-secs 60
+--forks 4`; ~2.07GiB logical, one 64B dirty write before each fork):
+
+| cell | fork p50 | fork max | disk growth (4 forks) |
+|---|---|---|---|
+| control (v1 HEAD 78c7212d, pre-fix) | 50,653 ms | 53,317 ms | 8.95 GiB |
+| hybrid, fat memtable (~35MiB slice) | 255 ms | 342 ms | 139.45 MiB |
+| hybrid, drained memtable | 33 ms | 61 ms | 171.89 KiB |
+
+Fork cost is now O(unsealed bytes): ~200x faster at the worst measured
+shape, ~1,500x drained, and per-fork growth went from a full logical
+duplicate (~2.2GiB) to the slice itself. GT5's real fork shape (KB-scale
+dirty state per rollout) lands at the drained end — tens of ms.
+
+Tests: `fork_with_unflushed_rows_is_cow_and_survives_reopen` (fork with a
+sealed + unsealed mix, divergence isolation both directions, reopen reads
+both the post-fork write and the fork-time unsealed slice);
+`fork_with_unsealed_rows_builds_a_cow_child` (1 inherited layer + child
+L0 slice); `fork_of_an_all_unsealed_source_stays_eager`. Battery: lib
+default 3361 / perf-trace 3558 green, all-targets + clippy clean on both
+feature sets, format goldens, engine-next, e2e 17/17.
+
+Shelf: fork-of-fork (sources WITH inherited layers) still takes the eager
+path — needs layer-chain composition, separate slice.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

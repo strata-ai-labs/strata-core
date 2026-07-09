@@ -319,6 +319,41 @@ impl BranchLocalState {
         Ok(rows)
     }
 
+    /// #2527: only the UNSEALED `<= watermark` rows (active memtable +
+    /// frozen tables), rewritten to the fork target. The hybrid COW fork
+    /// copies exactly these — bounded by the rotation threshold — while the
+    /// sealed rows ride the copy-on-write inherited layer, instead of
+    /// materializing the whole `<= watermark` state (O(dataset) reads and a
+    /// full on-disk duplicate; the #2527 seconds-scale `fork_current`).
+    pub(crate) fn fork_unsealed_snapshot_rows(
+        &self,
+        watermark: CommitVersion,
+        target_branch_id: BranchId,
+    ) -> BranchRuntimeResult<Vec<StorageRow>> {
+        let mut rows_by_key = BTreeMap::<TableInternalKeyBytes, StorageRow>::new();
+        for row in self.active.iter() {
+            insert_own_fork_snapshot_row(
+                &mut rows_by_key,
+                self.branch_id,
+                target_branch_id,
+                watermark,
+                row.row(),
+            )?;
+        }
+        for table in &self.frozen {
+            for row in table.iter() {
+                insert_own_fork_snapshot_row(
+                    &mut rows_by_key,
+                    self.branch_id,
+                    target_branch_id,
+                    watermark,
+                    row.row(),
+                )?;
+            }
+        }
+        Ok(rows_by_key.into_values().collect())
+    }
+
     pub(crate) fn fork_snapshot_rows(
         &self,
         watermark: CommitVersion,

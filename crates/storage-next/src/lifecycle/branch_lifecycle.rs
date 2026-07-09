@@ -7,6 +7,18 @@ use crate::branch::facts::{
     BranchTableReferenceKind,
 };
 use crate::branch::read::{BranchReadView, BranchTimestampCoverage};
+
+/// #2527: builds the hybrid COW fork's unsealed-rows table — one child L0
+/// table over the source's unsealed `<= V` rows (already rewritten to the
+/// child branch). `Ok(None)` declines the hybrid and falls back to the
+/// eager materialization.
+pub(crate) type ForkUnsealedTableBuilder<'a> =
+    &'a mut dyn FnMut(
+        strata_core_next::BranchId,
+        strata_core_next::CommitVersion,
+        Vec<crate::row::StorageRow>,
+    ) -> LifecycleResult<Option<BranchOwnedTable>>;
+use crate::branch::read::BranchOwnedTable;
 use crate::branch::state::snapshot::{
     install_snapshot_rows_into_branches, BranchSnapshotInstallRequest,
 };
@@ -816,6 +828,42 @@ impl LifecycleBranchCatalog {
         }
     }
 
+    /// The eager fork fallback: materialize the source's whole `<= V` state
+    /// into fresh child tables. O(dataset) — kept for fork-of-fork sources
+    /// and sources with no sealed `<= V` table to reference (#2527 moved
+    /// every other shape to the hybrid COW path).
+    fn materialized_fork_child(
+        source: &BranchLocalState,
+        branch_config: BranchRuntimeConfig,
+        destination_branch_id: BranchId,
+        destination_generation: CommitBranchGeneration,
+        fork_version: CommitVersion,
+    ) -> LifecycleResult<BranchLocalState> {
+        let rows = source
+            .fork_snapshot_rows(fork_version, destination_branch_id)
+            .map_err(branch_error)?;
+        let mut states =
+            vec![BranchLocalState::new(destination_branch_id, branch_config)
+                .map_err(branch_error)?];
+        if !rows.is_empty() {
+            let request = BranchSnapshotInstallRequest::from_rows(
+                format!(
+                    "branch-lifecycle-fork-at-{}-{}-{}",
+                    destination_branch_id,
+                    destination_generation.get(),
+                    fork_version.as_u64()
+                ),
+                rows,
+            )
+            .map_err(branch_error)?;
+            install_snapshot_rows_into_branches(&mut states, &request).map_err(branch_error)?;
+        }
+        Ok(states
+            .into_iter()
+            .next()
+            .expect("destination state is always present"))
+    }
+
     pub(crate) fn fork_at_retained_version(
         &mut self,
         source_branch_id: BranchId,
@@ -823,6 +871,30 @@ impl LifecycleBranchCatalog {
         destination_generation: CommitBranchGeneration,
         fork_version: CommitVersion,
         retained_floor: CommitVersion,
+    ) -> LifecycleResult<LifecycleBranchForkOutcome> {
+        self.fork_at_retained_version_with_unsealed_builder(
+            source_branch_id,
+            destination_branch_id,
+            destination_generation,
+            fork_version,
+            retained_floor,
+            None,
+        )
+    }
+
+    /// #2527: the hybrid COW fork entry. `unsealed_table_builder` turns the
+    /// source's unsealed `<= V` rows into ONE child L0 table (the durable
+    /// runtime publishes a real table object so the fork-time child manifest
+    /// covers it across restarts); returning `None` — or passing no builder —
+    /// falls back to the eager whole-state materialization.
+    pub(crate) fn fork_at_retained_version_with_unsealed_builder(
+        &mut self,
+        source_branch_id: BranchId,
+        destination_branch_id: BranchId,
+        destination_generation: CommitBranchGeneration,
+        fork_version: CommitVersion,
+        retained_floor: CommitVersion,
+        unsealed_table_builder: Option<ForkUnsealedTableBuilder<'_>>,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         self.require_destination_available(destination_branch_id, destination_generation)?;
         if fork_version < retained_floor {
@@ -877,47 +949,54 @@ impl LifecycleBranchCatalog {
             });
         }
 
-        // Historical-fork COW (Option A): when every `<= V` row is already sealed in an owned table
-        // (nothing at/below V left in active/frozen) and the source owns no inherited layers, build a
-        // copy-on-write child that references the source's owned tables at `fork_version = V` — instead
-        // of materializing the whole `<= V` state into fresh eager L0 tables. Otherwise fall back to the
-        // eager snapshot install (unflushed `<= V` rows, or a source that is itself a fork).
-        let cow_eligible =
-            source.inherited_layers().is_empty() && !source.has_in_fork_unsealed_rows(fork_version);
+        // Historical-fork COW (Option A + #2527 hybrid): when the source owns no inherited layers,
+        // build a copy-on-write child that references the source's owned tables at
+        // `fork_version = V` instead of materializing the whole `<= V` state (O(dataset) reads and
+        // a full duplicate — the #2527 seconds-scale `fork_current`). Unsealed `<= V` rows (active/
+        // frozen — bounded by the rotation threshold, so `fork_current` almost always has some) ride
+        // a single small L0 table the caller builds via `unsealed_table_builder`; it shadows the
+        // layer, and its union with the layer is exactly the `<= V` state. The eager snapshot
+        // install remains for: sources that are themselves forks, sources whose `<= V` rows are
+        // entirely unsealed (no table to reference), and callers without a builder.
+        let has_unsealed = source.has_in_fork_unsealed_rows(fork_version);
+        let has_sealed_in_fork = source
+            .owned_levels()
+            .iter()
+            .flatten()
+            .any(|table| table.facts().commit_range().min().as_u64() <= fork_version.as_u64());
+        let cow_structural = source.inherited_layers().is_empty() && has_sealed_in_fork;
+        let unsealed_table = match (cow_structural && has_unsealed, unsealed_table_builder) {
+            (true, Some(builder)) => {
+                let rows = source
+                    .fork_unsealed_snapshot_rows(fork_version, destination_branch_id)
+                    .map_err(branch_error)?;
+                builder(destination_branch_id, fork_version, rows)?
+            }
+            _ => None,
+        };
+        let cow_eligible = cow_structural && (!has_unsealed || unsealed_table.is_some());
         let (child, inherited_layer_count, inherited_table_count) = if cow_eligible {
-            let (child, outcome) = source
+            let (mut child, outcome) = source
                 .fork_into_empty_child_at_version(destination_branch_id, fork_version)
                 .map_err(branch_error)?;
+            if let Some(table) = unsealed_table {
+                // Installed AFTER the layer attach (layers attach only to an
+                // empty child); key-capped `<= V` rows shadow the layer.
+                child.install_l0_table(table).map_err(branch_error)?;
+            }
             (
                 child,
                 outcome.inherited_layer_count(),
                 outcome.inherited_table_count(),
             )
         } else {
-            let rows = source
-                .fork_snapshot_rows(fork_version, destination_branch_id)
-                .map_err(branch_error)?;
-            let mut states = vec![
-                BranchLocalState::new(destination_branch_id, self.branch_config)
-                    .map_err(branch_error)?,
-            ];
-            if !rows.is_empty() {
-                let request = BranchSnapshotInstallRequest::from_rows(
-                    format!(
-                        "branch-lifecycle-fork-at-{}-{}-{}",
-                        destination_branch_id,
-                        destination_generation.get(),
-                        fork_version.as_u64()
-                    ),
-                    rows,
-                )
-                .map_err(branch_error)?;
-                install_snapshot_rows_into_branches(&mut states, &request).map_err(branch_error)?;
-            }
-            let child = states
-                .into_iter()
-                .next()
-                .expect("destination state is always present");
+            let child = Self::materialized_fork_child(
+                source,
+                self.branch_config,
+                destination_branch_id,
+                destination_generation,
+                fork_version,
+            )?;
             (child, 0, 0)
         };
         Self::seed_child_timeline_from_parent(source, &child, fork_version);
@@ -946,6 +1025,26 @@ impl LifecycleBranchCatalog {
         timestamp: Timestamp,
         retained_floor: CommitVersion,
     ) -> LifecycleResult<LifecycleBranchForkOutcome> {
+        self.fork_at_retained_timestamp_with_unsealed_builder(
+            source_branch_id,
+            destination_branch_id,
+            destination_generation,
+            timestamp,
+            retained_floor,
+            None,
+        )
+    }
+
+    /// #2527: see [`Self::fork_at_retained_version_with_unsealed_builder`].
+    pub(crate) fn fork_at_retained_timestamp_with_unsealed_builder(
+        &mut self,
+        source_branch_id: BranchId,
+        destination_branch_id: BranchId,
+        destination_generation: CommitBranchGeneration,
+        timestamp: Timestamp,
+        retained_floor: CommitVersion,
+        unsealed_table_builder: Option<ForkUnsealedTableBuilder<'_>>,
+    ) -> LifecycleResult<LifecycleBranchForkOutcome> {
         self.require_destination_available(destination_branch_id, destination_generation)?;
         let source = self.branch_state(source_branch_id)?;
         match source.timestamp_coverage() {
@@ -972,12 +1071,13 @@ impl LifecycleBranchCatalog {
                 branch_id: source_branch_id,
                 reason: "branch has no rows at or before requested timestamp",
             })?;
-        self.fork_at_retained_version(
+        self.fork_at_retained_version_with_unsealed_builder(
             source_branch_id,
             destination_branch_id,
             destination_generation,
             resolved,
             retained_floor,
+            unsealed_table_builder,
         )
     }
 
