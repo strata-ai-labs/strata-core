@@ -32,6 +32,14 @@ impl TableInternalKeyBytes {
         }
     }
 
+    /// C3b: encode from borrowed parts — no `InternalKey` temp, no
+    /// physical-key clone.
+    pub(crate) fn from_physical_key_version(key: &PhysicalKey, version: CommitVersion) -> Self {
+        let mut bytes = Vec::new();
+        crate::format::append_internal_key_from_physical(key, version, &mut bytes);
+        Self { bytes }
+    }
+
     pub(crate) fn from_canonical_bytes(bytes: impl Into<Vec<u8>>) -> TableRuntimeResult<Self> {
         let bytes = bytes.into();
         let key = decode_internal_key(&bytes)
@@ -144,7 +152,6 @@ impl AsRef<[u8]> for TablePhysicalKeyBytes {
 
 #[derive(Debug)]
 pub(crate) struct TablePreparedPointLookup {
-    physical_key: TablePhysicalKeyBytes,
     seek_key: TableInternalKeyBytes,
     max_commit_version: Option<CommitVersion>,
     max_commit_timestamp: Option<Timestamp>,
@@ -158,12 +165,13 @@ impl TablePreparedPointLookup {
         max_commit_timestamp: Option<Timestamp>,
     ) -> Self {
         perf_trace::record_table_point_lookup_key_build();
-        let physical_key = TablePhysicalKeyBytes::from_physical_key(key);
+        // C3b: ONE escape-encode per read. The seek key is the physical-key
+        // encoding plus the inverted-version suffix, so the physical key is
+        // served as a prefix slice of the same buffer — the second full
+        // encode and the `InternalKey` temp clone are gone.
         let seek_version = max_commit_version.unwrap_or(CommitVersion::MAX);
-        let seek_key =
-            TableInternalKeyBytes::from_internal_key(&InternalKey::new(key.clone(), seek_version));
+        let seek_key = TableInternalKeyBytes::from_physical_key_version(key, seek_version);
         Self {
-            physical_key,
             seek_key,
             max_commit_version,
             max_commit_timestamp,
@@ -179,8 +187,8 @@ impl TablePreparedPointLookup {
         self.table_uses.set(previous_uses.saturating_add(1));
     }
 
-    pub(crate) const fn physical_key(&self) -> &TablePhysicalKeyBytes {
-        &self.physical_key
+    pub(crate) fn physical_key(&self) -> &[u8] {
+        self.seek_key.physical_key_bytes()
     }
 
     pub(crate) const fn seek_key(&self) -> &TableInternalKeyBytes {
@@ -547,6 +555,20 @@ pub(crate) fn last_table_key(rows: &[TableRow]) -> Option<&TableInternalKeyBytes
 
 fn approximate_row_size(row: &StorageRow, key: &TableInternalKeyBytes) -> usize {
     key.len()
+        .saturating_add(row.value().len())
+        .saturating_add(TABLE_ROW_METADATA_BYTES)
+        .saturating_add(TABLE_ROW_ADAPTER_OVERHEAD_BYTES)
+}
+
+/// C3b: the same estimate for a bare `StorageRow` (no encoded key buffer in
+/// hand — its length is approximated from the key parts it would encode to).
+pub(crate) fn approximate_storage_row_size(row: &StorageRow) -> usize {
+    let key = row.physical_key();
+    strata_core_next::BranchId::BYTE_LEN
+        .saturating_add(key.space().len())
+        .saturating_add(2)
+        .saturating_add(key.user_key().len())
+        .saturating_add(9)
         .saturating_add(row.value().len())
         .saturating_add(TABLE_ROW_METADATA_BYTES)
         .saturating_add(TABLE_ROW_ADAPTER_OVERHEAD_BYTES)

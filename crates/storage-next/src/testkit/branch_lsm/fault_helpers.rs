@@ -826,7 +826,7 @@ fn physical_key_with_space(
     space: StorageSpaceId,
     user_key: Vec<u8>,
 ) -> Result<PhysicalKey, TestkitError> {
-    PhysicalKey::new(branch_id, space_name, space, user_key)
+    PhysicalKey::new(branch_id, space_name.to_owned(), space, user_key)
         .map_err(|err| TestkitError::new(format!("physical key failed: {err}")))
 }
 

@@ -225,3 +225,55 @@ fn preheat_triggers_never_occupy_the_queue() {
     assert!(after.table_preheat_passes() >= 1);
     assert!(after.table_preheat_blocks_admitted() > 0);
 }
+
+/// C3a: a trigger landing MID-PASS must survive to start a follow-up pass.
+/// C2's chunk-scoped flag consume ate such triggers: tables published while
+/// a pass was in flight (sorting before the resume cursor) were never
+/// walked — the ~15% never-resident block population behind the ~6% miss
+/// floor. With chaining riding the cursor and the flag reserved for
+/// fresh-pass triggers, coverage converges: after drain-to-quiesce EVERY
+/// live block is cached and reads touch no table source.
+#[test]
+fn mid_pass_trigger_survives_to_a_follow_up_pass() {
+    let root = temp_dir_for_api_test("preheat-mid-pass-trigger");
+    seed_and_close(root.clone());
+
+    let mut runtime = reopen_evaluate_and_enqueue(root, StorageCachePreheatPolicy::WhenIdle);
+    // Multi-chunk passes on a tiny fixture: one ~16KiB block per chunk.
+    runtime.set_cache_preheat_chunk_bytes_for_test(1);
+    let _capture = perf_trace::begin_test_capture();
+
+    // Step single maintenance tasks until the first preheat CHUNK has run
+    // (a chunk == one pass-counter increment); the pass is then in flight
+    // with a kept cursor.
+    let mut guard = 0;
+    while perf_trace::snapshot().table_preheat_passes() == 0 {
+        assert!(
+            runtime.run_next_maintenance().expect("step").is_some(),
+            "maintenance queue drained before any preheat chunk ran"
+        );
+        guard += 1;
+        assert!(guard < 64, "no preheat chunk within 64 maintenance steps");
+    }
+
+    // Mid-pass trigger: publish a NEW table while the pass is in flight.
+    commit_many_puts(&mut runtime, "midpass", 600, 40);
+    let flush = MaintenanceRequest::new(MaintenanceTask::Flush, MaintenanceScope::Branch(branch()));
+    runtime.maintenance(&flush).expect("mid-pass flush");
+
+    // Drain to quiesce (terminating proves no re-arm spin).
+    runtime.drain_maintenance().expect("drain to quiesce");
+
+    // Convergence: keys from BOTH the pre-existing table and the mid-pass
+    // table read as cache hits with zero source reads.
+    let before = perf_trace::snapshot();
+    assert_eq!(read_value(&runtime, b"preheat-01234"), b"v".to_vec());
+    assert_eq!(read_value(&runtime, b"midpass-00042"), b"v".to_vec());
+    let after = perf_trace::snapshot();
+    assert_eq!(
+        after.table_data_block_reads(),
+        before.table_data_block_reads(),
+        "a converged cache serves both tables without touching the source"
+    );
+    assert!(after.table_cache_hits() > before.table_cache_hits());
+}

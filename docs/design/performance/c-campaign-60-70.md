@@ -109,34 +109,53 @@ the residual ~6% miss floor is structural (settle-300 converges to the same
 rate) and its anatomy moves onto C3's critical path — at h=0.94, C3's H→3.5us
 alone lands ~95K, so closing the floor is what buys 260-300K.
 
-### C3 — the allocation-free hot read: H → 3–3.5µs
+### C3 — the allocation-free hot read: H → 3–3.5µs — DONE (floor documented)
 
-Profile-ranked, in order:
-1. **Borrowed offsets probe**: stop materializing `Vec<u32>` per bisect —
-   probe the cached accelerator bytes directly (aligned LE reads), B3
-   leftover.
-2. **Seek-key reuse**: one seek-key/physical-key-bytes construction per READ
-   (not per source probed), stack/small-vec backed; kill the per-read space
-   String and 1-byte space Vec (the B4-deferred items, now profile-justified).
-3. **Candidate decode into the response**: the block-hit row decode already
-   copies key+value once — ensure it is exactly once end-to-end (audit the
-   post-B4 path for stragglers) and consider a small-vec key.
-4. **Eviction churn**: with C2's full pool, demand inserts stop evicting;
-   verify LruSlot drop samples disappear (else cap accelerator fair-inserts).
-5. Re-profile; iterate until H ≤ 3.5µs (settled C p50 gate) or the remaining
-   buckets are probe-fundamental (memtable RwLock, bloom, binary searches).
-- Exit gate: read p50 ≤ 3.5µs on settled C; combined with C2, C ≥ 230–290K.
+Landed in two commits (d45eb2af + d6fde965, then 96c40909 + a350f464 +
+c497cc95); full numbers in the ledger's C3a/C3b rows.
 
-### C4 — contingencies (only if C2+C3 undershoot)
+- **C3a (coverage)**: the ~6% miss floor was TWO probe-found mechanisms, not
+  the trigger-eating theory alone — dead-table blocks pinning the pool
+  15/15GB (capped quarantine sweep; fixed by `retain_tables` purges at pass
+  start/completion) and preheat self-throttling on pressure its own fill
+  raised (fixed by excluding cache bytes from the preheat pressure gate).
+  Plus the rearm/cursor/paused state machine so mid-pass installs survive
+  to a follow-up pass. Result: **miss = 0/500K**, evict = 0, cache = exact
+  live set, C 56.9K → 103.0K, read p99 210µs → ~14µs, ms-tails gone.
+- **C3b (strip)**: in-place accelerator probe, version-only visited-entry
+  parse + byte-compare row match, single escape-encode per read, no
+  TableRow re-encode, interned spaces, seek-key capacity reserve.
+  C 103.0K → **118.4K**, read p50 → **8.37µs**, bytes/op 16.9K → ~11-12K.
+- **Exit gate verdict**: miss ≤1% PASSED; p50 8.37µs ≫ 3.5µs — the 214-sample
+  re-profile says the residual is **probe-fundamental**: index bisect +
+  key memcmp ≈26%, key codec ~8%, bloom ~3%, allocator now ~long-tail.
+  These live in the index/format layer; no further allocation strip or
+  cache work moves them. Per this plan's own stop rule, C3 closes here and
+  the target moves to C4 with a concrete recommendation.
 
-- **mmap'd table reads** (page-cache-native hits, no per-hit syscall/copy on
-  the miss residue) — the classic embedded answer; larger design change,
-  interacts with the trusted-read admission model.
-- io_uring / readahead batching for the miss residue.
-- Compression (LZ4 blocks + our own cache honesty) — shrinks the effective
-  dataset like RocksDB's; big scope, post-V1 flavor.
+### C4 — the format-layer decision (now on the critical path)
+
+C2+C3 delivered h → 1.0 and H ≈ 8.4µs; the 260–300K line needs H ≈ 3.3–3.9µs,
+i.e. another ~2.4x on the hit path, and the profile says where it lives:
+
+1. **Index bisect + memcmp (~26%)** — every read runs `binary_search_by`
+   over full escaped internal keys at three levels (table pick, block pick,
+   entry pick). The format answer: prefix-truncated index entries or a
+   layout-aware index (fixed-stride or interpolation-friendly), possibly
+   fused with the entry-offset accelerator. This is a durable-format change
+   → must land before the M3 format freeze or ride a format version bump.
+2. **mmap'd table reads** — page-cache-native hits kill the per-hit
+   read syscall + copy and shrink the block-cache's job to decoded forms;
+   interacts with the trusted-read admission model. Bigger design change;
+   evaluate against (1) — they compose but (1) is smaller and profile-first.
+3. io_uring / readahead batching — now only relevant to cold/miss paths
+   (settled C no longer misses); keep for the general-read story, not C.
+4. Compression (LZ4 blocks + cache honesty) — post-V1 flavor, unchanged.
 - Concurrency protocol note: the 60–70% target is defined single-threaded
   against RocksDB single-threaded, matching the standing scoreboard.
+- Standing math: 118.4K = 8.45µs mean at h≈1.0. The two-term model is dead
+  (no miss term); C is now a pure hit-path CPU problem — exactly the regime
+  where format-layer work pays linearly.
 
 ## Risks / notes
 

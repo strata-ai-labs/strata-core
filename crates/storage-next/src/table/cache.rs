@@ -342,6 +342,23 @@ impl LruSlab {
 
     /// Remove every entry whose key belongs to `table`, refunding their byte charge. O(n) — used only
     /// for invalidation, never on the read hot path.
+    /// Drop every entry whose table is NOT in `live`, refunding byte
+    /// charges. O(n) — invalidation only, never the read hot path.
+    fn retain_tables(&mut self, live: &std::collections::BTreeSet<TableCacheTableId>) -> usize {
+        let victims: Vec<u32> = self
+            .index
+            .iter()
+            .filter(|(key, _)| !live.contains(key.table()))
+            .map(|(_, &idx)| idx)
+            .collect();
+        let removed = victims.len();
+        for idx in victims {
+            let key = self.detach_slot(idx);
+            self.index.remove(&key);
+        }
+        removed
+    }
+
     fn remove_table(&mut self, table: &TableCacheTableId) -> usize {
         let victims: Vec<u32> = self
             .index
@@ -461,6 +478,7 @@ struct CacheState {
 impl TableBlockCache {
     pub(crate) fn new(config: TableCacheConfig) -> Self {
         let capacities = shard_capacities(config.capacity_bytes(), cache_shard_count(config));
+        perf_trace::set_table_cache_capacity_gauge(capacities.iter().sum::<usize>() as u64);
         Self {
             shards: capacities
                 .into_iter()
@@ -625,6 +643,32 @@ impl TableBlockCache {
         }
     }
 
+    /// C3a: drop every entry belonging to tables OUTSIDE the live set. The
+    /// capped quarantine sweep leaves dead-table blocks resident for many
+    /// cycles after compaction churn (measured: ~260K dead entries pinning
+    /// the pool at capacity, whose eviction churn WAS the residual miss
+    /// floor); a completed preheat pass knows the exact live set and cleans
+    /// in one shot.
+    pub(crate) fn retain_tables(
+        &self,
+        live: &std::collections::BTreeSet<TableCacheTableId>,
+    ) -> usize {
+        let mut removed = 0usize;
+        for shard in &self.shards {
+            let mut state = shard.lock_state();
+            let dropped = state.lru.retain_tables(live);
+            if dropped > 0 {
+                state.stats.table_invalidations = state
+                    .stats
+                    .table_invalidations
+                    .saturating_add(dropped as u64);
+                refresh_gauges(&mut state);
+                removed += dropped;
+            }
+        }
+        removed
+    }
+
     pub(crate) fn remove_table(&self, table: &TableCacheTableId) -> usize {
         let mut removed = 0usize;
         let mut states = self.lock_all_states();
@@ -658,6 +702,7 @@ impl TableBlockCache {
 
     pub(crate) fn resize(&self, capacity_bytes: usize) {
         let capacities = shard_capacities(capacity_bytes, self.shards.len());
+        perf_trace::set_table_cache_capacity_gauge(capacities.iter().sum::<usize>() as u64);
         let mut states = self.lock_all_states();
         for (state, capacity_bytes) in states.iter_mut().zip(capacities) {
             state.capacity_bytes = capacity_bytes;
@@ -896,6 +941,7 @@ fn evict_to_capacity(state: &mut CacheState) {
 fn evict_one(state: &mut CacheState) -> bool {
     if state.lru.evict_lru() {
         state.stats.evictions = state.stats.evictions.saturating_add(1);
+        perf_trace::record_table_cache_eviction();
         refresh_gauges(state);
         true
     } else {
@@ -904,6 +950,13 @@ fn evict_one(state: &mut CacheState) -> bool {
 }
 
 fn refresh_gauges(state: &mut CacheState) {
+    // C3a: occupancy gauges advance by two's-complement delta so the
+    // process-wide atomics track absolute bytes/entries without a
+    // full-shard sweep.
+    perf_trace::adjust_table_cache_occupancy(
+        (state.lru.bytes() as u64).wrapping_sub(state.stats.bytes as u64),
+        (state.lru.len() as u64).wrapping_sub(state.stats.entries as u64),
+    );
     state.stats.entries = state.lru.len();
     state.stats.bytes = state.lru.bytes();
     state.stats.capacity_bytes = state.capacity_bytes;

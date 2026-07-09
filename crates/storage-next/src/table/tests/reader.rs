@@ -122,7 +122,7 @@ fn reader_filter_for_table_bytes(
 
 fn filter_probe_for_key(filter: &TableReaderFilter, key: &PhysicalKey) -> TableBloomProbe {
     let key = TablePhysicalKeyBytes::from_physical_key(key);
-    filter.probe_physical_key(&key)
+    filter.probe_physical_key(key.as_slice())
 }
 
 #[cfg(feature = "perf-trace")]
@@ -1761,7 +1761,7 @@ fn immutable_reader_supplied_filter_is_conservative_for_physical_keys() {
 
     assert_eq!(
         TableReaderFilter::unavailable().probe_physical_key(
-            &TablePhysicalKeyBytes::from_physical_key(table_rows[0].physical_key())
+            TablePhysicalKeyBytes::from_physical_key(table_rows[0].physical_key()).as_slice()
         ),
         TableBloomProbe::Unavailable
     );

@@ -36,11 +36,52 @@ pub(crate) fn decode_physical_key(bytes: &[u8]) -> Result<PhysicalKey, FormatErr
 }
 
 pub(crate) fn encode_internal_key(key: &InternalKey) -> Vec<u8> {
-    let mut bytes = encode_physical_key(key.physical_key());
+    let mut bytes = Vec::with_capacity(
+        physical_key_encode_capacity(key.physical_key()) + INTERNAL_KEY_SUFFIX_LEN,
+    );
+    append_internal_key_from_physical(key.physical_key(), key.commit_version(), &mut bytes);
+    bytes
+}
+
+/// C3b: append the internal-key encoding of `(key, version)` without
+/// materializing an `InternalKey` (whose construction clones the physical
+/// key's space String and user-key Vec). Byte-identical to
+/// `encode_internal_key` — the goldens pin it.
+pub(crate) fn append_internal_key_from_physical(
+    key: &PhysicalKey,
+    version: CommitVersion,
+    bytes: &mut Vec<u8>,
+) {
+    // Reserve the full encoding upfront: the escape encode pushes
+    // byte-by-byte, and growing from empty reallocs several times per key
+    // (measured as the allocator's top hot-path frames).
+    bytes.reserve(physical_key_encode_capacity(key) + INTERNAL_KEY_SUFFIX_LEN);
+    append_physical_key(key, bytes);
     // Store the bitwise inverse as big-endian so ordinary ascending byte order
     // returns newest commit versions first for the same physical key.
-    bytes.extend_from_slice(&(!key.commit_version().as_u64()).to_be_bytes());
-    bytes
+    bytes.extend_from_slice(&(!version.as_u64()).to_be_bytes());
+}
+
+/// C3b: parse ONLY the commit version from an encoded internal key — the
+/// inverted big-endian suffix — without materializing the physical key. The
+/// trusted indexed block probe reads versions per visited entry; the full
+/// decode allocated a space String and user-key Vec it never used.
+pub(crate) fn internal_key_commit_version(bytes: &[u8]) -> Result<CommitVersion, FormatError> {
+    let split =
+        bytes
+            .len()
+            .checked_sub(INTERNAL_KEY_SUFFIX_LEN)
+            .ok_or(FormatError::InsufficientBytes {
+                format: INTERNAL_KEY_FORMAT,
+                needed: INTERNAL_KEY_SUFFIX_LEN,
+                actual: bytes.len(),
+            })?;
+    let suffix = <[u8; INTERNAL_KEY_SUFFIX_LEN]>::try_from(&bytes[split..]).map_err(|_| {
+        FormatError::InvalidLength {
+            field: INTERNAL_KEY_FORMAT,
+        }
+    })?;
+    Ok(CommitVersion::new(!u64::from_be_bytes(suffix)))
 }
 
 pub(crate) fn decode_internal_key(bytes: &[u8]) -> Result<InternalKey, FormatError> {
@@ -84,8 +125,17 @@ fn decode_physical_key_prefix(bytes: &[u8]) -> Result<(PhysicalKey, usize), Form
     let space_bytes = reader.read_exact(space_len)?;
     reader.read_exact(1)?;
     let space = std::str::from_utf8(space_bytes)
-        .map_err(|_| FormatError::InvalidUtf8 { field: "space" })?
-        .to_owned();
+        .map_err(|_| FormatError::InvalidUtf8 { field: "space" })?;
+    // C3b: intern the well-known space names — every hot-path row decode
+    // otherwise allocates a fresh short String for a name drawn from a
+    // small fixed set. Unknown names still allocate (correct for user
+    // spaces).
+    let space: std::borrow::Cow<'static, str> = match space {
+        "api" => std::borrow::Cow::Borrowed("api"),
+        "default" => std::borrow::Cow::Borrowed("default"),
+        "timeline" => std::borrow::Cow::Borrowed("timeline"),
+        other => std::borrow::Cow::Owned(other.to_owned()),
+    };
 
     let storage_space_id =
         StorageSpaceId::from_raw(reader.read_u8()?).map_err(format_error_from_row_error)?;
@@ -163,7 +213,7 @@ fn format_error_from_row_error(error: RowError) -> FormatError {
 mod tests {
     use super::{
         decode_internal_key, decode_physical_key, encode_internal_key, encode_physical_key,
-        FormatError, PHYSICAL_KEY_FORMAT,
+        internal_key_commit_version, FormatError, PHYSICAL_KEY_FORMAT,
     };
     use crate::row::{InternalKey, PhysicalKey, StorageSpaceId};
     use strata_core_next::{BranchId, CommitVersion};
@@ -200,6 +250,33 @@ mod tests {
         let older = encode_internal_key(&InternalKey::new(key, CommitVersion::new(7)));
 
         assert!(newer < older);
+    }
+
+    /// C3b: the suffix-only version parse agrees with the full decode for
+    /// every version shape, without materializing the key.
+    #[test]
+    fn internal_key_commit_version_matches_full_decode() {
+        for version in [0u64, 1, 7, 42, u64::MAX - 1, u64::MAX] {
+            let internal = InternalKey::new(key(b"alpha".to_vec()), CommitVersion::new(version));
+            let bytes = encode_internal_key(&internal);
+            assert_eq!(
+                internal_key_commit_version(&bytes),
+                Ok(CommitVersion::new(version))
+            );
+            assert_eq!(
+                decode_internal_key(&bytes).map(|key| key.commit_version()),
+                Ok(CommitVersion::new(version))
+            );
+        }
+    }
+
+    /// C3b: inputs shorter than the version suffix fail closed.
+    #[test]
+    fn internal_key_commit_version_rejects_short_input() {
+        assert!(matches!(
+            internal_key_commit_version(&[0u8; 7]),
+            Err(FormatError::InsufficientBytes { .. })
+        ));
     }
 
     #[test]

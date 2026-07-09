@@ -483,7 +483,7 @@ fn seek_physical_key_in_rows(
     let mut visited = 0usize;
     for (_, entry) in data.rows.range((Included(seek_key), Unbounded)) {
         let row = entry.row.as_ref();
-        if !prefix.is_prefix_of(row.key()) {
+        if !row.key().as_slice().starts_with(prefix) {
             break;
         }
         if !entry_visible(entry, sequence_upper_bound) {
@@ -514,7 +514,7 @@ fn physical_key_rows_in_rows(
     let mut matching = Vec::new();
     for (_, entry) in data.rows.range(seek_key..) {
         let row = entry.row.as_ref();
-        if !prefix.is_prefix_of(row.key()) {
+        if !row.key().as_slice().starts_with(prefix.as_slice()) {
             break;
         }
         if !entry_visible(entry, sequence_upper_bound) {

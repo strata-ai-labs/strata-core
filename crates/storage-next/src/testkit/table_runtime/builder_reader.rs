@@ -491,7 +491,7 @@ fn assert_source_reader_filter_matches_model(
         .map_err(|err| TestkitError::new(format!("reader filter build failed: {err}")))?;
     for row in rows {
         let key = TablePhysicalKeyBytes::from_physical_key(row.physical_key());
-        if filter.probe_physical_key(&key) == TableBloomProbe::DefinitelyAbsent {
+        if filter.probe_physical_key(key.as_slice()) == TableBloomProbe::DefinitelyAbsent {
             return Err(TestkitError::new(
                 "reader filter produced a false negative for a generated physical key",
             ));
@@ -542,7 +542,7 @@ fn assert_source_reader_filter_matches_model(
         0xfd,
         b"unavailable".to_vec(),
     )?);
-    if TableReaderFilter::unavailable().probe_physical_key(&absent_probe_key)
+    if TableReaderFilter::unavailable().probe_physical_key(absent_probe_key.as_slice())
         != TableBloomProbe::Unavailable
     {
         return Err(TestkitError::new(

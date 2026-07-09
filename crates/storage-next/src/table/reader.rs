@@ -4,7 +4,7 @@ use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use super::cache::CacheInsert;
-use super::key::table_internal_physical_key_bytes;
+use super::key::{approximate_storage_row_size, table_internal_physical_key_bytes};
 use super::{
     BoundedTableCursor, TableBlockAddress, TableBlockCache, TableBlockCacheKey,
     TableBlockCacheKind, TableBloomFilter, TableBloomProbe, TableCacheTableId, TableCommitRange,
@@ -15,7 +15,7 @@ use super::{
 use crate::format::seek_immutable_table_data_block_point;
 use crate::format::{
     build_immutable_table_data_block_entry_offsets, decode_immutable_table_data_block_trusted,
-    seek_immutable_table_data_block_point_indexed, FormatError,
+    seek_immutable_table_data_block_point_indexed, EntryOffsetsView, FormatError,
 };
 use crate::format::{
     decode_filter_frame, decode_immutable_table, decode_immutable_table_data_block,
@@ -24,7 +24,7 @@ use crate::format::{
     MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE,
 };
 use crate::observability::perf_trace;
-use crate::row::{InternalKey, PhysicalKey};
+use crate::row::{InternalKey, PhysicalKey, StorageRow};
 use sha2::{Digest, Sha256};
 use strata_core_next::{CommitVersion, Timestamp};
 
@@ -246,10 +246,10 @@ impl TableReaderFilter {
         }
     }
 
-    pub(crate) fn probe_physical_key(&self, key: &TablePhysicalKeyBytes) -> TableBloomProbe {
+    pub(crate) fn probe_physical_key(&self, key: &[u8]) -> TableBloomProbe {
         match &self.state {
             TableReaderFilterState::Unavailable => TableBloomProbe::Unavailable,
-            TableReaderFilterState::Bloom(state) => state.filter.might_contain(key.as_slice()),
+            TableReaderFilterState::Bloom(state) => state.filter.might_contain(key),
         }
     }
 
@@ -352,21 +352,34 @@ impl EagerTableRows {
 
 pub(crate) enum TablePointLookupRow<'a> {
     Borrowed(&'a TableRow),
-    Owned(TableRow),
+    /// C3b: the lazy block seek yields a decoded `StorageRow` whose encoded
+    /// key already sits in the cached block — wrapping it in a `TableRow`
+    /// re-ran the escape encode purely for the hot path to unwrap it again.
+    /// Cold callers that genuinely need a `TableRow` wrap at their boundary
+    /// (`into_owned`).
+    Owned(StorageRow),
 }
 
 impl TablePointLookupRow<'_> {
-    pub(crate) const fn as_table_row(&self) -> &TableRow {
+    pub(crate) const fn storage_row(&self) -> &StorageRow {
         match self {
-            Self::Borrowed(row) => row,
+            Self::Borrowed(row) => row.row(),
             Self::Owned(row) => row,
+        }
+    }
+
+    /// Approximate resident size, for the candidate-clone accounting.
+    pub(crate) fn approximate_size_bytes(&self) -> usize {
+        match self {
+            Self::Borrowed(row) => row.approximate_size_bytes(),
+            Self::Owned(row) => approximate_storage_row_size(row),
         }
     }
 
     pub(crate) fn into_owned(self) -> TableRow {
         match self {
             Self::Borrowed(row) => row.clone(),
-            Self::Owned(row) => row,
+            Self::Owned(row) => TableRow::new(row),
         }
     }
 }
@@ -648,16 +661,15 @@ impl LazyTableState<'_> {
     fn seek_prepared_point(
         &self,
         lookup: &TablePreparedPointLookup,
-    ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
+    ) -> TableRuntimeResult<(Option<StorageRow>, usize)> {
         perf_trace::record_table_seek();
         lookup.record_table_seek_use();
-        let prefix = lookup.physical_key();
-        let target_physical_key = prefix.as_slice();
+        let target_physical_key = lookup.physical_key();
         if !self.contains_physical_key(target_physical_key) {
             perf_trace::record_table_point_rows_visited(0);
             return Ok((None, 0));
         }
-        if self.probe_physical_filter(prefix) == TableBloomProbe::DefinitelyAbsent {
+        if self.probe_physical_filter(target_physical_key) == TableBloomProbe::DefinitelyAbsent {
             perf_trace::record_table_point_rows_visited(0);
             return Ok((None, 0));
         }
@@ -688,7 +700,7 @@ impl LazyTableState<'_> {
             let continue_to_next_block = seek.continue_to_next_block();
             if let Some(row) = seek.row() {
                 perf_trace::record_table_point_rows_visited(visited);
-                return Ok((Some(TableRow::new(row)), visited));
+                return Ok((Some(row), visited));
             }
 
             if !continue_to_next_block {
@@ -710,7 +722,7 @@ impl LazyTableState<'_> {
             perf_trace::record_table_point_rows_visited(0);
             return Ok((Vec::new(), 0));
         }
-        if self.probe_physical_filter(&prefix) == TableBloomProbe::DefinitelyAbsent {
+        if self.probe_physical_filter(target_physical_key) == TableBloomProbe::DefinitelyAbsent {
             perf_trace::record_table_point_rows_visited(0);
             return Ok((Vec::new(), 0));
         }
@@ -779,7 +791,7 @@ impl LazyTableState<'_> {
         min_key <= physical_key && physical_key <= max_key
     }
 
-    fn probe_physical_filter(&self, key: &TablePhysicalKeyBytes) -> TableBloomProbe {
+    fn probe_physical_filter(&self, key: &[u8]) -> TableBloomProbe {
         let probe = self
             .filter
             .as_ref()
@@ -852,7 +864,7 @@ impl LazyTableState<'_> {
                 entry,
                 frame.bytes.as_ref(),
                 lookup.seek_key().as_slice(),
-                lookup.physical_key().as_slice(),
+                lookup.physical_key(),
                 lookup.max_commit_version(),
                 lookup.max_commit_timestamp(),
             );
@@ -890,46 +902,55 @@ impl LazyTableState<'_> {
         frame: &DataBlockFrame,
         lookup: &TablePreparedPointLookup,
     ) -> Result<TableDataBlockPointSeek, FormatError> {
-        let indexed = |offsets: &[u32]| {
+        let indexed = |offsets: EntryOffsetsView<'_>| {
             seek_immutable_table_data_block_point_indexed(
                 entry,
                 frame.bytes.as_ref(),
                 offsets,
                 lookup.seek_key().as_slice(),
-                lookup.physical_key().as_slice(),
+                lookup.physical_key(),
                 lookup.max_commit_version(),
                 lookup.max_commit_timestamp(),
             )
         };
-        let cached_offsets = self.cache.as_ref().and_then(|cache| {
+        // C3b: the cached accelerator bytes are bisected IN PLACE — no
+        // per-seek Vec<u32> materialization. A shape failure (`None`) or a
+        // content failure from the probe both fall through to the rebuild,
+        // exactly the old self-heal semantics.
+        let cached_bytes = self.cache.as_ref().and_then(|cache| {
             let key = accelerator_key_for_entry(&cache.table, entry, block_index).ok()?;
-            let bytes = cache.cache.get_quiet(&key)?;
-            decode_entry_offsets(&bytes)
+            cache.cache.get_quiet(&key)
         });
-        if let Some(offsets) = cached_offsets {
-            perf_trace::record_table_indexed_block_seek();
-            match indexed(&offsets) {
-                Ok(seek) => return Ok(seek),
-                Err(_) => {
-                    // Malformed accelerator (e.g. in-memory corruption):
-                    // rebuild from the verified payload below.
-                    perf_trace::record_table_accelerator_rebuild();
+        if let Some(bytes) = &cached_bytes {
+            if let Some(offsets) = EntryOffsetsView::new(bytes) {
+                perf_trace::record_table_indexed_block_seek();
+                match indexed(offsets) {
+                    Ok(seek) => return Ok(seek),
+                    Err(_) => {
+                        // Malformed accelerator (e.g. in-memory corruption):
+                        // rebuild from the verified payload below.
+                        perf_trace::record_table_accelerator_rebuild();
+                    }
                 }
             }
         }
         let offsets = build_immutable_table_data_block_entry_offsets(frame.bytes.as_ref())?;
+        let encoded = encode_entry_offsets(&offsets);
         perf_trace::record_table_accelerator_build();
         if self.fill_cache {
             if let Some(cache) = &self.cache {
                 if let Ok(key) = accelerator_key_for_entry(&cache.table, entry, block_index) {
                     // Rationale: accelerator admission is best-effort — a full
                     // shard costs a rebuild on the next hit, nothing more.
-                    let _ = cache.cache.insert(key, encode_entry_offsets(&offsets));
+                    let _ = cache.cache.insert(key, Arc::clone(&encoded));
                 }
             }
         }
         perf_trace::record_table_indexed_block_seek();
-        indexed(&offsets)
+        let offsets = EntryOffsetsView::new(&encoded).ok_or(FormatError::InvalidLength {
+            field: "entry_offsets",
+        })?;
+        indexed(offsets)
     }
 
     /// W2.3 (B3): derive + admit the accelerator for a block that just passed
@@ -1536,10 +1557,15 @@ impl<'a> ImmutableTableReader<'a> {
             let frame: Arc<[u8]> = Arc::from(slice);
             match cache.cache.insert_if_free(key, frame)? {
                 CacheInsert::Inserted(_) => admitted = admitted.saturating_add(1),
+                CacheInsert::SkippedFull(_) => {
+                    // C3a: a full shard rejected a publish-time warm — this
+                    // fresh table's block lands cold and becomes a run-phase
+                    // first-touch miss unless a later preheat pass covers it.
+                    perf_trace::record_table_warm_publish_skipped_full();
+                }
                 CacheInsert::DuplicateExisting(_)
                 | CacheInsert::SkippedDisabled(_)
-                | CacheInsert::SkippedOversized(_)
-                | CacheInsert::SkippedFull(_) => {}
+                | CacheInsert::SkippedOversized(_) => {}
             }
         }
         Ok(admitted)
@@ -1887,7 +1913,7 @@ fn seek_prepared_point_in_slice<'a>(
     let mut visited = 0usize;
     for row in &rows[start..] {
         visited = visited.saturating_add(1);
-        if !prefix.is_prefix_of(row.key()) {
+        if !row.key().as_slice().starts_with(prefix) {
             break;
         }
         if row_matches_point_bound(
@@ -1905,7 +1931,7 @@ fn seek_prepared_point_in_slice<'a>(
 
 fn probe_eager_physical_filter(
     filter: Option<&TableReaderFilter>,
-    prefix: &TablePhysicalKeyBytes,
+    prefix: &[u8],
 ) -> TableBloomProbe {
     let probe = filter.map_or(TableBloomProbe::Unavailable, |filter| {
         filter.probe_physical_key(prefix)
@@ -2387,21 +2413,6 @@ fn encode_entry_offsets(offsets: &[u32]) -> Arc<[u8]> {
         bytes.extend_from_slice(&offset.to_le_bytes());
     }
     Arc::from(bytes)
-}
-
-/// Decode cached accelerator bytes; shape errors yield `None` (the caller
-/// rebuilds from the verified payload — the indexed seek re-validates the
-/// offsets against the payload regardless).
-fn decode_entry_offsets(bytes: &[u8]) -> Option<Vec<u32>> {
-    if bytes.is_empty() || bytes.len() % 4 != 0 {
-        return None;
-    }
-    Some(
-        bytes
-            .chunks_exact(4)
-            .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect(),
-    )
 }
 
 fn table_facts_from_metadata(

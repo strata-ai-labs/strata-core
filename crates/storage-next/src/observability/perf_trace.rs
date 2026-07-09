@@ -221,6 +221,21 @@ pub struct StoragePerfSnapshot {
     /// C2: preheat starts deferred by global memory pressure or an active
     /// build task.
     table_preheat_deferred: u64,
+    /// C3a: LRU evictions across all cache shards (fair inserts displacing
+    /// the per-shard LRU victim).
+    table_cache_evictions: u64,
+    /// C3a: publish-time warm inserts skipped on a full shard — fresh
+    /// tables' blocks landing cold.
+    table_warm_publish_skipped_full: u64,
+    /// C3a occupancy gauges (absolute, NOT reset by `reset()` — a pure-read
+    /// phase performs no shard refresh, so zeroing would leave them stale).
+    table_cache_bytes_gauge: u64,
+    table_cache_entries_gauge: u64,
+    table_cache_capacity_gauge: u64,
+    /// C3a: blocks covered by the last COMPLETED preheat pass
+    /// (admitted + already-present + verification rejects) — the coverage
+    /// numerator against the live block count. Gauge semantics.
+    table_preheat_last_pass_blocks: u64,
     /// W3.3a: WAL appends staged in the coalescing buffer.
     commit_wal_buffered_appends: u64,
     /// W3.3a: buffer drains by trigger, plus total drained bytes.
@@ -1217,6 +1232,36 @@ impl StoragePerfSnapshot {
     /// C2: preheat starts deferred (pressure or active build).
     pub const fn table_preheat_deferred(self) -> u64 {
         self.table_preheat_deferred
+    }
+
+    /// C3a: LRU evictions across all cache shards.
+    pub const fn table_cache_evictions(self) -> u64 {
+        self.table_cache_evictions
+    }
+
+    /// C3a: publish-time warm inserts skipped on a full shard.
+    pub const fn table_warm_publish_skipped_full(self) -> u64 {
+        self.table_warm_publish_skipped_full
+    }
+
+    /// C3a gauge: resident cache bytes.
+    pub const fn table_cache_bytes_gauge(self) -> u64 {
+        self.table_cache_bytes_gauge
+    }
+
+    /// C3a gauge: resident cache entries.
+    pub const fn table_cache_entries_gauge(self) -> u64 {
+        self.table_cache_entries_gauge
+    }
+
+    /// C3a gauge: total cache capacity bytes.
+    pub const fn table_cache_capacity_gauge(self) -> u64 {
+        self.table_cache_capacity_gauge
+    }
+
+    /// C3a gauge: blocks covered by the last completed preheat pass.
+    pub const fn table_preheat_last_pass_blocks(self) -> u64 {
+        self.table_preheat_last_pass_blocks
     }
 
     /// W3.3a: WAL appends staged in the coalescing buffer.
@@ -2869,6 +2914,20 @@ static TABLE_PREHEAT_BYTES_READ: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static TABLE_PREHEAT_DEFERRED: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static TABLE_CACHE_EVICTIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_WARM_PUBLISH_SKIPPED_FULL: AtomicU64 = AtomicU64::new(0);
+// C3a occupancy gauges: signed-delta updates land on a u64 via two's
+// complement wrapping (deltas are small; the running sum stays non-negative).
+#[cfg(feature = "perf-trace")]
+static TABLE_CACHE_BYTES_GAUGE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_CACHE_ENTRIES_GAUGE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_CACHE_CAPACITY_GAUGE: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
+static TABLE_PREHEAT_LAST_PASS_BLOCKS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_WAL_BUFFERED_APPENDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD: AtomicU64 = AtomicU64::new(0);
@@ -3626,6 +3685,11 @@ pub fn reset() {
     TABLE_PREHEAT_BLOCKS_SKIPPED_FULL.store(0, Ordering::Relaxed);
     TABLE_PREHEAT_BYTES_READ.store(0, Ordering::Relaxed);
     TABLE_PREHEAT_DEFERRED.store(0, Ordering::Relaxed);
+    TABLE_CACHE_EVICTIONS.store(0, Ordering::Relaxed);
+    TABLE_WARM_PUBLISH_SKIPPED_FULL.store(0, Ordering::Relaxed);
+    // Occupancy gauges deliberately NOT reset: they are absolute values kept
+    // by signed deltas from the shard refresh; a phase that performs no
+    // refresh would otherwise read stale zeros.
     COMMIT_WAL_BUFFERED_APPENDS.store(0, Ordering::Relaxed);
     COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD.store(0, Ordering::Relaxed);
     COMMIT_WAL_BUFFER_FLUSHES_CAPTURE.store(0, Ordering::Relaxed);
@@ -4139,6 +4203,12 @@ pub fn snapshot() -> StoragePerfSnapshot {
             .load(Ordering::Relaxed),
         table_preheat_bytes_read: TABLE_PREHEAT_BYTES_READ.load(Ordering::Relaxed),
         table_preheat_deferred: TABLE_PREHEAT_DEFERRED.load(Ordering::Relaxed),
+        table_cache_evictions: TABLE_CACHE_EVICTIONS.load(Ordering::Relaxed),
+        table_warm_publish_skipped_full: TABLE_WARM_PUBLISH_SKIPPED_FULL.load(Ordering::Relaxed),
+        table_cache_bytes_gauge: TABLE_CACHE_BYTES_GAUGE.load(Ordering::Relaxed),
+        table_cache_entries_gauge: TABLE_CACHE_ENTRIES_GAUGE.load(Ordering::Relaxed),
+        table_cache_capacity_gauge: TABLE_CACHE_CAPACITY_GAUGE.load(Ordering::Relaxed),
+        table_preheat_last_pass_blocks: TABLE_PREHEAT_LAST_PASS_BLOCKS.load(Ordering::Relaxed),
         commit_wal_buffered_appends: COMMIT_WAL_BUFFERED_APPENDS.load(Ordering::Relaxed),
         commit_wal_buffer_flushes_threshold: COMMIT_WAL_BUFFER_FLUSHES_THRESHOLD
             .load(Ordering::Relaxed),
@@ -5797,6 +5867,57 @@ pub(crate) fn record_table_preheat_deferred() {
         return;
     }
     TABLE_PREHEAT_DEFERRED.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_cache_eviction() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_cache_eviction() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_CACHE_EVICTIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_table_warm_publish_skipped_full() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_table_warm_publish_skipped_full() {
+    if !recording_enabled() {
+        return;
+    }
+    TABLE_WARM_PUBLISH_SKIPPED_FULL.fetch_add(1, Ordering::Relaxed);
+}
+
+/// C3a: advance the occupancy gauges by the shard refresh's deltas, encoded
+/// as two's-complement `u64` (`new.wrapping_sub(old)`) so `fetch_add`
+/// accumulates signed movement on an unsigned atomic. Gauges bypass the
+/// test-capture gate: they are absolute state, not per-phase counters.
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn adjust_table_cache_occupancy(_bytes_delta: u64, _entries_delta: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn adjust_table_cache_occupancy(bytes_delta: u64, entries_delta: u64) {
+    TABLE_CACHE_BYTES_GAUGE.fetch_add(bytes_delta, Ordering::Relaxed);
+    TABLE_CACHE_ENTRIES_GAUGE.fetch_add(entries_delta, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn set_table_cache_capacity_gauge(_capacity: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn set_table_cache_capacity_gauge(capacity: u64) {
+    TABLE_CACHE_CAPACITY_GAUGE.store(capacity, Ordering::Relaxed);
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn set_table_preheat_last_pass_blocks(_blocks: u64) {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn set_table_preheat_last_pass_blocks(blocks: u64) {
+    TABLE_PREHEAT_LAST_PASS_BLOCKS.store(blocks, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]
