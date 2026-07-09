@@ -4,7 +4,7 @@ use std::fmt;
 use std::sync::{Arc, OnceLock};
 
 use super::cache::CacheInsert;
-use super::key::table_internal_physical_key_bytes;
+use super::key::{approximate_storage_row_size, table_internal_physical_key_bytes};
 use super::{
     BoundedTableCursor, TableBlockAddress, TableBlockCache, TableBlockCacheKey,
     TableBlockCacheKind, TableBloomFilter, TableBloomProbe, TableCacheTableId, TableCommitRange,
@@ -24,7 +24,7 @@ use crate::format::{
     MAX_TABLE_FOOTER_SIZE, MAX_TABLE_HEADER_SIZE,
 };
 use crate::observability::perf_trace;
-use crate::row::{InternalKey, PhysicalKey};
+use crate::row::{InternalKey, PhysicalKey, StorageRow};
 use sha2::{Digest, Sha256};
 use strata_core_next::{CommitVersion, Timestamp};
 
@@ -246,10 +246,10 @@ impl TableReaderFilter {
         }
     }
 
-    pub(crate) fn probe_physical_key(&self, key: &TablePhysicalKeyBytes) -> TableBloomProbe {
+    pub(crate) fn probe_physical_key(&self, key: &[u8]) -> TableBloomProbe {
         match &self.state {
             TableReaderFilterState::Unavailable => TableBloomProbe::Unavailable,
-            TableReaderFilterState::Bloom(state) => state.filter.might_contain(key.as_slice()),
+            TableReaderFilterState::Bloom(state) => state.filter.might_contain(key),
         }
     }
 
@@ -352,21 +352,34 @@ impl EagerTableRows {
 
 pub(crate) enum TablePointLookupRow<'a> {
     Borrowed(&'a TableRow),
-    Owned(TableRow),
+    /// C3b: the lazy block seek yields a decoded `StorageRow` whose encoded
+    /// key already sits in the cached block — wrapping it in a `TableRow`
+    /// re-ran the escape encode purely for the hot path to unwrap it again.
+    /// Cold callers that genuinely need a `TableRow` wrap at their boundary
+    /// (`into_owned`).
+    Owned(StorageRow),
 }
 
 impl TablePointLookupRow<'_> {
-    pub(crate) const fn as_table_row(&self) -> &TableRow {
+    pub(crate) const fn storage_row(&self) -> &StorageRow {
         match self {
-            Self::Borrowed(row) => row,
+            Self::Borrowed(row) => row.row(),
             Self::Owned(row) => row,
+        }
+    }
+
+    /// Approximate resident size, for the candidate-clone accounting.
+    pub(crate) fn approximate_size_bytes(&self) -> usize {
+        match self {
+            Self::Borrowed(row) => row.approximate_size_bytes(),
+            Self::Owned(row) => approximate_storage_row_size(row),
         }
     }
 
     pub(crate) fn into_owned(self) -> TableRow {
         match self {
             Self::Borrowed(row) => row.clone(),
-            Self::Owned(row) => row,
+            Self::Owned(row) => TableRow::new(row),
         }
     }
 }
@@ -648,16 +661,15 @@ impl LazyTableState<'_> {
     fn seek_prepared_point(
         &self,
         lookup: &TablePreparedPointLookup,
-    ) -> TableRuntimeResult<(Option<TableRow>, usize)> {
+    ) -> TableRuntimeResult<(Option<StorageRow>, usize)> {
         perf_trace::record_table_seek();
         lookup.record_table_seek_use();
-        let prefix = lookup.physical_key();
-        let target_physical_key = prefix.as_slice();
+        let target_physical_key = lookup.physical_key();
         if !self.contains_physical_key(target_physical_key) {
             perf_trace::record_table_point_rows_visited(0);
             return Ok((None, 0));
         }
-        if self.probe_physical_filter(prefix) == TableBloomProbe::DefinitelyAbsent {
+        if self.probe_physical_filter(target_physical_key) == TableBloomProbe::DefinitelyAbsent {
             perf_trace::record_table_point_rows_visited(0);
             return Ok((None, 0));
         }
@@ -688,7 +700,7 @@ impl LazyTableState<'_> {
             let continue_to_next_block = seek.continue_to_next_block();
             if let Some(row) = seek.row() {
                 perf_trace::record_table_point_rows_visited(visited);
-                return Ok((Some(TableRow::new(row)), visited));
+                return Ok((Some(row), visited));
             }
 
             if !continue_to_next_block {
@@ -710,7 +722,7 @@ impl LazyTableState<'_> {
             perf_trace::record_table_point_rows_visited(0);
             return Ok((Vec::new(), 0));
         }
-        if self.probe_physical_filter(&prefix) == TableBloomProbe::DefinitelyAbsent {
+        if self.probe_physical_filter(target_physical_key) == TableBloomProbe::DefinitelyAbsent {
             perf_trace::record_table_point_rows_visited(0);
             return Ok((Vec::new(), 0));
         }
@@ -779,7 +791,7 @@ impl LazyTableState<'_> {
         min_key <= physical_key && physical_key <= max_key
     }
 
-    fn probe_physical_filter(&self, key: &TablePhysicalKeyBytes) -> TableBloomProbe {
+    fn probe_physical_filter(&self, key: &[u8]) -> TableBloomProbe {
         let probe = self
             .filter
             .as_ref()
@@ -852,7 +864,7 @@ impl LazyTableState<'_> {
                 entry,
                 frame.bytes.as_ref(),
                 lookup.seek_key().as_slice(),
-                lookup.physical_key().as_slice(),
+                lookup.physical_key(),
                 lookup.max_commit_version(),
                 lookup.max_commit_timestamp(),
             );
@@ -896,7 +908,7 @@ impl LazyTableState<'_> {
                 frame.bytes.as_ref(),
                 offsets,
                 lookup.seek_key().as_slice(),
-                lookup.physical_key().as_slice(),
+                lookup.physical_key(),
                 lookup.max_commit_version(),
                 lookup.max_commit_timestamp(),
             )
@@ -1901,7 +1913,7 @@ fn seek_prepared_point_in_slice<'a>(
     let mut visited = 0usize;
     for row in &rows[start..] {
         visited = visited.saturating_add(1);
-        if !prefix.is_prefix_of(row.key()) {
+        if !row.key().as_slice().starts_with(prefix) {
             break;
         }
         if row_matches_point_bound(
@@ -1919,7 +1931,7 @@ fn seek_prepared_point_in_slice<'a>(
 
 fn probe_eager_physical_filter(
     filter: Option<&TableReaderFilter>,
-    prefix: &TablePhysicalKeyBytes,
+    prefix: &[u8],
 ) -> TableBloomProbe {
     let probe = filter.map_or(TableBloomProbe::Unavailable, |filter| {
         filter.probe_physical_key(prefix)

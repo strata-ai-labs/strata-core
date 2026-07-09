@@ -54,7 +54,10 @@ impl StorageSpaceId {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PhysicalKey {
     branch_id: BranchId,
-    space: String,
+    // C3b: `Cow` so the well-known space names ("api", "timeline", ...) ride
+    // as &'static str — the hot read path constructed a fresh 3-byte String
+    // per key before. Cloning a borrowed Cow is free.
+    space: std::borrow::Cow<'static, str>,
     storage_space_id: StorageSpaceId,
     user_key: Vec<u8>,
 }
@@ -62,7 +65,7 @@ pub(crate) struct PhysicalKey {
 impl PhysicalKey {
     pub(crate) fn new(
         branch_id: BranchId,
-        space: impl Into<String>,
+        space: impl Into<std::borrow::Cow<'static, str>>,
         storage_space_id: StorageSpaceId,
         user_key: impl Into<Vec<u8>>,
     ) -> Result<Self, RowError> {
@@ -82,6 +85,11 @@ impl PhysicalKey {
 
     pub(crate) fn space(&self) -> &str {
         &self.space
+    }
+
+    /// C3b: the space name as a `Cow` clone — free for interned names.
+    pub(crate) fn space_cow(&self) -> std::borrow::Cow<'static, str> {
+        self.space.clone()
     }
 
     pub(crate) const fn storage_space_id(&self) -> StorageSpaceId {

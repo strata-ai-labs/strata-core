@@ -36,11 +36,26 @@ pub(crate) fn decode_physical_key(bytes: &[u8]) -> Result<PhysicalKey, FormatErr
 }
 
 pub(crate) fn encode_internal_key(key: &InternalKey) -> Vec<u8> {
-    let mut bytes = encode_physical_key(key.physical_key());
+    let mut bytes = Vec::with_capacity(
+        physical_key_encode_capacity(key.physical_key()) + INTERNAL_KEY_SUFFIX_LEN,
+    );
+    append_internal_key_from_physical(key.physical_key(), key.commit_version(), &mut bytes);
+    bytes
+}
+
+/// C3b: append the internal-key encoding of `(key, version)` without
+/// materializing an `InternalKey` (whose construction clones the physical
+/// key's space String and user-key Vec). Byte-identical to
+/// `encode_internal_key` — the goldens pin it.
+pub(crate) fn append_internal_key_from_physical(
+    key: &PhysicalKey,
+    version: CommitVersion,
+    bytes: &mut Vec<u8>,
+) {
+    append_physical_key(key, bytes);
     // Store the bitwise inverse as big-endian so ordinary ascending byte order
     // returns newest commit versions first for the same physical key.
-    bytes.extend_from_slice(&(!key.commit_version().as_u64()).to_be_bytes());
-    bytes
+    bytes.extend_from_slice(&(!version.as_u64()).to_be_bytes());
 }
 
 /// C3b: parse ONLY the commit version from an encoded internal key — the
@@ -106,8 +121,17 @@ fn decode_physical_key_prefix(bytes: &[u8]) -> Result<(PhysicalKey, usize), Form
     let space_bytes = reader.read_exact(space_len)?;
     reader.read_exact(1)?;
     let space = std::str::from_utf8(space_bytes)
-        .map_err(|_| FormatError::InvalidUtf8 { field: "space" })?
-        .to_owned();
+        .map_err(|_| FormatError::InvalidUtf8 { field: "space" })?;
+    // C3b: intern the well-known space names — every hot-path row decode
+    // otherwise allocates a fresh short String for a name drawn from a
+    // small fixed set. Unknown names still allocate (correct for user
+    // spaces).
+    let space: std::borrow::Cow<'static, str> = match space {
+        "api" => std::borrow::Cow::Borrowed("api"),
+        "default" => std::borrow::Cow::Borrowed("default"),
+        "timeline" => std::borrow::Cow::Borrowed("timeline"),
+        other => std::borrow::Cow::Owned(other.to_owned()),
+    };
 
     let storage_space_id =
         StorageSpaceId::from_raw(reader.read_u8()?).map_err(format_error_from_row_error)?;

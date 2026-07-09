@@ -396,7 +396,8 @@ fn physical_key_with(
     storage_space_id: StorageSpaceId,
     user_key: Vec<u8>,
 ) -> PhysicalKey {
-    PhysicalKey::new(branch_id, space_name, storage_space_id, user_key).expect("physical key")
+    PhysicalKey::new(branch_id, space_name.to_owned(), storage_space_id, user_key)
+        .expect("physical key")
 }
 
 #[derive(Debug)]

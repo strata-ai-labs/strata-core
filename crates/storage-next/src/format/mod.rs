@@ -31,7 +31,10 @@ pub(crate) use branch_catalog_manifest::{
     decode_branch_catalog_manifest, encode_branch_catalog_manifest, BranchCatalogEntry,
     BranchCatalogManifest, BranchCatalogParent, BranchCatalogStatus,
 };
-pub(crate) use key::{decode_internal_key, encode_internal_key, encode_physical_key};
+pub(crate) use key::{
+    append_internal_key_from_physical, decode_internal_key, encode_internal_key,
+    encode_physical_key,
+};
 pub(crate) use manifest::{decode_manifest, encode_manifest, DatabaseManifest};
 pub(crate) use pending_releases_manifest::{
     decode_pending_releases_manifest, encode_pending_releases_manifest, PendingReleasesEntry,
