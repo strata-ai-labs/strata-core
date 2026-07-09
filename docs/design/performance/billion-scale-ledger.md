@@ -975,6 +975,54 @@ C-campaign standing math after C1: target 60-70% of 432K = **259-302K**;
 today 19.2K = h 0.75 x 12.5us + 0.25 x ~110-150us. C2 (fill the 15GB pool →
 h≥0.98) then C3 (allocation-free hit path → ~3.5us) carry the plan.
 
+## C2 — background block-cache preheat (2026-07-09, 877d30ba + 365eba9d)
+
+`c-campaign-60-70.md` C2: fill the pool so C stops missing to disk. New
+`CachePreheat` low-tier maintenance (dirty-flag armed by table installs and
+reopen — never a standing queued task), off-lock 128 MiB chunks walking live
+tables deepest-first through `warm_data_blocks_from_source` (verify-then-
+insert, recency-neutral presence probe, cursor resume), sweep-time dead-table
+cache invalidation (`remove_table` had zero production callers), and
+recovery-time walks moved to no-fill cursors (reopen is now cache-neutral).
+Knob: `StorageCachePreheatPolicy` / engine `CachePreheat` / bench
+`--preheat on|off` (default on).
+
+Two measured design corrections: no-evict preheat inserts starved against
+dead-block pool pollution (full-shard skips at ~40% live occupancy → fair
+inserts; LRU displaces never-touched dead blocks first), and a saturation-
+stopped chain never resumed in a quiet settle (sweep completion now re-arms).
+
+Settled C, 10M x 1KB, 500K ops, 32g, settle 120s, same-session interleaved,
+medians of 3:
+
+| cell | run ops/s | miss rate | read p50 | read p99 |
+|---|---|---|---|---|
+| preheat off | **18,818** (16.1-18.9K) | 24-26% | 10.4-10.7us | 298-644us |
+| preheat on | **56,919** (54.9-58.1K) | **5.5-6.1%** | 9.3-10.4us | 204-217us |
+
+- **C x3.0** (18.8K → 56.9K). Preheat walks ~8.9GB in ~70 chunks during
+  settle (zero full-shard skips after the fair-insert fix), ~350-410
+  build-active/pressure deferrals absorbed harmlessly.
+- **ON cells are stable** (±3% spread vs the historical ~2x cell lottery) —
+  a full cache removes load-shape luck from the read path.
+- Regression cells (single runs): A on 29,356 vs off 6,099 (off drew a
+  lottery-bad cell; on is the best A ever recorded — 50% of A's ops are
+  reads), B on 53,386 vs off 21,199, read p99 improved in every cell, no
+  load regression beyond spread.
+- **Residual ~5.5-6% miss floor is structural**: settle-300 converges to the
+  same rate (55.8K, 6.0%), so it is not the late-compaction tail. Anatomy
+  (which blocks still miss with full walk coverage) → follow-up, folded into
+  C3's profiling pass.
+- Exit gate: miss ≤2-5% BORDERLINE (5.5-6.1%), C ≥ 60-80K NOT met (56.9K)
+  — the gate assumed mean ≈ H at h→1; the 6% floor at ~150us/miss costs
+  ~8-9us of the 17.6us mean. C3 (hit path ~10us → 3.5us) now carries the
+  260-300K target with h at 0.94: projected mean ≈ 0.94x3.5 + 0.06x~120 ≈
+  10.5us ≈ 95K without the floor fixed; **the miss-floor anatomy is
+  therefore on C3's critical path**, not optional.
+- Pre-existing (NOT this slice): 14 storage-next lib tests fail under
+  `--features perf-trace` at the C1 baseline too (commit/api perf-count
+  asserts); tracked for a separate fix.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

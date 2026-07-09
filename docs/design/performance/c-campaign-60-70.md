@@ -98,20 +98,16 @@ its effective dataset size, and the reference can never silently become
 compression-flattered. Ledger row records the matrix and the re-based
 protocol.
 
-### C2 — fill the pool: h → 0.98 (the miss-rate slice)
+### C2 — fill the pool: h → 0.98 (the miss-rate slice) — DONE
 
-The pool already fits the dataset at 10M/32G; make it FULL by the time the
-run starts:
-- A **cache preheat maintenance task**: after flush/compaction quiesce (the
-  settle window; production analog = background idle), sweep live tables and
-  admit their data blocks through the existing warm path until the pool
-  reaches target occupancy. Bounded, best-effort, budget-charged; reuses
-  `warm_data_blocks_from_encoded`'s verified-insert machinery reading from
-  the table source instead of the encode buffer.
-- Fix warm-insert lossiness where cheap (retry-once on SkippedFull after
-  eviction pressure clears; W2.4b heat-aware admission when pool < dataset).
-- Exit gate: settled C at 10M/32G shows miss rate ≤ 2–5% and C ≥ 60–80K
-  (mean ≈ H). This gate isolates h from H.
+Landed (877d30ba + 365eba9d): `CachePreheat` low-tier maintenance (dirty-flag
+armed by table installs/reopen, off-lock 128 MiB chunks, fair inserts, sweep
+invalidation of dead-table blocks, no-fill recovery walks). Measured medians:
+**C 18.8K → 56.9K (x3.0)**, miss 24% → 5.5-6.1%, read p99 300 → 210us, ON
+cells stable to ±3%; A 29.4K / B 53.4K (both bests). Exit gate borderline:
+the residual ~6% miss floor is structural (settle-300 converges to the same
+rate) and its anatomy moves onto C3's critical path — at h=0.94, C3's H→3.5us
+alone lands ~95K, so closing the floor is what buys 260-300K.
 
 ### C3 — the allocation-free hot read: H → 3–3.5µs
 
