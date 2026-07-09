@@ -1,0 +1,16 @@
+[package]
+name = "strata-gpu"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Device runtime for the GPU hot tier: dlopen'd CUDA driver, arena, streams, PTX"
+
+[dependencies]
+tracing = { workspace = true }
+
+[lints]
+workspace = true
