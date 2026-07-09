@@ -146,6 +146,7 @@ fn build_flush_drain(
     request: &crate::lifecycle::flush::FlushDrainRequest,
     budget: &crate::lifecycle::StorageBudgetLedger,
     data_block_bytes: Option<u32>,
+    inflight: &super::inflight::InFlightTableOutputs,
 ) -> LifecycleResult<crate::lifecycle::flush::PreparedDurableFlushDrain> {
     prepare_durable_flush_drain_with_budget(
         branch_snapshot,
@@ -154,6 +155,7 @@ fn build_flush_drain(
         request,
         Some(budget),
         data_block_bytes,
+        Some(inflight),
     )
 }
 
@@ -168,6 +170,7 @@ pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
         budget: crate::lifecycle::StorageBudgetLedger,
         data_block_bytes: Option<u32>,
         started_at: std::time::Instant,
+        inflight: super::inflight::InFlightTableOutputs,
     },
     Checkpoint {
         task: MaintenanceTask,
@@ -189,6 +192,7 @@ pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
         table_object: TableObjectService<'static>,
         table_reader: TableObjectReaderService<'static>,
         budget: crate::lifecycle::StorageBudgetLedger,
+        inflight: super::inflight::InFlightTableOutputs,
     },
     Materialization {
         task: MaintenanceTask,
@@ -197,6 +201,7 @@ pub(crate) enum DurableBackgroundMaintenanceBuild<'a> {
         table_object: TableObjectService<'static>,
         table_reader: TableObjectReaderService<'static>,
         budget: crate::lifecycle::StorageBudgetLedger,
+        inflight: super::inflight::InFlightTableOutputs,
     },
 }
 
@@ -262,6 +267,7 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                 budget,
                 data_block_bytes,
                 started_at,
+                inflight,
             } => Ok(DurableBackgroundMaintenanceBuilt::Flush {
                 task,
                 branch_id,
@@ -272,6 +278,7 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                     &request,
                     &budget,
                     data_block_bytes,
+                    &inflight,
                 )?,
                 elapsed: started_at.elapsed(),
             }),
@@ -328,6 +335,7 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                 table_object,
                 table_reader,
                 budget,
+                inflight,
             } => Ok(DurableBackgroundMaintenanceBuilt::Compaction {
                 task,
                 branch_id,
@@ -338,6 +346,7 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                     &table_reader,
                     &request,
                     Some(&budget),
+                    Some(&inflight),
                 )?),
             }),
             Self::Materialization {
@@ -347,10 +356,16 @@ impl DurableBackgroundMaintenanceBuild<'_> {
                 table_object,
                 table_reader,
                 budget,
+                inflight,
             } => Ok(DurableBackgroundMaintenanceBuilt::Materialization {
                 task,
                 branch_id,
-                prepared: Box::new(build.build(&table_object, &table_reader, Some(&budget))?),
+                prepared: Box::new(build.build(
+                    &table_object,
+                    &table_reader,
+                    Some(&budget),
+                    Some(&inflight),
+                )?),
             }),
         }
     }
@@ -1693,6 +1708,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 budget: self.budget.clone(),
                 data_block_bytes: self.open_plan.lifecycle_config().data_block_bytes(),
                 started_at: std::time::Instant::now(),
+                inflight: self.inflight_outputs.clone(),
             },
         ))))
     }
@@ -3094,6 +3110,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 table_object: self.services.table_object().clone(),
                 table_reader: self.services.table_reader().clone(),
                 budget: self.budget.clone(),
+                inflight: self.inflight_outputs.clone(),
             },
         ))))
     }
@@ -3305,6 +3322,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                         table_object: self.services.table_object().clone(),
                         table_reader: self.services.table_reader().clone(),
                         budget: self.budget.clone(),
+                        inflight: self.inflight_outputs.clone(),
                     },
                 ))))
             }
@@ -3332,18 +3350,22 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         if self.open_plan.lifecycle_config().cache_preheat_policy()
             == LifecycleCachePreheatPolicy::WhenIdle
         {
-            self.cache_preheat_pending = true;
+            self.cache_preheat_rearm = true;
+            // A suspended pass (saturation/deferral) resumes on any trigger.
+            self.cache_preheat_paused = false;
         }
     }
 
-    /// C2: whether a preheat trigger is armed (feeds the drain-round re-arm
-    /// accounting so an idle runtime keeps chaining fill chunks).
+    /// C3a: preheat work exists when a fresh pass is owed (`rearm`) or an
+    /// in-flight pass has a runnable cursor. Feeds the drain-round re-arm
+    /// accounting and the low-tier interleave.
     pub(crate) fn cache_preheat_work_pending(&self) -> bool {
-        self.cache_preheat_pending
+        self.cache_preheat_rearm
+            || (self.cache_preheat_cursor.is_some() && !self.cache_preheat_paused)
     }
 
     pub(crate) fn has_pending_low_tier_maintenance(&self) -> bool {
-        self.cache_preheat_pending
+        self.cache_preheat_work_pending()
             || self.maintenance.pending_tasks().iter().any(|task| {
                 matches!(
                     task.kind(),
@@ -3376,17 +3398,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             return Ok(None);
         }
         let state = self.state;
-        // Defer the table-object mark outright while builds are in flight: the sweep would
-        // defer on the same condition anyway, so running the O(inventory + manifests) mark
-        // first only burns the drain slot (measured: enough wasted slots under a sustained
-        // load's 16 background workers to push compaction into the L0 admission wall). The
-        // deferral is cheap and the mark re-runs at the next lull, close, or reopen.
-        let builds_active = self.maintenance.has_active_build_task();
-        let pinned_objects = if builds_active {
-            Vec::new()
-        } else {
-            in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog)
-        };
+        // #2524: the mark runs DURING builds now — in-flight outputs are
+        // pinned by name (reserved before their bytes land), so the wholesale
+        // `has_active_build_task` defer that starved reclaim under sustained
+        // load (zero retention runs across a whole seed) is gone.
+        let mut pinned_objects =
+            in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
+        pinned_objects.extend(self.inflight_outputs.snapshot());
         let maintenance = &mut self.maintenance;
         let services = &self.services;
         let health = self.current_recovery_health.clone();
@@ -3400,7 +3418,6 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             pending_releases,
             pending_releases_sequence,
             pinned_objects,
-            builds_active,
         };
         let outcome = maintenance.run_next_matching(state, &mut runner, |task| {
             matches!(
@@ -3418,6 +3435,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             Ok(Some(completed)) if completed.task_kind() == MaintenanceTaskKind::Retention
                 && completed.status() == MaintenanceOutcomeStatus::Completed
         ) {
+            crate::observability::perf_trace::record_table_object_retention_run();
             let _ = self.enqueue_maintenance(MaintenanceTaskRequest::quarantine());
         }
         outcome
@@ -3480,6 +3498,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         self.run_quarantine_maintenance_task(task.id())
     }
 
+    /// #2524 test seam: the in-flight build-output registry, so tests can
+    /// observe reservations and pin objects directly.
+    #[cfg(test)]
+    pub(crate) fn inflight_table_outputs(&self) -> &super::inflight::InFlightTableOutputs {
+        &self.inflight_outputs
+    }
+
     pub(crate) fn run_quarantine_maintenance_task(
         &mut self,
         task_id: MaintenanceTaskId,
@@ -3491,10 +3516,12 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             self.allocator.timestamp_guard().last_allocated(),
             self.recovered_checkpoint_timestamp_max,
         );
-        let builds_active = self.maintenance.has_active_build_task();
         let retired_readers_alive = self.snapshot_publisher.retired_views_alive();
-        let pinned_objects =
+        // #2524: in-flight build outputs are pinned by name (see the
+        // background sweep entry) — no wholesale build defer.
+        let mut pinned_objects =
             in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
+        pinned_objects.extend(self.inflight_outputs.snapshot());
         let mut runner = DurableTableObjectSweepRunner {
             services: &self.services,
             branch_id: self.initial_branch_id,
@@ -3502,7 +3529,6 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             database_id,
             codec_id,
             staged_at,
-            builds_active,
             retired_readers_alive,
             pinned_objects,
             quarantined_objects: 0,
@@ -3553,10 +3579,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             self.allocator.timestamp_guard().last_allocated(),
             self.recovered_checkpoint_timestamp_max,
         );
-        let builds_active = self.maintenance.has_active_build_task();
         let retired_readers_alive = self.snapshot_publisher.retired_views_alive();
-        let pinned_objects =
+        // #2524: in-flight build outputs are pinned by name (reserved before
+        // their bytes land), so the mark no longer defers wholesale on
+        // `has_active_build_task` — reclaim stays live under sustained load.
+        let mut pinned_objects =
             in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
+        pinned_objects.extend(self.inflight_outputs.snapshot());
         let Some(task) = self
             .maintenance
             .start_next_matching(state, |queued| queued.id() == pending.id())?
@@ -3601,20 +3630,18 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
             return Ok(Some(DurableBackgroundMaintenanceStep::completed(outcome)));
         }
-        if builds_active || retired_readers_alive {
+        if retired_readers_alive {
             // Interlock deferral does NOT self-requeue (that would spin the retention →
             // quarantine chain against a long-held reader); the next rewrite publish, reopen,
-            // or explicit Reclaim re-triggers the cycle.
-            let reason = if builds_active {
-                "table-object sweep deferred: build task in flight"
-            } else {
-                "table-object sweep deferred: retired read view still held"
-            };
+            // or explicit Reclaim re-triggers the cycle. Retired readers remain a wholesale
+            // defer: they are name-addressed with no held fd, and no per-object bookkeeping
+            // says which candidate a live view might still fetch blocks from.
+            crate::observability::perf_trace::record_table_object_sweep_deferred(false);
             let outcome = MaintenanceOutcome::new(
                 MaintenanceTaskKind::Quarantine,
                 MaintenanceOutcomeStatus::Deferred,
             )
-            .with_reason(reason)
+            .with_reason("table-object sweep deferred: retired read view still held")
             .with_stats(LifecycleStats::new(0, 0, 1, 1, 0));
             let outcome = self.maintenance.finish_started(task, outcome, false)?;
             self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
@@ -3659,6 +3686,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
             return Ok(outcome);
         }
+        crate::observability::perf_trace::record_table_object_sweep_run();
         let mut outcome = MaintenanceOutcome::new(
             MaintenanceTaskKind::Quarantine,
             MaintenanceOutcomeStatus::Completed,
@@ -3706,32 +3734,44 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     pub(crate) fn start_next_background_cache_preheat(
         &mut self,
     ) -> LifecycleResult<Option<DurableBackgroundMaintenanceStep<'a>>> {
-        if !self.cache_preheat_pending {
+        if !self.cache_preheat_work_pending() {
             return Ok(None);
         }
         if self.open_plan.lifecycle_config().cache_preheat_policy()
             == LifecycleCachePreheatPolicy::Disabled
         {
             // Belt over the trigger gates (they are policy-checked too).
-            self.cache_preheat_pending = false;
+            self.cache_preheat_rearm = false;
+            self.cache_preheat_cursor = None;
+            self.cache_preheat_paused = false;
             return Ok(None);
         }
         self.refresh_runtime_memory_total();
-        if self.budget.global_pressure().defers_optional_maintenance()
+        // Pressure gate EXCLUDES the block cache's own resident bytes: the
+        // pool is self-evicting and budget-bounded, so cache-at-capacity is
+        // its intended state — gating the fill on a total the fill itself
+        // raises froze coverage at ~85% (permanent deferral past the 80%
+        // high water). Non-cache pressure and in-flight builds still defer.
+        let cache_bytes = self.services.table_object().block_cache_resident_bytes();
+        if self
+            .budget
+            .global_pressure_excluding(cache_bytes)
+            .defers_optional_maintenance()
             || self.maintenance.has_active_build_task()
         {
-            // Disarm rather than retry: a deferral loop under pressure or a
-            // long build would spin the low tier; the next structural change
-            // or reopen re-arms the flag.
-            self.cache_preheat_pending = false;
+            // Pause rather than retry (a deferral loop would spin the low
+            // tier) — but KEEP the cursor: the next trigger resumes the pass
+            // where it stopped instead of losing the fill progress.
+            self.cache_preheat_rearm = false;
+            self.cache_preheat_paused = true;
             crate::observability::perf_trace::record_table_preheat_deferred();
             return Ok(None);
         }
         let state = self.state;
         let enqueued = self.enqueue_maintenance(MaintenanceTaskRequest::cache_preheat());
         let Ok(outcome) = enqueued else {
-            // Best-effort (queue full / draining for close): stay armed so an
-            // idle retry or the next trigger picks it up.
+            // Best-effort (queue full / draining for close): state unchanged;
+            // an idle retry or the next trigger picks it up.
             return Ok(None);
         };
         let task_id = outcome.task_id();
@@ -3741,7 +3781,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         else {
             return Ok(None);
         };
-        self.cache_preheat_pending = false;
+        // Consume the fresh-pass trigger ONLY when actually beginning a
+        // fresh pass. A chunk of an in-flight pass leaves `rearm` untouched,
+        // so a publish landing mid-pass still gets its follow-up pass — the
+        // convergence property behind ~100% coverage at quiesce.
+        if self.cache_preheat_cursor.is_none() {
+            self.cache_preheat_rearm = false;
+            self.cache_preheat_pass_blocks = 0;
+        }
         let layouts = self
             .branch_catalog
             .list_branches(false)
@@ -3760,12 +3807,19 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                     })
             })
             .collect();
+        #[cfg(test)]
+        let chunk_max_bytes = self
+            .cache_preheat_chunk_bytes_for_test
+            .unwrap_or(CACHE_PREHEAT_CHUNK_MAX_BYTES);
+        #[cfg(not(test))]
+        let chunk_max_bytes = CACHE_PREHEAT_CHUNK_MAX_BYTES;
         Ok(Some(DurableBackgroundMaintenanceStep::PreheatStage(
             Box::new(PreheatStageInputs {
                 task,
                 layouts,
                 cursor: self.cache_preheat_cursor.take(),
-                chunk_max_bytes: CACHE_PREHEAT_CHUNK_MAX_BYTES,
+                chunk_max_bytes,
+                block_cache: self.services.table_object().block_cache().cloned(),
             }),
         )))
     }
@@ -3785,7 +3839,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         );
         self.refresh_runtime_memory_total();
         if let Some(error) = staged.stage_error {
+            // Abandon the pass; a trigger set mid-pass (rearm) still starts
+            // a fresh one.
             self.cache_preheat_cursor = None;
+            self.cache_preheat_paused = false;
             let outcome = MaintenanceOutcome::new(
                 MaintenanceTaskKind::CachePreheat,
                 MaintenanceOutcomeStatus::Failed,
@@ -3797,15 +3854,30 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
             return Ok(outcome);
         }
-        let chain_next = staged.next_cursor.is_some() && !staged.stopped_full;
+        self.cache_preheat_pass_blocks = self
+            .cache_preheat_pass_blocks
+            .saturating_add(staged.admitted)
+            .saturating_add(staged.skipped_present);
+        let pass_complete = staged.next_cursor.is_none();
         self.cache_preheat_cursor = staged.next_cursor;
+        // Chaining rides the CURSOR: a kept cursor with `paused == false` is
+        // pending work by itself (`cache_preheat_work_pending`), so no flag
+        // re-arm happens here — the flag stays reserved for fresh-pass
+        // triggers. Saturation suspends the pass until the next trigger
+        // (the sweep that frees dead-block capacity re-arms).
+        self.cache_preheat_paused = staged.stopped_full;
         let reason = if staged.stopped_full {
             "cache preheat stopped: shards saturated"
-        } else if chain_next {
-            "cache preheat chunk complete, more pending"
-        } else {
+        } else if pass_complete {
             "cache preheat pass complete"
+        } else {
+            "cache preheat chunk complete, more pending"
         };
+        if pass_complete {
+            crate::observability::perf_trace::set_table_preheat_last_pass_blocks(
+                self.cache_preheat_pass_blocks,
+            );
+        }
         let outcome = MaintenanceOutcome::new(
             MaintenanceTaskKind::CachePreheat,
             MaintenanceOutcomeStatus::Completed,
@@ -3816,11 +3888,6 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             .maintenance
             .finish_started(staged.task, outcome, false)?;
         self.record_optional_maintenance_health(&Ok(Some(outcome.clone())));
-        if chain_next && !self.budget.global_pressure().defers_optional_maintenance() {
-            // Re-arm for the next chunk (the cursor is kept); the drain-round
-            // re-arm accounting counts the flag as pending work.
-            self.cache_preheat_pending = true;
-        }
         Ok(outcome)
     }
 
@@ -4373,6 +4440,10 @@ pub(crate) struct PreheatStageInputs {
     layouts: Vec<(BranchId, Arc<BranchLayout>, Vec<BranchInheritedLayer>)>,
     cursor: Option<CachePreheatCursor>,
     chunk_max_bytes: u64,
+    // C3a: for the completed-pass dead-entry purge (`retain_tables`) — the
+    // capped quarantine sweep leaves compacted-away tables' blocks pinning
+    // the pool at capacity, whose eviction churn was the residual miss floor.
+    block_cache: Option<Arc<TableBlockCache>>,
 }
 
 /// The off-lock preheat result, folded back under the lock by
@@ -4386,6 +4457,8 @@ pub(crate) struct PreheatStaged {
     next_cursor: Option<CachePreheatCursor>,
     stopped_full: bool,
     stage_error: Option<LifecycleError>,
+    /// C3a: dead-table cache entries dropped by the completed-pass purge.
+    dead_entries_removed: u64,
 }
 
 impl PreheatStageInputs {
@@ -4393,7 +4466,7 @@ impl PreheatStageInputs {
     /// locks held. Admission is verify-then-no-evict (the W2.4 contract), so
     /// a concurrent demand reader can at worst race a duplicate insert, which
     /// the cache folds as `DuplicateExisting`.
-    pub(crate) fn stage(self) -> PreheatStaged {
+    pub(crate) fn stage(mut self) -> PreheatStaged {
         let mut staged = PreheatStaged {
             task: self.task,
             admitted: 0,
@@ -4403,8 +4476,19 @@ impl PreheatStageInputs {
             next_cursor: None,
             stopped_full: false,
             stage_error: None,
+            dead_entries_removed: 0,
         };
-        let cursor = self.cursor;
+        let cursor = self.cursor.take();
+        if cursor.is_none() {
+            // Fresh pass: purge dead-table entries BEFORE filling. Left in
+            // place they inflate occupancy by gigabytes and the fill's own
+            // fair inserts then evict the earliest-walked LIVE blocks once
+            // the pool saturates mid-pass (measured: ~100K live blocks lost
+            // to exactly that, re-appearing as run-phase first-touch
+            // misses). The completion purge below still handles tables
+            // compacted away DURING the pass.
+            staged.dead_entries_removed = self.purge_dead_table_entries();
+        }
         // Until the cursor's table is found, tables are skipped without IO;
         // a vanished cursor table restarts coverage (cheap: presence probes).
         let mut resuming = cursor.is_some();
@@ -4489,7 +4573,38 @@ impl PreheatStageInputs {
                 }
             }
         }
+        staged.dead_entries_removed = staged
+            .dead_entries_removed
+            .saturating_add(self.purge_dead_table_entries());
         staged
+    }
+
+    /// C3a: the pass covered the full walked set — purge every cache entry
+    /// whose table is OUTSIDE it. LRU alone cannot reclaim this garbage fast
+    /// enough (dead blocks only leave via the capped sweep or eviction
+    /// pressure, and that pressure evicts cold-but-LIVE victims too — the
+    /// measured miss floor). A table published DURING the walk is absent
+    /// from the snapshot and loses its warm blocks here; the trigger it
+    /// fired survives to the follow-up pass, which re-admits them.
+    fn purge_dead_table_entries(&self) -> u64 {
+        let Some(cache) = &self.block_cache else {
+            return 0;
+        };
+        let mut live = std::collections::BTreeSet::new();
+        for (_, layout, inherited) in &self.layouts {
+            let tables = layout.levels().iter().flatten().chain(
+                inherited
+                    .iter()
+                    .flat_map(|layer| layer.owned_levels().iter().flatten()),
+            );
+            for table in tables {
+                if let Ok(id) = TableCacheTableId::new(table.facts().identity().as_str().as_bytes())
+                {
+                    live.insert(id);
+                }
+            }
+        }
+        cache.retain_tables(&live) as u64
     }
 }
 
@@ -4545,6 +4660,9 @@ impl SweepStageInputs {
             match quarantine_outcome.status() {
                 crate::lifecycle::LifecycleQuarantineStatus::QuarantinedSourceDeleted
                 | crate::lifecycle::LifecycleQuarantineStatus::SourceDeleteRetried => {
+                    crate::observability::perf_trace::record_table_object_quarantined(
+                        quarantine_outcome.byte_count(),
+                    );
                     quarantined_objects += 1;
                     staged_names.push(object.to_string());
                 }
@@ -4606,14 +4724,17 @@ impl PurgeStageInputs {
                 self.default_branch_id,
                 inventory.token(),
             )?;
-            Ok(purge_lifecycle_quarantine(
+            let purge_outcome = purge_lifecycle_quarantine(
                 &self.quarantine,
                 branch_id,
                 self.database_id,
                 &self.codec_id,
                 &proof,
-            )?
-            .maintenance_outcome())
+            )?;
+            crate::observability::perf_trace::record_quarantine_purge(
+                purge_outcome.reclaimed_bytes(),
+            );
+            Ok(purge_outcome.maintenance_outcome())
         })();
         PurgeStaged {
             task: self.task,
@@ -4628,12 +4749,10 @@ struct DurableRetentionMaintenanceRunner<'a, 'b> {
     health: crate::lifecycle::RecoveryHealth,
     pending_releases: &'a mut Vec<crate::branch::facts::BranchReleasePlan>,
     pending_releases_sequence: &'a mut u64,
-    /// In-memory-reachable table objects, pinned live in the mark (COW crash windows) so the
-    /// report matches what the sweep will actually reclaim.
+    /// In-memory-reachable table objects plus in-flight build outputs
+    /// (#2524), pinned live in the mark so the report matches what the sweep
+    /// will actually reclaim.
     pinned_objects: Vec<crate::object::ObjectName>,
-    /// When a build is in flight the table-object mark defers before the O(inventory) listing —
-    /// the sweep would defer on the same condition, so the scan would be pure wasted slot time.
-    builds_active: bool,
 }
 
 impl DurableRetentionMaintenanceRunner<'_, '_> {
@@ -4742,17 +4861,6 @@ impl MaintenanceTaskRunner for DurableRetentionMaintenanceRunner<'_, '_> {
             self.publish_pending_releases()?;
         }
         if let LifecycleRetentionScope::TableObjects { branch_id } = request.scope() {
-            if self.builds_active {
-                return Ok(append_released_table_names(
-                    MaintenanceOutcome::new(
-                        MaintenanceTaskKind::Retention,
-                        MaintenanceOutcomeStatus::Deferred,
-                    )
-                    .with_reason("table-object mark deferred: build task in flight")
-                    .with_stats(LifecycleStats::new(0, 0, 1, 1, 0)),
-                    &drained,
-                ));
-            }
             let table_retention =
                 table_object_retention_request(self.services, branch_id, &self.health)
                     .map(|request| request.with_pinned_objects(self.pinned_objects.clone()))
@@ -4912,10 +5020,11 @@ const TABLE_OBJECT_SWEEP_MAX_OBJECTS: usize = 32;
 /// or manifest advance to invalidate — then stages each unreachable object into quarantine (the
 /// existing two-phase copy-then-delete-source safety net; physical bytes are reclaimed by the
 /// follow-up Purge task). Never deletes an object that any branch can reach: the mark unions
-/// durable-manifest reachability with in-memory pins (COW crash windows), and the sweep defers
-/// outright while an off-lock build is in flight (its unpublished outputs are durably unreachable
-/// by construction) or while a retired read view is still held (durable readers are name-addressed
-/// with no held fd, so a source delete would break their block fetches).
+/// durable-manifest reachability with in-memory pins (COW crash windows) AND the in-flight
+/// build-output registry (#2524 — outputs reserve their names before their bytes land, so the
+/// sweep runs DURING builds instead of deferring wholesale). The one remaining wholesale defer
+/// is a held retired read view (durable readers are name-addressed with no held fd, so a source
+/// delete would break their block fetches).
 struct DurableTableObjectSweepRunner<'a, 'b> {
     services: &'a crate::lifecycle::LifecycleDurableLocalServices<'b>,
     branch_id: strata_core_next::BranchId,
@@ -4923,7 +5032,6 @@ struct DurableTableObjectSweepRunner<'a, 'b> {
     database_id: [u8; 16],
     codec_id: LifecycleCodecId,
     staged_at: Timestamp,
-    builds_active: bool,
     retired_readers_alive: bool,
     pinned_objects: Vec<crate::object::ObjectName>,
     /// Out: objects staged into quarantine this pass (drives the follow-up Purge enqueue).
@@ -4961,20 +5069,17 @@ impl MaintenanceTaskRunner for DurableTableObjectSweepRunner<'_, '_> {
             .with_reason("no unreachable table objects")
             .with_stats(LifecycleStats::new(0, 0, 1, 0, 0)));
         }
-        if self.builds_active || self.retired_readers_alive {
+        if self.retired_readers_alive {
             // Interlock deferral does NOT self-requeue (that would spin the retention →
             // quarantine chain against a long-held reader); the next rewrite publish, reopen,
-            // or explicit Reclaim re-triggers the cycle.
-            let reason = if self.builds_active {
-                "table-object sweep deferred: build task in flight"
-            } else {
-                "table-object sweep deferred: retired read view still held"
-            };
+            // or explicit Reclaim re-triggers the cycle. In-flight build outputs are pinned
+            // by name (#2524), so builds no longer defer the sweep.
+            crate::observability::perf_trace::record_table_object_sweep_deferred(false);
             return Ok(MaintenanceOutcome::new(
                 MaintenanceTaskKind::Quarantine,
                 MaintenanceOutcomeStatus::Deferred,
             )
-            .with_reason(reason)
+            .with_reason("table-object sweep deferred: retired read view still held")
             .with_stats(LifecycleStats::new(0, 0, 1, 1, 0)));
         }
 
@@ -5001,6 +5106,9 @@ impl MaintenanceTaskRunner for DurableTableObjectSweepRunner<'_, '_> {
             match quarantine_outcome.status() {
                 crate::lifecycle::LifecycleQuarantineStatus::QuarantinedSourceDeleted
                 | crate::lifecycle::LifecycleQuarantineStatus::SourceDeleteRetried => {
+                    crate::observability::perf_trace::record_table_object_quarantined(
+                        quarantine_outcome.byte_count(),
+                    );
                     self.quarantined_objects += 1;
                     staged_names.push(object.to_string());
                 }
@@ -5021,6 +5129,7 @@ impl MaintenanceTaskRunner for DurableTableObjectSweepRunner<'_, '_> {
             .len()
             .saturating_sub(TABLE_OBJECT_SWEEP_MAX_OBJECTS.min(candidates.len()));
 
+        crate::observability::perf_trace::record_table_object_sweep_run();
         let mut outcome = MaintenanceOutcome::new(
             MaintenanceTaskKind::Quarantine,
             MaintenanceOutcomeStatus::Completed,

@@ -1700,6 +1700,7 @@ fn prepared_durable_flush_installs_by_identity_after_frozen_set_shifts() {
         &request,
         None,
         None,
+        None,
     )
     .expect("prepare flush")
     .expect("prepared flush");
@@ -1741,6 +1742,7 @@ fn prepared_durable_flush_fails_closed_when_its_frozen_table_is_gone() {
         &TableObjectService::new(backend),
         &TableObjectReaderService::new(backend),
         &request,
+        None,
         None,
         None,
     )

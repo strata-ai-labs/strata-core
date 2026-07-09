@@ -1273,11 +1273,17 @@ fn assert_indexed_matches_linear(compression: TableCompression) {
                             max_timestamp,
                         )
                         .expect("linear seek");
+                        let offset_bytes: Vec<u8> = offsets
+                            .iter()
+                            .flat_map(|offset| offset.to_le_bytes())
+                            .collect();
+                        let view = crate::format::EntryOffsetsView::new(&offset_bytes)
+                            .expect("shaped offsets view");
                         let indexed =
                             super::artifact::seek_immutable_table_data_block_point_indexed(
                                 &entry,
                                 &frame,
-                                &offsets,
+                                view,
                                 seek_key,
                                 physical,
                                 max_version,
@@ -1325,8 +1331,14 @@ fn indexed_seek_rejects_malformed_offsets() {
     let physical = crate::format::encode_physical_key(target.physical_key());
 
     let seek_with = |offsets: &[u32]| {
+        let offset_bytes: Vec<u8> = offsets
+            .iter()
+            .flat_map(|offset| offset.to_le_bytes())
+            .collect();
+        let view =
+            crate::format::EntryOffsetsView::new(&offset_bytes).expect("shaped offsets view");
         super::artifact::seek_immutable_table_data_block_point_indexed(
-            &entry, &frame, offsets, &seek_key, &physical, None, None,
+            &entry, &frame, view, &seek_key, &physical, None, None,
         )
     };
 

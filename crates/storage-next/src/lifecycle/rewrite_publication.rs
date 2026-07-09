@@ -38,6 +38,11 @@ pub(crate) struct PreparedDurableCompaction {
     io_facts: LifecycleCompactionIoFacts,
     output: PreparedDurableCompactionOutput,
     elapsed: std::time::Duration,
+    /// #2524: pins this build's published-not-yet-installed output names in
+    /// the in-flight registry until the prepared value is consumed or
+    /// abandoned (see `PreparedDurableFlushDrain::inflight_guard`).
+    #[allow(dead_code, reason = "held for its Drop; never read")]
+    inflight_guard: Option<std::sync::Arc<super::durable::InFlightOutputsGuard>>,
 }
 
 enum PreparedDurableCompactionOutput {
@@ -68,6 +73,10 @@ pub(crate) struct PreparedDurableMaterialization {
     branch_request: BranchMaterializationRequest,
     prepared: Option<BranchMaterializationPreparedOutput>,
     published: Vec<PublishedRewriteTable>,
+    /// #2524: pins this build's published-not-yet-installed output names
+    /// (see `PreparedDurableFlushDrain::inflight_guard`).
+    #[allow(dead_code, reason = "held for its Drop; never read")]
+    inflight_guard: Option<std::sync::Arc<super::durable::InFlightOutputsGuard>>,
 }
 
 pub(crate) fn compact_durable_branch_manifest_backed(
@@ -85,6 +94,9 @@ pub(crate) fn compact_durable_branch_manifest_backed(
         reader_service,
         request,
         budget,
+        // Foreground path: build and install share one runtime-lock hold —
+        // no in-flight pin needed.
+        None,
     )?;
     install_prepared_durable_compaction(branch, manifest_service, catalog, prepared, budget)
 }
@@ -95,6 +107,7 @@ pub(crate) fn prepare_durable_compaction_publication(
     reader_service: &TableObjectReaderService<'static>,
     request: &LifecycleCompactionRequest,
     budget: Option<&StorageBudgetLedger>,
+    inflight: Option<&super::durable::InFlightTableOutputs>,
 ) -> LifecycleResult<PreparedDurableCompaction> {
     let started = std::time::Instant::now();
     let request = request
@@ -107,6 +120,7 @@ pub(crate) fn prepare_durable_compaction_publication(
         .map_err(branch_error)?;
     let io_facts = LifecycleCompactionIoFacts::from_plan(branch, &plan);
     let ranges = subcompaction_ranges_for_publication(branch, &branch_request, &plan)?;
+    let inflight_guard = inflight.map(|registry| std::sync::Arc::new(registry.guard()));
     let output = match build_and_publish_compaction(
         branch,
         &branch_request,
@@ -115,6 +129,7 @@ pub(crate) fn prepare_durable_compaction_publication(
         reader_service,
         budget,
         &ranges,
+        inflight_guard.as_deref(),
     )? {
         Some((published, report)) => {
             PreparedDurableCompactionOutput::Published { report, published }
@@ -128,6 +143,7 @@ pub(crate) fn prepare_durable_compaction_publication(
         io_facts,
         output,
         elapsed: started.elapsed(),
+        inflight_guard,
     })
 }
 
@@ -179,6 +195,7 @@ fn subcompaction_ranges_for_publication(
 /// completed table publishes immediately (freeing its bytes); the first
 /// publish error is captured and outranks the sink's placeholder unwind, and
 /// partial-publish cleanup runs over everything published so far.
+#[allow(clippy::too_many_arguments, reason = "explicit build-input plumbing")]
 fn build_range_with_publishing_sink(
     branch: &BranchLocalState,
     branch_request: &BranchCompactionRequest,
@@ -188,6 +205,7 @@ fn build_range_with_publishing_sink(
     budget: Option<&StorageBudgetLedger>,
     index: usize,
     bounds: Option<&TableKeyBounds>,
+    inflight: Option<&super::durable::InFlightOutputsGuard>,
 ) -> SubcompactionBuildResult {
     // No-candidate and metadata-promotion plans build nothing — mirror
     // the prepare path's `None` before demanding an output level.
@@ -218,6 +236,7 @@ fn build_range_with_publishing_sink(
             artifact,
             plan.materialization_source(),
             budget,
+            inflight,
         ) {
             Ok(output) => {
                 published.push(output);
@@ -243,6 +262,7 @@ fn build_range_with_publishing_sink(
     Ok(Some((published, report)))
 }
 
+#[allow(clippy::too_many_arguments, reason = "explicit build-input plumbing")]
 fn build_and_publish_compaction(
     branch: &BranchLocalState,
     branch_request: &BranchCompactionRequest,
@@ -251,6 +271,7 @@ fn build_and_publish_compaction(
     reader_service: &TableObjectReaderService<'static>,
     budget: Option<&StorageBudgetLedger>,
     ranges: &[Option<TableKeyBounds>],
+    inflight: Option<&super::durable::InFlightOutputsGuard>,
 ) -> SubcompactionBuildResult {
     let build_range = |index: usize, bounds: Option<&TableKeyBounds>| -> SubcompactionBuildResult {
         build_range_with_publishing_sink(
@@ -262,6 +283,7 @@ fn build_and_publish_compaction(
             budget,
             index,
             bounds,
+            inflight,
         )
     };
 
@@ -362,6 +384,9 @@ pub(crate) fn install_prepared_durable_compaction_without_publish(
         io_facts,
         output,
         elapsed,
+        // Held to the end of the install: the in-memory pins take over the
+        // moment the outputs enter branch state under this same lock hold.
+        inflight_guard: _inflight_guard,
     } = prepared;
     match output {
         PreparedDurableCompactionOutput::MetadataOnly => {
@@ -501,7 +526,9 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
         DurableMaterializationBegin::Deferred(outcome) => return Ok(*outcome),
         DurableMaterializationBegin::Build(build) => *build,
     };
-    let prepared = build.build(table_service, reader_service, budget)?;
+    // Foreground path: build and install share one runtime-lock hold — no
+    // in-flight pin needed.
+    let prepared = build.build(table_service, reader_service, budget, None)?;
     install_prepared_durable_materialization(branch, manifest_service, catalog, prepared, budget)
 }
 
@@ -541,11 +568,13 @@ impl DurableMaterializationBuild {
         table_service: &TableObjectService<'_>,
         reader_service: &TableObjectReaderService<'static>,
         budget: Option<&StorageBudgetLedger>,
+        inflight: Option<&super::durable::InFlightTableOutputs>,
     ) -> LifecycleResult<PreparedDurableMaterialization> {
         let prepared = self
             .branch_snapshot
             .prepare_materialization_output(&self.branch_request)
             .map_err(branch_error)?;
+        let inflight_guard = inflight.map(|registry| std::sync::Arc::new(registry.guard()));
         let published = match prepared.as_ref() {
             Some(prepared) if !prepared.artifacts().is_empty() => publish_materialization_outputs(
                 self.branch_snapshot.branch_id(),
@@ -553,6 +582,7 @@ impl DurableMaterializationBuild {
                 reader_service,
                 prepared,
                 budget,
+                inflight_guard.as_deref(),
             )?,
             _ => Vec::new(),
         };
@@ -563,6 +593,7 @@ impl DurableMaterializationBuild {
             branch_request: self.branch_request,
             prepared,
             published,
+            inflight_guard,
         })
     }
 }
@@ -604,6 +635,8 @@ pub(crate) fn install_prepared_durable_materialization_without_publish(
         branch_request,
         prepared,
         published,
+        // Held to the end of the install (see the compaction install).
+        inflight_guard: _inflight_guard,
     } = prepared;
     let Some(prepared_output) = prepared else {
         let branch_outcome = branch
@@ -728,6 +761,7 @@ fn publish_materialization_outputs(
     reader_service: &TableObjectReaderService<'static>,
     prepared: &BranchMaterializationPreparedOutput,
     budget: Option<&StorageBudgetLedger>,
+    inflight: Option<&super::durable::InFlightOutputsGuard>,
 ) -> LifecycleResult<Vec<PublishedRewriteTable>> {
     let mut published = Vec::new();
     for artifact in prepared.artifacts() {
@@ -739,6 +773,7 @@ fn publish_materialization_outputs(
             artifact.clone(),
             Some(prepared.materialization_source()),
             budget,
+            inflight,
         ) {
             Ok(output) => published.push(output),
             Err(error) => return Err(partial_publish_error(&published, error)),
@@ -747,6 +782,7 @@ fn publish_materialization_outputs(
     Ok(published)
 }
 
+#[allow(clippy::too_many_arguments, reason = "explicit build-input plumbing")]
 fn publish_rewrite_artifact(
     branch_id: BranchId,
     level: BranchLevel,
@@ -755,6 +791,7 @@ fn publish_rewrite_artifact(
     artifact: BuiltTableArtifact,
     materialization_source: Option<BranchMaterializationSource>,
     budget: Option<&StorageBudgetLedger>,
+    inflight: Option<&super::durable::InFlightOutputsGuard>,
 ) -> LifecycleResult<PublishedRewriteTable> {
     let extras = artifact.extras().clone();
     // BS4.5a: the rewrite output installs a lazy, disk-resident reader — charge only its
@@ -768,6 +805,7 @@ fn publish_rewrite_artifact(
     require_optional_rewrite_reader_budget(budget, reader_resident_bytes)?;
     let identity = table_facts.identity().clone();
     let branch_component = branch_id.to_string();
+    reserve_inflight_rewrite_output(inflight, &branch_component, level, identity.as_str())?;
     let object = publish_or_load_rewrite_output(
         table_service,
         reader_service,
@@ -887,6 +925,30 @@ fn require_optional_rewrite_reader_budget(
     if let Some(budget) = budget {
         require_table_reader_budget(budget, bytes, "table rewrite reader exceeds storage budget")?;
     }
+    Ok(())
+}
+
+/// #2524: pin the output name BEFORE the bytes land (see the flush publish
+/// site) — the mark runs concurrently with this off-lock build.
+fn reserve_inflight_rewrite_output(
+    inflight: Option<&super::durable::InFlightOutputsGuard>,
+    branch_component: &str,
+    level: BranchLevel,
+    identity: &str,
+) -> LifecycleResult<()> {
+    let Some(inflight) = inflight else {
+        return Ok(());
+    };
+    let object_name = crate::layout::ObjectLayout::table_object(
+        branch_component,
+        u32::from(level.raw()),
+        identity,
+    )
+    .map_err(|source| LifecycleError::RewritePublicationFailed {
+        reason: "rewrite output object name derivation failed",
+        source: Some(std::sync::Arc::new(source)),
+    })?;
+    inflight.reserve(object_name);
     Ok(())
 }
 

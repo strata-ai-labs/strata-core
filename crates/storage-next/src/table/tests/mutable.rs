@@ -21,7 +21,7 @@ fn physical_key_in_space(
 ) -> PhysicalKey {
     PhysicalKey::new(
         branch(branch_byte),
-        space,
+        space.to_owned(),
         StorageSpaceId::from_raw(space_id).expect("storage space id"),
         user_key,
     )

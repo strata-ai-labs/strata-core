@@ -781,6 +781,7 @@ fn create_graph_fixture(executor: &mut Executor) {
     ] {
         executor
             .execute(Command::GraphAddNode {
+                object_type: None,
                 branch: None,
                 space: None,
                 graph: "deps".to_owned(),

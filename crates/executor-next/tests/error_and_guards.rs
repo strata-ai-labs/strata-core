@@ -841,7 +841,9 @@ fn forbidden_graph_lower_layer_terms() -> &'static [&'static str] {
         "node_address",
         "edge_address",
         "reverse_edge_address",
-        "Ontology",
+        // GO4 lifted the ontology deferral (commands delegate to the
+        // engine's D4 ontology surface); analytics stays deferred until
+        // the GA slices land and retire their tokens here.
         "Pagerank",
         "Cdlp",
         "Sssp",
@@ -921,21 +923,17 @@ fn forbidden_response_fixture_terms() -> &'static [&'static str] {
 
 fn excluded_graph_command_names() -> &'static [&'static str] {
     &[
+        // GO4 ported the ontology surface onto 8 commands; the v0.6
+        // per-kind read commands below stay excluded by design — the one
+        // canonical read is GraphGetOntology (status + all definitions).
+        // Analytics and bulk ingest stay deferred until the GA slices.
         "GraphBulkInsert",
         "GraphBfs",
-        "GraphDefineObjectType",
         "GraphGetObjectType",
         "GraphListObjectTypes",
-        "GraphDeleteObjectType",
-        "GraphDefineLinkType",
         "GraphGetLinkType",
         "GraphListLinkTypes",
-        "GraphDeleteLinkType",
-        "GraphFreezeOntology",
-        "GraphOntologyStatus",
-        "GraphOntologySummary",
         "GraphListOntologyTypes",
-        "GraphNodesByType",
         "GraphWcc",
         "GraphCdlp",
         "GraphPagerank",

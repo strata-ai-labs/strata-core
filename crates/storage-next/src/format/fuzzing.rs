@@ -73,13 +73,15 @@ pub(crate) fn decode_table_block_indexed_seek(bytes: &[u8]) -> bool {
     let rest = &bytes[2..];
     let split = split % rest.len();
     let (payload, offset_bytes) = rest.split_at(split);
-    let offsets: Vec<u32> = offset_bytes
-        .chunks_exact(4)
-        .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-        .collect();
+    // Feed the raw fuzz bytes straight into the borrowed view — the probe
+    // must reject or succeed without panicking on ANY byte shape.
+    let Some(view) = table::EntryOffsetsView::new(&offset_bytes[..offset_bytes.len() / 4 * 4])
+    else {
+        return false;
+    };
     table::seek_table_data_block_point_indexed(
         payload,
-        &offsets,
+        view,
         b"fuzz-seek-key",
         b"fuzz-target",
         None,

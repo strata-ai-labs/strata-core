@@ -73,7 +73,8 @@ pub(crate) fn rewrite_physical_key_branch(
 ) -> BranchRuntimeResult<PhysicalKey> {
     PhysicalKey::new(
         target_branch_id,
-        physical_key.space().to_owned(),
+        // C3b: Cow clone — free for the interned well-known names.
+        physical_key.space_cow(),
         physical_key.storage_space_id(),
         physical_key.user_key().to_vec(),
     )

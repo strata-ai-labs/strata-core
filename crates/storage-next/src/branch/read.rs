@@ -1325,7 +1325,8 @@ impl BranchReadView {
                 continue;
             }
             probes = probes.saturating_add(1);
-            let Some(table_index) = select_nonzero_level_point_table(tables, &key_bytes)? else {
+            let Some(table_index) = select_nonzero_level_point_table(tables, key_bytes.as_slice())?
+            else {
                 continue;
             };
             let (row, _visited) = tables[table_index]
@@ -1766,7 +1767,7 @@ fn collect_owned_level_history_candidates(
         return Ok(());
     }
     add_history_source_probes(source_probes, 1);
-    let Some(table_index) = select_nonzero_level_point_table(tables, key_bytes)? else {
+    let Some(table_index) = select_nonzero_level_point_table(tables, key_bytes.as_slice())? else {
         return Ok(());
     };
     let table = &tables[table_index];
@@ -1873,7 +1874,8 @@ fn collect_inherited_level_history_candidates(
         return Ok(());
     }
     add_history_source_probes(source_probes, 1);
-    let Some(table_index) = select_nonzero_level_point_table(tables, source_key_bytes)? else {
+    let Some(table_index) = select_nonzero_level_point_table(tables, source_key_bytes.as_slice())?
+    else {
         return Ok(());
     };
     add_history_source_probes(source_probes, 1);
@@ -1968,9 +1970,7 @@ impl PointCandidate<'_> {
     fn row(&self) -> &StorageRow {
         match self {
             Self::LocalShared { row, .. } => row.row(),
-            Self::LocalLookup { row, .. } | Self::InheritedLookup { row, .. } => {
-                row.as_table_row().row()
-            }
+            Self::LocalLookup { row, .. } | Self::InheritedLookup { row, .. } => row.storage_row(),
         }
     }
 
@@ -2000,7 +2000,7 @@ impl PointCandidate<'_> {
                 // records only actual clones).
                 match row {
                     TablePointLookupRow::Borrowed(row) => clone_point_candidate_row(row),
-                    TablePointLookupRow::Owned(row) => row.into_row(),
+                    TablePointLookupRow::Owned(row) => row,
                 },
                 source,
             )),
@@ -2010,14 +2010,12 @@ impl PointCandidate<'_> {
                 child_branch_id,
                 layer_index,
             } => {
-                let row = row.as_table_row();
                 perf_trace::record_branch_point_candidate_row_clone(row.approximate_size_bytes());
                 Ok(candidate_row(
-                    rewrite_row_branch(row.row(), source_branch_id, child_branch_id).map_err(
-                        |_| BranchRuntimeError::InvalidInheritedLayer {
+                    rewrite_row_branch(row.storage_row(), source_branch_id, child_branch_id)
+                        .map_err(|_| BranchRuntimeError::InvalidInheritedLayer {
                             reason: "inherited row branch rewrite failed",
-                        },
-                    )?,
+                        })?,
                     BranchRowSource::Inherited {
                         source_branch_id,
                         layer_index,
@@ -2830,9 +2828,8 @@ fn append_inherited_point_table_candidate(
 
 fn select_nonzero_level_point_table(
     tables: &[BranchOwnedTable],
-    key: &TablePhysicalKeyBytes,
+    target: &[u8],
 ) -> BranchRuntimeResult<Option<usize>> {
-    let target = key.as_slice();
     let mut low = 0usize;
     let mut high = tables.len();
     while low < high {

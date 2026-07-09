@@ -34,7 +34,10 @@ use strata_core_next::{BranchId, CommitVersion};
 
 mod bootstrap;
 mod close;
+mod inflight;
 mod maintenance;
+
+pub(crate) use inflight::{InFlightOutputsGuard, InFlightTableOutputs};
 
 pub(crate) use bootstrap::{
     DurableGroupApplyDone, DurableGroupApplyWork, DurableGroupInFlight, DurableGroupMemberResult,

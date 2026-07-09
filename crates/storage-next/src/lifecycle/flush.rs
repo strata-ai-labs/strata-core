@@ -103,6 +103,12 @@ pub(crate) struct PreparedDurableFlush {
 pub(crate) struct PreparedDurableFlushDrain {
     request: FlushDrainRequest,
     prepared_flushes: Vec<PreparedDurableFlush>,
+    /// #2524: pins this drain's published-not-yet-installed object names in
+    /// the in-flight registry. Held (shared across clones) until the drain
+    /// is consumed or abandoned — by then the outputs are either installed
+    /// (covered by the in-memory pins) or orphaned and sweepable.
+    #[allow(dead_code, reason = "held for its Drop; never read")]
+    inflight_guard: Option<std::sync::Arc<super::durable::InFlightOutputsGuard>>,
 }
 
 const DEFAULT_FLUSH_DRAIN_FREEZE_RETRY_LIMIT: usize = 4;
@@ -723,6 +729,9 @@ pub(crate) fn flush_durable_branch_with_budget(
         request,
         budget,
         data_block_bytes,
+        // Foreground path: publish and install share one runtime-lock hold,
+        // so the mark can never interleave — no in-flight pin needed.
+        None,
     )?
     else {
         return Ok(FlushFrozenOutcome::deferred(request));
@@ -730,6 +739,7 @@ pub(crate) fn flush_durable_branch_with_budget(
     Ok(install_prepared_durable_flush(branch, prepared))
 }
 
+#[allow(clippy::too_many_arguments, reason = "explicit build-input plumbing")]
 pub(crate) fn prepare_durable_flush_with_budget(
     branch: &BranchLocalState,
     table_service: &TableObjectService<'_>,
@@ -737,6 +747,7 @@ pub(crate) fn prepare_durable_flush_with_budget(
     request: &FlushFrozenRequest,
     budget: Option<&StorageBudgetLedger>,
     data_block_bytes: Option<u32>,
+    inflight: Option<&super::durable::InFlightOutputsGuard>,
 ) -> LifecycleResult<Option<PreparedDurableFlush>> {
     let Some(frozen_index) = select_frozen_index(branch, request)? else {
         return Ok(None);
@@ -761,6 +772,7 @@ pub(crate) fn prepare_durable_flush_with_budget(
     let table_facts = artifact.facts().clone();
     let branch_component = request.branch_id().to_string();
     let object_id = derived_object_id(request, &table_facts);
+    reserve_inflight_flush_output(inflight, request, &branch_component, &object_id)?;
     let object_facts = publish_or_load_existing(
         table_service,
         &branch_component,
@@ -889,6 +901,7 @@ pub(crate) fn install_prepared_durable_flush(
     )
 }
 
+#[allow(clippy::too_many_arguments, reason = "explicit build-input plumbing")]
 pub(crate) fn prepare_durable_flush_drain_with_budget(
     branch: &BranchLocalState,
     table_service: &TableObjectService<'_>,
@@ -896,12 +909,14 @@ pub(crate) fn prepare_durable_flush_drain_with_budget(
     request: &FlushDrainRequest,
     budget: Option<&StorageBudgetLedger>,
     data_block_bytes: Option<u32>,
+    inflight: Option<&super::durable::InFlightTableOutputs>,
 ) -> LifecycleResult<PreparedDurableFlushDrain> {
     if branch.branch_id() != request.branch_id() {
         return Err(LifecycleError::MaintenanceTaskFailed {
             reason: "flush drain branch id must match branch state",
         });
     }
+    let inflight_guard = inflight.map(|registry| std::sync::Arc::new(registry.guard()));
     let mut branch_snapshot = branch.clone();
     let frozen_tables_discovered = branch_snapshot.frozen_table_count();
     let operation_limit =
@@ -919,6 +934,7 @@ pub(crate) fn prepare_durable_flush_drain_with_budget(
             &flush_request,
             budget,
             data_block_bytes,
+            inflight_guard.as_deref(),
         )?
         else {
             let maintenance = FlushFrozenOutcome::deferred(&flush_request).maintenance_outcome();
@@ -937,6 +953,7 @@ pub(crate) fn prepare_durable_flush_drain_with_budget(
     Ok(PreparedDurableFlushDrain {
         request: request.clone(),
         prepared_flushes,
+        inflight_guard,
     })
 }
 
@@ -1328,6 +1345,34 @@ fn frozen_key_span_digest(frozen: &FrozenTable) -> u64 {
         hash = mix(hash, last.as_slice());
     }
     hash
+}
+
+/// #2524: pin the output name BEFORE the bytes land — the table-object mark
+/// runs concurrently with this off-lock build, and an unreachable, unpinned
+/// object would be swept out from under the publish.
+fn reserve_inflight_flush_output(
+    inflight: Option<&super::durable::InFlightOutputsGuard>,
+    request: &FlushFrozenRequest,
+    branch_component: &str,
+    object_id: &str,
+) -> LifecycleResult<()> {
+    let Some(inflight) = inflight else {
+        return Ok(());
+    };
+    let object_name = crate::layout::ObjectLayout::table_object(
+        branch_component,
+        request.target_level().raw().into(),
+        object_id,
+    )
+    .map_err(|source| {
+        LifecycleError::lower_layer_with(
+            crate::lifecycle::LifecycleLowerLayer::Layout,
+            "layout failed",
+            source,
+        )
+    })?;
+    inflight.reserve(object_name);
+    Ok(())
 }
 
 fn derived_object_id(request: &FlushFrozenRequest, table_facts: &TableRuntimeFacts) -> String {

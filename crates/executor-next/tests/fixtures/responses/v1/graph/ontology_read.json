@@ -1,0 +1,28 @@
+{
+  "type": "graph_ontology_result",
+  "data": {
+    "graph": "deps",
+    "status": "frozen",
+    "object_types": [
+      {
+        "name": "Document",
+        "properties": {
+          "title": {
+            "value_type": "string",
+            "required": true
+          }
+        }
+      }
+    ],
+    "link_types": [
+      {
+        "name": "wrote",
+        "source": "Author",
+        "target": "Document",
+        "cardinality": "one-to-many"
+      }
+    ],
+    "version": 2,
+    "timestamp": 20
+  }
+}

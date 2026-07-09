@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 
 use clap::Parser;
 use serde_json::Value;
-use strata_executor_next::{Command, Executor, ExecutorError};
+use strata_executor_next::{Command, Executor, ExecutorError, GraphPropertyDef};
 
 mod agents;
 mod context;
@@ -30,7 +30,8 @@ use input::{
 };
 use options::{
     ArrowCommand, BranchCommand, Cli, CommandCommand, ConfigCommand, EventCommand, GraphCommand,
-    JsonCommand, KvCommand, SpaceCommand, VectorCollectionCommand, VectorCommand,
+    GraphOntologyCommand, JsonCommand, KvCommand, SpaceCommand, VectorCollectionCommand,
+    VectorCommand,
 };
 use render::{render_error, render_output, render_value};
 
@@ -824,6 +825,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             node_id,
             properties,
             properties_file,
+            object_type,
         } => Command::GraphAddNode {
             branch: scope.branch.clone(),
             space: scope.space.clone(),
@@ -835,6 +837,7 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
                 "node properties",
             )?,
             binding: None,
+            object_type,
         },
         GraphCommand::GetNode {
             graph,
@@ -937,8 +940,106 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             limit,
             as_of,
         },
-        GraphCommand::Ontology(_) => return Err(deferred_command("graph ontology")),
+        GraphCommand::NodesByType {
+            graph,
+            object_type,
+            cursor,
+            limit,
+            as_of,
+        } => Command::GraphNodesByType {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            object_type,
+            cursor,
+            limit,
+            as_of,
+        },
+        GraphCommand::Ontology(args) => graph_ontology_command(args.command, scope)?,
         GraphCommand::Analytics(_) => return Err(deferred_command("graph analytics")),
+    })
+}
+
+fn graph_ontology_command(
+    command: GraphOntologyCommand,
+    scope: &Scope,
+) -> Result<Command, CliError> {
+    Ok(match command {
+        GraphOntologyCommand::DefineObjectType {
+            graph,
+            name,
+            properties,
+            properties_file,
+        } => Command::GraphDefineObjectType {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            name,
+            properties: parse_type_properties(properties.as_deref(), properties_file.as_ref())?,
+        },
+        GraphOntologyCommand::DefineLinkType {
+            graph,
+            name,
+            source,
+            target,
+            cardinality,
+            properties,
+            properties_file,
+        } => Command::GraphDefineLinkType {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            name,
+            source,
+            target,
+            cardinality,
+            properties: parse_type_properties(properties.as_deref(), properties_file.as_ref())?,
+        },
+        GraphOntologyCommand::DeleteObjectType { graph, name } => Command::GraphDeleteObjectType {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            name,
+        },
+        GraphOntologyCommand::DeleteLinkType { graph, name } => Command::GraphDeleteLinkType {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            name,
+        },
+        GraphOntologyCommand::Freeze { graph } => Command::GraphFreezeOntology {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+        },
+        GraphOntologyCommand::Get { graph, as_of } => Command::GraphGetOntology {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            as_of,
+        },
+        GraphOntologyCommand::Summary { graph, as_of } => Command::GraphOntologySummary {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            as_of,
+        },
+    })
+}
+
+/// Parses the ontology type-properties JSON argument into the wire map.
+fn parse_type_properties(
+    properties: Option<&str>,
+    properties_file: Option<&std::path::PathBuf>,
+) -> Result<std::collections::BTreeMap<String, GraphPropertyDef>, CliError> {
+    let Some(value) = parse_optional_json_argument(properties, properties_file, "type properties")?
+    else {
+        return Ok(std::collections::BTreeMap::new());
+    };
+    serde_json::from_value(value).map_err(|error| {
+        CliError::usage(format!(
+            "type properties must map names to {{value_type, required}}: {error}"
+        ))
     })
 }
 

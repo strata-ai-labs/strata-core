@@ -35,8 +35,11 @@ pub use graph::{
     GraphBatchOpOutcome, GraphBatchOperation, GraphBatchWrite, GraphBatchWriteOutcome,
     GraphBinding, GraphBindingPage, GraphBindingPrimitive, GraphBindingTarget, GraphDeleteOutcome,
     GraphDirection, GraphEdge, GraphEdgeData, GraphEdgeType, GraphEdgeWriteOutcome,
-    GraphEntityBinding, GraphInfo, GraphName, GraphNamePage, GraphNeighbor, GraphNeighborPage,
-    GraphNode, GraphNodeData, GraphNodeId, GraphNodePage, GraphProperties, GraphService,
+    GraphEntityBinding, GraphInfo, GraphLinkTypeDef, GraphLinkTypeSummary, GraphName,
+    GraphNamePage, GraphNeighbor, GraphNeighborPage, GraphNode, GraphNodeData, GraphNodeId,
+    GraphNodePage, GraphObjectTypeDef, GraphObjectTypeSummary, GraphOntology,
+    GraphOntologyFreezeOutcome, GraphOntologyStatus, GraphOntologySummary,
+    GraphOntologyWriteOutcome, GraphProperties, GraphPropertyDef, GraphService, GraphTypeName,
     GraphWriteOutcome,
 };
 pub use json::{

@@ -112,8 +112,17 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="data_loss.engine.graph_node_record"></a>
 - `data_loss.engine.graph_node_record`
 
+<a id="data_loss.engine.graph_ontology_record"></a>
+- `data_loss.engine.graph_ontology_record`
+
 <a id="data_loss.engine.graph_reverse_edge_key"></a>
 - `data_loss.engine.graph_reverse_edge_key`
+
+<a id="data_loss.engine.graph_type_index_key"></a>
+- `data_loss.engine.graph_type_index_key`
+
+<a id="data_loss.engine.graph_type_index_record"></a>
+- `data_loss.engine.graph_type_index_record`
 
 <a id="data_loss.engine.json_document"></a>
 - `data_loss.engine.json_document`
@@ -171,6 +180,24 @@ the public registry when adding, renaming, or removing a public error code.
 
 <a id="failed_precondition.engine.default_branch"></a>
 - `failed_precondition.engine.default_branch`
+
+<a id="failed_precondition.engine.graph_ontology_edge_type"></a>
+- `failed_precondition.engine.graph_ontology_edge_type`
+
+<a id="failed_precondition.engine.graph_ontology_endpoint_type"></a>
+- `failed_precondition.engine.graph_ontology_endpoint_type`
+
+<a id="failed_precondition.engine.graph_ontology_freeze"></a>
+- `failed_precondition.engine.graph_ontology_freeze`
+
+<a id="failed_precondition.engine.graph_ontology_frozen"></a>
+- `failed_precondition.engine.graph_ontology_frozen`
+
+<a id="failed_precondition.engine.graph_ontology_node_type"></a>
+- `failed_precondition.engine.graph_ontology_node_type`
+
+<a id="failed_precondition.engine.graph_ontology_required_property"></a>
+- `failed_precondition.engine.graph_ontology_required_property`
 
 <a id="failed_precondition.engine.layout_version"></a>
 - `failed_precondition.engine.layout_version`
@@ -277,11 +304,29 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="invalid_argument.engine.graph_node_record"></a>
 - `invalid_argument.engine.graph_node_record`
 
+<a id="invalid_argument.engine.graph_ontology_record"></a>
+- `invalid_argument.engine.graph_ontology_record`
+
 <a id="invalid_argument.engine.graph_properties"></a>
 - `invalid_argument.engine.graph_properties`
 
 <a id="invalid_argument.engine.graph_properties_too_large"></a>
 - `invalid_argument.engine.graph_properties_too_large`
+
+<a id="invalid_argument.engine.graph_property_name"></a>
+- `invalid_argument.engine.graph_property_name`
+
+<a id="invalid_argument.engine.graph_type_hint"></a>
+- `invalid_argument.engine.graph_type_hint`
+
+<a id="invalid_argument.engine.graph_type_index_record"></a>
+- `invalid_argument.engine.graph_type_index_record`
+
+<a id="invalid_argument.engine.graph_type_name"></a>
+- `invalid_argument.engine.graph_type_name`
+
+<a id="invalid_argument.engine.graph_type_name_reserved"></a>
+- `invalid_argument.engine.graph_type_name_reserved`
 
 <a id="invalid_argument.engine.json_array_too_large"></a>
 - `invalid_argument.engine.json_array_too_large`

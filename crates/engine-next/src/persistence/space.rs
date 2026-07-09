@@ -15,6 +15,8 @@ pub(crate) enum RowClass {
     GraphEdge,
     GraphReverseEdge,
     GraphBindingIndex,
+    GraphOntology,
+    GraphTypeIndex,
     BranchControl,
     SpaceControl,
     Registry,
@@ -41,6 +43,14 @@ impl RowClass {
             Self::GraphEdge => 0x3a,
             Self::GraphReverseEdge => 0x3c,
             Self::GraphBindingIndex => 0x3e,
+            // Authored ontology rows: the first source-row byte past the
+            // 0x40..=0x45 derived-row families reserved by the storage-space
+            // registry.
+            Self::GraphOntology => 0x46,
+            // Rebuildable node-type index rows: the storage-space
+            // registry's graph-index family byte ("graph reverse maps,
+            // relationship lookup rows, traversal accelerators").
+            Self::GraphTypeIndex => 0x43,
         }
     }
 }
@@ -75,6 +85,8 @@ mod tests {
             RowClass::GraphEdge.storage_space_id(),
             RowClass::GraphReverseEdge.storage_space_id(),
             RowClass::GraphBindingIndex.storage_space_id(),
+            RowClass::GraphOntology.storage_space_id(),
+            RowClass::GraphTypeIndex.storage_space_id(),
             RowClass::BranchControl.storage_space_id(),
             RowClass::SpaceControl.storage_space_id(),
             RowClass::Registry.storage_space_id(),
@@ -85,6 +97,11 @@ mod tests {
         unique.dedup();
         assert_eq!(unique.len(), all_ids.len());
         assert!(!unique.contains(&0x33));
-        assert!(unique.iter().all(|id| !(0x40..=0x45).contains(id)));
+        // 0x43 is claimed by GraphTypeIndex — the registry's graph-index
+        // derived family; the other derived-family bytes stay reserved.
+        assert_eq!(RowClass::GraphTypeIndex.storage_space_id(), 0x43);
+        assert!(unique
+            .iter()
+            .all(|id| !(0x40..=0x45).contains(id) || *id == 0x43));
     }
 }

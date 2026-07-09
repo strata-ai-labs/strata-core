@@ -273,8 +273,10 @@ fn graph_service_keeps_storage_requests_in_persistence_modules() {
 fn graph_core_does_not_expose_deferred_graph_surface() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let roots = [root.join("api"), root.join("data").join("graph")];
+    // GO1 lifted the ontology deferral (docs/design/graph-v1-port-gap-analysis.md);
+    // analytics, traversal, and search boosting stay deferred until the GA/GS
+    // slices land and remove their tokens here.
     let forbidden = [
-        "Ontology",
         "Wcc",
         "Cdlp",
         "Pagerank",

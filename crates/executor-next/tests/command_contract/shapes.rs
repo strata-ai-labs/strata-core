@@ -210,6 +210,7 @@ fn event_output_json_uses_stable_tags_and_field_shape() {
 #[test]
 fn graph_command_json_uses_stable_tags_and_field_shape() {
     let command = Command::GraphAddNode {
+        object_type: None,
         branch: None,
         space: None,
         graph: "deps".to_owned(),

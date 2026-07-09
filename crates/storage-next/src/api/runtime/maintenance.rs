@@ -721,12 +721,12 @@ pub(super) fn drain_durable_background_round(
             let pending_before = runtime.maintenance_status().pending_tasks();
             // Guaranteed low-tier progress: after every LOW_TIER_SERVICE_INTERVAL upper-tier
             // tasks with low-tier work pending, service one low-tier task before the ladder.
-            // Falls through to the ladder when the low tier has nothing startable. Skipped
-            // while a build is in flight — the table-object mark and sweep defer on that
-            // condition anyway, and a deferred no-op would still consume the round's task
-            // budget (measured: enough to push a sustained load into the L0 admission wall).
+            // Falls through to the ladder when the low tier has nothing startable. #2524: the
+            // build-in-flight skip is GONE — the mark and sweep now pin in-flight build
+            // outputs by name and make real progress during builds (the skip made reclaim
+            // run only in lulls: zero retention passes across an entire sustained seed,
+            // ~10-17x transient space debt).
             let step = if upper_tier_since_low >= LOW_TIER_SERVICE_INTERVAL
-                && !runtime.has_active_build_task()
                 && runtime.has_pending_low_tier_maintenance()
             {
                 let low_tier_start = perf_trace::start_timer();

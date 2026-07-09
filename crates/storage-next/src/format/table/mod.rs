@@ -17,7 +17,7 @@ pub(crate) use artifact::{
 };
 #[cfg(any(test, feature = "testkit"))]
 pub(crate) use data::seek_table_data_block_point_indexed;
-pub(crate) use data::TableDataBlockPointSeek;
+pub(crate) use data::{EntryOffsetsView, TableDataBlockPointSeek};
 pub(crate) use index::TableIndexEntry;
 pub(crate) const MAX_TABLE_HEADER_SIZE: usize = TABLE_HEADER_SIZE;
 pub(crate) const MAX_TABLE_FOOTER_SIZE: usize = TABLE_FOOTER_SIZE;

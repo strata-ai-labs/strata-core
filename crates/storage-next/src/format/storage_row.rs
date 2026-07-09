@@ -107,6 +107,31 @@ fn storage_row_encode_capacity_from_parts(
 }
 
 pub(crate) fn decode_storage_row(bytes: &[u8]) -> Result<StorageRow, FormatError> {
+    decode_storage_row_inner(bytes, None)
+}
+
+/// C3b: decode a row while cross-checking it against its block entry's
+/// ENCODED internal key — the embedded physical-key region must equal the
+/// key's physical prefix byte-for-byte (the encoding is canonical, so byte
+/// equality is exactly semantic equality and strictly stronger than the
+/// decoded-struct comparison it replaces) and the commit versions must
+/// agree. Lets the trusted indexed probe skip the full internal-key decode
+/// for entries it only compares.
+pub(crate) fn decode_storage_row_matching_key(
+    bytes: &[u8],
+    expected_physical_key: &[u8],
+    expected_commit_version: CommitVersion,
+) -> Result<StorageRow, FormatError> {
+    decode_storage_row_inner(
+        bytes,
+        Some((expected_physical_key, expected_commit_version)),
+    )
+}
+
+fn decode_storage_row_inner(
+    bytes: &[u8],
+    expected: Option<(&[u8], CommitVersion)>,
+) -> Result<StorageRow, FormatError> {
     let mut reader = ByteReader::new(STORAGE_ROW_FORMAT, bytes);
     let version = reader.read_u8()?;
     if version != STORAGE_ROW_FORMAT_VERSION {
@@ -120,8 +145,23 @@ pub(crate) fn decode_storage_row(bytes: &[u8]) -> Result<StorageRow, FormatError
         usize::try_from(reader.read_u32_le()?).map_err(|_| FormatError::InvalidLength {
             field: "physical_key",
         })?;
-    let physical_key = decode_physical_key(reader.read_exact(physical_key_len)?)?;
+    let physical_key_bytes = reader.read_exact(physical_key_len)?;
+    if let Some((expected_key, _)) = expected {
+        if physical_key_bytes != expected_key {
+            return Err(FormatError::InvalidValue {
+                field: "physical_key",
+            });
+        }
+    }
+    let physical_key = decode_physical_key(physical_key_bytes)?;
     let commit_version = CommitVersion::new(reader.read_u64_le()?);
+    if let Some((_, expected_version)) = expected {
+        if commit_version != expected_version {
+            return Err(FormatError::InvalidValue {
+                field: "commit_version",
+            });
+        }
+    }
     let commit_timestamp = Timestamp::from_micros(reader.read_u64_le()?);
     let expires_at = Timestamp::from_micros(reader.read_u64_le()?);
     let row_flags = reader.read_u32_le()?;
@@ -176,7 +216,10 @@ pub(crate) fn decode_storage_row(bytes: &[u8]) -> Result<StorageRow, FormatError
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_storage_row, encode_storage_row, FormatError, STORAGE_ROW_FORMAT};
+    use super::{
+        decode_storage_row, decode_storage_row_matching_key, encode_storage_row, FormatError,
+        STORAGE_ROW_FORMAT,
+    };
     use crate::row::{PhysicalKey, StorageRow, StorageSpaceId};
     use strata_core_next::{BranchId, CommitVersion, Timestamp};
 
@@ -188,6 +231,42 @@ mod tests {
             b"alpha".to_vec(),
         )
         .expect("physical key")
+    }
+
+    /// C3b: the matching-key decode accepts the row's own encoded key and
+    /// version, and fails closed on any drift between the block entry's key
+    /// and the row's embedded facts (the byte-compare form of the
+    /// decoded-struct equality it replaces).
+    #[test]
+    fn storage_row_matching_key_accepts_and_rejects_drift() {
+        let row = StorageRow::put(
+            physical_key(),
+            CommitVersion::new(42),
+            Timestamp::from_micros(11),
+            Timestamp::from_micros(99),
+            b"value".to_vec(),
+        );
+        let bytes = encode_storage_row(&row).expect("encode row");
+        let key_bytes = crate::format::encode_physical_key(row.physical_key());
+
+        assert_eq!(
+            decode_storage_row_matching_key(&bytes, &key_bytes, CommitVersion::new(42)),
+            Ok(row)
+        );
+        let mut drifted_key = key_bytes.clone();
+        *drifted_key.last_mut().expect("non-empty key") ^= 0xFF;
+        assert_eq!(
+            decode_storage_row_matching_key(&bytes, &drifted_key, CommitVersion::new(42)),
+            Err(FormatError::InvalidValue {
+                field: "physical_key",
+            })
+        );
+        assert_eq!(
+            decode_storage_row_matching_key(&bytes, &key_bytes, CommitVersion::new(43)),
+            Err(FormatError::InvalidValue {
+                field: "commit_version",
+            })
+        );
     }
 
     #[test]

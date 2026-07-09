@@ -4,14 +4,18 @@ use super::{
     EngineGraphBatchWriteOutcome, EngineGraphBinding, EngineGraphBindingPage,
     EngineGraphBindingPrimitive, EngineGraphBindingTarget, EngineGraphDeleteOutcome,
     EngineGraphDirection, EngineGraphEdge, EngineGraphEdgeData, EngineGraphEdgeType,
-    EngineGraphEdgeWriteOutcome, EngineGraphEntityBinding, EngineGraphInfo, EngineGraphName,
-    EngineGraphNamePage, EngineGraphNeighbor, EngineGraphNeighborPage, EngineGraphNode,
-    EngineGraphNodeData, EngineGraphNodeId, EngineGraphNodePage, EngineGraphProperties,
-    EngineGraphWriteOutcome, ExecutorError, ExecutorResult, GraphBatchItemResult,
-    GraphBatchOperation, GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget,
-    GraphDirection, GraphEdgeData, GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData,
-    GraphNeighborHit, GraphNodeData, GraphNodeDataOutput, MutationEffect, Output, PageInfo,
-    DEFAULT_BRANCH, DEFAULT_SPACE,
+    EngineGraphEdgeWriteOutcome, EngineGraphEntityBinding, EngineGraphInfo, EngineGraphLinkTypeDef,
+    EngineGraphName, EngineGraphNamePage, EngineGraphNeighbor, EngineGraphNeighborPage,
+    EngineGraphNode, EngineGraphNodeData, EngineGraphNodeId, EngineGraphNodePage,
+    EngineGraphObjectTypeDef, EngineGraphOntology, EngineGraphOntologyFreezeOutcome,
+    EngineGraphOntologyStatus, EngineGraphOntologySummary, EngineGraphOntologyWriteOutcome,
+    EngineGraphProperties, EngineGraphPropertyDef, EngineGraphTypeName, EngineGraphWriteOutcome,
+    ExecutorError, ExecutorResult, GraphBatchItemResult, GraphBatchOperation, GraphBindingHit,
+    GraphBindingPrimitive, GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEdgeDataOutput,
+    GraphEntityBinding, GraphInfoData, GraphLinkTypeDefData, GraphLinkTypeSummaryData,
+    GraphNeighborHit, GraphNodeData, GraphNodeDataOutput, GraphObjectTypeDefData,
+    GraphObjectTypeSummaryData, GraphOntologyData, GraphOntologySummaryData, GraphPropertyDef,
+    MutationEffect, Output, PageInfo, DEFAULT_BRANCH, DEFAULT_SPACE,
 };
 
 pub(super) fn graph_name(name: String) -> ExecutorResult<EngineGraphName> {
@@ -52,11 +56,19 @@ pub(super) fn engine_graph_properties(
 }
 
 pub(super) fn engine_graph_node_data(data: GraphNodeData) -> ExecutorResult<EngineGraphNodeData> {
-    let (properties, binding) = data.into_parts();
-    Ok(EngineGraphNodeData::new(
+    let (properties, binding, object_type) = data.into_parts();
+    let mut data = EngineGraphNodeData::new(
         engine_graph_properties(properties)?,
         binding.map(engine_graph_entity_binding).transpose()?,
-    ))
+    );
+    if let Some(object_type) = object_type {
+        data = data.with_object_type(graph_type_name(object_type)?);
+    }
+    Ok(data)
+}
+
+pub(super) fn graph_type_name(name: String) -> ExecutorResult<EngineGraphTypeName> {
+    EngineGraphTypeName::new(name).map_err(ExecutorError::from)
 }
 
 pub(super) fn engine_graph_edge_data(data: GraphEdgeData) -> ExecutorResult<EngineGraphEdgeData> {
@@ -214,6 +226,9 @@ pub(super) fn graph_node_data_output(node: &EngineGraphNode) -> GraphNodeDataOut
             .properties()
             .map(|properties| properties.as_inner().clone()),
         node.data().binding().map(output_graph_entity_binding),
+        node.data()
+            .object_type()
+            .map(|object_type| object_type.as_str().to_owned()),
         node.version().as_u64(),
         node.timestamp().as_micros(),
     )
@@ -396,4 +411,155 @@ pub(super) fn graph_batch_item_effect(item: &EngineGraphBatchOpOutcome) -> Mutat
         return upsert_effect(!created);
     }
     delete_effect(item.deleted_flag() == Some(true))
+}
+
+pub(super) fn engine_graph_property_defs(
+    properties: std::collections::BTreeMap<String, GraphPropertyDef>,
+) -> ExecutorResult<Vec<(String, EngineGraphPropertyDef)>> {
+    properties
+        .into_iter()
+        .map(|(name, def)| {
+            let (value_type, required) = def.into_parts();
+            Ok((
+                name,
+                EngineGraphPropertyDef::new(value_type, required).map_err(ExecutorError::from)?,
+            ))
+        })
+        .collect()
+}
+
+fn output_graph_property_defs(
+    properties: &std::collections::BTreeMap<String, EngineGraphPropertyDef>,
+) -> std::collections::BTreeMap<String, GraphPropertyDef> {
+    properties
+        .iter()
+        .map(|(name, def)| {
+            (
+                name.clone(),
+                GraphPropertyDef::new(def.value_type().map(str::to_owned), def.required()),
+            )
+        })
+        .collect()
+}
+
+fn output_graph_object_type_def(def: &EngineGraphObjectTypeDef) -> GraphObjectTypeDefData {
+    GraphObjectTypeDefData::new(
+        def.name().as_str().to_owned(),
+        output_graph_property_defs(def.properties()),
+    )
+}
+
+fn output_graph_link_type_def(def: &EngineGraphLinkTypeDef) -> GraphLinkTypeDefData {
+    GraphLinkTypeDefData::new(
+        def.name().as_str().to_owned(),
+        def.source().as_str().to_owned(),
+        def.target().as_str().to_owned(),
+        def.cardinality().map(str::to_owned),
+        output_graph_property_defs(def.properties()),
+    )
+}
+
+pub(super) const fn graph_ontology_status(status: EngineGraphOntologyStatus) -> &'static str {
+    match status {
+        EngineGraphOntologyStatus::Draft => "draft",
+        EngineGraphOntologyStatus::Frozen => "frozen",
+    }
+}
+
+pub(super) fn graph_ontology_output(ontology: &EngineGraphOntology) -> GraphOntologyData {
+    GraphOntologyData::new(
+        ontology.graph().as_str().to_owned(),
+        graph_ontology_status(ontology.status()).to_owned(),
+        ontology
+            .object_types()
+            .iter()
+            .map(output_graph_object_type_def)
+            .collect(),
+        ontology
+            .link_types()
+            .iter()
+            .map(output_graph_link_type_def)
+            .collect(),
+        ontology.version().as_u64(),
+        ontology.timestamp().as_micros(),
+    )
+}
+
+pub(super) fn graph_ontology_summary_output(
+    summary: &EngineGraphOntologySummary,
+) -> GraphOntologySummaryData {
+    GraphOntologySummaryData::new(
+        summary.graph().as_str().to_owned(),
+        graph_ontology_status(summary.status()).to_owned(),
+        summary
+            .object_types()
+            .iter()
+            .map(|entry| {
+                GraphObjectTypeSummaryData::new(
+                    output_graph_object_type_def(entry.def()),
+                    entry.node_count(),
+                )
+            })
+            .collect(),
+        summary
+            .link_types()
+            .iter()
+            .map(|entry| {
+                GraphLinkTypeSummaryData::new(
+                    output_graph_link_type_def(entry.def()),
+                    entry.edge_count(),
+                )
+            })
+            .collect(),
+        summary.version().as_u64(),
+        summary.timestamp().as_micros(),
+    )
+}
+
+pub(super) fn graph_ontology_write_output(
+    outcome: &EngineGraphOntologyWriteOutcome,
+    kind: &str,
+) -> Output {
+    let commit = outcome.commit();
+    Output::GraphOntologyWriteResult {
+        graph: outcome.graph().as_str().to_owned(),
+        kind: kind.to_owned(),
+        type_name: outcome.type_name().as_str().to_owned(),
+        created: outcome.created(),
+        effect: upsert_effect(!outcome.created()),
+        commit: commit_receipt(*commit),
+        version: commit.version().as_u64(),
+        timestamp: commit.timestamp().as_micros(),
+    }
+}
+
+pub(super) fn graph_ontology_delete_output(
+    outcome: &EngineGraphDeleteOutcome,
+    kind: &str,
+    type_name: &str,
+) -> Output {
+    Output::GraphOntologyDeleteResult {
+        graph: outcome.graph().as_str().to_owned(),
+        kind: kind.to_owned(),
+        type_name: type_name.to_owned(),
+        deleted: outcome.deleted(),
+        effect: delete_effect(outcome.deleted()),
+        commit: outcome.commit().map(commit_receipt),
+        version: outcome.commit().map(|commit| commit.version().as_u64()),
+        timestamp: outcome
+            .commit()
+            .map(|commit| commit.timestamp().as_micros()),
+    }
+}
+
+pub(super) fn graph_ontology_freeze_output(outcome: &EngineGraphOntologyFreezeOutcome) -> Output {
+    let commit = outcome.commit();
+    Output::GraphOntologyFreezeResult {
+        graph: outcome.graph().as_str().to_owned(),
+        object_types: usize_to_u64(outcome.object_types()),
+        link_types: usize_to_u64(outcome.link_types()),
+        commit: commit_receipt(*commit),
+        version: commit.version().as_u64(),
+        timestamp: commit.timestamp().as_micros(),
+    }
 }

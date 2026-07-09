@@ -193,7 +193,20 @@ fn run_workload(
         print_jemalloc_split("post-load");
         strata_storage_next::perf_trace::reset();
     }
+    // C3a (P4): thread-local jemalloc allocation delta across the
+    // single-threaded run loop — the per-item gate for the C3b strip.
+    let alloc_before = thread_allocated_bytes();
     let run = run_phase(&mut database, config, workload)?;
+    if config.perf_breakdown {
+        if let (Some(before), Some(after)) = (alloc_before, thread_allocated_bytes()) {
+            let delta = after.saturating_sub(before);
+            eprintln!(
+                "  [probe] alloc: run_bytes={} bytes_per_op={:.1}",
+                delta,
+                delta as f64 / config.ops.max(1) as f64,
+            );
+        }
+    }
     // Storage-side attribution of the run phase (requires the perf-trace
     // feature, on for benchmarks): separates commit-stage work from runtime-
     // lock wait and from background maintenance lock holds — the numbers that
@@ -326,11 +339,16 @@ fn run_workload(
             perf.point_selected_inherited(),
         );
         eprintln!(
-            "  [probe] table read: cache hit={} miss={} ins={} skip={} | filter neg={} pos={} absent={} | eager neg={} pos={} unavail={} | seeks={} reader_opens={} point_rows={} cursor_rows={}",
+            "  [probe] table read: cache hit={} miss={} ins={} skip={} evict={} warm_full={} | cache_gb={:.2}/{:.2} entries={} | filter neg={} pos={} absent={} | eager neg={} pos={} unavail={} | seeks={} reader_opens={} point_rows={} cursor_rows={}",
             perf.table_cache_hits(),
             perf.table_cache_misses(),
             perf.table_cache_inserts(),
             perf.table_cache_skipped_inserts(),
+            perf.table_cache_evictions(),
+            perf.table_warm_publish_skipped_full(),
+            perf.table_cache_bytes_gauge() as f64 / (1024.0 * 1024.0 * 1024.0),
+            perf.table_cache_capacity_gauge() as f64 / (1024.0 * 1024.0 * 1024.0),
+            perf.table_cache_entries_gauge(),
             perf.table_filter_negative_probes(),
             perf.table_filter_positive_probes(),
             perf.table_filter_absent_probes(),
@@ -376,16 +394,27 @@ fn run_workload(
     })
 }
 
+/// C3a (P4): this thread's cumulative jemalloc allocation counter.
+fn thread_allocated_bytes() -> Option<u64> {
+    tikv_jemalloc_ctl::thread::allocatedp::mib()
+        .and_then(|mib| mib.read())
+        .map(|counter| counter.get())
+        .ok()
+}
+
 fn print_preheat_probe(label: &str) {
     let perf = strata_storage_next::perf_trace::snapshot();
     eprintln!(
-        "  [probe] preheat {label}: passes={} admitted={} present={} full={} read_mb={:.1} deferred={}",
+        "  [probe] preheat {label}: passes={} admitted={} present={} full={} read_mb={:.1} deferred={} last_pass_blocks={} cache_gb={:.2}/{:.2}",
         perf.table_preheat_passes(),
         perf.table_preheat_blocks_admitted(),
         perf.table_preheat_blocks_skipped_present(),
         perf.table_preheat_blocks_skipped_full(),
         perf.table_preheat_bytes_read() as f64 / (1024.0 * 1024.0),
         perf.table_preheat_deferred(),
+        perf.table_preheat_last_pass_blocks(),
+        perf.table_cache_bytes_gauge() as f64 / (1024.0 * 1024.0 * 1024.0),
+        perf.table_cache_capacity_gauge() as f64 / (1024.0 * 1024.0 * 1024.0),
     );
 }
 

@@ -377,6 +377,16 @@ impl StorageRuntime<'static> {
         }
     }
 
+    /// C3a test seam: shrink the preheat chunk budget so multi-chunk passes
+    /// are constructible on tiny fixtures.
+    #[cfg(test)]
+    #[allow(dead_code, reason = "consumer is gated on localfs + perf-trace")]
+    pub(crate) fn set_cache_preheat_chunk_bytes_for_test(&self, chunk_bytes: u64) {
+        if let StorageRuntimeInner::DurableOwned(slot) = &self.inner {
+            slot.lock().cache_preheat_chunk_bytes_for_test = Some(chunk_bytes);
+        }
+    }
+
     #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn wait_background_idle_until_for_test(
