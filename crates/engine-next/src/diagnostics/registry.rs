@@ -144,7 +144,10 @@ const UNSUPPORTED_CODES: &[&str] = &[
     "unsupported.engine.graph_binding_cross_branch",
 ];
 
-const RESOURCE_EXHAUSTED_CODES: &[&str] = &["resource_exhausted.engine.persistence_budget"];
+const RESOURCE_EXHAUSTED_CODES: &[&str] = &[
+    "resource_exhausted.engine.graph_analytics_budget",
+    "resource_exhausted.engine.persistence_budget",
+];
 
 const CORRUPTION_CODES: &[&str] = &[
     "corruption.engine.persistence_recovery",

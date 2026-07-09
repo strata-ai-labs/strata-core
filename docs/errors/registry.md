@@ -460,6 +460,9 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="not_found.engine.vector_collection"></a>
 - `not_found.engine.vector_collection`
 
+<a id="resource_exhausted.engine.graph_analytics_budget"></a>
+- `resource_exhausted.engine.graph_analytics_budget`
+
 <a id="resource_exhausted.engine.persistence_budget"></a>
 - `resource_exhausted.engine.persistence_budget`
 

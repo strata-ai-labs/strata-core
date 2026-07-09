@@ -27,14 +27,14 @@ use super::{
     decode_graph_node_record, decode_graph_ontology_record, decode_graph_type_index_record,
     encode_graph_binding_record, encode_graph_edge_record, encode_graph_metadata_record,
     encode_graph_node_record, encode_graph_ontology_record, encode_graph_type_index_record,
-    GraphBatchOpOutcome, GraphBatchOperation, GraphBatchWrite, GraphBatchWriteOutcome,
-    GraphBinding, GraphBindingPage, GraphBindingRecord, GraphBindingTarget, GraphDeleteOutcome,
-    GraphDirection, GraphEdge, GraphEdgeRecord, GraphEdgeType, GraphEdgeWriteOutcome, GraphInfo,
-    GraphLinkTypeDef, GraphLinkTypeSummary, GraphName, GraphNamePage, GraphNeighbor,
-    GraphNeighborPage, GraphNode, GraphNodeId, GraphNodePage, GraphNodeRecord, GraphObjectTypeDef,
-    GraphObjectTypeSummary, GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyRecord,
-    GraphOntologySummary, GraphOntologyWriteOutcome, GraphTypeIndexRecord, GraphTypeName,
-    GraphWriteOutcome,
+    GraphAdjacencyIndex, GraphAdjacencyIndexBuilder, GraphAnalyticsBudget, GraphBatchOpOutcome,
+    GraphBatchOperation, GraphBatchWrite, GraphBatchWriteOutcome, GraphBinding, GraphBindingPage,
+    GraphBindingRecord, GraphBindingTarget, GraphDeleteOutcome, GraphDirection, GraphEdge,
+    GraphEdgeRecord, GraphEdgeType, GraphEdgeWriteOutcome, GraphInfo, GraphLinkTypeDef,
+    GraphLinkTypeSummary, GraphName, GraphNamePage, GraphNeighbor, GraphNeighborPage, GraphNode,
+    GraphNodeId, GraphNodePage, GraphNodeRecord, GraphObjectTypeDef, GraphObjectTypeSummary,
+    GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyRecord, GraphOntologySummary,
+    GraphOntologyWriteOutcome, GraphTypeIndexRecord, GraphTypeName, GraphWriteOutcome,
 };
 
 type EdgeIdentity = (GraphNodeId, GraphEdgeType, GraphNodeId);
@@ -1379,6 +1379,71 @@ impl<'a> GraphService<'a> {
             selector,
             None,
         )
+    }
+
+    /// Builds an in-memory adjacency snapshot of the graph's visible
+    /// nodes and edges at one consistent read — the substrate for the
+    /// traversal and analytics stages. Refuses graphs beyond `budget`
+    /// with `resource_exhausted.engine.graph_analytics_budget` instead
+    /// of exhausting memory.
+    pub fn adjacency_index(
+        &mut self,
+        graph: &GraphName,
+        budget: &GraphAnalyticsBudget,
+    ) -> EngineResult<GraphAdjacencyIndex> {
+        self.adjacency_index_with_selector(graph, budget, ReadSelector::Latest)
+    }
+
+    /// Builds the adjacency snapshot visible at a commit version.
+    pub fn adjacency_index_at_version(
+        &mut self,
+        graph: &GraphName,
+        budget: &GraphAnalyticsBudget,
+        version: CommitVersion,
+    ) -> EngineResult<GraphAdjacencyIndex> {
+        self.adjacency_index_with_selector(graph, budget, ReadSelector::AtVersion(version))
+    }
+
+    /// Builds the adjacency snapshot visible at a timestamp.
+    pub fn adjacency_index_at(
+        &mut self,
+        graph: &GraphName,
+        budget: &GraphAnalyticsBudget,
+        timestamp: Timestamp,
+    ) -> EngineResult<GraphAdjacencyIndex> {
+        self.adjacency_index_with_selector(graph, budget, ReadSelector::AtTimestamp(timestamp))
+    }
+
+    fn adjacency_index_with_selector(
+        &mut self,
+        graph: &GraphName,
+        budget: &GraphAnalyticsBudget,
+        selector: ReadSelector,
+    ) -> EngineResult<GraphAdjacencyIndex> {
+        let record = self.branch_record()?;
+        self.require_graph_with_selector(&record, graph, selector)?;
+        let mut builder = GraphAdjacencyIndexBuilder::new(graph.clone(), *budget);
+        for row in self.node_rows(&record, graph, selector)? {
+            if row.is_tombstone() {
+                continue;
+            }
+            let (_, node_id) = decode_graph_node_key(&self.space, row.key())?;
+            builder.add_node(node_id)?;
+        }
+        builder.finish_nodes();
+        for row in self.edge_rows(&record, graph, selector)? {
+            if row.is_tombstone() {
+                continue;
+            }
+            let edge = self.edge_record_from_forward_row(&row)?;
+            builder.add_edge(
+                edge.src(),
+                edge.edge_type(),
+                edge.dst(),
+                edge.data().weight(),
+            )?;
+        }
+        Ok(builder.finish())
     }
 
     fn ontology_address(&self, record: &BranchCatalogRecord, graph: &GraphName) -> RowAddress {
