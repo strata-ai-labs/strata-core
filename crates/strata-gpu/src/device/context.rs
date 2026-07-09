@@ -4,11 +4,11 @@ use std::sync::Arc;
 
 use tracing::info;
 
-use crate::driver::{
+use crate::device::driver::{
     CuContext, DriverApi, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
     CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
 };
-use crate::error::GpuError;
+use crate::device::error::GpuError;
 
 /// Consumer-GPU floor (HT-8): Ampere and newer.
 const COMPUTE_CAPABILITY_FLOOR: (i32, i32) = (8, 0);

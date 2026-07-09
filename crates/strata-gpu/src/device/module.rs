@@ -9,10 +9,10 @@ use std::ffi::CString;
 use std::os::raw::c_void;
 use std::sync::Arc;
 
-use crate::context::GpuContext;
-use crate::driver::{CuFunction, CuModule, DriverApi};
-use crate::error::GpuError;
-use crate::stream::Stream;
+use crate::device::context::GpuContext;
+use crate::device::driver::{CuFunction, CuModule, DriverApi};
+use crate::device::error::GpuError;
+use crate::device::stream::Stream;
 
 /// A JIT-compiled PTX module with named kernels resolved eagerly.
 pub struct PtxModule {

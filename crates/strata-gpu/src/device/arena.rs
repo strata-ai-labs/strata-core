@@ -6,9 +6,9 @@
 //! (HT-7). Fixed-size slot allocation inside a region is pure host math and
 //! unit-tests without hardware.
 
-use crate::context::GpuContext;
-use crate::driver::{DevicePtr, DriverApi};
-use crate::error::GpuError;
+use crate::device::context::GpuContext;
+use crate::device::driver::{DevicePtr, DriverApi};
+use crate::device::error::GpuError;
 use std::sync::Arc;
 
 /// Region alignment: matches the design's page alignment (§4) and satisfies

@@ -9,8 +9,8 @@
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 
-use crate::dl::DynLib;
-use crate::error::GpuError;
+use crate::device::dl::DynLib;
+use crate::device::error::GpuError;
 
 /// Raw device pointer (`CUdeviceptr`).
 pub type DevicePtr = u64;

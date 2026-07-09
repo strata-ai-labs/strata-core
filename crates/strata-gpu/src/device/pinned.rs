@@ -6,9 +6,9 @@
 use std::os::raw::c_void;
 use std::sync::Arc;
 
-use crate::context::GpuContext;
-use crate::driver::DriverApi;
-use crate::error::GpuError;
+use crate::device::context::GpuContext;
+use crate::device::driver::DriverApi;
+use crate::device::error::GpuError;
 
 /// An owned pinned host buffer.
 pub struct PinnedBuffer {

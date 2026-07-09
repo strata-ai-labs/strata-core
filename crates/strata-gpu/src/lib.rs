@@ -1,38 +1,32 @@
-//! Device runtime for the Strata GPU hot tier.
+//! The GPU workstream crate: everything Strata runs on a device lives here.
 //!
-//! Wraps the CUDA driver API loaded at runtime via `dlopen` — no CUDA
-//! toolkit at build time, no link-time dependency; a machine without a
-//! driver gets a clean `unavailable.gpu.driver_missing` error, never a
-//! build or load failure. The pattern is extracted from the proven
-//! strata-inference engine and generalized for the hot tier
-//! (`docs/design/gpu-hot-tier.md` §3).
+//! One crate, two layers (`docs/design/gpu-hot-tier.md` §2):
 //!
-//! What lives here: driver loading, one context per device, the tier's
-//! streams and events, PTX module JIT, the pre-reserved device arena, and
-//! pinned host pools. What does not: tier semantics (page tables,
-//! promotion, eviction) — those live in `strata-tier` against a backend
-//! trait so they stay testable without hardware.
+//! - [`device`](crate::device) *(internal)* — the runtime: CUDA driver
+//!   loaded at runtime via `dlopen` (no toolkit at build time, no link-time
+//!   dependency; driverless machines get a clean typed error), one context
+//!   per device, the pre-reserved arena, streams/events, pinned host
+//!   memory, and PTX JIT. Extracted from the proven strata-inference
+//!   engine. This module is the crate's only `unsafe` territory.
+//! - `tier` *(GT1+)* — the hot-tier semantics: page pool and page table,
+//!   epoch pinning with event-fenced slot reuse, promotion/eviction,
+//!   write-behind to the store of record. Safe Rust against a backend
+//!   trait, so all machinery tests on a host-sim backend in CI.
 //!
-//! # Unsafe policy
-//!
-//! This crate is the workspace's audited-unsafe island for device work
-//! (the inference-next `local/` discipline): every `unsafe` block wraps a
-//! driver FFI call or pointer handoff and carries a `SAFETY` comment.
-//! Consumers (`strata-tier` and above) stay `#![deny(unsafe_code)]`.
+//! The unsafe policy is module-scoped (the inference-next `local/`
+//! discipline, workspace rule 38): the crate denies `unsafe_code`; only
+//! `device/` may allow it, and every unsafe block there wraps a single
+//! driver call with a `SAFETY` note.
 
-mod arena;
-mod context;
-mod dl;
-mod driver;
-mod error;
-mod module;
-mod pinned;
-mod stream;
+#![deny(unsafe_code)]
 
-pub use arena::{DeviceArena, RegionSpec, SlotAllocator, SlotRegion};
-pub use context::{DeviceFacts, GpuContext};
-pub use driver::DevicePtr;
-pub use error::GpuError;
-pub use module::PtxModule;
-pub use pinned::PinnedBuffer;
-pub use stream::{Event, Stream};
+#[allow(unsafe_code)]
+mod device;
+
+pub use device::arena::{DeviceArena, RegionSpec, SlotAllocator, SlotRegion};
+pub use device::context::{DeviceFacts, GpuContext};
+pub use device::driver::DevicePtr;
+pub use device::error::GpuError;
+pub use device::module::PtxModule;
+pub use device::pinned::PinnedBuffer;
+pub use device::stream::{Event, Stream};

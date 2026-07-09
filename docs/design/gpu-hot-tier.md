@@ -31,7 +31,7 @@ unlock depends on Lithos's models or Moho's kernels existing.
 | D6 | fp8 pages / attention numerics | Not the tier's decision: pages are opaque bytes. The tier guarantees alignment and size only. (Quantization is Moho/Lithos co-design.) | 4 |
 | D7 | Eviction safety (HT-1 refcounting) | Epoch pinning + event-fenced slot reuse instead of per-page device refcounts — no host syncs, satisfies "never evicted under an in-flight step" | 5 |
 | D8 | Adjacency form | Bounded-degree adjacency table (slot-major, fixed fan-out F) at v0, not general CSR; one-hop bounded expansion is the requirement, the table is the simplest structure that serves it | 8 |
-| D9 | Where the code lives | In-workspace non-default crates (`crates/strata-gpu`, `crates/strata-tier`), the wasm-next pattern: feature-isolated, CI-checked, rides the V1 rewrite | 2 |
+| D9 | Where the code lives | ONE in-workspace non-default crate (`crates/strata-gpu`) holding the whole GPU workstream — `device/` runtime + `tier/` semantics as modules; the workspace stays product-shaped | 2 |
 | D10 | Testing without a GPU fleet | Backend trait with `cuda` and `host-sim` implementations; all machinery testable in CI on CPU, CUDA specifics tested on the dev 4070S | 11 |
 | D11 | New (not in requirements) | **HT-11: COW page-table fork** — forkable working memory. Designed in from day 0 via page immutability; implemented after the core loop | 9 |
 
@@ -40,25 +40,28 @@ unlock depends on Lithos's models or Moho's kernels existing.
 ## 2. Crate architecture
 
 ```text
-crates/strata-gpu     device runtime: driver loading, context, streams, events,
-                      arena + pinned pools, PTX module cache   (audited unsafe)
-crates/strata-tier    the tier: page pool, page table, promotion/eviction,
-                      summaries, adjacency, write-behind, API   (safe Rust)
-                        └── consumes strata-gpu + engine-next public surface
-python: strata_tier   PyO3 binding over strata-tier: DLPack, numpy-free
+crates/strata-gpu     ONE crate for the whole GPU workstream (the workspace
+                      stays product-shaped; Strata is more than this track):
+  src/device/         runtime: driver loading, context, streams, events,
+                      arena + pinned pools, PTX JIT     (the only unsafe)
+  src/tier/           page pool, page table, promotion/eviction, summaries,
+                      adjacency, write-behind, API      (safe Rust)
+                        └── consumes engine-next public surface
+python: strata_tier   PyO3 binding over strata-gpu: DLPack, numpy-free
 ```
 
 Rules:
 
-- `strata-tier` imports **engine-next's public (D4) surface only** — it is a
+- The tier layer imports **engine-next's public (D4) surface only** — it is a
   consumer like the executor, never a storage-next importer. The one
   anticipated D4 addition is a batched page-read call sized for promotion
   (§6); until approved, `kv_batch_get` suffices.
-- `#![deny(unsafe_code)]` in `strata-tier`. All unsafe (FFI, device pointers)
-  lives in `strata-gpu`, isolated and audited — the inference-next `local/`
-  discipline.
-- Both crates are **workspace members but not default-members**; native builds
-  without the `cuda` feature compile the full logic against `host-sim` (§11).
+- `#![deny(unsafe_code)]` at the crate root; only `src/device/` carries
+  `#[allow(unsafe_code)]` — module-scoped isolation, the inference-next
+  `local/` discipline (workspace rule 38). The tier layer is safe Rust.
+- The crate is a **workspace member but not a default-member**; the tier
+  machinery compiles and tests against `host-sim` (§11) with no GPU. Device
+  tests are `#[ignore]`d and run explicitly on hardware.
 - Naming: no `-next` suffix. These crates are not part of the V1 cutover
   train; they track engine-next's public surface and take the one-line rename
   when M9B sheds suffixes.
@@ -250,7 +253,7 @@ sizes).
 
 ## 11. Backends and testing (D10)
 
-`strata-tier` is written against a `DeviceBackend` trait implemented twice:
+The tier layer is written against a `DeviceBackend` trait implemented twice:
 
 - **`cuda`** — real: `strata-gpu` arena, streams, events, kernels.
 - **`host-sim`** — plain host memory; "streams" are FIFO queues drained
