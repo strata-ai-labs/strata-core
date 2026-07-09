@@ -17,8 +17,10 @@
 //! therefore exactly the engine's: everything up to the last receipt is
 //! durable, later appends are not (bounded by the tier's backlog cap).
 
+use std::sync::{Arc, Mutex};
+
 use strata_engine_next::{
-    BranchName, Database, DurableLocalOpenOptions, KvKey, KvValue, ProductSpace,
+    BranchName, Database, DurableLocalOpenOptions, KvKey, KvService, KvValue, ProductSpace,
 };
 
 use crate::tier::page_table::PageId;
@@ -32,8 +34,13 @@ const META_PREFIX: &[u8] = b"meta/";
 const MANIFEST_BYTES: usize = 16;
 
 /// The engine-backed store of record.
+///
+/// The database handle is shared across a fork family (HT-11): forked
+/// stores are branch-scoped views over one engine instance, so it sits
+/// behind a lock with the tier's guard discipline — locked per operation,
+/// one thread drives a family.
 pub struct EnginePageStore {
-    database: Database,
+    database: Arc<Mutex<Database>>,
     branch: BranchName,
     space: ProductSpace,
 }
@@ -44,14 +51,21 @@ impl EnginePageStore {
     pub fn open(path: impl Into<std::path::PathBuf>, space: &str) -> Result<Self, GpuError> {
         let outcome = Database::open_local(path, DurableLocalOpenOptions::new())
             .map_err(store_error("open_local"))?;
-        let database = outcome.into_database();
-        let branch = database.default_branch().clone();
-        let space = ProductSpace::new(space).map_err(store_error("space"))?;
-        Ok(Self {
-            database,
-            branch,
-            space,
-        })
+        Self::from_database(outcome.into_database(), space)
+    }
+
+    /// Opens the database and binds the tier's rows to `space` on a named
+    /// branch — reopening a forked branch of record (HT-11c). The branch
+    /// must exist; the first read (the tier's manifest check at open)
+    /// refuses otherwise.
+    pub fn open_on_branch(
+        path: impl Into<std::path::PathBuf>,
+        space: &str,
+        branch: &str,
+    ) -> Result<Self, GpuError> {
+        let mut store = Self::open(path, space)?;
+        store.branch = BranchName::new(branch).map_err(store_error("branch_name"))?;
+        Ok(store)
     }
 
     /// Wraps an already-open database handle (the embedding case: the tier
@@ -60,29 +74,86 @@ impl EnginePageStore {
         let branch = database.default_branch().clone();
         let space = ProductSpace::new(space).map_err(store_error("space"))?;
         Ok(Self {
-            database,
+            database: Arc::new(Mutex::new(database)),
             branch,
             space,
         })
     }
 
-    /// Closes the underlying database (flushes engine state).
+    /// Forks the branch of record (HT-11c): creates `branch` from this
+    /// branch's current head, so the child sees every page durable here at
+    /// the fork point — manifest, page rows, and watermark all travel with
+    /// the branch — and diverges after. Pass the returned store to
+    /// `Tier::fork`; the tier's flushed-parent refusal guarantees the fork
+    /// point covers the whole working set.
+    pub fn fork(&self, branch: &str) -> Result<Self, GpuError> {
+        let name = BranchName::new(branch).map_err(store_error("fork_branch_name"))?;
+        {
+            let mut database = self.database.lock().expect("database lock poisoned");
+            let mut branches = database.branches().map_err(store_error("branches"))?;
+            branches
+                .fork_current(&self.branch, name.clone())
+                .map_err(store_error("fork_current"))?;
+        }
+        Ok(Self {
+            database: Arc::clone(&self.database),
+            branch: name,
+            space: self.space.clone(),
+        })
+    }
+
+    /// The branch of record this store reads and writes.
+    #[must_use]
+    pub fn branch(&self) -> &BranchName {
+        &self.branch
+    }
+
+    /// Closes the underlying database (flushes engine state). The handle
+    /// is family-shared: closing through any store closes them all;
+    /// repeat closes are idempotent.
     pub fn close(&mut self) -> Result<(), GpuError> {
-        self.database.close().map_err(store_error("close"))?;
+        let mut database = self.database.lock().expect("database lock poisoned");
+        database.close().map_err(store_error("close"))?;
         Ok(())
     }
 
-    fn kv(&mut self) -> Result<strata_engine_next::KvService<'_>, GpuError> {
-        self.database
+    /// Runs one KV operation on this store's branch and space, holding the
+    /// family database lock for exactly that operation.
+    fn with_kv<T>(
+        &mut self,
+        f: impl FnOnce(&mut KvService<'_>) -> Result<T, GpuError>,
+    ) -> Result<T, GpuError> {
+        let mut database = self.database.lock().expect("database lock poisoned");
+        let mut kv = database
             .kv(self.branch.clone(), self.space.clone())
-            .map_err(store_error("kv_service"))
+            .map_err(store_error("kv_service"))?;
+        f(&mut kv)
     }
 
     fn get_row(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, GpuError> {
         let key = kv_key(key)?;
-        let mut kv = self.kv()?;
-        let value = kv.get(&key).map_err(store_error("get"))?;
-        Ok(value.map(KvValue::into_bytes))
+        self.with_kv(|kv| {
+            let value = kv.get(&key).map_err(store_error("get"))?;
+            Ok(value.map(KvValue::into_bytes))
+        })
+    }
+}
+
+impl<B: crate::tier::backend::DeviceBackend> crate::tier::tier::Tier<B, EnginePageStore> {
+    /// The canonical fork call for engine-backed tiers: forks the handle
+    /// and its branch of record in one step. Refuses an unflushed parent
+    /// *before* creating the branch, so a refusal leaves no orphaned
+    /// branch behind — the two-step form (`tier.fork(store.fork(..))`)
+    /// creates the branch first and would strand it on refusal. The
+    /// generic `Tier::fork(store)` remains the machinery seam for test
+    /// backends.
+    pub fn fork_branch(&self, branch: &str) -> Result<Self, GpuError> {
+        if self.write_backlog() > 0 {
+            return Err(GpuError::ForkUnflushed {
+                queued: self.write_backlog(),
+            });
+        }
+        self.fork(self.store().fork(branch)?)
     }
 }
 
@@ -171,8 +242,7 @@ impl PageStore for EnginePageStore {
             keys.push(page_key(*id)?);
             keys.push(meta_key(*id)?);
         }
-        let mut kv = self.kv()?;
-        let rows = kv.batch_get(&keys).map_err(store_error("batch_get"))?;
+        let rows = self.with_kv(|kv| kv.batch_get(&keys).map_err(store_error("batch_get")))?;
         let mut blobs = Vec::with_capacity(ids.len());
         for pair in rows.chunks_exact(2) {
             let blob = match (&pair[0], &pair[1]) {
@@ -208,8 +278,7 @@ impl PageStore for EnginePageStore {
             kv_key(WATERMARK_KEY)?,
             KvValue::new(watermark.0.to_be_bytes().to_vec()),
         ));
-        let mut kv = self.kv()?;
-        let outcome = kv.put_batch(rows).map_err(store_error("put_batch"))?;
+        let outcome = self.with_kv(|kv| kv.put_batch(rows).map_err(store_error("put_batch")))?;
         Ok(CommitReceipt {
             version: outcome.version().as_u64(),
             timestamp: outcome.timestamp().as_micros(),
@@ -242,10 +311,11 @@ impl PageStore for EnginePageStore {
         bytes.extend_from_slice(&manifest.page_bytes.to_le_bytes());
         bytes.extend_from_slice(&manifest.summary_bytes.to_le_bytes());
         let key = kv_key(MANIFEST_KEY)?;
-        let mut kv = self.kv()?;
-        kv.put(key, KvValue::new(bytes))
-            .map_err(store_error("write_manifest"))?;
-        Ok(())
+        self.with_kv(|kv| {
+            kv.put(key, KvValue::new(bytes))
+                .map_err(store_error("write_manifest"))?;
+            Ok(())
+        })
     }
 
     fn watermark(&mut self) -> Result<Option<PageId>, GpuError> {
