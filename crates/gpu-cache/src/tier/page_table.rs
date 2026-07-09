@@ -14,6 +14,7 @@
 //!    — i.e. after every step that could have selected the slot has drained.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::device::arena::{SlotAllocator, SlotRegion};
 use crate::tier::backend::CopyFence;
@@ -43,9 +44,67 @@ pub struct SlotState {
     pub resident_neighbors: u32,
 }
 
-/// The host-authoritative page table.
-pub struct PageTable<F: CopyFence> {
+/// The shared slot authority: one per device pool, shared by every tier
+/// handle over it (HT-11). Owns which slots are allocated and how many
+/// handles reference each one — the design's "table-count". A slot returns
+/// to the allocator only when its last reference is released; per-handle
+/// fence gating stays in each handle's [`PageTable`], so the reuse
+/// invariant (§5) is enforced by the releasing handle before it releases.
+pub(crate) struct SlotPool {
     slots: SlotAllocator,
+    /// Handle references per slot.
+    refs: Vec<u32>,
+}
+
+impl SlotPool {
+    fn new(region_len: u64, page_bytes: u64) -> Result<Self, GpuError> {
+        let region = SlotRegion {
+            name: "pages",
+            base: 0, // the pool speaks region *offsets*; the backend owns bases
+            len: region_len,
+        };
+        let slots = SlotAllocator::new(region, page_bytes)?;
+        let capacity = slots.capacity() as usize;
+        Ok(Self {
+            slots,
+            refs: vec![0; capacity],
+        })
+    }
+
+    /// Takes a free slot with one reference (the placing handle's).
+    fn alloc(&mut self) -> Option<u32> {
+        let slot = self.slots.alloc()?;
+        self.refs[slot as usize] = 1;
+        Some(slot)
+    }
+
+    /// Drops one handle's reference. The slot returns to the allocator at
+    /// zero; `true` reports that it actually freed.
+    fn release(&mut self, slot: u32) -> bool {
+        let refs = &mut self.refs[slot as usize];
+        debug_assert!(*refs > 0, "release of unreferenced slot {slot}");
+        *refs = refs.saturating_sub(1);
+        if *refs == 0 {
+            self.slots.release(slot);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn allocated(&self) -> u32 {
+        self.slots.allocated()
+    }
+}
+
+/// The host-authoritative page table: one per tier handle. Slot allocation
+/// goes through the [`SlotPool`] shared across handles; everything else —
+/// id→slot mapping, per-slot metadata, epoch pinning, fence-gated reuse —
+/// is this handle's own view.
+pub struct PageTable<F: CopyFence> {
+    pool: Arc<Mutex<SlotPool>>,
+    page_bytes: u64,
+    capacity: u32,
     entries: Vec<Option<SlotState>>,
     id_to_slot: HashMap<PageId, u32>,
     epoch: Epoch,
@@ -59,24 +118,28 @@ pub struct PageTable<F: CopyFence> {
 }
 
 impl<F: CopyFence> PageTable<F> {
-    /// Builds a table over a page region with `page_bytes` slots.
+    /// Builds a table over a page region with `page_bytes` slots, creating
+    /// a fresh slot pool (HT-11 fork shares the pool instead).
     pub fn new(region_len: u64, page_bytes: u64) -> Result<Self, GpuError> {
-        let region = SlotRegion {
-            name: "pages",
-            base: 0, // the table speaks region *offsets*; the backend owns bases
-            len: region_len,
-        };
-        let slots = SlotAllocator::new(region, page_bytes)?;
-        let capacity = slots.capacity() as usize;
+        let pool = SlotPool::new(region_len, page_bytes)?;
+        let capacity = pool.slots.capacity();
         Ok(Self {
-            slots,
-            entries: vec![None; capacity],
-            id_to_slot: HashMap::with_capacity(capacity),
+            pool: Arc::new(Mutex::new(pool)),
+            page_bytes,
+            capacity,
+            entries: vec![None; capacity as usize],
+            id_to_slot: HashMap::with_capacity(capacity as usize),
             epoch: 0,
             epoch_fences: BTreeMap::new(),
             reuse_gates: Vec::new(),
             scan_cursor: 0,
         })
+    }
+
+    /// Locks the shared pool. Scoped to one operation at every call site —
+    /// never held across other table calls.
+    fn pool(&self) -> MutexGuard<'_, SlotPool> {
+        self.pool.lock().expect("slot pool lock poisoned")
     }
 
     /// Current epoch.
@@ -88,13 +151,13 @@ impl<F: CopyFence> PageTable<F> {
     /// Total slot capacity.
     #[must_use]
     pub const fn capacity(&self) -> u32 {
-        self.slots.capacity()
+        self.capacity
     }
 
-    /// Resident (placed) pages, selectable or not.
+    /// Pages resident in *this handle's* table (selectable or not).
     #[must_use]
     pub fn resident(&self) -> u32 {
-        self.slots.allocated() - u32::try_from(self.reuse_gates.len()).unwrap_or(u32::MAX)
+        u32::try_from(self.id_to_slot.len()).unwrap_or(u32::MAX)
     }
 
     /// Begins the next step: installs `fence` for the epoch that just
@@ -105,10 +168,11 @@ impl<F: CopyFence> PageTable<F> {
         self.epoch
     }
 
-    /// Byte offset of a slot in the page region.
+    /// Byte offset of a slot in the page region (offsets are pure geometry:
+    /// slot × page size from a zero base).
     #[must_use]
     pub const fn slot_offset(&self, slot: u32) -> u64 {
-        self.slots.slot_ptr(slot)
+        slot as u64 * self.page_bytes
     }
 
     /// Takes a free slot for `page_id` (unselectable until [`Self::activate`]).
@@ -118,7 +182,7 @@ impl<F: CopyFence> PageTable<F> {
         if self.id_to_slot.contains_key(&page_id) {
             return None; // already resident or in flight; callers dedup, this backstops
         }
-        let slot = self.slots.alloc()?;
+        let slot = self.pool().alloc()?;
         self.entries[slot as usize] = Some(SlotState {
             page_id,
             valid: false,
@@ -228,7 +292,7 @@ impl<F: CopyFence> PageTable<F> {
         if let Some(state) = self.entries[slot as usize].take() {
             debug_assert!(!state.valid, "abort_place on an activated slot");
             self.id_to_slot.remove(&state.page_id);
-            self.slots.release(slot);
+            self.pool().release(slot);
         }
     }
 
@@ -257,8 +321,9 @@ impl<F: CopyFence> PageTable<F> {
     /// the allocator. Returns how many opened.
     pub fn sweep_reusable(&mut self) -> u32 {
         let mut opened = 0;
-        let mut remaining = Vec::with_capacity(self.reuse_gates.len());
-        for (slot, gate_epoch) in self.reuse_gates.drain(..) {
+        let gates = std::mem::take(&mut self.reuse_gates);
+        let mut remaining = Vec::with_capacity(gates.len());
+        for (slot, gate_epoch) in gates {
             // The gate's fence is installed by step_begin(gate_epoch + 1);
             // until then the epoch is still producing work and the gate holds.
             let complete = self
@@ -266,7 +331,7 @@ impl<F: CopyFence> PageTable<F> {
                 .get(&gate_epoch)
                 .is_some_and(CopyFence::is_complete);
             if complete {
-                self.slots.release(slot);
+                self.pool().release(slot);
                 opened += 1;
             } else {
                 remaining.push((slot, gate_epoch));
@@ -288,10 +353,11 @@ impl<F: CopyFence> PageTable<F> {
         self.reuse_gates.len()
     }
 
-    /// Free slots available right now.
+    /// Free slots available right now (pool-wide: a slot referenced by any
+    /// handle is not free).
     #[must_use]
     pub fn free_now(&self) -> u32 {
-        self.capacity() - self.slots.allocated()
+        self.capacity() - self.pool().allocated()
     }
 }
 

@@ -5,6 +5,8 @@
 //! contract those layers sit on: request/append/maintain with the fence
 //! discipline, and stats that make degradation observable (HT-9).
 
+use std::sync::{Arc, Mutex, MutexGuard};
+
 use crate::tier::backend::{DeviceBackend, Region, RegionBytes, TagFilter};
 use crate::tier::eviction;
 use crate::tier::page_table::{Epoch, PageId, PageTable};
@@ -87,7 +89,11 @@ pub enum RequestOutcome {
 pub struct Tier<B: DeviceBackend, S: PageStore> {
     table: PageTable<B::Fence>,
     scheduler: PromotionScheduler<B::Fence>,
-    backend: B,
+    /// The shared device core: arena, streams, kernels. Handles created by
+    /// `fork` (HT-11) share it, so it sits behind a lock; every acquisition
+    /// is scoped to a single backend operation — a guard is never held
+    /// across another tier call.
+    backend: Arc<Mutex<B>>,
     store: S,
     config: TierConfig,
     stats: TierStats,
@@ -167,7 +173,7 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
         })?;
         let table = PageTable::new(slots * config.page_bytes, config.page_bytes)?;
         Ok(Self {
-            backend,
+            backend: Arc::new(Mutex::new(backend)),
             store,
             table,
             scheduler: PromotionScheduler::new(),
@@ -183,9 +189,14 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
         })
     }
 
+    /// Locks the shared device backend for one operation.
+    fn device(&self) -> MutexGuard<'_, B> {
+        self.backend.lock().expect("backend lock poisoned")
+    }
+
     /// Begins a decode step: fences the finished epoch and bumps the clock.
     pub fn step_begin(&mut self) -> Result<Epoch, GpuError> {
-        let fence = self.backend.fence_now()?;
+        let fence = self.device().fence_now()?;
         Ok(self.table.step_begin(fence))
     }
 
@@ -400,16 +411,16 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
             tag_bytes[i * 8..i * 8 + 8].copy_from_slice(&tag.to_le_bytes());
         }
         let copied = (|| {
-            self.backend
+            self.device()
                 .copy_in(Region::Pages, page_offset, &blob.bytes)?;
-            self.backend
+            self.device()
                 .copy_in(Region::Summaries, summary_offset, &blob.summary)?;
-            self.backend
+            self.device()
                 .copy_in(Region::Tags, u64::from(slot) * 32, &tag_bytes)?;
             for row in dirty_rows {
                 self.write_adjacency_row(row)?;
             }
-            self.backend.fence_now()
+            self.device().fence_now()
         })();
         if let Ok(fence) = copied {
             self.scheduler.track(page_id, slot, fence);
@@ -425,7 +436,7 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
     /// the last write, so kernels never see a partially-installed page.
     fn activate_slot(&mut self, slot: u32) {
         if self
-            .backend
+            .device()
             .copy_in(Region::Validity, u64::from(slot), &[1])
             .is_err()
         {
@@ -470,7 +481,7 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
         for (j, neighbor) in self.slot_adj[slot as usize].iter().enumerate() {
             row[j * 4..j * 4 + 4].copy_from_slice(&neighbor.to_le_bytes());
         }
-        self.backend
+        self.device()
             .copy_in(
                 Region::Adjacency,
                 u64::from(slot) * (degree as u64) * 4,
@@ -494,7 +505,7 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
                 detail: format!("k must be in 1..={MAX_K}, got {k}"),
             });
         }
-        let fence = self.backend.topk(query, k, expand_budget, filter)?;
+        let fence = self.device().topk(query, k, expand_budget, filter)?;
         self.selection_fence = Some(fence);
         Ok(())
     }
@@ -502,7 +513,7 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
     /// Enqueues the contiguous gather of the most recent selection into the
     /// materialize region (`[k, page_bytes]`, pad rows zeroed).
     pub fn materialize_enqueue(&mut self) -> Result<(), GpuError> {
-        let fence = self.backend.materialize_topk()?;
+        let fence = self.device().materialize_topk()?;
         self.selection_fence = Some(fence);
         Ok(())
     }
@@ -554,8 +565,8 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
                 });
             }
         }
-        self.backend.topk(query, k, expand_budget, filter)?;
-        let readback = self.backend.read_topk()?;
+        self.device().topk(query, k, expand_budget, filter)?;
+        let readback = self.device().read_topk()?;
         let mut selected = Vec::with_capacity(readback.selected.len());
         for (slot, score) in readback.selected {
             if let Some(state) = self.table.state(slot) {
@@ -589,7 +600,7 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
             };
             // Unselectable on the device first, then host bookkeeping.
             if self
-                .backend
+                .device()
                 .copy_in(Region::Validity, u64::from(victim), &[0])
                 .is_err()
             {
@@ -650,15 +661,17 @@ impl<B: DeviceBackend, S: PageStore> Tier<B, S> {
         self.table.capacity()
     }
 
-    /// Backend access for test oracles.
-    #[must_use]
-    pub fn backend(&self) -> &B {
-        &self.backend
+    /// Backend access for test oracles and device-address seams. Returns
+    /// the shared-core lock guard — scope it to one statement; holding it
+    /// across another call on this (or a forked) tier deadlocks.
+    pub fn backend(&self) -> MutexGuard<'_, B> {
+        self.device()
     }
 
-    /// Mutable backend access for fault knobs in tests.
-    pub fn backend_mut(&mut self) -> &mut B {
-        &mut self.backend
+    /// Mutable backend access for fault knobs in tests. Same guard contract
+    /// as [`Self::backend`].
+    pub fn backend_mut(&mut self) -> MutexGuard<'_, B> {
+        self.device()
     }
 
     /// Store access for test oracles.
