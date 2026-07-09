@@ -1023,6 +1023,106 @@ medians of 3:
   `--features perf-trace` at the C1 baseline too (commit/api perf-count
   asserts); tracked for a separate fix.
 
+## C3a — preheat coverage convergence: the miss floor to ZERO (2026-07-09, d45eb2af + d6fde965)
+
+`c-campaign-60-70.md` C3, commit 1: kill C2's residual ~6% miss floor and land
+the probes that make cache claims checkable. Two mechanisms, both found by the
+new probes rather than by theory (two prior theories falsified en route):
+
+1. **Dead-block pool pinning.** The capped quarantine sweep leaves ~260K
+   dead-table blocks in the pool; the occupancy gauges showed 15.0/15.0 GB
+   "full" with the live set at ~10.7 GB. Fix: `TableBlockCache::
+   retain_tables(live)` purge at fresh-pass START and pass COMPLETION —
+   the cache converges to exactly the live set.
+2. **Pressure self-throttle.** Preheat gated on global memory pressure that
+   its own fill raised, freezing coverage at ~85%. Fix:
+   `global_pressure_excluding(cache bytes)` — the pool is self-evicting and
+   budget-bounded, so preheat now gates on non-cache pressure only (80%
+   high-water).
+
+Plus the trigger/chaining state machine (`rearm`/`cursor`/`paused`): a
+mid-pass table install now survives to a follow-up fresh pass (C2 consumed
+the trigger at every chunk start, permanently skipping tables sorted before
+the resume cursor); deferrals pause keeping the cursor (resume ≠ restart).
+
+New probes (perf-trace): table-cache eviction counter, bytes/entries/capacity
+occupancy gauges (gauges excluded from `reset()`), warm-publish SkippedFull
+counter, `last_pass_blocks` gauge, and a bench-side jemalloc
+`[probe] alloc: bytes_per_op` around the run loop — the C3b gate.
+
+Settled C, 10M x 1KB, 500K ops, 32g, settle 120s, medians of 3:
+
+| cell | run ops/s | miss | read p50 | read p99 |
+|---|---|---|---|---|
+| C2 close-out | 56,919 | 5.5-6.1% | 9.3-10.4us | 204-217us |
+| C3a | **103.0K** | **0 / 500K** | 8.9-9.7us | **~14us** |
+
+- evict=0, cache 10.74/15.00 GB = exact live set (820K entries), post-run
+  preheat idle. The ms-scale read max disappears (best cell max 238us).
+- Settle-300 converges identically → convergence is trigger-driven, not
+  time-driven. Exit gate (miss ≤1%) PASSED with margin.
+
+## C3b — hot-read allocation strip (2026-07-09, 96c40909 + a350f464 + c497cc95)
+
+`c-campaign-60-70.md` C3, commit 2: strip the ~13-15 heap allocations per hit
+read down to the necessary ones. Landed, each wire-neutral (format goldens
+byte-identical):
+
+- **B1** `EntryOffsetsView`: bisect probes the cached accelerator bytes
+  in place (checked LE u32 reads) — no per-seek `Vec<u32>`; shape-mismatch
+  still self-heals via rebuild.
+- **B2** version-only visited-entry parse (`internal_key_commit_version`,
+  trusted indexed path only; the checked walk keeps full decode) +
+  `decode_storage_row_matching_key` byte-compares the row's embedded key
+  region (canonical encoding → strictly stronger than decoded equality).
+- **B3** single escape-encode per read: the prepared lookup's physical key
+  IS the seek-key prefix slice; the bloom-probe chain takes `&[u8]`.
+- **B4** `TablePointLookupRow::Owned(StorageRow)` — the lazy hit returns the
+  seek's row directly, no TableRow re-encode; cold callers wrap at the edge.
+- **B5** `PhysicalKey.space: Cow<'static, str>` with well-known spaces
+  interned at decode — kills the per-read space String x2.
+- **Capacity fix** (c497cc95): B3's seek-key build into an unreserved Vec
+  realloc'd several times per read — the re-profile ranked the storm at
+  ~15% of hit CPU. One upfront `reserve()`.
+
+Settled C, same protocol, medians of 3 per group (same-session groups):
+
+| cell | run ops/s | read p50 | read p99 | alloc bytes/op |
+|---|---|---|---|---|
+| C3a baseline | 103.0K | 8.9-9.7us | ~14us | 16.9K |
+| B1+B2 | 103.0K | 9.3-9.9us | ~14.5us | 10.5-11.9K |
+| B3+B4+B5 | 113.0K | 8.4-8.9us | 12.8-13.7us | 11.3-12.1K |
+| + capacity fix | **118.4K** | **8.37us** | 13.0-13.7us | 11.4-12.2K |
+
+- Net: C 103.0K → 118.4K (+15%), read p50 ~9.7 → 8.37us, C is now ~27% of
+  the honest RocksDB 432K reference (was 4.5% at campaign start).
+- The alloc probe is noisy (±15% between reps); bytes/op roughly halved
+  from the pre-strip 16.9K but a ~10-12K gross remains (inventory predicted
+  ~2-3K) — unexplained gross is background-inclusive (the probe brackets
+  the whole run phase, including flush/compaction on the run's writes).
+- Clean 214-sample gdb re-profile at 109.7K (5M-op window, post-settle
+  gate): **index bisect + memcmp ≈26%**, allocator ≈15% (the realloc storm,
+  since fixed), key codec ~8%, bloom ~3%, `max_commit_for_owned_levels`
+  fold ~3%, rest long-tail.
+- Exit gate: miss ≤1% PASSED (zero), per-read allocs materially down, but
+  **p50 8.4us > the 3.5us gate → documented probe-fundamental floor**: the
+  top residual is the index bisect + key memcmp in the format layer, which
+  no allocation strip touches. Per the plan's definition of done this stops
+  the slice and hands C4 the decision: index-format acceleration
+  (prefix-truncated / layout-aware index) and/or mmap'd table reads.
+- A/B spot cells (probed, 3 cells each): **B on = 139.4K / 138.4K / 24.7K**
+  (median 138.4K vs 53.4K at C2 close — B is 95% reads, the C3 gains
+  transfer; the 24.7K cell and the preheat-off control at 27.6K both drew
+  the write-stall lottery, update max ~870ms). **A = 10.5K / 17.1K / 32.8K**
+  (median 17.1K vs C2's 29.4K best-ever draw) — A remains update-stall
+  dominated (p99.9 1-5ms, max 0.4-1s in every cell; W1.3 shape lottery),
+  not read-bound; read p50 improved to 7.3-9.5µs in all cells. Mid-run
+  flush-triggered preheat passes do run during A (4-7 passes, 0.5-0.9GB
+  read) and one A cell showed run-phase churn re-pinning the pool
+  (15.00/15.00, warm_full=266K, evict=12.5K) — noted as a C4-adjacent
+  observation (pass-boundary purge can lag run-phase table churn), not the
+  dominant A term. No read-side regression in any cell.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
