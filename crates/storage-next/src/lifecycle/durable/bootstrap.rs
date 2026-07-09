@@ -491,6 +491,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             checkpoint_watermark,
         )?;
         rebuild_fork_snapshot_rows(&mut branch_catalog)?;
+        complete_forked_branch_timelines_after_replay(&branch_catalog)?;
         Ok((
             report,
             branch_catalog,
@@ -1540,6 +1541,15 @@ fn replay_branch_catalog_manifest(
                 ),
                 RecoveryExclusivityToken::new(),
             )?;
+            // #2521/#2522: `create_branch` marked the restored fork
+            // complete-from-birth, which fabricates empty coverage over its
+            // inherited pre-fork history. Post-replay derivation re-completes
+            // it from the parent chain.
+            if let Ok(branch) = catalog.branch_state(branch_id) {
+                branch
+                    .retained_timeline()
+                    .mark_incomplete_for_fork_recovery();
+            }
         }
         if matches!(entry.status(), BranchCatalogStatus::Deleted) {
             let deleted_at = entry.deleted_at().map(CommitVersion::new);
@@ -2734,14 +2744,79 @@ fn install_non_seeded_checkpoint_state(
         checkpoint.timeline_groups(),
         seeded_branch_id,
     );
-    // W3.1c invariant: every branch (seeded included) leaves recovery with a
-    // complete index — section-seeded branches no-op; the rest scan-seed from
-    // their (pre-elision) timeline rows, or complete-empty when fresh.
+    // W3.1c invariant, split by parentage (#2521/#2522): PARENTLESS branches
+    // complete here (section-seeded no-op; the rest scan-seed from
+    // pre-elision rows, or complete-empty when fresh — exact for a branch
+    // created from birth, whose replayed commits then observe-append).
+    // FORKED branches must stay incomplete through WAL replay: their
+    // pre-fork coverage derives from the parent chain, and the parents'
+    // entries only exist AFTER replay re-observes them — see
+    // `complete_forked_branch_timelines_after_replay`.
+    for descriptor in branch_catalog.list_branches(false) {
+        if descriptor.parent().is_some() {
+            continue;
+        }
+        let branch = branch_catalog.branch_state(descriptor.branch_id())?;
+        crate::lifecycle::recovery::ensure_branch_timeline_complete(branch)?;
+    }
+    Ok(())
+}
+
+/// #2521/#2522: complete every forked branch's retained-timeline index once
+/// WAL replay has re-observed the parents' commits. Runs after
+/// `rebuild_fork_snapshot_rows` in the recovery assembly.
+fn complete_forked_branch_timelines_after_replay(
+    branch_catalog: &LifecycleBranchCatalog,
+) -> LifecycleResult<()> {
+    seed_forked_branch_timelines_from_parents(branch_catalog);
+    // Corruption-guard remainder (a parent whose snapshot was refused):
+    // fall back to the child's own scan — fail-safe, same as pre-fork-aware
+    // recovery behaved.
     for descriptor in branch_catalog.list_branches(false) {
         let branch = branch_catalog.branch_state(descriptor.branch_id())?;
         crate::lifecycle::recovery::ensure_branch_timeline_complete(branch)?;
     }
     Ok(())
+}
+
+/// #2522: a forked branch that reopens without its own checkpoint timeline
+/// group must NOT complete-empty from the post-elision scan — timeline rows
+/// no longer exist, and "empty is exact" only holds for branches created
+/// from birth. A fork's pre-fork coverage is its parent's index clamped to
+/// the fork version (exactly what fork-time seeding built in-process, which
+/// a restart discards when no checkpoint persisted the child's group). The
+/// fixpoint loop resolves fork-of-a-fork chains: each pass completes children
+/// whose parent completed in an earlier pass. Section-seeded children are
+/// already complete and skip; a child with WAL-replayed post-fork
+/// observations merges them inside `seed_from_scan`.
+fn seed_forked_branch_timelines_from_parents(branch_catalog: &LifecycleBranchCatalog) {
+    let descriptors = branch_catalog.list_branches(false);
+    let mut progressed = true;
+    while progressed {
+        progressed = false;
+        for descriptor in &descriptors {
+            let Some(parent) = descriptor.parent() else {
+                continue;
+            };
+            let Ok(branch) = branch_catalog.branch_state(descriptor.branch_id()) else {
+                continue;
+            };
+            if branch.retained_timeline().is_complete() {
+                continue;
+            }
+            let Ok(parent_state) = branch_catalog.branch_state(parent.source_branch_id()) else {
+                continue;
+            };
+            let Some(entries) = parent_state
+                .retained_timeline()
+                .snapshot_entries(parent.fork_version())
+            else {
+                continue;
+            };
+            branch.retained_timeline().seed_from_scan(&entries);
+            progressed = branch.retained_timeline().is_complete();
+        }
+    }
 }
 
 /// W3.1b: seed each non-seeded active branch's retained-timeline index from

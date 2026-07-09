@@ -40,21 +40,21 @@ Requirements: bash, python3 (JSON assertions). No network, no real home dir —
 suite stays green and prints a `KNOWN-BUG:` line on every run, and **fails the
 day the defect is fixed** so the pin gets promoted to a real assertion.
 
-Current pins:
+Current pins: none.
 
-- `02_branch` · **grandchild inherits the fork's state** — regression from the
-  read-path perf campaign: forking a fork silently drops the middle branch's
-  inherited state (the grandchild reads `(nil)` where the fork's value should
-  show). Silent wrong data — the most severe pin in this ledger. Owned by the
-  storage workstream (fork-COW plan's deferred "inherited-source re-clamping").
-  Tracked in #2521.
-- `08_time_travel` · **fork as-of a pre-fork commit** — regression from the
-  read-path perf campaign (W3.1b retained-timeline index): the fork's timeline
-  index lacks pre-fork coverage floor seeding, so `--as-of <pre-fork ts>` on a
-  fork fails closed with `history_unavailable.engine.persistence_history`
-  instead of reading inherited history. Owned by the storage workstream (the
-  fork-COW plan's deferred "timestamp_coverage floor seeding" item). Tracked
-  in #2522.
+Promoted pins:
+
+- `02_branch` · **grandchild inherits the fork's state** (#2521) and
+  `08_time_travel` · **fork as-of a pre-fork commit** (#2522) — both were one
+  regression family: recovery rebuilt a forked branch's retained-timeline
+  index as complete-but-EMPTY (catalog restore kept `create_branch`'s
+  complete-from-birth marking), erasing inherited pre-fork coverage; the
+  engine's fork path then silently fell back to creating an empty unparented
+  branch. Fixed in storage (forked restores stay incomplete until post-replay
+  derivation seeds them from the parent chain at each fork version; fork paths
+  seed the child index at fork time) and engine (the silent `create_branch`
+  fallback is gone — storage forks a genuinely history-less source at version
+  zero with parent linkage intact). Pins promoted to real assertions.
 
 (The event time-travel domain defect this mechanism was built for —
 `event len --as-of` filtering on wall-clock payload timestamps instead of the

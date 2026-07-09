@@ -811,7 +811,17 @@ impl<'a> StorageRuntime<'a> {
             BranchAction::ForkCurrent { source } => {
                 require_valid_branch_identifier(request.branch_id(), "branch_id")?;
                 require_valid_branch_identifier(source, "source_branch_id")?;
-                let version = self.current_branch_version(source)?;
+                // #2521: a source with NO commit history forks at version
+                // zero — the legitimate empty-fork case (empty child, parent
+                // linkage intact). Callers must never paper over other fork
+                // errors by fabricating an unparented empty branch: recovery
+                // now rebuilds forked timeline coverage, so a populated
+                // source always resolves a real version here.
+                let version = match self.current_branch_version(source) {
+                    Ok(version) => version,
+                    Err(StorageApiError::RetainedHistoryUnavailable { .. }) => CommitVersion::ZERO,
+                    Err(error) => return Err(error),
+                };
                 self.fork_branch_at_version(request, source, version, None)
             }
             BranchAction::ForkAtVersion { source, version } => {
@@ -2019,7 +2029,17 @@ impl<'a> StorageRuntime<'a> {
         timestamp: Option<Timestamp>,
     ) -> StorageApiResult<BranchOutcome> {
         let generation = branch_generation_or_default(request.expected_generation())?;
-        let retained_floor = self.retained_floor(source)?;
+        // #2521: a history-less source (the legitimate empty-fork case) has
+        // no retained floor; zero matches its zero fork version.
+        let retained_floor = match self.retained_floor(source) {
+            Ok(floor) => floor,
+            Err(StorageApiError::RetainedHistoryUnavailable { .. })
+                if version == CommitVersion::ZERO =>
+            {
+                CommitVersion::ZERO
+            }
+            Err(error) => return Err(error),
+        };
         let outcome = match &self.inner {
             StorageRuntimeInner::Cache(slot) => {
                 let mut runtime = slot.lock();

@@ -20,6 +20,8 @@ mod commit;
 mod diagnostics;
 #[cfg(all(feature = "localfs", feature = "perf-trace"))]
 mod disk_resident_reads;
+#[cfg(feature = "localfs")]
+mod fork_reopen;
 mod maintenance;
 mod off_lock_concurrency;
 mod off_lock_interleaving;

@@ -122,6 +122,12 @@ impl<'a> BranchService<'a> {
         self.reject_aliasing_storage_branch(&record)?;
 
         ControlPlane::begin_branch_operation(self.persistence, &record)?;
+        // #2521: no silent fallback to `create_branch` on a fork error — that
+        // fabricated an EMPTY, unparented child (fork_version 0) whenever
+        // fork-source history resolution failed, turning a recoverable
+        // condition into silent data loss. Storage now forks a genuinely
+        // history-less source at version zero itself (parent linkage intact);
+        // every other error surfaces.
         let fork_outcome = match self.persistence.fork_branch_current(
             storage_branch_id,
             source_record.storage_branch_id(),
@@ -129,29 +135,6 @@ impl<'a> BranchService<'a> {
         ) {
             Ok(outcome) => outcome,
             Err(error) => {
-                if error.code() == "history_unavailable.engine.persistence_history" {
-                    let outcome = match self
-                        .persistence
-                        .create_branch(storage_branch_id, generation)
-                    {
-                        Ok(outcome) => outcome,
-                        Err(error) => {
-                            return Err(self.clear_pending_after_storage_error(&record, error));
-                        }
-                    };
-                    let branch = outcome.branch();
-                    let record = record.with_storage_facts(
-                        branch.generation(),
-                        branch_status(branch),
-                        branch.created_at(),
-                        branch.deleted_at(),
-                        branch.state_revision(),
-                    );
-                    self.persist_catalog_record(record.clone())?;
-                    return Ok(BranchCreateOutcome::new(BranchSummary::from_catalog(
-                        &record,
-                    )));
-                }
                 return Err(self.clear_pending_after_storage_error(&record, error));
             }
         };
