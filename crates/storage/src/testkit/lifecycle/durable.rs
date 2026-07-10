@@ -78,9 +78,16 @@ fn check_durable_standard_create(
             && shell.admit_health_query().is_ok(),
         "durable shell admitted wrong operation before recovery",
     )?;
+    // Assembly's only directory listing is the WAL-prefix scan that reconciles
+    // the writer's resume segment against the on-disk tail (#2555). Anything
+    // else listing objects during assembly is still a side-effect violation.
     ensure(
-        !backend.saw_list_prefix(),
-        "durable assembly listed objects during service assembly",
+        backend.listed_prefixes()
+            == vec![ObjectLayout::wal_prefix()
+                .map_err(testkit_error)?
+                .as_str()
+                .to_owned()],
+        "durable assembly listed objects beyond the single WAL resume scan",
     )?;
     outcome.durable_assembly_standard_cases += 1;
     outcome.durable_manifest_create_cases += 1;
@@ -374,6 +381,7 @@ struct DurableScriptBackend {
     capabilities: BackendCapabilities,
     objects: Mutex<BTreeMap<ObjectName, Vec<u8>>>,
     operations: Mutex<Vec<ScriptOperation>>,
+    listed_prefixes: Mutex<Vec<String>>,
     lock_held: Arc<AtomicBool>,
     fail_lock: bool,
     publish_failure: Option<PublishFailureKind>,
@@ -404,6 +412,7 @@ impl DurableScriptBackend {
             capabilities,
             objects: Mutex::new(BTreeMap::new()),
             operations: Mutex::new(Vec::new()),
+            listed_prefixes: Mutex::new(Vec::new()),
             lock_held: Arc::new(AtomicBool::new(false)),
             fail_lock: false,
             publish_failure: None,
@@ -460,8 +469,11 @@ impl DurableScriptBackend {
         self.saw(ScriptOperation::ReadObject)
     }
 
-    fn saw_list_prefix(&self) -> bool {
-        self.saw(ScriptOperation::ListPrefix)
+    fn listed_prefixes(&self) -> Vec<String> {
+        self.listed_prefixes
+            .lock()
+            .expect("listed prefixes")
+            .clone()
     }
 
     fn saw_wal_metadata(&self) -> bool {
@@ -521,6 +533,10 @@ impl Backend for DurableScriptBackend {
 
     fn list_prefix(&self, prefix: &ObjectPrefix) -> BackendResult<Vec<ObjectName>> {
         self.record(ScriptOperation::ListPrefix);
+        self.listed_prefixes
+            .lock()
+            .expect("listed prefixes")
+            .push(prefix.as_str().to_owned());
         let mut names: Vec<_> = self
             .objects
             .lock()

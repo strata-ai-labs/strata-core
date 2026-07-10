@@ -106,9 +106,19 @@ fn durable_assembly_creates_manifest_opens_wal_and_remains_recovering() {
     assert!(operations
         .iter()
         .any(|operation| matches!(operation, Operation::ObjectMetadata(object) if object == &ObjectLayout::wal_segment(1).expect("segment object"))));
-    assert!(!operations
+    // Assembly's only listing is the WAL-prefix scan that reconciles the
+    // writer's resume segment against the on-disk tail (#2555).
+    let listed: Vec<_> = operations
         .iter()
-        .any(|operation| matches!(operation, Operation::ListPrefix(_))));
+        .filter_map(|operation| match operation {
+            Operation::ListPrefix(prefix) => Some(prefix.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        vec![ObjectLayout::wal_prefix().expect("wal prefix")]
+    );
     assert!(backend.lock_is_held());
     drop(shell);
     assert!(!backend.lock_is_held());

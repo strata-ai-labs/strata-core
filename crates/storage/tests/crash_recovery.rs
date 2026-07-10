@@ -94,6 +94,12 @@ fn crash_after_close_wal_sync_before_guard_release_reopens_consistently() {
 
 #[cfg(all(feature = "testkit", feature = "localfs", not(target_arch = "wasm32")))]
 #[test]
+fn crash_after_wal_rolls_before_checkpoint_resumes_writer_at_tail() {
+    assert!(crash_outcome().stale_wal_pointer_resumed_cases() > 0);
+}
+
+#[cfg(all(feature = "testkit", feature = "localfs", not(target_arch = "wasm32")))]
+#[test]
 fn crash_harness_ignored_cases_have_nonignored_phase_equivalents() {
     assert!(crash_outcome().ignored_case_equivalent_cases() > 0);
 }

@@ -91,6 +91,7 @@ pub struct StoragePerfSnapshot {
     commit_wal_append_ns: u64,
     commit_wal_appends: u64,
     commit_wal_append_bytes: u64,
+    wal_open_segment_reconciliations: u64,
     commit_post_wal_growth_ns: u64,
     commit_wal_growth_facts_ns: u64,
     commit_wal_growth_manifest_ns: u64,
@@ -674,6 +675,11 @@ impl StoragePerfSnapshot {
     /// Durable WAL append calls made by commit execution.
     pub const fn commit_wal_appends(self) -> u64 {
         self.commit_wal_appends
+    }
+
+    /// WAL opens that resumed above the manifest's stale segment pointer (#2555).
+    pub const fn wal_open_segment_reconciliations(self) -> u64 {
+        self.wal_open_segment_reconciliations
     }
 
     /// Durable WAL append payload bytes reported by the WAL service.
@@ -2757,6 +2763,8 @@ static COMMIT_WAL_APPENDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_WAL_APPEND_BYTES: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
+static WAL_OPEN_SEGMENT_RECONCILIATIONS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "perf-trace")]
 static COMMIT_POST_WAL_GROWTH_NS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "perf-trace")]
 static COMMIT_WAL_GROWTH_FACTS_NS: AtomicU64 = AtomicU64::new(0);
@@ -3662,6 +3670,7 @@ pub fn reset() {
     COMMIT_WAL_APPEND_NS.store(0, Ordering::Relaxed);
     COMMIT_WAL_APPENDS.store(0, Ordering::Relaxed);
     COMMIT_WAL_APPEND_BYTES.store(0, Ordering::Relaxed);
+    WAL_OPEN_SEGMENT_RECONCILIATIONS.store(0, Ordering::Relaxed);
     COMMIT_POST_WAL_GROWTH_NS.store(0, Ordering::Relaxed);
     COMMIT_WAL_GROWTH_FACTS_NS.store(0, Ordering::Relaxed);
     COMMIT_WAL_GROWTH_MANIFEST_NS.store(0, Ordering::Relaxed);
@@ -4112,6 +4121,7 @@ pub fn snapshot() -> StoragePerfSnapshot {
         commit_wal_append_ns: COMMIT_WAL_APPEND_NS.load(Ordering::Relaxed),
         commit_wal_appends: COMMIT_WAL_APPENDS.load(Ordering::Relaxed),
         commit_wal_append_bytes: COMMIT_WAL_APPEND_BYTES.load(Ordering::Relaxed),
+        wal_open_segment_reconciliations: WAL_OPEN_SEGMENT_RECONCILIATIONS.load(Ordering::Relaxed),
         commit_post_wal_growth_ns: COMMIT_POST_WAL_GROWTH_NS.load(Ordering::Relaxed),
         commit_wal_growth_facts_ns: COMMIT_WAL_GROWTH_FACTS_NS.load(Ordering::Relaxed),
         commit_wal_growth_manifest_ns: COMMIT_WAL_GROWTH_MANIFEST_NS.load(Ordering::Relaxed),
@@ -6266,6 +6276,17 @@ pub(crate) fn record_lifecycle_wal_growth_sample(
     if checkpoint_coalesced {
         LIFECYCLE_WAL_CHECKPOINT_COALESCED_EVENTS.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+#[cfg(not(feature = "perf-trace"))]
+pub(crate) fn record_wal_open_segment_reconciliation() {}
+
+#[cfg(feature = "perf-trace")]
+pub(crate) fn record_wal_open_segment_reconciliation() {
+    if !recording_enabled() {
+        return;
+    }
+    WAL_OPEN_SEGMENT_RECONCILIATIONS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(not(feature = "perf-trace"))]
