@@ -87,6 +87,7 @@ pub(crate) fn compact_durable_branch_manifest_backed(
     catalog: &mut LifecycleDurableTableCatalog,
     request: &LifecycleCompactionRequest,
     budget: Option<&StorageBudgetLedger>,
+    sweep_staged: &super::durable::InFlightTableOutputs,
 ) -> LifecycleResult<LifecycleCompactionOutcome> {
     let prepared = prepare_durable_compaction_publication(
         branch,
@@ -98,7 +99,15 @@ pub(crate) fn compact_durable_branch_manifest_backed(
         // no in-flight pin needed.
         None,
     )?;
-    install_prepared_durable_compaction(branch, manifest_service, catalog, prepared, budget)
+    install_prepared_durable_compaction(
+        branch,
+        manifest_service,
+        catalog,
+        prepared,
+        budget,
+        sweep_staged,
+        table_service,
+    )
 }
 
 pub(crate) fn prepare_durable_compaction_publication(
@@ -354,9 +363,17 @@ pub(crate) fn install_prepared_durable_compaction(
     catalog: &mut LifecycleDurableTableCatalog,
     prepared: PreparedDurableCompaction,
     budget: Option<&StorageBudgetLedger>,
+    sweep_staged: &super::durable::InFlightTableOutputs,
+    table_service: &TableObjectService<'_>,
 ) -> LifecycleResult<LifecycleCompactionOutcome> {
-    let outcome =
-        install_prepared_durable_compaction_without_publish(branch, catalog, prepared, budget)?;
+    let outcome = install_prepared_durable_compaction_without_publish(
+        branch,
+        catalog,
+        prepared,
+        budget,
+        sweep_staged,
+        table_service,
+    )?;
     Ok(publish_compaction_outcome_manifest(
         branch,
         manifest_service,
@@ -364,6 +381,56 @@ pub(crate) fn install_prepared_durable_compaction(
         outcome,
         budget,
     ))
+}
+
+/// #2553: refuse to install rewrite outputs whose objects a table-object
+/// sweep has staged for deletion (in-flight registry) or already deleted
+/// (existence probe). Content-derived identities are deterministic across
+/// retries, so an adopted (content-identical dedupe) output can name an
+/// orphan of an abandoned attempt that a concurrent sweep is mid-way through
+/// deleting — installing it would let the next manifest reference a deleted
+/// object. Install and sweep-stage preparation run under the same runtime
+/// lock, so the registry check is race-free; the probe covers stages that
+/// completed before this install began.
+fn verify_rewrite_outputs_not_swept(
+    published: &[PublishedRewriteTable],
+    sweep_staged: &super::durable::InFlightTableOutputs,
+    table_service: &TableObjectService<'_>,
+) -> LifecycleResult<()> {
+    let names: Vec<crate::object::ObjectName> = published
+        .iter()
+        .map(|output| published_object_facts(output).object().clone())
+        .collect();
+    verify_output_objects_not_swept(&names, sweep_staged, table_service)
+}
+
+/// Names-based core of the #2553 install check, shared with the flush install
+/// (flush identities are equally deterministic across retries).
+pub(crate) fn verify_output_objects_not_swept(
+    names: &[crate::object::ObjectName],
+    sweep_staged: &super::durable::InFlightTableOutputs,
+    table_service: &TableObjectService<'_>,
+) -> LifecycleResult<()> {
+    if names.is_empty() {
+        return Ok(());
+    }
+    let staged = sweep_staged.snapshot();
+    for object in names {
+        if staged.contains(object) {
+            return Err(LifecycleError::RewriteOutputRacedSweep {
+                object: object.clone(),
+            });
+        }
+        if !table_service
+            .object_exists(object)
+            .map_err(rewrite_table_service_error)?
+        {
+            return Err(LifecycleError::RewriteOutputRacedSweep {
+                object: object.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Install a prepared compaction's in-memory and catalog state without writing the table
@@ -376,7 +443,12 @@ pub(crate) fn install_prepared_durable_compaction_without_publish(
     catalog: &mut LifecycleDurableTableCatalog,
     prepared: PreparedDurableCompaction,
     budget: Option<&StorageBudgetLedger>,
+    sweep_staged: &super::durable::InFlightTableOutputs,
+    table_service: &TableObjectService<'_>,
 ) -> LifecycleResult<LifecycleCompactionOutcome> {
+    if let PreparedDurableCompactionOutput::Published { published, .. } = &prepared.output {
+        verify_rewrite_outputs_not_swept(published, sweep_staged, table_service)?;
+    }
     let PreparedDurableCompaction {
         request,
         branch_request,
@@ -521,6 +593,7 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
     catalog: &mut LifecycleDurableTableCatalog,
     request: &LifecycleMaterializationRequest,
     budget: Option<&StorageBudgetLedger>,
+    sweep_staged: &super::durable::InFlightTableOutputs,
 ) -> LifecycleResult<LifecycleMaterializationOutcome> {
     let build = match begin_durable_materialization_build(branch, request)? {
         DurableMaterializationBegin::Deferred(outcome) => return Ok(*outcome),
@@ -529,7 +602,15 @@ pub(crate) fn materialize_durable_branch_manifest_backed(
     // Foreground path: build and install share one runtime-lock hold — no
     // in-flight pin needed.
     let prepared = build.build(table_service, reader_service, budget, None)?;
-    install_prepared_durable_materialization(branch, manifest_service, catalog, prepared, budget)
+    install_prepared_durable_materialization(
+        branch,
+        manifest_service,
+        catalog,
+        prepared,
+        budget,
+        sweep_staged,
+        table_service,
+    )
 }
 
 pub(crate) fn begin_durable_materialization_build(
@@ -604,9 +685,16 @@ pub(crate) fn install_prepared_durable_materialization(
     catalog: &mut LifecycleDurableTableCatalog,
     prepared: PreparedDurableMaterialization,
     budget: Option<&StorageBudgetLedger>,
+    sweep_staged: &super::durable::InFlightTableOutputs,
+    table_service: &TableObjectService<'_>,
 ) -> LifecycleResult<LifecycleMaterializationOutcome> {
     let outcome = install_prepared_durable_materialization_without_publish(
-        branch, catalog, prepared, budget,
+        branch,
+        catalog,
+        prepared,
+        budget,
+        sweep_staged,
+        table_service,
     )?;
     Ok(publish_materialization_outcome_manifest(
         branch,
@@ -627,7 +715,10 @@ pub(crate) fn install_prepared_durable_materialization_without_publish(
     catalog: &mut LifecycleDurableTableCatalog,
     prepared: PreparedDurableMaterialization,
     _budget: Option<&StorageBudgetLedger>,
+    sweep_staged: &super::durable::InFlightTableOutputs,
+    table_service: &TableObjectService<'_>,
 ) -> LifecycleResult<LifecycleMaterializationOutcome> {
+    verify_rewrite_outputs_not_swept(&prepared.published, sweep_staged, table_service)?;
     let PreparedDurableMaterialization {
         request,
         materialization_handle,

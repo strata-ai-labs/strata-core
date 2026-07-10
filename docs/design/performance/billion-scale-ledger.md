@@ -1649,6 +1649,50 @@ cadence (freshness, not correctness, once the frontier holds);
 lossy-recovery granularity (one missing object still zeroes the branch);
 the catalog-global manifest_publish_pending flag.
 
+### Amendment: the 1B revalidation FALSIFIED completeness — third hole found and fixed (2026-07-10)
+
+The first revalidation run (store-1b-v2) re-bricked on the same signature
+with a `level-6-direct` compaction family: index-0 written at 12:18:43,
+manifest at 12:18:44, C read failed at 12:18:46 — the family was seconds
+old, too fast for any mark-stage-purge cycle against a pinned object.
+The frontier fix (above) is real (its red-first tests stand) but covers
+only mark-time holes.
+
+Third mechanism — **adoption resurrects sweep-staged names** (violates
+the "unreachability is monotone" assumption the off-lock stage rests on,
+`api/runtime/maintenance.rs:846`): rewrite output identities are
+content-derived (`{seed}-{hash(input identities)}-{index}`,
+`table/compaction.rs:1437`) and therefore DETERMINISTIC across retries.
+An abandoned attempt leaves orphans under exactly the names its re-plan
+will produce; a sweep marks them (correctly — unpinned orphans), the
+stage step freezes its candidate list and runs off-lock; the re-planned
+pass then hits `PreconditionFailed` on publish and ADOPTS the existing
+object (`publish_or_load_rewrite_output` byte-validates and reuses it,
+`rewrite_publication.rs:979`) — the in-flight pin from `reserve` comes
+too late for the frozen candidate list. Install records the name, the
+manifest lists it, the stage deletes it. Front/tail family holes =
+"some indexes adopted doomed orphans, siblings were fresh writes".
+
+Fix: **sweep-staged name registry + install-time verification**. A
+second `InFlightTableOutputs` instance (`sweep_staged_names`) freezes
+the staged candidate names from stage-prepare (under the lock) until the
+staged result folds back (under the lock; guard travels through
+`SweepStageInputs`/`SweepStaged`). Every rewrite/materialization/flush
+install verifies its output names — registry hit OR existence-probe miss
+→ typed `RewriteOutputRacedSweep` → the dispatcher DEFERS (the
+stale-candidate precedent); the retried pass publishes fresh bytes once
+the sweep completes. Interleave coverage: stage-prepare and install are
+both under the global lock — stage-first is caught by the registry,
+install-first means the build's reserve pin excluded the object from the
+stage's fresh mark; completed-stage deletions are caught by the probe.
+
+Red-first: `adopted_rewrite_output_defers_while_its_object_is_sweep_staged`
+(abandon a compaction build → crash-analog reopen → mark + HOLD the
+sweep stage → identical re-plan adopts the orphans → install) FAILS on
+the frontier-only build at "an install adopting sweep-staged objects
+must defer" and passes post-fix through stage completion, a fresh
+third-attempt publish, and clean recovery.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

@@ -144,6 +144,14 @@ pub(crate) enum LifecycleError {
     TableManifestCheckpointConflict {
         reason: &'static str,
     },
+    /// #2553: a rewrite output adopted (content-identical dedupe) a table
+    /// object that an in-flight sweep has staged for deletion, or whose
+    /// object is already gone. Installing it would let the next manifest
+    /// reference a deleted object. Benign race: the dispatcher DEFERS and the
+    /// rebuilt pass publishes fresh bytes once the sweep completes.
+    RewriteOutputRacedSweep {
+        object: crate::object::ObjectName,
+    },
     CheckpointPublicationFailed {
         reason: &'static str,
     },
@@ -440,6 +448,9 @@ impl LifecycleError {
             Self::TableManifestCheckpointConflict { .. } => {
                 "failed_precondition.lifecycle.table_manifest_checkpoint_conflict"
             }
+            Self::RewriteOutputRacedSweep { .. } => {
+                "unavailable.lifecycle.rewrite_output_sweep_race"
+            }
             Self::CheckpointPublicationFailed { .. } => {
                 "failed_precondition.lifecycle.checkpoint_publication"
             }
@@ -701,6 +712,10 @@ impl PartialEq for LifecycleError {
                     && left_actual == right_actual
             }
             (
+                Self::RewriteOutputRacedSweep { object: left },
+                Self::RewriteOutputRacedSweep { object: right },
+            ) => left == right,
+            (
                 Self::BranchGenerationExhausted {
                     branch_id: left_branch,
                     generation: left_generation,
@@ -894,6 +909,12 @@ impl fmt::Display for LifecycleError {
             }
             Self::InvalidLifecycleState { reason } => {
                 write!(formatter, "invalid lifecycle state: {reason}")
+            }
+            Self::RewriteOutputRacedSweep { object } => {
+                write!(
+                    formatter,
+                    "table rewrite output raced a table-object sweep: {object}"
+                )
             }
             Self::InvalidOpenPlan { reason } => {
                 write!(formatter, "invalid storage open plan: {reason}")
@@ -1147,6 +1168,12 @@ impl LifecycleError {
     /// superseded the candidate's input tables between scheduling and
     /// execution. The background dispatcher DEFERS this benign race instead
     /// of recording a task failure — coverage re-derives fresh candidates.
+    /// #2553: whether this error is the rewrite-output/sweep adoption race —
+    /// deferred by the dispatcher exactly like a stale compaction candidate.
+    pub(crate) fn is_rewrite_output_sweep_race(&self) -> bool {
+        matches!(self, Self::RewriteOutputRacedSweep { .. })
+    }
+
     pub(crate) fn is_stale_compaction_candidate(&self) -> bool {
         let mut source: Option<&(dyn Error + 'static)> = self.source();
         while let Some(error) = source {

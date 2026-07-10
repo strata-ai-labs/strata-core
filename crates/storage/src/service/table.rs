@@ -581,6 +581,20 @@ impl<'a> TableObjectService<'a> {
             .map_or(0, |cache| cache.current_bytes())
     }
 
+    /// #2553: whether the object currently exists on the backend. Used by
+    /// installs to refuse adopted (content-identical dedupe) outputs whose
+    /// bytes a completed sweep already deleted.
+    pub(crate) fn object_exists(&self, name: &ObjectName) -> Result<bool, TableObjectServiceError> {
+        match self.backend.object_metadata(name) {
+            Ok(_) => Ok(true),
+            Err(source) if source.kind() == crate::backend::BackendErrorKind::NotFound => Ok(false),
+            Err(source) => Err(TableObjectServiceError::Metadata {
+                object: name.clone(),
+                source,
+            }),
+        }
+    }
+
     pub(crate) fn publish_create(
         &self,
         branch_id: &str,

@@ -81,6 +81,13 @@ pub(crate) struct LifecycleDurableLocalRuntime<'a, S = CommitManualTimestampSour
     /// wholesale on `has_active_build_task` — reclaim stays live under
     /// sustained load.
     pub(super) inflight_outputs: super::inflight::InFlightTableOutputs,
+    /// #2553: names an in-flight table-object sweep stage has frozen for
+    /// deletion. Content-derived rewrite identities are deterministic across
+    /// retries, so a re-planned pass can find its output already on disk (an
+    /// orphan of an abandoned attempt) and ADOPT it — resurrecting a name the
+    /// sweep already staged. Installs consult this registry (plus an
+    /// existence probe) and defer instead of referencing a doomed object.
+    pub(super) sweep_staged_names: super::inflight::InFlightTableOutputs,
     pub(super) durable_gate: CommitUnresolvedDurableGate,
     pub(super) commit_config: crate::commit::CommitRuntimeConfig,
     pub(super) table_catalog: LifecycleDurableTableCatalog,
@@ -308,6 +315,7 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             visible_commit_version: visible_version_mirror(self.visible),
             snapshot_publisher: BranchSnapshotPublisher::new(),
             inflight_outputs: super::inflight::InFlightTableOutputs::default(),
+            sweep_staged_names: super::inflight::InFlightTableOutputs::default(),
             durable_gate: self.durable_gate,
             commit_config: self.commit_config,
             table_catalog: self.table_catalog,

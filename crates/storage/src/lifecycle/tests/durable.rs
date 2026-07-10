@@ -4084,7 +4084,7 @@ fn sweep_spares_objects_listed_by_a_mid_persist_manifest() {
     let branch = branch_id(0x79);
     let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
 
-    // Flush 1 → t1, fully published + confirmed (M0 lists t1).
+    // Flush 1 → t1, fully published + confirmed (the durable manifest lists t1).
     let (built, flush_one_outputs) =
         build_flush_for_frontier_tests(&mut runtime, branch, b"frontier-row-1", b"value-1");
     publish_to_confirmation(&mut runtime, built);
@@ -4180,7 +4180,7 @@ fn sweep_spares_objects_listed_by_the_last_confirmed_manifest() {
     let manifest_object =
         ObjectLayout::branch_table_manifest(&branch.to_string()).expect("manifest object");
 
-    // Two flushes, fully published + confirmed: the durable manifest M1 lists t1,t2.
+    // Two flushes, fully published + confirmed: the durable manifest lists t1,t2.
     let mut flush_outputs = Vec::new();
     for (key, value) in [
         (&b"confirmed-row-1"[..], &b"value-1"[..]),
@@ -4311,5 +4311,150 @@ fn frontier_protection_releases_after_the_next_confirmed_publish() {
     let recovery = LifecycleRecoveryRuntime::new(&mut shell)
         .recover(&request)
         .expect("recovery after frontier release");
+    shell.complete_recovery(&recovery).expect("reopen runtime");
+}
+
+/// #2553 test scaffolding: enqueue a level-0 compaction and drive it through
+/// its off-lock build; the publish phase is the caller's.
+fn build_compaction_for_adoption_test(
+    runtime: &mut LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource>,
+    branch: BranchId,
+) -> DurableBackgroundMaintenanceBuilt {
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+    let step = runtime
+        .start_next_background_table_rewrite_maintenance()
+        .expect("start compaction")
+        .expect("compaction step");
+    let DurableBackgroundMaintenanceStep::Build(pending) = step else {
+        panic!("expected a compaction build step");
+    };
+    pending.build().expect("build compaction")
+}
+
+/// #2553 (adoption race): content-derived rewrite identities are
+/// deterministic across retries, so a re-planned compaction can find its
+/// output already on disk — an orphan of an abandoned attempt — and ADOPT it
+/// without republishing. If a sweep stage has already frozen that name for
+/// deletion, the adopted install would let the next manifest reference an
+/// object the stage is deleting off-lock. The install must defer instead.
+#[test]
+fn adopted_rewrite_output_defers_while_its_object_is_sweep_staged() {
+    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let branch = branch_id(0x7c);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
+
+    // Two confirmed L0 tables — the compaction inputs.
+    for (key, value) in [
+        (&b"adopt-row-1"[..], &b"value-1"[..]),
+        (&b"adopt-row-2"[..], &b"value-2"[..]),
+    ] {
+        let (built, _outputs) = build_flush_for_frontier_tests(&mut runtime, branch, key, value);
+        publish_to_confirmation(&mut runtime, built);
+    }
+
+    // Attempt A: build the compaction off-lock (outputs published under
+    // content-derived names), then ABANDON it — the orphans stay on disk.
+    let built_a = build_compaction_for_adoption_test(&mut runtime, branch);
+    let orphaned = runtime.inflight_table_outputs().snapshot();
+    assert!(!orphaned.is_empty(), "attempt A published outputs");
+    drop(built_a);
+    assert!(
+        runtime.inflight_table_outputs().snapshot().is_empty(),
+        "abandoning attempt A releases its pins",
+    );
+    // Reopen: the crash-analog of the abandonment (the in-flight registry is
+    // in-memory by design). The orphans persist on disk under their
+    // content-derived names; the task queue starts fresh.
+    drop(runtime);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
+    for name in &orphaned {
+        assert!(
+            backend.object_metadata(name).is_ok(),
+            "attempt A's orphan {name} persists across the reopen",
+        );
+    }
+
+    // Mark the orphans and HOLD the sweep stage un-run: the registry now
+    // freezes the doomed names while the deletion is notionally in flight.
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch))
+        .expect("enqueue retention");
+    runtime
+        .run_next_retention_maintenance()
+        .expect("run retention")
+        .expect("retention outcome");
+    let held_stage = match runtime
+        .start_next_background_quarantine_sweep()
+        .expect("start sweep")
+        .expect("sweep step")
+    {
+        DurableBackgroundMaintenanceStep::SweepStage(inputs) => *inputs,
+        _ => panic!("expected a sweep stage step"),
+    };
+
+    // Attempt B: identical inputs, identical content, identical names — the
+    // publish collides and ADOPTS the orphans (their bytes still exist).
+    let built_b = build_compaction_for_adoption_test(&mut runtime, branch);
+    let publish = runtime
+        .begin_publish_phase(built_b)
+        .expect("begin compaction B publish");
+    let outcome = match publish {
+        PreparedPublishStep::Done(result) => result.expect("compaction B resolves under lock"),
+        PreparedPublishStep::OffLock(prepared) => {
+            // Pre-fix path: the adopted outputs install and the manifest
+            // persists, referencing objects the held stage is about to
+            // delete.
+            let (prepared, write_result) = prepared.persist_off_lock();
+            runtime
+                .finish_publish_phase(prepared, write_result)
+                .expect("finish compaction B publish")
+        }
+    };
+    assert_eq!(
+        outcome.status(),
+        MaintenanceOutcomeStatus::Deferred,
+        "an install adopting sweep-staged objects must defer, not proceed",
+    );
+
+    // The held stage now runs and deletes the orphans; folding it back
+    // releases the registry.
+    let staged = held_stage.stage();
+    runtime
+        .finish_quarantine_sweep(staged)
+        .expect("finish held sweep");
+    for name in &orphaned {
+        assert!(
+            backend.object_metadata(name).is_err(),
+            "the staged orphan {name} is deleted by the sweep",
+        );
+    }
+
+    // Attempt C: with the names free again, the retried compaction publishes
+    // FRESH bytes and completes; the store recovers cleanly.
+    let built_c = build_compaction_for_adoption_test(&mut runtime, branch);
+    let outcome = match runtime
+        .begin_publish_phase(built_c)
+        .expect("begin compaction C publish")
+    {
+        PreparedPublishStep::OffLock(prepared) => {
+            let (prepared, write_result) = prepared.persist_off_lock();
+            runtime
+                .finish_publish_phase(prepared, write_result)
+                .expect("finish compaction C publish")
+        }
+        PreparedPublishStep::Done(result) => result.expect("compaction C publish done"),
+    };
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+
+    drop(runtime);
+    let mut shell =
+        assemble_shell(StorageMode::DurableLocalStandard, branch, backend).expect("reopen shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let recovery = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery after adoption race resolves");
     shell.complete_recovery(&recovery).expect("reopen runtime");
 }
