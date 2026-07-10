@@ -1590,6 +1590,65 @@ DESIGN — a disordered package has no trustworthy replay order; refusal
 is the invariant. Both are rebuildable bench artifacts; store-1b is
 preserved for the #2553 investigation.
 
+## #2553 FIXED: the sweep must not delete objects a recovery-relevant manifest references (2026-07-10)
+
+Forensics on the preserved 288GiB store: two multi-output compaction
+families damaged by per-object selective deletion (front-hole [0,1]
+missing with [2,3] present; tail-hole [0] present with [1..] gone) —
+the sweep's ascending-name order + 32-object cap, biting live objects.
+
+Root cause — two holes at one seam, the reclaim mark's reachable set
+(visible manifests ∪ in-memory pins ∪ in-flight output pins):
+
+1. Off-lock persist window / deferred publish: compaction installs
+   in-memory FIRST (consumed inputs leave branch state; the in-flight
+   output pins released at install), THEN the manifest persist runs with
+   the global lock released — or DEFERS entirely on the busy per-branch
+   publish slot. A pass consuming another pass's outputs in that window
+   left them in NO protection set, while the mid-flight full-snapshot
+   manifest still listed them and landed afterwards.
+2. Visible-vs-confirmed manifest: the mark read the VISIBLE manifest; a
+   replace that landed visible but publication-uncertain
+   (VisibleDurabilityUnconfirmed) dropped consumed inputs from the live
+   set while a crash would revert recovery to the last CONFIRMED
+   manifest — which still listed them. (Checkpoint already deferred on
+   this debt; the sweep had no counterpart.)
+
+Fix — manifest-frontier protection, mark-side (per design review; the
+pin-lifetime alternative is unimplementable: the deferred-publish arm
+drops all state, so nothing can carry a pin to the emergent retry):
+`LifecycleDurableTableCatalog` keeps two per-branch object-name sets —
+the CONFIRMED frontier (names listed by the last durably-confirmed
+manifest; advanced at record_manifest / confirm / recovery-seeding) and
+the PENDING publication (names of a built manifest, registered at
+publish-slot guard acquisition, kept on uncertain persists, superseded
+at the next confirm). The sweep's pinned set unions both via one
+`reclaim_pinned_table_objects` helper across all four mark entry points
+(rider: `prove_retention` previously omitted the in-flight pins).
+Confirm stays O(1) (BS5.3): names collected during the manifest build
+walk, Arc-swapped. Branch deletion clears both sets after the tombstone
+publish. Perf-trace counter `table_object_frontier_pins`.
+
+Verification: T1 (mid-persist window — flush publish HELD at the
+off-lock step, compaction consumes its tables and defers on the slot,
+sweep runs, manifest lands, reopen) and T2 (visible-unconfirmed replace
+via a new apply-then-fail test-backend knob, sweep, crash-revert to the
+confirmed manifest bytes, reopen) both verified RED on pre-fix main —
+failing exactly at "must survive the sweep" — and green post-fix
+through clean recovery. T3 pins the catalog bookkeeping (per-branch
+isolation — the `manifest_publish_pending` global-flag mistake as a
+regression guard — and recovery seeding). T4 pins anti-starvation: after
+the next CONFIRMED publish stops listing superseded objects they sweep
+normally (the #2524 reclaim-liveness regression this must not
+reintroduce). Battery: lib 3379/3576 both feature sets, all-targets,
+goldens, clippy 0/0, engine clean, e2e 17/17. 1B revalidation of the
+matrix leg that bricked: pending (run after merge or alongside PR).
+
+Shelf (unchanged invariants, separate slices): bounded manifest-publish
+cadence (freshness, not correctness, once the frontier holds);
+lossy-recovery granularity (one missing object still zeroes the branch);
+the catalog-global manifest_publish_pending flag.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

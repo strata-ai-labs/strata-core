@@ -30,7 +30,8 @@ use crate::table::{
     ImmutableTableReader, TableCursor, TableIdentity, TableReaderConfig, TableRow,
     TableRuntimeFacts, TableSummaryExtras,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use strata_core::BranchId;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,6 +55,23 @@ pub(crate) struct LifecycleDurableTableCatalog {
     // debt owns exactly such a base, so the masked-debt snapshot is not recorded. A per-branch debt
     // set is the deferred precise fix; see multi-branch-orphaned-delta-recovery-gap.md.
     manifest_publish_pending: bool,
+    // #2553: the reclaim mark must never sweep an object that a recovery-relevant manifest
+    // still references. Two per-branch object-name frontiers make that predicate local:
+    //
+    // - `confirmed_frontiers`: the object names listed by the branch's last durably-CONFIRMED
+    //   manifest — the exact set recovery loads if the process dies now (the crash-revert
+    //   target). A visible-but-unconfirmed replace does NOT advance this.
+    // - `pending_publications`: the names listed by a built manifest whose off-lock persist is
+    //   in flight or ended publication-uncertain. Inserted when the publish acquires the
+    //   per-branch slot (deferred attempts never persist and add nothing), replaced by the
+    //   confirmed frontier on a confirmed publish, and KEPT on an uncertain persist — the bytes
+    //   may be durable even while reads still serve the prior manifest.
+    //
+    // The sweep unions both into its pinned set, closing the window where a rewrite consumed
+    // inputs out of branch state while the manifest that still lists them had not yet landed
+    // (or could revert on crash). Bounded: at most one set of names per branch per map.
+    confirmed_frontiers: BTreeMap<[u8; 16], Arc<BTreeSet<ObjectName>>>,
+    pending_publications: BTreeMap<[u8; 16], Arc<BTreeSet<ObjectName>>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -85,6 +103,8 @@ impl LifecycleDurableTableCatalog {
             objects: BTreeMap::new(),
             next_manifest_sequence: 1,
             manifest_publish_pending: false,
+            confirmed_frontiers: BTreeMap::new(),
+            pending_publications: BTreeMap::new(),
         }
     }
 
@@ -156,7 +176,55 @@ impl LifecycleDurableTableCatalog {
         )?;
         // The manifest is durably recorded: the catalog and the durable manifest agree again.
         self.manifest_publish_pending = false;
+        self.advance_confirmed_frontier(manifest.branch_id(), manifest_object_names(manifest));
         Ok(())
+    }
+
+    /// Advances the branch's confirmed frontier to a durably-recorded manifest's object names
+    /// and drops any pending publication it supersedes (#2553).
+    fn advance_confirmed_frontier(
+        &mut self,
+        branch_id: BranchId,
+        names: Arc<BTreeSet<ObjectName>>,
+    ) {
+        let key = *branch_id.as_bytes();
+        self.confirmed_frontiers.insert(key, names);
+        self.pending_publications.remove(&key);
+    }
+
+    /// Registers the object names of a built manifest whose off-lock persist is about to run
+    /// (#2553). Called only after the per-branch publish slot is acquired — deferred attempts
+    /// never persist and must not accumulate protection. The entry is superseded by the next
+    /// confirmed publish for the branch; an uncertain persist keeps it (the bytes may be
+    /// durable even while reads serve the prior manifest).
+    pub(crate) fn record_pending_publication(
+        &mut self,
+        branch_id: BranchId,
+        names: Arc<BTreeSet<ObjectName>>,
+    ) {
+        self.pending_publications
+            .insert(*branch_id.as_bytes(), names);
+    }
+
+    /// Every object name protected because a recovery-relevant manifest may still list it:
+    /// the last durably-confirmed manifest per branch (the crash-revert target) plus any
+    /// built-but-unconfirmed publication (#2553). The reclaim mark unions these into its
+    /// pinned set.
+    pub(crate) fn manifest_frontier_pinned_objects(&self) -> Vec<ObjectName> {
+        self.confirmed_frontiers
+            .values()
+            .chain(self.pending_publications.values())
+            .flat_map(|names| names.iter().cloned())
+            .collect()
+    }
+
+    /// Drops both frontier sets for a deleted branch. Safe only once the branch tombstone is
+    /// durable: recovery then ignores the branch's table manifest, so nothing recovery-relevant
+    /// references the objects and normal reachability governs their reclaim.
+    pub(crate) fn clear_branch_frontier(&mut self, branch_id: BranchId) {
+        let key = *branch_id.as_bytes();
+        self.confirmed_frontiers.remove(&key);
+        self.pending_publications.remove(&key);
     }
 
     /// Confirms a reserved-sequence manifest's off-lock publish as durable and clears the
@@ -168,8 +236,16 @@ impl LifecycleDurableTableCatalog {
     /// ~17 ms per flush at steady state, starving writers), and could silently resurrect entries
     /// removed between the publish phases. Recovery-side manifests still validate entry-by-entry
     /// via [`record_recovered_manifest`](Self::record_recovered_manifest).
-    pub(crate) fn confirm_reserved_manifest_published(&mut self) {
+    ///
+    /// The frontier advance stays O(1): `names` was collected during the manifest build walk
+    /// (already O(tables) under the lock) and moves in as an `Arc` swap (#2553).
+    pub(crate) fn confirm_reserved_manifest_published(
+        &mut self,
+        branch_id: BranchId,
+        names: Arc<BTreeSet<ObjectName>>,
+    ) {
         self.manifest_publish_pending = false;
+        self.advance_confirmed_frontier(branch_id, names);
     }
 
     /// Records a manifest loaded during recovery. Recovery applies per-branch manifests in
@@ -193,6 +269,7 @@ impl LifecycleDurableTableCatalog {
         self.next_manifest_sequence = self.next_manifest_sequence.max(advanced);
         // The loaded manifest is durable by definition: catalog and durable manifest agree.
         self.manifest_publish_pending = false;
+        self.advance_confirmed_frontier(manifest.branch_id(), manifest_object_names(manifest));
         Ok(())
     }
 
@@ -1070,6 +1147,16 @@ fn manifest_table_refs(manifest: &TableManifest) -> impl Iterator<Item = &TableM
                 .flat_map(TableManifestInheritedLayer::levels)
                 .flat_map(TableManifestLevel::tables),
         )
+}
+
+/// Every table object name a manifest references (owned levels + inherited layers) — the
+/// unit of the #2553 frontier sets.
+pub(crate) fn manifest_object_names(manifest: &TableManifest) -> Arc<BTreeSet<ObjectName>> {
+    Arc::new(
+        manifest_table_refs(manifest)
+            .map(|table| table.object().clone())
+            .collect(),
+    )
 }
 
 const fn manifest_status_from_inherited(
