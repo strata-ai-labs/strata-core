@@ -23,6 +23,7 @@ mod error;
 mod export;
 mod import;
 mod info;
+mod remote;
 mod schema_preview;
 
 pub use error::BundleExportError;
@@ -31,3 +32,6 @@ pub use export::{
 };
 pub use import::{import_bundle, BundleImportError};
 pub use info::{engine_info, EngineInfo, CAPABILITY_REGISTRY_VERSION};
+pub use remote::{
+    read_remote_tracking_ref, write_remote_tracking_ref, RemoteRefError, RemoteTrackingRef,
+};

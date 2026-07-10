@@ -206,6 +206,50 @@ impl Database {
         self.persistence.arm_replay_commit_timestamp(timestamp);
     }
 
+    /// Records (or overwrites) where this database was cloned from.
+    ///
+    /// Written by clone orchestration after a successful bundle import;
+    /// future sync operations overwrite it with each new fetch.
+    pub fn set_remote_origin(
+        &mut self,
+        origin: &crate::artifact::RemoteOrigin,
+    ) -> EngineResult<()> {
+        self.require_open()?;
+        self.control.require_healthy()?;
+        let mutation = crate::persistence::RowMutation::put(
+            crate::persistence::RowAddress::new(
+                crate::branch::catalog::SYSTEM_BRANCH_ID,
+                crate::persistence::RowClass::DatasetIdentity,
+                crate::persistence::remote_origin_key(),
+            ),
+            crate::artifact::encode_remote_origin(origin),
+        );
+        self.persistence
+            .commit(&crate::persistence::CommitPlan::new(
+                crate::branch::catalog::SYSTEM_BRANCH_ID,
+                vec![mutation],
+                None,
+            ))?;
+        Ok(())
+    }
+
+    /// Reads this database's remote origin, when one was recorded.
+    pub fn remote_origin(&mut self) -> EngineResult<Option<crate::artifact::RemoteOrigin>> {
+        self.require_open()?;
+        self.control.require_healthy()?;
+        let bytes = self.persistence.read(
+            crate::persistence::RowAddress::new(
+                crate::branch::catalog::SYSTEM_BRANCH_ID,
+                crate::persistence::RowClass::DatasetIdentity,
+                crate::persistence::remote_origin_key(),
+            ),
+            crate::persistence::ReadSelector::Latest,
+        )?;
+        bytes
+            .map(|bytes| crate::artifact::decode_remote_origin(&bytes))
+            .transpose()
+    }
+
     /// Returns a branch service for this database.
     pub fn branches(&mut self) -> EngineResult<BranchService<'_>> {
         self.require_open()?;
