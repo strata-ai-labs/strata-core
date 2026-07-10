@@ -206,9 +206,8 @@ fn import_into_populated_branch_refuses() {
     )
     .expect("put");
 
-    let error = match target.import_branch_artifact(&artifact) {
-        Err(error) => error,
-        Ok(_) => panic!("import into populated branch must refuse"),
+    let Err(error) = target.import_branch_artifact(&artifact) else {
+        panic!("import into populated branch must refuse");
     };
     assert_eq!(error.code(), "conflict.engine.artifact_import");
 }
