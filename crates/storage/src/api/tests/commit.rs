@@ -1059,3 +1059,54 @@ fn commit_api_rejects_cross_branch_atomic_request() {
     assert!(!source.contains("atomic"));
     assert!(!source.contains("branches:"));
 }
+
+#[test]
+fn commit_at_stamps_the_supplied_timestamp() {
+    let runtime = open_runtime();
+    let timestamp = Timestamp::from_micros(50_000);
+    let summary = runtime
+        .commit_at(&put_batch(b"restore-a", b"one"), timestamp)
+        .expect("explicit commit succeeds");
+    assert_eq!(summary.commit_timestamp(), timestamp);
+    let read = read_latest(&runtime, b"restore-a");
+    assert_eq!(
+        read.row().expect("row present").commit_timestamp(),
+        timestamp
+    );
+}
+
+#[test]
+fn commit_at_accepts_non_decreasing_and_rejects_regression() {
+    let runtime = open_runtime();
+    runtime
+        .commit_at(&put_batch(b"restore-b", b"one"), Timestamp::from_micros(70))
+        .expect("first explicit commit");
+    // Equal to the floor is allowed.
+    runtime
+        .commit_at(&put_batch(b"restore-c", b"two"), Timestamp::from_micros(70))
+        .expect("equal-timestamp commit");
+    // Earlier than the floor is rejected with a caller-actionable code.
+    let error = runtime
+        .commit_at(
+            &put_batch(b"restore-d", b"three"),
+            Timestamp::from_micros(69),
+        )
+        .expect_err("regressing timestamp refuses");
+    assert_eq!(error.code(), "invalid_argument.storage_api.argument");
+}
+
+#[test]
+fn ordinary_commits_stay_monotonic_after_commit_at() {
+    let runtime = open_runtime();
+    let explicit = Timestamp::from_micros(90_000);
+    runtime
+        .commit_at(&put_batch(b"restore-e", b"one"), explicit)
+        .expect("explicit commit");
+    let summary = runtime
+        .commit(&put_batch(b"restore-f", b"two"))
+        .expect("ordinary commit after explicit");
+    assert!(
+        summary.commit_timestamp() >= explicit,
+        "clock never regresses below an explicit stamp"
+    );
+}

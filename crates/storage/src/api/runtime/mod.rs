@@ -831,6 +831,25 @@ impl<'a> StorageRuntime<'a> {
         self.execute_commit(batch, None)
     }
 
+    /// Commit a batch stamped with a caller-supplied timestamp.
+    ///
+    /// This is the replay entry point: writers reproducing logical content
+    /// that already carries commit timestamps (artifact import,
+    /// replay-shaped tooling) use it to preserve those temporal facts. The
+    /// explicit timestamp must be at or after the runtime's monotonic
+    /// commit-timestamp floor — equal is allowed, earlier is rejected with
+    /// `invalid_argument.storage_api.argument`. Replaying commits in
+    /// non-decreasing timestamp order always satisfies the floor. Commit
+    /// versions remain runtime-allocated and strictly monotonic; only the
+    /// timestamp is caller-controlled. Ordinary writers use [`Self::commit`].
+    pub fn commit_at(
+        &self,
+        batch: &CommitBatch,
+        timestamp: Timestamp,
+    ) -> StorageApiResult<CommitSummary> {
+        self.execute_commit(batch, Some(timestamp))
+    }
+
     pub fn branch(&self, request: &BranchRequest) -> StorageApiResult<BranchOutcome> {
         match request.action() {
             BranchAction::Create => self.create_branch_request(request),
@@ -2297,7 +2316,7 @@ impl<'a> StorageRuntime<'a> {
         batch: &CommitBatch,
         timestamp: Timestamp,
     ) -> StorageApiResult<CommitSummary> {
-        self.execute_commit(batch, Some(timestamp))
+        self.commit_at(batch, timestamp)
     }
 
     #[cfg(test)]
