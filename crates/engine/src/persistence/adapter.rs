@@ -900,6 +900,26 @@ pub(crate) fn map_storage_error(error: StorageApiError) -> EngineError {
     let details = storage_error_details(&error);
     let suggested_fix = persistence_suggested_fix(&error);
     match &error {
+        StorageApiError::IncompatibleLayout { .. } => {
+            // V1 cutover (hard rule 42): pre-V1 database layouts surface a
+            // structured layout error, never a generic persistence failure.
+            return EngineError::with_status(
+                EngineErrorClass::IncompatibleLayout,
+                EngineErrorStatus::new(
+                    ErrorClass::FailedPrecondition,
+                    "failed_precondition.engine.layout_version",
+                    RetryPolicy::Never,
+                    CommitOutcomeStatus::NotApplicable,
+                    "this directory holds a database from a pre-V1 version of Strata",
+                    suggested_fix,
+                    details,
+                    vec![
+                        "Point Strata at an empty directory or an existing V1 database; pre-V1 databases are not migrated.".to_owned(),
+                    ],
+                ),
+                error,
+            );
+        }
         StorageApiError::BranchGenerationMismatch { .. } => {
             return EngineError::with_status(
                 EngineErrorClass::Conflict,
@@ -1185,6 +1205,9 @@ const fn persistence_suggested_fix(error: &StorageApiError) -> &'static str {
         }
         StorageApiError::LowerLayer { .. } => {
             "Retry after the local persistence layer is available."
+        }
+        StorageApiError::IncompatibleLayout { .. } => {
+            "Point Strata at an empty directory or an existing V1 database; pre-V1 databases are not migrated."
         }
         _ => persistence_suggested_fix_for_class(error.class()),
     }

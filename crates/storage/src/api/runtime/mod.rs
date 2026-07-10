@@ -651,8 +651,26 @@ fn open_durable_local_owned_with_options(
             reason: "durable local open requires a durable-local mode",
         });
     }
+    let root = root.into();
+    reject_pre_v1_layout(&root)?;
     let backend = StorageBackend::local_fs(root);
     open_durable_with_owned_backend_handle(options, backend.into_backend_handle())
+}
+
+/// V1 cutover (hard rule 42): pre-V1 development databases are rejected with
+/// a structured layout error — a fresh V1 layout must never be silently
+/// created inside one. The marker file names are owned by the layout module.
+#[cfg(feature = "localfs")]
+fn reject_pre_v1_layout(root: &std::path::Path) -> StorageApiResult<()> {
+    if crate::layout::PRE_V1_LAYOUT_MARKER_FILES
+        .iter()
+        .any(|marker| root.join(marker).is_file())
+    {
+        return Err(StorageApiError::IncompatibleLayout {
+            reason: "directory holds a pre-V1 database layout",
+        });
+    }
+    Ok(())
 }
 
 #[cfg(not(feature = "localfs"))]

@@ -15,6 +15,11 @@ const MAX_TABLE_LEVEL: u32 = 9_999;
 const FIXED_U64_COMPONENT_LEN: usize = 16;
 const QUARANTINE_MANIFEST_OBJECT_ID: &str = "manifest";
 
+/// Root-level file names whose presence identifies a pre-V1 database layout
+/// (hard rule 42). V1 layouts keep the manifest inside a `manifest/`
+/// directory and never create either name, so these are unambiguous markers.
+pub(crate) const PRE_V1_LAYOUT_MARKER_FILES: &[&str] = &["strata.toml", "MANIFEST"];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ObjectFamily {
     Manifest,
