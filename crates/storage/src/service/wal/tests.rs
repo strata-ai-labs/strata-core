@@ -456,7 +456,7 @@ fn other_database_id_for_tests() -> [u8; 16] {
 }
 
 #[test]
-fn read_rejects_invalid_wal_object_names_from_listing() {
+fn open_rejects_invalid_wal_object_names_from_listing() {
     let active = ObjectLayout::wal_segment(1).expect("active segment");
     for invalid in [
         wal_listed_object("not-fixed-width"),
@@ -467,18 +467,18 @@ fn read_rejects_invalid_wal_object_names_from_listing() {
     ] {
         let backend = StoredWalBackend::with_object(&active, &segment_bytes(1, &[]));
         backend.set_list_order(vec![invalid.clone()]);
-        let service = WalService::open(
+        // The resume-segment reconciliation (#2555) lists the WAL directory at
+        // open, so a foreign name under `wal/` now fails the open itself —
+        // same typed error the read path raised, strictly earlier.
+        let Err(error) = WalService::open(
             &backend,
             database_id(),
             1,
             DurabilityPolicy::Standard,
             WalServiceConfig::default(),
-        )
-        .expect("open WAL");
-
-        let error = service
-            .read_all()
-            .expect_err("invalid listed WAL object should fail");
+        ) else {
+            panic!("invalid listed WAL object should fail open");
+        };
 
         assert_backend_list_invalid_object(error, &invalid);
     }

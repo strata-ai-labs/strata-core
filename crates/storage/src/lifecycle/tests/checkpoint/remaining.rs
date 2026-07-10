@@ -667,14 +667,11 @@ fn wal_truncation_keeps_active_segment_under_table_manifest_watermark() {
 fn wal_truncation_keeps_segment_newer_than_active_segment() {
     let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let config = crate::service::WalServiceConfig::new(1024);
-    let _future_service = crate::service::WalService::open(
-        backend,
-        DATABASE_ID,
-        2,
-        crate::config::mode::DurabilityPolicy::Standard,
-        config,
-    )
-    .expect("future segment");
+    // Open the active writer FIRST (empty directory -> segment 1); the future
+    // segment is created afterwards, as a concurrent handle would. Opening
+    // the active writer after segment 2 exists would reconcile it to the
+    // on-disk tail (#2555), which is exactly what this boundary test must
+    // not depend on.
     let active_service = crate::service::WalService::open(
         backend,
         DATABASE_ID,
@@ -683,6 +680,14 @@ fn wal_truncation_keeps_segment_newer_than_active_segment() {
         config,
     )
     .expect("active segment");
+    let _future_service = crate::service::WalService::open(
+        backend,
+        DATABASE_ID,
+        2,
+        crate::config::mode::DurabilityPolicy::Standard,
+        config,
+    )
+    .expect("future segment");
     let request = WalRetentionProof::snapshot_watermark(CommitVersion::new(1));
 
     let outcome = truncate_wal(&active_service, request).expect("truncation");
@@ -696,14 +701,8 @@ fn wal_truncation_keeps_segment_newer_than_active_segment() {
 fn wal_truncation_keeps_newer_than_active_segment() {
     let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let config = crate::service::WalServiceConfig::new(1024);
-    let _future_service = crate::service::WalService::open(
-        backend,
-        DATABASE_ID,
-        2,
-        crate::config::mode::DurabilityPolicy::Standard,
-        config,
-    )
-    .expect("future segment");
+    // Active writer first, future segment second — see
+    // `wal_truncation_keeps_segment_newer_than_active_segment` (#2555).
     let active_service = crate::service::WalService::open(
         backend,
         DATABASE_ID,
@@ -712,6 +711,14 @@ fn wal_truncation_keeps_newer_than_active_segment() {
         config,
     )
     .expect("active segment");
+    let _future_service = crate::service::WalService::open(
+        backend,
+        DATABASE_ID,
+        2,
+        crate::config::mode::DurabilityPolicy::Standard,
+        config,
+    )
+    .expect("future segment");
     let request = WalRetentionProof::flush_watermark(CommitVersion::new(1));
 
     let outcome = truncate_wal(&active_service, request).expect("truncation");

@@ -149,6 +149,7 @@ pub struct CrashRecoveryHarnessOutcome {
     quarantine_inventory_debt: usize,
     object_quarantine_preserved: usize,
     close_reopen_consistent: usize,
+    stale_wal_pointer_resumed: usize,
     ignored_case_equivalents: usize,
     harness_environment: usize,
 }
@@ -193,6 +194,11 @@ fn record_close_reopen_window(outcome: &mut CrashRecoveryHarnessOutcome) {
     outcome.close_reopen_consistent += 1;
 }
 
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn record_stale_wal_pointer_window(outcome: &mut CrashRecoveryHarnessOutcome) {
+    outcome.stale_wal_pointer_resumed += 1;
+}
+
 impl CrashRecoveryHarnessOutcome {
     pub const fn cases_executed(self) -> usize {
         self.cases_executed
@@ -228,6 +234,10 @@ impl CrashRecoveryHarnessOutcome {
 
     pub const fn close_reopen_consistent_cases(self) -> usize {
         self.close_reopen_consistent
+    }
+
+    pub const fn stale_wal_pointer_resumed_cases(self) -> usize {
+        self.stale_wal_pointer_resumed
     }
 
     pub const fn ignored_case_equivalent_cases(self) -> usize {
@@ -604,6 +614,10 @@ pub fn run_localfs_crash_recovery_harness(
         (
             localfs_close_manifest_survives_reopen,
             record_close_reopen_window,
+        ),
+        (
+            localfs_stale_wal_pointer_resumes_at_tail,
+            record_stale_wal_pointer_window,
         ),
     ];
     let limit = case_limit.unwrap_or(cases.len()).min(cases.len());
@@ -1218,6 +1232,86 @@ fn localfs_close_manifest_survives_reopen(root: &std::path::Path) -> Result<(), 
         .acquire_writer_lock(&writer_lock)
         .map_err(|err| TestkitError::new(format!("re-acquire writer lock: {err}")))?;
     drop(reopened_guard);
+    Ok(())
+}
+
+#[cfg(all(feature = "localfs", not(target_arch = "wasm32")))]
+fn localfs_stale_wal_pointer_resumes_at_tail(root: &std::path::Path) -> Result<(), TestkitError> {
+    use crate::backend::local_fs::LocalFsBackend;
+    use crate::config::mode::DurabilityPolicy;
+    use crate::format::WalCommitPayload;
+    use crate::service::{WalService, WalServiceConfig};
+
+    // Crash window (#2555): the WAL rotated past the segment the last
+    // published checkpoint recorded, and the crash arrives before any later
+    // checkpoint persists the new pointer. Recovery reopens with the STALE
+    // seed; the writer must resume at the on-disk tail — resuming inside the
+    // sealed seed segment collides on the next roll and disorders the package.
+    fn wal_record(version: u64) -> Result<crate::format::WalRecord, TestkitError> {
+        let commit_version = CommitVersion::new(version);
+        let commit_timestamp = Timestamp::from_micros(2_000_000 + version);
+        let physical_key = PhysicalKey::new(
+            branch_id(),
+            "default",
+            StorageSpaceId::engine(0x20)
+                .map_err(|err| TestkitError::new(format!("storage space: {err}")))?,
+            version.to_le_bytes(),
+        )
+        .map_err(|err| TestkitError::new(format!("physical key: {err}")))?;
+        let row = StorageRow::put(
+            physical_key,
+            commit_version,
+            commit_timestamp,
+            Timestamp::EPOCH,
+            vec![0x2b; 300],
+        );
+        let payload = WalCommitPayload::new(vec![row])
+            .map_err(|err| TestkitError::new(format!("commit payload: {err}")))?;
+        crate::format::WalRecord::new(commit_version, branch_id(), commit_timestamp, payload)
+            .map_err(|err| TestkitError::new(format!("wal record: {err}")))
+    }
+
+    let backend: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    let config = WalServiceConfig::new(1024);
+    let mut version = 0_u64;
+    let tail_before_crash = {
+        let mut writer =
+            WalService::open(backend, DATABASE_ID, 1, DurabilityPolicy::Standard, config)
+                .map_err(|err| TestkitError::new(format!("first WAL open: {err}")))?;
+        while writer.active_segment_id() < 3 {
+            version += 1;
+            writer
+                .append(&wal_record(version)?)
+                .map_err(|err| TestkitError::new(format!("pre-crash append: {err}")))?;
+        }
+        writer.active_segment_id()
+        // Dropped without any manifest/checkpoint write: the crash leaves the
+        // durable pointer at segment 1 while segments 1..=tail exist on disk.
+    };
+
+    let reopened: &'static LocalFsBackend = Box::leak(Box::new(LocalFsBackend::new(root)));
+    let mut resumed =
+        WalService::open(reopened, DATABASE_ID, 1, DurabilityPolicy::Standard, config)
+            .map_err(|err| TestkitError::new(format!("reopen with stale seed: {err}")))?;
+    require(
+        resumed.active_segment_id() == tail_before_crash,
+        "reopened WAL writer did not resume at the on-disk tail",
+    )?;
+    version += 1;
+    resumed
+        .append(&wal_record(version)?)
+        .map_err(|err| TestkitError::new(format!("post-reopen append: {err}")))?;
+    let read = resumed
+        .read_all()
+        .map_err(|err| TestkitError::new(format!("read after post-reopen append: {err}")))?;
+    let mut previous = None;
+    for record in read.records() {
+        require(
+            previous.is_none_or(|prior| record.commit_version() > prior),
+            "post-reopen WAL package lost strict commit-version order",
+        )?;
+        previous = Some(record.commit_version());
+    }
     Ok(())
 }
 
