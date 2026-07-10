@@ -33,10 +33,10 @@ checkpoint, from trusted table manifests, or from a combination of both.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-2. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-3. `docs/architecture/storage-next/l7-commit-runtime.md`
-4. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+1. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+2. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+3. `docs/architecture/storage/l7-commit-runtime.md`
+4. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 5. `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-implementation-plan.md`
 6. `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-test-plan.md`
 7. `docs/architecture/implementation-plans/M4/L8/l8j-checkpoint-watermark-wal-truncation-implementation-plan.md`

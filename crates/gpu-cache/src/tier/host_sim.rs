@@ -4,7 +4,7 @@
 //! runs against this backend in ordinary CI with no GPU, deterministically:
 //! copy completion is a counter the *test* advances, so interleavings that
 //! would be racy timing on real hardware become explicit test steps
-//! (mirroring storage-next's fault-injection discipline).
+//! (mirroring storage's fault-injection discipline).
 //!
 //! Fault knobs:
 //! - [`HostSimBackend::fail_next_copies`] — upcoming copies error at enqueue

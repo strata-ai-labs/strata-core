@@ -116,7 +116,7 @@ instead of duplicating backend setup and fault injection.
 ## L4A Transition Ownership Matrix
 
 The architecture inventory in
-`docs/architecture/storage-next/l4-log-manifest-snapshot-services.md` is the
+`docs/architecture/storage/l4-log-manifest-snapshot-services.md` is the
 canonical transition map. This matrix names the test owner for each transition
 and the L4 sub-slice that must close any remaining gap.
 

@@ -8,7 +8,7 @@
 //! validated on reopen (design §10).
 //!
 //! [`InMemoryStore`] is the machinery-test fake; `EnginePageStore` (GT2)
-//! implements the same seam over engine-next's public surface.
+//! implements the same seam over engine's public surface.
 
 use std::cell::Cell;
 use std::collections::HashMap;

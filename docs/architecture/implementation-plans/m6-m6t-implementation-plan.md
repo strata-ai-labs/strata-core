@@ -8,15 +8,15 @@ Implement the V1 database product behavior over the engine persistence adapter.
 
 ## Inputs
 
-1. `docs/architecture/engine-next/primitive-implementation-contract.md`
-2. `docs/architecture/engine-next/entity-ref-and-relationship-layer-contract.md`
-3. `docs/architecture/engine-next/branch-operation-and-capability-adapter-contract.md`
-4. `docs/architecture/engine-next/temporal-context-and-timeline-resolver-contract.md`
-5. `docs/architecture/engine-next/retrieval-and-derived-state-contract.md`
-6. `docs/architecture/engine-next/ipc-and-command-boundary-contract.md`
-7. `docs/architecture/engine-next/dataset-clone-artifact-contract.md`
-8. `docs/architecture/engine-next/product-pathway-conformance-plan.md`
-9. `docs/architecture/intelligence-next-architecture.md`
+1. `docs/architecture/engine/primitive-implementation-contract.md`
+2. `docs/architecture/engine/entity-ref-and-relationship-layer-contract.md`
+3. `docs/architecture/engine/branch-operation-and-capability-adapter-contract.md`
+4. `docs/architecture/engine/temporal-context-and-timeline-resolver-contract.md`
+5. `docs/architecture/engine/retrieval-and-derived-state-contract.md`
+6. `docs/architecture/engine/ipc-and-command-boundary-contract.md`
+7. `docs/architecture/engine/dataset-clone-artifact-contract.md`
+8. `docs/architecture/engine/product-pathway-conformance-plan.md`
+9. `docs/architecture/intelligence-architecture.md`
 10. `docs/architecture/v1-removed-surfaces.md`
 
 All slices must follow the V1 engineering standards: permanent domain names,

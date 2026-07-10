@@ -816,16 +816,16 @@ V1 architecture does not attempt to deliver:
 
 This document should be followed by focused architecture documents:
 
-1. `docs/architecture/core-next-architecture.md`
-2. `docs/architecture/storage-next-architecture.md`
-3. `docs/architecture/engine-next-architecture.md`
-4. `docs/architecture/inference-next-architecture.md`
-5. `docs/architecture/intelligence-next-architecture.md`
-6. `docs/architecture/storage-next/l1-backend-io.md`
-7. `docs/architecture/engine-next/ipc-and-command-boundary-contract.md`
+1. `docs/architecture/core-architecture.md`
+2. `docs/architecture/storage-architecture.md`
+3. `docs/architecture/engine-architecture.md`
+4. `docs/architecture/inference-architecture.md`
+5. `docs/architecture/intelligence-architecture.md`
+6. `docs/architecture/storage/l1-backend-io.md`
+7. `docs/architecture/engine/ipc-and-command-boundary-contract.md`
 8. `docs/architecture/v1-testing-and-conformance-plan.md`
 9. `docs/architecture/v1-error-and-diagnostics-contract.md`
-10. `docs/architecture/engine-next/public-api-and-cli-surface-cleanup-checklist.md`
+10. `docs/architecture/engine/public-api-and-cli-surface-cleanup-checklist.md`
 11. `docs/architecture/strata-v1-implementation-roadmap.md`
 12. `docs/architecture/v1-existing-test-inventory-and-porting-plan.md`
 13. `docs/architecture/v1-engineering-standards.md`

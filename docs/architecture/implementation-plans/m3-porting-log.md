@@ -80,9 +80,9 @@ and what old code became eligible for retirement.
 - `crates/storage/src/quarantine.rs`
 - `crates/storage/src/segmented/quarantine_protocol.rs`
 - `crates/storage/src/segmented/compaction.rs`
-- `docs/architecture/storage-next/l2-object-layout.md`
-- `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-- `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+- `docs/architecture/storage/l2-object-layout.md`
+- `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+- `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 - `docs/spec/strata-storage-format-v1.md`
 
 ### Behavior Preserved
@@ -479,7 +479,7 @@ and what old code became eligible for retirement.
 - `crates/storage/src/segmented/quarantine_protocol.rs`
 - `crates/storage-next/src/object/mod.rs`
 - `crates/storage-next/src/layout/mod.rs`
-- `docs/architecture/storage-next/l2-object-layout.md`
+- `docs/architecture/storage/l2-object-layout.md`
 
 ### Behavior Preserved
 
@@ -589,9 +589,9 @@ and what old code became eligible for retirement.
 - `crates/storage/src/durability/format/primitives.rs`
 - `crates/storage/src/durability/format/writeset.rs`
 - `crates/storage/src/durability/payload.rs`
-- `docs/architecture/storage-next/l3-durable-format-codec.md`
-- `docs/architecture/storage-next/storage-space-id-registry.md`
-- `docs/architecture/engine-next/storage-space-id-registry.md`
+- `docs/architecture/storage/l3-durable-format-codec.md`
+- `docs/architecture/storage/storage-space-id-registry.md`
+- `docs/architecture/engine/storage-space-id-registry.md`
 - `docs/spec/strata-storage-format-v1.md`
 
 ### Behavior Preserved
@@ -657,8 +657,8 @@ and what old code became eligible for retirement.
 - `crates/storage/src/durability/format/watermark.rs`
 - `crates/storage/src/durability/format/segment_meta.rs`
 - `crates/storage/src/manifest.rs`
-- `docs/architecture/storage-next/l3-durable-format-codec.md`
-- `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
+- `docs/architecture/storage/l3-durable-format-codec.md`
+- `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
 - `docs/spec/strata-storage-format-v1.md`
 
 ### Behavior Preserved
@@ -727,8 +727,8 @@ and what old code became eligible for retirement.
 - `crates/storage/src/durability/commit_adapter.rs`
 - `crates/storage/src/durability/payload.rs`
 - `crates/storage/src/durability/codec/`
-- `docs/architecture/storage-next/l3-durable-format-codec.md`
-- `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
+- `docs/architecture/storage/l3-durable-format-codec.md`
+- `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
 - `docs/spec/strata-storage-format-v1.md`
 
 ### Behavior To Preserve
@@ -780,7 +780,7 @@ and what old code became eligible for retirement.
 - `crates/storage/src/durability/format/snapshot.rs`
 - `crates/storage/src/durability/disk_snapshot/reader.rs`
 - `crates/storage/src/durability/disk_snapshot/writer.rs`
-- `docs/architecture/storage-next/l3-durable-format-codec.md`
+- `docs/architecture/storage/l3-durable-format-codec.md`
 - `docs/spec/strata-storage-format-v1.md`
 
 ### Behavior Preserved
@@ -848,8 +848,8 @@ and what old code became eligible for retirement.
 - `crates/storage-next/fuzz/fuzz_targets/README.md`
 - `crates/storage-next/src/format/*`
 - `crates/storage-next/src/testkit/mod.rs`
-- `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
-- `docs/architecture/storage-next/l3-durable-format-codec.md`
+- `docs/architecture/storage/target-crate-shape-and-test-harness.md`
+- `docs/architecture/storage/l3-durable-format-codec.md`
 
 ### Behavior Preserved
 
@@ -1437,8 +1437,8 @@ and what old code became eligible for retirement.
 - `crates/storage-next/src/backend/conformance.rs`
 - `crates/storage-next/src/config/mode.rs`
 - `crates/storage-next/src/layout/mod.rs`
-- `docs/architecture/storage-next/l1-backend-io.md`
-- `docs/architecture/storage-next/l2-object-layout.md`
+- `docs/architecture/storage/l1-backend-io.md`
+- `docs/architecture/storage/l2-object-layout.md`
 
 ### Behavior Preserved
 
@@ -1501,7 +1501,7 @@ and what old code became eligible for retirement.
 - `crates/storage-next/src/format/storage_row.rs`
 - `crates/storage-next/src/row/mod.rs`
 - `docs/spec/strata-storage-format-v1.md`
-- `docs/architecture/storage-next/l3-durable-format-codec.md`
+- `docs/architecture/storage/l3-durable-format-codec.md`
 
 ### Behavior Preserved
 
@@ -1570,7 +1570,7 @@ and what old code became eligible for retirement.
 - `crates/storage-next/src/format/mod.rs`
 - `crates/storage-next/src/table/mod.rs`
 - `docs/spec/strata-storage-format-v1.md`
-- `docs/architecture/storage-next/l3-durable-format-codec.md`
+- `docs/architecture/storage/l3-durable-format-codec.md`
 
 ### Behavior Preserved
 
@@ -1634,7 +1634,7 @@ and what old code became eligible for retirement.
 - `crates/storage-next/src/format/table/mod.rs`
 - `crates/storage-next/src/row/mod.rs`
 - `docs/spec/strata-storage-format-v1.md`
-- `docs/architecture/storage-next/l3-durable-format-codec.md`
+- `docs/architecture/storage/l3-durable-format-codec.md`
 
 ### Behavior Preserved
 
@@ -1829,7 +1829,7 @@ and what old code became eligible for retirement.
 - `crates/storage-next/src/format/table/artifact.rs`
 - `crates/storage-next/src/service/publish.rs`
 - `crates/storage-next/src/service/manifest.rs`
-- `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
+- `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
 
 ### Behavior Preserved
 
@@ -1891,7 +1891,7 @@ and what old code became eligible for retirement.
 - `crates/storage-next/src/service/wal.rs`
 - `crates/storage-next/src/service/sidecar.rs`
 - `crates/storage-next/src/service/table.rs`
-- `docs/architecture/storage-next/l1-backend-io.md`
+- `docs/architecture/storage/l1-backend-io.md`
 - `docs/spec/strata-storage-format-v1.md`
 
 ### Behavior Preserved

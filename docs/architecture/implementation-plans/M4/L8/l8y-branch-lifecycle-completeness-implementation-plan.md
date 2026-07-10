@@ -39,10 +39,10 @@ the behavior safely.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-2. `docs/architecture/storage-next/l7-commit-runtime.md`
-3. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
-4. `docs/architecture/storage-next/l9-storage-api-boundary.md`
+1. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+2. `docs/architecture/storage/l7-commit-runtime.md`
+3. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
+4. `docs/architecture/storage/l9-storage-api-boundary.md`
 5. `docs/architecture/implementation-plans/m4-l6-branch-lsm-runtime-implementation-plan.md`
 6. `docs/architecture/implementation-plans/m4-l6-branch-lsm-runtime-test-plan.md`
 7. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`

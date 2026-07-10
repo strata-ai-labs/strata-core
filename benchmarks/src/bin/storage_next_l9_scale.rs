@@ -1,6 +1,6 @@
-//! Storage-next L9 scale benchmark runner.
+//! Storage L9 scale benchmark runner.
 //!
-//! This binary exercises only the public `strata_storage_next::api` surface.
+//! This binary exercises only the public `strata_storage::api` surface.
 //! It is intended for large one-shot scale cells where Criterion would be the
 //! wrong tool because it repeats setup-heavy workloads.
 
@@ -14,7 +14,7 @@ use strata_benchmarks::harness::{read_cpu_model, read_total_ram_gb};
 use strata_benchmarks::schema::{
     BenchmarkMetrics, BenchmarkReport, BenchmarkResult, HardwareInfo, RunMetadata,
 };
-use strata_storage_next::api::{
+use strata_storage::api::{
     BranchAction, BranchGeneration, BranchId, BranchRequest, CommitBatch, CommitMutation,
     CommitOptions, DiagnosticsFactState, DiagnosticsRequest, DiagnosticsScope,
     DiagnosticsSourceLayoutReport, MaintenanceQueueSummary, MaintenanceRequest, MaintenanceScope,
@@ -23,10 +23,10 @@ use strata_storage_next::api::{
     StorageApiError, StorageApiResult, StorageDurabilityPolicy, StorageKey, StorageMemoryBudget,
     StorageOpenOptions, StorageOpenOutcome, StorageRuntime, StorageSpaceId, StorageValue,
 };
-use strata_storage_next::perf_trace::{self, StoragePerfSnapshot};
+use strata_storage::perf_trace::{self, StoragePerfSnapshot};
 use tempfile::TempDir;
 
-const CATEGORY: &str = "storage-next-l9-scale";
+const CATEGORY: &str = "storage-l9-scale";
 const DEFAULT_SCALE: usize = 100_000;
 const DEFAULT_VALUE_BYTES: usize = 64;
 const DEFAULT_BATCH_SIZE: usize = 1_000;
@@ -68,7 +68,7 @@ fn run(config: Config) -> Result<(), BenchmarkError> {
     std::fs::create_dir_all(&config.root)?;
     let mut results = Vec::new();
 
-    eprintln!("storage-next L9 scale benchmark");
+    eprintln!("storage L9 scale benchmark");
     eprintln!("root: {}", config.root.display());
     eprintln!("scales: {}", format_list(&config.scales));
     eprintln!("engines: {}", format_list(&config.engines));
@@ -640,7 +640,7 @@ fn discover_initial_branch(runtime: &mut StorageRuntime<'_>) -> Result<BranchId,
         .find(|branch| {
             matches!(
                 branch.status(),
-                strata_storage_next::api::BranchStatus::Active
+                strata_storage::api::BranchStatus::Active
             )
         })
         .map(|branch| branch.branch_id())
@@ -718,7 +718,7 @@ fn save_report(config: &Config, report: &BenchmarkReport) -> Result<PathBuf, Ben
     let dir = config.results_dir.clone().unwrap_or_else(|| {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("results")
-            .join("storage-next-l9")
+            .join("storage-l9")
     });
     std::fs::create_dir_all(&dir)?;
     let commit = report
@@ -1120,10 +1120,10 @@ fn format_list<T: fmt::Display>(items: &[T]) -> String {
 fn print_help() {
     eprintln!(
         "\
-storage-next L9 scale benchmark
+storage L9 scale benchmark
 
 Usage:
-  cargo run --manifest-path benchmarks/Cargo.toml --bin storage-next-l9-scale -- [options]
+  cargo run --manifest-path benchmarks/Cargo.toml --bin storage-l9-scale -- [options]
 
 Options:
   --scales LIST          Comma list: 100k,1m,10m,100m. Default: 100k
@@ -1137,8 +1137,8 @@ Options:
   --scan-limit N         Prefix scan limit. Default: 64
   --seed N               Deterministic sampling seed.
   --memory-budget SIZE   Storage memory budget, e.g. 48g/512m. Default: storage default profile.
-  --root PATH            Benchmark scratch root. Default: benchmarks/.benchmark/storage-next-l9
-  --results-dir PATH     JSON output directory. Default: benchmarks/results/storage-next-l9
+  --root PATH            Benchmark scratch root. Default: benchmarks/.benchmark/storage-l9
+  --results-dir PATH     JSON output directory. Default: benchmarks/results/storage-l9
   --diagnostic-source-shape
                          Observe source layout after load-only runs without explicit maintenance.
   --diagnostic-final-drain
@@ -1148,8 +1148,8 @@ Options:
   -h, --help             Show this help.
 
 Examples:
-  cargo run --manifest-path benchmarks/Cargo.toml --bin storage-next-l9-scale -- --scales 100k
-  cargo run --manifest-path benchmarks/Cargo.toml --bin storage-next-l9-scale -- --scales 100k,1m,10m,100m --engines standard,always --samples 50000
+  cargo run --manifest-path benchmarks/Cargo.toml --bin storage-l9-scale -- --scales 100k
+  cargo run --manifest-path benchmarks/Cargo.toml --bin storage-l9-scale -- --scales 100k,1m,10m,100m --engines standard,always --samples 50000
 "
     );
 }
@@ -1190,7 +1190,7 @@ impl Config {
             seed: DEFAULT_SEED,
             root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join(".benchmark")
-                .join("storage-next-l9"),
+                .join("storage-l9"),
             results_dir: None,
             diagnostic_source_shape: false,
             diagnostic_final_drain: false,
@@ -1697,7 +1697,7 @@ impl RunResult {
         }
 
         BenchmarkResult {
-            benchmark: format!("storage-next-l9/{}", self.workload),
+            benchmark: format!("storage-l9/{}", self.workload),
             category: CATEGORY.to_string(),
             parameters,
             metrics: self.measurement.into_metrics(),

@@ -3,7 +3,7 @@
   "metadata": {
     "timestamp": "2026-06-05T07:14:14Z",
     "git_commit": "12d2790b",
-    "git_branch": "perf/storage-next-traces-fixes",
+    "git_branch": "perf/storage-traces-fixes",
     "git_dirty": true,
     "sdk": "rust",
     "sdk_version": "0.1.0",

@@ -13,9 +13,9 @@ The binding V1 architecture anchor is:
 
 The binding storage-next architecture anchors are:
 
-1. `docs/architecture/storage-next-architecture.md`
-2. `docs/architecture/storage-next/README.md`
-3. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
+1. `docs/architecture/storage-architecture.md`
+2. `docs/architecture/storage/README.md`
+3. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
 
 The original charter text has been intentionally removed from this file because
 it contained as-if-binding sections for rejected or deferred directions:

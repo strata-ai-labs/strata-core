@@ -28,7 +28,7 @@ is stable.
 - `crates/executor/src/command.rs`
 - `crates/executor/src/handlers/graph.rs`
 - `crates/executor/src/handlers/graph_impl.rs`
-- `docs/architecture/engine-next/entity-ref-and-relationship-layer-contract.md`
+- `docs/architecture/engine/entity-ref-and-relationship-layer-contract.md`
 
 ## Current Targets
 

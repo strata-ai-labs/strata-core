@@ -37,8 +37,8 @@ it has decided a table object is reachable and safe to read.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l5-table-runtime.md`
-2. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
+1. `docs/architecture/storage/l5-table-runtime.md`
+2. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
 3. `docs/architecture/implementation-plans/m4-l5-table-runtime-implementation-plan.md`
 4. `docs/architecture/implementation-plans/m4-l5-table-runtime-test-plan.md`
 5. `docs/architecture/implementation-plans/M4/m4-l5-porting-log.md`

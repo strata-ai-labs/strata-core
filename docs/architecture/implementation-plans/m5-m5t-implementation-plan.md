@@ -15,13 +15,13 @@ adapter.
 
 ## Inputs
 
-1. `docs/architecture/engine-next-architecture.md`
-2. `docs/architecture/engine-next/target-crate-shape-and-test-harness.md`
-3. `docs/architecture/engine-next/persistence-adapter-contract.md`
-4. `docs/architecture/engine-next/control-plane-layout-contract.md`
-5. `docs/architecture/engine-next/storage-space-id-registry.md`
+1. `docs/architecture/engine-architecture.md`
+2. `docs/architecture/engine/target-crate-shape-and-test-harness.md`
+3. `docs/architecture/engine/persistence-adapter-contract.md`
+4. `docs/architecture/engine/control-plane-layout-contract.md`
+5. `docs/architecture/engine/storage-space-id-registry.md`
 6. `docs/architecture/runtime-resource-profile-architecture.md`
-7. `docs/architecture/intelligence-next-architecture.md`
+7. `docs/architecture/intelligence-architecture.md`
 
 All slices must follow the V1 engineering standards: permanent domain names,
 concept-budget discipline, file/function thresholds, comment standards, and no

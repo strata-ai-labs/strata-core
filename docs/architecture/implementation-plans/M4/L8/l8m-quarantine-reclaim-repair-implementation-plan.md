@@ -38,9 +38,9 @@ quarantine service has a durable inventory trail for the operation.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
-2. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-3. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
+1. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
+2. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+3. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
 4. `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-implementation-plan.md`
 5. `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-test-plan.md`
 6. `docs/architecture/implementation-plans/M4/L8/l8l-retention-proof-snapshot-pruning-implementation-plan.md`

@@ -27,7 +27,7 @@ validation, timeline rows, cache commits, durable commits, or replay.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
 2. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 4. `docs/architecture/implementation-plans/M4/L7/l7b-commit-batch-mutation-model-implementation-plan.md`

@@ -36,7 +36,7 @@ Status: implemented
 - `crates/storage/src/traits.rs`
 - `crates/storage-next/src/lifecycle/error.rs`
 - `crates/storage-next/src/lifecycle/outcome.rs`
-- `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
+- `docs/architecture/storage/target-crate-shape-and-test-harness.md`
 - `docs/architecture/implementation-plans/M4/L9/l9a-api-vocabulary-visibility-boundary-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/L9/l9a-api-vocabulary-visibility-boundary-test-plan.md`
 
@@ -293,7 +293,7 @@ Status: implemented
 - `crates/storage-next/src/branch/read.rs`
 - `crates/storage-next/src/branch/state.rs`
 - `crates/storage-next/src/commit/timeline.rs`
-- `docs/architecture/engine-next/temporal-context-and-timeline-resolver-contract.md`
+- `docs/architecture/engine/temporal-context-and-timeline-resolver-contract.md`
 - `docs/architecture/implementation-plans/M4/L9/l9c-reads-timeline-resolution-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/L9/l9c-reads-timeline-resolution-test-plan.md`
 
@@ -947,7 +947,7 @@ Status: planned
 
 - `crates/storage-next/src/testkit/`
 - `crates/storage-next/tests/`
-- `docs/architecture/engine-next/testing-and-conformance-plan.md`
+- `docs/architecture/engine/testing-and-conformance-plan.md`
 - `docs/architecture/implementation-plans/M4/L9/l9h-engine-testkit-closeout-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/L9/l9h-engine-testkit-closeout-test-plan.md`
 

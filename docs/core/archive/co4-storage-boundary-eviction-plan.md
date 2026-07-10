@@ -1,7 +1,7 @@
 # CO4 Storage Boundary Eviction Plan
 
 Status: historical cleanup-era implementation plan; V1 storage ownership is
-governed by `docs/architecture/storage-next-architecture.md`.
+governed by `docs/architecture/storage-architecture.md`.
 
 ## Purpose
 

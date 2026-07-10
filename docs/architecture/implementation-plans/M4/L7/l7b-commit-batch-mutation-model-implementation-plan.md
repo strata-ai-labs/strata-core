@@ -25,9 +25,9 @@ commit timestamp.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-3. `docs/architecture/storage-next/commit-timeline-substrate.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+3. `docs/architecture/storage/commit-timeline-substrate.md`
 4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 5. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 6. `docs/architecture/implementation-plans/M4/L7/l7a-commit-runtime-scaffold-implementation-plan.md`

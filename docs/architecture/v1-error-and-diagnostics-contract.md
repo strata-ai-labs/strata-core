@@ -23,9 +23,9 @@ conformance plan.
 ## Related Documents
 
 1. `docs/architecture/strata-v1-architecture.md`
-2. `docs/architecture/core-next-architecture.md`
-3. `docs/architecture/storage-next-architecture.md`
-4. `docs/architecture/storage-next/l9-storage-api-boundary.md`
+2. `docs/architecture/core-architecture.md`
+3. `docs/architecture/storage-architecture.md`
+4. `docs/architecture/storage/l9-storage-api-boundary.md`
 5. `docs/product/strata-v1-non-functional-requirements.md`
 6. `docs/core/archive/error-research.md`
 7. `docs/core/archive/core-error-review.md`

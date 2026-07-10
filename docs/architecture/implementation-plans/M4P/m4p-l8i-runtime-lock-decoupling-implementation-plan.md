@@ -53,7 +53,7 @@ Reconciliation of a 2026-06-30 session that partly re-derived this plan:
 - A "remove `schedule_post_commit` from the backpressure path" change was tried and
   **reverted** — it is a fragment of the **abandoned Group A** (wait-loop area), and a
   crawl-rate A/B re-confirmed it is not a throughput lever (matching Group A's note).
-- A separate `docs/architecture/storage-next/lock-decoupling-roadmap.md` draft was
+- A separate `docs/architecture/storage/lock-decoupling-roadmap.md` draft was
   **retired** in favor of this plan; its only non-overlapping idea — *concurrent
   (disjoint-level) compaction* — is a **drain-rate** lever, complementary to and out of
   scope for this lock-decoupling plan (track with the M12C-style compaction work).

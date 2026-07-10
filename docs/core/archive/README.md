@@ -8,7 +8,7 @@ architecture and should not be required reading for new V1 implementation work.
 
 The active V1 core target is:
 
-- [docs/architecture/core-next-architecture.md](../../architecture/core-next-architecture.md)
+- [docs/architecture/core-architecture.md](../../architecture/core-architecture.md)
 
 The current crate evidence map is:
 

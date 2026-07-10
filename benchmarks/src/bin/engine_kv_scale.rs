@@ -1,7 +1,7 @@
-//! Engine-next KV scale benchmark.
+//! Engine KV scale benchmark.
 //!
 //! Drives KV load, point reads, and prefix scans through the public
-//! `strata_engine_next` surface (`Database` + `KvService`) at a configurable
+//! `strata_engine` surface (`Database` + `KvService`) at a configurable
 //! scale and storage memory budget. The memory budget is the reason this binary
 //! exists separately from `engine-kv-scan-regression`: it exercises the
 //! `with_memory_budget` open option so large working sets stay resident instead
@@ -19,7 +19,7 @@ use std::process;
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
-use strata_engine_next::{
+use strata_engine::{
     BranchName, CacheOpenOptions, Database, DurableLocalOpenOptions, EngineResult, KvKey, KvValue,
     ProductSpace,
 };

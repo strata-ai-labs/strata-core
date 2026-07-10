@@ -10,7 +10,7 @@ use std::process;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use strata_engine_next::{
+use strata_engine::{
     BranchName, CacheOpenOptions, Database, DurableLocalOpenOptions, EngineResult, KvKey, KvValue,
     ProductSpace,
 };

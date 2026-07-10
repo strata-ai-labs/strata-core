@@ -55,11 +55,11 @@ later milestone.
 | Document | Status | Role |
 |---|---|---|
 | `docs/architecture/strata-v1-architecture.md` | Exists | Binding high-level V1 architecture anchor. |
-| `docs/architecture/core-next-architecture.md` | Exists | Binding core-next architecture. |
-| `docs/architecture/storage-next-architecture.md` | Exists | Binding storage-next architecture. |
-| `docs/architecture/engine-next-architecture.md` | Exists | Binding engine-next architecture. |
-| `docs/architecture/inference-next-architecture.md` | Exists | Binding inference-next architecture. |
-| `docs/architecture/intelligence-next-architecture.md` | Exists | Binding intelligence-next architecture. |
+| `docs/architecture/core-architecture.md` | Exists | Binding core-next architecture. |
+| `docs/architecture/storage-architecture.md` | Exists | Binding storage-next architecture. |
+| `docs/architecture/engine-architecture.md` | Exists | Binding engine-next architecture. |
+| `docs/architecture/inference-architecture.md` | Exists | Binding inference-next architecture. |
+| `docs/architecture/intelligence-architecture.md` | Exists | Binding intelligence-next architecture. |
 | `docs/architecture/stratahub-substrate-architecture.md` | Exists | Binding V1 StrataHub substrate architecture. |
 | `docs/architecture/runtime-resource-profile-architecture.md` | Exists | Binding runtime resource profile architecture. |
 
@@ -83,42 +83,42 @@ later milestone.
 
 | Document | Status | Role |
 |---|---|---|
-| `docs/architecture/storage-next/README.md` | Exists | Storage-next document index and reading order. |
-| `docs/architecture/storage-next/l1-backend-io.md` | Exists | Binding L1 conceptual contract. |
-| `docs/architecture/storage-next/l2-object-layout.md` | Exists | Binding L2 conceptual contract. |
-| `docs/architecture/storage-next/l3-durable-format-codec.md` | Exists | Binding L3 conceptual contract. |
-| `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md` | Exists | Binding L4 conceptual contract. |
-| `docs/architecture/storage-next/l5-table-runtime.md` | Exists | Binding L5 conceptual contract. |
-| `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md` | Exists | Binding L6 conceptual contract. |
-| `docs/architecture/storage-next/l7-commit-runtime.md` | Exists | Binding L7 conceptual contract. |
-| `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md` | Exists | Binding L8 conceptual contract. |
-| `docs/architecture/storage-next/l9-storage-api-boundary.md` | Exists | Binding L9 conceptual contract. |
-| `docs/architecture/storage-next/implementation-patterns.md` | Exists | Binding repeatable implementation patterns. |
-| `docs/architecture/storage-next/target-crate-shape-and-test-harness.md` | Exists | Binding target crate shape and test harness plan. |
-| `docs/architecture/storage-next/storage-space-id-registry.md` | Exists | Binding storage-owned storage-space registry. |
-| `docs/architecture/storage-next/commit-timeline-substrate.md` | Exists | Binding commit timeline placement contract. |
+| `docs/architecture/storage/README.md` | Exists | Storage-next document index and reading order. |
+| `docs/architecture/storage/l1-backend-io.md` | Exists | Binding L1 conceptual contract. |
+| `docs/architecture/storage/l2-object-layout.md` | Exists | Binding L2 conceptual contract. |
+| `docs/architecture/storage/l3-durable-format-codec.md` | Exists | Binding L3 conceptual contract. |
+| `docs/architecture/storage/l4-log-manifest-snapshot-services.md` | Exists | Binding L4 conceptual contract. |
+| `docs/architecture/storage/l5-table-runtime.md` | Exists | Binding L5 conceptual contract. |
+| `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md` | Exists | Binding L6 conceptual contract. |
+| `docs/architecture/storage/l7-commit-runtime.md` | Exists | Binding L7 conceptual contract. |
+| `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md` | Exists | Binding L8 conceptual contract. |
+| `docs/architecture/storage/l9-storage-api-boundary.md` | Exists | Binding L9 conceptual contract. |
+| `docs/architecture/storage/implementation-patterns.md` | Exists | Binding repeatable implementation patterns. |
+| `docs/architecture/storage/target-crate-shape-and-test-harness.md` | Exists | Binding target crate shape and test harness plan. |
+| `docs/architecture/storage/storage-space-id-registry.md` | Exists | Binding storage-owned storage-space registry. |
+| `docs/architecture/storage/commit-timeline-substrate.md` | Exists | Binding commit timeline placement contract. |
 | `docs/spec/strata-storage-format-v1.md` | Exists | Draft public storage format specification; unstable until M3 freeze. |
 
 ## Engine-Next Documents
 
 | Document | Status | Role |
 |---|---|---|
-| `docs/architecture/engine-next/README.md` | Exists | Engine-next contract index and reading order. |
-| `docs/architecture/engine-next/primitive-implementation-contract.md` | Exists | Binding data-capability implementation contract. |
-| `docs/architecture/engine-next/entity-ref-and-relationship-layer-contract.md` | Exists | Binding EntityRef and relationship-layer contract. |
-| `docs/architecture/engine-next/storage-space-id-registry.md` | Exists | Binding engine-owned storage-space registry. |
-| `docs/architecture/engine-next/persistence-adapter-contract.md` | Exists | Binding engine-to-storage adapter contract. |
-| `docs/architecture/engine-next/branch-operation-and-capability-adapter-contract.md` | Exists | Binding branch operation contract. |
-| `docs/architecture/engine-next/temporal-context-and-timeline-resolver-contract.md` | Exists | Binding temporal context and timeline contract. |
-| `docs/architecture/engine-next/control-plane-layout-contract.md` | Exists | Binding control-plane layout contract. |
-| `docs/architecture/engine-next/retrieval-and-derived-state-contract.md` | Exists | Binding retrieval and derived-state contract. |
-| `docs/architecture/engine-next/ipc-and-command-boundary-contract.md` | Exists | Binding IPC and serializable command boundary contract. |
-| `docs/architecture/engine-next/dataset-clone-artifact-contract.md` | Exists | Binding dataset clone artifact contract. |
-| `docs/architecture/engine-next/public-api-and-cli-surface-cleanup-checklist.md` | Exists | Binding public API and CLI cleanup checklist. |
-| `docs/architecture/engine-next/product-pathway-conformance-plan.md` | Exists | Binding engine product-path conformance plan. |
-| `docs/architecture/engine-next/error-and-diagnostics-contract.md` | Exists | Binding engine-specific error contract. |
-| `docs/architecture/engine-next/testing-and-conformance-plan.md` | Exists | Binding engine test and conformance plan. |
-| `docs/architecture/engine-next/target-crate-shape-and-test-harness.md` | Exists | Binding target crate shape and test harness plan. |
+| `docs/architecture/engine/README.md` | Exists | Engine-next contract index and reading order. |
+| `docs/architecture/engine/primitive-implementation-contract.md` | Exists | Binding data-capability implementation contract. |
+| `docs/architecture/engine/entity-ref-and-relationship-layer-contract.md` | Exists | Binding EntityRef and relationship-layer contract. |
+| `docs/architecture/engine/storage-space-id-registry.md` | Exists | Binding engine-owned storage-space registry. |
+| `docs/architecture/engine/persistence-adapter-contract.md` | Exists | Binding engine-to-storage adapter contract. |
+| `docs/architecture/engine/branch-operation-and-capability-adapter-contract.md` | Exists | Binding branch operation contract. |
+| `docs/architecture/engine/temporal-context-and-timeline-resolver-contract.md` | Exists | Binding temporal context and timeline contract. |
+| `docs/architecture/engine/control-plane-layout-contract.md` | Exists | Binding control-plane layout contract. |
+| `docs/architecture/engine/retrieval-and-derived-state-contract.md` | Exists | Binding retrieval and derived-state contract. |
+| `docs/architecture/engine/ipc-and-command-boundary-contract.md` | Exists | Binding IPC and serializable command boundary contract. |
+| `docs/architecture/engine/dataset-clone-artifact-contract.md` | Exists | Binding dataset clone artifact contract. |
+| `docs/architecture/engine/public-api-and-cli-surface-cleanup-checklist.md` | Exists | Binding public API and CLI cleanup checklist. |
+| `docs/architecture/engine/product-pathway-conformance-plan.md` | Exists | Binding engine product-path conformance plan. |
+| `docs/architecture/engine/error-and-diagnostics-contract.md` | Exists | Binding engine-specific error contract. |
+| `docs/architecture/engine/testing-and-conformance-plan.md` | Exists | Binding engine test and conformance plan. |
+| `docs/architecture/engine/target-crate-shape-and-test-harness.md` | Exists | Binding target crate shape and test harness plan. |
 
 ## Implementation Plans
 

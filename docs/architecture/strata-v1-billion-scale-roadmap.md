@@ -45,8 +45,8 @@ Authoritative inputs:
 
 | Concern | Design document |
 |---|---|
-| Durable write pipeline root causes (RC1/RC2/RC3) | `docs/architecture/storage-next/durable-write-pipeline-scaling.md` |
-| Single-commit write cliff | `docs/architecture/storage-next/durable-single-commit-write-cliff.md` |
+| Durable write pipeline root causes (RC1/RC2/RC3) | `docs/architecture/storage/durable-write-pipeline-scaling.md` |
+| Single-commit write cliff | `docs/architecture/storage/durable-single-commit-write-cliff.md` |
 | Compaction problem framing (I/O, convergence, branch GC) | `docs/design/performance/compaction-architecture-brief.md` |
 | Compaction I/O starvation under read load | `docs/design/performance/compaction-io-starvation.md` |
 | Compaction + COW branching design space | `docs/design/performance/compaction-research.md` |

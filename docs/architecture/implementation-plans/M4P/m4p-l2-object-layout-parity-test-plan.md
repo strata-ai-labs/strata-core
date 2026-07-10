@@ -104,7 +104,7 @@ Use:
 4. Existing lifecycle tests under `crates/storage-next/src/lifecycle/tests/` for
    table reachability and table-object retention behavior after parser
    adoption.
-5. `docs/architecture/storage-next/l2-object-layout.md` for documentation
+5. `docs/architecture/storage/l2-object-layout.md` for documentation
    closeout.
 
 Keep Rust test names behavior-focused. Do not use `M4P`, `L2`, or roadmap slice
@@ -284,10 +284,10 @@ Seeded guard probes should prove the guard allows:
 
 Documentation closeout requires review of:
 
-1. `docs/architecture/storage-next/l2-object-layout.md`;
-2. `docs/architecture/storage-next/l3-durable-format-codec.md` if it enumerates
+1. `docs/architecture/storage/l2-object-layout.md`;
+2. `docs/architecture/storage/l3-durable-format-codec.md` if it enumerates
    manifest-family object names;
-3. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md` if it
+3. `docs/architecture/storage/l4-log-manifest-snapshot-services.md` if it
    enumerates manifest-family object names.
 
 Required documentation assertions:

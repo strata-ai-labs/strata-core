@@ -78,33 +78,33 @@ close the question in place.
 | Source document | Covered by |
 |---|---|
 | `docs/architecture/strata-v1-implementation-roadmap.md` | `V1Q-001` through `V1Q-005` |
-| `docs/architecture/storage-next-architecture.md` | `V1Q-006`, `V1Q-007`, `V1Q-015`, `V1Q-016`, `V1Q-017` |
-| `docs/architecture/storage-next/l1-backend-io.md` | `V1Q-007` |
-| `docs/architecture/storage-next/l2-object-layout.md` | `V1Q-006`, `V1Q-008` |
-| `docs/architecture/storage-next/commit-timeline-substrate.md` | `V1Q-009` |
-| `docs/architecture/storage-next/storage-space-id-registry.md` | `V1Q-009` |
-| `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md` | `V1Q-010`, `V1Q-014` |
-| `docs/architecture/storage-next/l5-table-runtime.md` | `V1Q-011` |
-| `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md` | `V1Q-012` |
-| `docs/architecture/storage-next/l7-commit-runtime.md` | `V1Q-013`, `V1Q-016` |
-| `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md` | `V1Q-014` |
-| `docs/architecture/storage-next/l9-storage-api-boundary.md` | `V1Q-010`, `V1Q-014`, `V1Q-024`, `V1Q-026` |
+| `docs/architecture/storage-architecture.md` | `V1Q-006`, `V1Q-007`, `V1Q-015`, `V1Q-016`, `V1Q-017` |
+| `docs/architecture/storage/l1-backend-io.md` | `V1Q-007` |
+| `docs/architecture/storage/l2-object-layout.md` | `V1Q-006`, `V1Q-008` |
+| `docs/architecture/storage/commit-timeline-substrate.md` | `V1Q-009` |
+| `docs/architecture/storage/storage-space-id-registry.md` | `V1Q-009` |
+| `docs/architecture/storage/l4-log-manifest-snapshot-services.md` | `V1Q-010`, `V1Q-014` |
+| `docs/architecture/storage/l5-table-runtime.md` | `V1Q-011` |
+| `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md` | `V1Q-012` |
+| `docs/architecture/storage/l7-commit-runtime.md` | `V1Q-013`, `V1Q-016` |
+| `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md` | `V1Q-014` |
+| `docs/architecture/storage/l9-storage-api-boundary.md` | `V1Q-010`, `V1Q-014`, `V1Q-024`, `V1Q-026` |
 | `docs/spec/strata-storage-format-v1.md` | `V1Q-002`, `V1Q-036`, `V1Q-037` |
-| `docs/architecture/engine-next/control-plane-layout-contract.md` | `V1Q-019` |
-| `docs/architecture/engine-next/storage-space-id-registry.md` | `V1Q-019` |
-| `docs/architecture/engine-next/branch-operation-and-capability-adapter-contract.md` | `V1Q-020` |
-| `docs/architecture/engine-next/entity-ref-and-relationship-layer-contract.md` | `V1Q-021`, `V1Q-033` |
-| `docs/architecture/engine-next/error-and-diagnostics-contract.md` | `V1Q-022` |
+| `docs/architecture/engine/control-plane-layout-contract.md` | `V1Q-019` |
+| `docs/architecture/engine/storage-space-id-registry.md` | `V1Q-019` |
+| `docs/architecture/engine/branch-operation-and-capability-adapter-contract.md` | `V1Q-020` |
+| `docs/architecture/engine/entity-ref-and-relationship-layer-contract.md` | `V1Q-021`, `V1Q-033` |
+| `docs/architecture/engine/error-and-diagnostics-contract.md` | `V1Q-022` |
 | `docs/architecture/v1-error-and-diagnostics-contract.md` | `V1Q-022` |
-| `docs/architecture/engine-next/ipc-and-command-boundary-contract.md` | `V1Q-023` |
-| `docs/architecture/engine-next/persistence-adapter-contract.md` | `V1Q-024` |
-| `docs/architecture/engine-next/retrieval-and-derived-state-contract.md` | `V1Q-025`, `V1Q-032` |
-| `docs/architecture/engine-next/temporal-context-and-timeline-resolver-contract.md` | `V1Q-026` |
-| `docs/architecture/engine-next/testing-and-conformance-plan.md` | `V1Q-027` |
-| `docs/architecture/engine-next/dataset-clone-artifact-contract.md` | `V1Q-028`, `V1Q-034` |
+| `docs/architecture/engine/ipc-and-command-boundary-contract.md` | `V1Q-023` |
+| `docs/architecture/engine/persistence-adapter-contract.md` | `V1Q-024` |
+| `docs/architecture/engine/retrieval-and-derived-state-contract.md` | `V1Q-025`, `V1Q-032` |
+| `docs/architecture/engine/temporal-context-and-timeline-resolver-contract.md` | `V1Q-026` |
+| `docs/architecture/engine/testing-and-conformance-plan.md` | `V1Q-027` |
+| `docs/architecture/engine/dataset-clone-artifact-contract.md` | `V1Q-028`, `V1Q-034` |
 | `docs/architecture/runtime-resource-profile-architecture.md` | `V1Q-029` |
-| `docs/architecture/inference-next-architecture.md` | `V1Q-030`, `V1Q-031` |
-| `docs/architecture/intelligence-next-architecture.md` | `V1Q-004`, `V1Q-025`, `V1Q-032`, `V1Q-035` |
+| `docs/architecture/inference-architecture.md` | `V1Q-030`, `V1Q-031` |
+| `docs/architecture/intelligence-architecture.md` | `V1Q-004`, `V1Q-025`, `V1Q-032`, `V1Q-035` |
 | `docs/architecture/stratahub-substrate-architecture.md` | `V1Q-034` |
 | `docs/stratahub/docs/product/stratahub-user-pathways.md` | `V1Q-028`, `V1Q-034` |
 | `docs/stratahub/docs/product/stratahub-v1-cli-commands.md` | `V1Q-022`, `V1Q-028`, `V1Q-034` |

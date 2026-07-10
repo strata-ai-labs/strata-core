@@ -29,10 +29,10 @@ passes.
 
 Architecture references:
 
-1. `docs/architecture/engine-next/control-plane-layout-contract.md`
-2. `docs/architecture/engine-next/persistence-adapter-contract.md`
-3. `docs/architecture/engine-next/storage-space-id-registry.md`
-4. `docs/architecture/engine-next/branch-operation-and-capability-adapter-contract.md`
+1. `docs/architecture/engine/control-plane-layout-contract.md`
+2. `docs/architecture/engine/persistence-adapter-contract.md`
+3. `docs/architecture/engine/storage-space-id-registry.md`
+4. `docs/architecture/engine/branch-operation-and-capability-adapter-contract.md`
 5. `docs/architecture/runtime-resource-profile-architecture.md`
 
 Old architecture evidence:
