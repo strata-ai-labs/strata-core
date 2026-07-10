@@ -502,6 +502,12 @@ the public registry when adding, renaming, or removing a public error code.
 
 ### Executor Codes
 
+<a id="failed_precondition.executor.hub_clone"></a>
+- `failed_precondition.executor.hub_clone`
+
+<a id="failed_precondition.executor.hub_url"></a>
+- `failed_precondition.executor.hub_url`
+
 <a id="failed_precondition.executor.runtime_closed"></a>
 - `failed_precondition.executor.runtime_closed`
 
@@ -513,6 +519,12 @@ the public registry when adding, renaming, or removing a public error code.
 
 <a id="internal.executor.unregistered_code"></a>
 - `internal.executor.unregistered_code`
+
+<a id="invalid_argument.executor.hub_branch"></a>
+- `invalid_argument.executor.hub_branch`
+
+<a id="invalid_argument.executor.hub_dataset"></a>
+- `invalid_argument.executor.hub_dataset`
 
 <a id="invalid_argument.executor.arrow_base64"></a>
 - `invalid_argument.executor.arrow_base64`
@@ -630,3 +642,6 @@ the public registry when adding, renaming, or removing a public error code.
 
 <a id="inference.unsupported_provider"></a>
 - `inference.unsupported_provider`
+
+<a id="unavailable.executor.hub_transport"></a>
+- `unavailable.executor.hub_transport`

@@ -26,6 +26,21 @@ pub enum Output {
     },
     /// Database identity and catalog summary.
     DatabaseInfo(AdminDatabaseInfo),
+    /// A completed hub clone.
+    HubCloneResult {
+        /// Dataset cloned.
+        dataset: String,
+        /// Branch fetched.
+        branch: String,
+        /// Destination directory holding the new database.
+        dest: String,
+        /// The bundle's manifest hash.
+        manifest_hash: String,
+        /// Objects fetched.
+        object_count: u64,
+        /// Total bytes fetched.
+        total_bytes: u64,
+    },
     /// Remote origin of a cloned database (`None` when never recorded).
     RemoteOriginResult {
         /// The recorded origin, when present.

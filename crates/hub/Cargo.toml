@@ -20,19 +20,34 @@ serde_json = "1"
 strata-core = { path = "../core" }
 strata-engine = { path = "../engine" }
 tempfile = "3"
-async-trait = "0.1"
-bytes = "1"
-futures-util = "0.3"
+async-trait = { version = "0.1", optional = true }
+bytes = { version = "1", optional = true }
+dirs = "6"
+futures-util = { version = "0.3", optional = true }
 semver = "1"
 time = "0.3"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 toml = "0.8"
 url = "2"
 stratahub-client = { git = "https://github.com/stratalab/stratahub", rev = "283ca9ce500b43090aa81309014d14674c74ecae" }
-stratahub-ingest = { git = "https://github.com/stratalab/stratahub", rev = "283ca9ce500b43090aa81309014d14674c74ecae" }
+stratahub-ingest = { git = "https://github.com/stratalab/stratahub", rev = "283ca9ce500b43090aa81309014d14674c74ecae", optional = true }
 stratahub-protocol = { git = "https://github.com/stratalab/stratahub", rev = "283ca9ce500b43090aa81309014d14674c74ecae" }
 
+[features]
+# The stratahub-ingest Engine trait impl (HB5). Off by default: their
+# ingest stack transitively git-pins strata-executor (the engine swap),
+# which must not enter this workspace's default graph — the executor
+# consumes this crate for clone orchestration, and the pin would create
+# a duplicate/cyclic strata-executor. stratahub's ingest CLI enables it.
+ingest = ["dep:stratahub-ingest", "dep:async-trait", "dep:bytes", "dep:futures-util"]
+
+[[test]]
+name = "ingest_engine"
+required-features = ["ingest"]
+
 [dev-dependencies]
+futures-util = "0.3"
+
 tiny_http = "0.12"
 stratahub-testkit = { git = "https://github.com/stratalab/stratahub", rev = "283ca9ce500b43090aa81309014d14674c74ecae" }
 

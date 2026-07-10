@@ -13,6 +13,12 @@ impl Executor {
             Command::Describe { branch } => self.execute_describe(branch.as_deref()),
             Command::ConfigGet => self.execute_config_get(),
             Command::RemoteGet => self.execute_remote_get(),
+            Command::HubClone {
+                dataset,
+                branch,
+                dest,
+                hub_url,
+            } => self.execute_hub_clone(&dataset, branch.as_deref(), &dest, hub_url),
             Command::ConfigureGetKey { key } => self.execute_configure_get_key(&key),
             Command::SpaceList { branch } => self.execute_space_list(branch.as_deref()),
             Command::SpaceCreate { branch, space } => {
