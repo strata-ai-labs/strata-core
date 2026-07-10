@@ -38,6 +38,7 @@ serde_yaml = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 strata-core = { path = "../core" }
 strata-engine = { path = "../engine", default-features = false }
+strata-hub = { path = "../hub" }
 strata-inference = { path = "../inference", optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -52,6 +53,8 @@ path = "src/bin/strata-idl/main.rs"
 required-features = ["idl-tooling"]
 
 [dev-dependencies]
+tiny_http = "0.12"
+url = "2"
 tempfile = { workspace = true }
 
 [lints]

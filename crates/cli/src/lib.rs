@@ -5,6 +5,7 @@
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
+use std::path::PathBuf;
 
 use clap::Parser;
 use serde_json::Value;
@@ -126,6 +127,24 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             return Ok(0);
         }
 
+        if let options::TopCommand::Clone(args) = command {
+            // Clone creates a NEW database; it never touches a session
+            // database, so it runs on an ephemeral cache executor.
+            let mut executor = Executor::open_cache()?;
+            let dest = args
+                .dest
+                .unwrap_or_else(|| PathBuf::from(format!("{}.strata", args.dataset)));
+            let output = executor.execute(Command::HubClone {
+                dataset: args.dataset,
+                branch: args.branch,
+                dest: dest.display().to_string(),
+                hub_url: args.hub,
+            })?;
+            render::render_output(&output, format)?;
+            executor.close()?;
+            return Ok(0);
+        }
+
         let opened =
             open::open_executor(cli.cache, cli.db, cli.db_path, open::OpenIntent::OneShot)?;
         let mut executor = opened.executor;
@@ -194,6 +213,9 @@ pub(crate) fn execute_parsed_command(
     let output = match command {
         options::TopCommand::Ping => executor.execute(Command::Ping)?,
         options::TopCommand::Remote => executor.execute(Command::RemoteGet)?,
+        options::TopCommand::Clone(_) => {
+            unreachable!("clone is dispatched before a session database opens")
+        }
         options::TopCommand::Init => {
             let value = init::run_init()?;
             render_value(&value, format)?;
@@ -298,6 +320,18 @@ enum TopLevelAction {
 fn top_level_without_database(command: &options::TopCommand) -> Result<TopLevelAction, CliError> {
     match command {
         options::TopCommand::Init => Ok(TopLevelAction::NoDatabase(init::run_init()?)),
+        options::TopCommand::Config(args) => match &args.command {
+            ConfigCommand::Set { key, value } => {
+                Ok(TopLevelAction::NoDatabase(user_config_set(key, value)?))
+            }
+            ConfigCommand::Unset { key } => Ok(TopLevelAction::NoDatabase(user_config_unset(key)?)),
+            ConfigCommand::Path => Ok(TopLevelAction::NoDatabase(user_config_path()?)),
+            ConfigCommand::Show => Ok(TopLevelAction::NoDatabase(user_config_show())),
+            ConfigCommand::GetKey { key } if key == "hub.url" => {
+                Ok(TopLevelAction::NoDatabase(user_config_get()?))
+            }
+            _ => Ok(TopLevelAction::NeedsDatabase),
+        },
         options::TopCommand::Command(args) => match &args.command {
             CommandCommand::Print { json, file } => {
                 let command = raw_command_from_sources(json.as_deref(), file.as_ref())?;
@@ -314,7 +348,75 @@ fn config_command(command: ConfigCommand) -> Command {
     match command {
         ConfigCommand::Get => Command::ConfigGet,
         ConfigCommand::GetKey { key } => Command::ConfigureGetKey { key },
+        // User-config subcommands are handled before a database opens
+        // (top_level_without_database); reaching here is a dispatch bug.
+        ConfigCommand::Set { .. }
+        | ConfigCommand::Unset { .. }
+        | ConfigCommand::Path
+        | ConfigCommand::Show => unreachable!("user-config subcommands run without a database"),
     }
+}
+
+/// `strata config set hub.url <url>` — writes the global user config.
+fn user_config_set(key: &str, value: &str) -> Result<serde_json::Value, CliError> {
+    require_hub_url_key(key)?;
+    let path = strata_hub::write_global_hub_url(value)
+        .map_err(|error| CliError::usage(error.to_string()))?;
+    Ok(serde_json::json!({
+        "key": key,
+        "value": value,
+        "path": path.display().to_string(),
+    }))
+}
+
+fn user_config_unset(key: &str) -> Result<serde_json::Value, CliError> {
+    require_hub_url_key(key)?;
+    let path =
+        strata_hub::unset_global_hub_url().map_err(|error| CliError::usage(error.to_string()))?;
+    Ok(serde_json::json!({
+        "key": key,
+        "unset": true,
+        "path": path.map(|path| path.display().to_string()),
+    }))
+}
+
+fn user_config_get() -> Result<serde_json::Value, CliError> {
+    let value =
+        strata_hub::read_global_hub_url().map_err(|error| CliError::usage(error.to_string()))?;
+    Ok(serde_json::json!({
+        "key": "hub.url",
+        "value": value.map(|url| url.to_string()),
+    }))
+}
+
+fn user_config_path() -> Result<serde_json::Value, CliError> {
+    let path = strata_hub::global_config_path()
+        .ok_or_else(|| CliError::usage("the platform exposes no user config directory"))?;
+    Ok(serde_json::json!({ "path": path.display().to_string() }))
+}
+
+/// `strata config show` — the resolved hub URL and which layer supplied
+/// it, the first thing to ask for when strata talks to the wrong hub.
+fn user_config_show() -> serde_json::Value {
+    match strata_hub::resolve_hub_url(&strata_hub::HubUrlInputs::from_process(None)) {
+        Ok(resolved) => serde_json::json!({
+            "hub.url": resolved.url.to_string(),
+            "source": resolved.source.to_string(),
+        }),
+        Err(error) => serde_json::json!({
+            "hub.url": serde_json::Value::Null,
+            "detail": error.to_string(),
+        }),
+    }
+}
+
+fn require_hub_url_key(key: &str) -> Result<(), CliError> {
+    if key == "hub.url" {
+        return Ok(());
+    }
+    Err(CliError::usage(
+        "only `hub.url` is a settable user-config key in V1",
+    ))
 }
 
 fn branch_command(command: BranchCommand) -> Result<Command, CliError> {

@@ -125,6 +125,7 @@ mod event_convert;
 mod facade;
 mod graph;
 mod graph_convert;
+mod hub;
 mod input_common;
 mod json;
 mod kv;

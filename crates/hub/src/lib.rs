@@ -24,11 +24,14 @@ mod error;
 mod export;
 mod import;
 mod info;
+#[cfg(feature = "ingest")]
 mod ingest_adapter;
 mod remote;
 mod resolve;
 mod schema_preview;
 mod transport;
+
+pub use stratahub_protocol;
 
 pub use clone::{
     clone_dataset, CloneError, CloneOutcome, CloneProgress, CloneRequest, HubTransport,
@@ -39,9 +42,13 @@ pub use export::{
 };
 pub use import::{import_bundle, BundleImportError};
 pub use info::{engine_info, EngineInfo, CAPABILITY_REGISTRY_VERSION};
+#[cfg(feature = "ingest")]
 pub use ingest_adapter::IngestEngine;
 pub use remote::{
     read_remote_tracking_ref, write_remote_tracking_ref, RemoteRefError, RemoteTrackingRef,
 };
-pub use resolve::{resolve_hub_url, HubUrlError, HubUrlInputs, HubUrlSource, ResolvedHubUrl};
+pub use resolve::{
+    global_config_path, read_global_hub_url, resolve_hub_url, unset_global_hub_url,
+    write_global_hub_url, HubUrlError, HubUrlInputs, HubUrlSource, ResolvedHubUrl,
+};
 pub use transport::ClientTransport;

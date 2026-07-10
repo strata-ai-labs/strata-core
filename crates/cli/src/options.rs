@@ -88,6 +88,8 @@ pub(crate) enum TopCommand {
     Config(ConfigArgs),
     /// Show where this database was cloned from (its remote origin).
     Remote,
+    /// Clone a dataset from a hub into a new local database.
+    Clone(CloneArgs),
     /// Branch lifecycle commands.
     Branch(BranchArgs),
     /// Product space commands.
@@ -206,11 +208,42 @@ pub(crate) enum AgentsCommand {
 pub(crate) enum ConfigCommand {
     /// Print sanitized config.
     Get,
-    /// Print one sanitized config value.
+    /// Print one sanitized config value (`hub.url` reads the user config).
     GetKey {
         /// Config key.
         key: String,
     },
+    /// Set a user-config key (V1: `hub.url`) in the global strata config.
+    Set {
+        /// Config key.
+        key: String,
+        /// New value.
+        value: String,
+    },
+    /// Remove a user-config key (V1: `hub.url`) from the global config.
+    Unset {
+        /// Config key.
+        key: String,
+    },
+    /// Print the global strata config file path.
+    Path,
+    /// Print the resolved hub configuration and which layer supplied it.
+    Show,
+}
+
+/// Clone command arguments.
+#[derive(Debug, Args)]
+pub(crate) struct CloneArgs {
+    /// Dataset to clone (its hub slug).
+    pub(crate) dataset: String,
+    /// Destination directory. Defaults to `./<dataset>.strata`.
+    pub(crate) dest: Option<std::path::PathBuf>,
+    /// Branch to fetch. Defaults to the dataset's default branch.
+    #[arg(long)]
+    pub(crate) branch: Option<String>,
+    /// Hub URL for this invocation (overrides env and config files).
+    #[arg(long)]
+    pub(crate) hub: Option<String>,
 }
 
 /// Branch command wrapper.

@@ -51,6 +51,24 @@ pub enum Command {
     /// Reads where this database was cloned from (its remote origin),
     /// when clone recorded one.
     RemoteGet,
+    /// Clones a dataset from a hub into a new local database directory.
+    ///
+    /// Orchestration (resolution, download, verification, reconstitution,
+    /// origin recording) runs once behind this command; every frontend
+    /// reaches it here. The session database is not touched.
+    HubClone {
+        /// Dataset to clone.
+        dataset: String,
+        /// Branch to fetch. Defaults to the dataset's default branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Destination directory (must not exist, or be empty).
+        dest: String,
+        /// Explicit hub URL; when absent the 5-layer resolver runs
+        /// (flag, `STRATA_HUB_URL`, project config, global config).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hub_url: Option<String>,
+    },
     /// Returns one sanitized configuration value by key.
     ConfigureGetKey {
         /// Config key.
@@ -1631,6 +1649,7 @@ impl Command {
             Self::Describe { .. } => "describe",
             Self::ConfigGet => "config_get",
             Self::RemoteGet => "remote_get",
+            Self::HubClone { .. } => "hub_clone",
             Self::ConfigureGetKey { .. } => "configure_get_key",
             Self::SpaceList { .. } => "space_list",
             Self::SpaceCreate { .. } => "space_create",

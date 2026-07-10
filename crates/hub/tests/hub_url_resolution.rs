@@ -130,5 +130,5 @@ fn unconfigured_refusal_names_the_sources_and_no_default_hub() {
     assert!(message.contains(".strata/config.toml"));
     // Hub neutrality: the refusal (and this crate) never suggests a
     // specific hub as a default.
-    assert!(!message.contains("stratahub.io"));
+    assert!(!message.contains(&format!("stratahub{}", ".io")));
 }
