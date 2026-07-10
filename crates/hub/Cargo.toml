@@ -20,14 +20,21 @@ serde_json = "1"
 strata-core = { path = "../core" }
 strata-engine = { path = "../engine" }
 tempfile = "3"
+async-trait = "0.1"
+bytes = "1"
+futures-util = "0.3"
 semver = "1"
 time = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread"] }
 toml = "0.8"
 url = "2"
-stratahub-protocol = { git = "https://github.com/stratalab/stratahub", rev = "a79b63edc00ca6ee7e65f2c8343e1d957926db64" }
+stratahub-client = { git = "https://github.com/stratalab/stratahub", rev = "283ca9ce500b43090aa81309014d14674c74ecae" }
+stratahub-ingest = { git = "https://github.com/stratalab/stratahub", rev = "283ca9ce500b43090aa81309014d14674c74ecae" }
+stratahub-protocol = { git = "https://github.com/stratalab/stratahub", rev = "283ca9ce500b43090aa81309014d14674c74ecae" }
 
 [dev-dependencies]
-stratahub-testkit = { git = "https://github.com/stratalab/stratahub", rev = "a79b63edc00ca6ee7e65f2c8343e1d957926db64" }
+tiny_http = "0.12"
+stratahub-testkit = { git = "https://github.com/stratalab/stratahub", rev = "283ca9ce500b43090aa81309014d14674c74ecae" }
 
 [lints]
 workspace = true
