@@ -32,7 +32,10 @@ fn executor_sources_do_not_import_inference_internals() {
         "provider::",
         "strata_inference::registry::",
         "llama::",
-        "ffi",
+        // Path forms only: bare "ffi" false-positives on words like
+        // "coefficients" in doc comments.
+        "ffi::",
+        "::ffi",
         "CloudEmbeddingEngine",
         "GenerationEngine",
         "EmbeddingEngine",

@@ -1,6 +1,8 @@
 //! `HubClone` behavior: the executor verb end-to-end against a live
 //! in-process hub, plus its typed error paths.
 
+#![cfg(feature = "hub")]
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;

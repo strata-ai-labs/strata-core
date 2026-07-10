@@ -27,7 +27,9 @@ members = [
 [workspace.package]
 version = "1.0.0"
 edition = "2021"
-rust-version = "1.88"
+# Floor set by the stratahub crates (rust-version 1.91), which ride in the
+# default graph via strata-hub.
+rust-version = "1.91"
 authors = ["Strata contributors"]
 license = "Apache-2.0"
 repository = "https://github.com/stratalab/strata-core"

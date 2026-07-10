@@ -80,6 +80,15 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         EXECUTOR_SCHEMA,
     ),
     entry(
+        "invalid_argument.executor.hub_feature_disabled",
+        ErrorClass::InvalidArgument,
+        RetryPolicy::AfterStateChange,
+        CommitOutcomeStatus::NotStarted,
+        "Hub support is not enabled in this build.",
+        "Run a build with the hub feature enabled before using hub clone.",
+        EXECUTOR_SCHEMA,
+    ),
+    entry(
         "invalid_argument.executor.arrow_base64",
         ErrorClass::InvalidArgument,
         RetryPolicy::Never,

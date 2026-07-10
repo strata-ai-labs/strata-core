@@ -151,7 +151,7 @@ strata init
 strata --cache ping                 # pong 1.0.0
 ```
 
-Rust 1.88+ required.
+Rust 1.91+ required.
 
 ## How it works
 

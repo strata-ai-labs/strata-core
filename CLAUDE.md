@@ -201,9 +201,9 @@ cargo fmt --all -- --check
 cargo hack check -p <crate> --feature-powerset --depth 2
 
 # Conformance harnesses (per milestone)
-cargo test -p strata-storage --test format_goldens             # M3+
-cargo test -p strata-engine --test product_pathways            # M6+
-cargo test -p strata-intelligence --test fake_provider_paths   # M8+
+cargo test -p strata-storage --test format_golden               # M3+
+cargo test -p strata-engine --test capability_conformance       # M6+
+cargo test -p strata-intelligence --test fake_provider_paths    # M8+
 ```
 
 Benchmark suites and threshold policy will be re-baselined in M9F/M10D. The old `strata-benchmarks` regression harness still exists but its thresholds apply to the pre-V1 architecture only.

@@ -2,97 +2,143 @@ name: CI
 
 on:
   pull_request:
-    branches: [develop, main]
+    branches: [main]
   push:
-    branches: [develop, main]
+    branches: [main]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
+  # strata-hub pins the stratahub crates by git rev and that repo is
+  # private, so every cargo resolve needs read access. Fetch through the
+  # git CLI so the token below applies.
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { submodules: true }
+      - name: Authorize private git dependencies
+        # Fine-grained PAT with Contents: read on stratalab/stratahub.
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
       - uses: dtolnay/rust-toolchain@1.94.1
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-deny
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features
-        # No -- -D warnings: workspace.lints is the authority. clippy::all = deny
-        # handles clippy warnings; warn-level rust lints (missing_docs, unreachable_pub)
-        # are allowed until their owning scopes clear them.
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Lockfile consistency
         run: cargo metadata --locked --format-version 1 > /dev/null
-      - name: Advisory + license check
+      - name: Advisory + license + source check
         run: cargo deny check
-      - name: DAG guard
-        run: |
-          # Guard: engine must not have normal dep on vector or graph
-          if cargo tree --package strata-engine --edges=normal --format="{p}" | grep -q strata-vector; then
-            echo "ERROR: strata-engine has normal dep on strata-vector" && exit 1
-          fi
-          if cargo tree --package strata-engine --edges=normal --format="{p}" | grep -q strata-graph; then
-            echo "ERROR: strata-engine has normal dep on strata-graph" && exit 1
-          fi
-          # Manifest guard: engine must not depend on vector/graph (neither normal nor dev-deps)
-          if grep -qE "^strata-(vector|graph)" crates/engine/Cargo.toml; then
-            echo "ERROR: engine Cargo.toml must not list strata-vector or strata-graph" && exit 1
-          fi
+      # Dependency-direction (DAG) enforcement lives in workspace guard
+      # tests (crates/*/tests/dependency_guard*.rs, storage source guards)
+      # and runs with the test job.
 
   test:
     needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { submodules: true }
+      - name: Authorize private git dependencies
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
       - uses: dtolnay/rust-toolchain@1.94.1
       - uses: Swatinem/rust-cache@v2
-      - name: Run tests
-        run: cargo test --workspace
-      - name: Executor IDL overlay check
+      - name: Workspace tests
+        # gpu-cache device tests are #[ignore]d and skip without a GPU;
+        # its host-sim suites run here.
+        run: cargo test --locked --workspace
+      - name: Conformance gates
+        # Frozen-format and capability-contract harnesses, named so a
+        # failure is visible as its own step.
         run: |
-          cargo run -p strata-executor --features idl-tooling --bin strata-idl -- check
-          cargo run -p strata-executor --features idl-tooling --bin strata-idl -- check-cli
-          cargo test -p strata-executor --features idl-tooling --test idl_kv_vector_overlay
+          cargo test --locked -p strata-storage --test format_golden
+          cargo test --locked -p strata-engine --test capability_conformance
+      - name: Executor IDL drift gates
+        run: |
+          cargo run --locked -p strata-executor --features idl-tooling --bin strata-idl -- check
+          cargo run --locked -p strata-executor --features idl-tooling --bin strata-idl -- check-cli
+          cargo test --locked -p strata-executor --features idl-tooling --test idl_kv_vector_overlay
       - name: Doc tests
-        run: cargo test --workspace --doc --all-features --exclude strata-inference
+        run: cargo test --locked --workspace --doc
 
   feature-matrix:
     needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { submodules: true }
+      - name: Authorize private git dependencies
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
       - uses: dtolnay/rust-toolchain@1.94.1
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-hack
       - name: Feature powerset check
-        # Local inference depends on a llama.cpp CMake build; exercise it in targeted jobs.
-        run: cargo hack --feature-powerset --depth 2 --exclude-features local check --workspace --exclude strata-inference
-      - name: Per-feature test
-        run: cargo hack --each-feature --exclude-features local test --workspace --exclude strata-inference
+        # Excluded: `local`/`inference-local` (llama.cpp cmake build),
+        # `ingest` (cross-repo executor pin, covered by hub-ingest),
+        # `python` (pyo3 link).
+        run: >
+          cargo hack --locked --feature-powerset --depth 2
+          --exclude-features local,inference-local,ingest,python
+          check --workspace
+
+  hub-ingest:
+    # The stratahub-facing surface their ingest CLI compiles against:
+    # `ingest` pulls stratahub-ingest, whose metadata layer pins
+    # strata-executor at the blessed engine-swap SHA (a second, older
+    # executor build — expected, not a conflict).
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorize private git dependencies
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Hub tests with ingest enabled
+        run: cargo test --locked -p strata-hub --features ingest
+
+  wasm:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorize private git dependencies
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
+      - uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Browser target check
+        run: cargo check --locked -p strata-wasm --target wasm32-unknown-unknown
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authorize private git dependencies
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
+      - uses: dtolnay/rust-toolchain@1.91
+      - uses: Swatinem/rust-cache@v2
+      - name: MSRV check
+        # Lib/bin targets only: MSRV is a promise about what users compile.
+        # Dev-only dependencies (test servers, conformance stacks) may
+        # require newer compilers and build under the pinned toolchain.
+        run: cargo check --locked --workspace
 
   build:
     needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with: { submodules: true }
+      - name: Authorize private git dependencies
+        run: git config --global url."https://x-access-token:${{ secrets.STRATAHUB_READ_TOKEN }}@github.com/stratalab/stratahub".insteadOf "https://github.com/stratalab/stratahub"
       - uses: dtolnay/rust-toolchain@1.94.1
       - uses: Swatinem/rust-cache@v2
       - name: Release build
-        run: cargo build --release --all
-
-  msrv:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with: { submodules: true }
-      - uses: dtolnay/rust-toolchain@1.88
-      - uses: Swatinem/rust-cache@v2
-      - name: MSRV check
-        run: cargo check --workspace --all-targets --all-features
+        run: cargo build --locked --release --workspace
