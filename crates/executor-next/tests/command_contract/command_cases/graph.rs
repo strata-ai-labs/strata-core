@@ -169,9 +169,65 @@ pub(super) fn graph_commands() -> Vec<Command> {
             limit: Some(5),
             as_of: None,
         },
+        Command::GraphWcc {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            budget: None,
+            as_of: None,
+        },
+        Command::GraphLcc {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            budget: None,
+            as_of: Some(9),
+        },
+        Command::GraphSssp {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            source: "node-a".to_owned(),
+            direction: Some(GraphDirection::Both),
+            budget: None,
+            as_of: None,
+        },
+        Command::GraphPagerank {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            damping: Some(0.9),
+            max_iterations: Some(50),
+            tolerance: None,
+            personalization: None,
+            budget: None,
+            as_of: None,
+        },
+        Command::GraphCdlp {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            max_iterations: Some(5),
+            direction: None,
+            budget: None,
+            as_of: None,
+        },
+        Command::GraphBfs {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            start: "node-a".to_owned(),
+            max_depth: Some(3),
+            max_nodes: None,
+            edge_types: None,
+            direction: None,
+            budget: None,
+            as_of: None,
+        },
     ]
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn graph_round_trip_edge_commands() -> Vec<Command> {
     vec![
         Command::GraphCreate {
@@ -244,6 +300,40 @@ pub(super) fn graph_round_trip_edge_commands() -> Vec<Command> {
                     dst: "node-b".to_owned(),
                 },
             ],
+        },
+        Command::GraphPagerank {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            graph: "wide".to_owned(),
+            damping: Some(0.5),
+            max_iterations: Some(100),
+            tolerance: Some(1e-8),
+            personalization: Some(
+                [("node-a".to_owned(), 5.0), ("node-b".to_owned(), 3.0)]
+                    .into_iter()
+                    .collect(),
+            ),
+            budget: Some(GraphAnalyticsBudget::new(Some(1_000), Some(10_000))),
+            as_of: Some(77),
+        },
+        Command::GraphBfs {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            graph: "wide".to_owned(),
+            start: "node-a".to_owned(),
+            max_depth: Some(2),
+            max_nodes: Some(100),
+            edge_types: Some(vec!["depends_on".to_owned(), "relates_to".to_owned()]),
+            direction: Some(GraphDirection::Both),
+            budget: Some(GraphAnalyticsBudget::new(None, Some(500))),
+            as_of: None,
+        },
+        Command::GraphWcc {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            graph: "wide".to_owned(),
+            budget: Some(GraphAnalyticsBudget::new(Some(10), None)),
+            as_of: Some(31),
         },
     ]
 }

@@ -127,6 +127,12 @@ fn command_names_cover_every_variant() {
             "graph_get_ontology",
             "graph_ontology_summary",
             "graph_nodes_by_type",
+            "graph_wcc",
+            "graph_lcc",
+            "graph_sssp",
+            "graph_pagerank",
+            "graph_cdlp",
+            "graph_bfs",
             "arrow_import",
             "arrow_export",
         ]

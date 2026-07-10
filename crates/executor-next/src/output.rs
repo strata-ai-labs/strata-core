@@ -4,8 +4,9 @@ use crate::types::{
     AdminConfig, AdminDatabaseInfo, AdminDescribe, AdminHealth, AdminMetrics, ArrowExportResult,
     ArrowImportResult, BatchGetItemResult, BatchItemResult, BatchResult, BranchCleanupItem,
     BranchItem, Bytes, CommitReceipt, EventBatchAppendItemResult, EventChainVerification,
-    EventVersionedData, GraphBatchItemResult, GraphBindingHit, GraphEdgeDataOutput, GraphInfoData,
-    GraphNeighborHit, GraphNodeDataOutput, GraphOntologyData, GraphOntologySummaryData,
+    EventVersionedData, GraphBatchItemResult, GraphBfsData, GraphBindingHit, GraphCdlpData,
+    GraphEdgeDataOutput, GraphInfoData, GraphLccData, GraphNeighborHit, GraphNodeDataOutput,
+    GraphOntologyData, GraphOntologySummaryData, GraphPagerankData, GraphSsspData, GraphWccData,
     HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
     JsonIndexDefinition, JsonSampleItem, MaybeJsonValue, MaybeJsonVersionedValue, MutationEffect,
     PageInfo, SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult,
@@ -536,6 +537,18 @@ pub enum Output {
         /// Commit timestamp.
         timestamp: u64,
     },
+    /// Weakly connected components computed over a graph snapshot.
+    GraphWccResult(GraphWccData),
+    /// Local clustering coefficients computed over a graph snapshot.
+    GraphLccResult(GraphLccData),
+    /// Shortest-path distances computed over a graph snapshot.
+    GraphSsspResult(GraphSsspData),
+    /// `PageRank` scores computed over a graph snapshot.
+    GraphPagerankResult(GraphPagerankData),
+    /// Community labels computed over a graph snapshot.
+    GraphCdlpResult(GraphCdlpData),
+    /// Breadth-first traversal computed over a graph snapshot.
+    GraphBfsResult(GraphBfsData),
     /// Graph ontology type deletion acknowledgement.
     GraphOntologyDeleteResult {
         /// Graph name.

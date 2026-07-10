@@ -6,8 +6,8 @@ use serde_json::Value;
 use crate::types::{
     ArrowExportPrimitive, ArrowFileFormat, ArrowImportTarget, BatchEventEntry,
     BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry, Bytes,
-    EventRangeDirection, GraphBatchOperation, GraphBindingTarget, GraphDirection,
-    GraphEntityBinding, GraphPropertyDef, JsonIndexType, VectorDistanceMetric,
+    EventRangeDirection, GraphAnalyticsBudget, GraphBatchOperation, GraphBindingTarget,
+    GraphDirection, GraphEntityBinding, GraphPropertyDef, JsonIndexType, VectorDistanceMetric,
     VectorMetadataFilter,
 };
 
@@ -1268,6 +1268,146 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
+    /// Computes weakly connected components over a graph snapshot.
+    GraphWcc {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Optional snapshot size bounds. Defaults to the engine limits.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget: Option<GraphAnalyticsBudget>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Computes local clustering coefficients over a graph snapshot.
+    GraphLcc {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Optional snapshot size bounds. Defaults to the engine limits.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget: Option<GraphAnalyticsBudget>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Computes shortest-path distances from a source node.
+    GraphSssp {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Source node id.
+        source: String,
+        /// Optional traversal direction. Defaults to outgoing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<GraphDirection>,
+        /// Optional snapshot size bounds. Defaults to the engine limits.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget: Option<GraphAnalyticsBudget>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Computes `PageRank` scores, optionally personalized by seed weights.
+    GraphPagerank {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Optional damping factor. Defaults to 0.85.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        damping: Option<f64>,
+        /// Optional iteration bound. Defaults to 20.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_iterations: Option<u64>,
+        /// Optional convergence tolerance. Defaults to 1e-6.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tolerance: Option<f64>,
+        /// Optional seed weights (node id to weight). When present, both
+        /// teleport and dangling mass follow the seeds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        personalization: Option<std::collections::BTreeMap<String, f64>>,
+        /// Optional snapshot size bounds. Defaults to the engine limits.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget: Option<GraphAnalyticsBudget>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Detects communities via label propagation.
+    GraphCdlp {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Optional iteration bound. Defaults to 10.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_iterations: Option<u64>,
+        /// Optional propagation direction. Defaults to both.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<GraphDirection>,
+        /// Optional snapshot size bounds. Defaults to the engine limits.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget: Option<GraphAnalyticsBudget>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
+    /// Runs a bounded breadth-first traversal from a start node.
+    GraphBfs {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Start node id.
+        start: String,
+        /// Optional depth bound. Defaults to 100.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_depth: Option<u64>,
+        /// Optional visited-node bound. Defaults to 10000.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_nodes: Option<u64>,
+        /// Optional edge-type restriction applied at every hop.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edge_types: Option<Vec<String>>,
+        /// Optional traversal direction. Defaults to outgoing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direction: Option<GraphDirection>,
+        /// Optional snapshot size bounds. Defaults to the engine limits.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget: Option<GraphAnalyticsBudget>,
+        /// Optional timestamp in microseconds. Reads the graph state visible at that instant.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<u64>,
+    },
     /// Imports an Arrow-compatible file into a product primitive.
     ArrowImport {
         /// Target branch. Defaults to the executor handle branch.
@@ -1504,6 +1644,12 @@ impl Command {
             Self::GraphGetOntology { .. } => "graph_get_ontology",
             Self::GraphOntologySummary { .. } => "graph_ontology_summary",
             Self::GraphNodesByType { .. } => "graph_nodes_by_type",
+            Self::GraphWcc { .. } => "graph_wcc",
+            Self::GraphLcc { .. } => "graph_lcc",
+            Self::GraphSssp { .. } => "graph_sssp",
+            Self::GraphPagerank { .. } => "graph_pagerank",
+            Self::GraphCdlp { .. } => "graph_cdlp",
+            Self::GraphBfs { .. } => "graph_bfs",
             Self::ArrowImport { .. } => "arrow_import",
             Self::ArrowExport { .. } => "arrow_export",
             #[cfg(feature = "inference")]

@@ -956,7 +956,101 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             as_of,
         },
         GraphCommand::Ontology(args) => graph_ontology_command(args.command, scope)?,
-        GraphCommand::Analytics(_) => return Err(deferred_command("graph analytics")),
+        GraphCommand::Wcc { graph, as_of } => Command::GraphWcc {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            budget: None,
+            as_of,
+        },
+        GraphCommand::Lcc { graph, as_of } => Command::GraphLcc {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            budget: None,
+            as_of,
+        },
+        GraphCommand::Sssp {
+            graph,
+            source,
+            direction,
+            as_of,
+        } => Command::GraphSssp {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            source,
+            direction: Some(direction.into()),
+            budget: None,
+            as_of,
+        },
+        GraphCommand::Pagerank {
+            graph,
+            damping,
+            max_iterations,
+            tolerance,
+            personalization,
+            as_of,
+        } => Command::GraphPagerank {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            damping,
+            max_iterations,
+            tolerance,
+            personalization: personalization
+                .as_deref()
+                .map(parse_personalization)
+                .transpose()?,
+            budget: None,
+            as_of,
+        },
+        GraphCommand::Cdlp {
+            graph,
+            max_iterations,
+            direction,
+            as_of,
+        } => Command::GraphCdlp {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            max_iterations,
+            direction: Some(direction.into()),
+            budget: None,
+            as_of,
+        },
+        GraphCommand::Bfs {
+            graph,
+            start,
+            max_depth,
+            max_nodes,
+            edge_types,
+            direction,
+            as_of,
+        } => Command::GraphBfs {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            start,
+            max_depth,
+            max_nodes,
+            edge_types: if edge_types.is_empty() {
+                None
+            } else {
+                Some(edge_types)
+            },
+            direction: Some(direction.into()),
+            budget: None,
+            as_of,
+        },
+    })
+}
+
+fn parse_personalization(raw: &str) -> Result<std::collections::BTreeMap<String, f64>, CliError> {
+    serde_json::from_str(raw).map_err(|error| {
+        CliError::usage(format!(
+            "personalization must be a JSON object mapping node ids to weights: {error}"
+        ))
     })
 }
 

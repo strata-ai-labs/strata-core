@@ -1020,9 +1020,91 @@ pub(crate) enum GraphCommand {
     },
     /// Graph ontology commands.
     Ontology(GraphOntologyArgs),
-    /// Deferred graph analytics commands.
-    #[command(hide = true)]
-    Analytics(DeferredArgs),
+    /// Compute weakly connected components.
+    Wcc {
+        /// Graph name.
+        graph: String,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// Compute local clustering coefficients.
+    Lcc {
+        /// Graph name.
+        graph: String,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// Compute shortest-path distances from a source node.
+    Sssp {
+        /// Graph name.
+        graph: String,
+        /// Source node id.
+        source: String,
+        /// Traversal direction.
+        #[arg(long, value_enum, default_value_t = CliGraphDirection::Outgoing)]
+        direction: CliGraphDirection,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// Compute pagerank importance scores, optionally personalized.
+    Pagerank {
+        /// Graph name.
+        graph: String,
+        /// Optional damping factor (default 0.85).
+        #[arg(long)]
+        damping: Option<f64>,
+        /// Optional iteration bound (default 20).
+        #[arg(long)]
+        max_iterations: Option<u64>,
+        /// Optional convergence tolerance (default 1e-6).
+        #[arg(long)]
+        tolerance: Option<f64>,
+        /// Optional seed weights as JSON, e.g. '{"node": 1.0}'.
+        #[arg(long)]
+        personalization: Option<String>,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// Detect communities via label propagation.
+    Cdlp {
+        /// Graph name.
+        graph: String,
+        /// Optional iteration bound (default 10).
+        #[arg(long)]
+        max_iterations: Option<u64>,
+        /// Propagation direction.
+        #[arg(long, value_enum, default_value_t = CliGraphDirection::Both)]
+        direction: CliGraphDirection,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
+    /// Run a bounded breadth-first traversal.
+    Bfs {
+        /// Graph name.
+        graph: String,
+        /// Start node id.
+        start: String,
+        /// Optional depth bound (default 100).
+        #[arg(long)]
+        max_depth: Option<u64>,
+        /// Optional visited-node bound (default 10000).
+        #[arg(long)]
+        max_nodes: Option<u64>,
+        /// Optional edge-type restriction (repeatable).
+        #[arg(long = "edge-type")]
+        edge_types: Vec<String>,
+        /// Traversal direction.
+        #[arg(long, value_enum, default_value_t = CliGraphDirection::Outgoing)]
+        direction: CliGraphDirection,
+        /// Optional read timestamp in microseconds.
+        #[arg(long)]
+        as_of: Option<u64>,
+    },
 }
 
 /// Graph ontology command wrapper.

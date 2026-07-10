@@ -6,6 +6,7 @@ pub(super) fn graph_outputs() -> Vec<Output> {
     outputs
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) fn graph_read_outputs() -> Vec<Output> {
     vec![
         Output::GraphInfo(GraphInfoData::new("deps".to_owned(), 2, 1, 1, 10, 4, 40)),
@@ -78,6 +79,39 @@ pub(super) fn graph_read_outputs() -> Vec<Output> {
         Output::GraphOntologyResult(None),
         Output::GraphOntologySummaryResult(Some(graph_ontology_summary_output())),
         Output::GraphOntologySummaryResult(None),
+        Output::GraphWccResult(graph_wcc_output()),
+        Output::GraphLccResult(GraphLccData::new(
+            "deps".to_owned(),
+            [("node-a".to_owned(), 1.0), ("node-b".to_owned(), 0.0)]
+                .into_iter()
+                .collect(),
+        )),
+        Output::GraphSsspResult(GraphSsspData::new(
+            "deps".to_owned(),
+            "node-a".to_owned(),
+            GraphDirection::Outgoing,
+            [("node-a".to_owned(), 0.0), ("node-b".to_owned(), 1.5)]
+                .into_iter()
+                .collect(),
+        )),
+        Output::GraphPagerankResult(GraphPagerankData::new(
+            "deps".to_owned(),
+            [("node-a".to_owned(), 0.6), ("node-b".to_owned(), 0.4)]
+                .into_iter()
+                .collect(),
+            12,
+            true,
+        )),
+        Output::GraphCdlpResult(GraphCdlpData::new(
+            "deps".to_owned(),
+            [
+                ("node-a".to_owned(), "node-a".to_owned()),
+                ("node-b".to_owned(), "node-a".to_owned()),
+            ]
+            .into_iter()
+            .collect(),
+        )),
+        Output::GraphBfsResult(graph_bfs_output()),
     ]
 }
 

@@ -503,3 +503,138 @@ impl Executor {
         Ok(graph_node_page_output(&page))
     }
 }
+
+use super::{
+    engine_graph_bfs_options, engine_graph_budget, engine_graph_cdlp_options,
+    engine_graph_pagerank_options, engine_graph_personalization, graph_bfs_output,
+    graph_cdlp_output, graph_lcc_output, graph_pagerank_output, graph_sssp_output,
+    graph_wcc_output, EngineGraphAdjacencyIndex, EngineGraphName, GraphAnalyticsBudget,
+};
+
+impl Executor {
+    /// Builds the adjacency snapshot every analytics command runs on,
+    /// honoring the optional size bounds and read timestamp.
+    fn graph_analytics_index(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: &EngineGraphName,
+        budget: Option<GraphAnalyticsBudget>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<EngineGraphAdjacencyIndex> {
+        let budget = engine_graph_budget(budget)?;
+        let mut service = self.graph_service(branch, space)?;
+        Ok(if let Some(as_of) = as_of {
+            service.adjacency_index_at(graph, &budget, Timestamp::from_micros(as_of))?
+        } else {
+            service.adjacency_index(graph, &budget)?
+        })
+    }
+
+    pub(super) fn execute_graph_wcc(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        budget: Option<GraphAnalyticsBudget>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of)?;
+        Ok(graph_wcc_output(&index, &index.wcc()))
+    }
+
+    pub(super) fn execute_graph_lcc(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        budget: Option<GraphAnalyticsBudget>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of)?;
+        Ok(graph_lcc_output(&index, &index.lcc()))
+    }
+
+    pub(super) fn execute_graph_sssp(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        source: String,
+        direction: Option<GraphDirection>,
+        budget: Option<GraphAnalyticsBudget>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let source = graph_node_id(source)?;
+        let direction = direction.unwrap_or(GraphDirection::Outgoing);
+        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of)?;
+        let result = index.sssp(&source, engine_graph_direction(direction))?;
+        Ok(graph_sssp_output(&index, direction, &result))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn execute_graph_pagerank(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        damping: Option<f64>,
+        max_iterations: Option<u64>,
+        tolerance: Option<f64>,
+        personalization: Option<std::collections::BTreeMap<String, f64>>,
+        budget: Option<GraphAnalyticsBudget>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let options = engine_graph_pagerank_options(damping, max_iterations, tolerance)?;
+        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of)?;
+        let (result, personalized) = if let Some(personalization) = personalization {
+            let seeds = engine_graph_personalization(personalization)?;
+            (index.personalized_pagerank(&options, &seeds)?, true)
+        } else {
+            (index.pagerank(&options), false)
+        };
+        Ok(graph_pagerank_output(&index, &result, personalized))
+    }
+
+    pub(super) fn execute_graph_cdlp(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        max_iterations: Option<u64>,
+        direction: Option<GraphDirection>,
+        budget: Option<GraphAnalyticsBudget>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let options = engine_graph_cdlp_options(max_iterations, direction)?;
+        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of)?;
+        Ok(graph_cdlp_output(&index, &index.cdlp(&options)))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn execute_graph_bfs(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        start: String,
+        max_depth: Option<u64>,
+        max_nodes: Option<u64>,
+        edge_types: Option<Vec<String>>,
+        direction: Option<GraphDirection>,
+        budget: Option<GraphAnalyticsBudget>,
+        as_of: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let start = graph_node_id(start)?;
+        let options = engine_graph_bfs_options(max_depth, max_nodes, edge_types, direction)?;
+        let index = self.graph_analytics_index(branch, space, &graph, budget, as_of)?;
+        let result = index.bfs(&start, &options)?;
+        Ok(graph_bfs_output(&index, &start, &result))
+    }
+}
