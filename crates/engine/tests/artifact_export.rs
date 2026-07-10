@@ -252,3 +252,90 @@ fn read_field(bytes: &mut &[u8]) -> Vec<u8> {
     *bytes = &bytes[field_len..];
     field
 }
+
+#[test]
+fn decoded_records_mirror_the_populated_content() {
+    use strata_engine::artifact::{decode_section, ArtifactRecord};
+
+    let mut db = fresh_populated();
+    let artifact = export(&mut db);
+
+    let mut kinds = Vec::new();
+    for section in artifact.sections() {
+        for record in decode_section(section.model(), section.bytes()) {
+            kinds.push(match record.expect("record decodes") {
+                ArtifactRecord::Kv { key, value, .. } => {
+                    assert!(!key.is_empty() && !value.is_empty());
+                    "kv"
+                }
+                ArtifactRecord::Json { id, doc, .. } => {
+                    assert_eq!(id, "config");
+                    serde_json::from_slice::<serde_json::Value>(&doc).expect("doc parses");
+                    "json"
+                }
+                ArtifactRecord::Event {
+                    event_type,
+                    payload,
+                    ..
+                } => {
+                    assert_eq!(event_type, "tool_call");
+                    serde_json::from_slice::<serde_json::Value>(&payload).expect("payload");
+                    "event"
+                }
+                ArtifactRecord::VectorConfig { config, .. } => {
+                    let config: serde_json::Value =
+                        serde_json::from_slice(&config).expect("config");
+                    assert_eq!(config["dimension"], 4);
+                    "vconfig"
+                }
+                ArtifactRecord::VectorEntry { key, embedding, .. } => {
+                    assert_eq!(key, "doc1");
+                    assert_eq!(embedding.len(), 4);
+                    "ventry"
+                }
+                ArtifactRecord::GraphMeta { .. } => "gmeta",
+                ArtifactRecord::GraphNode { id, .. } => {
+                    assert!(["ada", "lin"].contains(&id.as_str()));
+                    "gnode"
+                }
+                ArtifactRecord::GraphEdge {
+                    src,
+                    edge_type,
+                    dst,
+                    ..
+                } => {
+                    assert_eq!(
+                        (src.as_str(), edge_type.as_str(), dst.as_str()),
+                        ("ada", "knows", "lin")
+                    );
+                    "gedge"
+                }
+                other => panic!("unexpected record variant: {other:?}"),
+            });
+        }
+    }
+    assert_eq!(
+        kinds,
+        vec!["kv", "kv", "json", "event", "vconfig", "ventry", "gmeta", "gnode", "gedge", "gnode"]
+    );
+}
+
+#[test]
+fn truncated_section_bytes_surface_payload_corruption() {
+    use strata_engine::artifact::{decode_section, ArtifactModel};
+
+    let mut db = fresh_populated();
+    let artifact = export(&mut db);
+    let section = artifact
+        .sections()
+        .iter()
+        .find(|section| section.model() == ArtifactModel::Kv)
+        .expect("kv section");
+
+    let truncated = &section.bytes()[..section.bytes().len() - 3];
+    let error = decode_section(section.model(), truncated)
+        .last()
+        .expect("at least one item")
+        .expect_err("truncation must fail");
+    assert_eq!(error.code(), "corruption.engine.artifact_payload");
+}

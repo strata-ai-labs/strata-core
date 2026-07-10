@@ -50,14 +50,23 @@ const REQUIRED_ENGINE_VERSION: &str = ">=1.0.0, <2.0.0";
 const NON_PORTABLE_TOP_LEVEL: &[&str] = &["locks"];
 
 /// Export options (M8E2 `EngineExportOptions` shape).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct EngineExportOptions {
-    /// Emit schema + preview auxiliary blobs (HB4; currently always `None`
-    /// blobs, which the contract permits).
+    /// Emit schema + preview auxiliary blobs. Defaults to `true` per the
+    /// M8E2 spec.
     pub emit_schema_preview: bool,
     /// Branches to export; empty means the `default` branch.
     pub branches: Vec<BranchName>,
+}
+
+impl Default for EngineExportOptions {
+    fn default() -> Self {
+        Self {
+            emit_schema_preview: true,
+            branches: Vec::new(),
+        }
+    }
 }
 
 /// blake3 hashes of the auxiliary blobs (M8E3 shape).
@@ -188,8 +197,22 @@ impl StrataCoreEngine {
         let mut max_micros: Option<u64> = None;
         let mut used_models = std::collections::BTreeSet::new();
 
-        for branch in &branches {
+        let mut schema_preview = None;
+        let mut branch_samples = Vec::new();
+        for (position, branch) in branches.iter().enumerate() {
             let artifact = self.export_branch(branch)?;
+            branch_samples.push(stratahub_protocol::wire::BranchSampleEntry {
+                name: branch.clone(),
+                created: content_derived_created(
+                    artifact
+                        .max_row_timestamp()
+                        .map(strata_core::Timestamp::as_micros),
+                )?,
+                is_default: position == 0,
+            });
+            if position == 0 && options.emit_schema_preview {
+                schema_preview = Some(crate::schema_preview::generate(&artifact)?);
+            }
             if let Some(timestamp) = artifact.max_row_timestamp() {
                 max_micros = Some(
                     max_micros.map_or(timestamp.as_micros(), |max| max.max(timestamp.as_micros())),
@@ -235,13 +258,18 @@ impl StrataCoreEngine {
         )?;
         objects.insert(0, control_object);
 
-        let manifest = Self::build_manifest(
+        let (schema_blob, preview_blob, auxiliary_hashes) =
+            auxiliary_blobs(schema_preview, branch_samples)?;
+
+        let mut manifest = Self::build_manifest(
             &branches,
             branch_entries,
             &objects,
             max_micros,
             &used_models,
         )?;
+        manifest.schema_hash.clone_from(&auxiliary_hashes.schema);
+        manifest.preview_hash.clone_from(&auxiliary_hashes.preview);
         manifest
             .validate()
             .map_err(|error| internal(format!("exported manifest failed validation: {error}")))?;
@@ -253,9 +281,9 @@ impl StrataCoreEngine {
             manifest_canonical_bytes,
             manifest,
             objects,
-            schema_blob: None,
-            preview_blob: None,
-            auxiliary_hashes: AuxiliaryHashes::default(),
+            schema_blob,
+            preview_blob,
+            auxiliary_hashes,
         })
     }
 
@@ -317,6 +345,31 @@ impl StrataCoreEngine {
             subject: None,
         })
     }
+}
+
+type AuxiliaryBlobs = (Option<Vec<u8>>, Option<Vec<u8>>, AuxiliaryHashes);
+
+/// Canonicalizes and hashes the schema + preview blobs when generated.
+fn auxiliary_blobs(
+    schema_preview: Option<(
+        stratahub_protocol::wire::DatasetSchema,
+        stratahub_protocol::wire::SamplePreview,
+    )>,
+    branch_samples: Vec<stratahub_protocol::wire::BranchSampleEntry>,
+) -> Result<AuxiliaryBlobs, BundleExportError> {
+    let Some((schema, mut preview)) = schema_preview else {
+        return Ok((None, None, AuxiliaryHashes::default()));
+    };
+    preview.branches = Some(branch_samples);
+    let schema_blob = serde_jcs::to_vec(&schema)
+        .map_err(|error| internal(format!("schema canonicalization: {error}")))?;
+    let preview_blob = serde_jcs::to_vec(&preview)
+        .map_err(|error| internal(format!("preview canonicalization: {error}")))?;
+    let hashes = AuxiliaryHashes {
+        schema: Some(stratahub_protocol::hash_bytes(&schema_blob)),
+        preview: Some(stratahub_protocol::hash_bytes(&preview_blob)),
+    };
+    Ok((Some(schema_blob), Some(preview_blob), hashes))
 }
 
 fn resolve_branches(options: &EngineExportOptions) -> Result<Vec<BranchName>, BundleExportError> {

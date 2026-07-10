@@ -154,6 +154,7 @@ const RESOURCE_EXHAUSTED_CODES: &[&str] = &[
 ];
 
 const CORRUPTION_CODES: &[&str] = &[
+    "corruption.engine.artifact_payload",
     "corruption.engine.persistence_recovery",
     "data_loss.engine.branch_catalog",
     "data_loss.engine.branch_id",

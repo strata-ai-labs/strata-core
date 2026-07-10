@@ -14,6 +14,7 @@ use strata_engine::{
     VectorMetadata,
 };
 use strata_hub::{BundleExportError, EngineExportOptions, StrataCoreEngine};
+use stratahub_protocol::wire::{DatasetSchema, SamplePreview};
 
 /// Builds the fixture database: kv, json, vectors, graph across the
 /// default branch (events excluded — their wall-clock timestamps are
@@ -166,12 +167,6 @@ fn export_satisfies_the_output_invariants() {
         vec!["graph", "json", "kv", "vectors"]
     );
 
-    // Invariant 6: no auxiliary blobs yet, and the manifest agrees.
-    assert!(output.schema_blob.is_none());
-    assert!(output.preview_blob.is_none());
-    assert!(output.manifest.schema_hash.is_none());
-    assert!(output.manifest.preview_hash.is_none());
-
     // Structure: control document first, then section chunks.
     assert_eq!(output.objects[0].path.as_str(), "control/bundle.json");
     assert_eq!(
@@ -252,7 +247,7 @@ fn fixture_manifest_hash_is_pinned() {
     let hash = stratahub_protocol::hash_bytes(&output.manifest_canonical_bytes);
     assert_eq!(
         hash.as_str(),
-        "blake3:9e16c7a13631bf2a5e60c0709af182a04e6e9439844d6827a18fe63a49ba33c8",
+        "blake3:91020425367e6b9dc6aa33229605583e9893496730ee6b45084f15fdd36983fe",
         "bundle format anchor drift"
     );
 }
@@ -307,4 +302,121 @@ fn unknown_branch_and_bad_source_report_typed_errors() {
         error,
         BundleExportError::NotAStrataDb(_) | BundleExportError::Internal { .. }
     ));
+}
+
+#[test]
+fn emit_schema_preview_false_omits_blobs_and_hashes() {
+    let source = fixture_dir();
+    let mut engine = StrataCoreEngine::open(source.path()).expect("open");
+    let mut options = EngineExportOptions::default();
+    options.emit_schema_preview = false;
+    let output = engine.export_bundle(&options).expect("export");
+    assert!(output.schema_blob.is_none());
+    assert!(output.preview_blob.is_none());
+    assert!(output.manifest.schema_hash.is_none());
+    assert!(output.manifest.preview_hash.is_none());
+    assert_eq!(
+        output.auxiliary_hashes,
+        strata_hub::AuxiliaryHashes::default()
+    );
+}
+
+#[test]
+fn preview_truncates_long_values() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let mut db = Database::open_local(dir.path(), DurableLocalOpenOptions::new())
+            .expect("db opens")
+            .into_database();
+        let mut kv = db
+            .kv(
+                BranchName::new("default").expect("branch"),
+                ProductSpace::new("default").expect("space"),
+            )
+            .expect("kv");
+        kv.put(
+            KvKey::new("big").expect("key"),
+            KvValue::new(vec![b'x'; 5_000]),
+        )
+        .expect("put");
+    }
+    let mut engine = StrataCoreEngine::open(dir.path()).expect("open");
+    let output = engine
+        .export_bundle(&EngineExportOptions::default())
+        .expect("export");
+    let preview: SamplePreview =
+        serde_json::from_slice(output.preview_blob.as_deref().expect("preview"))
+            .expect("typed preview");
+    let summary = &preview.kv.expect("kv preview")[0].value_summary;
+    assert_eq!(summary.chars().count(), 201, "200 chars + ellipsis");
+    assert!(summary.ends_with('…'));
+}
+
+#[test]
+fn auxiliary_blobs_are_typed_hashed_and_manifest_linked() {
+    let source = fixture_dir();
+    let mut engine = StrataCoreEngine::open(source.path()).expect("open");
+    let output = engine
+        .export_bundle(&EngineExportOptions::default())
+        .expect("export");
+
+    let schema_blob = output.schema_blob.as_deref().expect("schema blob");
+
+    let preview_blob = output.preview_blob.as_deref().expect("preview blob");
+    let schema: DatasetSchema = serde_json::from_slice(schema_blob).expect("typed schema");
+    let preview: SamplePreview = serde_json::from_slice(preview_blob).expect("typed preview");
+    assert_eq!(
+        output
+            .auxiliary_hashes
+            .schema
+            .as_ref()
+            .expect("schema hash"),
+        &stratahub_protocol::hash_bytes(schema_blob)
+    );
+    assert_eq!(
+        output
+            .auxiliary_hashes
+            .preview
+            .as_ref()
+            .expect("preview hash"),
+        &stratahub_protocol::hash_bytes(preview_blob)
+    );
+    assert_eq!(output.manifest.schema_hash, output.auxiliary_hashes.schema);
+    assert_eq!(
+        output.manifest.preview_hash,
+        output.auxiliary_hashes.preview
+    );
+
+    // Schema content: per-primitive sub-objects only for used primitives.
+    let kv_schema = schema.kv.expect("kv schema");
+    assert_eq!(kv_schema.namespaces.len(), 1);
+    assert_eq!(kv_schema.namespaces[0].prefix, "user:");
+    assert_eq!(kv_schema.namespaces[0].value_type, "raw");
+    assert_eq!(kv_schema.namespaces[0].entry_count, 2);
+    let json_schema = schema.json.expect("json schema");
+    assert_eq!(
+        json_schema.fields.get("model").map(String::as_str),
+        Some("string")
+    );
+    assert_eq!(
+        json_schema.fields.get("k").map(String::as_str),
+        Some("number")
+    );
+    let vectors_schema = schema.vectors.expect("vectors schema");
+    assert_eq!(vectors_schema.collections.len(), 1);
+    assert_eq!(vectors_schema.collections[0].name, "embeddings");
+    assert_eq!(vectors_schema.collections[0].dimension, 4);
+    assert_eq!(vectors_schema.collections[0].count, 1);
+    assert!(schema.events.is_none(), "no events in the fixture");
+
+    // Preview content.
+    let kv_preview = preview.kv.expect("kv preview");
+    assert_eq!(kv_preview[0].key, "user:ada");
+    assert_eq!(kv_preview[0].value_summary, "engineer");
+    let branch_preview = preview.branches.expect("branches preview");
+    assert_eq!(branch_preview.len(), 1);
+    assert!(branch_preview[0].is_default);
+    let vector_preview = preview.vectors.expect("vector preview");
+    assert_eq!(vector_preview[0].dimension, 4);
+    assert_eq!(vector_preview[0].vector_preview.len(), 4);
 }

@@ -22,6 +22,7 @@
 mod error;
 mod export;
 mod info;
+mod schema_preview;
 
 pub use error::BundleExportError;
 pub use export::{

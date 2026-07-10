@@ -38,8 +38,10 @@
 //! The format version is [`ARTIFACT_FORMAT_VERSION`]; the framing is
 //! frozen once the hub adapter's golden fixtures land (HB3).
 
+mod decode;
 mod export;
 
+pub use decode::{decode_section, ArtifactRecord, ArtifactRecordIter};
 pub use export::export_branch;
 
 use strata_core::Timestamp;
