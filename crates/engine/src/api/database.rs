@@ -175,6 +175,20 @@ impl Database {
         )
     }
 
+    /// Exports the branch's logical content as a deterministic artifact.
+    ///
+    /// Sections are portable SAP1 payload streams (see [`crate::artifact`]);
+    /// identical logical databases produce identical bytes. The exporter
+    /// holds this handle exclusively for the whole export, so the result is
+    /// a consistent snapshot. V1 buffers sections in memory (dataset-scale,
+    /// not backup-scale).
+    pub fn export_branch_artifact(
+        &mut self,
+        branch: &BranchName,
+    ) -> EngineResult<crate::artifact::BranchArtifact> {
+        crate::artifact::export_branch(self, branch)
+    }
+
     /// Returns a branch service for this database.
     pub fn branches(&mut self) -> EngineResult<BranchService<'_>> {
         self.require_open()?;

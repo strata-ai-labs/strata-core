@@ -80,7 +80,7 @@ impl<'de> Deserialize<'de> for GraphTypeName {
 /// One declared property on an object or link type. `value_type` is a
 /// recorded hint (for consumers and model prompts), not an enforced
 /// constraint; only `required` participates in GO2 write validation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct GraphPropertyDef {
     value_type: Option<String>,
     required: bool,
@@ -117,7 +117,7 @@ impl GraphPropertyDef {
 }
 
 /// A declared node (object) type.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct GraphObjectTypeDef {
     name: GraphTypeName,
     properties: BTreeMap<String, GraphPropertyDef>,
@@ -149,7 +149,7 @@ impl GraphObjectTypeDef {
 }
 
 /// A declared edge (link) type between two object types.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct GraphLinkTypeDef {
     name: GraphTypeName,
     source: GraphTypeName,
@@ -232,7 +232,7 @@ fn validated_properties(
 }
 
 /// Ontology lifecycle status.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 pub enum GraphOntologyStatus {
     /// Definitions may change freely; nothing is validated on write.
     Draft,
@@ -242,7 +242,7 @@ pub enum GraphOntologyStatus {
 
 /// The visible ontology of one graph: status plus every definition, with
 /// the commit facts of the row that produced this view.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct GraphOntology {
     graph: GraphName,
     status: GraphOntologyStatus,

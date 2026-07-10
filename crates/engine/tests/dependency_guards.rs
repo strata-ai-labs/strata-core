@@ -790,10 +790,13 @@ fn benchmark_sources_do_not_use_engine_persistence_internals() {
 #[test]
 fn product_scope_stays_limited_to_current_primitives() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // "Export" left this list when dataset clone artifacts landed: branch
+    // artifact export is sanctioned engine scope per
+    // docs/architecture/engine/dataset-clone-artifact-contract.md (the
+    // roadmap's export/import substrate), implemented in src/artifact/.
     let forbidden = [
         "Retrieval",
         "Ipc",
-        "Export",
         "Merge",
         "Diff",
         "Restore",
