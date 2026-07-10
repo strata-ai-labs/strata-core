@@ -19,9 +19,9 @@ table components that L6 can assemble into a branch-isolated LSM runtime.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l5-table-runtime.md`
-2. `docs/architecture/storage-next/implementation-patterns.md`
-3. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
+1. `docs/architecture/storage/l5-table-runtime.md`
+2. `docs/architecture/storage/implementation-patterns.md`
+3. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
 4. `docs/architecture/implementation-plans/m4-m4t-implementation-plan.md`
 5. `docs/architecture/implementation-plans/m4-l5-table-runtime-test-plan.md`
 6. `docs/architecture/implementation-plans/M4/m4-l5-porting-log.md`

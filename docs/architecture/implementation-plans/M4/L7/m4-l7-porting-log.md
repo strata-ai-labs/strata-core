@@ -12,10 +12,10 @@ Parent test plan:
 
 ### Source Evidence Read
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-3. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-4. `docs/architecture/storage-next/commit-timeline-substrate.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+3. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+4. `docs/architecture/storage/commit-timeline-substrate.md`
 5. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 6. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 7. `docs/architecture/implementation-plans/M4/L7/l7a-commit-runtime-scaffold-implementation-plan.md`
@@ -124,9 +124,9 @@ Verified for L7A:
 
 ### Source Evidence Read
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-3. `docs/architecture/storage-next/commit-timeline-substrate.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+3. `docs/architecture/storage/commit-timeline-substrate.md`
 4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 5. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 6. `docs/architecture/implementation-plans/M4/L7/l7b-commit-batch-mutation-model-implementation-plan.md`
@@ -227,8 +227,8 @@ Verified for L7B:
 
 ### Source Evidence Read
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/commit-timeline-substrate.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/commit-timeline-substrate.md`
 3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 5. `docs/architecture/implementation-plans/M4/L7/l7c-version-and-timestamp-clocks-implementation-plan.md`
@@ -334,8 +334,8 @@ Verified for L7C:
 
 ### Source Evidence Read
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/commit-timeline-substrate.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/commit-timeline-substrate.md`
 3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 5. `docs/architecture/implementation-plans/M4/L7/l7d-outcomes-visibility-read-only-implementation-plan.md`
@@ -437,7 +437,7 @@ Verified for L7D:
 
 ### Source Evidence Read
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
 2. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 4. `docs/architecture/implementation-plans/M4/L7/l7e-branch-registry-commit-guards-implementation-plan.md`
@@ -539,7 +539,7 @@ Verified for L7E:
 
 ### Source Evidence Read
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
 2. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 4. `docs/architecture/implementation-plans/M4/L7/l7f-conflict-validation-implementation-plan.md`
@@ -630,9 +630,9 @@ Verified for L7F:
 
 ### Source Evidence Read
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/commit-timeline-substrate.md`
-3. `docs/architecture/storage-next/storage-space-id-registry.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/commit-timeline-substrate.md`
+3. `docs/architecture/storage/storage-space-id-registry.md`
 4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 5. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 6. `docs/architecture/implementation-plans/M4/L7/l7g-commit-timeline-substrate-implementation-plan.md`
@@ -733,7 +733,7 @@ Verified for L7G:
 
 ### Source Evidence Read
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
 2. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 4. `docs/architecture/implementation-plans/M4/L7/l7h-cache-commit-runtime-implementation-plan.md`
@@ -794,8 +794,8 @@ Verified for L7H:
 
 ### Source Evidence Read
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
 3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 5. `docs/architecture/implementation-plans/M4/L7/l7i-durable-wal-commit-runtime-implementation-plan.md`
@@ -863,8 +863,8 @@ Verified for L7I:
 
 ### Source Evidence Read
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
 3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 5. `docs/architecture/implementation-plans/M4/L7/l7j-durable-but-not-visible-classification-implementation-plan.md`
@@ -971,8 +971,8 @@ Verified for L7J during implementation:
 
 ### Source Evidence Read
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/commit-timeline-substrate.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/commit-timeline-substrate.md`
 3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 5. `docs/architecture/implementation-plans/M4/L7/l7k-recovery-replay-allocator-catch-up-implementation-plan.md`
@@ -1095,8 +1095,8 @@ Verified for L7K during implementation:
 
 ### Source Evidence Read
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 5. `docs/architecture/implementation-plans/M4/L7/l7l-concurrency-quiesce-hardening-implementation-plan.md`
@@ -1227,7 +1227,7 @@ Verified for L7L during implementation:
 
 ### Source Evidence Read
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
 2. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 4. `docs/architecture/implementation-plans/M4/L7/l7m-generated-fuzz-fault-assurance-implementation-plan.md`
@@ -1358,8 +1358,8 @@ Verified for L7M during implementation:
 
 ### Source Evidence Read
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/commit-timeline-substrate.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/commit-timeline-substrate.md`
 3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 5. `docs/architecture/implementation-plans/M4/L7/l7n-l7-conformance-closeout-implementation-plan.md`

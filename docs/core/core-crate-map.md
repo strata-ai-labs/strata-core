@@ -6,7 +6,7 @@ Status: current evidence map for the pre-V1 `crates/core` crate
 
 This document maps `crates/core` as it exists today. It is descriptive, not a
 target design. The target V1 boundary is defined by
-`docs/architecture/core-next-architecture.md`.
+`docs/architecture/core-architecture.md`.
 
 The current crate is already much smaller than the historical cleanup-era core
 surface, but it is still not automatically the V1 answer. Core-next must keep
@@ -197,4 +197,4 @@ The current crate has three categories:
 3. storage/runtime vocabulary that should probably move down: `TxnId`
 
 The V1 implementation should use this file as source evidence only. Final
-ownership is governed by `docs/architecture/core-next-architecture.md`.
+ownership is governed by `docs/architecture/core-architecture.md`.

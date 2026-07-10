@@ -36,12 +36,12 @@ commit grouping.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-3. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-4. `docs/architecture/storage-next/commit-timeline-substrate.md`
-5. `docs/architecture/storage-next/implementation-patterns.md`
-6. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+3. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+4. `docs/architecture/storage/commit-timeline-substrate.md`
+5. `docs/architecture/storage/implementation-patterns.md`
+6. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
 7. `docs/architecture/implementation-plans/m4-m4t-implementation-plan.md`
 8. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 9. `docs/spec/strata-storage-format-v1.md`
@@ -445,7 +445,7 @@ branch id + commit version                    -> commit timestamp
 ```
 
 The physical representation is defined by
-`docs/architecture/storage-next/commit-timeline-substrate.md`. Timeline rows
+`docs/architecture/storage/commit-timeline-substrate.md`. Timeline rows
 are ordinary storage-owned rows in the reserved commit-timeline family. They
 must be written with the same commit version and timestamp as the user rows
 they describe.
@@ -457,7 +457,7 @@ Timestamp lookup must return the greatest retained commit version at or before
 the requested timestamp. When multiple commits have the same timestamp in one
 branch, the greatest commit version wins. The timestamp index must therefore
 include commit version in the key, matching
-`docs/architecture/storage-next/commit-timeline-substrate.md`.
+`docs/architecture/storage/commit-timeline-substrate.md`.
 
 ## Recovery Handoff
 

@@ -4,8 +4,8 @@ Status: V1 cleanup plan, aligned with engine-next architecture
 
 This document is still active as the implementation cleanup plan for removing
 follower mode from the current codebase. The target architecture is defined in
-`docs/architecture/engine-next-architecture.md` and
-`docs/architecture/engine-next/ipc-and-command-boundary-contract.md`.
+`docs/architecture/engine-architecture.md` and
+`docs/architecture/engine/ipc-and-command-boundary-contract.md`.
 
 ## Purpose
 
@@ -102,7 +102,7 @@ Tests and docs:
 
 - `crates/engine/tests/follower_tests.rs`
 - follower-related recovery language in
-  `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+  `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 - follower allowances in `docs/storage/v1-storage-consumption-contract.md`
 - follower mentions in `docs/engine/engine-crate-map.md`
 - follower entry in `docs/product/strata-v1-feature-inventory.md`
@@ -359,7 +359,7 @@ Required changes:
 3. `docs/engine/engine-consolidation-plan.md`
 4. `docs/engine/engine-crate-map.md`
 5. `docs/storage/v1-storage-consumption-contract.md`
-6. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+6. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 
 The final docs should describe:
 

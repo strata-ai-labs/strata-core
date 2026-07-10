@@ -6,7 +6,7 @@
 //! Run control-first via `git worktree` and compare. This is a machine-dependent *direction*
 //! measurement — the plan's >=3x@10M headline is an out-of-band, big-machine hypothesis.
 //!
-//! Usage: `cargo run --release --bin storage-next-concurrent-reads`
+//! Usage: `cargo run --release --bin storage-concurrent-reads`
 //!
 //! Measured (100K keys, ephemeral cache, this dev box), ops/s:
 //!   threads   control b6dab1bc (locked)   HEAD (off-lock)   speedup
@@ -35,7 +35,7 @@ extern crate strata_benchmarks;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use strata_storage_next::api::{
+use strata_storage::api::{
     BranchId, CommitBatch, CommitMutation, CommitOptions, PointReadRequest, ReadBound, StorageKey,
     StorageRuntime, StorageSpaceId, StorageValue,
 };

@@ -32,7 +32,7 @@ cursor type without moving cursor ownership back into L5C.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l5-table-runtime.md`
+1. `docs/architecture/storage/l5-table-runtime.md`
 2. `docs/architecture/implementation-plans/M4/l5b-row-key-adapters-implementation-plan.md`
 3. `docs/architecture/implementation-plans/M4/l5b-row-key-adapters-test-plan.md`
 4. `crates/storage-next/src/table/mutable.rs`

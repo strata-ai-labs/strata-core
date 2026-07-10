@@ -23,10 +23,10 @@ that reads everything you put in and proposes what to do about it.
 Architecture anchors:
 
 1. [strata-v1-architecture.md](../architecture/strata-v1-architecture.md)
-2. [intelligence-next-architecture.md](../architecture/intelligence-next-architecture.md)
-3. [engine-next-architecture.md](../architecture/engine-next-architecture.md)
-4. [inference-next-architecture.md](../architecture/inference-next-architecture.md)
-5. [storage-next-architecture.md](../architecture/storage-next-architecture.md)
+2. [intelligence-architecture.md](../architecture/intelligence-architecture.md)
+3. [engine-architecture.md](../architecture/engine-architecture.md)
+4. [inference-architecture.md](../architecture/inference-architecture.md)
+5. [storage-architecture.md](../architecture/storage-architecture.md)
 
 Product direction:
 

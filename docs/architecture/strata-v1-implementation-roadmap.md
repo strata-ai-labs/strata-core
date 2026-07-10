@@ -33,11 +33,11 @@ Product anchors:
 Architecture anchors:
 
 1. `docs/architecture/strata-v1-architecture.md`
-2. `docs/architecture/core-next-architecture.md`
-3. `docs/architecture/storage-next-architecture.md`
-4. `docs/architecture/engine-next-architecture.md`
-5. `docs/architecture/inference-next-architecture.md`
-6. `docs/architecture/intelligence-next-architecture.md`
+2. `docs/architecture/core-architecture.md`
+3. `docs/architecture/storage-architecture.md`
+4. `docs/architecture/engine-architecture.md`
+5. `docs/architecture/inference-architecture.md`
+6. `docs/architecture/intelligence-architecture.md`
 7. `docs/architecture/stratahub-substrate-architecture.md`
 8. `docs/architecture/runtime-resource-profile-architecture.md`
 9. `docs/architecture/v1-error-and-diagnostics-contract.md`
@@ -52,20 +52,20 @@ Architecture anchors:
 
 Engine contracts:
 
-1. `docs/architecture/engine-next/README.md`
-2. `docs/architecture/engine-next/persistence-adapter-contract.md`
-3. `docs/architecture/engine-next/primitive-implementation-contract.md`
-4. `docs/architecture/engine-next/branch-operation-and-capability-adapter-contract.md`
-5. `docs/architecture/engine-next/retrieval-and-derived-state-contract.md`
-6. `docs/architecture/engine-next/ipc-and-command-boundary-contract.md`
-7. `docs/architecture/engine-next/product-pathway-conformance-plan.md`
+1. `docs/architecture/engine/README.md`
+2. `docs/architecture/engine/persistence-adapter-contract.md`
+3. `docs/architecture/engine/primitive-implementation-contract.md`
+4. `docs/architecture/engine/branch-operation-and-capability-adapter-contract.md`
+5. `docs/architecture/engine/retrieval-and-derived-state-contract.md`
+6. `docs/architecture/engine/ipc-and-command-boundary-contract.md`
+7. `docs/architecture/engine/product-pathway-conformance-plan.md`
 
 Storage contracts:
 
-1. `docs/architecture/storage-next/README.md`
-2. `docs/architecture/storage-next/implementation-patterns.md`
-3. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
-4. `docs/architecture/storage-next/l9-storage-api-boundary.md`
+1. `docs/architecture/storage/README.md`
+2. `docs/architecture/storage/implementation-patterns.md`
+3. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
+4. `docs/architecture/storage/l9-storage-api-boundary.md`
 5. `docs/spec/strata-storage-format-v1.md`
 
 Milestone implementation plans:

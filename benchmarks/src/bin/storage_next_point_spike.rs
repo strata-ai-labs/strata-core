@@ -1,6 +1,6 @@
-//! Storage-next PERF-P2 point-read isolation spike.
+//! Storage PERF-P2 point-read isolation spike.
 //!
-//! This binary calls the hidden `perf-trace` probe in storage-next. It compares
+//! This binary calls the hidden `perf-trace` probe in storage. It compares
 //! current point-read mechanics against benchmark-only ordered-key seek and
 //! borrowed-source variants without changing production serving behavior.
 
@@ -9,10 +9,10 @@ use std::fmt;
 
 use strata_benchmarks::harness::recorder::ResultRecorder;
 use strata_benchmarks::schema::{BenchmarkMetrics, BenchmarkResult};
-use strata_storage_next::perf_probe::{run_point_read_spike, PointReadProbeConfig};
-use strata_storage_next::perf_trace::StoragePerfSnapshot;
+use strata_storage::perf_probe::{run_point_read_spike, PointReadProbeConfig};
+use strata_storage::perf_trace::StoragePerfSnapshot;
 
-const CATEGORY: &str = "storage-next-point-spike";
+const CATEGORY: &str = "storage-point-spike";
 
 fn main() {
     let config = match Config::parse(std::env::args().skip(1)) {
@@ -36,7 +36,7 @@ fn main() {
 }
 
 fn run(config: Config) -> Result<(), String> {
-    eprintln!("storage-next PERF-P2 point-read spike");
+    eprintln!("storage PERF-P2 point-read spike");
     eprintln!(
         "scale={} samples={} batch={} value={}B buckets={} seed={}",
         config.probe.scale_keys,
@@ -73,7 +73,7 @@ fn run(config: Config) -> Result<(), String> {
     Ok(())
 }
 
-fn print_case(case: &strata_storage_next::perf_probe::PointReadProbeCase) {
+fn print_case(case: &strata_storage::perf_probe::PointReadProbeCase) {
     let perf = case.perf();
     eprintln!(
         "  {:<28} {:>12.0} ops/s  avg={:>10} ns  found={}",
@@ -127,7 +127,7 @@ fn print_case(case: &strata_storage_next::perf_probe::PointReadProbeCase) {
 fn parameters(
     config: &PointReadProbeConfig,
     branch_rows: usize,
-    case: &strata_storage_next::perf_probe::PointReadProbeCase,
+    case: &strata_storage::perf_probe::PointReadProbeCase,
 ) -> HashMap<String, serde_json::Value> {
     let perf = case.perf();
     let mut parameters = HashMap::new();
@@ -349,7 +349,7 @@ impl Config {
 }
 
 fn print_help() {
-    eprintln!("Usage: storage-next-point-spike [options]");
+    eprintln!("Usage: storage-point-spike [options]");
     eprintln!();
     eprintln!("Options:");
     eprintln!("  --scale <N|100k|1m>       Key count (default 100k)");

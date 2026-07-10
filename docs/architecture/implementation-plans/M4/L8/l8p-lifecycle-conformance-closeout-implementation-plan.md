@@ -32,12 +32,12 @@ should primarily add:
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
-2. `docs/architecture/storage-next/l7-commit-runtime.md`
-3. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-4. `docs/architecture/storage-next/l5-table-runtime.md`
-5. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-6. `docs/architecture/storage-next/implementation-patterns.md`
+1. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
+2. `docs/architecture/storage/l7-commit-runtime.md`
+3. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+4. `docs/architecture/storage/l5-table-runtime.md`
+5. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+6. `docs/architecture/storage/implementation-patterns.md`
 7. `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-implementation-plan.md`
 8. `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-test-plan.md`
 9. All L8A through L8O slice plans under

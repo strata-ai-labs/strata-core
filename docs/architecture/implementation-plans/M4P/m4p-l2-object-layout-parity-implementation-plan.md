@@ -52,11 +52,11 @@ Findings closed by this plan:
 
 Supporting architecture:
 
-1. `docs/architecture/storage-next/l2-object-layout.md`
-2. `docs/architecture/storage-next/implementation-patterns.md`
-3. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
-4. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-5. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+1. `docs/architecture/storage/l2-object-layout.md`
+2. `docs/architecture/storage/implementation-patterns.md`
+3. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
+4. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+5. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 
 The serving-path proof plan is not a direct performance input for L2. L2 is not
 the current point-read, load, or scan bottleneck. Its role in M4P is boundary
@@ -251,7 +251,7 @@ M4P-L2 does not implement:
 ## V1 `tmp/` Decision
 
 M4P-L2 should record this decision in
-`docs/architecture/storage-next/l2-object-layout.md`:
+`docs/architecture/storage/l2-object-layout.md`:
 
 1. `tmp/` remains a reserved object-visible family for future durable service
    operations that need named temporary objects.
@@ -321,7 +321,7 @@ the audit leak.
 
 ### 1. Sync The L2 Specification
 
-1. Update `docs/architecture/storage-next/l2-object-layout.md` so the
+1. Update `docs/architecture/storage/l2-object-layout.md` so the
    implemented canonical layout block includes:
    - `manifest/current`;
    - `manifest/branch-catalog`;

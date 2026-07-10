@@ -1,0 +1,24 @@
+[package]
+name = "strata-core"
+version.workspace = true
+description = "Shared atoms for the Strata database: branch identity, commit versions, timestamps"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+bincode = { workspace = true }
+proptest = { workspace = true }
+serde_json = { workspace = true }

@@ -20,8 +20,8 @@ engine-facing code imports storage-next only through L9.
 ## Inputs
 
 1. L9A-L9G.
-2. `docs/architecture/engine-next/testing-and-conformance-plan.md`
-3. `docs/architecture/engine-next/temporal-context-and-timeline-resolver-contract.md`
+2. `docs/architecture/engine/testing-and-conformance-plan.md`
+3. `docs/architecture/engine/temporal-context-and-timeline-resolver-contract.md`
 4. `crates/storage-next/src/testkit/`
 5. `crates/storage-next/tests/`
 6. `docs/architecture/implementation-plans/M4/L9/m4-l9-porting-log.md`

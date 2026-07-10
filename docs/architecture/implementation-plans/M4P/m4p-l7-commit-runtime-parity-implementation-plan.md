@@ -10,10 +10,10 @@ Parent test methodology:
 `docs/architecture/implementation-plans/m4p-storage-next-parity-restoration-test-plan.md`
 
 Architecture context:
-`docs/architecture/storage-next/l7-commit-runtime.md`
+`docs/architecture/storage/l7-commit-runtime.md`
 
 Timeline context:
-`docs/architecture/storage-next/commit-timeline-substrate.md`
+`docs/architecture/storage/commit-timeline-substrate.md`
 
 Audit context:
 `docs/architecture/perf-tuning/storage-next-mechanics-parity-audit.md`
@@ -349,7 +349,7 @@ Tasks:
    proves equivalent durable/visibility ordering.
 3. Record the semantic decision for global versus independent-branch commit
    admission:
-   - artifact: `docs/architecture/storage-next/l7-commit-runtime.md`, under a
+   - artifact: `docs/architecture/storage/l7-commit-runtime.md`, under a
      new `Semantic Decisions` section unless a shared decision-register file is
      created first;
    - owner: L7 for the primitive, L8 for retry/admission policy;

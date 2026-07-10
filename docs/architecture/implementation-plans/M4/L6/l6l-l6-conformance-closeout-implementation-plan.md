@@ -46,11 +46,11 @@ L6L must answer these questions with code, tests, or explicit deferrals:
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-2. `docs/architecture/storage-next/l5-table-runtime.md`
-3. `docs/architecture/storage-next/commit-timeline-substrate.md`
-4. `docs/architecture/storage-next/implementation-patterns.md`
-5. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
+1. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+2. `docs/architecture/storage/l5-table-runtime.md`
+3. `docs/architecture/storage/commit-timeline-substrate.md`
+4. `docs/architecture/storage/implementation-patterns.md`
+5. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
 6. `docs/spec/strata-storage-format-v1.md`
 7. `docs/architecture/implementation-plans/m4-l6-branch-lsm-runtime-implementation-plan.md`
 8. `docs/architecture/implementation-plans/m4-l6-branch-lsm-runtime-test-plan.md`

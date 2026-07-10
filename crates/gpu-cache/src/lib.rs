@@ -14,7 +14,7 @@
 //!   write-behind to the store of record. Safe Rust against a backend
 //!   trait, so all machinery tests on a host-sim backend in CI.
 //!
-//! The unsafe policy is module-scoped (the inference-next `local/`
+//! The unsafe policy is module-scoped (the inference `local/`
 //! discipline, workspace rule 38): the crate denies `unsafe_code`; only
 //! `device/` may allow it, and every unsafe block there wraps a single
 //! driver call with a `SAFETY` note.

@@ -1,0 +1,733 @@
+//! Generated branch-LSM scaffold property harness.
+
+#![deny(unsafe_code)]
+#![allow(clippy::too_many_lines)]
+
+mod common;
+
+use std::fs;
+
+const REQUIRED_HARNESS_TOKENS: &[&str] = &[
+    "branch_lsm_property_harness_runs_scaffold_contract",
+    "branch_lsm_property_harness_runs_seeded_source_topologies",
+    "check_branch_lsm_scaffold_contract",
+    "check_branch_lsm_reads_contract",
+    "check_branch_lsm_inheritance_contract",
+    "check_branch_lsm_install_contract",
+    "check_branch_lsm_fault_window_contract",
+    "check_branch_lsm_reference_model_contract",
+    "check_branch_lsm_inheritance_model_contract",
+    "check_branch_lsm_install_model_contract",
+    "runtime_topology_scripts",
+    "assert_seeded_source_topology_outcome",
+    "ModelBranchStore",
+    "ModelInheritedLayer",
+    "assert_model_store_read_surface",
+    "inheritance_model_cases",
+    "install_model_cases",
+    "read_bound_cases",
+    "descriptor_cases",
+    "error_source_cases",
+    "matching_row_cases",
+    "inherited_bound_cases",
+    "candidate_tombstone_cases",
+    "edge_row_cases",
+    "encoded_grouping_cases",
+    "row_chain_cases",
+    "fork_edge_cases",
+    "state_construction_cases",
+    "committed_put_append_cases",
+    "committed_tombstone_append_cases",
+    "wrong_branch_append_rejection_cases",
+    "active_duplicate_rejection_cases",
+    "cross_layer_duplicate_append_cases",
+    "same_key_version_append_cases",
+    "same_version_key_append_cases",
+    "active_rotation_cases",
+    "empty_rotation_skip_cases",
+    "frozen_limit_skip_cases",
+    "active_only_fact_cases",
+    "frozen_only_fact_cases",
+    "mixed_active_frozen_fact_cases",
+    "timestamp_edge_fact_cases",
+    "max_commit_edge_fact_cases",
+    "read_view_capture_cases",
+    "pinned_append_isolation_cases",
+    "pinned_rotation_isolation_cases",
+    "latest_point_read_cases",
+    "version_bounded_point_read_cases",
+    "tombstone_shadow_read_cases",
+    "history_read_cases",
+    "history_tombstone_cases",
+    "history_limit_cases",
+    "prefix_scan_cases",
+    "range_scan_cases",
+    "scan_tombstone_suppression_cases",
+    "active_frozen_merge_read_cases",
+    "wrong_branch_read_rejection_cases",
+    "timestamp_point_read_cases",
+    "active_timestamp_point_read_cases",
+    "frozen_timestamp_point_read_cases",
+    "owned_timestamp_point_read_cases",
+    "timestamp_scan_read_cases",
+    "timestamp_prefix_scan_cases",
+    "timestamp_range_scan_cases",
+    "ttl_before_expiry_read_cases",
+    "ttl_exact_expiry_suppression_cases",
+    "ttl_after_expiry_suppression_cases",
+    "ttl_max_expiry_read_cases",
+    "timestamp_tombstone_shadow_cases",
+    "timestamp_tombstone_after_non_shadow_cases",
+    "timestamp_scan_boundary_cases",
+    "timestamp_scan_space_isolation_cases",
+    "timestamp_empty_scan_cases",
+    "non_monotonic_timestamp_read_cases",
+    "inherited_timestamp_read_cases",
+    "inherited_timestamp_point_read_cases",
+    "inherited_timestamp_scan_read_cases",
+    "inherited_timestamp_fork_gate_cases",
+    "inherited_timestamp_child_put_shadow_cases",
+    "inherited_timestamp_child_tombstone_shadow_cases",
+    "inherited_timestamp_nearest_tie_cases",
+    "pinned_timestamp_view_isolation_cases",
+    "unknown_timestamp_coverage_read_cases",
+    "insufficient_timestamp_history_rejection_cases",
+    "immutable_descriptor_cases",
+    "immutable_l0_install_cases",
+    "immutable_l1_install_cases",
+    "invalid_immutable_install_rejection_cases",
+    "immutable_l1_overlap_rejection_cases",
+    "frozen_replacement_cases",
+    "pinned_immutable_install_isolation_cases",
+    "immutable_latest_read_cases",
+    "immutable_version_bounded_read_cases",
+    "immutable_history_cases",
+    "immutable_prefix_scan_cases",
+    "immutable_range_scan_cases",
+    "immutable_tombstone_shadow_cases",
+    "active_frozen_immutable_merge_read_cases",
+    "immutable_source_attribution_cases",
+    "inherited_fork_capture_cases",
+    "inherited_layer_validation_cases",
+    "inherited_latest_read_cases",
+    "inherited_version_bounded_read_cases",
+    "inherited_history_read_cases",
+    "inherited_prefix_scan_cases",
+    "inherited_range_scan_cases",
+    "inherited_key_rewrite_cases",
+    "inherited_child_put_shadow_cases",
+    "inherited_child_tombstone_shadow_cases",
+    "inherited_post_fork_invisibility_cases",
+    "inherited_chained_ancestry_cases",
+    "invalid_inherited_layer_rejection_cases",
+    "pinned_inherited_view_isolation_cases",
+    "materialization_attempt_cases",
+    "successful_materialization_cases",
+    "empty_materialization_cases",
+    "idempotent_materialization_retry_cases",
+    "materialized_row_cases",
+    "materialized_table_cases",
+    "skipped_materialization_post_fork_row_cases",
+    "skipped_materialization_exact_duplicate_cases",
+    "materialization_latest_read_parity_cases",
+    "materialization_version_read_parity_cases",
+    "materialization_timestamp_read_parity_cases",
+    "materialization_history_read_parity_cases",
+    "materialization_prefix_scan_parity_cases",
+    "materialization_range_scan_parity_cases",
+    "materialization_pinned_view_isolation_cases",
+    "materialization_tombstone_preservation_cases",
+    "materialization_ttl_preservation_cases",
+    "invalid_materialization_rejection_cases",
+    "reachability_snapshot_cases",
+    "reachability_owned_ref_cases",
+    "reachability_inherited_ref_cases",
+    "materializing_reachability_ref_cases",
+    "reachability_aggregate_rebuild_cases",
+    "shared_table_detection_cases",
+    "reachability_release_candidate_cases",
+    "protected_release_attempt_cases",
+    "registry_rebuild_cases",
+    "registry_unregister_cases",
+    "registry_disagreement_cases",
+    "fork_reachability_cases",
+    "failed_fork_reachability_rollback_cases",
+    "materialization_release_cases",
+    "branch_clear_release_cases",
+    "reachability_deterministic_ordering_cases",
+    "invalid_reachability_rejection_cases",
+    "compaction_noop_cases",
+    "l0_compaction_candidate_cases",
+    "l0_to_l1_compaction_candidate_cases",
+    "nonzero_level_compaction_candidate_cases",
+    "keep_all_compaction_cases",
+    "compaction_output_install_cases",
+    "compaction_output_split_cases",
+    "stale_candidate_rejection_cases",
+    "unsafe_old_version_pruning_rejection_cases",
+    "unsafe_tombstone_pruning_rejection_cases",
+    "unsafe_ttl_pruning_rejection_cases",
+    "compaction_latest_parity_cases",
+    "compaction_version_parity_cases",
+    "compaction_timestamp_parity_cases",
+    "compaction_history_parity_cases",
+    "compaction_prefix_scan_parity_cases",
+    "compaction_range_scan_parity_cases",
+    "compaction_pinned_view_isolation_cases",
+    "compaction_release_candidate_cases",
+    "compaction_protected_release_cases",
+    "invalid_compaction_request_rejection_cases",
+    "snapshot_empty_install_noop_cases",
+    "snapshot_single_branch_install_cases",
+    "snapshot_multi_branch_install_cases",
+    "snapshot_missing_branch_rejection_cases",
+    "snapshot_missing_branch_create_cases",
+    "snapshot_non_empty_target_rejection_cases",
+    "snapshot_empty_group_rejection_cases",
+    "snapshot_duplicate_branch_group_rejection_cases",
+    "snapshot_duplicate_row_rejection_cases",
+    "snapshot_unsorted_row_rejection_cases",
+    "snapshot_branch_mismatch_rejection_cases",
+    "snapshot_output_identity_collision_rejection_cases",
+    "snapshot_table_build_failure_atomicity_cases",
+    "snapshot_latest_parity_cases",
+    "snapshot_version_parity_cases",
+    "snapshot_timestamp_parity_cases",
+    "snapshot_history_parity_cases",
+    "snapshot_prefix_scan_parity_cases",
+    "snapshot_range_scan_parity_cases",
+    "snapshot_tombstone_preservation_cases",
+    "snapshot_ttl_preservation_cases",
+    "snapshot_pinned_view_isolation_cases",
+    "snapshot_reachability_cases",
+    "snapshot_source_boundary_guard_cases",
+];
+
+#[test]
+fn branch_lsm_property_harness_is_not_a_placeholder() {
+    let source = fs::read_to_string(common::crate_root().join("tests/branch_lsm_properties.rs"))
+        .expect("read branch LSM property harness");
+
+    for token in REQUIRED_HARNESS_TOKENS {
+        assert!(source.contains(token), "missing harness token {token}");
+    }
+    assert!(!source.contains("src/branch/mod.rs\").is_file()"));
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+type BranchLsmOutcomeCounter = fn(strata_storage::testkit::BranchLsmScaffoldOutcome) -> usize;
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+const REQUIRED_OUTCOME_COUNTERS: &[BranchLsmOutcomeCounter] = &[
+    strata_storage::testkit::BranchLsmScaffoldOutcome::valid_config_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::invalid_config_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::read_bound_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::valid_fact_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::invalid_fact_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::descriptor_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::error_source_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::matching_row_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::mismatching_row_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::physical_key_rewrite_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::row_rewrite_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::own_bound_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_bound_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::candidate_put_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::candidate_tombstone_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::edge_row_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::encoded_grouping_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::row_chain_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::fork_edge_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::state_construction_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::committed_put_append_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::committed_tombstone_append_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::wrong_branch_append_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::active_duplicate_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::cross_layer_duplicate_append_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::same_key_version_append_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::same_version_key_append_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::active_rotation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::empty_rotation_skip_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::frozen_limit_skip_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::active_only_fact_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::frozen_only_fact_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::mixed_active_frozen_fact_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::timestamp_edge_fact_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::max_commit_edge_fact_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::read_view_capture_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::pinned_append_isolation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::pinned_rotation_isolation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::latest_point_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::version_bounded_point_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::tombstone_shadow_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::history_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::history_tombstone_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::history_limit_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::prefix_scan_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::range_scan_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::scan_tombstone_suppression_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::active_frozen_merge_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::wrong_branch_read_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::timestamp_point_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::active_timestamp_point_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::frozen_timestamp_point_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::owned_timestamp_point_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::timestamp_scan_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::timestamp_prefix_scan_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::timestamp_range_scan_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::ttl_before_expiry_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::ttl_exact_expiry_suppression_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::ttl_after_expiry_suppression_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::ttl_max_expiry_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::timestamp_tombstone_shadow_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::timestamp_tombstone_after_non_shadow_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::timestamp_scan_boundary_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::timestamp_scan_space_isolation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::timestamp_empty_scan_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::non_monotonic_timestamp_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_timestamp_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_timestamp_point_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_timestamp_scan_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_timestamp_fork_gate_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_timestamp_child_put_shadow_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_timestamp_child_tombstone_shadow_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_timestamp_nearest_tie_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::pinned_timestamp_view_isolation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::unknown_timestamp_coverage_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::insufficient_timestamp_history_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::immutable_descriptor_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::immutable_l0_install_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::immutable_l1_install_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::invalid_immutable_install_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::immutable_l1_overlap_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::frozen_replacement_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::pinned_immutable_install_isolation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::immutable_latest_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::immutable_version_bounded_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::immutable_history_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::immutable_prefix_scan_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::immutable_range_scan_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::immutable_tombstone_shadow_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::active_frozen_immutable_merge_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::immutable_source_attribution_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_fork_capture_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_layer_validation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_latest_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_version_bounded_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_history_read_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_prefix_scan_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_range_scan_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_key_rewrite_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_child_put_shadow_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_child_tombstone_shadow_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_post_fork_invisibility_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inherited_chained_ancestry_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::invalid_inherited_layer_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::pinned_inherited_view_isolation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::inheritance_model_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::materialization_attempt_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::successful_materialization_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::empty_materialization_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::idempotent_materialization_retry_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::materialized_row_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::materialized_table_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::skipped_materialization_post_fork_row_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::skipped_materialization_exact_duplicate_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::materialization_latest_read_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::materialization_version_read_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::materialization_timestamp_read_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::materialization_history_read_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::materialization_prefix_scan_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::materialization_range_scan_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::materialization_pinned_view_isolation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::materialization_tombstone_preservation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::materialization_ttl_preservation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::invalid_materialization_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::reachability_snapshot_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::reachability_owned_ref_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::reachability_inherited_ref_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::materializing_reachability_ref_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::reachability_aggregate_rebuild_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::shared_table_detection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::reachability_release_candidate_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::protected_release_attempt_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::registry_rebuild_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::registry_unregister_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::registry_disagreement_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::fork_reachability_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::failed_fork_reachability_rollback_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::materialization_release_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::branch_clear_release_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::reachability_deterministic_ordering_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::invalid_reachability_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::compaction_noop_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::l0_compaction_candidate_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::l0_to_l1_compaction_candidate_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::nonzero_level_compaction_candidate_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::keep_all_compaction_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::compaction_output_install_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::compaction_output_split_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::stale_candidate_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::unsafe_old_version_pruning_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::unsafe_tombstone_pruning_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::unsafe_ttl_pruning_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::compaction_latest_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::compaction_version_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::compaction_timestamp_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::compaction_history_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::compaction_prefix_scan_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::compaction_range_scan_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::compaction_pinned_view_isolation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::compaction_release_candidate_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::compaction_protected_release_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::invalid_compaction_request_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_empty_install_noop_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_single_branch_install_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_multi_branch_install_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_missing_branch_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_missing_branch_create_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_non_empty_target_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_empty_group_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_duplicate_branch_group_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_duplicate_row_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_unsorted_row_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_branch_mismatch_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_output_identity_collision_rejection_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_table_build_failure_atomicity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_latest_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_version_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_timestamp_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_history_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_prefix_scan_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_range_scan_parity_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_tombstone_preservation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_ttl_preservation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_pinned_view_isolation_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_reachability_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::snapshot_source_boundary_guard_cases,
+    strata_storage::testkit::BranchLsmScaffoldOutcome::install_model_cases,
+];
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+fn branch_lsm_outcome_exercised_all_categories(
+    outcome: &strata_storage::testkit::BranchLsmScaffoldOutcome,
+) -> bool {
+    REQUIRED_OUTCOME_COUNTERS
+        .iter()
+        .all(|counter| counter(*outcome) != 0)
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn branch_lsm_property_harness_runs_scaffold_contract() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::TestCaseError;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use strata_storage::testkit::check_branch_lsm_scaffold_contract;
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/branch_lsm.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 0..=128), |script| {
+            let outcome = check_branch_lsm_scaffold_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            if !branch_lsm_outcome_exercised_all_categories(&outcome) {
+                return Err(TestCaseError::fail(
+                    "branch LSM scaffold contract did not exercise all categories",
+                ));
+            }
+            Ok(())
+        })
+        .expect("generated branch LSM scaffold property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn branch_lsm_property_harness_runs_independent_reference_model() {
+    use proptest::collection::vec;
+    use proptest::prelude::any;
+    use proptest::test_runner::TestCaseError;
+    use proptest::test_runner::{Config, FileFailurePersistence, TestRunner};
+    use strata_storage::testkit::{
+        check_branch_lsm_fault_window_contract, check_branch_lsm_reference_model_contract,
+    };
+
+    let mut runner = TestRunner::new(Config {
+        cases: 32,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/branch_lsm_reference_model.txt",
+        ))),
+        ..Config::default()
+    });
+
+    runner
+        .run(&vec(any::<u8>(), 0..=256), |script| {
+            check_branch_lsm_reference_model_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            check_branch_lsm_fault_window_contract(&script)
+                .map_err(|error| TestCaseError::fail(error.to_string()))?;
+            Ok(())
+        })
+        .expect("generated branch LSM reference model property");
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+#[test]
+fn branch_lsm_property_harness_runs_seeded_source_topologies() {
+    use strata_storage::testkit::{
+        check_branch_lsm_fault_window_contract, check_branch_lsm_inheritance_contract,
+        check_branch_lsm_install_contract, check_branch_lsm_reads_contract,
+        check_branch_lsm_reference_model_contract, check_branch_lsm_scaffold_contract,
+    };
+
+    for script in runtime_topology_scripts() {
+        let outcome =
+            check_branch_lsm_scaffold_contract(&script).expect("seeded branch LSM scaffold");
+        assert_seeded_source_topology_outcome(&outcome);
+        check_branch_lsm_reference_model_contract(&script)
+            .expect("seeded branch LSM reference model");
+        check_branch_lsm_fault_window_contract(&script).expect("seeded branch LSM fault windows");
+        check_branch_lsm_reads_contract(&script).expect("seeded branch LSM reads");
+        check_branch_lsm_inheritance_contract(&script).expect("seeded branch LSM inheritance");
+        check_branch_lsm_install_contract(&script).expect("seeded branch LSM install");
+    }
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+fn runtime_topology_scripts() -> [Vec<u8>; 3] {
+    [
+        (0_u8..=255).collect(),
+        (0_u8..=255)
+            .map(|byte| byte.wrapping_mul(37).wrapping_add(11))
+            .collect(),
+        b"active frozen owned inherited l0 nonzero fork shadow tombstone ttl materialization compaction scan range history timestamp"
+            .repeat(3),
+    ]
+}
+
+#[cfg(all(feature = "testkit", not(target_arch = "wasm32")))]
+fn assert_seeded_source_topology_outcome(
+    outcome: &strata_storage::testkit::BranchLsmScaffoldOutcome,
+) {
+    let required = [
+        ("active append", outcome.committed_put_append_cases()),
+        (
+            "active tombstone",
+            outcome.committed_tombstone_append_cases(),
+        ),
+        ("frozen rotation", outcome.active_rotation_cases()),
+        ("read view", outcome.read_view_capture_cases()),
+        ("latest point read", outcome.latest_point_read_cases()),
+        (
+            "version bounded point read",
+            outcome.version_bounded_point_read_cases(),
+        ),
+        ("timestamp point read", outcome.timestamp_point_read_cases()),
+        ("history read", outcome.history_read_cases()),
+        ("history tombstone", outcome.history_tombstone_cases()),
+        ("prefix scan", outcome.prefix_scan_cases()),
+        ("range scan", outcome.range_scan_cases()),
+        (
+            "scan tombstone suppression",
+            outcome.scan_tombstone_suppression_cases(),
+        ),
+        ("TTL before expiry", outcome.ttl_before_expiry_read_cases()),
+        (
+            "TTL exact expiry",
+            outcome.ttl_exact_expiry_suppression_cases(),
+        ),
+        (
+            "TTL after expiry",
+            outcome.ttl_after_expiry_suppression_cases(),
+        ),
+        ("owned L0 install", outcome.immutable_l0_install_cases()),
+        ("owned L1 install", outcome.immutable_l1_install_cases()),
+        (
+            "owned L1 overlap rejection",
+            outcome.immutable_l1_overlap_rejection_cases(),
+        ),
+        (
+            "owned source attribution",
+            outcome.immutable_source_attribution_cases(),
+        ),
+        (
+            "inherited fork capture",
+            outcome.inherited_fork_capture_cases(),
+        ),
+        (
+            "inherited layer validation",
+            outcome.inherited_layer_validation_cases(),
+        ),
+        (
+            "inherited latest read",
+            outcome.inherited_latest_read_cases(),
+        ),
+        (
+            "inherited version read",
+            outcome.inherited_version_bounded_read_cases(),
+        ),
+        (
+            "inherited history read",
+            outcome.inherited_history_read_cases(),
+        ),
+        (
+            "inherited prefix scan",
+            outcome.inherited_prefix_scan_cases(),
+        ),
+        ("inherited range scan", outcome.inherited_range_scan_cases()),
+        (
+            "inherited key rewrite",
+            outcome.inherited_key_rewrite_cases(),
+        ),
+        (
+            "inherited child put shadow",
+            outcome.inherited_child_put_shadow_cases(),
+        ),
+        (
+            "inherited child tombstone shadow",
+            outcome.inherited_child_tombstone_shadow_cases(),
+        ),
+        (
+            "inherited post-fork invisibility",
+            outcome.inherited_post_fork_invisibility_cases(),
+        ),
+        (
+            "inherited chain",
+            outcome.inherited_chained_ancestry_cases(),
+        ),
+        (
+            "inherited timestamp read",
+            outcome.inherited_timestamp_read_cases(),
+        ),
+        (
+            "inherited timestamp point read",
+            outcome.inherited_timestamp_point_read_cases(),
+        ),
+        (
+            "inherited timestamp scan",
+            outcome.inherited_timestamp_scan_read_cases(),
+        ),
+        (
+            "inherited timestamp fork gate",
+            outcome.inherited_timestamp_fork_gate_cases(),
+        ),
+        (
+            "inherited timestamp child put shadow",
+            outcome.inherited_timestamp_child_put_shadow_cases(),
+        ),
+        (
+            "inherited timestamp child tombstone shadow",
+            outcome.inherited_timestamp_child_tombstone_shadow_cases(),
+        ),
+        ("inheritance model", outcome.inheritance_model_cases()),
+        (
+            "materialization attempt",
+            outcome.materialization_attempt_cases(),
+        ),
+        (
+            "successful materialization",
+            outcome.successful_materialization_cases(),
+        ),
+        (
+            "materialization latest parity",
+            outcome.materialization_latest_read_parity_cases(),
+        ),
+        (
+            "materialization timestamp parity",
+            outcome.materialization_timestamp_read_parity_cases(),
+        ),
+        (
+            "materialization history parity",
+            outcome.materialization_history_read_parity_cases(),
+        ),
+        (
+            "materialization prefix parity",
+            outcome.materialization_prefix_scan_parity_cases(),
+        ),
+        (
+            "materialization range parity",
+            outcome.materialization_range_scan_parity_cases(),
+        ),
+        (
+            "materialization tombstone preservation",
+            outcome.materialization_tombstone_preservation_cases(),
+        ),
+        (
+            "materialization TTL preservation",
+            outcome.materialization_ttl_preservation_cases(),
+        ),
+        ("L0 compaction", outcome.l0_compaction_candidate_cases()),
+        (
+            "L0 to L1 compaction",
+            outcome.l0_to_l1_compaction_candidate_cases(),
+        ),
+        (
+            "nonzero compaction",
+            outcome.nonzero_level_compaction_candidate_cases(),
+        ),
+        (
+            "compaction latest parity",
+            outcome.compaction_latest_parity_cases(),
+        ),
+        (
+            "compaction timestamp parity",
+            outcome.compaction_timestamp_parity_cases(),
+        ),
+        (
+            "compaction history parity",
+            outcome.compaction_history_parity_cases(),
+        ),
+        (
+            "compaction prefix parity",
+            outcome.compaction_prefix_scan_parity_cases(),
+        ),
+        (
+            "compaction range parity",
+            outcome.compaction_range_scan_parity_cases(),
+        ),
+        (
+            "snapshot install",
+            outcome.snapshot_single_branch_install_cases(),
+        ),
+        (
+            "snapshot latest parity",
+            outcome.snapshot_latest_parity_cases(),
+        ),
+        (
+            "snapshot timestamp parity",
+            outcome.snapshot_timestamp_parity_cases(),
+        ),
+        (
+            "snapshot history parity",
+            outcome.snapshot_history_parity_cases(),
+        ),
+        (
+            "snapshot prefix parity",
+            outcome.snapshot_prefix_scan_parity_cases(),
+        ),
+        (
+            "snapshot range parity",
+            outcome.snapshot_range_scan_parity_cases(),
+        ),
+        (
+            "snapshot tombstone preservation",
+            outcome.snapshot_tombstone_preservation_cases(),
+        ),
+        (
+            "snapshot TTL preservation",
+            outcome.snapshot_ttl_preservation_cases(),
+        ),
+        ("install model", outcome.install_model_cases()),
+    ];
+
+    for (label, count) in required {
+        assert!(count != 0, "seeded branch LSM script missed {label}");
+    }
+}

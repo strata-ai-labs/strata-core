@@ -1,27 +1,29 @@
 [workspace]
 resolver = "2"
 default-members = [
-    "crates/core-next",
-    "crates/storage-next",
-    "crates/engine-next",
-    "crates/executor-next",
-    "crates/inference-next",
-    "crates/cli-next",
+    "crates/core",
+    "crates/storage",
+    "crates/engine",
+    "crates/executor",
+    "crates/inference",
+    "crates/cli",
+    "crates/stratadb",
 ]
 exclude = ["benchmarks"]
 members = [
-    "crates/core-next",
-    "crates/storage-next",
-    "crates/engine-next",
-    "crates/executor-next",
-    "crates/inference-next",
-    "crates/cli-next",
-    "crates/wasm-next",
+    "crates/core",
+    "crates/storage",
+    "crates/engine",
+    "crates/executor",
+    "crates/inference",
+    "crates/cli",
+    "crates/wasm",
     "crates/gpu-cache",
+    "crates/stratadb",
 ]
 
 [workspace.package]
-version = "0.6.1"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.88"
 authors = ["Strata contributors"]
@@ -112,7 +114,7 @@ getrandom = "0.2"
 # API over performance.now()/Date.now(). Only wired as a wasm32 target dep.
 web-time = "1"
 
-# Browser boundary (crates/wasm-next)
+# Browser boundary (crates/wasm)
 wasm-bindgen = "0.2"
 console_error_panic_hook = "0.1"
 

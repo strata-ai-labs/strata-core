@@ -257,7 +257,7 @@ command enum.
 
 Implementation steps:
 
-1. Create a hand-maintained `docs/architecture/cli-next-command-coverage.md`
+1. Create a hand-maintained `docs/architecture/cli-command-coverage.md`
    table with:
    - old CLI command;
    - current CLI command;

@@ -22,9 +22,9 @@ and acts as a partner on top of that understanding.
 Architecture anchors:
 
 1. [strata-v1-architecture.md](./strata-v1-architecture.md)
-2. [intelligence-next-architecture.md](./intelligence-next-architecture.md)
-3. [inference-next-architecture.md](./inference-next-architecture.md)
-4. [engine-next-architecture.md](./engine-next-architecture.md)
+2. [intelligence-architecture.md](./intelligence-architecture.md)
+3. [inference-architecture.md](./inference-architecture.md)
+4. [engine-architecture.md](./engine-architecture.md)
 5. [runtime-resource-profile-architecture.md](./runtime-resource-profile-architecture.md)
 6. [v1-error-and-diagnostics-contract.md](./v1-error-and-diagnostics-contract.md)
 7. [v1-engineering-standards.md](./v1-engineering-standards.md)

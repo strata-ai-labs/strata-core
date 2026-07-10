@@ -9,7 +9,7 @@
 //!   degrade-never-stall.
 //! - [`eviction`] *(internal)* — the pure score+edge retention policy.
 //! - [`store`] — the T2 seam ([`store::PageStore`]) with an in-memory fake;
-//!   GT2 implements it over engine-next.
+//!   GT2 implements it over engine.
 //! - [`host_sim`] — the CI backend: deterministic completion, fault knobs.
 //! - [`tier`] — the facade: `open` / `step_begin` / `request` / `append` /
 //!   `maintain`.

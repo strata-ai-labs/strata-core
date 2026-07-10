@@ -27,7 +27,7 @@ milestone.
 7. `docs/stratahub/docs/architecture/stratahub-v1-protocol-spec.md`
 8. `docs/stratahub/docs/architecture/stratahub-v1-bundle-format.md`
 9. `docs/stratahub/docs/architecture/stratahub-v1-testing-and-ci.md`
-10. `docs/architecture/engine-next/dataset-clone-artifact-contract.md`
+10. `docs/architecture/engine/dataset-clone-artifact-contract.md`
 11. `docs/architecture/stratahub-substrate-architecture.md`
 
 StrataHub product and architecture documents are inputs only so strata-core can

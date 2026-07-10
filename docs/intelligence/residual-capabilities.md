@@ -29,8 +29,8 @@ than from the intelligence loop's outputs.
 
 1. [self-understanding-architecture.md](./self-understanding-architecture.md)
 2. [strata-v1-architecture.md](../architecture/strata-v1-architecture.md)
-3. [intelligence-next-architecture.md](../architecture/intelligence-next-architecture.md)
-4. [inference-next-architecture.md](../architecture/inference-next-architecture.md)
+3. [intelligence-architecture.md](../architecture/intelligence-architecture.md)
+4. [inference-architecture.md](../architecture/inference-architecture.md)
 
 ## The Substrate, Briefly
 

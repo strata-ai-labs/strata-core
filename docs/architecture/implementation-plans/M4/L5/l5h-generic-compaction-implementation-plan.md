@@ -37,7 +37,7 @@ tables are safe to compact and which retention decisions are legal.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l5-table-runtime.md`
+1. `docs/architecture/storage/l5-table-runtime.md`
 2. `docs/architecture/implementation-plans/m4-l5-table-runtime-implementation-plan.md`
 3. `docs/architecture/implementation-plans/m4-l5-table-runtime-test-plan.md`
 4. `docs/architecture/implementation-plans/M4/m4-l5-porting-log.md`

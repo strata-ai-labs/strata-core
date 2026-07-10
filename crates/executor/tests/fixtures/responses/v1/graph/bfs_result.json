@@ -1,0 +1,20 @@
+{
+  "type": "graph_bfs_result",
+  "data": {
+    "graph": "deps",
+    "start": "node-a",
+    "visited": ["node-a", "node-b"],
+    "depths": {
+      "node-a": 0,
+      "node-b": 1
+    },
+    "edges": [
+      {
+        "src": "node-a",
+        "dst": "node-b",
+        "edge_type": "depends_on",
+        "weight": 1.0
+      }
+    ]
+  }
+}

@@ -19,9 +19,9 @@ later L5 slices can add behavior without rediscovering the layer boundary.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l5-table-runtime.md`
-2. `docs/architecture/storage-next/implementation-patterns.md`
-3. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
+1. `docs/architecture/storage/l5-table-runtime.md`
+2. `docs/architecture/storage/implementation-patterns.md`
+3. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
 4. `docs/spec/strata-storage-format-v1.md`
 5. `crates/storage-next/src/table/mod.rs`
 6. `crates/storage-next/src/format/table/`

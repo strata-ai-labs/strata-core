@@ -22,11 +22,11 @@ state, and table object publication remain later slices.
 
 Architecture and spec inputs:
 
-1. `docs/architecture/storage-next/l3-durable-format-codec.md`
-2. `docs/architecture/storage-next/l5-table-runtime.md`
-3. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-4. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
-5. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
+1. `docs/architecture/storage/l3-durable-format-codec.md`
+2. `docs/architecture/storage/l5-table-runtime.md`
+3. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+4. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
+5. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
 6. `docs/architecture/v1-testing-and-conformance-plan.md`
 7. `docs/spec/strata-storage-format-v1.md`
 8. `docs/architecture/implementation-plans/m3-m3t-implementation-plan.md`

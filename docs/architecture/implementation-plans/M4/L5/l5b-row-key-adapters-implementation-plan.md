@@ -29,7 +29,7 @@ L5E, L5F, and L5H build on.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l5-table-runtime.md`
+1. `docs/architecture/storage/l5-table-runtime.md`
 2. `docs/spec/strata-storage-format-v1.md`, especially sections 15, 16, and
    17.
 3. `crates/storage-next/src/row/mod.rs`

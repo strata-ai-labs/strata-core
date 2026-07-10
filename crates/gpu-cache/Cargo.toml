@@ -1,6 +1,6 @@
 [package]
 name = "strata-gpu-cache"
-version = "1.0.0"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
@@ -20,9 +20,9 @@ python = ["dep:pyo3"]
 
 [dependencies]
 pyo3 = { version = "0.23", optional = true }
-# The tier consumes engine-next's public (D4) surface only — a consumer
-# like the executor, never a storage-next importer (design §2).
-strata-engine-next = { path = "../engine-next" }
+# The tier consumes engine's public (D4) surface only — a consumer
+# like the executor, never a storage importer (design §2).
+strata-engine = { path = "../engine" }
 tracing = { workspace = true }
 
 [dev-dependencies]

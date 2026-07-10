@@ -32,15 +32,15 @@ jobs:
       - name: DAG guard
         run: |
           # Guard: engine must not have normal dep on vector or graph
-          if cargo tree --package strata-engine-next --edges=normal --format="{p}" | grep -q strata-vector; then
-            echo "ERROR: strata-engine-next has normal dep on strata-vector" && exit 1
+          if cargo tree --package strata-engine --edges=normal --format="{p}" | grep -q strata-vector; then
+            echo "ERROR: strata-engine has normal dep on strata-vector" && exit 1
           fi
-          if cargo tree --package strata-engine-next --edges=normal --format="{p}" | grep -q strata-graph; then
-            echo "ERROR: strata-engine-next has normal dep on strata-graph" && exit 1
+          if cargo tree --package strata-engine --edges=normal --format="{p}" | grep -q strata-graph; then
+            echo "ERROR: strata-engine has normal dep on strata-graph" && exit 1
           fi
           # Manifest guard: engine must not depend on vector/graph (neither normal nor dev-deps)
-          if grep -qE "^strata-(vector|graph)" crates/engine-next/Cargo.toml; then
-            echo "ERROR: engine-next Cargo.toml must not list strata-vector or strata-graph" && exit 1
+          if grep -qE "^strata-(vector|graph)" crates/engine/Cargo.toml; then
+            echo "ERROR: engine Cargo.toml must not list strata-vector or strata-graph" && exit 1
           fi
 
   test:
@@ -55,11 +55,11 @@ jobs:
         run: cargo test --workspace
       - name: Executor IDL overlay check
         run: |
-          cargo run -p strata-executor-next --features idl-tooling --bin strata-idl -- check
-          cargo run -p strata-executor-next --features idl-tooling --bin strata-idl -- check-cli
-          cargo test -p strata-executor-next --features idl-tooling --test idl_kv_vector_overlay
+          cargo run -p strata-executor --features idl-tooling --bin strata-idl -- check
+          cargo run -p strata-executor --features idl-tooling --bin strata-idl -- check-cli
+          cargo test -p strata-executor --features idl-tooling --test idl_kv_vector_overlay
       - name: Doc tests
-        run: cargo test --workspace --doc --all-features --exclude strata-inference-next
+        run: cargo test --workspace --doc --all-features --exclude strata-inference
 
   feature-matrix:
     needs: check
@@ -72,9 +72,9 @@ jobs:
       - uses: taiki-e/install-action@cargo-hack
       - name: Feature powerset check
         # Local inference depends on a llama.cpp CMake build; exercise it in targeted jobs.
-        run: cargo hack --feature-powerset --depth 2 --exclude-features local check --workspace --exclude strata-inference-next
+        run: cargo hack --feature-powerset --depth 2 --exclude-features local check --workspace --exclude strata-inference
       - name: Per-feature test
-        run: cargo hack --each-feature --exclude-features local test --workspace --exclude strata-inference-next
+        run: cargo hack --each-feature --exclude-features local test --workspace --exclude strata-inference
 
   build:
     needs: test

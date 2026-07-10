@@ -77,8 +77,8 @@ and what old code became eligible for retirement.
 
 ### Current Files Read
 
-- `docs/architecture/storage-next/l5-table-runtime.md`
-- `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
+- `docs/architecture/storage/l5-table-runtime.md`
+- `docs/architecture/storage/target-crate-shape-and-test-harness.md`
 - `docs/architecture/implementation-plans/m4-l5-table-runtime-implementation-plan.md`
 - `docs/architecture/implementation-plans/m4-l5-table-runtime-test-plan.md`
 - `docs/architecture/implementation-plans/M4/l5a-table-runtime-scaffold-implementation-plan.md`
@@ -166,7 +166,7 @@ and what old code became eligible for retirement.
 
 ### Current Files Read
 
-- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/storage/l5-table-runtime.md`
 - `docs/spec/strata-storage-format-v1.md`
 - `docs/architecture/implementation-plans/M4/l5b-row-key-adapters-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/l5b-row-key-adapters-test-plan.md`
@@ -247,7 +247,7 @@ and what old code became eligible for retirement.
 
 ### Current Files Read
 
-- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/storage/l5-table-runtime.md`
 - `docs/architecture/implementation-plans/M4/l5c-mutable-frozen-tables-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/l5c-mutable-frozen-tables-test-plan.md`
 - `crates/storage-next/src/table/key.rs`
@@ -339,7 +339,7 @@ and what old code became eligible for retirement.
 
 ### Current Files Read
 
-- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/storage/l5-table-runtime.md`
 - `docs/architecture/implementation-plans/M4/l5d-raw-cursors-merge-cursor-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/l5d-raw-cursors-merge-cursor-test-plan.md`
 - `crates/storage-next/src/table/key.rs`
@@ -442,7 +442,7 @@ and what old code became eligible for retirement.
 
 ### Current Files Read
 
-- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/storage/l5-table-runtime.md`
 - `docs/spec/strata-storage-format-v1.md`
 - `docs/architecture/implementation-plans/M4/l5e-immutable-table-builder-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/l5e-immutable-table-builder-test-plan.md`
@@ -529,7 +529,7 @@ and what old code became eligible for retirement.
 
 ### Current Files Read
 
-- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/storage/l5-table-runtime.md`
 - `docs/spec/strata-storage-format-v1.md`
 - `docs/architecture/implementation-plans/M4/l5f-immutable-table-reader-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/l5f-immutable-table-reader-test-plan.md`
@@ -617,7 +617,7 @@ and what old code became eligible for retirement.
 
 ### Current Files Read
 
-- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/storage/l5-table-runtime.md`
 - `docs/architecture/implementation-plans/M4/l5g-block-cache-accelerators-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/l5g-block-cache-accelerators-test-plan.md`
 - `crates/storage-next/src/table/cache.rs`
@@ -705,7 +705,7 @@ and what old code became eligible for retirement.
 
 ### Current Files Read
 
-- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/storage/l5-table-runtime.md`
 - `docs/architecture/implementation-plans/M4/l5h-generic-compaction-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/l5h-generic-compaction-test-plan.md`
 - `crates/storage-next/src/table/compaction.rs`
@@ -797,7 +797,7 @@ and what old code became eligible for retirement.
 
 ### Current Files Read
 
-- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/storage/l5-table-runtime.md`
 - `docs/architecture/implementation-plans/M4/l5i-object-backed-table-access-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/l5i-object-backed-table-access-test-plan.md`
 - `crates/storage-next/src/service/table.rs`
@@ -899,7 +899,7 @@ and what old code became eligible for retirement.
 
 ### Current Files Read
 
-- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/storage/l5-table-runtime.md`
 - `docs/architecture/implementation-plans/m4-l5-table-runtime-implementation-plan.md`
 - `docs/architecture/implementation-plans/m4-l5-table-runtime-test-plan.md`
 - `docs/architecture/implementation-plans/M4/l5j-l5-conformance-closeout-implementation-plan.md`
@@ -1039,7 +1039,7 @@ cd crates/storage-next/fuzz && cargo +nightly fuzz run table_runtime_compaction 
 
 - `docs/architecture/implementation-plans/M4P/m4p-l5-table-runtime-parity-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4P/m4p-l5-table-runtime-parity-test-plan.md`
-- `docs/architecture/storage-next/l5-table-runtime.md`
+- `docs/architecture/storage/l5-table-runtime.md`
 - `crates/storage-next/src/table/`
 - `crates/storage-next/src/service/table.rs`
 - `crates/storage-next/src/testkit/table_runtime.rs`

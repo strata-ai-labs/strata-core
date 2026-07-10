@@ -9,7 +9,7 @@ on it.
 
 ## Inputs
 
-1. `docs/architecture/inference-next-architecture.md`
+1. `docs/architecture/inference-architecture.md`
 2. `docs/architecture/v1-error-and-diagnostics-contract.md`
 3. `docs/architecture/runtime-resource-profile-architecture.md`
 4. `docs/architecture/v1-engineering-standards.md`

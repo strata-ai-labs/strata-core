@@ -11,13 +11,13 @@
 //! database would hand later points a larger dataset and background-maintenance debt).
 //!
 //! Usage:
-//!   cargo run --release --bin storage-next-concurrent-writers -- \
+//!   cargo run --release --bin storage-concurrent-writers -- \
 //!     [--engines cache,standard,always] [--branches shared|per-writer] [--readers M]
 //!     [--batch-size N] [--value-bytes N] [--window-secs S] [--threads 1,2,4,8]
 //!
 //! Output: CSV `engine,branches,threads,readers,total_ops,ops_per_sec,min_thread_ops,
 //! max_thread_ops` on stdout (one row per point), plus a `BenchmarkReport` JSON under
-//! `benchmarks/results/storage-next-concurrent-writers/`.
+//! `benchmarks/results/storage-concurrent-writers/`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,7 +28,7 @@ use strata_benchmarks::harness::{read_cpu_model, read_total_ram_gb};
 use strata_benchmarks::schema::{
     BenchmarkMetrics, BenchmarkReport, BenchmarkResult, HardwareInfo, RunMetadata,
 };
-use strata_storage_next::api::{
+use strata_storage::api::{
     BranchAction, BranchGeneration, BranchId, BranchRequest, CommitBatch, CommitMutation,
     CommitOptions, PointReadRequest, ReadBound, StorageApiErrorClass, StorageDurabilityPolicy,
     StorageKey, StorageRuntime, StorageSpaceId, StorageValue,
@@ -129,7 +129,7 @@ fn parse_config() -> Result<Config, String> {
         window: DEFAULT_WINDOW,
         root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join(".benchmark")
-            .join("storage-next-concurrent-writers"),
+            .join("storage-concurrent-writers"),
         perf_breakdown: false,
     };
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -291,7 +291,7 @@ fn run_point(config: &Config, engine: Engine, mode: BranchMode, writers: usize) 
         seed_reader_keys(&runtime, config.value_bytes);
     }
     if config.perf_breakdown {
-        strata_storage_next::perf_trace::reset();
+        strata_storage::perf_trace::reset();
     }
 
     let stop = AtomicBool::new(false);
@@ -383,7 +383,7 @@ fn run_point(config: &Config, engine: Engine, mode: BranchMode, writers: usize) 
 
     let total_ops: u64 = per_writer_ops.iter().sum();
     if config.perf_breakdown && total_ops > 0 {
-        let perf = strata_storage_next::perf_trace::snapshot();
+        let perf = strata_storage::perf_trace::snapshot();
         let per = |ns: u64| ns as f64 / total_ops as f64 / 1_000.0;
         eprintln!(
             "[breakdown {} {}T] per-commit us: api_map={:.1} api_clone={:.1} admit={:.1} \
@@ -510,12 +510,12 @@ fn main() {
                 parameters.insert("stalls".to_string(), serde_json::json!(outcome.stalls));
                 results.push(BenchmarkResult {
                     benchmark: format!(
-                        "storage-next-concurrent-writers/{}-{}-t{}",
+                        "storage-concurrent-writers/{}-{}-t{}",
                         engine.name(),
                         mode.name(),
                         writers
                     ),
-                    category: "storage-next-concurrent-writers".to_string(),
+                    category: "storage-concurrent-writers".to_string(),
                     parameters,
                     metrics: BenchmarkMetrics {
                         ops_per_sec: Some(outcome.ops_per_sec),
@@ -561,7 +561,7 @@ fn run_metadata() -> RunMetadata {
 fn save_report(report: &BenchmarkReport) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("results")
-        .join("storage-next-concurrent-writers");
+        .join("storage-concurrent-writers");
     std::fs::create_dir_all(&dir)?;
     let commit = report
         .metadata
@@ -571,7 +571,7 @@ fn save_report(report: &BenchmarkReport) -> Result<PathBuf, Box<dyn std::error::
         .to_string();
     let timestamp = report.metadata.timestamp.replace(':', "-");
     let path = dir.join(format!(
-        "storage-next-concurrent-writers-{timestamp}-{commit}.json"
+        "storage-concurrent-writers-{timestamp}-{commit}.json"
     ));
     std::fs::write(&path, serde_json::to_string_pretty(report)?)?;
     Ok(path)

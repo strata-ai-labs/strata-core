@@ -1,0 +1,47 @@
+# Storage-Next Fuzz Targets
+
+This directory contains the storage cargo-fuzz package.
+
+The first targets exercise the current durable byte decoders through the hidden
+`testkit` surface. They are fail-closed parser fuzzers: arbitrary bytes may
+decode or reject, but they must not panic, allocate without decoder limits, or
+accept malformed checksums as valid. Service targets route generated operation
+scripts through hidden L4 testkit harnesses and assert model invariants after
+each step.
+
+Useful local commands:
+
+```bash
+cargo install cargo-fuzz --locked
+cargo +nightly fuzz run format_manifest
+cargo +nightly fuzz run format_branch_catalog_manifest
+cargo +nightly fuzz run format_pending_releases_manifest
+cargo +nightly fuzz run format_quarantine
+cargo +nightly fuzz run format_retained_history_extension
+cargo +nightly fuzz run format_snapshot_envelope
+cargo +nightly fuzz run format_snapshot_row_payload
+cargo +nightly fuzz run format_storage_row
+cargo +nightly fuzz run format_table_artifact
+cargo +nightly fuzz run format_table_block
+cargo +nightly fuzz run format_table_manifest
+cargo +nightly fuzz run table_runtime_reader
+cargo +nightly fuzz run table_runtime_cursor
+cargo +nightly fuzz run table_runtime_compaction
+cargo +nightly fuzz run format_wal_commit_payload
+cargo +nightly fuzz run format_wal_record
+cargo +nightly fuzz run service_quarantine
+cargo +nightly fuzz run service_snapshot
+```
+
+L5 table-runtime behavior is covered by the normal `table_runtime_properties`
+proptest route, the `table_runtime_reader` arbitrary-byte open target, the
+`table_runtime_cursor` generated operation-script target, the
+`table_runtime_compaction` generated source/policy-script target, and the
+`format_table_artifact` and `format_table_block` byte fuzzers.
+
+The fuzz package uses `default-features = false` so parser fuzzing also covers
+the memory/cache-compatible build surface. Format targets should stay named for
+the byte-oriented durable input they fuzz, such as `object_name_parse`,
+`format_table_block`, `format_timeline_row`, and `recovery_object_inventory`.
+Service targets should stay named for the service family they script, such as
+`service_snapshot` and `service_quarantine`.

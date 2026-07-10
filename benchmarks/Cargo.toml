@@ -12,8 +12,8 @@ default = []
 rocksdb-compare = ["dep:rocksdb"]
 
 [dependencies]
-strata-engine-next = { path = "../crates/engine-next", features = ["testkit"] }
-strata-storage-next = { path = "../crates/storage-next", features = ["perf-trace"] }
+strata-engine = { path = "../crates/engine", features = ["testkit"] }
+strata-storage = { path = "../crates/storage", features = ["perf-trace"] }
 serde = { version = "1.0", features = ["derive"] }
 # The old root `stratadb` package (a bench dependency until the V1 cutover)
 # installed jemalloc as the global allocator, so every recorded benchmark
@@ -43,19 +43,19 @@ name = "bench-compare"
 path = "src/bin/compare.rs"
 
 [[bin]]
-name = "storage-next-l9-scale"
+name = "storage-l9-scale"
 path = "src/bin/storage_next_l9_scale.rs"
 
 [[bin]]
-name = "storage-next-point-spike"
+name = "storage-point-spike"
 path = "src/bin/storage_next_point_spike.rs"
 
 [[bin]]
-name = "storage-next-concurrent-writers"
+name = "storage-concurrent-writers"
 path = "src/bin/storage_next_concurrent_writers.rs"
 
 [[bin]]
-name = "storage-next-concurrent-reads"
+name = "storage-concurrent-reads"
 path = "src/bin/storage_next_concurrent_reads.rs"
 
 [[bin]]
@@ -84,11 +84,11 @@ name = "engine-vector-indexing"
 path = "src/bin/engine_vector_indexing.rs"
 
 [[bin]]
-name = "storage-next-after-version-scan"
+name = "storage-after-version-scan"
 path = "src/bin/storage_next_after_version_scan.rs"
 
 [[bin]]
-name = "storage-next-l0-compact"
+name = "storage-l0-compact"
 path = "src/bin/storage_next_l0_compact.rs"
 
 [profile.bench]

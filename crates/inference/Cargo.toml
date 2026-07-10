@@ -1,0 +1,36 @@
+[package]
+name = "strata-inference"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Inference runtime for Strata model execution"
+
+[lints]
+workspace = true
+
+[features]
+default = ["anthropic", "openai", "google"]
+local = ["dep:cmake"]
+download = ["dep:ureq", "dep:sha2"]
+anthropic = ["dep:ureq", "dep:serde_json"]
+openai = ["dep:ureq", "dep:serde_json"]
+google = ["dep:ureq", "dep:serde_json"]
+testkit = []
+
+[build-dependencies]
+cmake = { version = "0.1", optional = true }
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+tracing = { workspace = true }
+ureq = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }

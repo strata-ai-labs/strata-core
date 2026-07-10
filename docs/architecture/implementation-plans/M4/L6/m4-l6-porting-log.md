@@ -1493,7 +1493,7 @@ deferred, and what old code became eligible for retirement.
 - `crates/storage-next/src/row/mod.rs`
 - `crates/storage-next/src/table/{builder.rs,reader.rs,key.rs,facts.rs}`
 - `crates/storage-next/src/branch/{state.rs,read.rs,facts.rs,error.rs}`
-- `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
+- `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
 - `docs/architecture/implementation-plans/M4/L6/l6k-snapshot-row-install-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/L6/l6k-snapshot-row-install-test-plan.md`
 

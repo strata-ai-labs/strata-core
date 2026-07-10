@@ -9,11 +9,11 @@ depend on them.
 
 ## Inputs
 
-1. `docs/architecture/storage-next-architecture.md`
-2. `docs/architecture/storage-next/l1-backend-io.md`
-3. `docs/architecture/storage-next/l2-object-layout.md`
-4. `docs/architecture/storage-next/l3-durable-format-codec.md`
-5. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
+1. `docs/architecture/storage-architecture.md`
+2. `docs/architecture/storage/l1-backend-io.md`
+3. `docs/architecture/storage/l2-object-layout.md`
+4. `docs/architecture/storage/l3-durable-format-codec.md`
+5. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
 6. `docs/spec/strata-storage-format-v1.md`
 7. `docs/architecture/implementation-plans/m3-porting-log.md`
 

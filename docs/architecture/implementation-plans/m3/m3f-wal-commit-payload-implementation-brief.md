@@ -28,9 +28,9 @@ record.
 
 Architecture and format inputs:
 
-1. `docs/architecture/storage-next/l3-durable-format-codec.md`
-2. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-3. `docs/architecture/storage-next/l7-commit-runtime.md`
+1. `docs/architecture/storage/l3-durable-format-codec.md`
+2. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+3. `docs/architecture/storage/l7-commit-runtime.md`
 4. `docs/spec/strata-storage-format-v1.md`
 5. `docs/architecture/implementation-plans/m3-m3t-implementation-plan.md`
 6. `docs/architecture/implementation-plans/m3e2-wal-service-implementation-brief.md`

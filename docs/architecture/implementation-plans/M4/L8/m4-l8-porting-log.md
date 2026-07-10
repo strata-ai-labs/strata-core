@@ -39,7 +39,7 @@ Status: implemented
 - `crates/storage-next/tests/commit_runtime_properties.rs`
 - `crates/storage-next/tests/commit_runtime_source_guard.rs`
 - `crates/storage-next/tests/common/mod.rs`
-- `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+- `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 - `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-implementation-plan.md`
 - `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-test-plan.md`
 - `docs/architecture/implementation-plans/M4/L8/l8a-lifecycle-scaffold-implementation-plan.md`
@@ -1919,7 +1919,7 @@ Status: implemented
 - `crates/storage-next/src/testkit/lifecycle/mod.rs`
 - `crates/storage-next/tests/lifecycle_properties.rs`
 - `crates/storage-next/tests/lifecycle_source_guard.rs`
-- `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+- `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 - `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-implementation-plan.md`
 - `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-test-plan.md`
 - `docs/architecture/implementation-plans/M4/L8/l8b-lifecycle-state-open-plan-implementation-plan.md`
@@ -2167,7 +2167,7 @@ Status: implemented
 - `crates/storage-next/src/backend/memory.rs`
 - `crates/engine/src/database/recovery.rs`
 - `crates/engine/src/database/lifecycle.rs`
-- `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+- `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 - `docs/architecture/implementation-plans/M4/L8/l8d-cache-open-close-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/L8/l8d-cache-open-close-test-plan.md`
 
@@ -2308,7 +2308,7 @@ Status: implemented
 - `crates/engine/src/database/open.rs`
 - `crates/engine/src/database/recovery.rs`
 - `crates/engine/src/database/lifecycle.rs`
-- `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+- `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 - `docs/architecture/implementation-plans/M4/L8/l8e-durable-open-create-service-assembly-implementation-plan.md`
 - `docs/architecture/implementation-plans/M4/L8/l8e-durable-open-create-service-assembly-test-plan.md`
 
@@ -2779,7 +2779,7 @@ Status: implemented
 
 ### Source Evidence Read
 
-- `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+- `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 - `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-implementation-plan.md`
 - `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-test-plan.md`
 - `docs/architecture/implementation-plans/M4/L8/l8h-maintenance-task-executor-implementation-plan.md`

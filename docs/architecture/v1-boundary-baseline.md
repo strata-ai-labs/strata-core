@@ -10,11 +10,11 @@ implementation starts. It is evidence, not target architecture.
 The target architecture remains defined by:
 
 1. `docs/architecture/strata-v1-architecture.md`
-2. `docs/architecture/core-next-architecture.md`
-3. `docs/architecture/storage-next-architecture.md`
-4. `docs/architecture/engine-next-architecture.md`
-5. `docs/architecture/inference-next-architecture.md`
-6. `docs/architecture/intelligence-next-architecture.md`
+2. `docs/architecture/core-architecture.md`
+3. `docs/architecture/storage-architecture.md`
+4. `docs/architecture/engine-architecture.md`
+5. `docs/architecture/inference-architecture.md`
+6. `docs/architecture/intelligence-architecture.md`
 
 ## Baseline Provenance
 
@@ -206,7 +206,7 @@ Current `strata-core` still exports product-shaped types:
 8. `BranchName`
 9. `TxnId`
 
-Target ownership is defined by `docs/architecture/core-next-architecture.md`:
+Target ownership is defined by `docs/architecture/core-architecture.md`:
 
 - core keeps only true shared atoms such as `BranchId`, `CommitVersion`, and the
   timestamp representation;

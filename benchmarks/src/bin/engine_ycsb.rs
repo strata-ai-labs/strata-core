@@ -1,6 +1,6 @@
-//! YCSB benchmark for the engine-next KV surface.
+//! YCSB benchmark for the engine KV surface.
 //!
-//! Runs the standard YCSB workloads A-F through the public `strata_engine_next`
+//! Runs the standard YCSB workloads A-F through the public `strata_engine`
 //! `Database`/`KvService` API with a proper load phase + run phase, the standard
 //! Zipfian/Uniform/Latest request distributions, and per-operation-type latency
 //! percentiles. Workload/distribution generators are shared with the
@@ -24,7 +24,7 @@ use std::process;
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
-use strata_engine_next::{
+use strata_engine::{
     BranchName, CacheOpenOptions, CachePreheat, Database, DurableLocalOpenOptions, EngineResult,
     KvKey, KvValue, ProductSpace,
 };
@@ -201,7 +201,7 @@ fn run_workload(
     // Run phase: weighted operation mix over the chosen request distribution.
     if config.perf_breakdown {
         print_jemalloc_split("post-load");
-        strata_storage_next::perf_trace::reset();
+        strata_storage::perf_trace::reset();
     }
     // C3a (P4): thread-local jemalloc allocation delta across the
     // single-threaded run loop — the per-item gate for the C3b strip.
@@ -222,7 +222,7 @@ fn run_workload(
     // lock wait and from background maintenance lock holds — the numbers that
     // explain durable tail latency.
     if config.perf_breakdown && mode == BenchMode::Durable {
-        let perf = strata_storage_next::perf_trace::snapshot();
+        let perf = strata_storage::perf_trace::snapshot();
         eprintln!(
             "  [probe] admission: evals={} clean={} pressure_accepts={} urgent={} pressure_rejects={} retryable_rejects={} wait_attempts={} wait_timeouts={} block_wait_ms={:.1}",
             perf.lifecycle_write_admission_evaluations(),
@@ -420,7 +420,7 @@ fn thread_allocated_bytes() -> Option<u64> {
 }
 
 fn print_preheat_probe(label: &str) {
-    let perf = strata_storage_next::perf_trace::snapshot();
+    let perf = strata_storage::perf_trace::snapshot();
     eprintln!(
         "  [probe] preheat {label}: passes={} admitted={} present={} full={} read_mb={:.1} deferred={} last_pass_blocks={} cache_gb={:.2}/{:.2}",
         perf.table_preheat_passes(),

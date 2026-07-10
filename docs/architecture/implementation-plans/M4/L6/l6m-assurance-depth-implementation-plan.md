@@ -36,10 +36,10 @@ L6M must answer these questions:
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-2. `docs/architecture/storage-next/l5-table-runtime.md`
-3. `docs/architecture/storage-next/commit-timeline-substrate.md`
-4. `docs/architecture/storage-next/implementation-patterns.md`
+1. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+2. `docs/architecture/storage/l5-table-runtime.md`
+3. `docs/architecture/storage/commit-timeline-substrate.md`
+4. `docs/architecture/storage/implementation-patterns.md`
 5. `docs/architecture/implementation-plans/m4-l6-branch-lsm-runtime-test-plan.md`
 6. `docs/architecture/implementation-plans/M4/L6/l6l-l6-conformance-closeout-test-plan.md`
 7. `crates/storage-next/src/branch/`

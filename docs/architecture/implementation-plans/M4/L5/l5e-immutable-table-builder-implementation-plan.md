@@ -32,7 +32,7 @@ L5E is deliberately an adapter over the M3G format implementation:
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l5-table-runtime.md`
+1. `docs/architecture/storage/l5-table-runtime.md`
 2. `docs/spec/strata-storage-format-v1.md`
 3. `docs/architecture/implementation-plans/m4-l5-table-runtime-test-plan.md`
 4. `docs/architecture/implementation-plans/M4/l5b-row-key-adapters-implementation-plan.md`

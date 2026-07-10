@@ -9,7 +9,7 @@ cross-layer atoms that genuinely belong below both storage-next and engine-next.
 
 ## Inputs
 
-1. `docs/architecture/core-next-architecture.md`
+1. `docs/architecture/core-architecture.md`
 2. `docs/architecture/strata-v1-implementation-roadmap.md`
 3. `docs/architecture/v1-engineering-standards.md`
 

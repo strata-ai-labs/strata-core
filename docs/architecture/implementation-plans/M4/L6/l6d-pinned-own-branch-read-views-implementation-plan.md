@@ -36,7 +36,7 @@ centralizing own-branch read-view mechanics and row-chain selection.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
+1. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
 2. `docs/architecture/implementation-plans/m4-l6-branch-lsm-runtime-implementation-plan.md`
 3. `docs/architecture/implementation-plans/m4-l6-branch-lsm-runtime-test-plan.md`
 4. `docs/architecture/implementation-plans/M4/L6/l6a-branch-runtime-scaffold-implementation-plan.md`

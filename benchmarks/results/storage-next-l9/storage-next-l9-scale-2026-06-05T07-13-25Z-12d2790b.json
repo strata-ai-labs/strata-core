@@ -3,7 +3,7 @@
   "metadata": {
     "timestamp": "2026-06-05T07:13:25Z",
     "git_commit": "12d2790b",
-    "git_branch": "perf/storage-next-traces-fixes",
+    "git_branch": "perf/storage-traces-fixes",
     "git_dirty": true,
     "sdk": "rust",
     "sdk_version": "0.1.0",
@@ -17,8 +17,8 @@
   },
   "results": [
     {
-      "benchmark": "storage-next-l9/load-seq",
-      "category": "storage-next-l9-scale",
+      "benchmark": "storage-l9/load-seq",
+      "category": "storage-l9-scale",
       "parameters": {
         "branch_samples": 100,
         "engine": "cache",
@@ -90,8 +90,8 @@
       }
     },
     {
-      "benchmark": "storage-next-l9/point-latest",
-      "category": "storage-next-l9-scale",
+      "benchmark": "storage-l9/point-latest",
+      "category": "storage-l9-scale",
       "parameters": {
         "scan_limit": 64,
         "engine": "cache",
@@ -161,8 +161,8 @@
       }
     },
     {
-      "benchmark": "storage-next-l9/point-latest-throughput",
-      "category": "storage-next-l9-scale",
+      "benchmark": "storage-l9/point-latest-throughput",
+      "category": "storage-l9-scale",
       "parameters": {
         "value_bytes": 64,
         "flush_every": 100000,
@@ -227,8 +227,8 @@
       }
     },
     {
-      "benchmark": "storage-next-l9/scan-prefix",
-      "category": "storage-next-l9-scale",
+      "benchmark": "storage-l9/scan-prefix",
+      "category": "storage-l9-scale",
       "parameters": {
         "value_bytes": 64,
         "batch_size": 1000,
@@ -298,8 +298,8 @@
       }
     },
     {
-      "benchmark": "storage-next-l9/scan-range-throughput",
-      "category": "storage-next-l9-scale",
+      "benchmark": "storage-l9/scan-range-throughput",
+      "category": "storage-l9-scale",
       "parameters": {
         "flush_every": 100000,
         "branch_samples": 100,

@@ -29,11 +29,11 @@ Read this with:
 1. `docs/product/strata-v1-product-requirements.md`
 2. `docs/product/strata-v1-non-functional-requirements.md`
 3. `docs/architecture/strata-v1-architecture.md`
-4. `docs/architecture/storage-next-architecture.md`
-5. `docs/architecture/storage-next/l5-table-runtime.md`
-6. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
-7. `docs/architecture/storage-next/l9-storage-api-boundary.md`
-8. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
+4. `docs/architecture/storage-architecture.md`
+5. `docs/architecture/storage/l5-table-runtime.md`
+6. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
+7. `docs/architecture/storage/l9-storage-api-boundary.md`
+8. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
 
 The current implementation evidence is in:
 

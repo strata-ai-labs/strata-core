@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{json, Value};
-use strata_engine_next::testkit::{VectorIndexDiagnostics, VectorIndexPolicy};
-use strata_engine_next::{
+use strata_engine::testkit::{VectorIndexDiagnostics, VectorIndexPolicy};
+use strata_engine::{
     BranchName, CacheOpenOptions, Database, DatabaseOpenOutcome, DurableLocalOpenOptions,
     EngineResult, ProductSpace, VectorCollectionName, VectorConfig, VectorDistanceMetric,
     VectorEmbedding, VectorKey, VectorMetadata, VectorMetadataPatch, VectorSearchResult,
@@ -94,7 +94,7 @@ impl BenchConfig {
                 }
                 "--workload" => {
                     let Some(value) = args.next() else {
-                        return Err(strata_engine_next::EngineError::invalid_input(
+                        return Err(strata_engine::EngineError::invalid_input(
                             "invalid_argument.benchmark.workload",
                             "--workload requires all, exact, flat, hnsw, write, mutation, branch, or reopen",
                         ));
@@ -106,13 +106,13 @@ impl BenchConfig {
                         Some("cache") => OpenMode::Cache,
                         Some("durable") => OpenMode::Durable,
                         Some(value) => {
-                            return Err(strata_engine_next::EngineError::invalid_input(
+                            return Err(strata_engine::EngineError::invalid_input(
                                 "invalid_argument.benchmark.mode",
                                 format!("unknown mode `{value}`, expected cache or durable"),
                             ));
                         }
                         None => {
-                            return Err(strata_engine_next::EngineError::invalid_input(
+                            return Err(strata_engine::EngineError::invalid_input(
                                 "invalid_argument.benchmark.mode",
                                 "--mode requires cache or durable",
                             ));
@@ -121,7 +121,7 @@ impl BenchConfig {
                 }
                 "--metric" => {
                     let Some(value) = args.next() else {
-                        return Err(strata_engine_next::EngineError::invalid_input(
+                        return Err(strata_engine::EngineError::invalid_input(
                             "invalid_argument.benchmark.metric",
                             "--metric requires cosine, euclidean, dot_product, or all",
                         ));
@@ -130,7 +130,7 @@ impl BenchConfig {
                 }
                 "--path" => {
                     let Some(path) = args.next() else {
-                        return Err(strata_engine_next::EngineError::invalid_input(
+                        return Err(strata_engine::EngineError::invalid_input(
                             "invalid_argument.benchmark.path",
                             "--path requires a filesystem path",
                         ));
@@ -143,7 +143,7 @@ impl BenchConfig {
                     std::process::exit(0);
                 }
                 value => {
-                    return Err(strata_engine_next::EngineError::invalid_input(
+                    return Err(strata_engine::EngineError::invalid_input(
                         "invalid_argument.benchmark.arg",
                         format!("unknown argument `{value}`"),
                     ));
@@ -151,13 +151,13 @@ impl BenchConfig {
             }
         }
         if config.collection_size == 0 || config.dimension == 0 || config.k == 0 {
-            return Err(strata_engine_next::EngineError::invalid_input(
+            return Err(strata_engine::EngineError::invalid_input(
                 "invalid_argument.benchmark.config",
                 "records, dimension, and k must be greater than zero",
             ));
         }
         if config.query_samples == 0 || config.batch_size == 0 {
-            return Err(strata_engine_next::EngineError::invalid_input(
+            return Err(strata_engine::EngineError::invalid_input(
                 "invalid_argument.benchmark.config",
                 "samples and batch size must be greater than zero",
             ));
@@ -231,7 +231,7 @@ impl MetricSelection {
             "euclidean" => Ok(Self::Euclidean),
             "dot" | "dot_product" => Ok(Self::DotProduct),
             "all" => Ok(Self::All),
-            _ => Err(strata_engine_next::EngineError::invalid_input(
+            _ => Err(strata_engine::EngineError::invalid_input(
                 "invalid_argument.benchmark.metric",
                 format!(
                     "unknown metric `{value}`, expected cosine, euclidean, dot_product, or all"
@@ -302,7 +302,7 @@ impl WorkloadSelection {
             "mutation" => Ok(Self::Mutation),
             "branch" => Ok(Self::Branch),
             "reopen" => Ok(Self::Reopen),
-            _ => Err(strata_engine_next::EngineError::invalid_input(
+            _ => Err(strata_engine::EngineError::invalid_input(
                 "invalid_argument.benchmark.workload",
                 format!(
                     "unknown workload `{value}`, expected all, exact, flat, hnsw, write, mutation, branch, or reopen"
@@ -863,7 +863,7 @@ fn measure_query_policy_on_branch(
         if &actual != expected {
             exact_mismatch_count = exact_mismatch_count.saturating_add(1);
             if exact_match_required {
-                return Err(strata_engine_next::EngineError::incompatible_layout(
+                return Err(strata_engine::EngineError::incompatible_layout(
                     "failed_precondition.benchmark.vector_index_exact_match",
                     format!(
                         "{workload} result diverged from exact query sample {query_index}: expected={expected:?} actual={actual:?}"
@@ -1187,7 +1187,7 @@ fn metadata(value: Value) -> EngineResult<VectorMetadata> {
 fn vector_service<'a>(
     database: &'a mut Database,
     branch_name: &str,
-) -> EngineResult<strata_engine_next::VectorService<'a>> {
+) -> EngineResult<strata_engine::VectorService<'a>> {
     database.vector(branch(branch_name)?, ProductSpace::new("default")?)
 }
 
@@ -1281,21 +1281,21 @@ fn percentile_index(len: usize, percentile: usize) -> usize {
 
 fn parse_usize_arg(name: &str, value: Option<String>) -> EngineResult<usize> {
     let Some(value) = value else {
-        return Err(strata_engine_next::EngineError::invalid_input(
+        return Err(strata_engine::EngineError::invalid_input(
             "invalid_argument.benchmark.arg",
             format!("{name} requires a numeric value"),
         ));
     };
     value.parse::<usize>().map_err(|error| {
-        strata_engine_next::EngineError::invalid_input(
+        strata_engine::EngineError::invalid_input(
             "invalid_argument.benchmark.arg",
             format!("{name} must be a positive integer: {error}"),
         )
     })
 }
 
-fn io_engine_error(error: std::io::Error) -> strata_engine_next::EngineError {
-    strata_engine_next::EngineError::invalid_input(
+fn io_engine_error(error: std::io::Error) -> strata_engine::EngineError {
+    strata_engine::EngineError::invalid_input(
         "io.benchmark.tempdir",
         format!("benchmark filesystem setup failed: {error}"),
     )

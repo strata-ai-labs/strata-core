@@ -1,0 +1,103 @@
+# strata-core public API snapshot
+# This file is checked by tests/public_api_snapshot.rs.
+crate strata_core
+
+module lib
+pub use branch::{BranchId, BranchIdError}
+pub use time::{ParseTimestampError, Timestamp}
+pub use version::{CommitVersion, ParseCommitVersionError}
+
+module branch
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct BranchId([u8; Self::BYTE_LEN]);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BranchIdError {
+  InvalidLength {
+  expected: usize,
+  actual: usize,
+  },
+  InvalidText,
+}
+impl BranchId
+  pub const BYTE_LEN: usize = 16;
+  #[must_use]
+  pub const fn from_bytes(bytes: [u8; Self::BYTE_LEN]) -> Self
+  pub fn try_from_slice(bytes: &[u8]) -> Result<Self, BranchIdError>
+  #[must_use]
+  pub const fn as_bytes(&self) -> &[u8; Self::BYTE_LEN]
+  pub fn parse_str(text: &str) -> Result<Self, BranchIdError>
+impl TryFrom<&[u8]> for BranchId
+  type Error = BranchIdError;
+impl fmt::Display for BranchId
+impl FromStr for BranchId
+  type Err = BranchIdError;
+impl Serialize for BranchId
+impl<'de> Deserialize<'de> for BranchId
+impl fmt::Display for BranchIdError
+impl std::error::Error for BranchIdError
+
+module time
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct Timestamp(u64);
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct ParseTimestampError {
+  private source: Option<ParseIntError>,
+}
+impl Timestamp
+  pub const EPOCH: Self = Self(0);
+  pub const MAX: Self = Self(u64::MAX);
+  #[must_use]
+  pub const fn from_micros(micros: u64) -> Self
+  #[must_use]
+  pub const fn from_millis(millis: u64) -> Self
+  #[must_use]
+  pub const fn from_secs(secs: u64) -> Self
+  #[must_use]
+  pub fn from_duration_since_epoch(duration: Duration) -> Self
+  #[must_use]
+  pub const fn as_micros(self) -> u64
+  #[must_use]
+  pub const fn as_millis(self) -> u64
+  #[must_use]
+  pub const fn as_secs(self) -> u64
+  #[must_use]
+  pub const fn duration_since(self, earlier: Self) -> Option<Duration>
+  #[must_use]
+  pub fn saturating_add(self, duration: Duration) -> Self
+  #[must_use]
+  pub fn saturating_sub(self, duration: Duration) -> Self
+impl fmt::Display for Timestamp
+impl FromStr for Timestamp
+  type Err = ParseTimestampError;
+impl fmt::Display for ParseTimestampError
+impl std::error::Error for ParseTimestampError
+
+module version
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[repr(transparent)]
+#[serde(transparent)]
+pub struct CommitVersion(u64);
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct ParseCommitVersionError {
+  private source: Option<ParseIntError>,
+}
+impl CommitVersion
+  pub const ZERO: Self = Self(0);
+  pub const MAX: Self = Self(u64::MAX);
+  #[must_use]
+  pub const fn new(raw: u64) -> Self
+  #[must_use]
+  pub const fn as_u64(self) -> u64
+  #[must_use]
+  pub const fn checked_next(self) -> Option<Self>
+impl fmt::Display for CommitVersion
+impl FromStr for CommitVersion
+  type Err = ParseCommitVersionError;
+impl fmt::Display for ParseCommitVersionError
+impl std::error::Error for ParseCommitVersionError

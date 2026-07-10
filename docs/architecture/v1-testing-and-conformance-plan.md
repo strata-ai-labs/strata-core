@@ -19,9 +19,9 @@ shared map.
 ## Related Documents
 
 1. `docs/architecture/strata-v1-architecture.md`
-2. `docs/architecture/storage-next-architecture.md`
-3. `docs/architecture/storage-next/README.md`
-4. `docs/architecture/storage-next/implementation-patterns.md`
+2. `docs/architecture/storage-architecture.md`
+3. `docs/architecture/storage/README.md`
+4. `docs/architecture/storage/implementation-patterns.md`
 5. `docs/architecture/v1-error-and-diagnostics-contract.md`
 6. `docs/architecture/runtime-resource-profile-architecture.md`
 7. `docs/product/strata-v1-non-functional-requirements.md`

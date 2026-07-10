@@ -25,8 +25,8 @@ facts in a monotonic way, without yet performing a mutating commit.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/commit-timeline-substrate.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/commit-timeline-substrate.md`
 3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 5. `docs/architecture/implementation-plans/M4/L7/l7b-commit-batch-mutation-model-implementation-plan.md`

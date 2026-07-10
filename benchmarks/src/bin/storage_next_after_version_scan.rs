@@ -12,7 +12,7 @@
 //!
 //! It reports latency percentiles, rows returned, and the number of sealed tables opened per arm.
 //! `tables_opened == 0` in the skip arm is the direct proof of the optimization. Storage-layer only:
-//! it exercises the public `strata_storage_next::api` surface.
+//! it exercises the public `strata_storage::api` surface.
 
 // Link the benchmark lib for its #[global_allocator] (jemalloc): a bin that
 // never references the lib does NOT link it, silently running on glibc
@@ -25,13 +25,13 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use strata_storage_next::api::{
+use strata_storage::api::{
     BranchAction, BranchId, BranchRequest, BranchStatus, CommitBatch, CommitMutation,
     CommitOptions, CommitVersion, MaintenanceRequest, MaintenanceScope, MaintenanceSummaryStatus,
     MaintenanceTask, PrefixScanReadRequest, ReadBound, StorageApiResult, StorageDurabilityPolicy,
     StorageKey, StorageRuntime, StorageSpaceId, StorageValue,
 };
-use strata_storage_next::perf_trace;
+use strata_storage::perf_trace;
 use tempfile::TempDir;
 
 const DEFAULT_BRANCH_ID: BranchId = BranchId::from_bytes([0x01; BranchId::BYTE_LEN]);
@@ -95,7 +95,7 @@ fn parse_usize(flag: &str, value: Option<String>) -> BenchResult<usize> {
 
 fn print_help() {
     eprintln!(
-        "storage-next-after-version-scan\n\n\
+        "storage-after-version-scan\n\n\
          Durable benchmark for the after_version table-level I/O skip.\n\n\
          Options:\n  \
          --records N       bulk rows sealed into the LSM (default {DEFAULT_RECORDS})\n  \
@@ -135,7 +135,7 @@ fn run(config: &Config) -> BenchResult<()> {
         }
     };
 
-    eprintln!("storage-next after_version table-skip benchmark");
+    eprintln!("storage after_version table-skip benchmark");
     eprintln!(
         "records={} delta={} samples={} batch={} flush_every={}",
         config.records, config.delta, config.samples, config.batch, config.flush_every
@@ -369,7 +369,7 @@ fn print_arm(label: &str, arm: &ArmResult) {
 
 fn json_report(config: &Config, baseline: &ArmResult, skipped: &ArmResult) -> String {
     format!(
-        "{{\"benchmark\":\"storage-next-after-version-scan\",\"records\":{},\"delta\":{},\"samples\":{},\
+        "{{\"benchmark\":\"storage-after-version-scan\",\"records\":{},\"delta\":{},\"samples\":{},\
          \"baseline\":{},\"skip\":{}}}",
         config.records,
         config.delta,

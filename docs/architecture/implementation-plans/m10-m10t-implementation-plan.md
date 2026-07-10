@@ -10,9 +10,9 @@ architecture to users.
 ## Inputs
 
 1. `docs/architecture/strata-v1-implementation-roadmap.md`
-2. `docs/architecture/engine-next/public-api-and-cli-surface-cleanup-checklist.md`
-3. `docs/architecture/engine-next/ipc-and-command-boundary-contract.md`
-4. `docs/architecture/engine-next/dataset-clone-artifact-contract.md`
+2. `docs/architecture/engine/public-api-and-cli-surface-cleanup-checklist.md`
+3. `docs/architecture/engine/ipc-and-command-boundary-contract.md`
+4. `docs/architecture/engine/dataset-clone-artifact-contract.md`
 5. `docs/architecture/v1-existing-test-inventory-and-porting-plan.md`
 6. `docs/product/strata-v1-product-requirements.md`
 7. `docs/architecture/v1-cutover-pr-series.md`

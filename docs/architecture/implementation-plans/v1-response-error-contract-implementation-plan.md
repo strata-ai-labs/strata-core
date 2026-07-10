@@ -64,7 +64,7 @@ This plan closes the response/error contract gap before freezing the IDL.
 ## Related Documents
 
 - `docs/architecture/v1-error-and-diagnostics-contract.md`
-- `docs/architecture/engine-next/error-and-diagnostics-contract.md`
+- `docs/architecture/engine/error-and-diagnostics-contract.md`
 - `docs/architecture/strata-sdk-quality-playbook.md`
 - `crates/storage-next/src/api/error.rs`
 - `crates/engine-next/src/diagnostics/error.rs`
@@ -900,7 +900,7 @@ Expected work:
 Likely targets:
 
 - `docs/architecture/v1-error-and-diagnostics-contract.md`
-- `docs/architecture/engine-next/error-and-diagnostics-contract.md`
+- `docs/architecture/engine/error-and-diagnostics-contract.md`
 - new `docs/architecture/error-registry.yaml`
 - generated or curated `docs/reference/errors/*.md` later
 

@@ -24,7 +24,7 @@ ordering without exposing branch-LSM internals.
 3. `crates/storage-next/src/branch/state.rs`
 4. `crates/storage-next/src/commit/timeline.rs`
 5. `crates/storage-next/src/lifecycle/`
-6. `docs/architecture/engine-next/temporal-context-and-timeline-resolver-contract.md`
+6. `docs/architecture/engine/temporal-context-and-timeline-resolver-contract.md`
 7. `crates/storage/src/traits.rs`
 
 ## Scope

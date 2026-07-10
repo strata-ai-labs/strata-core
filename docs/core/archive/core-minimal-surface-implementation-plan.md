@@ -1,7 +1,7 @@
 # Core Minimal Surface Implementation Plan
 
 Status: historical cleanup-era implementation plan; V1 core ownership is
-governed by `docs/architecture/core-next-architecture.md`.
+governed by `docs/architecture/core-architecture.md`.
 
 ## Purpose
 

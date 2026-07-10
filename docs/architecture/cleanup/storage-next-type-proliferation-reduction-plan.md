@@ -62,7 +62,7 @@ private operation steps have grown boundary-shaped type families:
 8. proof or attestation types for every invariant.
 
 This violates the guidance in
-`docs/architecture/storage-next/implementation-patterns.md`: private small
+`docs/architecture/storage/implementation-patterns.md`: private small
 operations should stay small instead of creating a unique type family for each
 step.
 

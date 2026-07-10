@@ -12,7 +12,7 @@ Follow-up test plan:
 `docs/architecture/implementation-plans/M4P/m4p-l8b-lifecycle-maintenance-followup-test-plan.md`
 
 Architecture context:
-`docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+`docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 
 Audit context:
 

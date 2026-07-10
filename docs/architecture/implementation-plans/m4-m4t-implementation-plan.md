@@ -11,13 +11,13 @@ layer plans live in separate documents so this file remains the program index.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l5-table-runtime.md`
-2. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-3. `docs/architecture/storage-next/l7-commit-runtime.md`
-4. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
-5. `docs/architecture/storage-next/l9-storage-api-boundary.md`
-6. `docs/architecture/storage-next/commit-timeline-substrate.md`
-7. `docs/architecture/storage-next-architecture.md`
+1. `docs/architecture/storage/l5-table-runtime.md`
+2. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+3. `docs/architecture/storage/l7-commit-runtime.md`
+4. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
+5. `docs/architecture/storage/l9-storage-api-boundary.md`
+6. `docs/architecture/storage/commit-timeline-substrate.md`
+7. `docs/architecture/storage-architecture.md`
 
 All slices must follow the V1 engineering standards: permanent domain names,
 concept-budget discipline, file/function thresholds, comment standards, and no

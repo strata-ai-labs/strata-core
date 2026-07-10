@@ -1,8 +1,8 @@
 //! [`PageStore`] over the store of record: Strata's engine (design §10).
 //!
 //! Pages live as KV rows in a dedicated product space of a durable-local
-//! database, through engine-next's public surface only (the tier is a
-//! consumer like the executor — never a storage-next importer):
+//! database, through engine's public surface only (the tier is a
+//! consumer like the executor — never a storage importer):
 //!
 //! ```text
 //! manifest              -> geometry (page_bytes, summary_bytes; LE u64 x2)
@@ -19,7 +19,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use strata_engine_next::{
+use strata_engine::{
     BranchName, Database, DurableLocalOpenOptions, KvKey, KvService, KvValue, ProductSpace,
 };
 
@@ -157,9 +157,7 @@ impl<B: crate::tier::backend::DeviceBackend> crate::tier::tier::Tier<B, EnginePa
     }
 }
 
-fn store_error(
-    operation: &'static str,
-) -> impl FnOnce(strata_engine_next::EngineError) -> GpuError {
+fn store_error(operation: &'static str) -> impl FnOnce(strata_engine::EngineError) -> GpuError {
     move |error| GpuError::Store {
         operation,
         detail: error.to_string(),
