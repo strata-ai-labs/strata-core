@@ -386,6 +386,13 @@ fn run_workload(
         print_jemalloc_split("post-run");
     }
 
+    // Close explicitly so the writer lock releases before the next workload
+    // reopens a shared --data-dir store; Drop alone leaves the release racing
+    // the next open (EAGAIN on the advisory lock).
+    if mode == BenchMode::Durable {
+        database.close()?;
+    }
+
     Ok(WorkloadResult {
         workload: workload.label,
         workload_name: workload.name,

@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::fmt;
-#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+#[cfg(feature = "localfs")]
 use std::path::Path;
 #[cfg(feature = "localfs")]
 use std::path::PathBuf;
@@ -311,7 +311,7 @@ fn temp_dir_for_api_test(name: &str) -> PathBuf {
     path
 }
 
-#[cfg(all(feature = "localfs", feature = "perf-trace"))]
+#[cfg(feature = "localfs")]
 fn wal_segment_file_count(root: &Path) -> usize {
     std::fs::read_dir(root.join("wal")).map_or(0, |entries| {
         entries

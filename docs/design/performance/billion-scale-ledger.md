@@ -1541,6 +1541,55 @@ Readings:
 3. Evidence preserved: store-10m (3GiB, #2555 cheap repro), store-100m
    (26GiB, #2555), store-1b (288GiB, #2553). run.log alongside.
 
+## #2555 FIXED: WAL writer resumes at the on-disk tail after reopen (2026-07-10)
+
+Root cause (code-anchored): the writer's resume segment was seeded ONLY
+from manifest `active_wal_segment`, persisted only when a checkpoint
+PUBLISHES; rotation durably creates segments without persisting the
+pointer, and checkpoint cadence is threshold-driven — so after
+post-checkpoint rolls the pointer lags the on-disk tail. Reopen appended
+into the sealed pointer segment; the next roll durably CREATEd an
+existing segment (`AlreadyExists` -> commit unavailable), and the
+disordered package failed the strictly-ordered recovery check on the
+next open — bricked. A stale-low active id also silently disabled WAL
+retention (protects `>= active`). Recovery's own replay always computed
+the true directory max and discarded it.
+
+Fix: `resolve_resume_segment` in `WalService::open` — resume =
+max(manifest seed, on-disk max). Heals clean-close AND crash reopens
+(close-time persistence alone could not), un-breaks the retention
+boundary, routes torn tails through the existing latest-segment repair
+contract, and leaves fresh stores byte-identical. Deleted stale seeds
+are not resurrected. Foreign names under `wal/` now fail at open instead
+of first read (same typed error, strictly earlier). Perf-trace counter
+`wal_open_segment_reconciliations` + a lifecycle `warn` breadcrumb when
+the writer resumes past the manifest pointer.
+
+Consciously revised invariants: "assembly performs no listing" (testkit
++ lifecycle tests) is now "assembly lists exactly the WAL prefix, once";
+the truncation-boundary tests that seeded a writer BELOW existing
+segments (only reachable via the bug) were restructured to create the
+future segment after the active writer opens.
+
+Verification: red-first e2e pinned on pre-fix v1 (fails with the exact
+`Publish CreateSegment AlreadyExists` chain from the matrix night; green
+post-fix, including a third-open recovery + read-back). New crash-harness
+case (rolls -> crash before checkpoint -> reopen resumes at tail, strict
+order preserved). 5 service-level tests (stale-seed floor resume + fresh
+roll, deleted-seed no-resurrection, seed-above-max, torn tail, retention
+boundary). Battery: lib 3367/3564 both feature sets, all-targets,
+goldens, clippy 0/0, engine-next 22/22, e2e 17/17. Real-world proof:
+the matrix night's exact failing sequence (10M x 100B shared store:
+load+C -> reopen B (25K updates) -> reopen A (250K RMW-class updates) ->
+reopen C) now runs end to end. Rider: engine-ycsb closes the database
+explicitly per workload — Drop raced the next open's writer lock
+(EAGAIN) on back-to-back shared-store reopens.
+
+The bricked matrix stores (store-10m/store-100m) stay unrecoverable BY
+DESIGN — a disordered package has no trustworthy replay order; refusal
+is the invariant. Both are rebuildable bench artifacts; store-1b is
+preserved for the #2553 investigation.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and

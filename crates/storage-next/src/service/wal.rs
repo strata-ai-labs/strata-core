@@ -992,6 +992,12 @@ impl<'a> WalService<'a> {
         validate_segment_id(active_segment_id)?;
         let backend = backend.into();
         require_capabilities(&backend, WAL_REQUIRED_CAPABILITIES)?;
+        // The caller's seed is the manifest `active_wal_segment`, persisted only
+        // when a checkpoint publishes — it lags behind every rotation since. The
+        // directory is ground truth for which segments exist: resuming below its
+        // max would append into a sealed segment and collide on the next roll
+        // (#2555), and would hold the retention boundary below the true tail.
+        let active_segment_id = resolve_resume_segment(&backend, active_segment_id)?;
         let (active_object, active_segment_size, active_metadata) =
             open_or_create_segment(&backend, database_id, active_segment_id, config.codec_id())?;
 
@@ -2037,6 +2043,24 @@ fn decode_wal_codec_bytes<'a>(codec_id: &str, bytes: &'a [u8]) -> WalServiceResu
 }
 
 type WalSegmentObject = (u64, ObjectName);
+
+/// Resolves the segment the writer resumes in: the requested (manifest) seed
+/// or the highest segment on disk, whichever is greater. An empty directory
+/// (fresh store) resumes at the seed; a seed above the directory max (external
+/// restore/tamper) is honored and created, matching fresh-store semantics.
+pub(crate) fn resolve_resume_segment(
+    backend: &dyn Backend,
+    requested: u64,
+) -> WalServiceResult<u64> {
+    let on_disk_max = list_segments(backend)?
+        .last()
+        .map(|(segment_id, _)| *segment_id);
+    let resolved = on_disk_max.map_or(requested, |max| max.max(requested));
+    if resolved > requested {
+        perf_trace::record_wal_open_segment_reconciliation();
+    }
+    Ok(resolved)
+}
 
 fn list_segments(backend: &dyn Backend) -> WalServiceResult<Vec<WalSegmentObject>> {
     let prefix = ObjectLayout::wal_prefix().map_err(|source| WalServiceError::Layout { source })?;
