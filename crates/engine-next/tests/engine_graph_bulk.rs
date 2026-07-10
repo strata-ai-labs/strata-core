@@ -127,6 +127,47 @@ fn exercise_bulk_insert(mut database: Database) {
 }
 
 #[test]
+fn bulk_chunks_respect_the_storage_commit_budget_in_cache_and_durable_modes() {
+    run_database_modes(exercise_storage_commit_budget);
+}
+
+/// Regression (found ingesting the ASOIAF dataset): every edge writes a
+/// forward and a reverse row, so an unchunked commit of a few thousand
+/// edges exceeds the storage per-commit mutation budget. The default
+/// and the clamp must keep every chunk inside one commit.
+fn exercise_storage_commit_budget(mut database: Database) {
+    let mut graph = database
+        .graph(branch("default"), space("default"))
+        .expect("graph service opens");
+    let name = graph_name("wide");
+    graph.create_graph(name.clone()).expect("graph created");
+
+    let ids: Vec<String> = (0..2_501).map(|index| format!("n{index}")).collect();
+    let node_items: Vec<(GraphNodeId, GraphNodeData)> = ids
+        .iter()
+        .map(|id| (node_id(id), GraphNodeData::default()))
+        .collect();
+    // 2,500 edges = 5,000 row mutations: over the 4,096 budget if they
+    // ever landed in one commit.
+    let edge_items: Vec<(GraphNodeId, GraphEdgeType, GraphNodeId, GraphEdgeData)> =
+        ids[1..].iter().map(|id| edge("n0", "e", id, 1.0)).collect();
+
+    // Default chunking succeeds and spreads the work over many commits.
+    let outcome = graph
+        .bulk_insert(&name, &node_items, &edge_items, None)
+        .expect("default chunking ingests");
+    assert_eq!(outcome.edges_inserted(), 2_500);
+    assert!(outcome.commits() > 2, "default chunking splits commits");
+
+    // An absurd explicit chunk size clamps instead of building a commit
+    // the storage layer refuses.
+    let outcome = graph
+        .bulk_insert(&name, &node_items, &edge_items, Some(250_000))
+        .expect("clamped chunking ingests");
+    assert!(outcome.commits() >= 4, "oversized chunk request clamps");
+}
+
+#[test]
 fn bulk_insert_refuses_before_committing_in_cache_and_durable_modes() {
     run_database_modes(exercise_bulk_refusals);
 }
