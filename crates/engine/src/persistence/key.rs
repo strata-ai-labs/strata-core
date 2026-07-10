@@ -949,6 +949,10 @@ fn decode_user_key<'a>(
     Ok(key_bytes)
 }
 
+pub(crate) fn remote_origin_key() -> Vec<u8> {
+    b"\x01provenance:remote-origin".to_vec()
+}
+
 pub(crate) fn database_identity_key() -> Vec<u8> {
     b"\x01identity".to_vec()
 }

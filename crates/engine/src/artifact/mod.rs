@@ -41,10 +41,13 @@
 mod decode;
 mod export;
 mod import;
+mod provenance;
 
 pub use decode::{decode_section, ArtifactRecord, ArtifactRecordIter};
 pub use export::export_branch;
 pub use import::{import_branch, BranchImportSummary};
+pub(crate) use provenance::{decode_remote_origin, encode_remote_origin};
+pub use provenance::{RemoteOrigin, RemoteOriginFrontierEntry};
 
 use strata_core::Timestamp;
 
