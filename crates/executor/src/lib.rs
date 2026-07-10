@@ -29,7 +29,7 @@ pub use error::{
 };
 pub use error_registry::{public_error_code_entries, public_error_code_entry};
 pub use executor::Executor;
-pub use output::Output;
+pub use output::{Output, RemoteOriginFrontierInfo, RemoteOriginInfo};
 pub use strata_engine::{
     CommitOutcomeStatus, ErrorClass, ErrorCodeRegistryEntry, ErrorDetail, RetryPolicy,
 };

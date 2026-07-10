@@ -48,6 +48,9 @@ pub enum Command {
     },
     /// Returns sanitized configuration facts.
     ConfigGet,
+    /// Reads where this database was cloned from (its remote origin),
+    /// when clone recorded one.
+    RemoteGet,
     /// Returns one sanitized configuration value by key.
     ConfigureGetKey {
         /// Config key.
@@ -1627,6 +1630,7 @@ impl Command {
             Self::Metrics { .. } => "metrics",
             Self::Describe { .. } => "describe",
             Self::ConfigGet => "config_get",
+            Self::RemoteGet => "remote_get",
             Self::ConfigureGetKey { .. } => "configure_get_key",
             Self::SpaceList { .. } => "space_list",
             Self::SpaceCreate { .. } => "space_create",

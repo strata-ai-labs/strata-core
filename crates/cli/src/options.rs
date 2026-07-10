@@ -86,6 +86,8 @@ pub(crate) enum TopCommand {
     Describe,
     /// Configuration reads.
     Config(ConfigArgs),
+    /// Show where this database was cloned from (its remote origin).
+    Remote,
     /// Branch lifecycle commands.
     Branch(BranchArgs),
     /// Product space commands.

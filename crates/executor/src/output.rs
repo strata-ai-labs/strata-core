@@ -26,6 +26,11 @@ pub enum Output {
     },
     /// Database identity and catalog summary.
     DatabaseInfo(AdminDatabaseInfo),
+    /// Remote origin of a cloned database (`None` when never recorded).
+    RemoteOriginResult {
+        /// The recorded origin, when present.
+        origin: Option<RemoteOriginInfo>,
+    },
     /// Control-plane health facts.
     Health(AdminHealth),
     /// Lightweight database metrics.
@@ -670,4 +675,33 @@ pub enum Output {
     /// Inference runtime cache diagnostics.
     #[cfg(feature = "inference")]
     InferenceCacheStatus(strata_inference::ModelCacheStatus),
+}
+
+/// Serialized view of a database's recorded remote origin.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RemoteOriginInfo {
+    /// The remote host the database was fetched from.
+    pub remote_url: String,
+    /// The remote dataset name.
+    pub dataset: String,
+    /// The branch the clone opened by default.
+    pub branch: String,
+    /// The fetched bundle's manifest hash.
+    pub manifest_hash: String,
+    /// When the fetch happened (Unix microseconds).
+    pub fetched_at_micros: u64,
+    /// Per-branch base frontier recorded at the sync point.
+    pub base_frontier: Vec<RemoteOriginFrontierInfo>,
+}
+
+/// One fetched branch in the recorded base frontier.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RemoteOriginFrontierInfo {
+    /// The fetched branch name.
+    pub branch: String,
+    /// The bundle's per-branch base token.
+    pub base: String,
+    /// Local head version at the sync point, when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_version: Option<u64>,
 }
