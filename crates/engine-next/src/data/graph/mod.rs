@@ -1,11 +1,19 @@
 //! Graph core capability.
 
+mod adjacency;
+mod analytics;
+mod iterative;
 mod ontology;
 mod outcome;
 mod record;
 mod service;
+mod traversal;
 mod types;
 
+pub(crate) use adjacency::GraphAdjacencyIndexBuilder;
+pub use adjacency::{GraphAdjacencyEdge, GraphAdjacencyIndex, GraphAnalyticsBudget};
+pub use analytics::{GraphLccResult, GraphSsspResult, GraphWccResult};
+pub use iterative::{GraphCdlpOptions, GraphCdlpResult, GraphPageRankOptions, GraphPageRankResult};
 pub use ontology::{
     GraphLinkTypeDef, GraphLinkTypeSummary, GraphObjectTypeDef, GraphObjectTypeSummary,
     GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyStatus, GraphOntologySummary,
@@ -13,14 +21,16 @@ pub use ontology::{
 };
 pub use outcome::{
     GraphBatchOpOutcome, GraphBatchWriteOutcome, GraphBinding, GraphBindingPage,
-    GraphDeleteOutcome, GraphEdge, GraphEdgeWriteOutcome, GraphInfo, GraphNamePage, GraphNeighbor,
-    GraphNeighborPage, GraphNode, GraphNodePage, GraphWriteOutcome,
+    GraphBulkInsertOutcome, GraphDeleteOutcome, GraphDeletePolicyOutcome, GraphEdge,
+    GraphEdgeWriteOutcome, GraphInfo, GraphNamePage, GraphNeighbor, GraphNeighborPage, GraphNode,
+    GraphNodePage, GraphTargetStatus, GraphWriteOutcome,
 };
 pub use service::GraphService;
+pub use traversal::{GraphBfsOptions, GraphBfsResult, GraphSubgraphResult, GraphTraversalEdge};
 pub use types::{
     GraphBatchOperation, GraphBatchWrite, GraphBindingPrimitive, GraphBindingTarget,
-    GraphDirection, GraphEdgeData, GraphEdgeType, GraphEntityBinding, GraphName, GraphNodeData,
-    GraphNodeId, GraphProperties,
+    GraphDeletePolicy, GraphDirection, GraphEdgeData, GraphEdgeType, GraphEntityBinding, GraphName,
+    GraphNodeData, GraphNodeId, GraphProperties,
 };
 
 pub(crate) use ontology::{

@@ -190,6 +190,20 @@ pub enum GraphDirection {
     Both,
 }
 
+/// Explicit policy for graph facts bound to a deleted entity, per the
+/// relationship-layer contract vocabulary. Reject-delete is not a V1
+/// policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphDeletePolicy {
+    /// Delete the bound graph nodes and their incident edges.
+    Cascade,
+    /// Preserve the graph nodes and remove their entity bindings.
+    Detach,
+    /// Preserve the bindings; traversal reports the target's status.
+    KeepDangling,
+}
+
 /// Typed primitive kind for graph entity bindings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -8,18 +8,22 @@ use crate::branch::catalog::BranchCatalogRecord;
 use crate::branch::BranchName;
 use crate::commit::CommitOutcome;
 use crate::control::ControlPlane;
+use crate::data::event::EventSequence;
+use crate::data::json::JsonDocumentId;
 use crate::data::kv::ProductSpace;
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{
     decode_graph_binding_key, decode_graph_edge_key, decode_graph_metadata_key,
-    decode_graph_node_key, decode_graph_reverse_edge_key, encode_graph_binding_key,
-    encode_graph_binding_space_prefix, encode_graph_binding_target_prefix, encode_graph_edge_key,
-    encode_graph_edge_prefix, encode_graph_incoming_edge_prefix, encode_graph_metadata_key,
-    encode_graph_metadata_prefix, encode_graph_node_key, encode_graph_node_prefix,
-    encode_graph_ontology_key, encode_graph_outgoing_edge_prefix, encode_graph_reverse_edge_key,
+    decode_graph_node_key, decode_graph_reverse_edge_key, encode_event_key,
+    encode_graph_binding_key, encode_graph_binding_space_prefix,
+    encode_graph_binding_target_prefix, encode_graph_edge_key, encode_graph_edge_prefix,
+    encode_graph_incoming_edge_prefix, encode_graph_metadata_key, encode_graph_metadata_prefix,
+    encode_graph_node_key, encode_graph_node_prefix, encode_graph_ontology_key,
+    encode_graph_outgoing_edge_prefix, encode_graph_reverse_edge_key,
     encode_graph_reverse_edge_prefix, encode_graph_type_index_graph_prefix,
-    encode_graph_type_index_key, encode_graph_type_index_type_prefix, CommitPlan,
-    PersistenceReadRow, ReadSelector, RowAddress, RowClass, RowMutation, StoragePersistence,
+    encode_graph_type_index_key, encode_graph_type_index_type_prefix, encode_json_key,
+    encode_kv_key_bytes, CommitPlan, PersistenceReadRow, ReadSelector, RowAddress, RowClass,
+    RowMutation, StoragePersistence,
 };
 
 use super::{
@@ -27,13 +31,15 @@ use super::{
     decode_graph_node_record, decode_graph_ontology_record, decode_graph_type_index_record,
     encode_graph_binding_record, encode_graph_edge_record, encode_graph_metadata_record,
     encode_graph_node_record, encode_graph_ontology_record, encode_graph_type_index_record,
-    GraphBatchOpOutcome, GraphBatchOperation, GraphBatchWrite, GraphBatchWriteOutcome,
-    GraphBinding, GraphBindingPage, GraphBindingRecord, GraphBindingTarget, GraphDeleteOutcome,
-    GraphDirection, GraphEdge, GraphEdgeRecord, GraphEdgeType, GraphEdgeWriteOutcome, GraphInfo,
-    GraphLinkTypeDef, GraphLinkTypeSummary, GraphName, GraphNamePage, GraphNeighbor,
-    GraphNeighborPage, GraphNode, GraphNodeId, GraphNodePage, GraphNodeRecord, GraphObjectTypeDef,
-    GraphObjectTypeSummary, GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyRecord,
-    GraphOntologySummary, GraphOntologyWriteOutcome, GraphTypeIndexRecord, GraphTypeName,
+    GraphAdjacencyIndex, GraphAdjacencyIndexBuilder, GraphAnalyticsBudget, GraphBatchOpOutcome,
+    GraphBatchOperation, GraphBatchWrite, GraphBatchWriteOutcome, GraphBinding, GraphBindingPage,
+    GraphBindingPrimitive, GraphBindingRecord, GraphBindingTarget, GraphBulkInsertOutcome,
+    GraphDeleteOutcome, GraphDeletePolicy, GraphDeletePolicyOutcome, GraphDirection, GraphEdge,
+    GraphEdgeRecord, GraphEdgeType, GraphEdgeWriteOutcome, GraphInfo, GraphLinkTypeDef,
+    GraphLinkTypeSummary, GraphName, GraphNamePage, GraphNeighbor, GraphNeighborPage, GraphNode,
+    GraphNodeId, GraphNodePage, GraphNodeRecord, GraphObjectTypeDef, GraphObjectTypeSummary,
+    GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyRecord, GraphOntologySummary,
+    GraphOntologyWriteOutcome, GraphTargetStatus, GraphTypeIndexRecord, GraphTypeName,
     GraphWriteOutcome,
 };
 
@@ -272,6 +278,201 @@ impl<'a> GraphService<'a> {
     /// Decision 6 / conformance test 9). A `None` target branch means "the
     /// node's own branch" and is accepted; an explicit target branch is accepted
     /// only when it equals the node's branch.
+    /// Applies an explicit delete policy to every graph fact bound to
+    /// `target`, across all graphs in this space. The typical caller
+    /// just deleted (or is about to delete) the bound entity.
+    ///
+    /// Candidates come from the binding reverse index and are verified
+    /// against the authoritative node row's binding before any row is
+    /// mutated. Cascade deletes the bound nodes and their incident
+    /// edges; detach preserves the nodes and removes their bindings;
+    /// keep-dangling mutates nothing — traversal reports the target's
+    /// status instead.
+    pub fn apply_binding_delete_policy(
+        &mut self,
+        target: &GraphBindingTarget,
+        policy: GraphDeletePolicy,
+    ) -> EngineResult<GraphDeletePolicyOutcome> {
+        let record = self.branch_record()?;
+        self.validate_binding_target(target)?;
+
+        // Reverse-index candidates, verified against the authoritative
+        // node binding (reverse maps are candidate indexes, not truth).
+        let mut verified: Vec<(GraphName, GraphNodeId, GraphNodeRecord)> = Vec::new();
+        for row in self.persistence.scan_prefix(
+            record.storage_branch_id(),
+            RowClass::GraphBindingIndex,
+            encode_graph_binding_target_prefix(&self.space, target),
+            ReadSelector::Latest,
+            None,
+        )? {
+            if row.is_tombstone() {
+                continue;
+            }
+            let (_, graph, node_id) = decode_graph_binding_key(&self.space, row.key())?;
+            let Some(node) = self.node_record(&record, &graph, &node_id)? else {
+                continue;
+            };
+            if node.data().binding().map(super::GraphEntityBinding::target) == Some(target) {
+                verified.push((graph, node_id, node));
+            }
+        }
+        let nodes_affected = verified.len() as u64;
+
+        let mut mutations = MutationMap::default();
+        match policy {
+            GraphDeletePolicy::KeepDangling => {}
+            GraphDeletePolicy::Detach => {
+                for (graph, node_id, node) in &verified {
+                    let mut data =
+                        super::GraphNodeData::new(node.data().properties().cloned(), None);
+                    if let Some(object_type) = node.data().object_type() {
+                        data = data.with_object_type(object_type.clone());
+                    }
+                    let detached = GraphNodeRecord::new(graph.clone(), node_id.clone(), data);
+                    mutations.put(
+                        self.node_address(&record, graph, node_id),
+                        encode_graph_node_record(&detached)?,
+                    );
+                    mutations.delete(self.binding_address(&record, target, graph, node_id));
+                }
+            }
+            GraphDeletePolicy::Cascade => {
+                let mut by_graph: BTreeMap<GraphName, Vec<GraphNodeId>> = BTreeMap::new();
+                for (graph, node_id, node) in &verified {
+                    mutations.delete(self.node_address(&record, graph, node_id));
+                    mutations.delete(self.binding_address(&record, target, graph, node_id));
+                    if let Some(object_type) = node.data().object_type() {
+                        mutations.delete(self.type_index_address(
+                            &record,
+                            graph,
+                            object_type,
+                            node_id,
+                        ));
+                    }
+                    by_graph
+                        .entry(graph.clone())
+                        .or_default()
+                        .push(node_id.clone());
+                }
+                for (graph, node_ids) in &by_graph {
+                    for edge in self
+                        .edge_record_map(&record, graph, ReadSelector::Latest)?
+                        .into_values()
+                    {
+                        if node_ids.contains(edge.src()) || node_ids.contains(edge.dst()) {
+                            self.delete_edge_mutations(&record, &mut mutations, &edge);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mutations = mutations.into_mutations();
+        let commit = if mutations.is_empty() {
+            None
+        } else {
+            Some(self.commit_batch(&record, mutations)?)
+        };
+        Ok(GraphDeletePolicyOutcome::new(
+            policy,
+            nodes_affected,
+            commit,
+        ))
+    }
+
+    /// Resolves the current status of one binding target: whether the
+    /// bound entity's row is visible, tombstoned, or absent. Vector and
+    /// graph targets use composite addresses and report
+    /// [`GraphTargetStatus::Unsupported`].
+    pub fn resolve_binding_target(
+        &mut self,
+        target: &GraphBindingTarget,
+    ) -> EngineResult<GraphTargetStatus> {
+        let record = self.branch_record()?;
+        self.binding_target_status(&record, target, ReadSelector::Latest)
+    }
+
+    /// Resolves a binding target's status at a commit version.
+    pub fn resolve_binding_target_at_version(
+        &mut self,
+        target: &GraphBindingTarget,
+        version: CommitVersion,
+    ) -> EngineResult<GraphTargetStatus> {
+        let record = self.branch_record()?;
+        self.binding_target_status(&record, target, ReadSelector::AtVersion(version))
+    }
+
+    /// Resolves a binding target's status at a timestamp.
+    pub fn resolve_binding_target_at(
+        &mut self,
+        target: &GraphBindingTarget,
+        timestamp: Timestamp,
+    ) -> EngineResult<GraphTargetStatus> {
+        let record = self.branch_record()?;
+        self.binding_target_status(&record, target, ReadSelector::AtTimestamp(timestamp))
+    }
+
+    /// Point-reads the target's row in its owning capability's row class.
+    /// Row existence only: value decoding and interpretation stay with
+    /// the owning capability.
+    fn binding_target_status(
+        &mut self,
+        record: &BranchCatalogRecord,
+        target: &GraphBindingTarget,
+        selector: ReadSelector,
+    ) -> EngineResult<GraphTargetStatus> {
+        let (class, key) = match target.primitive() {
+            GraphBindingPrimitive::Kv => (
+                RowClass::Kv,
+                encode_kv_key_bytes(target.space(), target.key().as_bytes()),
+            ),
+            GraphBindingPrimitive::Json => {
+                let Ok(id) = JsonDocumentId::new(target.key()) else {
+                    return Ok(GraphTargetStatus::MalformedTarget);
+                };
+                (RowClass::Json, encode_json_key(target.space(), &id))
+            }
+            GraphBindingPrimitive::Event => {
+                let Ok(sequence) = target.key().parse::<u64>() else {
+                    return Ok(GraphTargetStatus::MalformedTarget);
+                };
+                (
+                    RowClass::Event,
+                    encode_event_key(target.space(), EventSequence::new(sequence)),
+                )
+            }
+            GraphBindingPrimitive::Vector | GraphBindingPrimitive::Graph => {
+                return Ok(GraphTargetStatus::Unsupported);
+            }
+        };
+        let row = self.persistence.read_row(
+            RowAddress::new(record.storage_branch_id(), class, key),
+            selector,
+        )?;
+        Ok(match row {
+            None => GraphTargetStatus::Missing,
+            Some(row) if row.is_tombstone() => GraphTargetStatus::Deleted,
+            Some(_) => GraphTargetStatus::Present,
+        })
+    }
+
+    fn neighbor_target_status(
+        &mut self,
+        record: &BranchCatalogRecord,
+        node: &GraphNode,
+        selector: ReadSelector,
+    ) -> EngineResult<Option<GraphTargetStatus>> {
+        match node.data().binding() {
+            Some(binding) => Ok(Some(self.binding_target_status(
+                record,
+                binding.target(),
+                selector,
+            )?)),
+            None => Ok(None),
+        }
+    }
+
     fn validate_binding_target(&self, target: &GraphBindingTarget) -> EngineResult<()> {
         if let Some(target_branch) = target.branch() {
             if target_branch != &self.branch {
@@ -566,6 +767,180 @@ impl<'a> GraphService<'a> {
             created,
             commit,
         ))
+    }
+
+    /// Default number of input items per bulk-ingest chunk commit.
+    pub const DEFAULT_BULK_CHUNK_SIZE: usize = 250_000;
+
+    /// Ingests nodes and edges in chunked commits — the ingest-scale
+    /// companion to the transactional `batch_write`. Nodes commit before
+    /// edges, so edges may reference nodes from the same call; every
+    /// endpoint must exist among committed rows or this call's nodes.
+    /// Upsert semantics match `upsert_node` / `upsert_edge`, including
+    /// derived-index maintenance and frozen-ontology enforcement.
+    ///
+    /// Returns per-kind counts and the number of chunk commits. An empty
+    /// input commits nothing.
+    pub fn bulk_insert(
+        &mut self,
+        graph: &GraphName,
+        nodes: &[(GraphNodeId, super::GraphNodeData)],
+        edges: &[(
+            GraphNodeId,
+            GraphEdgeType,
+            GraphNodeId,
+            super::GraphEdgeData,
+        )],
+        chunk_size: Option<usize>,
+    ) -> EngineResult<GraphBulkInsertOutcome> {
+        let record = self.branch_record()?;
+        self.require_graph(&record, graph)?;
+        if nodes.is_empty() && edges.is_empty() {
+            return Ok(GraphBulkInsertOutcome::new(graph.clone(), 0, 0, 0, None));
+        }
+        let chunk_size = chunk_size.unwrap_or(Self::DEFAULT_BULK_CHUNK_SIZE).max(1);
+        self.validate_bulk_input(&record, graph, nodes, edges)?;
+
+        let mut commits = 0u64;
+        let mut last_commit = None;
+        for chunk in nodes.chunks(chunk_size) {
+            let mut mutations = MutationMap::default();
+            for (node_id, data) in chunk {
+                // Upsert discipline: drop stale derived rows before the
+                // new node row lands, exactly like `upsert_node`.
+                let current = self.node_record(&record, graph, node_id)?;
+                let new_record = GraphNodeRecord::new(graph.clone(), node_id.clone(), data.clone());
+                if let Some(old) = current.as_ref().and_then(|record| record.data().binding()) {
+                    if Some(old) != new_record.data().binding() {
+                        mutations.delete(self.binding_address(
+                            &record,
+                            old.target(),
+                            graph,
+                            node_id,
+                        ));
+                    }
+                }
+                let old_type = current
+                    .as_ref()
+                    .and_then(|record| record.data().object_type());
+                let new_type = new_record.data().object_type();
+                if let Some(old_type) = old_type {
+                    if Some(old_type) != new_type {
+                        mutations
+                            .delete(self.type_index_address(&record, graph, old_type, node_id));
+                    }
+                }
+                if let Some(new_type) = new_type {
+                    mutations.put(
+                        self.type_index_address(&record, graph, new_type, node_id),
+                        encode_graph_type_index_record(&GraphTypeIndexRecord::new(
+                            graph.clone(),
+                            new_type.clone(),
+                            node_id.clone(),
+                        ))?,
+                    );
+                }
+                mutations.put(
+                    self.node_address(&record, graph, node_id),
+                    encode_graph_node_record(&new_record)?,
+                );
+                if let Some(binding) = new_record.data().binding() {
+                    mutations.put(
+                        self.binding_address(&record, binding.target(), graph, node_id),
+                        encode_graph_binding_record(&GraphBindingRecord::new(
+                            graph.clone(),
+                            node_id.clone(),
+                            binding.clone(),
+                        ))?,
+                    );
+                }
+            }
+            last_commit = Some(self.commit_batch(&record, mutations.into_mutations())?);
+            commits += 1;
+        }
+        for chunk in edges.chunks(chunk_size) {
+            let mut mutations = MutationMap::default();
+            for (src, edge_type, dst, data) in chunk {
+                let edge = GraphEdgeRecord::new(
+                    graph.clone(),
+                    src.clone(),
+                    edge_type.clone(),
+                    dst.clone(),
+                    data.clone(),
+                );
+                mutations.put(
+                    self.edge_address(&record, graph, src, edge_type, dst),
+                    encode_graph_edge_record(&edge)?,
+                );
+                mutations.put(
+                    self.reverse_edge_address(&record, graph, dst, edge_type, src),
+                    encode_graph_edge_record(&edge)?,
+                );
+            }
+            last_commit = Some(self.commit_batch(&record, mutations.into_mutations())?);
+            commits += 1;
+        }
+
+        Ok(GraphBulkInsertOutcome::new(
+            graph.clone(),
+            nodes.len() as u64,
+            edges.len() as u64,
+            commits,
+            last_commit,
+        ))
+    }
+
+    /// Validates every bulk input before the first commit: a mid-stream
+    /// refusal must not leave earlier chunks half-applied.
+    fn validate_bulk_input(
+        &mut self,
+        record: &BranchCatalogRecord,
+        graph: &GraphName,
+        nodes: &[(GraphNodeId, super::GraphNodeData)],
+        edges: &[(
+            GraphNodeId,
+            GraphEdgeType,
+            GraphNodeId,
+            super::GraphEdgeData,
+        )],
+    ) -> EngineResult<()> {
+        let ontology = self.frozen_ontology(record, graph)?;
+        let mut call_nodes: BTreeMap<&GraphNodeId, &super::GraphNodeData> = BTreeMap::new();
+        for (node_id, data) in nodes {
+            if let Some(binding) = data.binding() {
+                self.validate_binding_target(binding.target())?;
+            }
+            if let Some(ontology) = ontology.as_ref() {
+                ontology.validate_node(data)?;
+            }
+            call_nodes.insert(node_id, data);
+        }
+        let mut endpoint_cache: BTreeMap<GraphNodeId, Option<super::GraphNodeData>> =
+            BTreeMap::new();
+        for (src, edge_type, dst, _) in edges {
+            for endpoint in [src, dst] {
+                if call_nodes.contains_key(endpoint) || endpoint_cache.contains_key(endpoint) {
+                    continue;
+                }
+                let data = self
+                    .node_record(record, graph, endpoint)?
+                    .map(|existing| existing.data().clone());
+                endpoint_cache.insert(endpoint.clone(), data);
+            }
+            let resolve = |endpoint: &GraphNodeId| {
+                call_nodes
+                    .get(endpoint)
+                    .copied()
+                    .or_else(|| endpoint_cache.get(endpoint).and_then(Option::as_ref))
+            };
+            let (Some(src_data), Some(dst_data)) = (resolve(src), resolve(dst)) else {
+                return Err(missing_edge_endpoint());
+            };
+            if let Some(ontology) = ontology.as_ref() {
+                ontology.validate_edge(edge_type, src_data, dst_data)?;
+            }
+        }
+        Ok(())
     }
 
     /// Reads one graph edge.
@@ -1381,6 +1756,71 @@ impl<'a> GraphService<'a> {
         )
     }
 
+    /// Builds an in-memory adjacency snapshot of the graph's visible
+    /// nodes and edges at one consistent read — the substrate for the
+    /// traversal and analytics stages. Refuses graphs beyond `budget`
+    /// with `resource_exhausted.engine.graph_analytics_budget` instead
+    /// of exhausting memory.
+    pub fn adjacency_index(
+        &mut self,
+        graph: &GraphName,
+        budget: &GraphAnalyticsBudget,
+    ) -> EngineResult<GraphAdjacencyIndex> {
+        self.adjacency_index_with_selector(graph, budget, ReadSelector::Latest)
+    }
+
+    /// Builds the adjacency snapshot visible at a commit version.
+    pub fn adjacency_index_at_version(
+        &mut self,
+        graph: &GraphName,
+        budget: &GraphAnalyticsBudget,
+        version: CommitVersion,
+    ) -> EngineResult<GraphAdjacencyIndex> {
+        self.adjacency_index_with_selector(graph, budget, ReadSelector::AtVersion(version))
+    }
+
+    /// Builds the adjacency snapshot visible at a timestamp.
+    pub fn adjacency_index_at(
+        &mut self,
+        graph: &GraphName,
+        budget: &GraphAnalyticsBudget,
+        timestamp: Timestamp,
+    ) -> EngineResult<GraphAdjacencyIndex> {
+        self.adjacency_index_with_selector(graph, budget, ReadSelector::AtTimestamp(timestamp))
+    }
+
+    fn adjacency_index_with_selector(
+        &mut self,
+        graph: &GraphName,
+        budget: &GraphAnalyticsBudget,
+        selector: ReadSelector,
+    ) -> EngineResult<GraphAdjacencyIndex> {
+        let record = self.branch_record()?;
+        self.require_graph_with_selector(&record, graph, selector)?;
+        let mut builder = GraphAdjacencyIndexBuilder::new(graph.clone(), *budget);
+        for row in self.node_rows(&record, graph, selector)? {
+            if row.is_tombstone() {
+                continue;
+            }
+            let (_, node_id) = decode_graph_node_key(&self.space, row.key())?;
+            builder.add_node(node_id)?;
+        }
+        builder.finish_nodes();
+        for row in self.edge_rows(&record, graph, selector)? {
+            if row.is_tombstone() {
+                continue;
+            }
+            let edge = self.edge_record_from_forward_row(&row)?;
+            builder.add_edge(
+                edge.src(),
+                edge.edge_type(),
+                edge.dst(),
+                edge.data().weight(),
+            )?;
+        }
+        Ok(builder.finish())
+    }
+
     fn ontology_address(&self, record: &BranchCatalogRecord, graph: &GraphName) -> RowAddress {
         RowAddress::new(
             record.storage_branch_id(),
@@ -1814,10 +2254,12 @@ impl<'a> GraphService<'a> {
                     return Ok(None);
                 }
                 let node = self.visible_node_or_corruption(record, graph, edge.dst(), selector)?;
+                let target_status = self.neighbor_target_status(record, &node, selector)?;
                 Ok(Some(GraphNeighbor::new(
                     node,
                     edge,
                     GraphDirection::Outgoing,
+                    target_status,
                 )))
             })
             .filter_map(Result::transpose)
@@ -1848,10 +2290,12 @@ impl<'a> GraphService<'a> {
                     return Ok(None);
                 }
                 let node = self.visible_node_or_corruption(record, graph, edge.src(), selector)?;
+                let target_status = self.neighbor_target_status(record, &node, selector)?;
                 Ok(Some(GraphNeighbor::new(
                     node,
                     edge,
                     GraphDirection::Incoming,
+                    target_status,
                 )))
             })
             .filter_map(Result::transpose)
@@ -2199,7 +2643,7 @@ mod tests {
             CommitVersion::new(1),
             Timestamp::from_micros(1),
         );
-        let hit = GraphNeighbor::new(node, edge, GraphDirection::Outgoing);
+        let hit = GraphNeighbor::new(node, edge, GraphDirection::Outgoing, None);
         assert!(neighbor_cursor(&hit).starts_with("o\u{1f}links"));
     }
 

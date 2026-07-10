@@ -4,8 +4,9 @@ use crate::types::{
     AdminConfig, AdminDatabaseInfo, AdminDescribe, AdminHealth, AdminMetrics, ArrowExportResult,
     ArrowImportResult, BatchGetItemResult, BatchItemResult, BatchResult, BranchCleanupItem,
     BranchItem, Bytes, CommitReceipt, EventBatchAppendItemResult, EventChainVerification,
-    EventVersionedData, GraphBatchItemResult, GraphBindingHit, GraphEdgeDataOutput, GraphInfoData,
-    GraphNeighborHit, GraphNodeDataOutput, GraphOntologyData, GraphOntologySummaryData,
+    EventVersionedData, GraphBatchItemResult, GraphBfsData, GraphBindingHit, GraphCdlpData,
+    GraphEdgeDataOutput, GraphInfoData, GraphLccData, GraphNeighborHit, GraphNodeDataOutput,
+    GraphOntologyData, GraphOntologySummaryData, GraphPagerankData, GraphSsspData, GraphWccData,
     HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
     JsonIndexDefinition, JsonSampleItem, MaybeJsonValue, MaybeJsonVersionedValue, MutationEffect,
     PageInfo, SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult,
@@ -535,6 +536,56 @@ pub enum Output {
         version: u64,
         /// Commit timestamp.
         timestamp: u64,
+    },
+    /// Weakly connected components computed over a graph snapshot.
+    GraphWccResult(GraphWccData),
+    /// Local clustering coefficients computed over a graph snapshot.
+    GraphLccResult(GraphLccData),
+    /// Shortest-path distances computed over a graph snapshot.
+    GraphSsspResult(GraphSsspData),
+    /// `PageRank` scores computed over a graph snapshot.
+    GraphPagerankResult(GraphPagerankData),
+    /// Community labels computed over a graph snapshot.
+    GraphCdlpResult(GraphCdlpData),
+    /// Breadth-first traversal computed over a graph snapshot.
+    GraphBfsResult(GraphBfsData),
+    /// Bulk ingest acknowledgement.
+    GraphBulkInsertResult {
+        /// Graph name.
+        graph: String,
+        /// How many node upserts the ingest applied.
+        nodes_inserted: u64,
+        /// How many edge upserts the ingest applied.
+        edges_inserted: u64,
+        /// How many chunk commits the ingest produced.
+        commits: u64,
+        /// Final chunk's commit receipt, when any chunk committed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<CommitReceipt>,
+        /// Final chunk's commit version, when any chunk committed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        /// Final chunk's commit timestamp, when any chunk committed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
+    },
+    /// Delete-policy application acknowledgement.
+    GraphDeletePolicyResult {
+        /// Applied policy: `cascade`, `detach`, or `keep_dangling`.
+        policy: String,
+        /// How many bound nodes the policy covered.
+        nodes_affected: u64,
+        /// Mutation effect facts.
+        effect: MutationEffect,
+        /// Commit receipt when rows changed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<CommitReceipt>,
+        /// Commit version when rows changed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        /// Commit timestamp when rows changed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
     },
     /// Graph ontology type deletion acknowledgement.
     GraphOntologyDeleteResult {

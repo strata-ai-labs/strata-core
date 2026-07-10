@@ -9,11 +9,13 @@ pub(super) use strata_executor_next::{
     BatchKvEntry, BatchMode, BatchResult, BatchStatus, BatchVectorEntry, BranchCleanupItem,
     BranchItem, BranchParentItem, BranchStatus, Bytes, Command, CommitReceipt, ErrorStatus,
     EventBatchAppendItemResult, EventChainVerification, EventData, EventRangeDirection,
-    EventVersionedData, GraphBatchItemResult, GraphBatchOperation, GraphBindingHit,
-    GraphBindingPrimitive, GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEdgeDataOutput,
-    GraphEntityBinding, GraphInfoData, GraphLinkTypeDefData, GraphLinkTypeSummaryData,
-    GraphNeighborHit, GraphNodeData, GraphNodeDataOutput, GraphObjectTypeDefData,
-    GraphObjectTypeSummaryData, GraphOntologyData, GraphOntologySummaryData, GraphPropertyDef,
+    EventVersionedData, GraphAnalyticsBudget, GraphBatchItemResult, GraphBatchOperation,
+    GraphBfsData, GraphBfsEdgeData, GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget,
+    GraphBulkEdge, GraphBulkNode, GraphCdlpData, GraphDeletePolicy, GraphDirection, GraphEdgeData,
+    GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData, GraphLccData, GraphLinkTypeDefData,
+    GraphLinkTypeSummaryData, GraphNeighborHit, GraphNodeData, GraphNodeDataOutput,
+    GraphObjectTypeDefData, GraphObjectTypeSummaryData, GraphOntologyData,
+    GraphOntologySummaryData, GraphPagerankData, GraphPropertyDef, GraphSsspData, GraphWccData,
     HistoryItem, HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
     JsonIndexDefinition, JsonIndexType, JsonSampleItem, JsonVersionedValue, MaybeJsonValue,
     MaybeJsonVersionedValue, MutationEffect, MutationEffectKind, Output, PageInfo, SampleItem,
@@ -382,5 +384,36 @@ pub(super) fn graph_edge_output(
         Some(json!({"kind": "edge"})),
         3,
         30,
+    )
+}
+
+pub(super) fn graph_wcc_output() -> GraphWccData {
+    GraphWccData::new(
+        "deps".to_owned(),
+        [
+            ("node-a".to_owned(), "node-a".to_owned()),
+            ("node-b".to_owned(), "node-a".to_owned()),
+            ("node-c".to_owned(), "node-c".to_owned()),
+        ]
+        .into_iter()
+        .collect(),
+        2,
+    )
+}
+
+pub(super) fn graph_bfs_output() -> GraphBfsData {
+    GraphBfsData::new(
+        "deps".to_owned(),
+        "node-a".to_owned(),
+        vec!["node-a".to_owned(), "node-b".to_owned()],
+        [("node-a".to_owned(), 0), ("node-b".to_owned(), 1)]
+            .into_iter()
+            .collect(),
+        vec![GraphBfsEdgeData::new(
+            "node-a".to_owned(),
+            "node-b".to_owned(),
+            "depends_on".to_owned(),
+            1.0,
+        )],
     )
 }

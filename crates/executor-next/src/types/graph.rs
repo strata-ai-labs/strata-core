@@ -16,6 +16,18 @@ pub enum GraphDirection {
     Both,
 }
 
+/// Explicit policy for graph facts bound to a deleted entity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphDeletePolicy {
+    /// Delete the bound graph nodes and their incident edges.
+    Cascade,
+    /// Preserve the graph nodes and remove their entity bindings.
+    Detach,
+    /// Preserve the bindings; traversal reports the target's status.
+    KeepDangling,
+}
+
 /// Product primitive kind used by graph entity bindings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -460,6 +472,9 @@ pub struct GraphNeighborHit {
     direction: GraphDirection,
     node: GraphNodeDataOutput,
     edge: GraphEdgeDataOutput,
+    /// Bound-entity resolution status; absent when the node is unbound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_status: Option<String>,
 }
 
 impl GraphNeighborHit {
@@ -468,6 +483,7 @@ impl GraphNeighborHit {
         node: GraphNodeDataOutput,
         edge: GraphEdgeDataOutput,
         direction: GraphDirection,
+        target_status: Option<String>,
     ) -> Self {
         debug_assert_eq!(node.graph(), edge.graph());
         Self {
@@ -479,7 +495,13 @@ impl GraphNeighborHit {
             direction,
             node,
             edge,
+            target_status,
         }
+    }
+
+    /// Returns the bound-entity resolution status, when the node is bound.
+    pub fn target_status(&self) -> Option<&str> {
+        self.target_status.as_deref()
     }
 
     /// Returns the graph name.
@@ -1027,5 +1049,418 @@ impl GraphOntologySummaryData {
     /// Returns the commit timestamp of the visible ontology row.
     pub const fn timestamp(&self) -> u64 {
         self.timestamp
+    }
+}
+
+/// Optional size bounds for one graph analytics snapshot (input form).
+/// Unset fields use the engine defaults.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphAnalyticsBudget {
+    /// Maximum node count admitted into the snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_nodes: Option<u64>,
+    /// Maximum edge count admitted into the snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max_edges: Option<u64>,
+}
+
+impl GraphAnalyticsBudget {
+    /// Creates explicit snapshot bounds.
+    #[must_use]
+    pub const fn new(max_nodes: Option<u64>, max_edges: Option<u64>) -> Self {
+        Self {
+            max_nodes,
+            max_edges,
+        }
+    }
+
+    /// Returns the node bound, when set.
+    pub const fn max_nodes(&self) -> Option<u64> {
+        self.max_nodes
+    }
+
+    /// Returns the edge bound, when set.
+    pub const fn max_edges(&self) -> Option<u64> {
+        self.max_edges
+    }
+}
+
+/// Weakly-connected-components result (wire form). Every node maps to
+/// its component representative: the smallest node id in the component.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphWccData {
+    graph: String,
+    components: std::collections::BTreeMap<String, String>,
+    component_count: u64,
+}
+
+impl GraphWccData {
+    /// Creates component output data.
+    pub const fn new(
+        graph: String,
+        components: std::collections::BTreeMap<String, String>,
+        component_count: u64,
+    ) -> Self {
+        Self {
+            graph,
+            components,
+            component_count,
+        }
+    }
+
+    /// Returns the graph name.
+    pub fn graph(&self) -> &str {
+        &self.graph
+    }
+
+    /// Returns each node's component representative, keyed by node id.
+    pub const fn components(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.components
+    }
+
+    /// Returns the number of distinct components.
+    pub const fn component_count(&self) -> u64 {
+        self.component_count
+    }
+}
+
+/// Local-clustering-coefficient result (wire form).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphLccData {
+    graph: String,
+    coefficients: std::collections::BTreeMap<String, f64>,
+}
+
+impl GraphLccData {
+    /// Creates coefficient output data.
+    pub const fn new(graph: String, coefficients: std::collections::BTreeMap<String, f64>) -> Self {
+        Self {
+            graph,
+            coefficients,
+        }
+    }
+
+    /// Returns the graph name.
+    pub fn graph(&self) -> &str {
+        &self.graph
+    }
+
+    /// Returns the clustering coefficient per node id.
+    pub const fn coefficients(&self) -> &std::collections::BTreeMap<String, f64> {
+        &self.coefficients
+    }
+}
+
+/// Shortest-path result (wire form). Unreachable nodes are omitted.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphSsspData {
+    graph: String,
+    source: String,
+    direction: GraphDirection,
+    distances: std::collections::BTreeMap<String, f64>,
+}
+
+impl GraphSsspData {
+    /// Creates shortest-path output data.
+    pub const fn new(
+        graph: String,
+        source: String,
+        direction: GraphDirection,
+        distances: std::collections::BTreeMap<String, f64>,
+    ) -> Self {
+        Self {
+            graph,
+            source,
+            direction,
+            distances,
+        }
+    }
+
+    /// Returns the graph name.
+    pub fn graph(&self) -> &str {
+        &self.graph
+    }
+
+    /// Returns the source node id.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Returns the traversal direction.
+    pub const fn direction(&self) -> GraphDirection {
+        self.direction
+    }
+
+    /// Returns the distance per reachable node id.
+    pub const fn distances(&self) -> &std::collections::BTreeMap<String, f64> {
+        &self.distances
+    }
+}
+
+/// `PageRank` result (wire form).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphPagerankData {
+    graph: String,
+    ranks: std::collections::BTreeMap<String, f64>,
+    iterations: u64,
+    personalized: bool,
+}
+
+impl GraphPagerankData {
+    /// Creates rank output data.
+    pub const fn new(
+        graph: String,
+        ranks: std::collections::BTreeMap<String, f64>,
+        iterations: u64,
+        personalized: bool,
+    ) -> Self {
+        Self {
+            graph,
+            ranks,
+            iterations,
+            personalized,
+        }
+    }
+
+    /// Returns the graph name.
+    pub fn graph(&self) -> &str {
+        &self.graph
+    }
+
+    /// Returns the rank per node id.
+    pub const fn ranks(&self) -> &std::collections::BTreeMap<String, f64> {
+        &self.ranks
+    }
+
+    /// Returns the number of power iterations performed.
+    pub const fn iterations(&self) -> u64 {
+        self.iterations
+    }
+
+    /// Returns true when seed weights steered the walk.
+    pub const fn personalized(&self) -> bool {
+        self.personalized
+    }
+}
+
+/// Community-detection result (wire form). Every node maps to its
+/// community representative node id.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct GraphCdlpData {
+    graph: String,
+    labels: std::collections::BTreeMap<String, String>,
+}
+
+impl GraphCdlpData {
+    /// Creates community output data.
+    pub const fn new(graph: String, labels: std::collections::BTreeMap<String, String>) -> Self {
+        Self { graph, labels }
+    }
+
+    /// Returns the graph name.
+    pub fn graph(&self) -> &str {
+        &self.graph
+    }
+
+    /// Returns each node's community representative, keyed by node id.
+    pub const fn labels(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.labels
+    }
+}
+
+/// One traversal step recorded by a breadth-first search (wire form).
+/// `src`/`dst` follow traversal order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphBfsEdgeData {
+    src: String,
+    dst: String,
+    edge_type: String,
+    weight: f64,
+}
+
+impl GraphBfsEdgeData {
+    /// Creates traversal edge output data.
+    pub const fn new(src: String, dst: String, edge_type: String, weight: f64) -> Self {
+        Self {
+            src,
+            dst,
+            edge_type,
+            weight,
+        }
+    }
+
+    /// Returns the node the traversal came from.
+    pub fn src(&self) -> &str {
+        &self.src
+    }
+
+    /// Returns the node the traversal reached.
+    pub fn dst(&self) -> &str {
+        &self.dst
+    }
+
+    /// Returns the edge type.
+    pub fn edge_type(&self) -> &str {
+        &self.edge_type
+    }
+
+    /// Returns the edge weight.
+    pub const fn weight(&self) -> f64 {
+        self.weight
+    }
+}
+
+/// Breadth-first-search result (wire form).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphBfsData {
+    graph: String,
+    start: String,
+    visited: Vec<String>,
+    depths: std::collections::BTreeMap<String, u64>,
+    edges: Vec<GraphBfsEdgeData>,
+}
+
+impl GraphBfsData {
+    /// Creates traversal output data.
+    pub const fn new(
+        graph: String,
+        start: String,
+        visited: Vec<String>,
+        depths: std::collections::BTreeMap<String, u64>,
+        edges: Vec<GraphBfsEdgeData>,
+    ) -> Self {
+        Self {
+            graph,
+            start,
+            visited,
+            depths,
+            edges,
+        }
+    }
+
+    /// Returns the graph name.
+    pub fn graph(&self) -> &str {
+        &self.graph
+    }
+
+    /// Returns the start node id.
+    pub fn start(&self) -> &str {
+        &self.start
+    }
+
+    /// Returns the visited node ids in breadth-first order.
+    pub fn visited(&self) -> &[String] {
+        &self.visited
+    }
+
+    /// Returns the depth per visited node id.
+    pub const fn depths(&self) -> &std::collections::BTreeMap<String, u64> {
+        &self.depths
+    }
+
+    /// Returns the tree edges in discovery order.
+    pub fn edges(&self) -> &[GraphBfsEdgeData] {
+        &self.edges
+    }
+}
+
+/// One node in a bulk ingest (input form).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphBulkNode {
+    /// Node id.
+    node_id: String,
+    /// Optional JSON properties.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    properties: Option<Value>,
+    /// Optional entity binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    binding: Option<GraphEntityBinding>,
+    /// Optional declared object type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    object_type: Option<String>,
+}
+
+impl GraphBulkNode {
+    /// Creates a bulk node entry.
+    #[must_use]
+    pub const fn new(
+        node_id: String,
+        properties: Option<Value>,
+        binding: Option<GraphEntityBinding>,
+        object_type: Option<String>,
+    ) -> Self {
+        Self {
+            node_id,
+            properties,
+            binding,
+            object_type,
+        }
+    }
+
+    /// Splits the entry into its parts.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        String,
+        Option<Value>,
+        Option<GraphEntityBinding>,
+        Option<String>,
+    ) {
+        (
+            self.node_id,
+            self.properties,
+            self.binding,
+            self.object_type,
+        )
+    }
+}
+
+/// One edge in a bulk ingest (input form).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphBulkEdge {
+    /// Source node id.
+    src: String,
+    /// Edge type.
+    edge_type: String,
+    /// Destination node id.
+    dst: String,
+    /// Optional weight. Defaults to 1.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    weight: Option<f64>,
+    /// Optional JSON properties.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    properties: Option<Value>,
+}
+
+impl GraphBulkEdge {
+    /// Creates a bulk edge entry.
+    #[must_use]
+    pub const fn new(
+        src: String,
+        edge_type: String,
+        dst: String,
+        weight: Option<f64>,
+        properties: Option<Value>,
+    ) -> Self {
+        Self {
+            src,
+            edge_type,
+            dst,
+            weight,
+            properties,
+        }
+    }
+
+    /// Splits the entry into its parts.
+    #[must_use]
+    pub fn into_parts(self) -> (String, String, String, Option<f64>, Option<Value>) {
+        (
+            self.src,
+            self.edge_type,
+            self.dst,
+            self.weight,
+            self.properties,
+        )
     }
 }

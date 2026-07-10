@@ -1,0 +1,12 @@
+{
+  "type": "graph_wcc_result",
+  "data": {
+    "graph": "deps",
+    "components": {
+      "node-a": "node-a",
+      "node-b": "node-a",
+      "node-c": "node-c"
+    },
+    "component_count": 2
+  }
+}

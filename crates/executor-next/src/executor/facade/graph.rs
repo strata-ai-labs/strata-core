@@ -1,6 +1,6 @@
 use super::super::{
-    Command, Executor, ExecutorResult, GraphBatchOperation, GraphBindingTarget, GraphDirection,
-    GraphEntityBinding, Output,
+    Command, Executor, ExecutorResult, GraphBatchOperation, GraphBindingTarget, GraphBulkEdge,
+    GraphBulkNode, GraphDeletePolicy, GraphDirection, GraphEntityBinding, Output,
 };
 
 impl Executor {
@@ -357,6 +357,131 @@ impl Executor {
             space: None,
             graph: graph.into(),
             operations,
+        })
+    }
+
+    /// Executes a default-branch weakly-connected-components command.
+    pub fn graph_wcc(&mut self, graph: impl Into<String>) -> ExecutorResult<Output> {
+        self.execute(Command::GraphWcc {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            budget: None,
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch clustering-coefficient command.
+    pub fn graph_lcc(&mut self, graph: impl Into<String>) -> ExecutorResult<Output> {
+        self.execute(Command::GraphLcc {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            budget: None,
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch shortest-path command.
+    pub fn graph_sssp(
+        &mut self,
+        graph: impl Into<String>,
+        source: impl Into<String>,
+        direction: Option<GraphDirection>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphSssp {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            source: source.into(),
+            direction,
+            budget: None,
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch `PageRank` command, personalized when
+    /// seed weights are provided.
+    pub fn graph_pagerank(
+        &mut self,
+        graph: impl Into<String>,
+        personalization: Option<std::collections::BTreeMap<String, f64>>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphPagerank {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            damping: None,
+            max_iterations: None,
+            tolerance: None,
+            personalization,
+            budget: None,
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch community-detection command.
+    pub fn graph_cdlp(&mut self, graph: impl Into<String>) -> ExecutorResult<Output> {
+        self.execute(Command::GraphCdlp {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            max_iterations: None,
+            direction: None,
+            budget: None,
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch breadth-first-traversal command.
+    pub fn graph_bfs(
+        &mut self,
+        graph: impl Into<String>,
+        start: impl Into<String>,
+        direction: Option<GraphDirection>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphBfs {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            start: start.into(),
+            max_depth: None,
+            max_nodes: None,
+            edge_types: None,
+            direction,
+            budget: None,
+            as_of: None,
+        })
+    }
+
+    /// Executes a default-branch delete-policy application.
+    pub fn graph_apply_delete_policy(
+        &mut self,
+        target: GraphBindingTarget,
+        policy: GraphDeletePolicy,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphApplyDeletePolicy {
+            branch: None,
+            space: None,
+            target,
+            policy,
+        })
+    }
+
+    /// Executes a default-branch bulk ingest.
+    pub fn graph_bulk_insert(
+        &mut self,
+        graph: impl Into<String>,
+        nodes: Vec<GraphBulkNode>,
+        edges: Vec<GraphBulkEdge>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphBulkInsert {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            nodes,
+            edges,
+            chunk_size: None,
         })
     }
 }

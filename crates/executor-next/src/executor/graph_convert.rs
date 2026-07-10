@@ -1,21 +1,28 @@
 use super::{
     branch_name, commit_receipt, delete_effect, graph_batch_result, product_space, upsert_effect,
-    usize_to_u64, CommitOutcome, EngineGraphBatchOpOutcome, EngineGraphBatchOperation,
-    EngineGraphBatchWriteOutcome, EngineGraphBinding, EngineGraphBindingPage,
-    EngineGraphBindingPrimitive, EngineGraphBindingTarget, EngineGraphDeleteOutcome,
-    EngineGraphDirection, EngineGraphEdge, EngineGraphEdgeData, EngineGraphEdgeType,
-    EngineGraphEdgeWriteOutcome, EngineGraphEntityBinding, EngineGraphInfo, EngineGraphLinkTypeDef,
+    usize_to_u64, CommitOutcome, EngineGraphAdjacencyIndex, EngineGraphAnalyticsBudget,
+    EngineGraphBatchOpOutcome, EngineGraphBatchOperation, EngineGraphBatchWriteOutcome,
+    EngineGraphBfsOptions, EngineGraphBfsResult, EngineGraphBinding, EngineGraphBindingPage,
+    EngineGraphBindingPrimitive, EngineGraphBindingTarget, EngineGraphBulkInsertOutcome,
+    EngineGraphCdlpOptions, EngineGraphCdlpResult, EngineGraphDeleteOutcome,
+    EngineGraphDeletePolicy, EngineGraphDeletePolicyOutcome, EngineGraphDirection, EngineGraphEdge,
+    EngineGraphEdgeData, EngineGraphEdgeType, EngineGraphEdgeWriteOutcome,
+    EngineGraphEntityBinding, EngineGraphInfo, EngineGraphLccResult, EngineGraphLinkTypeDef,
     EngineGraphName, EngineGraphNamePage, EngineGraphNeighbor, EngineGraphNeighborPage,
     EngineGraphNode, EngineGraphNodeData, EngineGraphNodeId, EngineGraphNodePage,
     EngineGraphObjectTypeDef, EngineGraphOntology, EngineGraphOntologyFreezeOutcome,
     EngineGraphOntologyStatus, EngineGraphOntologySummary, EngineGraphOntologyWriteOutcome,
-    EngineGraphProperties, EngineGraphPropertyDef, EngineGraphTypeName, EngineGraphWriteOutcome,
-    ExecutorError, ExecutorResult, GraphBatchItemResult, GraphBatchOperation, GraphBindingHit,
-    GraphBindingPrimitive, GraphBindingTarget, GraphDirection, GraphEdgeData, GraphEdgeDataOutput,
-    GraphEntityBinding, GraphInfoData, GraphLinkTypeDefData, GraphLinkTypeSummaryData,
-    GraphNeighborHit, GraphNodeData, GraphNodeDataOutput, GraphObjectTypeDefData,
-    GraphObjectTypeSummaryData, GraphOntologyData, GraphOntologySummaryData, GraphPropertyDef,
-    MutationEffect, Output, PageInfo, DEFAULT_BRANCH, DEFAULT_SPACE,
+    EngineGraphPageRankOptions, EngineGraphPageRankResult, EngineGraphProperties,
+    EngineGraphPropertyDef, EngineGraphSsspResult, EngineGraphTargetStatus, EngineGraphTypeName,
+    EngineGraphWccResult, EngineGraphWriteOutcome, ExecutorError, ExecutorResult,
+    GraphAnalyticsBudget, GraphBatchItemResult, GraphBatchOperation, GraphBfsData,
+    GraphBfsEdgeData, GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget, GraphBulkEdge,
+    GraphBulkNode, GraphCdlpData, GraphDeletePolicy, GraphDirection, GraphEdgeData,
+    GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData, GraphLccData, GraphLinkTypeDefData,
+    GraphLinkTypeSummaryData, GraphNeighborHit, GraphNodeData, GraphNodeDataOutput,
+    GraphObjectTypeDefData, GraphObjectTypeSummaryData, GraphOntologyData,
+    GraphOntologySummaryData, GraphPagerankData, GraphPropertyDef, GraphSsspData, GraphWccData,
+    MutationEffect, MutationEffectKind, Output, PageInfo, DEFAULT_BRANCH, DEFAULT_SPACE,
 };
 
 pub(super) fn graph_name(name: String) -> ExecutorResult<EngineGraphName> {
@@ -254,7 +261,117 @@ pub(super) fn graph_neighbor_hit(neighbor: &EngineGraphNeighbor) -> GraphNeighbo
         graph_node_data_output(neighbor.node()),
         graph_edge_data_output(neighbor.edge()),
         output_graph_direction(neighbor.direction()),
+        neighbor
+            .target_status()
+            .map(|status| graph_target_status(status).to_owned()),
     )
+}
+
+pub(super) fn engine_graph_bulk_nodes(
+    nodes: Vec<GraphBulkNode>,
+) -> ExecutorResult<Vec<(EngineGraphNodeId, EngineGraphNodeData)>> {
+    nodes
+        .into_iter()
+        .map(|node| {
+            let (node_id, properties, binding, object_type) = node.into_parts();
+            let mut data = GraphNodeData::new(properties, binding);
+            if let Some(object_type) = object_type {
+                data = data.with_object_type(object_type);
+            }
+            Ok((graph_node_id(node_id)?, engine_graph_node_data(data)?))
+        })
+        .collect()
+}
+
+pub(super) fn engine_graph_bulk_edges(
+    edges: Vec<GraphBulkEdge>,
+) -> ExecutorResult<
+    Vec<(
+        EngineGraphNodeId,
+        EngineGraphEdgeType,
+        EngineGraphNodeId,
+        EngineGraphEdgeData,
+    )>,
+> {
+    edges
+        .into_iter()
+        .map(|edge| {
+            let (src, edge_type, dst, weight, properties) = edge.into_parts();
+            Ok((
+                graph_node_id(src)?,
+                graph_edge_type(edge_type)?,
+                graph_node_id(dst)?,
+                engine_graph_edge_data(GraphEdgeData::new(weight, properties))?,
+            ))
+        })
+        .collect()
+}
+
+pub(super) fn graph_bulk_insert_output(outcome: &EngineGraphBulkInsertOutcome) -> Output {
+    Output::GraphBulkInsertResult {
+        graph: outcome.graph().as_str().to_owned(),
+        nodes_inserted: outcome.nodes_inserted(),
+        edges_inserted: outcome.edges_inserted(),
+        commits: outcome.commits(),
+        commit: outcome.last_commit().map(|commit| commit_receipt(*commit)),
+        version: outcome
+            .last_commit()
+            .map(|commit| commit.version().as_u64()),
+        timestamp: outcome
+            .last_commit()
+            .map(|commit| commit.timestamp().as_micros()),
+    }
+}
+
+pub(super) const fn engine_graph_delete_policy(
+    policy: GraphDeletePolicy,
+) -> EngineGraphDeletePolicy {
+    match policy {
+        GraphDeletePolicy::Cascade => EngineGraphDeletePolicy::Cascade,
+        GraphDeletePolicy::Detach => EngineGraphDeletePolicy::Detach,
+        GraphDeletePolicy::KeepDangling => EngineGraphDeletePolicy::KeepDangling,
+    }
+}
+
+pub(super) fn graph_delete_policy_output(outcome: &EngineGraphDeletePolicyOutcome) -> Output {
+    let policy = match outcome.policy() {
+        EngineGraphDeletePolicy::Cascade => "cascade",
+        EngineGraphDeletePolicy::Detach => "detach",
+        EngineGraphDeletePolicy::KeepDangling => "keep_dangling",
+    };
+    let matched = outcome.nodes_affected() > 0;
+    let kind = match outcome.policy() {
+        _ if outcome.commit().is_none() => MutationEffectKind::Unchanged,
+        EngineGraphDeletePolicy::Cascade => MutationEffectKind::Deleted,
+        _ => MutationEffectKind::Updated,
+    };
+    Output::GraphDeletePolicyResult {
+        policy: policy.to_owned(),
+        nodes_affected: outcome.nodes_affected(),
+        effect: MutationEffect::new(
+            outcome.commit().is_some(),
+            kind,
+            matched,
+            outcome.nodes_affected(),
+        ),
+        commit: outcome.commit().map(|commit| commit_receipt(*commit)),
+        version: outcome.commit().map(|commit| commit.version().as_u64()),
+        timestamp: outcome
+            .commit()
+            .map(|commit| commit.timestamp().as_micros()),
+    }
+}
+
+pub(super) fn graph_target_status(status: EngineGraphTargetStatus) -> &'static str {
+    match status {
+        EngineGraphTargetStatus::Present => "present",
+        EngineGraphTargetStatus::Deleted => "deleted",
+        EngineGraphTargetStatus::Missing => "missing",
+        EngineGraphTargetStatus::MalformedTarget => "malformed_target",
+        // Unsupported, plus any future state the non-exhaustive contract
+        // vocabulary adds before it gains a deliberate wire name.
+        _ => "unsupported",
+    }
 }
 
 pub(super) fn graph_binding_hit(binding: &EngineGraphBinding) -> GraphBindingHit {
@@ -562,4 +679,244 @@ pub(super) fn graph_ontology_freeze_output(outcome: &EngineGraphOntologyFreezeOu
         version: commit.version().as_u64(),
         timestamp: commit.timestamp().as_micros(),
     }
+}
+
+fn analytics_bound(value: u64, field: &'static str) -> ExecutorResult<usize> {
+    usize::try_from(value)
+        .map_err(|_| ExecutorError::invalid_input("invalid_argument.executor.limit", field))
+}
+
+pub(super) fn engine_graph_budget(
+    budget: Option<GraphAnalyticsBudget>,
+) -> ExecutorResult<EngineGraphAnalyticsBudget> {
+    let defaults = EngineGraphAnalyticsBudget::default();
+    let budget = budget.unwrap_or_default();
+    Ok(EngineGraphAnalyticsBudget::new(
+        budget
+            .max_nodes()
+            .map(|value| analytics_bound(value, "budget max_nodes does not fit this platform"))
+            .transpose()?
+            .unwrap_or(defaults.max_nodes()),
+        budget
+            .max_edges()
+            .map(|value| analytics_bound(value, "budget max_edges does not fit this platform"))
+            .transpose()?
+            .unwrap_or(defaults.max_edges()),
+    ))
+}
+
+pub(super) fn engine_graph_pagerank_options(
+    damping: Option<f64>,
+    max_iterations: Option<u64>,
+    tolerance: Option<f64>,
+) -> ExecutorResult<EngineGraphPageRankOptions> {
+    let defaults = EngineGraphPageRankOptions::default();
+    let max_iterations = max_iterations
+        .map(|value| analytics_bound(value, "max_iterations does not fit this platform"))
+        .transpose()?
+        .unwrap_or(defaults.max_iterations());
+    EngineGraphPageRankOptions::new(
+        damping.unwrap_or(defaults.damping()),
+        max_iterations,
+        tolerance.unwrap_or(defaults.tolerance()),
+    )
+    .map_err(ExecutorError::from)
+}
+
+pub(super) fn engine_graph_cdlp_options(
+    max_iterations: Option<u64>,
+    direction: Option<GraphDirection>,
+) -> ExecutorResult<EngineGraphCdlpOptions> {
+    let defaults = EngineGraphCdlpOptions::default();
+    Ok(EngineGraphCdlpOptions::new(
+        max_iterations
+            .map(|value| analytics_bound(value, "max_iterations does not fit this platform"))
+            .transpose()?
+            .unwrap_or(defaults.max_iterations()),
+        direction.map_or(defaults.direction(), engine_graph_direction),
+    ))
+}
+
+pub(super) fn engine_graph_bfs_options(
+    max_depth: Option<u64>,
+    max_nodes: Option<u64>,
+    edge_types: Option<Vec<String>>,
+    direction: Option<GraphDirection>,
+) -> ExecutorResult<EngineGraphBfsOptions> {
+    let defaults = EngineGraphBfsOptions::default();
+    let max_depth = max_depth
+        .map(|value| analytics_bound(value, "max_depth does not fit this platform"))
+        .transpose()?
+        .unwrap_or(defaults.max_depth());
+    let max_nodes = max_nodes
+        .map(|value| analytics_bound(value, "max_nodes does not fit this platform"))
+        .transpose()?
+        .map_or(defaults.max_nodes(), Some);
+    let edge_types = edge_types
+        .map(|types| {
+            types
+                .into_iter()
+                .map(graph_edge_type)
+                .collect::<ExecutorResult<Vec<_>>>()
+        })
+        .transpose()?;
+    Ok(EngineGraphBfsOptions::new(
+        max_depth,
+        max_nodes,
+        edge_types,
+        direction.map_or(EngineGraphDirection::Outgoing, engine_graph_direction),
+    ))
+}
+
+pub(super) fn engine_graph_personalization(
+    personalization: std::collections::BTreeMap<String, f64>,
+) -> ExecutorResult<std::collections::HashMap<EngineGraphNodeId, f64>> {
+    personalization
+        .into_iter()
+        .map(|(node_id, weight)| Ok((graph_node_id(node_id)?, weight)))
+        .collect()
+}
+
+/// Maps every node id to its component/community representative: the
+/// node id at the label index.
+fn representative_map(
+    index: &EngineGraphAdjacencyIndex,
+    labels: &[usize],
+) -> std::collections::BTreeMap<String, String> {
+    index
+        .node_ids()
+        .iter()
+        .zip(labels)
+        .map(|(node_id, label)| {
+            let representative = index
+                .node_id(*label)
+                .map_or_else(|| node_id.as_str(), EngineGraphNodeId::as_str);
+            (node_id.as_str().to_owned(), representative.to_owned())
+        })
+        .collect()
+}
+
+pub(super) fn graph_wcc_output(
+    index: &EngineGraphAdjacencyIndex,
+    result: &EngineGraphWccResult,
+) -> Output {
+    Output::GraphWccResult(GraphWccData::new(
+        index.graph().as_str().to_owned(),
+        representative_map(index, result.components()),
+        usize_to_u64(result.component_count()),
+    ))
+}
+
+pub(super) fn graph_lcc_output(
+    index: &EngineGraphAdjacencyIndex,
+    result: &EngineGraphLccResult,
+) -> Output {
+    Output::GraphLccResult(GraphLccData::new(
+        index.graph().as_str().to_owned(),
+        index
+            .node_ids()
+            .iter()
+            .zip(result.coefficients())
+            .map(|(node_id, coefficient)| (node_id.as_str().to_owned(), *coefficient))
+            .collect(),
+    ))
+}
+
+pub(super) fn graph_sssp_output(
+    index: &EngineGraphAdjacencyIndex,
+    direction: GraphDirection,
+    result: &EngineGraphSsspResult,
+) -> Output {
+    let source = index
+        .node_id(result.source())
+        .map_or("", EngineGraphNodeId::as_str)
+        .to_owned();
+    let distances = index
+        .node_ids()
+        .iter()
+        .zip(result.distances())
+        .filter_map(|(node_id, distance)| {
+            distance.map(|distance| (node_id.as_str().to_owned(), distance))
+        })
+        .collect();
+    Output::GraphSsspResult(GraphSsspData::new(
+        index.graph().as_str().to_owned(),
+        source,
+        direction,
+        distances,
+    ))
+}
+
+pub(super) fn graph_pagerank_output(
+    index: &EngineGraphAdjacencyIndex,
+    result: &EngineGraphPageRankResult,
+    personalized: bool,
+) -> Output {
+    Output::GraphPagerankResult(GraphPagerankData::new(
+        index.graph().as_str().to_owned(),
+        index
+            .node_ids()
+            .iter()
+            .zip(result.ranks())
+            .map(|(node_id, rank)| (node_id.as_str().to_owned(), *rank))
+            .collect(),
+        usize_to_u64(result.iterations()),
+        personalized,
+    ))
+}
+
+pub(super) fn graph_cdlp_output(
+    index: &EngineGraphAdjacencyIndex,
+    result: &EngineGraphCdlpResult,
+) -> Output {
+    Output::GraphCdlpResult(GraphCdlpData::new(
+        index.graph().as_str().to_owned(),
+        representative_map(index, result.labels()),
+    ))
+}
+
+pub(super) fn graph_bfs_output(
+    index: &EngineGraphAdjacencyIndex,
+    start: &EngineGraphNodeId,
+    result: &EngineGraphBfsResult,
+) -> Output {
+    let resolve = |position: usize| {
+        index
+            .node_id(position)
+            .map_or("", EngineGraphNodeId::as_str)
+            .to_owned()
+    };
+    let visited: Vec<String> = result.visited().iter().map(|node| resolve(*node)).collect();
+    let depths = result
+        .visited()
+        .iter()
+        .filter_map(|node| {
+            result
+                .depth(*node)
+                .map(|depth| (resolve(*node), usize_to_u64(depth)))
+        })
+        .collect();
+    let edges = result
+        .edges()
+        .iter()
+        .map(|edge| {
+            let edge_type = index
+                .edge_type_name(edge.edge_type())
+                .map_or("", EngineGraphEdgeType::as_str)
+                .to_owned();
+            GraphBfsEdgeData::new(
+                resolve(edge.source()),
+                resolve(edge.target()),
+                edge_type,
+                edge.weight(),
+            )
+        })
+        .collect();
+    Output::GraphBfsResult(GraphBfsData::new(
+        index.graph().as_str().to_owned(),
+        start.as_str().to_owned(),
+        visited,
+        depths,
+        edges,
+    ))
 }

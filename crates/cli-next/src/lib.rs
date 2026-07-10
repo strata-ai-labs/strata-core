@@ -956,7 +956,131 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             as_of,
         },
         GraphCommand::Ontology(args) => graph_ontology_command(args.command, scope)?,
-        GraphCommand::Analytics(_) => return Err(deferred_command("graph analytics")),
+        GraphCommand::Wcc { graph, as_of } => Command::GraphWcc {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            budget: None,
+            as_of,
+        },
+        GraphCommand::Lcc { graph, as_of } => Command::GraphLcc {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            budget: None,
+            as_of,
+        },
+        GraphCommand::Sssp {
+            graph,
+            source,
+            direction,
+            as_of,
+        } => Command::GraphSssp {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            source,
+            direction: Some(direction.into()),
+            budget: None,
+            as_of,
+        },
+        GraphCommand::Pagerank {
+            graph,
+            damping,
+            max_iterations,
+            tolerance,
+            personalization,
+            as_of,
+        } => Command::GraphPagerank {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            damping,
+            max_iterations,
+            tolerance,
+            personalization: personalization
+                .as_deref()
+                .map(parse_personalization)
+                .transpose()?,
+            budget: None,
+            as_of,
+        },
+        GraphCommand::Cdlp {
+            graph,
+            max_iterations,
+            direction,
+            as_of,
+        } => Command::GraphCdlp {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            max_iterations,
+            direction: Some(direction.into()),
+            budget: None,
+            as_of,
+        },
+        GraphCommand::BulkInsert {
+            graph,
+            data,
+            file,
+            chunk_size,
+        } => {
+            let payload =
+                parse_json_argument(data.as_deref(), file.as_ref(), "bulk-insert payload")?;
+            let payload: BulkInsertPayload = serde_json::from_value(payload).map_err(|error| {
+                CliError::usage(format!(
+                    "bulk-insert payload must be {{\"nodes\": [...], \"edges\": [...]}}: {error}"
+                ))
+            })?;
+            Command::GraphBulkInsert {
+                branch: scope.branch.clone(),
+                space: scope.space.clone(),
+                graph,
+                nodes: payload.nodes,
+                edges: payload.edges,
+                chunk_size,
+            }
+        }
+        GraphCommand::Bfs {
+            graph,
+            start,
+            max_depth,
+            max_nodes,
+            edge_types,
+            direction,
+            as_of,
+        } => Command::GraphBfs {
+            branch: scope.branch.clone(),
+            space: scope.space.clone(),
+            graph,
+            start,
+            max_depth,
+            max_nodes,
+            edge_types: if edge_types.is_empty() {
+                None
+            } else {
+                Some(edge_types)
+            },
+            direction: Some(direction.into()),
+            budget: None,
+            as_of,
+        },
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct BulkInsertPayload {
+    #[serde(default)]
+    nodes: Vec<strata_executor_next::GraphBulkNode>,
+    #[serde(default)]
+    edges: Vec<strata_executor_next::GraphBulkEdge>,
+}
+
+fn parse_personalization(raw: &str) -> Result<std::collections::BTreeMap<String, f64>, CliError> {
+    serde_json::from_str(raw).map_err(|error| {
+        CliError::usage(format!(
+            "personalization must be a JSON object mapping node ids to weights: {error}"
+        ))
     })
 }
 

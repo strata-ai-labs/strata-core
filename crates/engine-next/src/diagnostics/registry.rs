@@ -62,6 +62,8 @@ const INVALID_INPUT_CODES: &[&str] = &[
     "invalid_argument.engine.graph_node_id",
     "invalid_argument.engine.graph_node_record",
     "invalid_argument.engine.graph_ontology_record",
+    "invalid_argument.engine.graph_pagerank_options",
+    "invalid_argument.engine.graph_personalization",
     "invalid_argument.engine.graph_properties",
     "invalid_argument.engine.graph_properties_too_large",
     "invalid_argument.engine.graph_property_name",
@@ -113,6 +115,7 @@ const INVALID_INPUT_CODES: &[&str] = &[
 const NOT_FOUND_CODES: &[&str] = &[
     "not_found.engine.branch",
     "not_found.engine.graph",
+    "not_found.engine.graph_node",
     "not_found.engine.json_document",
     "not_found.engine.persistence",
     "not_found.engine.vector_collection",
@@ -128,6 +131,7 @@ const CONFLICT_CODES: &[&str] = &[
     "already_exists.engine.vector_collection",
     "conflict.engine.branch_generation",
     "conflict.engine.persistence",
+    "failed_precondition.engine.graph_negative_weight",
     "failed_precondition.engine.graph_ontology_edge_type",
     "failed_precondition.engine.graph_ontology_endpoint_type",
     "failed_precondition.engine.graph_ontology_freeze",
@@ -144,7 +148,10 @@ const UNSUPPORTED_CODES: &[&str] = &[
     "unsupported.engine.graph_binding_cross_branch",
 ];
 
-const RESOURCE_EXHAUSTED_CODES: &[&str] = &["resource_exhausted.engine.persistence_budget"];
+const RESOURCE_EXHAUSTED_CODES: &[&str] = &[
+    "resource_exhausted.engine.graph_analytics_budget",
+    "resource_exhausted.engine.persistence_budget",
+];
 
 const CORRUPTION_CODES: &[&str] = &[
     "corruption.engine.persistence_recovery",
@@ -395,6 +402,7 @@ fn class_prefixed_message(code: &str) -> Option<&'static str> {
     Some(match code {
         "not_found.engine.branch" => "The requested branch was not found.",
         "not_found.engine.graph" => "The requested graph was not found.",
+        "not_found.engine.graph_node" => "The requested graph node was not found.",
         "not_found.engine.json_document" => "The requested JSON document was not found.",
         "not_found.engine.vector_collection" => "The requested vector collection was not found.",
         "not_found.engine.persistence" => "The requested resource was not found.",
@@ -417,6 +425,9 @@ fn class_prefixed_suggested_fix(code: &str) -> Option<&'static str> {
             "List branches or use the default branch, then retry with an existing branch name."
         }
         "not_found.engine.graph" => "List graphs, then retry with an existing graph name.",
+        "not_found.engine.graph_node" => {
+            "List the graph's nodes, then retry with an existing node id."
+        }
         "not_found.engine.json_document" => {
             "List documents or create the document before reading it."
         }

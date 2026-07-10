@@ -32,15 +32,18 @@ pub use event::{
     EventVersionedRecord,
 };
 pub use graph::{
-    GraphBatchOpOutcome, GraphBatchOperation, GraphBatchWrite, GraphBatchWriteOutcome,
-    GraphBinding, GraphBindingPage, GraphBindingPrimitive, GraphBindingTarget, GraphDeleteOutcome,
-    GraphDirection, GraphEdge, GraphEdgeData, GraphEdgeType, GraphEdgeWriteOutcome,
-    GraphEntityBinding, GraphInfo, GraphLinkTypeDef, GraphLinkTypeSummary, GraphName,
-    GraphNamePage, GraphNeighbor, GraphNeighborPage, GraphNode, GraphNodeData, GraphNodeId,
-    GraphNodePage, GraphObjectTypeDef, GraphObjectTypeSummary, GraphOntology,
-    GraphOntologyFreezeOutcome, GraphOntologyStatus, GraphOntologySummary,
-    GraphOntologyWriteOutcome, GraphProperties, GraphPropertyDef, GraphService, GraphTypeName,
-    GraphWriteOutcome,
+    GraphAdjacencyEdge, GraphAdjacencyIndex, GraphAnalyticsBudget, GraphBatchOpOutcome,
+    GraphBatchOperation, GraphBatchWrite, GraphBatchWriteOutcome, GraphBfsOptions, GraphBfsResult,
+    GraphBinding, GraphBindingPage, GraphBindingPrimitive, GraphBindingTarget,
+    GraphBulkInsertOutcome, GraphCdlpOptions, GraphCdlpResult, GraphDeleteOutcome,
+    GraphDeletePolicy, GraphDeletePolicyOutcome, GraphDirection, GraphEdge, GraphEdgeData,
+    GraphEdgeType, GraphEdgeWriteOutcome, GraphEntityBinding, GraphInfo, GraphLccResult,
+    GraphLinkTypeDef, GraphLinkTypeSummary, GraphName, GraphNamePage, GraphNeighbor,
+    GraphNeighborPage, GraphNode, GraphNodeData, GraphNodeId, GraphNodePage, GraphObjectTypeDef,
+    GraphObjectTypeSummary, GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyStatus,
+    GraphOntologySummary, GraphOntologyWriteOutcome, GraphPageRankOptions, GraphPageRankResult,
+    GraphProperties, GraphPropertyDef, GraphService, GraphSsspResult, GraphSubgraphResult,
+    GraphTargetStatus, GraphTraversalEdge, GraphTypeName, GraphWccResult, GraphWriteOutcome,
 };
 pub use json::{
     JsonBatchDeleteOutcome, JsonBatchSetItemOutcome, JsonBatchSetOutcome, JsonDeleteOutcome,

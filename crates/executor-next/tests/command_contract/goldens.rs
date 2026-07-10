@@ -165,6 +165,14 @@ fn public_response_family_goldens_match_public_json() {
             include_str!("../fixtures/responses/v1/graph/ontology_read.json"),
         ),
         (
+            Output::GraphWccResult(graph_wcc_output()),
+            include_str!("../fixtures/responses/v1/graph/wcc_result.json"),
+        ),
+        (
+            Output::GraphBfsResult(graph_bfs_output()),
+            include_str!("../fixtures/responses/v1/graph/bfs_result.json"),
+        ),
+        (
             Output::ArrowImportResult(ArrowImportResult::new(
                 ArrowImportTarget::Kv,
                 "input.parquet".to_owned(),

@@ -305,14 +305,21 @@ pub struct GraphNeighbor {
     node: GraphNode,
     edge: GraphEdge,
     direction: GraphDirection,
+    target_status: Option<GraphTargetStatus>,
 }
 
 impl GraphNeighbor {
-    pub(crate) const fn new(node: GraphNode, edge: GraphEdge, direction: GraphDirection) -> Self {
+    pub(crate) const fn new(
+        node: GraphNode,
+        edge: GraphEdge,
+        direction: GraphDirection,
+        target_status: Option<GraphTargetStatus>,
+    ) -> Self {
         Self {
             node,
             edge,
             direction,
+            target_status,
         }
     }
 
@@ -333,6 +340,131 @@ impl GraphNeighbor {
     pub const fn direction(&self) -> GraphDirection {
         self.direction
     }
+
+    #[must_use]
+    /// Returns the neighbor's bound-entity status (`None` when the node
+    /// has no binding), resolved at the read's temporal context.
+    pub const fn target_status(&self) -> Option<GraphTargetStatus> {
+        self.target_status
+    }
+}
+
+/// Result of one chunked bulk ingest.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphBulkInsertOutcome {
+    graph: GraphName,
+    nodes_inserted: u64,
+    edges_inserted: u64,
+    commits: u64,
+    last_commit: Option<CommitOutcome>,
+}
+
+impl GraphBulkInsertOutcome {
+    pub(crate) const fn new(
+        graph: GraphName,
+        nodes_inserted: u64,
+        edges_inserted: u64,
+        commits: u64,
+        last_commit: Option<CommitOutcome>,
+    ) -> Self {
+        Self {
+            graph,
+            nodes_inserted,
+            edges_inserted,
+            commits,
+            last_commit,
+        }
+    }
+
+    #[must_use]
+    /// Returns the graph name.
+    pub const fn graph(&self) -> &GraphName {
+        &self.graph
+    }
+
+    #[must_use]
+    /// Returns how many node upserts the ingest applied.
+    pub const fn nodes_inserted(&self) -> u64 {
+        self.nodes_inserted
+    }
+
+    #[must_use]
+    /// Returns how many edge upserts the ingest applied.
+    pub const fn edges_inserted(&self) -> u64 {
+        self.edges_inserted
+    }
+
+    #[must_use]
+    /// Returns how many chunk commits the ingest produced.
+    pub const fn commits(&self) -> u64 {
+        self.commits
+    }
+
+    #[must_use]
+    /// Returns the final chunk's commit, when any chunk committed.
+    pub const fn last_commit(&self) -> Option<&CommitOutcome> {
+        self.last_commit.as_ref()
+    }
+}
+
+/// Result of applying a delete policy to every graph fact bound to
+/// one entity target.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphDeletePolicyOutcome {
+    policy: super::GraphDeletePolicy,
+    nodes_affected: u64,
+    commit: Option<CommitOutcome>,
+}
+
+impl GraphDeletePolicyOutcome {
+    pub(crate) const fn new(
+        policy: super::GraphDeletePolicy,
+        nodes_affected: u64,
+        commit: Option<CommitOutcome>,
+    ) -> Self {
+        Self {
+            policy,
+            nodes_affected,
+            commit,
+        }
+    }
+
+    #[must_use]
+    /// Returns the applied policy.
+    pub const fn policy(&self) -> super::GraphDeletePolicy {
+        self.policy
+    }
+
+    #[must_use]
+    /// Returns how many bound nodes the policy covered.
+    pub const fn nodes_affected(&self) -> u64 {
+        self.nodes_affected
+    }
+
+    #[must_use]
+    /// Returns the commit when the policy mutated rows.
+    pub const fn commit(&self) -> Option<&CommitOutcome> {
+        self.commit.as_ref()
+    }
+}
+
+/// Resolution status of one binding target, per the relationship-layer
+/// contract vocabulary. Dangling references are explicit: traversal
+/// reports the target's state instead of silently dropping it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum GraphTargetStatus {
+    /// The target row is visible in the read's temporal context.
+    Present,
+    /// The target has a visible tombstone: it existed and was deleted.
+    Deleted,
+    /// No target row exists in the requested context.
+    Missing,
+    /// The binding key cannot address a row of the target primitive.
+    MalformedTarget,
+    /// The target primitive uses a composite address this engine does
+    /// not resolve yet (vector and graph targets).
+    Unsupported,
 }
 
 /// Paginated neighbor hits.
@@ -796,7 +928,8 @@ mod tests {
         assert!(node_page.has_more());
         assert_eq!(node_page.cursor(), Some(&node_id));
 
-        let neighbor = GraphNeighbor::new(node.clone(), edge.clone(), GraphDirection::Outgoing);
+        let neighbor =
+            GraphNeighbor::new(node.clone(), edge.clone(), GraphDirection::Outgoing, None);
         assert_eq!(neighbor.node(), &node);
         assert_eq!(neighbor.edge(), &edge);
         assert_eq!(neighbor.direction(), GraphDirection::Outgoing);
