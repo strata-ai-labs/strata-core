@@ -8,10 +8,10 @@ Implement model-assisted Strata behavior over engine-next and inference-next.
 
 ## Inputs
 
-1. `docs/architecture/intelligence-next-architecture.md`
-2. `docs/architecture/engine-next/retrieval-and-derived-state-contract.md`
-3. `docs/architecture/engine-next/primitive-implementation-contract.md`
-4. `docs/architecture/inference-next-architecture.md`
+1. `docs/architecture/intelligence-architecture.md`
+2. `docs/architecture/engine/retrieval-and-derived-state-contract.md`
+3. `docs/architecture/engine/primitive-implementation-contract.md`
+4. `docs/architecture/inference-architecture.md`
 5. `docs/product/strata-autosearch-product-direction.md`
 
 All slices must follow the V1 engineering standards: permanent domain names,

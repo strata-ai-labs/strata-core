@@ -43,16 +43,16 @@ tree at M0TD capture time, not a clean checkout of that commit.
 
 ```bash
 rg -n '\b(M[0-9][A-Z0-9]*|M[0-9]T[A-Z0-9]*|m[0-9][a-z0-9]*|EG[0-9][A-Z]*|STAB[0-9][A-Z]*|ESTAB[0-9A-Z]*|EX[0-9][A-Z]*|ES[0-9][A-Z]*)\b' \
-  docs/architecture/storage-next/target-crate-shape-and-test-harness.md \
-  docs/architecture/engine-next/target-crate-shape-and-test-harness.md \
-  docs/architecture/inference-next-architecture.md \
-  docs/architecture/intelligence-next-architecture.md
+  docs/architecture/storage/target-crate-shape-and-test-harness.md \
+  docs/architecture/engine/target-crate-shape-and-test-harness.md \
+  docs/architecture/inference-architecture.md \
+  docs/architecture/intelligence-architecture.md
 
 rg -n '\bfacade\b|\bFacade\b' \
-  docs/architecture/storage-next/target-crate-shape-and-test-harness.md \
-  docs/architecture/engine-next/target-crate-shape-and-test-harness.md \
-  docs/architecture/inference-next-architecture.md \
-  docs/architecture/intelligence-next-architecture.md
+  docs/architecture/storage/target-crate-shape-and-test-harness.md \
+  docs/architecture/engine/target-crate-shape-and-test-harness.md \
+  docs/architecture/inference-architecture.md \
+  docs/architecture/intelligence-architecture.md
 
 rg --files-with-matches '\b(EG[0-9][A-Z]*|STAB[0-9][A-Z]*|ESTAB[0-9A-Z]*|EX[0-9][A-Z]*|ES[0-9][A-Z]*|M[0-9][A-Z0-9]*|M[0-9]T[A-Z0-9]*|m[0-9][a-z0-9]*)\b' \
   crates tests --glob '!target/**'

@@ -24,10 +24,10 @@ format remain M4/M5/M6 work.
 
 Architecture and plan inputs:
 
-1. `docs/architecture/storage-next/l2-object-layout.md`
-2. `docs/architecture/storage-next/l3-durable-format-codec.md`
-3. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-4. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+1. `docs/architecture/storage/l2-object-layout.md`
+2. `docs/architecture/storage/l3-durable-format-codec.md`
+3. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+4. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 5. `docs/spec/strata-storage-format-v1.md`
 6. `docs/architecture/implementation-plans/m3-m3t-implementation-plan.md`
 7. `docs/architecture/implementation-plans/m3-porting-log.md`

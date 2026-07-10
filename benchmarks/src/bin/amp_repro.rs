@@ -1,5 +1,5 @@
 //! #2524 disk-amplification repro: the GT5 `EnginePageStore` write shape
-//! against the engine-next KV surface.
+//! against the engine KV surface.
 //!
 //! Seeds `--commits` batches of `2N+1` rows each — N x `page/<BE u64>`
 //! (4 KiB), N x `meta/<BE u64>` (~150 B), plus the 8 B `watermark` row
@@ -26,7 +26,7 @@ extern crate strata_benchmarks;
 use std::process;
 use std::time::Instant;
 
-use strata_engine_next::{
+use strata_engine::{
     BranchName, Database, DurableLocalOpenOptions, EngineResult, KvKey, KvValue, ProductSpace,
 };
 
@@ -199,7 +199,7 @@ fn run(config: &Config) -> EngineResult<()> {
         format_bytes(logical),
     );
 
-    strata_storage_next::perf_trace::reset();
+    strata_storage::perf_trace::reset();
 
     // Seed phase: GT5's commit_batch — 2N+1 rows per put_batch (+ the
     // separate manifest put), sequential ids, no overwrites.
@@ -341,7 +341,7 @@ fn run(config: &Config) -> EngineResult<()> {
 }
 
 fn print_counters(phase: &str) {
-    let perf = strata_storage_next::perf_trace::snapshot();
+    let perf = strata_storage::perf_trace::snapshot();
     println!(
         "[counters {phase}] compaction: input={} output={} metadata_avoided={} \
          trivial_moves={} l0_to_l1_ops={} flush_outputs={} zone_cuts={}",

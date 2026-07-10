@@ -47,9 +47,9 @@ Findings closed by this plan:
 
 Supporting architecture:
 
-1. `docs/architecture/storage-next/l1-backend-io.md`
-2. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-3. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+1. `docs/architecture/storage/l1-backend-io.md`
+2. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+3. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 
 The serving-path proof plan is not a direct performance input for L1. L1 is not
 the point-read or scan bottleneck. Its role in M4P is correctness hardening and

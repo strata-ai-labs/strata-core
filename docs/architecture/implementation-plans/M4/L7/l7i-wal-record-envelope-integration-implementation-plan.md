@@ -25,10 +25,10 @@ gate without changing the successful durable protocol.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-3. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-4. `docs/architecture/storage-next/commit-timeline-substrate.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+3. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+4. `docs/architecture/storage/commit-timeline-substrate.md`
 5. `docs/spec/strata-storage-format-v1.md`
 6. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 7. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`

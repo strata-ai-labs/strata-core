@@ -26,7 +26,7 @@ without leaking lifecycle shell internals.
 5. `crates/storage-next/src/lifecycle/outcome.rs`
 6. `crates/storage-next/src/lifecycle/error.rs`
 7. `crates/storage-next/src/config/mode.rs`
-8. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
+8. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
 9. `crates/engine/src/database/open.rs`
 10. `crates/engine/src/database/lifecycle.rs`
 

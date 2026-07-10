@@ -18,17 +18,17 @@ to add benchmark-only shortcuts.
 
 1. `docs/architecture/perf-tuning/storage-next-mechanics-parity-audit.md`
 2. `docs/architecture/perf-tuning/storage-next-serving-path-parity-plan.md`
-3. `docs/architecture/storage-next/l1-backend-io.md`
-4. `docs/architecture/storage-next/l2-object-layout.md`
-5. `docs/architecture/storage-next/l3-durable-format-codec.md`
-6. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-7. `docs/architecture/storage-next/l5-table-runtime.md`
-8. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-9. `docs/architecture/storage-next/l7-commit-runtime.md`
-10. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
-11. `docs/architecture/storage-next/l9-storage-api-boundary.md`
-12. `docs/architecture/storage-next/test-density-roadmap.md`
-13. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
+3. `docs/architecture/storage/l1-backend-io.md`
+4. `docs/architecture/storage/l2-object-layout.md`
+5. `docs/architecture/storage/l3-durable-format-codec.md`
+6. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+7. `docs/architecture/storage/l5-table-runtime.md`
+8. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+9. `docs/architecture/storage/l7-commit-runtime.md`
+10. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
+11. `docs/architecture/storage/l9-storage-api-boundary.md`
+12. `docs/architecture/storage/test-density-roadmap.md`
+13. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
 14. `docs/architecture/implementation-plans/m4-m4t-implementation-plan.md`
 15. Existing M4 layer implementation and test plans under
     `docs/architecture/implementation-plans/M4/`.

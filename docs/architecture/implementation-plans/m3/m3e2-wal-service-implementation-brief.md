@@ -24,12 +24,12 @@ substrate work.
 
 Architecture and plan inputs:
 
-1. `docs/architecture/storage-next/l1-backend-io.md`
-2. `docs/architecture/storage-next/l2-object-layout.md`
-3. `docs/architecture/storage-next/l3-durable-format-codec.md`
-4. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-5. `docs/architecture/storage-next/l7-commit-runtime.md`
-6. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+1. `docs/architecture/storage/l1-backend-io.md`
+2. `docs/architecture/storage/l2-object-layout.md`
+3. `docs/architecture/storage/l3-durable-format-codec.md`
+4. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+5. `docs/architecture/storage/l7-commit-runtime.md`
+6. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 7. `docs/spec/strata-storage-format-v1.md`
 8. `docs/architecture/implementation-plans/m3-m3t-implementation-plan.md`
 9. `docs/architecture/implementation-plans/m3-porting-log.md`
@@ -156,8 +156,8 @@ Documentation files:
    M3E2 source-map note before production code changes.
 2. `docs/architecture/v1-progress-tracker.md` should be updated only after
    M3E2 implementation and verification are complete.
-3. `docs/architecture/storage-next/l1-backend-io.md` and
-   `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md` should
+3. `docs/architecture/storage/l1-backend-io.md` and
+   `docs/architecture/storage/l4-log-manifest-snapshot-services.md` should
    be updated if M3E2 closes the append/sync open question with concrete backend
    method names.
 

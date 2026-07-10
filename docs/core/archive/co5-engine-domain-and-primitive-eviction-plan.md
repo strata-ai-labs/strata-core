@@ -1,7 +1,7 @@
 # CO5 Engine Domain And Primitive Eviction Plan
 
 Status: historical cleanup-era implementation plan; V1 engine ownership is
-governed by `docs/architecture/engine-next-architecture.md`.
+governed by `docs/architecture/engine-architecture.md`.
 
 ## Purpose
 

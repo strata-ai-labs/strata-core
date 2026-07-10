@@ -26,15 +26,15 @@ L9 also closes the storage-next visibility boundary:
 
 ## Inputs
 
-1. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
-2. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
-3. `docs/architecture/storage-next/l7-commit-runtime.md`
-4. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-5. `docs/architecture/storage-next/l5-table-runtime.md`
-6. `docs/architecture/storage-next/future-object-durable-guardrails.md`
+1. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
+2. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
+3. `docs/architecture/storage/l7-commit-runtime.md`
+4. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+5. `docs/architecture/storage/l5-table-runtime.md`
+6. `docs/architecture/storage/future-object-durable-guardrails.md`
 7. `docs/architecture/strata-v1-architecture.md`
-8. `docs/architecture/engine-next/testing-and-conformance-plan.md`
-9. `docs/architecture/engine-next/temporal-context-and-timeline-resolver-contract.md`
+8. `docs/architecture/engine/testing-and-conformance-plan.md`
+9. `docs/architecture/engine/temporal-context-and-timeline-resolver-contract.md`
 10. `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-implementation-plan.md`
 11. `docs/architecture/implementation-plans/m4-l8-lifecycle-recovery-maintenance-test-plan.md`
 12. `crates/storage-next/src/api/`

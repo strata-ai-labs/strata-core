@@ -9,26 +9,26 @@ The V1 line is a clean break. No compatibility shims between old and new code, n
 ## V1 Stack
 
 ```text
-core-next
-  → storage-next
-  → engine-next
-  → intelligence-next → executor / CLI / SDK / Strata AI
-  → inference-next
+core
+  → storage
+  → engine
+  → intelligence → executor / CLI / SDK / Strata AI
+  → inference
 ```
 
-- **core-next** — smallest shared atoms (`BranchId`, `CommitVersion`, timestamp, type-local validation errors). No `Value`, no `EntityRef`, no storage transaction IDs.
-- **storage-next** — generic persistence mechanics, L1-L9 layered. Knows nothing about KV/JSON/event/vector/graph semantics.
-- **engine-next** — product semantics, data capabilities, branches, time travel, retrieval, IPC classification, clone artifacts, derived-state manifests. Owns adapter traits used by intelligence.
-- **intelligence-next** — autoembedding, query expansion, reranking, RAG, generation orchestration. Consumes engine surfaces; never imports storage; never speaks provider HTTP.
-- **inference-next** — provider execution and model artifact resolution. `Generator` / `Embedder` / `Reranker` traits. Knows nothing about Strata databases.
+- **core** — smallest shared atoms (`BranchId`, `CommitVersion`, timestamp, type-local validation errors). No `Value`, no `EntityRef`, no storage transaction IDs.
+- **storage** — generic persistence mechanics, L1-L9 layered. Knows nothing about KV/JSON/event/vector/graph semantics.
+- **engine** — product semantics, data capabilities, branches, time travel, retrieval, IPC classification, clone artifacts, derived-state manifests. Owns adapter traits used by intelligence.
+- **intelligence** — autoembedding, query expansion, reranking, RAG, generation orchestration. Consumes engine surfaces; never imports storage; never speaks provider HTTP.
+- **inference** — provider execution and model artifact resolution. `Generator` / `Embedder` / `Reranker` traits. Knows nothing about Strata databases.
 - **executor / CLI / SDK / Strata AI** — consume engine and intelligence. Never import storage directly. Never import inference directly.
 
 ## Where To Read Before Working On A Slice
 
 1. **Roadmap** — `docs/architecture/strata-v1-implementation-roadmap.md`
 2. **Current milestone plan** — `docs/architecture/implementation-plans/m{N}-m{N}t-implementation-plan.md`
-3. **Layer architecture** — `docs/architecture/{layer}-next-architecture.md`
-4. **Contracts** — `docs/architecture/engine-next/<contract>.md` or `docs/architecture/storage-next/<layer>.md`
+3. **Layer architecture** — `docs/architecture/{layer}-architecture.md`
+4. **Contracts** — `docs/architecture/engine/<contract>.md` or `docs/architecture/storage/<layer>.md` (docs keep their design-phase names)
 5. **Test inventory** — `docs/architecture/v1-existing-test-inventory-and-porting-plan.md`
 6. **Engineering standards** — `docs/architecture/v1-engineering-standards.md`
 7. **Error contract** — `docs/architecture/v1-error-and-diagnostics-contract.md`
@@ -41,14 +41,14 @@ Architecture docs are authoritative. This file restates only the hard invariants
 ### Dependency direction (CI-enforced)
 
 ```text
-core-next  ← storage-next  ← engine-next  ← intelligence-next  ← executor / CLI / SDK
-                                          ← inference-next     ←
+core  ← storage  ← engine  ← intelligence  ← executor / CLI / SDK
+                            ← inference   ←
 ```
 
-1. Only engine-next imports storage-next, and only inside `persistence/`.
-2. Engine-next never imports intelligence-next or inference-next.
-3. Inference-next imports nothing from the Strata workspace.
-4. Intelligence-next imports engine-next and inference-next only.
+1. Only engine imports storage, and only inside `persistence/`.
+2. Engine never imports intelligence or inference.
+3. Inference imports nothing from the Strata workspace.
+4. Intelligence-next imports engine and inference only.
 5. Executor and CLI consume intelligence; never import inference directly.
 6. The dependency DAG is enforced by a workspace guard test on every PR.
 
@@ -68,7 +68,7 @@ core-next  ← storage-next  ← engine-next  ← intelligence-next  ← executo
 
 ### Branch and capability
 
-15. One canonical `BranchId` lives in core-next; derivation lives in engine.
+15. One canonical `BranchId` lives in core; derivation lives in engine.
 16. Branch generations are monotonic, scoped per branch name.
 17. Every capability declares lifecycle, branch adapter, search adapter, relationship adapter, and derived-state hooks.
 18. Cross-branch references are rejected.
@@ -94,7 +94,7 @@ core-next  ← storage-next  ← engine-next  ← intelligence-next  ← executo
 
 ### Public surface
 
-32. Engine D4 public surface is documented in `engine-next-architecture.md`. New public types require reviewer approval.
+32. Engine D4 public surface is documented in `engine-architecture.md`. New public types require reviewer approval.
 33. `pub(crate)` by default; `pub` only for D4 items.
 34. `unreachable_pub` denies after visibility tightening.
 35. Newtypes use `#[repr(transparent)]` + `#[serde(transparent)]` for wire stability.
@@ -102,8 +102,8 @@ core-next  ← storage-next  ← engine-next  ← intelligence-next  ← executo
 ### Quality
 
 36. `[workspace.lints]` is the single source of truth for lint config.
-37. `#![deny(unsafe_code)]` on safe crates: core-next, storage-next (above backend FFI), engine-next, intelligence-next.
-38. Inference-next denies unsafe outside `local/`; audited unsafe is allowed only inside `local/`.
+37. `#![deny(unsafe_code)]` on safe crates: core, storage (above backend FFI), engine, intelligence.
+38. Inference denies unsafe outside `local/`; audited unsafe is allowed only inside `local/`.
 39. Typed reason enums replace string-factory error methods.
 
 ### Cutover
@@ -129,18 +129,18 @@ Milestones:
 | Code | Title |
 |---|---|
 | M0 | Architecture freeze and tracking |
-| M1 | Core-next |
-| M2 | Storage-next testkit and crate skeleton |
-| M3 | Storage-next backend, layout, format, durable services |
-| M4 | Storage-next table, branch, commit, recovery, L9 API |
-| M5 | Engine-next persistence adapter and control plane |
-| M6 | Engine-next product semantics |
-| M7 | Inference-next hardening |
+| M1 | Core |
+| M2 | Storage testkit and crate skeleton |
+| M3 | Storage backend, layout, format, durable services |
+| M4 | Storage table, branch, commit, recovery, L9 API |
+| M5 | Engine persistence adapter and control plane |
+| M6 | Engine product semantics |
+| M7 | Inference hardening |
 | M8 | Intelligence-next orchestration |
 | M9 | Executor, CLI, SDK, tests, benches, docs cutover |
 | M10 | V1 readiness hardening |
 
-M7 may run in parallel with M2-M6 once M1 ships (inference-next has no dependency on storage or engine).
+M7 may run in parallel with M2-M6 once M1 ships (inference has no dependency on storage or engine).
 
 ## PR Discipline
 
@@ -181,11 +181,11 @@ The V1 branch progressively breaks old commands as milestones land. Use what's a
 
 ```bash
 # Build (workspace may not build cleanly during transition slices)
-cargo build -p strata-core-next             # M1+
-cargo build -p strata-storage-next          # M2+
-cargo build -p strata-engine-next           # M5+
-cargo build -p strata-inference-next        # M7+
-cargo build -p strata-intelligence-next     # M8+
+cargo build -p strata-core             # M1+
+cargo build -p strata-storage          # M2+
+cargo build -p strata-engine           # M5+
+cargo build -p strata-inference        # M7+
+cargo build -p strata-intelligence     # M8+
 
 # Test
 cargo test -p <crate>
@@ -199,9 +199,9 @@ cargo fmt --all -- --check
 cargo hack check -p <crate> --feature-powerset --depth 2
 
 # Conformance harnesses (per milestone)
-cargo test -p strata-storage-next --test format_goldens             # M3+
-cargo test -p strata-engine-next --test product_pathways            # M6+
-cargo test -p strata-intelligence-next --test fake_provider_paths   # M8+
+cargo test -p strata-storage --test format_goldens             # M3+
+cargo test -p strata-engine --test product_pathways            # M6+
+cargo test -p strata-intelligence --test fake_provider_paths   # M8+
 ```
 
 Benchmark suites and threshold policy will be re-baselined in M9F/M10D. The old `strata-benchmarks` regression harness still exists but its thresholds apply to the pre-V1 architecture only.

@@ -33,9 +33,9 @@ Read this with:
 3. `docs/product/strata-v1-feature-inventory.md`
 4. `docs/product/strata-v1-user-pathways.md`
 5. `docs/architecture/strata-v1-architecture.md`
-6. `docs/architecture/storage-next-architecture.md`
-7. `docs/architecture/core-next-architecture.md`
-8. `docs/architecture/storage-next/l9-storage-api-boundary.md`
+6. `docs/architecture/storage-architecture.md`
+7. `docs/architecture/core-architecture.md`
+8. `docs/architecture/storage/l9-storage-api-boundary.md`
 9. `docs/architecture/v1-error-and-diagnostics-contract.md`
 10. `docs/architecture/v1-testing-and-conformance-plan.md`
 

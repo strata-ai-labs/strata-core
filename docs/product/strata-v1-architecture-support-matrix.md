@@ -8,9 +8,9 @@ This document checks the V1 product requirements, feature inventory, and user
 pathways against the current target architecture:
 
 1. `docs/architecture/strata-v1-architecture.md`
-2. `docs/architecture/core-next-architecture.md`
-3. `docs/architecture/storage-next-architecture.md`
-4. `docs/architecture/engine-next-architecture.md`
+2. `docs/architecture/core-architecture.md`
+3. `docs/architecture/storage-architecture.md`
+4. `docs/architecture/engine-architecture.md`
 5. `docs/architecture/runtime-resource-profile-architecture.md`
 6. `docs/architecture/v1-error-and-diagnostics-contract.md`
 7. `docs/architecture/v1-testing-and-conformance-plan.md`
@@ -248,7 +248,7 @@ contracts in roughly this order:
    facade, entity addressing, row families, codecs, reads, writes, branch
    adapter, search adapter, relationship adapter, derived-state hooks, tests.
    Defined in
-   `docs/architecture/engine-next/primitive-implementation-contract.md`.
+   `docs/architecture/engine/primitive-implementation-contract.md`.
 
 2. EntityRef and relationship-layer contract.
    Stable entity forms, branch/space/version meaning, graph node binding,

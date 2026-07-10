@@ -24,7 +24,7 @@ private and product-neutral.
 
 1. `docs/architecture/implementation-plans/m4-l9-storage-api-boundary-implementation-plan.md`
 2. `docs/architecture/implementation-plans/m4-l9-storage-api-boundary-test-plan.md`
-3. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
+3. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
 4. `docs/architecture/strata-v1-architecture.md`
 5. `crates/storage-next/src/api/mod.rs`
 6. `crates/storage-next/src/lib.rs`
@@ -42,7 +42,7 @@ private and product-neutral.
 | `crates/storage-next/src/lib.rs` | Lower modules are private today. | Keep lower modules private; expose only `api` intentionally. |
 | `crates/storage/src/traits.rs` | Old synchronous storage trait. | Preserve synchronous shape but avoid old product value types. |
 | `crates/storage-next/src/lifecycle/error.rs` | Stable code/source-chain pattern. | Mirror structured code/source-chain behavior at the API boundary. |
-| `docs/architecture/storage-next/target-crate-shape-and-test-harness.md` | Public API must be sync; `api` owns engine-facing DTOs. | Encode source guards and public surface rules. |
+| `docs/architecture/storage/target-crate-shape-and-test-harness.md` | Public API must be sync; `api` owns engine-facing DTOs. | Encode source guards and public surface rules. |
 
 ## Scope
 

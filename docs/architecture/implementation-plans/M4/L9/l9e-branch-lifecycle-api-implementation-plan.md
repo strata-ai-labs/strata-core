@@ -23,7 +23,7 @@ revert, restore, review, publish, or branch UX.
 2. `crates/storage-next/src/branch/`
 3. current L8Y branch lifecycle code under `crates/storage-next/src/lifecycle/`.
 4. `crates/storage-next/src/lifecycle/durable/`
-5. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
+5. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
 6. `docs/architecture/implementation-plans/M4/L8/l8y-branch-lifecycle-completeness-implementation-plan.md`
 7. old engine branch helpers under `crates/engine/src/database/`.
 

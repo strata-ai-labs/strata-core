@@ -28,12 +28,12 @@ decide recovery health, or expose public product APIs.
 
 Architecture and plan inputs:
 
-1. `docs/architecture/storage-next/l1-backend-io.md`
-2. `docs/architecture/storage-next/l2-object-layout.md`
-3. `docs/architecture/storage-next/l3-durable-format-codec.md`
-4. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-5. `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-6. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+1. `docs/architecture/storage/l1-backend-io.md`
+2. `docs/architecture/storage/l2-object-layout.md`
+3. `docs/architecture/storage/l3-durable-format-codec.md`
+4. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+5. `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+6. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 7. `docs/spec/strata-storage-format-v1.md`
 8. `docs/architecture/implementation-plans/m3-m3t-implementation-plan.md`
 9. `docs/architecture/implementation-plans/m3-porting-log.md`
@@ -148,7 +148,7 @@ Documentation files:
 
 1. `docs/architecture/implementation-plans/m3-porting-log.md` must receive an
    M3E3 source-map note before production code changes.
-2. `docs/architecture/storage-next/l2-object-layout.md` should be updated when
+2. `docs/architecture/storage/l2-object-layout.md` should be updated when
    `meta/wal/<segment-id>` sidecar names are implemented.
 3. `docs/spec/strata-storage-format-v1.md` should be updated only if M3E3
    changes sidecar object naming or service-level sidecar policy.

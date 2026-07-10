@@ -288,8 +288,8 @@ Exit criteria if implemented:
 
 Scope:
 
-1. Active architecture docs under `docs/architecture/storage-next`.
-2. Active architecture docs under `docs/architecture/engine-next`.
+1. Active architecture docs under `docs/architecture/storage`.
+2. Active architecture docs under `docs/architecture/engine`.
 3. V1 docs that describe the durable format.
 4. Golden fixture comments.
 

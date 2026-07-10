@@ -25,7 +25,7 @@ uncertainty, and returns storage-shaped commit outcomes.
 5. `crates/storage-next/src/commit/outcome.rs`
 6. `crates/storage-next/src/lifecycle/cache.rs`
 7. `crates/storage-next/src/lifecycle/durable/`
-8. `docs/architecture/storage-next/l7-commit-runtime.md`
+8. `docs/architecture/storage/l7-commit-runtime.md`
 9. `crates/engine/src/database/transaction.rs`
 
 ## Scope

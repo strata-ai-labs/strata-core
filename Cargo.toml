@@ -1,22 +1,22 @@
 [workspace]
 resolver = "2"
 default-members = [
-    "crates/core-next",
-    "crates/storage-next",
-    "crates/engine-next",
-    "crates/executor-next",
-    "crates/inference-next",
-    "crates/cli-next",
+    "crates/core",
+    "crates/storage",
+    "crates/engine",
+    "crates/executor",
+    "crates/inference",
+    "crates/cli",
 ]
 exclude = ["benchmarks"]
 members = [
-    "crates/core-next",
-    "crates/storage-next",
-    "crates/engine-next",
-    "crates/executor-next",
-    "crates/inference-next",
-    "crates/cli-next",
-    "crates/wasm-next",
+    "crates/core",
+    "crates/storage",
+    "crates/engine",
+    "crates/executor",
+    "crates/inference",
+    "crates/cli",
+    "crates/wasm",
     "crates/gpu-cache",
 ]
 
@@ -112,7 +112,7 @@ getrandom = "0.2"
 # API over performance.now()/Date.now(). Only wired as a wasm32 target dep.
 web-time = "1"
 
-# Browser boundary (crates/wasm-next)
+# Browser boundary (crates/wasm)
 wasm-bindgen = "0.2"
 console_error_panic_hook = "0.1"
 

@@ -3,7 +3,7 @@
   "metadata": {
     "timestamp": "2026-06-08T02:08:53Z",
     "git_commit": "7d124aeb",
-    "git_branch": "perf/storage-next-traces-fixes",
+    "git_branch": "perf/storage-traces-fixes",
     "git_dirty": true,
     "sdk": "rust",
     "sdk_version": "0.1.0",
@@ -17,8 +17,8 @@
   },
   "results": [
     {
-      "benchmark": "storage-next-l9/point-latest-throughput",
-      "category": "storage-next-l9-scale",
+      "benchmark": "storage-l9/point-latest-throughput",
+      "category": "storage-l9-scale",
       "parameters": {
         "samples": 1000,
         "perf_trace": {
@@ -83,8 +83,8 @@
       }
     },
     {
-      "benchmark": "storage-next-l9/point-latest-throughput",
-      "category": "storage-next-l9-scale",
+      "benchmark": "storage-l9/point-latest-throughput",
+      "category": "storage-l9-scale",
       "parameters": {
         "seed": 5860399455655764006,
         "engine": "standard",

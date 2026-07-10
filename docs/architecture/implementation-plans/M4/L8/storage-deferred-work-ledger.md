@@ -18,7 +18,7 @@ Related planning docs:
 9. `docs/architecture/implementation-plans/M4/L8/l8y-branch-lifecycle-completeness-implementation-plan.md`
 10. `docs/architecture/implementation-plans/M4/L8/l8z-commit-hardening-pre-l9-readiness-implementation-plan.md`
 11. `docs/architecture/implementation-plans/M4P/m4p-l8-automatic-maintenance-scheduling-followup.md`
-12. `docs/architecture/storage-next/l9-storage-api-boundary.md`
+12. `docs/architecture/storage/l9-storage-api-boundary.md`
 
 ## Purpose
 

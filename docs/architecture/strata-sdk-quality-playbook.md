@@ -860,7 +860,7 @@ strata://database/<id>/metrics                  → operational metrics
 
 # Knowledge base (the "Strata documents itself" pattern)
 strata://docs/architecture/overview             → architecture overview
-strata://docs/architecture/storage-next/l1      → L1 backend IO contract
+strata://docs/architecture/storage/l1      → L1 backend IO contract
 strata://docs/error-registry                    → every error code with fix
 strata://docs/format-spec                       → byte format spec
 strata://docs/recipes/setup-rag                 → canonical RAG setup

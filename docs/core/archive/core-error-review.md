@@ -2,7 +2,7 @@
 
 Status: historical cleanup-era ownership review; V1 error ownership is governed
 by `docs/architecture/v1-error-and-diagnostics-contract.md` and
-`docs/architecture/core-next-architecture.md`.
+`docs/architecture/core-architecture.md`.
 
 ## Purpose
 

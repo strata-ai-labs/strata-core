@@ -25,7 +25,7 @@
 //! Run under `STRATA_TRACE=1` to also capture the per-compaction `WT ... compact level=0 ... ms=...`
 //! line (its `ms`/`in_bytes` cross-check the L0→L1 in isolation).
 //!
-//! Usage: `cargo run --release --bin storage-next-l0-compact -- --value-bytes 1024`
+//! Usage: `cargo run --release --bin storage-l0-compact -- --value-bytes 1024`
 //!
 //! Measured (this dev box, single L0→L1, lifecycle-rewrite elapsed = plan+merge+publish):
 //!   value_bytes / rows       merge loop        plan+finish+publish     elapsed  (MB/s)
@@ -49,14 +49,14 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use strata_storage_next::api::{
+use strata_storage::api::{
     BranchAction, BranchId, BranchRequest, BranchStatus, CommitBatch, CommitMutation,
     CommitOptions, DiagnosticsRequest, DiagnosticsScope, MaintenanceRequest, MaintenanceScope,
     MaintenanceSummaryStatus, MaintenanceTask, StorageDurabilityPolicy, StorageKey,
     StorageMaintenanceSchedulingPolicy, StorageOpenOptions, StorageRuntime, StorageSpaceId,
     StorageValue,
 };
-use strata_storage_next::perf_trace;
+use strata_storage::perf_trace;
 use tempfile::TempDir;
 
 const DEFAULT_BRANCH_ID: BranchId = BranchId::from_bytes([0x01; BranchId::BYTE_LEN]);
@@ -124,7 +124,7 @@ fn parse_usize(flag: &str, value: Option<String>) -> BenchResult<usize> {
 
 fn print_help() {
     eprintln!(
-        "storage-next-l0-compact\n\n\
+        "storage-l0-compact\n\n\
          BS3.2 durable L0->L1 compaction decomposition (coarse perf-trace split).\n\n\
          Options:\n  \
          --value-bytes N   value size per row (default {DEFAULT_VALUE_BYTES}; 8192 = byte-dense arm)\n  \
@@ -161,7 +161,7 @@ fn run(config: &Config) -> BenchResult<()> {
     };
 
     let records = config.records();
-    eprintln!("storage-next L0->L1 compaction decomposition");
+    eprintln!("storage L0->L1 compaction decomposition");
     eprintln!(
         "value_bytes={} records={} flush_every_rows={} target_l0={TARGET_L0_TABLES}",
         config.value_bytes,
@@ -291,7 +291,7 @@ fn report(
     config: &Config,
     l0_tables: usize,
     wall: std::time::Duration,
-    perf: &strata_storage_next::perf_trace::StoragePerfSnapshot,
+    perf: &strata_storage::perf_trace::StoragePerfSnapshot,
 ) {
     let elapsed_ns = perf.lifecycle_compaction_elapsed_ns();
     let merge_ns = perf.table_compaction_merge_ns();
@@ -349,7 +349,7 @@ fn report(
     eprintln!("  throughput           {mb_per_s:.0} MB/s  (input / lifecycle elapsed)");
 
     println!(
-        "{{\"benchmark\":\"storage-next-l0-compact\",\"value_bytes\":{},\"l0_tables\":{},\
+        "{{\"benchmark\":\"storage-l0-compact\",\"value_bytes\":{},\"l0_tables\":{},\
          \"outer_wall_ns\":{},\"lifecycle_elapsed_ns\":{},\"merge_ns\":{},\"rest_ns\":{},\
          \"input_bytes\":{},\"output_bytes\":{},\"input_rows\":{},\"row_clones\":{},\
          \"l0_to_l1_ops\":{},\"mb_per_s\":{:.1}}}",

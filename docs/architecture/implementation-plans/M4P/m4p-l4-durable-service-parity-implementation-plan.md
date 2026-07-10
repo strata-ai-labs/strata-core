@@ -73,12 +73,12 @@ Current-status correction to the audit:
 
 Supporting architecture:
 
-1. `docs/architecture/storage-next/l1-backend-io.md`
-2. `docs/architecture/storage-next/l2-object-layout.md`
-3. `docs/architecture/storage-next/l3-durable-format-codec.md`
-4. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-5. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
-6. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
+1. `docs/architecture/storage/l1-backend-io.md`
+2. `docs/architecture/storage/l2-object-layout.md`
+3. `docs/architecture/storage/l3-durable-format-codec.md`
+4. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+5. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
+6. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
 7. `docs/spec/strata-storage-format-v1.md`
 
 ## Predecessors
@@ -462,10 +462,10 @@ service-owned object families and the allowed files.
 
 Update:
 
-1. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`;
-2. `docs/architecture/storage-next/future-object-durable-guardrails.md` if
+1. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`;
+2. `docs/architecture/storage/future-object-durable-guardrails.md` if
    fencing decision text belongs there;
-3. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md` if
+3. `docs/architecture/storage/target-crate-shape-and-test-harness.md` if
    a new conformance harness is added;
 4. M4P README index after plans are written.
 

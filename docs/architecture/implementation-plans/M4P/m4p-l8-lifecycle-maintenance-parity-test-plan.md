@@ -9,7 +9,7 @@ Parent test methodology:
 `docs/architecture/implementation-plans/m4p-storage-next-parity-restoration-test-plan.md`
 
 Architecture context:
-`docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+`docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 
 Audit context:
 `docs/architecture/perf-tuning/storage-next-mechanics-parity-audit.md`

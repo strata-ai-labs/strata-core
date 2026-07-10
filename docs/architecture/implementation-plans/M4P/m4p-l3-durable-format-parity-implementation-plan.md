@@ -51,12 +51,12 @@ Findings closed by this plan:
 
 Supporting architecture:
 
-1. `docs/architecture/storage-next/l3-durable-format-codec.md`
+1. `docs/architecture/storage/l3-durable-format-codec.md`
 2. `docs/spec/strata-storage-format-v1.md`
-3. `docs/architecture/storage-next/storage-space-id-registry.md`
-4. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
-5. `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-6. `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
+3. `docs/architecture/storage/storage-space-id-registry.md`
+4. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
+5. `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+6. `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
 
 Performance context:
 
@@ -326,7 +326,7 @@ Implementation target:
    - checkpoint row-section payload;
    - retained-history extension payload.
 2. Update the fuzz/testkit documentation in
-   `docs/architecture/storage-next/target-crate-shape-and-test-harness.md` if it
+   `docs/architecture/storage/target-crate-shape-and-test-harness.md` if it
    enumerates decoder names.
 3. Add seeded corpus guidance or fixture references for every new route.
 4. If a route decodes an extension section, route the payload decoder directly

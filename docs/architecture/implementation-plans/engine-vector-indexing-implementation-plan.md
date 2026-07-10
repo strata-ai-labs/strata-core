@@ -6,7 +6,7 @@ Test plan:
 `docs/architecture/implementation-plans/engine-vector-indexing-test-plan.md`
 
 Design anchor:
-`docs/architecture/engine-next/vector-indexing-design.md`
+`docs/architecture/engine/vector-indexing-design.md`
 
 ## Objective
 

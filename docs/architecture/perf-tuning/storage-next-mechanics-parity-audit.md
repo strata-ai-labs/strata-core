@@ -59,7 +59,7 @@ Relevant result files:
 This layer audit is separate from the serving-path audit above. Its purpose is
 to verify that storage-next did not lose important old-storage mechanics while
 preserving the L1-L9 architecture design in
-`docs/architecture/storage-next/`. Missing mechanics should be assigned to the
+`docs/architecture/storage/`. Missing mechanics should be assigned to the
 existing layer that owns them. The audit must not create new architecture layers
 or benchmark-only bypasses.
 
@@ -82,8 +82,8 @@ Status: `Partial`
 
 Architecture source:
 
-- `docs/architecture/storage-next/l1-backend-io.md`
-- `docs/architecture/storage-next-architecture.md`
+- `docs/architecture/storage/l1-backend-io.md`
+- `docs/architecture/storage-architecture.md`
 
 Old-storage evidence:
 
@@ -214,8 +214,8 @@ Status: `Partial`
 
 Architecture source:
 
-- `docs/architecture/storage-next/l2-object-layout.md`
-- `docs/architecture/storage-next-architecture.md`
+- `docs/architecture/storage/l2-object-layout.md`
+- `docs/architecture/storage-architecture.md`
 
 Old-storage evidence:
 
@@ -296,7 +296,7 @@ Gaps to fill:
 1. L2 documentation has drifted behind implemented manifest objects.
    - `ObjectLayout` now constructs `manifest/branch-catalog` and
      `manifest/pending-releases`.
-   - `docs/architecture/storage-next/l2-object-layout.md` still lists only
+   - `docs/architecture/storage/l2-object-layout.md` still lists only
      `manifest/current` in the implemented canonical layout block.
    - Owner: L2 docs plus L3/L4 manifest-format references.
    - Exit gate: update the L2 architecture doc and any storage format spec that
@@ -352,9 +352,9 @@ Status: `Partial`
 
 Architecture source:
 
-- `docs/architecture/storage-next/l3-durable-format-codec.md`
+- `docs/architecture/storage/l3-durable-format-codec.md`
 - `docs/spec/strata-storage-format-v1.md`
-- `docs/architecture/storage-next/storage-space-id-registry.md`
+- `docs/architecture/storage/storage-space-id-registry.md`
 
 Old-storage evidence:
 
@@ -539,8 +539,8 @@ Status: `Partial`
 
 Architecture source:
 
-- `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
-- `docs/architecture/storage-next-architecture.md`
+- `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
+- `docs/architecture/storage-architecture.md`
 
 Old-storage evidence:
 
@@ -699,7 +699,7 @@ Gaps to fill:
      and deletion-durability-uncertain cleanup.
 
 2. L4 documentation has drifted behind implemented manifest services.
-   - `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md`
+   - `docs/architecture/storage/l4-log-manifest-snapshot-services.md`
      describes database, branch/table, and quarantine manifest families.
    - Storage-next now also has explicit branch catalog and pending-release
      manifest services in `crates/storage-next/src/service/manifest.rs`.
@@ -766,8 +766,8 @@ Status: `Partial`
 
 Architecture source:
 
-- `docs/architecture/storage-next/l5-table-runtime.md`
-- `docs/architecture/storage-next-architecture.md`
+- `docs/architecture/storage/l5-table-runtime.md`
+- `docs/architecture/storage-architecture.md`
 
 Old-storage evidence:
 
@@ -991,8 +991,8 @@ Status: `Partial`
 
 Architecture source:
 
-- `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`
-- `docs/architecture/storage-next-architecture.md`
+- `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`
+- `docs/architecture/storage-architecture.md`
 
 Old-storage evidence:
 
@@ -1284,9 +1284,9 @@ Status: `Confirmed with documented V1 deltas`
 
 Architecture source:
 
-- `docs/architecture/storage-next/l7-commit-runtime.md`
-- `docs/architecture/storage-next/commit-timeline-substrate.md`
-- `docs/architecture/storage-next-architecture.md`
+- `docs/architecture/storage/l7-commit-runtime.md`
+- `docs/architecture/storage/commit-timeline-substrate.md`
+- `docs/architecture/storage-architecture.md`
 
 Old-storage evidence:
 
@@ -1442,7 +1442,7 @@ Closed and deferred findings:
      also has a single `active_admission` slot. That serializes all mutating
      commits across branches, even when there is no unresolved durable commit.
    - This is accepted as an explicit V1 semantic decision, documented in
-     `docs/architecture/storage-next/l7-commit-runtime.md`.
+     `docs/architecture/storage/l7-commit-runtime.md`.
    - Owner: L8/L9 for retry/deadline policy; future L7 work only if the global
      gate is relaxed.
    - Replacement proof: same-branch and cross-branch contention tests return
@@ -1551,8 +1551,8 @@ Status: `Partial`
 
 Architecture source:
 
-- `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`
-- `docs/architecture/storage-next-architecture.md`
+- `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`
+- `docs/architecture/storage-architecture.md`
 
 Old-storage evidence:
 
@@ -1868,8 +1868,8 @@ Status: `Partial`
 
 Architecture source:
 
-- `docs/architecture/storage-next/l9-storage-api-boundary.md`
-- `docs/architecture/storage-next-architecture.md`
+- `docs/architecture/storage/l9-storage-api-boundary.md`
+- `docs/architecture/storage-architecture.md`
 
 Old-storage evidence:
 
@@ -3543,7 +3543,7 @@ Architecture-aligned implementation packages:
 
 1. `GAP-L5`: restore table-runtime parity.
    - Architecture source:
-     `docs/architecture/storage-next/l5-table-runtime.md`.
+     `docs/architecture/storage/l5-table-runtime.md`.
    - Old evidence files: `crates/storage/src/memtable.rs`,
      `crates/storage/src/segment.rs`,
      `crates/storage/src/segment_builder.rs`,
@@ -3563,7 +3563,7 @@ Architecture-aligned implementation packages:
 
 2. `GAP-L6`: restore branch-isolated LSM topology and serving mechanics.
    - Architecture source:
-     `docs/architecture/storage-next/l6-branch-isolated-lsm-runtime.md`.
+     `docs/architecture/storage/l6-branch-isolated-lsm-runtime.md`.
    - Old evidence files: `crates/storage/src/segmented/mod.rs`,
      `crates/storage/src/key_encoding.rs`,
      `crates/storage/src/merge_iter.rs`,
@@ -3588,7 +3588,7 @@ Architecture-aligned implementation packages:
 
 3. `GAP-L8`: restore lifecycle and maintenance drain.
    - Architecture source:
-     `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`.
+     `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`.
    - Old evidence files: `crates/engine/src/background.rs`,
      `crates/engine/src/database/compaction.rs`,
      `crates/engine/src/database/lifecycle.rs`,
@@ -3610,8 +3610,8 @@ Architecture-aligned implementation packages:
 
 4. `GAP-L4/L8`: close durable topology and recovery parity.
    - Architecture sources:
-     `docs/architecture/storage-next/l4-log-manifest-snapshot-services.md` and
-     `docs/architecture/storage-next/l8-lifecycle-recovery-maintenance.md`.
+     `docs/architecture/storage/l4-log-manifest-snapshot-services.md` and
+     `docs/architecture/storage/l8-lifecycle-recovery-maintenance.md`.
    - Old evidence files: `crates/storage/src/durability/wal/`,
      `crates/storage/src/durability/disk_snapshot/`,
      `crates/storage/src/durability/checkpoint_runtime.rs`,
@@ -3632,7 +3632,7 @@ Architecture-aligned implementation packages:
 
 5. `GAP-L7`: verify commit-runtime parity and keep it narrow.
    - Architecture source:
-     `docs/architecture/storage-next/l7-commit-runtime.md`.
+     `docs/architecture/storage/l7-commit-runtime.md`.
    - Old evidence files: `crates/storage/src/txn/context.rs`,
      `crates/storage/src/txn/manager.rs`,
      `crates/storage/src/txn/validation.rs`,
@@ -3650,7 +3650,7 @@ Architecture-aligned implementation packages:
 
 6. `GAP-L9`: keep the storage API boundary explicit.
    - Architecture source:
-     `docs/architecture/storage-next/l9-storage-api-boundary.md`.
+     `docs/architecture/storage/l9-storage-api-boundary.md`.
    - Old evidence files: `crates/storage/src/traits.rs`,
      `crates/storage/src/runtime_config.rs`, and engine call sites that
      consume storage through the public boundary.

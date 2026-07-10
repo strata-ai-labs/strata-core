@@ -10,7 +10,7 @@ Parent test methodology:
 `docs/architecture/implementation-plans/m4p-storage-next-parity-restoration-test-plan.md`
 
 Architecture context:
-`docs/architecture/storage-next/l7-commit-runtime.md`
+`docs/architecture/storage/l7-commit-runtime.md`
 
 Audit context:
 `docs/architecture/perf-tuning/storage-next-mechanics-parity-audit.md`
@@ -63,7 +63,7 @@ record these decisions with owner, reason, and replacement proof:
      advancement. Same-branch contenders blocked; unrelated branches could
      commit concurrently.
    - Owner: L7 for visible safety; L8 for retry/deadline and admission policy.
-   - Artifact: record in `docs/architecture/storage-next/l7-commit-runtime.md`
+   - Artifact: record in `docs/architecture/storage/l7-commit-runtime.md`
      under `Semantic Decisions`, unless a shared decision-register file exists
      first.
    - Required proof: tests show later commits cannot advance visibility past

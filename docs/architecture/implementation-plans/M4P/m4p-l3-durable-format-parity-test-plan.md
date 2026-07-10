@@ -325,9 +325,9 @@ install, service publish, backend IO, or public APIs.
 
 Documentation closeout requires review of:
 
-1. `docs/architecture/storage-next/l3-durable-format-codec.md`;
+1. `docs/architecture/storage/l3-durable-format-codec.md`;
 2. `docs/spec/strata-storage-format-v1.md`;
-3. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`;
+3. `docs/architecture/storage/target-crate-shape-and-test-harness.md`;
 4. `crates/storage-next/testdata/goldens/storage-format-v1/README.md`.
 
 Required documentation assertions:

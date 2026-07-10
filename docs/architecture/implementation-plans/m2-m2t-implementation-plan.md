@@ -8,9 +8,9 @@ Make storage-next testable before durable behavior lands.
 
 ## Inputs
 
-1. `docs/architecture/storage-next-architecture.md`
-2. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
-3. `docs/architecture/storage-next/implementation-patterns.md`
+1. `docs/architecture/storage-architecture.md`
+2. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
+3. `docs/architecture/storage/implementation-patterns.md`
 4. `docs/architecture/v1-testing-and-conformance-plan.md`
 5. `docs/architecture/v1-engineering-standards.md`
 

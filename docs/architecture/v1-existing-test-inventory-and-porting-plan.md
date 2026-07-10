@@ -19,9 +19,9 @@ rewritten, archived, or deleted as the V1 roadmap proceeds.
 
 1. `docs/architecture/strata-v1-implementation-roadmap.md`
 2. `docs/architecture/v1-testing-and-conformance-plan.md`
-3. `docs/architecture/storage-next/target-crate-shape-and-test-harness.md`
-4. `docs/architecture/engine-next/testing-and-conformance-plan.md`
-5. `docs/architecture/engine-next/product-pathway-conformance-plan.md`
+3. `docs/architecture/storage/target-crate-shape-and-test-harness.md`
+4. `docs/architecture/engine/testing-and-conformance-plan.md`
+5. `docs/architecture/engine/product-pathway-conformance-plan.md`
 6. `docs/product/strata-v1-product-requirements.md`
 7. `docs/product/strata-v1-feature-inventory.md`
 

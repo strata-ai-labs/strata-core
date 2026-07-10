@@ -27,8 +27,8 @@ process-open recovery behavior.
 
 ## Inputs
 
-1. `docs/architecture/storage-next/l7-commit-runtime.md`
-2. `docs/architecture/storage-next/commit-timeline-substrate.md`
+1. `docs/architecture/storage/l7-commit-runtime.md`
+2. `docs/architecture/storage/commit-timeline-substrate.md`
 3. `docs/architecture/implementation-plans/m4-l7-commit-runtime-implementation-plan.md`
 4. `docs/architecture/implementation-plans/m4-l7-commit-runtime-test-plan.md`
 5. All L7A through L7M implementation and test plans under
