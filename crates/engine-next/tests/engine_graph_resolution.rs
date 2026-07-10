@@ -241,3 +241,128 @@ fn exercise_target_status(mut database: Database) {
         .expect("neighbor present");
     assert_eq!(doomed.target_status(), Some(GraphTargetStatus::Present));
 }
+
+#[test]
+fn delete_policies_apply_in_cache_and_durable_modes() {
+    run_database_modes(exercise_delete_policies);
+}
+
+fn exercise_delete_policies(mut database: Database) {
+    let mut graph = database
+        .graph(branch("default"), space("default"))
+        .expect("graph service opens");
+    let name = graph_name("facts");
+    graph.create_graph(name.clone()).expect("graph created");
+    graph
+        .upsert_node(&name, node_id("hub"), GraphNodeData::default())
+        .expect("hub upserts");
+    // Two nodes bound to doc-cascade (one with an incident edge), one to
+    // doc-detach, one to doc-keep, one bound elsewhere as a control.
+    for (node, key) in [
+        ("c1", "doc-cascade"),
+        ("c2", "doc-cascade"),
+        ("d1", "doc-detach"),
+        ("k1", "doc-keep"),
+        ("other", "doc-other"),
+    ] {
+        link_from_hub(
+            &mut graph,
+            &name,
+            node,
+            bound_node_data(GraphBindingPrimitive::Kv, key),
+        );
+    }
+
+    // Cascade: bound nodes and their incident edges disappear.
+    let outcome = graph
+        .apply_binding_delete_policy(
+            &target(GraphBindingPrimitive::Kv, "doc-cascade"),
+            strata_engine_next::GraphDeletePolicy::Cascade,
+        )
+        .expect("cascade applies");
+    assert_eq!(outcome.nodes_affected(), 2);
+    assert!(outcome.commit().is_some());
+    assert!(graph
+        .get_node(&name, &node_id("c1"))
+        .expect("read")
+        .is_none());
+    let hub_neighbors = graph
+        .neighbors(
+            &name,
+            &node_id("hub"),
+            GraphDirection::Outgoing,
+            None,
+            None,
+            100,
+        )
+        .expect("neighbors read");
+    assert!(
+        hub_neighbors
+            .neighbors()
+            .iter()
+            .all(|n| n.node().node_id() != &node_id("c1") && n.node().node_id() != &node_id("c2")),
+        "cascaded nodes leave traversal"
+    );
+    let page = graph
+        .bindings_for_entity(&target(GraphBindingPrimitive::Kv, "doc-cascade"), None, 100)
+        .expect("bindings read");
+    assert!(page.bindings().is_empty(), "cascade clears the reverse map");
+
+    // Detach: the node survives without its binding.
+    let outcome = graph
+        .apply_binding_delete_policy(
+            &target(GraphBindingPrimitive::Kv, "doc-detach"),
+            strata_engine_next::GraphDeletePolicy::Detach,
+        )
+        .expect("detach applies");
+    assert_eq!(outcome.nodes_affected(), 1);
+    assert!(outcome.commit().is_some());
+    let detached = graph
+        .get_node(&name, &node_id("d1"))
+        .expect("read")
+        .expect("node survives");
+    assert!(detached.data().binding().is_none(), "binding removed");
+    let page = graph
+        .bindings_for_entity(&target(GraphBindingPrimitive::Kv, "doc-detach"), None, 100)
+        .expect("bindings read");
+    assert!(page.bindings().is_empty(), "detach clears the reverse map");
+
+    // Keep-dangling: nothing mutates; traversal reports the target.
+    let outcome = graph
+        .apply_binding_delete_policy(
+            &target(GraphBindingPrimitive::Kv, "doc-keep"),
+            strata_engine_next::GraphDeletePolicy::KeepDangling,
+        )
+        .expect("keep-dangling applies");
+    assert_eq!(outcome.nodes_affected(), 1);
+    assert!(outcome.commit().is_none(), "no rows change");
+    let kept = graph
+        .get_node(&name, &node_id("k1"))
+        .expect("read")
+        .expect("node survives");
+    assert!(kept.data().binding().is_some(), "binding preserved");
+    assert_eq!(
+        neighbor_status(&mut graph, &name, "k1"),
+        Some(GraphTargetStatus::Missing),
+        "traversal reports the unwritten target"
+    );
+
+    // The control node bound to a different target is untouched.
+    assert!(graph
+        .get_node(&name, &node_id("other"))
+        .expect("read")
+        .expect("node survives")
+        .data()
+        .binding()
+        .is_some());
+
+    // An unbound target is a clean no-op.
+    let outcome = graph
+        .apply_binding_delete_policy(
+            &target(GraphBindingPrimitive::Kv, "doc-nobody"),
+            strata_engine_next::GraphDeletePolicy::Cascade,
+        )
+        .expect("no-op applies");
+    assert_eq!(outcome.nodes_affected(), 0);
+    assert!(outcome.commit().is_none());
+}

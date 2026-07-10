@@ -21,15 +21,16 @@ pub use ontology::{
 };
 pub use outcome::{
     GraphBatchOpOutcome, GraphBatchWriteOutcome, GraphBinding, GraphBindingPage,
-    GraphDeleteOutcome, GraphEdge, GraphEdgeWriteOutcome, GraphInfo, GraphNamePage, GraphNeighbor,
-    GraphNeighborPage, GraphNode, GraphNodePage, GraphTargetStatus, GraphWriteOutcome,
+    GraphDeleteOutcome, GraphDeletePolicyOutcome, GraphEdge, GraphEdgeWriteOutcome, GraphInfo,
+    GraphNamePage, GraphNeighbor, GraphNeighborPage, GraphNode, GraphNodePage, GraphTargetStatus,
+    GraphWriteOutcome,
 };
 pub use service::GraphService;
 pub use traversal::{GraphBfsOptions, GraphBfsResult, GraphSubgraphResult, GraphTraversalEdge};
 pub use types::{
     GraphBatchOperation, GraphBatchWrite, GraphBindingPrimitive, GraphBindingTarget,
-    GraphDirection, GraphEdgeData, GraphEdgeType, GraphEntityBinding, GraphName, GraphNodeData,
-    GraphNodeId, GraphProperties,
+    GraphDeletePolicy, GraphDirection, GraphEdgeData, GraphEdgeType, GraphEntityBinding, GraphName,
+    GraphNodeData, GraphNodeId, GraphProperties,
 };
 
 pub(crate) use ontology::{

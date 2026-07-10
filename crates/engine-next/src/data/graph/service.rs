@@ -34,12 +34,13 @@ use super::{
     GraphAdjacencyIndex, GraphAdjacencyIndexBuilder, GraphAnalyticsBudget, GraphBatchOpOutcome,
     GraphBatchOperation, GraphBatchWrite, GraphBatchWriteOutcome, GraphBinding, GraphBindingPage,
     GraphBindingPrimitive, GraphBindingRecord, GraphBindingTarget, GraphDeleteOutcome,
-    GraphDirection, GraphEdge, GraphEdgeRecord, GraphEdgeType, GraphEdgeWriteOutcome, GraphInfo,
-    GraphLinkTypeDef, GraphLinkTypeSummary, GraphName, GraphNamePage, GraphNeighbor,
-    GraphNeighborPage, GraphNode, GraphNodeId, GraphNodePage, GraphNodeRecord, GraphObjectTypeDef,
-    GraphObjectTypeSummary, GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyRecord,
-    GraphOntologySummary, GraphOntologyWriteOutcome, GraphTargetStatus, GraphTypeIndexRecord,
-    GraphTypeName, GraphWriteOutcome,
+    GraphDeletePolicy, GraphDeletePolicyOutcome, GraphDirection, GraphEdge, GraphEdgeRecord,
+    GraphEdgeType, GraphEdgeWriteOutcome, GraphInfo, GraphLinkTypeDef, GraphLinkTypeSummary,
+    GraphName, GraphNamePage, GraphNeighbor, GraphNeighborPage, GraphNode, GraphNodeId,
+    GraphNodePage, GraphNodeRecord, GraphObjectTypeDef, GraphObjectTypeSummary, GraphOntology,
+    GraphOntologyFreezeOutcome, GraphOntologyRecord, GraphOntologySummary,
+    GraphOntologyWriteOutcome, GraphTargetStatus, GraphTypeIndexRecord, GraphTypeName,
+    GraphWriteOutcome,
 };
 
 type EdgeIdentity = (GraphNodeId, GraphEdgeType, GraphNodeId);
@@ -277,6 +278,109 @@ impl<'a> GraphService<'a> {
     /// Decision 6 / conformance test 9). A `None` target branch means "the
     /// node's own branch" and is accepted; an explicit target branch is accepted
     /// only when it equals the node's branch.
+    /// Applies an explicit delete policy to every graph fact bound to
+    /// `target`, across all graphs in this space. The typical caller
+    /// just deleted (or is about to delete) the bound entity.
+    ///
+    /// Candidates come from the binding reverse index and are verified
+    /// against the authoritative node row's binding before any row is
+    /// mutated. Cascade deletes the bound nodes and their incident
+    /// edges; detach preserves the nodes and removes their bindings;
+    /// keep-dangling mutates nothing — traversal reports the target's
+    /// status instead.
+    pub fn apply_binding_delete_policy(
+        &mut self,
+        target: &GraphBindingTarget,
+        policy: GraphDeletePolicy,
+    ) -> EngineResult<GraphDeletePolicyOutcome> {
+        let record = self.branch_record()?;
+        self.validate_binding_target(target)?;
+
+        // Reverse-index candidates, verified against the authoritative
+        // node binding (reverse maps are candidate indexes, not truth).
+        let mut verified: Vec<(GraphName, GraphNodeId, GraphNodeRecord)> = Vec::new();
+        for row in self.persistence.scan_prefix(
+            record.storage_branch_id(),
+            RowClass::GraphBindingIndex,
+            encode_graph_binding_target_prefix(&self.space, target),
+            ReadSelector::Latest,
+            None,
+        )? {
+            if row.is_tombstone() {
+                continue;
+            }
+            let (_, graph, node_id) = decode_graph_binding_key(&self.space, row.key())?;
+            let Some(node) = self.node_record(&record, &graph, &node_id)? else {
+                continue;
+            };
+            if node.data().binding().map(super::GraphEntityBinding::target) == Some(target) {
+                verified.push((graph, node_id, node));
+            }
+        }
+        let nodes_affected = verified.len() as u64;
+
+        let mut mutations = MutationMap::default();
+        match policy {
+            GraphDeletePolicy::KeepDangling => {}
+            GraphDeletePolicy::Detach => {
+                for (graph, node_id, node) in &verified {
+                    let mut data =
+                        super::GraphNodeData::new(node.data().properties().cloned(), None);
+                    if let Some(object_type) = node.data().object_type() {
+                        data = data.with_object_type(object_type.clone());
+                    }
+                    let detached = GraphNodeRecord::new(graph.clone(), node_id.clone(), data);
+                    mutations.put(
+                        self.node_address(&record, graph, node_id),
+                        encode_graph_node_record(&detached)?,
+                    );
+                    mutations.delete(self.binding_address(&record, target, graph, node_id));
+                }
+            }
+            GraphDeletePolicy::Cascade => {
+                let mut by_graph: BTreeMap<GraphName, Vec<GraphNodeId>> = BTreeMap::new();
+                for (graph, node_id, node) in &verified {
+                    mutations.delete(self.node_address(&record, graph, node_id));
+                    mutations.delete(self.binding_address(&record, target, graph, node_id));
+                    if let Some(object_type) = node.data().object_type() {
+                        mutations.delete(self.type_index_address(
+                            &record,
+                            graph,
+                            object_type,
+                            node_id,
+                        ));
+                    }
+                    by_graph
+                        .entry(graph.clone())
+                        .or_default()
+                        .push(node_id.clone());
+                }
+                for (graph, node_ids) in &by_graph {
+                    for edge in self
+                        .edge_record_map(&record, graph, ReadSelector::Latest)?
+                        .into_values()
+                    {
+                        if node_ids.contains(edge.src()) || node_ids.contains(edge.dst()) {
+                            self.delete_edge_mutations(&record, &mut mutations, &edge);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mutations = mutations.into_mutations();
+        let commit = if mutations.is_empty() {
+            None
+        } else {
+            Some(self.commit_batch(&record, mutations)?)
+        };
+        Ok(GraphDeletePolicyOutcome::new(
+            policy,
+            nodes_affected,
+            commit,
+        ))
+    }
+
     /// Resolves the current status of one binding target: whether the
     /// bound entity's row is visible, tombstoned, or absent. Vector and
     /// graph targets use composite addresses and report

@@ -114,6 +114,22 @@ pub(super) fn graph_read_outputs() -> Vec<Output> {
             .collect(),
         )),
         Output::GraphBfsResult(graph_bfs_output()),
+        Output::GraphDeletePolicyResult {
+            policy: "cascade".to_owned(),
+            nodes_affected: 2,
+            effect: MutationEffect::new(true, MutationEffectKind::Deleted, true, 2),
+            commit: Some(commit_receipt(3, 30, 3, 0)),
+            version: Some(3),
+            timestamp: Some(30),
+        },
+        Output::GraphDeletePolicyResult {
+            policy: "keep_dangling".to_owned(),
+            nodes_affected: 2,
+            effect: MutationEffect::new(false, MutationEffectKind::Unchanged, true, 2),
+            commit: None,
+            version: None,
+            timestamp: None,
+        },
     ]
 }
 

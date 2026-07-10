@@ -133,6 +133,7 @@ fn command_names_cover_every_variant() {
             "graph_pagerank",
             "graph_cdlp",
             "graph_bfs",
+            "graph_apply_delete_policy",
             "arrow_import",
             "arrow_export",
         ]

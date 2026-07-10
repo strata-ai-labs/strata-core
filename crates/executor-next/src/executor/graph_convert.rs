@@ -4,23 +4,24 @@ use super::{
     EngineGraphBatchOpOutcome, EngineGraphBatchOperation, EngineGraphBatchWriteOutcome,
     EngineGraphBfsOptions, EngineGraphBfsResult, EngineGraphBinding, EngineGraphBindingPage,
     EngineGraphBindingPrimitive, EngineGraphBindingTarget, EngineGraphCdlpOptions,
-    EngineGraphCdlpResult, EngineGraphDeleteOutcome, EngineGraphDirection, EngineGraphEdge,
-    EngineGraphEdgeData, EngineGraphEdgeType, EngineGraphEdgeWriteOutcome,
-    EngineGraphEntityBinding, EngineGraphInfo, EngineGraphLccResult, EngineGraphLinkTypeDef,
-    EngineGraphName, EngineGraphNamePage, EngineGraphNeighbor, EngineGraphNeighborPage,
-    EngineGraphNode, EngineGraphNodeData, EngineGraphNodeId, EngineGraphNodePage,
-    EngineGraphObjectTypeDef, EngineGraphOntology, EngineGraphOntologyFreezeOutcome,
-    EngineGraphOntologyStatus, EngineGraphOntologySummary, EngineGraphOntologyWriteOutcome,
-    EngineGraphPageRankOptions, EngineGraphPageRankResult, EngineGraphProperties,
-    EngineGraphPropertyDef, EngineGraphSsspResult, EngineGraphTargetStatus, EngineGraphTypeName,
-    EngineGraphWccResult, EngineGraphWriteOutcome, ExecutorError, ExecutorResult,
-    GraphAnalyticsBudget, GraphBatchItemResult, GraphBatchOperation, GraphBfsData,
+    EngineGraphCdlpResult, EngineGraphDeleteOutcome, EngineGraphDeletePolicy,
+    EngineGraphDeletePolicyOutcome, EngineGraphDirection, EngineGraphEdge, EngineGraphEdgeData,
+    EngineGraphEdgeType, EngineGraphEdgeWriteOutcome, EngineGraphEntityBinding, EngineGraphInfo,
+    EngineGraphLccResult, EngineGraphLinkTypeDef, EngineGraphName, EngineGraphNamePage,
+    EngineGraphNeighbor, EngineGraphNeighborPage, EngineGraphNode, EngineGraphNodeData,
+    EngineGraphNodeId, EngineGraphNodePage, EngineGraphObjectTypeDef, EngineGraphOntology,
+    EngineGraphOntologyFreezeOutcome, EngineGraphOntologyStatus, EngineGraphOntologySummary,
+    EngineGraphOntologyWriteOutcome, EngineGraphPageRankOptions, EngineGraphPageRankResult,
+    EngineGraphProperties, EngineGraphPropertyDef, EngineGraphSsspResult, EngineGraphTargetStatus,
+    EngineGraphTypeName, EngineGraphWccResult, EngineGraphWriteOutcome, ExecutorError,
+    ExecutorResult, GraphAnalyticsBudget, GraphBatchItemResult, GraphBatchOperation, GraphBfsData,
     GraphBfsEdgeData, GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget, GraphCdlpData,
-    GraphDirection, GraphEdgeData, GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData,
-    GraphLccData, GraphLinkTypeDefData, GraphLinkTypeSummaryData, GraphNeighborHit, GraphNodeData,
-    GraphNodeDataOutput, GraphObjectTypeDefData, GraphObjectTypeSummaryData, GraphOntologyData,
-    GraphOntologySummaryData, GraphPagerankData, GraphPropertyDef, GraphSsspData, GraphWccData,
-    MutationEffect, Output, PageInfo, DEFAULT_BRANCH, DEFAULT_SPACE,
+    GraphDeletePolicy, GraphDirection, GraphEdgeData, GraphEdgeDataOutput, GraphEntityBinding,
+    GraphInfoData, GraphLccData, GraphLinkTypeDefData, GraphLinkTypeSummaryData, GraphNeighborHit,
+    GraphNodeData, GraphNodeDataOutput, GraphObjectTypeDefData, GraphObjectTypeSummaryData,
+    GraphOntologyData, GraphOntologySummaryData, GraphPagerankData, GraphPropertyDef,
+    GraphSsspData, GraphWccData, MutationEffect, MutationEffectKind, Output, PageInfo,
+    DEFAULT_BRANCH, DEFAULT_SPACE,
 };
 
 pub(super) fn graph_name(name: String) -> ExecutorResult<EngineGraphName> {
@@ -263,6 +264,45 @@ pub(super) fn graph_neighbor_hit(neighbor: &EngineGraphNeighbor) -> GraphNeighbo
             .target_status()
             .map(|status| graph_target_status(status).to_owned()),
     )
+}
+
+pub(super) const fn engine_graph_delete_policy(
+    policy: GraphDeletePolicy,
+) -> EngineGraphDeletePolicy {
+    match policy {
+        GraphDeletePolicy::Cascade => EngineGraphDeletePolicy::Cascade,
+        GraphDeletePolicy::Detach => EngineGraphDeletePolicy::Detach,
+        GraphDeletePolicy::KeepDangling => EngineGraphDeletePolicy::KeepDangling,
+    }
+}
+
+pub(super) fn graph_delete_policy_output(outcome: &EngineGraphDeletePolicyOutcome) -> Output {
+    let policy = match outcome.policy() {
+        EngineGraphDeletePolicy::Cascade => "cascade",
+        EngineGraphDeletePolicy::Detach => "detach",
+        EngineGraphDeletePolicy::KeepDangling => "keep_dangling",
+    };
+    let matched = outcome.nodes_affected() > 0;
+    let kind = match outcome.policy() {
+        _ if outcome.commit().is_none() => MutationEffectKind::Unchanged,
+        EngineGraphDeletePolicy::Cascade => MutationEffectKind::Deleted,
+        _ => MutationEffectKind::Updated,
+    };
+    Output::GraphDeletePolicyResult {
+        policy: policy.to_owned(),
+        nodes_affected: outcome.nodes_affected(),
+        effect: MutationEffect::new(
+            outcome.commit().is_some(),
+            kind,
+            matched,
+            outcome.nodes_affected(),
+        ),
+        commit: outcome.commit().map(|commit| commit_receipt(*commit)),
+        version: outcome.commit().map(|commit| commit.version().as_u64()),
+        timestamp: outcome
+            .commit()
+            .map(|commit| commit.timestamp().as_micros()),
+    }
 }
 
 pub(super) fn graph_target_status(status: EngineGraphTargetStatus) -> &'static str {

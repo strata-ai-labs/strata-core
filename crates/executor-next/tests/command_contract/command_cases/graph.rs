@@ -224,6 +224,12 @@ pub(super) fn graph_commands() -> Vec<Command> {
             budget: None,
             as_of: None,
         },
+        Command::GraphApplyDeletePolicy {
+            branch: None,
+            space: None,
+            target: graph_binding_target(),
+            policy: GraphDeletePolicy::Detach,
+        },
     ]
 }
 

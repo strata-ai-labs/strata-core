@@ -94,3 +94,85 @@ fn exercise_wire_target_status(executor: &mut Executor) {
         Some("deleted")
     );
 }
+
+#[test]
+fn delete_policy_command_applies_in_cache_and_durable_modes() {
+    run_modes(exercise_delete_policy_command);
+}
+
+fn exercise_delete_policy_command(executor: &mut Executor) {
+    use strata_executor_next::GraphDeletePolicy;
+
+    executor.graph_create("facts").expect("graph created");
+    executor
+        .graph_add_node("facts", "hub", None, None)
+        .expect("hub added");
+    for (node, key) in [("c1", "doc-x"), ("c2", "doc-x"), ("d1", "doc-y")] {
+        executor
+            .execute(Command::GraphAddNode {
+                branch: None,
+                space: None,
+                graph: "facts".to_owned(),
+                node_id: node.to_owned(),
+                properties: None,
+                binding: Some(kv_binding(key)),
+                object_type: None,
+            })
+            .expect("node added");
+        executor
+            .graph_add_edge("facts", "hub", "links", node, None, None)
+            .expect("edge added");
+    }
+
+    let output = executor
+        .graph_apply_delete_policy(
+            kv_binding("doc-x").into_target(),
+            GraphDeletePolicy::Cascade,
+        )
+        .expect("cascade applies");
+    let Output::GraphDeletePolicyResult {
+        policy,
+        nodes_affected,
+        commit,
+        ..
+    } = output
+    else {
+        panic!("unexpected delete-policy output");
+    };
+    assert_eq!(policy, "cascade");
+    assert_eq!(nodes_affected, 2);
+    assert!(commit.is_some());
+
+    let output = executor
+        .graph_apply_delete_policy(
+            kv_binding("doc-y").into_target(),
+            GraphDeletePolicy::KeepDangling,
+        )
+        .expect("keep-dangling applies");
+    let Output::GraphDeletePolicyResult {
+        policy,
+        nodes_affected,
+        commit,
+        ..
+    } = output
+    else {
+        panic!("unexpected delete-policy output");
+    };
+    assert_eq!(policy, "keep_dangling");
+    assert_eq!(nodes_affected, 1);
+    assert!(commit.is_none());
+    // The kept binding surfaces as missing through traversal (doc-y was
+    // never written to KV).
+    let output = executor
+        .graph_neighbors("facts", "hub", GraphDirection::Outgoing, None, None, None)
+        .expect("neighbors read");
+    let Output::GraphNeighborPage { items, .. } = output else {
+        panic!("unexpected neighbors output");
+    };
+    let kept = items
+        .iter()
+        .find(|hit| hit.node_id() == "d1")
+        .expect("kept neighbor");
+    assert_eq!(kept.target_status(), Some("missing"));
+    assert!(!items.iter().any(|hit| hit.node_id() == "c1"));
+}

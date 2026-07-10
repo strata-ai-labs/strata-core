@@ -549,6 +549,24 @@ pub enum Output {
     GraphCdlpResult(GraphCdlpData),
     /// Breadth-first traversal computed over a graph snapshot.
     GraphBfsResult(GraphBfsData),
+    /// Delete-policy application acknowledgement.
+    GraphDeletePolicyResult {
+        /// Applied policy: `cascade`, `detach`, or `keep_dangling`.
+        policy: String,
+        /// How many bound nodes the policy covered.
+        nodes_affected: u64,
+        /// Mutation effect facts.
+        effect: MutationEffect,
+        /// Commit receipt when rows changed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<CommitReceipt>,
+        /// Commit version when rows changed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        /// Commit timestamp when rows changed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
+    },
     /// Graph ontology type deletion acknowledgement.
     GraphOntologyDeleteResult {
         /// Graph name.

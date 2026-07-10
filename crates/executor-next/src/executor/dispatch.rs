@@ -839,6 +839,17 @@ impl Executor {
                 budget,
                 as_of,
             ),
+            Command::GraphApplyDeletePolicy {
+                branch,
+                space,
+                target,
+                policy,
+            } => self.execute_graph_apply_delete_policy(
+                branch.as_deref(),
+                space.as_deref(),
+                target,
+                policy,
+            ),
             Command::ArrowImport {
                 branch,
                 space,

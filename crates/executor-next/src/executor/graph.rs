@@ -506,9 +506,10 @@ impl Executor {
 
 use super::{
     engine_graph_bfs_options, engine_graph_budget, engine_graph_cdlp_options,
-    engine_graph_pagerank_options, engine_graph_personalization, graph_bfs_output,
-    graph_cdlp_output, graph_lcc_output, graph_pagerank_output, graph_sssp_output,
-    graph_wcc_output, EngineGraphAdjacencyIndex, EngineGraphName, GraphAnalyticsBudget,
+    engine_graph_delete_policy, engine_graph_pagerank_options, engine_graph_personalization,
+    graph_bfs_output, graph_cdlp_output, graph_delete_policy_output, graph_lcc_output,
+    graph_pagerank_output, graph_sssp_output, graph_wcc_output, EngineGraphAdjacencyIndex,
+    EngineGraphName, GraphAnalyticsBudget, GraphDeletePolicy,
 };
 
 impl Executor {
@@ -636,5 +637,19 @@ impl Executor {
         let index = self.graph_analytics_index(branch, space, &graph, budget, as_of)?;
         let result = index.bfs(&start, &options)?;
         Ok(graph_bfs_output(&index, &start, &result))
+    }
+
+    pub(super) fn execute_graph_apply_delete_policy(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        target: GraphBindingTarget,
+        policy: GraphDeletePolicy,
+    ) -> ExecutorResult<Output> {
+        let target = engine_graph_binding_target(target)?;
+        let policy = engine_graph_delete_policy(policy);
+        let mut service = self.graph_service(branch, space)?;
+        let outcome = service.apply_binding_delete_policy(&target, policy)?;
+        Ok(graph_delete_policy_output(&outcome))
     }
 }

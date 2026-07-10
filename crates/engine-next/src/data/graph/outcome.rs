@@ -349,6 +349,47 @@ impl GraphNeighbor {
     }
 }
 
+/// Result of applying a delete policy to every graph fact bound to
+/// one entity target.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphDeletePolicyOutcome {
+    policy: super::GraphDeletePolicy,
+    nodes_affected: u64,
+    commit: Option<CommitOutcome>,
+}
+
+impl GraphDeletePolicyOutcome {
+    pub(crate) const fn new(
+        policy: super::GraphDeletePolicy,
+        nodes_affected: u64,
+        commit: Option<CommitOutcome>,
+    ) -> Self {
+        Self {
+            policy,
+            nodes_affected,
+            commit,
+        }
+    }
+
+    #[must_use]
+    /// Returns the applied policy.
+    pub const fn policy(&self) -> super::GraphDeletePolicy {
+        self.policy
+    }
+
+    #[must_use]
+    /// Returns how many bound nodes the policy covered.
+    pub const fn nodes_affected(&self) -> u64 {
+        self.nodes_affected
+    }
+
+    #[must_use]
+    /// Returns the commit when the policy mutated rows.
+    pub const fn commit(&self) -> Option<&CommitOutcome> {
+        self.commit.as_ref()
+    }
+}
+
 /// Resolution status of one binding target, per the relationship-layer
 /// contract vocabulary. Dangling references are explicit: traversal
 /// reports the target's state instead of silently dropping it.

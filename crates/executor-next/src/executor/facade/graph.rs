@@ -1,6 +1,6 @@
 use super::super::{
-    Command, Executor, ExecutorResult, GraphBatchOperation, GraphBindingTarget, GraphDirection,
-    GraphEntityBinding, Output,
+    Command, Executor, ExecutorResult, GraphBatchOperation, GraphBindingTarget, GraphDeletePolicy,
+    GraphDirection, GraphEntityBinding, Output,
 };
 
 impl Executor {
@@ -451,6 +451,20 @@ impl Executor {
             direction,
             budget: None,
             as_of: None,
+        })
+    }
+
+    /// Executes a default-branch delete-policy application.
+    pub fn graph_apply_delete_policy(
+        &mut self,
+        target: GraphBindingTarget,
+        policy: GraphDeletePolicy,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphApplyDeletePolicy {
+            branch: None,
+            space: None,
+            target,
+            policy,
         })
     }
 }

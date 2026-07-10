@@ -7,8 +7,8 @@ use crate::types::{
     ArrowExportPrimitive, ArrowFileFormat, ArrowImportTarget, BatchEventEntry,
     BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry, Bytes,
     EventRangeDirection, GraphAnalyticsBudget, GraphBatchOperation, GraphBindingTarget,
-    GraphDirection, GraphEntityBinding, GraphPropertyDef, JsonIndexType, VectorDistanceMetric,
-    VectorMetadataFilter,
+    GraphDeletePolicy, GraphDirection, GraphEntityBinding, GraphPropertyDef, JsonIndexType,
+    VectorDistanceMetric, VectorMetadataFilter,
 };
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -1408,6 +1408,19 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
+    /// Applies an explicit delete policy to graph facts bound to an entity.
+    GraphApplyDeletePolicy {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// The bound entity target.
+        target: GraphBindingTarget,
+        /// Policy to apply: `cascade`, `detach`, or `keep_dangling`.
+        policy: GraphDeletePolicy,
+    },
     /// Imports an Arrow-compatible file into a product primitive.
     ArrowImport {
         /// Target branch. Defaults to the executor handle branch.
@@ -1650,6 +1663,7 @@ impl Command {
             Self::GraphPagerank { .. } => "graph_pagerank",
             Self::GraphCdlp { .. } => "graph_cdlp",
             Self::GraphBfs { .. } => "graph_bfs",
+            Self::GraphApplyDeletePolicy { .. } => "graph_apply_delete_policy",
             Self::ArrowImport { .. } => "arrow_import",
             Self::ArrowExport { .. } => "arrow_export",
             #[cfg(feature = "inference")]
