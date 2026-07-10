@@ -135,8 +135,14 @@ fn run(config: Config) -> EngineResult<()> {
             workload.mix_label(),
         );
         for mode in config.mode.modes() {
-            let tempdir = tempfile::tempdir_in(&root).expect("temporary benchmark database");
-            let result = run_workload(&config, mode, workload, tempdir.path())?;
+            let result = if let Some(data_dir) = &config.data_dir {
+                std::fs::create_dir_all(data_dir).expect("data dir");
+                run_workload(&config, mode, workload, data_dir)?
+            } else {
+                let tempdir =
+                    tempfile::tempdir_in(&root).expect("temporary benchmark database");
+                run_workload(&config, mode, workload, tempdir.path())?
+            };
             print_result(&result);
             results.push(result);
         }
@@ -159,7 +165,11 @@ fn run_workload(
 
     // Load phase: insert `records` keys (user0..user{records-1}).
     let load_start = Instant::now();
-    load(&mut database, config)?;
+    if config.skip_load {
+        eprintln!("  [load] skipped (reusing store in {})", path.display());
+    } else {
+        load(&mut database, config)?;
+    }
     let load_elapsed = load_start.elapsed();
     if mode == BenchMode::Durable {
         eprintln!(
@@ -374,6 +384,13 @@ fn run_workload(
         );
         print_preheat_probe("post-run");
         print_jemalloc_split("post-run");
+    }
+
+    // Close explicitly so the writer lock releases before the next workload
+    // reopens a shared --data-dir store; Drop alone leaves the release racing
+    // the next open (EAGAIN on the advisory lock).
+    if mode == BenchMode::Durable {
+        database.close()?;
     }
 
     Ok(WorkloadResult {
@@ -764,6 +781,11 @@ struct Config {
     settle_secs: u64,
     data_block_bytes: Option<u32>,
     cache_preheat: CachePreheat,
+    /// Persistent store directory shared across workloads (durable only).
+    /// The directory is created if missing and never deleted by the harness.
+    data_dir: Option<std::path::PathBuf>,
+    /// Reuse the store in `--data-dir` as-is: skip the load phase.
+    skip_load: bool,
 }
 
 impl Config {
@@ -782,6 +804,8 @@ impl Config {
             settle_secs: 0,
             data_block_bytes: None,
             cache_preheat: CachePreheat::WhenIdle,
+            data_dir: None,
+            skip_load: false,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -826,6 +850,10 @@ impl Config {
                         .parse()
                         .map_err(|_| format!("`{arg}` takes seconds"))?;
                 }
+                "--data-dir" => {
+                    config.data_dir = Some(arg_value(&arg, args.next())?.into());
+                }
+                "--skip-load" => config.skip_load = true,
                 "-q" | "--quick" => {
                     config.records = QUICK_RECORDS;
                     config.ops = QUICK_OPS;
@@ -836,6 +864,12 @@ impl Config {
         }
         if config.workloads.is_empty() {
             return Err("no workloads selected".to_string());
+        }
+        if config.skip_load && config.data_dir.is_none() {
+            return Err("--skip-load requires --data-dir".to_string());
+        }
+        if config.data_dir.is_some() && config.mode != ModeSelection::One(BenchMode::Durable) {
+            return Err("--data-dir requires --durable (a cache store has no directory)".to_string());
         }
         Ok(config)
     }
@@ -916,8 +950,11 @@ fn usage() -> String {
     "usage: engine-ycsb [--workload a,b,c,d,e,f] [--mode cache|durable|both] \
      [--records N] [--ops N] [--value-bytes N] [--value-fill constant|random] \
      [--scan-max N] [--load-batch N] \
-     [--memory-budget SIZE] [--preheat on|off] [--perf-breakdown] [-q]\n  \
-     records/ops accept k/m suffixes (decimal); SIZE accepts k/m/g (binary)."
+     [--memory-budget SIZE] [--preheat on|off] [--perf-breakdown] \
+     [--data-dir PATH] [--skip-load] [-q]\n  \
+     records/ops accept k/m suffixes (decimal); SIZE accepts k/m/g (binary).\n  \
+     --data-dir: persistent durable store shared across workloads (never \
+     deleted); --skip-load reuses it as-is."
         .to_owned()
 }
 

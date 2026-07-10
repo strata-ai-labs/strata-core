@@ -1383,6 +1383,213 @@ feature sets, format goldens, engine-next, e2e 17/17.
 Shelf: fork-of-fork (sources WITH inherited layers) still takes the eager
 path — needs layer-chain composition, separate slice.
 
+## 100M YCSB degradation scout — the out-of-cache cliff (2026-07-09, v1-content @ 88715bca, /data2)
+
+First 100M-record suite (1KB random values, ~103GiB logical). Single pass
+(scout, not medians), durable, 500K ops, 32g budget, settle 120s at 10M /
+300s at 100M, fresh load per workload, same-session interleaved 10M
+control, same binary/box. 10M control took 28min; 100M took 3h30 (six
+~28.5min loads dominate).
+
+| workload | 10M control | 100M | ratio |
+|---|---|---|---|
+| load (rows/s) | 75.3-86.4K | 57.5-62.7K | -29% |
+| A 50/50 update | 10,967 | 8,414 | -23% |
+| B 95/5 read | 139,273 | 9,920 | **14.0x** |
+| C read-only | 117,990 | 9,413 | **12.5x** |
+| D read-latest | 97,986 | 5,376 | **18.2x** |
+| E scan(<=100) | 5,908 | 2,683 | 2.2x |
+| F read-RMW | 8,115 | 3,778 | 2.1x |
+
+Read p50/p99 (C): 8.59us/13.3us -> 25.2us/320us. D read p50 218us.
+E scan p50 170 -> 246us, p99 236us -> 911us. A update p99.9 12.1 -> 4.4ms
+(single-pass lottery noise; A/F medians need reps).
+
+Readings:
+
+1. **The B/C/D cliff is the out-of-cache transition, and its unit cost is
+   the target.** At 10M the whole 12GiB store fits in cache (miss ~0 after
+   preheat); at 100M the C cell runs at **40.6% block-cache miss** (203K
+   misses / 500K reads, exactly one 16KiB data block and 16.5KB read per
+   miss — the format layer is fine), and `api_point_ms` = 52.9s of the
+   53.1s run: the whole regression is read-path wall. Derived miss cost
+   **~248us per missed block vs ~100us device floor** for a QD1 16KiB
+   NVMe read — ~2.5x of overhead (checked-path checksum + decode + cache
+   insert + eviction churn: 537K evictions over the run). D is worse (75%
+   miss, p50 218us) because the latest-distribution head is exactly what
+   preheat did not retain.
+2. **Preheat thrashes when store >> cache.** During D's 300s settle the
+   preheat cycled 110GiB through the 15GiB block pool (868 passes, 6.7M
+   blocks admitted, self-evicting). At over-budget scale it needs an
+   admit-until-full / hot-first policy instead of full-store passes —
+   today it burns settle-window IO for a cache that ends up holding an
+   arbitrary residue. (Probe oddity to check while there: `cache_gb`
+   prints 45-60/15.00 — used 3-4x capacity — either an accounting bug or
+   a mislabeled cumulative counter.)
+3. **Write side and space health scale cleanly.** Load -29% at 10x data;
+   A -23% (already stall-lottery-bound, not read-bound); residual
+   118-120GiB post-settle ~= **1.15x logical** — the #2524 fixes hold at
+   10x scale, slightly better than the 10M shape.
+4. E/F degrade only ~2.2x/2.1x — both were already bound elsewhere (scan
+   arithmetic; RMW stall lottery + the read tax on the R half).
+
+Next candidates, in leverage order: (a) RocksDB 100M control on the same
+box (both engines pay the disk at this scale — the honest gap is the
+miss-cost ratio, not the 10M cache-race); (b) miss-cost decomposition
+slice (~248us -> device floor: pread, checksum/decode, insert/evict); (c)
+preheat policy for over-budget stores; (d) medians-of-3 re-run of the
+cells that matter after any fix.
+
+### RocksDB 100M control (same session, same box, stock options)
+
+`rocksdb-ycsb` a-f at 10M and 100M, identical generators/keys/values,
+500K ops, stock `Options::default()` (the C1 peer framing; tiny block
+cache + OS page cache, no settle window — its post-ordered-load
+compaction is trivial-move-dominated). 10M control reproduced the
+C1-era refs (A 279K / B 417K / C 440K / D 307K / E 36.7K / F 190K;
+store 9.6GB raw). 100M: store 95.6GB raw, load 619-652K rows/s.
+
+| workload | RocksDB 10M -> 100M | RocksDB degr. | Strata degr. | gap @10M | gap @100M |
+|---|---|---|---|---|---|
+| load | 613-736K -> 619-652K | ~nil | -29% | 6.4x | **10.8x** |
+| A | 279,027 -> 44,588 | 6.3x | 1.3x | 25.4x | **5.3x** |
+| B | 416,859 -> 29,328 | 14.2x | 14.0x | 3.0x | **3.0x** |
+| C | 439,838 -> 29,464 | 14.9x | 12.5x | 3.7x | **3.1x** |
+| D | 307,240 -> 15,898 | 19.3x | 18.2x | 3.1x | **3.0x** |
+| E | 36,718 -> 5,682 | 6.5x | 2.2x | 6.2x | **2.1x** |
+| F | 190,068 -> 25,329 | 7.5x | 2.1x | 23.4x | **6.7x** |
+
+Readings:
+
+1. **The cliff is physics, not a Strata defect.** RocksDB's B/C/D
+   degrade 14.2x/14.9x/19.3x vs our 14.0x/12.5x/18.2x — the same
+   out-of-cache transition at near-identical ratios. Nobody outruns the
+   disk at 100M x 1KB on a 61GB box.
+2. **The read gap is scale-stable at ~3x and is the miss-cost ratio.**
+   RocksDB C at 100M: mean 33.9us/op, p99 ~97us — its per-miss cost sits
+   at the device floor (~100us buffered pread), while ours is ~248us.
+   That 2.5x per-miss overhead IS the 3x C/B/D gap. Confirms the
+   miss-cost decomposition slice as the highest-leverage read work; a
+   second term is the hot-path p50 (ours rose 8.6 -> 25us at 100M —
+   deeper fringe: nz_search 5/op, 2 seeks/op — while RocksDB's hit p50
+   stays ~5us).
+3. **Write-heavy gaps compress dramatically at scale** (A 25.4x -> 5.3x,
+   F 23.4x -> 6.7x): RocksDB's mixed-workload throughput pays 6-7x for
+   compaction-vs-read interference at 100M while our A barely moved
+   (stall-lottery-bound either way).
+4. **Load is the honest outlier.** RocksDB loads 100M at the same speed
+   it loads 10M (~645K rows/s ~= device bandwidth; ordered keys =
+   trivial moves), while we drop 75-86K -> 58K. We are structure-bound,
+   not bandwidth-bound, on ingest at scale — a real scaling defect worth
+   its own attribution pass (suspects: flush/compaction overlap, commit
+   admission, WAL cadence).
+
+## 1B YCSB matrix night — two store-bricking bugs, partial numbers (2026-07-10, @61b3f19a)
+
+First billion-record attempt. 100B random values (1KB x 1B does not fit
+the box), NEW shared-store protocol (`engine-ycsb --data-dir/--skip-load`:
+load once per scale, C on the virgin store, then b,d,e, then a,f), 500K
+ops, 32g, settles 120/300/600s; RocksDB fresh-per-workload at all three
+scales (stock options).
+
+**The headline is two product bugs, not the numbers:**
+
+1. **#2553 — 1B: manifest-listed compaction output missing on disk
+   (in-process data loss).** Load (288GiB, ~2.7h) + 600s settle clean;
+   the C run's reads then hit
+   `tables/.../l0001/maintenance-compaction-...-c04f315e4c7f9cb2-00000001`
+   -> NotFound; every reopen fails `TableManifestRecoveryMismatch`. The
+   index-0 SIBLING of the same multi-output family exists (51MB); index 1
+   is in neither tables/ nor quarantine/. Suspect seam: multi-output
+   publish->install->reclaim (the #2531-#2533 machinery). Needed 1B rows
+   of sustained load+maintenance; 10M/100M never showed it.
+2. **#2555 — reopen WAL next-segment collision (clean close + reopen +
+   first write bricks the store).** At 10M AND 100M: reopen + reads +
+   settle fine; first update commit fails
+   `CreateSegment wal/<max-existing-id> AlreadyExists`; the NEXT recovery
+   refuses `recovered WAL package must be strictly ordered`. Scale-gated
+   by WAL truncation history (a -q store reopens fine — e2e's reopen
+   tests are all tiny = CI blind spot). Killed all non-C Strata cells.
+   Cutover-blocking.
+
+Numbers that survived (100B family, single pass):
+
+| cell | Strata | RocksDB | gap |
+|---|---|---|---|
+| 10M load (rows/s) | 294,586 | ~3.2M | 10.9x |
+| 100M load | 207,645 | ~3.2M | 15.5x |
+| 1B load | ~100K (wall-clock est; result line lost to #2553) | ~3.2M (flat!) | ~32x |
+| 10M C | 124,396 (store cache-resident) | 392,816 | 3.2x |
+| 100M C | 23,789 (26GiB vs 15GiB pool) | 48,710 | **2.0x** |
+| 1B C | n/a (#2553) | 23,538 (p50 58us) | — |
+
+RocksDB full 1B row for later reference: A 41.5K / B 23.8K / C 23.5K /
+D 15.0K / E 10.5K / F 23.6K; read p50 58-78us (page cache holds ~half of
+its 107GB store).
+
+Readings:
+
+1. Strata ingest slope within one value family: 295K -> 208K -> ~100K
+   rows/s (-30% then -52% per decade, steepening at depth) while RocksDB
+   loads FLAT at ~3.2M rows/s across three decades (ordered keys,
+   no-sync batches). The 100M attribution pass (prior row) is now a 1B
+   attribution pass.
+2. 100M C at 2.0x RocksDB is Strata's best-ever relative read cell —
+   the 1.7x-over-budget regime is kind to us; the 40%-miss regime
+   (100M x 1KB: 3.1x) and their page-cache-heavy 1B regime remain to be
+   fought after the read-miss cost work.
+3. Evidence preserved: store-10m (3GiB, #2555 cheap repro), store-100m
+   (26GiB, #2555), store-1b (288GiB, #2553). run.log alongside.
+
+## #2555 FIXED: WAL writer resumes at the on-disk tail after reopen (2026-07-10)
+
+Root cause (code-anchored): the writer's resume segment was seeded ONLY
+from manifest `active_wal_segment`, persisted only when a checkpoint
+PUBLISHES; rotation durably creates segments without persisting the
+pointer, and checkpoint cadence is threshold-driven — so after
+post-checkpoint rolls the pointer lags the on-disk tail. Reopen appended
+into the sealed pointer segment; the next roll durably CREATEd an
+existing segment (`AlreadyExists` -> commit unavailable), and the
+disordered package failed the strictly-ordered recovery check on the
+next open — bricked. A stale-low active id also silently disabled WAL
+retention (protects `>= active`). Recovery's own replay always computed
+the true directory max and discarded it.
+
+Fix: `resolve_resume_segment` in `WalService::open` — resume =
+max(manifest seed, on-disk max). Heals clean-close AND crash reopens
+(close-time persistence alone could not), un-breaks the retention
+boundary, routes torn tails through the existing latest-segment repair
+contract, and leaves fresh stores byte-identical. Deleted stale seeds
+are not resurrected. Foreign names under `wal/` now fail at open instead
+of first read (same typed error, strictly earlier). Perf-trace counter
+`wal_open_segment_reconciliations` + a lifecycle `warn` breadcrumb when
+the writer resumes past the manifest pointer.
+
+Consciously revised invariants: "assembly performs no listing" (testkit
++ lifecycle tests) is now "assembly lists exactly the WAL prefix, once";
+the truncation-boundary tests that seeded a writer BELOW existing
+segments (only reachable via the bug) were restructured to create the
+future segment after the active writer opens.
+
+Verification: red-first e2e pinned on pre-fix v1 (fails with the exact
+`Publish CreateSegment AlreadyExists` chain from the matrix night; green
+post-fix, including a third-open recovery + read-back). New crash-harness
+case (rolls -> crash before checkpoint -> reopen resumes at tail, strict
+order preserved). 5 service-level tests (stale-seed floor resume + fresh
+roll, deleted-seed no-resurrection, seed-above-max, torn tail, retention
+boundary). Battery: lib 3367/3564 both feature sets, all-targets,
+goldens, clippy 0/0, engine-next 22/22, e2e 17/17. Real-world proof:
+the matrix night's exact failing sequence (10M x 100B shared store:
+load+C -> reopen B (25K updates) -> reopen A (250K RMW-class updates) ->
+reopen C) now runs end to end. Rider: engine-ycsb closes the database
+explicitly per workload — Drop raced the next open's writer lock
+(EAGAIN) on back-to-back shared-store reopens.
+
+The bricked matrix stores (store-10m/store-100m) stay unrecoverable BY
+DESIGN — a disordered package has no trustworthy replay order; refusal
+is the invariant. Both are rebuildable bench artifacts; store-1b is
+preserved for the #2553 investigation.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
