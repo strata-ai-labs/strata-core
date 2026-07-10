@@ -470,11 +470,10 @@ fn cache_commits_after_active_rotation_stay_readable() {
     let branch = StorageRuntime::default_branch_id_for_test();
     let space = StorageSpaceId::new(vec![0x20]).expect("engine storage space");
 
-    // Rotation triggers at 64MB of approximate active bytes; 300 rows of
-    // 256KiB cross it with margin while the 80MB frozen pool holds the one
-    // rotated table.
+    // Rotation triggers at half the frozen pool (32MB at this budget); 160
+    // rows of 256KiB cross it with margin.
     let value = vec![0x42u8; 256 * 1024];
-    let total_rows = 300usize;
+    let total_rows = 160usize;
     for index in 0..total_rows {
         let key = StorageKey::new(format!("rotation-{index:06}").into_bytes()).expect("key");
         let batch = CommitBatch::new(
@@ -511,6 +510,90 @@ fn cache_commits_after_active_rotation_stay_readable() {
     assert!(
         missing.is_empty(),
         "acknowledged rows unreadable after rotation: {} missing, first at {:?}",
+        missing.len(),
+        missing.first()
+    );
+}
+
+/// #2541 regression: cache mode drains frozen memtables inline at commit
+/// time, so sustained writes survive arbitrarily many rotations.
+///
+/// Before the fix nothing drained the frozen list: with the default-shaped
+/// budget (frozen pool = 20%), the second rotation's projection refused
+/// commits with `resource_exhausted` after ~128MB written; at larger budgets
+/// rotation stalled silently at `max_frozen_tables` and the active memtable
+/// grew unbounded. With inline drain, each rotation's sealed memtable becomes
+/// an in-memory L0 table and the frozen backlog stays at zero.
+#[test]
+fn cache_sustained_writes_survive_many_rotations() {
+    let budget = StorageMemoryBudget::new(400 * 1024 * 1024).expect("valid budget");
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache().with_memory_budget(budget))
+        .expect("cache open")
+        .into_runtime();
+
+    // ~100MB raw crosses the 32MB rotation threshold three times.
+    sustained_write_read_cycle(&runtime, 400, 256 * 1024, "drain");
+}
+
+/// #2541 companion: a small-budget cache database survives rotations too.
+/// The rotation threshold derives from the pools (min(active, frozen/2,
+/// 64MB)), so a 32MB-budget database rotates at ~2.5MB instead of refusing
+/// its first rotation outright — cache mode works at every budget size.
+#[test]
+fn cache_small_budget_survives_rotations() {
+    let budget = StorageMemoryBudget::new(32 * 1024 * 1024).expect("valid budget");
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache().with_memory_budget(budget))
+        .expect("cache open")
+        .into_runtime();
+    // ~9.4MB of 8KiB rows: several rotations at the ~2.5MB threshold.
+    sustained_write_read_cycle(&runtime, 1_200, 8 * 1024, "small");
+}
+
+fn sustained_write_read_cycle(
+    runtime: &StorageRuntime<'_>,
+    total_rows: usize,
+    value_bytes: usize,
+    prefix: &str,
+) {
+    let branch = StorageRuntime::default_branch_id_for_test();
+    let space = StorageSpaceId::new(vec![0x20]).expect("engine storage space");
+    let value = vec![0x2au8; value_bytes];
+    for index in 0..total_rows {
+        let key = StorageKey::new(format!("{prefix}-{index:06}").into_bytes()).expect("key");
+        let batch = CommitBatch::new(
+            branch,
+            vec![CommitMutation::Put {
+                storage_space: space.clone(),
+                key,
+                value: StorageValue::new(value.clone()),
+                ttl: None,
+            }],
+            CommitOptions::default(),
+        )
+        .expect("valid batch");
+        runtime
+            .commit(&batch)
+            .unwrap_or_else(|error| panic!("commit {index} acknowledged: {error:?}"));
+    }
+
+    let mut missing = Vec::new();
+    for index in 0..total_rows {
+        let key = StorageKey::new(format!("{prefix}-{index:06}").into_bytes()).expect("key");
+        let outcome = runtime
+            .read_point(&PointReadRequest::new(
+                branch,
+                space.clone(),
+                key,
+                ReadBound::Latest,
+            ))
+            .expect("read succeeds");
+        if outcome.row().is_none() {
+            missing.push(index);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "rows unreadable after sustained rotations: {} missing, first at {:?}",
         missing.len(),
         missing.first()
     );

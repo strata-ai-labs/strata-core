@@ -473,7 +473,10 @@ fn active_budget_crossing_rotates_after_commit() {
         .expect("read")
         .is_some());
     assert_eq!(runtime.branch_state().active_row_count(), 0);
-    assert_eq!(runtime.branch_state().frozen_table_count(), 1);
+    // #2541: the commit-path rotation is drained inline — the sealed
+    // memtable becomes an owned L0 table instead of lingering frozen.
+    assert_eq!(runtime.branch_state().frozen_table_count(), 0);
+    assert_eq!(runtime.branch_state().owned_table_count(), 1);
     assert_eq!(
         runtime
             .budget_snapshot()
@@ -486,7 +489,7 @@ fn active_budget_crossing_rotates_after_commit() {
             .budget_snapshot()
             .usage(StorageBudgetPool::FrozenMutable)
             .used_count(),
-        1
+        0
     );
 }
 

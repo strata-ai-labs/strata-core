@@ -1,7 +1,7 @@
 //! Cache-mode lifecycle runtime.
 
 use super::{
-    branch_config_with_storage_budget, branch_resident_bytes,
+    branch_config_with_storage_budget_for_cache, branch_resident_bytes,
     compaction::{
         begin_cache_materialization_build, bind_materialization_task_for_enqueue,
         collect_storage_pressure_with_budget, compact_cache_branch_to_fixed_point_with_policy,
@@ -30,22 +30,23 @@ use super::{
     projected_commit_rotation_would_exceed_frozen_budget, require_maintenance_enqueue_budget,
     require_rotate_budget, snapshot_with_runtime_usage, validate_backend_capabilities_for_open,
     BudgetedCommitBranch, CloseOutcome, CloseOutcomeEffects, CloseOutcomeStatus, ClosePhase,
-    FlushFrozenOutcome, FlushFrozenRequest, LifecycleBranchCatalog, LifecycleBranchClearOutcome,
-    LifecycleBranchCreateOutcome, LifecycleBranchDeleteOutcome, LifecycleBranchDescriptor,
-    LifecycleBranchForkOutcome, LifecycleCapabilityOutcome, LifecycleCloseFact,
-    LifecycleCompactionDrainOutcome, LifecycleCompactionDrainRequest, LifecycleCompactionIoPolicy,
-    LifecycleCompactionOutcome, LifecycleCompactionRequest, LifecycleError,
-    LifecycleMaintenanceExecutor, LifecycleMaintenanceSchedulingPolicy,
-    LifecycleMaterializationOutcome, LifecycleMaterializationRequest, LifecycleOperationKind,
-    LifecyclePostCommitMaintenanceOutcome, LifecycleResult, LifecycleState, LifecycleStateMachine,
-    LifecycleStats, LifecycleStoragePressure, LifecycleStoragePressureReason,
-    LifecycleStoragePressureSeverity, LifecycleTransitionTrigger, LifecycleWalGrowthOutcome,
-    LifecycleWriteAdmissionOutcome, MaintenanceCancelOutcome, MaintenanceEnqueueOutcome,
-    MaintenanceExecutorStatus, MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask,
-    MaintenanceTaskId, MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner,
-    MaintenanceTaskScope, RecoveryHealth, StorageBudgetLedger, StorageBudgetPool,
-    StorageBudgetPressureSeverity, StorageBudgetSnapshot, StorageMode, StorageOpenDisposition,
-    StorageOpenOutcome, StorageOpenPlan, StorageRuntimeBudget,
+    FlushFrozenOutcome, FlushFrozenRequest, FlushTableIdentitySeed, FlushTableObjectId,
+    LifecycleBranchCatalog, LifecycleBranchClearOutcome, LifecycleBranchCreateOutcome,
+    LifecycleBranchDeleteOutcome, LifecycleBranchDescriptor, LifecycleBranchForkOutcome,
+    LifecycleCapabilityOutcome, LifecycleCloseFact, LifecycleCompactionDrainOutcome,
+    LifecycleCompactionDrainRequest, LifecycleCompactionIoPolicy, LifecycleCompactionOutcome,
+    LifecycleCompactionRequest, LifecycleError, LifecycleMaintenanceExecutor,
+    LifecycleMaintenanceSchedulingPolicy, LifecycleMaterializationOutcome,
+    LifecycleMaterializationRequest, LifecycleOperationKind, LifecyclePostCommitMaintenanceOutcome,
+    LifecycleResult, LifecycleState, LifecycleStateMachine, LifecycleStats,
+    LifecycleStoragePressure, LifecycleStoragePressureReason, LifecycleStoragePressureSeverity,
+    LifecycleTransitionTrigger, LifecycleWalGrowthOutcome, LifecycleWriteAdmissionOutcome,
+    MaintenanceCancelOutcome, MaintenanceEnqueueOutcome, MaintenanceExecutorStatus,
+    MaintenanceOutcome, MaintenanceOutcomeStatus, MaintenanceTask, MaintenanceTaskId,
+    MaintenanceTaskKind, MaintenanceTaskRequest, MaintenanceTaskRunner, MaintenanceTaskScope,
+    RecoveryHealth, StorageBudgetLedger, StorageBudgetPool, StorageBudgetPressureSeverity,
+    StorageBudgetSnapshot, StorageMode, StorageOpenDisposition, StorageOpenOutcome,
+    StorageOpenPlan, StorageRuntimeBudget,
 };
 use crate::backend::Backend;
 use crate::branch::config::BranchRuntimeConfig;
@@ -408,7 +409,8 @@ impl<S> LifecycleCacheRuntime<S> {
 
         let capability_outcome = validate_backend_capabilities_for_open(request.plan(), backend)?;
         let budget = StorageBudgetLedger::new(request.plan.lifecycle_config().storage_budget())?;
-        let branch_config = branch_config_with_storage_budget(branch_config, budget.budget())?;
+        let branch_config =
+            branch_config_with_storage_budget_for_cache(branch_config, budget.budget())?;
         let branch = BranchLocalState::new(request.initial_branch_id(), branch_config)
             .map_err(branch_error)?;
         // W3.1b: cache mode never recovers — the initial branch is born
@@ -595,19 +597,50 @@ impl<S> LifecycleCacheRuntime<S> {
     /// memtable (frozen count grew). Mirrors the durable runtime's helper of the same
     /// name: rotation is a structural change, and the Model-2 published snapshot's
     /// live-active handle stops covering new appends the moment the active is swapped.
+    /// Returns whether a rotation was detected.
     fn republish_branch_snapshot_after_rotation(
         &mut self,
         branch_id: BranchId,
         frozen_before: usize,
-    ) -> LifecycleResult<()> {
+    ) -> LifecycleResult<bool> {
         let frozen_after = self
             .branch_catalog
             .branch_state(branch_id)?
             .frozen_table_count();
         if frozen_after != frozen_before {
             self.publish_branch_snapshot(branch_id);
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
+    }
+
+    /// #2541: inline frozen drain for cache mode. Converts every sealed frozen
+    /// memtable into an in-memory level-zero table via the existing flush path
+    /// (which republishes the snapshot per install). Best-effort: an admission
+    /// refusal, a deferred outcome, or any error leaves the remaining backlog
+    /// for the next rotation — visibility was already republished by the
+    /// caller, so correctness never depends on the drain.
+    fn drain_frozen_inline(&mut self, branch_id: BranchId) {
+        loop {
+            // The branch vanished mid-hold only in pathological states;
+            // draining is best-effort, so stop quietly.
+            let Ok(branch) = self.branch_catalog.branch_state(branch_id) else {
+                return;
+            };
+            let frozen = branch.frozen_table_count();
+            if frozen == 0 {
+                return;
+            }
+            let version = self.visible.visible_version().as_u64();
+            let Ok(request) = cache_inline_flush_request(branch_id, version, frozen) else {
+                return;
+            };
+            match self.flush_frozen(&request) {
+                Ok(outcome) if outcome.completed() => {}
+                // Deferred / failed / refused: retry at the next rotation.
+                _ => return,
+            }
+        }
     }
 
     fn publish_branch_snapshot(&mut self, branch_id: BranchId) {
@@ -2511,7 +2544,18 @@ where
             // lost every acknowledged row after the first rotation this way). Republish BEFORE
             // advancing the atomic mirror so any reader observing the new visible version finds
             // a covering snapshot (V-before-S).
-            self.republish_branch_snapshot_after_rotation(branch_id, frozen_before)?;
+            let rotated =
+                self.republish_branch_snapshot_after_rotation(branch_id, frozen_before)?;
+            if rotated {
+                // #2541: cache mode has no background maintenance, so the committing
+                // thread drains the frozen backlog inline — each rotation's sealed
+                // memtable becomes an in-memory L0 table. Without this, frozen tables
+                // accumulate until rotation stalls at max_frozen_tables (silently) or
+                // the frozen-pool projection refuses commits. Best-effort by design:
+                // the commit is already applied and visible, so a drain refusal must
+                // not fail it — the backlog is retried at the next rotation.
+                self.drain_frozen_inline(branch_id);
+            }
             // BS2.2: mirror the just-advanced visible version to the atomic (release) so off-lock
             // readers (BS2.4) observe it without the runtime lock. On the `applied_not_visible`
             // error path `outcome` is `Err`, so the atomic correctly does not advance.
@@ -2671,5 +2715,25 @@ fn commit_error(error: CommitRuntimeError) -> LifecycleError {
         super::LifecycleLowerLayer::CommitRuntime,
         "commit runtime failed",
         error,
+    )
+}
+
+/// Identity inputs for one inline cache flush: the visible version and the
+/// remaining frozen count make each request's table identity seed unique
+/// within a branch's lifetime.
+fn cache_inline_flush_request(
+    branch_id: BranchId,
+    visible_version: u64,
+    frozen_remaining: usize,
+) -> LifecycleResult<FlushFrozenRequest> {
+    FlushFrozenRequest::new(
+        branch_id,
+        None,
+        FlushTableIdentitySeed::new(format!(
+            "cache-inline-flush-{branch_id}-v{visible_version}-f{frozen_remaining}"
+        ))?,
+        FlushTableObjectId::new(format!(
+            "cache-inline-flush-{branch_id}-v{visible_version}-f{frozen_remaining}"
+        ))?,
     )
 }

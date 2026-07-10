@@ -79,13 +79,21 @@ const DEFAULT_MANIFEST_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 // the explicit (testkit-only) flush/compaction paths, and the durable-only pools keep 1%
 // floors so shared validation and accounting seams never see a zero pool. Sum = 97%,
 // preserving the default profile's small reserve.
-const CACHE_ACTIVE_MUTABLE_PERCENT: u64 = 68;
-const CACHE_FROZEN_MUTABLE_PERCENT: u64 = 20;
-const CACHE_GENERATED_ARTIFACT_PERCENT: u64 = 5;
-const CACHE_BLOCK_CACHE_PERCENT: u64 = 1;
-const CACHE_TABLE_READER_PERCENT: u64 = 1;
-const CACHE_MAINTENANCE_QUEUE_PERCENT: u64 = 1;
-const CACHE_MANIFEST_CATALOG_PERCENT: u64 = 1;
+// Cache-mode pool split for the inline-drain regime (#2541): data settles in
+// in-memory L0 tables (counted by the database-wide runtime total), while the
+// mutable pools are working buffers sized around one rotation. The rotation
+// threshold is derived as min(active pool, frozen pool, 64MB) — see
+// `active_rotation_bytes_from_budget_for_cache` — so at every budget size the
+// frozen pool holds the rotated table and the artifact/reader admission gates
+// (per-allocation ceilings; ledger usage stays zero, see module docs) admit
+// one rotation-sized flush artifact.
+const CACHE_ACTIVE_MUTABLE_PERCENT: u64 = 40;
+const CACHE_FROZEN_MUTABLE_PERCENT: u64 = 16;
+const CACHE_GENERATED_ARTIFACT_PERCENT: u64 = 18;
+const CACHE_BLOCK_CACHE_PERCENT: u64 = 2;
+const CACHE_TABLE_READER_PERCENT: u64 = 18;
+const CACHE_MAINTENANCE_QUEUE_PERCENT: u64 = 2;
+const CACHE_MANIFEST_CATALOG_PERCENT: u64 = 2;
 // BS4.5a: readers are metadata-only and byte-charged, so the count cap is only a backstop now. Raised
 // well above the ~1,600 always-open readers at the 100M tier (a bounded reader cache is the deferred
 // G15 1B-tier follow-up); the byte budget, not this count, is the effective bound.
@@ -222,6 +230,23 @@ pub(crate) fn branch_config_with_storage_budget(
         })
 }
 
+/// Cache-mode variant: rotation threshold bounded by the frozen pool too
+/// (see [`active_rotation_bytes_from_budget_for_cache`]).
+pub(crate) fn branch_config_with_storage_budget_for_cache(
+    branch_config: BranchRuntimeConfig,
+    budget: StorageRuntimeBudget,
+) -> LifecycleResult<BranchRuntimeConfig> {
+    branch_config
+        .with_active_rotation_bytes(active_rotation_bytes_from_budget_for_cache(budget))
+        .map_err(|source| {
+            LifecycleError::lower_layer_with(
+                LifecycleLowerLayer::BranchRuntime,
+                "branch configuration rejected active mutable budget",
+                source,
+            )
+        })
+}
+
 pub(crate) fn table_block_cache_from_storage_budget(
     budget: StorageRuntimeBudget,
 ) -> LifecycleResult<Option<Arc<TableBlockCache>>> {
@@ -278,10 +303,11 @@ impl StorageRuntimeBudget {
     }
 
     /// Derive a CACHE-mode budget from a single storage total. Cache mode keeps the whole
-    /// working set in the mutable pools (no durable tables), so active+frozen take ~88% of the
-    /// total instead of the durable profile's ~28% — the effective capacity of a cache database
-    /// is the declared budget, not total/8. Exceeding it still fails closed with the typed
-    /// `resource_exhausted` error (cache semantics: a `:memory:`-style cap, no eviction).
+    /// working set in memory — mutable pools plus the in-memory L0 tables that inline
+    /// frozen drain produces (#2541) — and the database-wide runtime total is the real
+    /// ceiling; per-pool shares gate individual components. Exceeding the total still
+    /// fails closed with the typed `resource_exhausted` error (cache semantics: a
+    /// `:memory:`-style cap, no eviction).
     pub(crate) fn from_total_bytes_for_cache(total_bytes: u64) -> LifecycleResult<Self> {
         let percent = |numerator: u64| -> u64 {
             let scaled = u128::from(total_bytes) * u128::from(numerator) / 100;
@@ -305,8 +331,8 @@ impl StorageRuntimeBudget {
 
     /// An effectively-unlimited budget for volatile (cache) storage.
     ///
-    /// Cache mode never flushes mutable state to table sources as product
-    /// policy, so memory grows with the working set. Like an in-memory cache
+    /// Cache mode keeps the whole working set in memory (mutable state plus
+    /// inline-flushed in-memory L0 tables), so memory grows with the data. Like an in-memory cache
     /// (or a `:memory:` database), the only real bound is host memory, so every
     /// pool and the overall total are set far above any real working set. This
     /// covers ordinary writes (active/frozen mutable) *and* explicit, test-only
@@ -1230,6 +1256,25 @@ pub(crate) fn active_rotation_bytes_from_budget(budget: StorageRuntimeBudget) ->
     let pool = usize::try_from(budget.pool_limit_bytes(StorageBudgetPool::ActiveMutable))
         .unwrap_or(usize::MAX);
     pool.min(MAX_ACTIVE_ROTATION_BYTES)
+}
+
+/// Floor for the frozen-coupled cache rotation threshold. Budgets derived by
+/// [`StorageRuntimeBudget::from_total_bytes_for_cache`] always sit far above
+/// it (the 1MB minimum budget yields an ~80KiB half-frozen bound); only
+/// hand-crafted degenerate shapes (tiny frozen pools in tests) hit the floor,
+/// and they keep the legacy active-pool-only behavior.
+const CACHE_MIN_ROTATION_BYTES: usize = 64 * 1024;
+
+/// Cache-mode rotation threshold (#2541): additionally bounded by HALF the
+/// frozen pool, so a rotation's sealed table — including the per-commit
+/// overshoot past the threshold — always fits the pool, and the inline drain
+/// then returns it to empty. This keeps cache mode functional at any budget
+/// size instead of refusing commits at the first rotation when the frozen
+/// pool cannot hold a 64MB table.
+pub(crate) fn active_rotation_bytes_from_budget_for_cache(budget: StorageRuntimeBudget) -> usize {
+    let frozen = usize::try_from(budget.pool_limit_bytes(StorageBudgetPool::FrozenMutable))
+        .unwrap_or(usize::MAX);
+    active_rotation_bytes_from_budget(budget).min((frozen / 2).max(CACHE_MIN_ROTATION_BYTES))
 }
 
 const fn empty_budget_counters() -> StorageBudgetCounters {
