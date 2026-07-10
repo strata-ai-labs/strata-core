@@ -16,10 +16,14 @@ publish = false
 blake3 = "1"
 serde_jcs = "=0.2.0"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+strata-core = { path = "../core" }
+strata-engine = { path = "../engine" }
+tempfile = "3"
+time = "0.3"
 stratahub-protocol = { git = "https://github.com/stratalab/stratahub", rev = "a79b63edc00ca6ee7e65f2c8343e1d957926db64" }
 
 [dev-dependencies]
-serde_json = "1"
 stratahub-testkit = { git = "https://github.com/stratalab/stratahub", rev = "a79b63edc00ca6ee7e65f2c8343e1d957926db64" }
 
 [lints]

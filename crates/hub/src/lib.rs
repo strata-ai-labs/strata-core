@@ -19,6 +19,12 @@
 
 #![deny(unsafe_code)]
 
+mod error;
+mod export;
 mod info;
 
+pub use error::BundleExportError;
+pub use export::{
+    AuxiliaryHashes, BundleObject, EngineExportOptions, EngineExportOutput, StrataCoreEngine,
+};
 pub use info::{engine_info, EngineInfo, CAPABILITY_REGISTRY_VERSION};
