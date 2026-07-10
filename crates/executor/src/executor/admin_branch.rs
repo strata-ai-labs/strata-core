@@ -13,6 +13,28 @@ impl Executor {
         })
     }
 
+    pub(super) fn execute_remote_get(&mut self) -> ExecutorResult<Output> {
+        let origin = self.database.remote_origin()?;
+        Ok(Output::RemoteOriginResult {
+            origin: origin.map(|origin| crate::RemoteOriginInfo {
+                remote_url: origin.remote_url().to_owned(),
+                dataset: origin.dataset().to_owned(),
+                branch: origin.branch().to_owned(),
+                manifest_hash: origin.manifest_hash().to_owned(),
+                fetched_at_micros: origin.fetched_at_micros(),
+                base_frontier: origin
+                    .base_frontier()
+                    .iter()
+                    .map(|entry| crate::RemoteOriginFrontierInfo {
+                        branch: entry.branch().to_owned(),
+                        base: entry.base().to_owned(),
+                        local_version: entry.local_version(),
+                    })
+                    .collect(),
+            }),
+        })
+    }
+
     pub(super) fn execute_info(&mut self, branch: Option<&str>) -> ExecutorResult<Output> {
         let branch = branch_name(branch, &self.default_branch)?;
         let mut admin = self.database.admin()?;

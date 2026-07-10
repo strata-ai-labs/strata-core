@@ -193,6 +193,7 @@ pub(crate) fn execute_parsed_command(
     executor.set_default_space(space)?;
     let output = match command {
         options::TopCommand::Ping => executor.execute(Command::Ping)?,
+        options::TopCommand::Remote => executor.execute(Command::RemoteGet)?,
         options::TopCommand::Init => {
             let value = init::run_init()?;
             render_value(&value, format)?;
