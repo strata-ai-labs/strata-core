@@ -50,6 +50,9 @@ fn checkpoint_task_rejects_wrong_maintenance_scope() {
     let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x0f);
     let shell = assemble_shell(branch, backend).expect("shell");
+    // Assembly itself performs the WAL resume-segment listing (#2555); the
+    // rejection below must add no backend work on top of that baseline.
+    let baseline_events = backend.event_count();
     let task = maintenance_task_for_test(31, MaintenanceTaskRequest::wal_truncation());
 
     let error = checkpoint_request_from_maintenance_task(
@@ -64,7 +67,7 @@ fn checkpoint_task_rejects_wrong_maintenance_scope() {
         error.code(),
         "failed_precondition.lifecycle.maintenance_task"
     );
-    assert_eq!(backend.event_count(), 0);
+    assert_eq!(backend.event_count(), baseline_events);
 }
 
 #[test]
@@ -606,6 +609,9 @@ fn checkpoint_with_truncation_skips_delete_when_deferred() {
     let backend: &'static CheckpointTestBackend = Box::leak(Box::new(CheckpointTestBackend::new()));
     let branch = branch_id(0x22);
     let shell = assemble_shell(branch, backend).expect("shell");
+    // Assembly performs the WAL resume-segment listing (#2555); the deferred
+    // checkpoint must not add a retention listing on top of that baseline.
+    let baseline_lists = backend.list_calls();
     let request = LifecycleCheckpointRequest::new(branch, 1, Timestamp::from_micros(26))
         .expect("request")
         .with_wal_truncation_after_checkpoint(true);
@@ -624,7 +630,7 @@ fn checkpoint_with_truncation_skips_delete_when_deferred() {
         LifecycleCheckpointStatus::DeferredNoVisibleRows
     );
     assert_eq!(outcome.wal_truncation(), None);
-    assert_eq!(backend.list_calls(), 0);
+    assert_eq!(backend.list_calls(), baseline_lists);
 }
 
 #[test]

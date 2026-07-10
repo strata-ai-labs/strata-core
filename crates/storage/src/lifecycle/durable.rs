@@ -186,6 +186,10 @@ impl LifecycleDurableAssemblyFacts {
             database_id: *manifest.database_id(),
             codec_id: manifest.codec_id().to_owned(),
             durability_policy,
+            // The MANIFEST pointer, persisted at the last published checkpoint.
+            // It may lag the writer's resumed segment: `WalService::open`
+            // reconciles against the on-disk tail (#2555), and the live value
+            // is `services.wal().active_segment_id()`.
             active_wal_segment: manifest.active_wal_segment(),
             writer_lock_object,
             manifest_snapshot_watermark: manifest.snapshot_watermark(),
@@ -338,6 +342,18 @@ impl<'a, S> LifecycleDurableLocalShell<'a, S> {
             request.wal_config(),
         )
         .map_err(wal_error)?;
+        if wal.active_segment_id() > manifest.active_wal_segment() {
+            // Expected after post-checkpoint segment rolls: the manifest pointer
+            // advances only when a checkpoint publishes, so the writer resumed
+            // at the on-disk tail instead (#2555). The breadcrumb explains why
+            // the live writer disagrees with the manifest until the next
+            // published checkpoint.
+            tracing::warn!(
+                manifest_segment = manifest.active_wal_segment(),
+                resumed_segment = wal.active_segment_id(),
+                "WAL writer resumed past the manifest's stale segment pointer",
+            );
+        }
 
         let budget = StorageBudgetLedger::new(request.plan().lifecycle_config().storage_budget())?;
         let block_cache = table_block_cache_from_storage_budget(budget.budget())?;

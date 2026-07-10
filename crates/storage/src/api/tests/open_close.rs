@@ -702,6 +702,86 @@ fn outcome_summaries_expose_stored_fields() {
     assert_eq!(commit.commit_timestamp(), Timestamp::from_micros(8));
 }
 
+/// #2555 end-to-end: the WAL rolls past the last published checkpoint, the
+/// store closes cleanly, and the reopened writer must resume at the on-disk
+/// tail. Pre-fix the reopened writer resumed in the manifest's stale segment,
+/// its first rotation collided with an existing segment (commit failed
+/// `unavailable`), and the disordered package bricked the NEXT recovery with
+/// `RecoveryFailed`.
+#[test]
+#[cfg(feature = "localfs")]
+fn reopen_after_wal_rolls_past_last_checkpoint_accepts_writes_and_recovers() {
+    let root = temp_dir_for_api_test("reopen-stale-wal-pointer");
+    let options = || {
+        StorageOpenOptions::durable_local(StorageDurabilityPolicy::Standard)
+            .with_wal_segment_size_for_test(1024)
+    };
+    let value = vec![0x5A; 256];
+
+    // Session 1: roll the WAL well past segment 1 (the manifest pointer for a
+    // fresh store) without crossing any checkpoint threshold, then close.
+    let mut first = StorageRuntime::open_with_backend(
+        options(),
+        Box::leak(Box::new(StorageBackend::local_fs(root.clone()))),
+    )
+    .expect("first open")
+    .into_runtime();
+    for index in 0..24_u32 {
+        let key = format!("stale-pointer-{index:04}");
+        first
+            .commit(&background_put_batch(key.as_bytes(), value.clone()))
+            .expect("first-session commit");
+    }
+    assert!(
+        wal_segment_file_count(&root) >= 3,
+        "test shape must roll the WAL across several segments"
+    );
+    first.close().expect("first close");
+    drop(first);
+
+    // Session 2: reopen and write again. The first commit forces appends (and
+    // rotation off the tail); pre-fix this failed with the CreateSegment
+    // AlreadyExists publish error surfaced as an unavailable commit.
+    let mut second = StorageRuntime::open_with_backend(
+        options(),
+        Box::leak(Box::new(StorageBackend::local_fs(root.clone()))),
+    )
+    .expect("reopen after clean close")
+    .into_runtime();
+    for index in 0..8_u32 {
+        let key = format!("post-reopen-{index:04}");
+        second
+            .commit(&background_put_batch(key.as_bytes(), value.clone()))
+            .expect("post-reopen commit must not collide with sealed segments");
+    }
+    second.close().expect("second close");
+    drop(second);
+
+    // Session 3: the package must still recover (pre-fix the disordered WAL
+    // failed closed here) and reads must see both sessions' rows.
+    let third = StorageRuntime::open_with_backend(
+        options(),
+        Box::leak(Box::new(StorageBackend::local_fs(root.clone()))),
+    )
+    .expect("recovery after post-reopen writes must stay ordered")
+    .into_runtime();
+    let branch = StorageRuntime::default_branch_id_for_test();
+    for probe in ["stale-pointer-0000", "post-reopen-0007"] {
+        let read = third
+            .read_point(&PointReadRequest::new(
+                branch,
+                background_space(),
+                key(probe.as_bytes()),
+                ReadBound::Latest,
+            ))
+            .expect("read after second recovery");
+        assert!(
+            read.row().is_some(),
+            "row `{probe}` must survive both reopens"
+        );
+    }
+}
+
 /// V1 cutover (hard rule 42): a directory holding a pre-V1 database layout
 /// is rejected with a structured layout error — a fresh V1 layout is never
 /// silently created inside one. The pre-V1 signature is a root `strata.toml`

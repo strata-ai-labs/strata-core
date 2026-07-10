@@ -97,12 +97,17 @@ fn retention_deletes_only_covered_old_segments_and_sorts_report() {
         .delete_covered_segments(WalRetentionProof::snapshot_watermark(CommitVersion::new(3)))
         .expect("delete covered WAL segments");
 
-    assert_eq!(report.deleted_segments(), &[1]);
-    assert_eq!(report.protected_segments(), &[2, 3, 4]);
+    // The seed of 3 is stale (segment 4 exists): open reconciles the writer to
+    // the on-disk tail (#2555), so sealed segment 3 sits below the active
+    // boundary and, being fully covered, is deletable alongside 1. Segment 2
+    // stays protected by its above-watermark record; 4 is the active tail.
+    assert_eq!(service.active_segment_id(), 4);
+    assert_eq!(report.deleted_segments(), &[1, 3]);
+    assert_eq!(report.protected_segments(), &[2, 4]);
     assert_eq!(report.failed_segments(), &[]);
     assert_segment_missing(&backend, &segment_one);
     assert_segment_present(&backend, &segment_two);
-    assert_segment_present(&backend, &segment_three);
+    assert_segment_missing(&backend, &segment_three);
     assert_segment_present(&backend, &segment_four);
     assert_eq!(
         backend.read_object(&manifest).expect("manifest bytes"),
@@ -1002,4 +1007,166 @@ fn buffered_drop_flushes_staged_records_for_reopen() {
         1,
         "drop must flush staged bytes to the backend (no fsync — close owns the barrier)"
     );
+}
+
+// --- #2555: open-time reconciliation of the writer's resume segment ---------
+//
+// The manifest `active_wal_segment` pointer advances only when a checkpoint
+// publishes, so after post-checkpoint rotations it lags the on-disk tail.
+// `WalService::open` must resume at the directory max, never inside a sealed
+// older segment (appending there collides on the next roll and disorders the
+// package).
+
+#[test]
+fn reopen_with_stale_seed_resumes_at_the_on_disk_tail_and_rolls_fresh() {
+    let backend = StoredWalBackend::new();
+    // Segments 2..4 survive retention; 2 is the stale manifest pointer. Both
+    // 2 and 4 are over the segment budget so the first append must rotate.
+    let floor = record_with_frame_len(2, 1100, 0x42);
+    let middle = record(3, b"middle".to_vec());
+    let tail = record_with_frame_len(4, 1100, 0x43);
+    seed_segment(&backend, 2, std::slice::from_ref(&floor));
+    seed_segment(&backend, 3, std::slice::from_ref(&middle));
+    seed_segment(&backend, 4, std::slice::from_ref(&tail));
+
+    let mut reopened = WalService::open(
+        &backend,
+        database_id(),
+        2,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(1024),
+    )
+    .expect("reopen with stale manifest seed");
+    assert_eq!(reopened.active_segment_id(), 4);
+
+    // Pre-fix this append resumed in segment 2 and its rotation CREATEd the
+    // already-existing segment 3 (the #2555 collision). Post-fix it rotates
+    // off the true tail into a fresh segment 5.
+    let appended = record(5, b"after reopen".to_vec());
+    let append = reopened.append(&appended).expect("append after reopen");
+    assert_eq!(append.segment_id(), 5);
+    assert_eq!(reopened.active_segment_id(), 5);
+    assert_segment_present(&backend, &wal_segment(5));
+    let read = read_records(&reopened);
+    assert_eq!(read, vec![floor, middle, tail, appended]);
+}
+
+#[test]
+fn reopen_with_deleted_stale_seed_does_not_resurrect_the_truncated_segment() {
+    let backend = StoredWalBackend::new();
+    // Retention already deleted segments 1..2; the manifest still points at 2.
+    seed_segment(&backend, 3, &[record(3, b"survivor".to_vec())]);
+    seed_segment(&backend, 4, &[record(4, b"tail".to_vec())]);
+
+    let reopened = WalService::open(
+        &backend,
+        database_id(),
+        2,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(1024),
+    )
+    .expect("reopen with deleted stale seed");
+
+    assert_eq!(reopened.active_segment_id(), 4);
+    assert_object_missing(&backend, &wal_segment(2));
+}
+
+#[test]
+fn reopen_with_seed_above_the_on_disk_tail_creates_the_seed_segment() {
+    let backend = StoredWalBackend::new();
+    seed_segment(&backend, 1, &[record(1, b"one".to_vec())]);
+    seed_segment(&backend, 2, &[record(2, b"two".to_vec())]);
+
+    // A seed above the directory max cannot arise from the engine's own state
+    // machine (rotation durably creates before the pointer advances); it pins
+    // external restore/tamper behavior: honor the seed, matching fresh-store
+    // semantics.
+    let reopened = WalService::open(
+        &backend,
+        database_id(),
+        7,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(1024),
+    )
+    .expect("reopen with seed above disk max");
+
+    assert_eq!(reopened.active_segment_id(), 7);
+    assert_segment_present(&backend, &wal_segment(7));
+}
+
+#[test]
+fn reopen_with_stale_seed_routes_a_torn_tail_through_the_repair_contract() {
+    let backend = StoredWalBackend::new();
+    let survivor = record(2, b"survivor".to_vec());
+    let tail = record(3, b"tail".to_vec());
+    seed_segment(&backend, 2, std::slice::from_ref(&survivor));
+    let segment_three = seed_segment(&backend, 3, std::slice::from_ref(&tail));
+    let valid_end = backend
+        .object_metadata(&segment_three)
+        .expect("tail metadata")
+        .size_bytes();
+    backend
+        .append_object(&segment_three, &[0xff])
+        .expect("append partial tail");
+
+    let mut reopened = WalService::open(
+        &backend,
+        database_id(),
+        2,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::new(1024),
+    )
+    .expect("reopen stale seed onto torn tail");
+
+    // Reconciliation must land on the torn MAX segment so the existing
+    // recoverable-tail contract applies: reads surface the truncation fact and
+    // appends refuse until the lifecycle repair step truncates the tail.
+    assert_eq!(reopened.active_segment_id(), 3);
+    let read = reopened.read_all().expect("read torn tail");
+    assert_eq!(read.records(), &[survivor, tail]);
+    let truncation = read.truncation().expect("truncation fact");
+    assert_eq!(truncation.segment_id(), 3);
+    assert_eq!(truncation.valid_end_offset(), valid_end);
+    let error = reopened
+        .append(&record(4, b"blocked".to_vec()))
+        .expect_err("append onto torn tail must refuse before repair");
+    assert_eq!(
+        error,
+        WalServiceError::UnexpectedAppendOffset {
+            object: segment_three,
+            expected: valid_end,
+            actual: valid_end + 1,
+        }
+    );
+}
+
+#[test]
+fn reopen_with_stale_seed_keeps_retention_boundary_at_the_true_tail() {
+    let backend = StoredWalBackend::new();
+    let one = seed_segment(&backend, 1, &[record(1, b"covered one".to_vec())]);
+    let two = seed_segment(&backend, 2, &[record(2, b"covered two".to_vec())]);
+    let three = seed_segment(&backend, 3, &[record(3, b"covered three".to_vec())]);
+    let four = seed_segment(&backend, 4, &[record(4, b"active".to_vec())]);
+
+    // Pre-fix a stale seed of 1 protected EVERY segment (`>= active`), so
+    // retention silently stopped deleting covered garbage.
+    let reopened = WalService::open(
+        &backend,
+        database_id(),
+        1,
+        DurabilityPolicy::Standard,
+        WalServiceConfig::default(),
+    )
+    .expect("reopen with stale seed");
+    assert_eq!(reopened.active_segment_id(), 4);
+    let report = reopened
+        .delete_covered_segments(WalRetentionProof::flush_watermark(CommitVersion::new(3)))
+        .expect("retention pass");
+
+    assert_eq!(report.deleted_segments(), &[1, 2, 3]);
+    assert_eq!(report.protected_segments(), &[4]);
+    assert_segment_missing(&backend, &one);
+    assert_segment_missing(&backend, &two);
+    assert_segment_missing(&backend, &three);
+    assert_segment_present(&backend, &four);
 }
