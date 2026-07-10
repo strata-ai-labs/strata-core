@@ -60,6 +60,17 @@ pub enum Command {
         branch: Option<String>,
     },
     /// Creates a product space for a branch.
+    ///
+    /// # Guaranteed semantics
+    ///
+    /// - **Idempotent success.** Creating a space that already exists is not
+    ///   an error: the command succeeds with `created: false` and no mutation
+    ///   effect. `created: true` is reported only by the call that first
+    ///   materialized the space.
+    /// - **Immediate visibility.** Once the command returns success, the
+    ///   space is visible to every subsequent command on any handle of the
+    ///   same database — `SpaceExists` reports `true` and data commands
+    ///   targeting the space are accepted.
     SpaceCreate {
         /// Target branch. Defaults to the executor handle branch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -129,6 +140,17 @@ pub enum Command {
         branch: String,
     },
     /// Writes one KV entry.
+    ///
+    /// # Guaranteed semantics
+    ///
+    /// - **Atomic per key.** The write is a single engine commit: it either
+    ///   applies fully (value plus a new commit version) or not at all. No
+    ///   reader ever observes a partial or torn value.
+    /// - **Read-after-write visibility.** Once the command returns success,
+    ///   every subsequent read through any handle of the same database
+    ///   observes this write (or a newer one) — including immediately, from
+    ///   the handle that issued it. Acknowledged writes are never
+    ///   transiently invisible.
     KvPut {
         /// Target branch. Defaults to the executor handle branch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -395,6 +417,23 @@ pub enum Command {
         entries: Vec<BatchJsonDeleteEntry>,
     },
     /// Lists JSON document keys.
+    ///
+    /// # Guaranteed semantics
+    ///
+    /// - **Ordering.** Keys are returned in ascending byte-lexicographic
+    ///   order, stable across calls for unchanged data.
+    /// - **Cursor.** The returned cursor is the last key of a non-terminal
+    ///   page; resuming lists strictly *after* that key. Cursors are plain
+    ///   positions: they stay valid indefinitely, across interleaved writes,
+    ///   and even if the cursor document itself is deleted. A key is never
+    ///   returned twice for the same cursor chain.
+    /// - **Interleaved writes.** Each page reads the latest committed state
+    ///   unless `as_of` is set: documents created behind the cursor position
+    ///   do not appear; documents created or deleted ahead of it are
+    ///   reflected in later pages. For a snapshot-stable enumeration across
+    ///   pages, pass the same `as_of` timestamp on every page.
+    /// - **Termination.** The terminal page reports `has_more: false` and
+    ///   `cursor: null`. A `limit` of zero returns an empty terminal page.
     JsonList {
         /// Target branch. Defaults to the executor handle branch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
