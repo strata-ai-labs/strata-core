@@ -124,6 +124,7 @@ const NOT_FOUND_CODES: &[&str] = &[
 const ALREADY_EXISTS_CODES: &[&str] = &["already_exists.engine.persistence"];
 
 const CONFLICT_CODES: &[&str] = &[
+    "conflict.engine.artifact_import",
     "already_exists.engine.branch",
     "already_exists.engine.graph",
     "already_exists.engine.json_document",

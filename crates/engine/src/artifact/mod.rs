@@ -40,9 +40,11 @@
 
 mod decode;
 mod export;
+mod import;
 
 pub use decode::{decode_section, ArtifactRecord, ArtifactRecordIter};
 pub use export::export_branch;
+pub use import::{import_branch, BranchImportSummary};
 
 use strata_core::Timestamp;
 
@@ -93,6 +95,22 @@ pub struct ArtifactSection {
 }
 
 impl ArtifactSection {
+    /// Reassembles a section from transported parts (bundle import).
+    ///
+    /// `bytes` must be the concatenation of the section's transport chunks
+    /// in order; malformed streams surface
+    /// `corruption.engine.artifact_payload` during import.
+    #[must_use]
+    pub fn from_parts(
+        space: ProductSpace,
+        model: ArtifactModel,
+        qualifier: Option<String>,
+        record_count: u64,
+        bytes: Vec<u8>,
+    ) -> Self {
+        Self::new(space, model, qualifier, record_count, bytes)
+    }
+
     pub(crate) fn new(
         space: ProductSpace,
         model: ArtifactModel,
@@ -153,6 +171,17 @@ pub struct BranchArtifact {
 }
 
 impl BranchArtifact {
+    /// Reassembles an artifact from transported parts (bundle import).
+    #[must_use]
+    pub fn from_parts(
+        branch: BranchName,
+        spaces: Vec<ProductSpace>,
+        sections: Vec<ArtifactSection>,
+        max_row_timestamp: Option<Timestamp>,
+    ) -> Self {
+        Self::new(branch, spaces, sections, max_row_timestamp)
+    }
+
     pub(crate) fn new(
         branch: BranchName,
         spaces: Vec<ProductSpace>,
