@@ -1440,6 +1440,50 @@ slice (~248us -> device floor: pread, checksum/decode, insert/evict); (c)
 preheat policy for over-budget stores; (d) medians-of-3 re-run of the
 cells that matter after any fix.
 
+### RocksDB 100M control (same session, same box, stock options)
+
+`rocksdb-ycsb` a-f at 10M and 100M, identical generators/keys/values,
+500K ops, stock `Options::default()` (the C1 peer framing; tiny block
+cache + OS page cache, no settle window — its post-ordered-load
+compaction is trivial-move-dominated). 10M control reproduced the
+C1-era refs (A 279K / B 417K / C 440K / D 307K / E 36.7K / F 190K;
+store 9.6GB raw). 100M: store 95.6GB raw, load 619-652K rows/s.
+
+| workload | RocksDB 10M -> 100M | RocksDB degr. | Strata degr. | gap @10M | gap @100M |
+|---|---|---|---|---|---|
+| load | 613-736K -> 619-652K | ~nil | -29% | 6.4x | **10.8x** |
+| A | 279,027 -> 44,588 | 6.3x | 1.3x | 25.4x | **5.3x** |
+| B | 416,859 -> 29,328 | 14.2x | 14.0x | 3.0x | **3.0x** |
+| C | 439,838 -> 29,464 | 14.9x | 12.5x | 3.7x | **3.1x** |
+| D | 307,240 -> 15,898 | 19.3x | 18.2x | 3.1x | **3.0x** |
+| E | 36,718 -> 5,682 | 6.5x | 2.2x | 6.2x | **2.1x** |
+| F | 190,068 -> 25,329 | 7.5x | 2.1x | 23.4x | **6.7x** |
+
+Readings:
+
+1. **The cliff is physics, not a Strata defect.** RocksDB's B/C/D
+   degrade 14.2x/14.9x/19.3x vs our 14.0x/12.5x/18.2x — the same
+   out-of-cache transition at near-identical ratios. Nobody outruns the
+   disk at 100M x 1KB on a 61GB box.
+2. **The read gap is scale-stable at ~3x and is the miss-cost ratio.**
+   RocksDB C at 100M: mean 33.9us/op, p99 ~97us — its per-miss cost sits
+   at the device floor (~100us buffered pread), while ours is ~248us.
+   That 2.5x per-miss overhead IS the 3x C/B/D gap. Confirms the
+   miss-cost decomposition slice as the highest-leverage read work; a
+   second term is the hot-path p50 (ours rose 8.6 -> 25us at 100M —
+   deeper fringe: nz_search 5/op, 2 seeks/op — while RocksDB's hit p50
+   stays ~5us).
+3. **Write-heavy gaps compress dramatically at scale** (A 25.4x -> 5.3x,
+   F 23.4x -> 6.7x): RocksDB's mixed-workload throughput pays 6-7x for
+   compaction-vs-read interference at 100M while our A barely moved
+   (stall-lottery-bound either way).
+4. **Load is the honest outlier.** RocksDB loads 100M at the same speed
+   it loads 10M (~645K rows/s ~= device bandwidth; ordered keys =
+   trivial moves), while we drop 75-86K -> 58K. We are structure-bound,
+   not bandwidth-bound, on ingest at scale — a real scaling defect worth
+   its own attribution pass (suspects: flush/compaction overlap, commit
+   admission, WAL cadence).
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
