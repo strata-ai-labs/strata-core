@@ -4,18 +4,23 @@
 //! First source that yields a value wins: explicit flag, environment,
 //! per-project `.strata/config.toml` (walking up from the working
 //! directory, stopping at a `.git` boundary or the filesystem root),
-//! global user config, then a structured refusal. A malformed source
+//! global user config, then the built-in default. A malformed source
 //! never falls through silently — it aborts naming the source.
 //!
-//! Hub-neutrality (§5, Q8): this module is strata-core's single
-//! designated defaults surface, and it carries **no** default hub URL.
-//! A fresh install with nothing configured refuses hub commands.
+//! Single-surface rule (the §5/Q8 amendment): this module is
+//! strata-core's designated defaults surface, and [`DEFAULT_HUB_URL`]
+//! is the only place a hub host may appear in source — enforced by the
+//! `hub_neutrality` guard test. Every configuration layer overrides it.
 
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use url::Url;
+
+/// The built-in default hub: the official StrataHub instance. Used only
+/// when no configuration layer supplies a URL.
+pub const DEFAULT_HUB_URL: &str = "https://hub.stratahub.io";
 
 /// Which layer produced the resolved URL (surfaced by `config show`
 /// style diagnostics).
@@ -29,6 +34,8 @@ pub enum HubUrlSource {
     ProjectConfig(PathBuf),
     /// The global user config, at the recorded path.
     GlobalConfig(PathBuf),
+    /// No layer supplied a URL: [`DEFAULT_HUB_URL`].
+    Default,
 }
 
 impl fmt::Display for HubUrlSource {
@@ -39,6 +46,7 @@ impl fmt::Display for HubUrlSource {
             Self::ProjectConfig(path) | Self::GlobalConfig(path) => {
                 write!(formatter, "{}", path.display())
             }
+            Self::Default => formatter.write_str("built-in default"),
         }
     }
 }
@@ -64,8 +72,6 @@ pub enum HubUrlError {
         /// Parse failure detail.
         detail: String,
     },
-    /// No layer supplied a URL (§2 layer 5): the structured refusal.
-    NotConfigured,
 }
 
 impl fmt::Display for HubUrlError {
@@ -74,14 +80,6 @@ impl fmt::Display for HubUrlError {
             Self::MalformedSource { source, detail } => {
                 write!(formatter, "{source}: {detail}")
             }
-            Self::NotConfigured => formatter.write_str(
-                "no hub URL configured\n\n\
-                 set one of the following, in any order of preference:\n  \
-                 --hub <url>                  (one-off, this command only)\n  \
-                 STRATA_HUB_URL=<url>         (shell session, e.g., CI)\n  \
-                 ./.strata/config.toml        (per-project, in or above CWD)\n  \
-                 the global strata config     (run `strata config set hub.url <url>`)",
-            ),
         }
     }
 }
@@ -104,12 +102,12 @@ pub struct HubUrlInputs {
     pub global_config: Option<PathBuf>,
 }
 
-/// Resolves the hub URL by the §2 precedence chain.
+/// Resolves the hub URL by the §2 precedence chain, falling back to
+/// [`DEFAULT_HUB_URL`] when no layer supplies a value.
 ///
 /// # Errors
 ///
-/// [`HubUrlError::MalformedSource`] when the winning source is invalid;
-/// [`HubUrlError::NotConfigured`] when no layer supplies a value.
+/// [`HubUrlError::MalformedSource`] when the winning source is invalid.
 pub fn resolve_hub_url(inputs: &HubUrlInputs) -> Result<ResolvedHubUrl, HubUrlError> {
     if let Some(flag) = &inputs.flag {
         return parse_layer(flag, HubUrlSource::Flag, "--hub");
@@ -130,25 +128,32 @@ pub fn resolve_hub_url(inputs: &HubUrlInputs) -> Result<ResolvedHubUrl, HubUrlEr
 
     if let Some(working_dir) = &inputs.working_dir {
         if let Some(config_path) = find_project_config(working_dir) {
-            let url = read_config_hub_url(&config_path)?;
-            return Ok(ResolvedHubUrl {
-                url,
-                source: HubUrlSource::ProjectConfig(config_path),
-            });
+            // A config file without the key is simply unset here; a
+            // malformed file still aborts rather than falling through.
+            if let Some(url) = read_config_hub_url(&config_path)? {
+                return Ok(ResolvedHubUrl {
+                    url,
+                    source: HubUrlSource::ProjectConfig(config_path),
+                });
+            }
         }
     }
 
     if let Some(global) = &inputs.global_config {
         if global.is_file() {
-            let url = read_config_hub_url(global)?;
-            return Ok(ResolvedHubUrl {
-                url,
-                source: HubUrlSource::GlobalConfig(global.clone()),
-            });
+            if let Some(url) = read_config_hub_url(global)? {
+                return Ok(ResolvedHubUrl {
+                    url,
+                    source: HubUrlSource::GlobalConfig(global.clone()),
+                });
+            }
         }
     }
 
-    Err(HubUrlError::NotConfigured)
+    Ok(ResolvedHubUrl {
+        url: Url::parse(DEFAULT_HUB_URL).expect("the built-in default is a valid URL"),
+        source: HubUrlSource::Default,
+    })
 }
 
 fn parse_layer(
@@ -180,7 +185,11 @@ fn find_project_config(working_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn read_config_hub_url(path: &Path) -> Result<Url, HubUrlError> {
+/// Reads `hub.url` from a config file. `Ok(None)` when the key is
+/// absent (the file may legitimately hold other configuration); any
+/// other defect — unreadable, bad TOML, non-string or invalid URL —
+/// aborts naming the source.
+fn read_config_hub_url(path: &Path) -> Result<Option<Url>, HubUrlError> {
     let source = path.display().to_string();
     let text = std::fs::read_to_string(path).map_err(|error| HubUrlError::MalformedSource {
         source: source.clone(),
@@ -191,18 +200,19 @@ fn read_config_hub_url(path: &Path) -> Result<Url, HubUrlError> {
             source: source.clone(),
             detail: format!("malformed TOML: {error}"),
         })?;
-    let url = value
-        .get("hub")
-        .and_then(|hub| hub.get("url"))
-        .and_then(toml::Value::as_str)
-        .ok_or_else(|| HubUrlError::MalformedSource {
-            source: source.clone(),
-            detail: "missing [hub].url".to_owned(),
-        })?;
-    Url::parse(url).map_err(|error| HubUrlError::MalformedSource {
-        source,
-        detail: format!("[hub].url is not a valid URL: {error}"),
-    })
+    let Some(url) = value.get("hub").and_then(|hub| hub.get("url")) else {
+        return Ok(None);
+    };
+    let url = url.as_str().ok_or_else(|| HubUrlError::MalformedSource {
+        source: source.clone(),
+        detail: "[hub].url is not a string".to_owned(),
+    })?;
+    Url::parse(url)
+        .map(Some)
+        .map_err(|error| HubUrlError::MalformedSource {
+            source,
+            detail: format!("[hub].url is not a valid URL: {error}"),
+        })
 }
 
 impl HubUrlInputs {
@@ -242,13 +252,7 @@ pub fn read_global_hub_url() -> Result<Option<Url>, HubUrlError> {
     if !path.is_file() {
         return Ok(None);
     }
-    match read_config_hub_url(&path) {
-        Ok(url) => Ok(Some(url)),
-        Err(HubUrlError::MalformedSource { detail, .. }) if detail == "missing [hub].url" => {
-            Ok(None)
-        }
-        Err(error) => Err(error),
-    }
+    read_config_hub_url(&path)
 }
 
 /// Writes `hub.url` into the global config, preserving other keys and

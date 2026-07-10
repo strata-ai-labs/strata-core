@@ -1,32 +1,47 @@
-//! Hub-neutrality guard (resolution-config doc §5, coordination Q8):
-//! no source file in the workspace may reference a specific hub host.
-//! Strata carries **no default hub** — a fresh install refuses
-//! hub-touching commands until the user configures a URL.
+//! Hub single-surface guard (the resolution-config §5/Q8 amendment):
+//! the official hub host may appear in exactly one place in workspace
+//! source — `DEFAULT_HUB_URL` in the resolver, strata-core's designated
+//! defaults surface. Everything else (messages, docs strings, tests)
+//! must reach it through the const so the default stays swappable and
+//! auditable at a single site.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 #[test]
-fn no_crate_source_references_a_specific_hub_host() {
+fn the_hub_host_appears_only_in_the_designated_defaults_surface() {
     let crates_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("crates dir")
         .to_owned();
+    let sanctioned = crates_root.join("hub/src/resolve.rs");
 
     // Assembled at runtime so this guard's own source stays clean.
     let needle = format!("stratahub{}", ".io");
     let mut offenders = Vec::new();
+    let mut sanctioned_carries_it = false;
     for file in rust_files(&crates_root) {
         let text = fs::read_to_string(&file).expect("read source");
-        if text.contains(&needle) {
+        if !text.contains(&needle) {
+            continue;
+        }
+        if file == sanctioned {
+            sanctioned_carries_it = true;
+        } else {
             offenders.push(file);
         }
     }
     assert!(
         offenders.is_empty(),
-        "a specific hub host leaked into source (the resolver's refusal \
-         message is the only sanctioned place to discuss hub configuration, \
-         and it names no host): {offenders:?}"
+        "the hub host leaked outside the designated defaults surface \
+         (crates/hub/src/resolve.rs); reference DEFAULT_HUB_URL instead: \
+         {offenders:?}"
+    );
+    assert!(
+        sanctioned_carries_it,
+        "DEFAULT_HUB_URL moved out of crates/hub/src/resolve.rs; update \
+         this guard's sanctioned path so the single-surface rule keeps \
+         tracking it"
     );
 }
 

@@ -1,7 +1,8 @@
 //! Hub-URL resolver behavior (resolution-config doc §2/§3): precedence,
-//! malformed-source refusal, project-config discovery, hub neutrality.
+//! malformed-source refusal, project-config discovery, the built-in
+//! default.
 
-use strata_hub::{resolve_hub_url, HubUrlError, HubUrlInputs, HubUrlSource};
+use strata_hub::{resolve_hub_url, HubUrlError, HubUrlInputs, HubUrlSource, DEFAULT_HUB_URL};
 
 fn inputs() -> HubUrlInputs {
     HubUrlInputs::default()
@@ -51,10 +52,8 @@ fn precedence_is_flag_env_project_global() {
 fn empty_env_is_unset_but_whitespace_and_bad_urls_abort_naming_the_source() {
     let mut all = inputs();
     all.environment = Some(String::new());
-    assert!(matches!(
-        resolve_hub_url(&all),
-        Err(HubUrlError::NotConfigured)
-    ));
+    let resolved = resolve_hub_url(&all).expect("empty env is unset");
+    assert_eq!(resolved.source, HubUrlSource::Default);
 
     all.environment = Some("   ".to_owned());
     let Err(HubUrlError::MalformedSource { source, .. }) = resolve_hub_url(&all) else {
@@ -114,21 +113,52 @@ fn project_config_walk_stops_at_a_git_boundary() {
         working_dir: Some(nested),
         ..inputs()
     };
-    assert!(
-        matches!(resolve_hub_url(&all), Err(HubUrlError::NotConfigured)),
-        "the walk must stop at the nested repo's .git boundary"
+    let resolved = resolve_hub_url(&all).expect("resolves");
+    assert_eq!(
+        resolved.source,
+        HubUrlSource::Default,
+        "the walk must stop at the nested repo's .git boundary and fall \
+         through to the default"
     );
 }
 
 #[test]
-fn unconfigured_refusal_names_the_sources_and_no_default_hub() {
-    let error = resolve_hub_url(&inputs()).expect_err("nothing configured");
-    let message = error.to_string();
-    assert!(message.contains("no hub URL configured"));
-    assert!(message.contains("--hub"));
-    assert!(message.contains("STRATA_HUB_URL"));
-    assert!(message.contains(".strata/config.toml"));
-    // Hub neutrality: the refusal (and this crate) never suggests a
-    // specific hub as a default.
-    assert!(!message.contains(&format!("stratahub{}", ".io")));
+fn a_config_file_without_the_key_is_unset_not_malformed() {
+    // The exact `strata config set` + `unset` residue: the file exists
+    // with an empty [hub] table. Resolution falls through to the
+    // default instead of aborting.
+    let workdir = tempfile::tempdir().expect("tempdir");
+    let global = workdir.path().join("global.toml");
+    std::fs::write(&global, "[hub]\n").expect("write");
+    let all = HubUrlInputs {
+        global_config: Some(global.clone()),
+        ..inputs()
+    };
+    let resolved = resolve_hub_url(&all).expect("resolves");
+    assert_eq!(resolved.source, HubUrlSource::Default);
+
+    // A key that is present but not a string still aborts.
+    std::fs::write(&global, "[hub]\nurl = 7\n").expect("write");
+    let all = HubUrlInputs {
+        global_config: Some(global),
+        ..inputs()
+    };
+    assert!(matches!(
+        resolve_hub_url(&all),
+        Err(HubUrlError::MalformedSource { .. })
+    ));
+}
+
+#[test]
+fn nothing_configured_resolves_to_the_official_hub() {
+    let resolved = resolve_hub_url(&inputs()).expect("the default always resolves");
+    assert_eq!(resolved.source, HubUrlSource::Default);
+    // The exported const is the single source of truth; asserting through
+    // it keeps the host literal out of this file (single-surface rule).
+    assert_eq!(
+        resolved.url.as_str().trim_end_matches('/'),
+        DEFAULT_HUB_URL,
+        "the fallback is the built-in default"
+    );
+    assert_eq!(resolved.source.to_string(), "built-in default");
 }
