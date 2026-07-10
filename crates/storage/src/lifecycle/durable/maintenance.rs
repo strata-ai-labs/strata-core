@@ -578,6 +578,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 &mut self.table_catalog,
                 request,
                 Some(&self.budget),
+                &self.sweep_staged_names,
             )
         };
         if let Ok(compaction) = &outcome {
@@ -619,6 +620,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         let services = &self.services;
         let table_catalog = &mut self.table_catalog;
         let budget = &self.budget;
+        let sweep_staged = &self.sweep_staged_names;
         let outcome = {
             let branch = self
                 .branch_catalog
@@ -636,6 +638,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                         table_catalog,
                         compaction,
                         Some(budget),
+                        sweep_staged,
                     )
                 },
             )
@@ -683,6 +686,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 &mut self.table_catalog,
                 request,
                 Some(&self.budget),
+                &self.sweep_staged_names,
             )
         };
         outcome
@@ -2082,6 +2086,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 .map_err(commit_error)?
                 .generation();
             let table_catalog = &mut self.table_catalog;
+            let sweep_staged = &self.sweep_staged_names;
+            let table_object = self.services.table_object();
             let branch = self
                 .branch_catalog
                 .branch_state_mut(branch_id, CommitBranchGenerationGuard::exact(generation))?;
@@ -2090,6 +2096,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 branch,
                 prepared,
                 |branch, prepared_flush| {
+                    // #2553: a retried flush can adopt (content-identical
+                    // dedupe) an orphan a sweep stage has frozen for deletion.
+                    crate::lifecycle::rewrite_publication::verify_output_objects_not_swept(
+                        &prepared_flush.output_object_names(),
+                        sweep_staged,
+                        table_object,
+                    )?;
                     let outcome = install_prepared_durable_flush(branch, prepared_flush);
                     let maintenance_outcome = outcome.maintenance_outcome();
                     if outcome.completed() {
@@ -2115,9 +2128,16 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         let (drain_outcome, any_completed) = match install {
             Ok(values) => values,
             Err(error) => {
-                let outcome =
+                // #2553: adopting a sweep-staged object is a benign race —
+                // defer; the retried drain publishes fresh bytes.
+                let outcome = if error.is_rewrite_output_sweep_race() {
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
+                        .with_reason("flush output raced a table-object sweep")
+                        .with_stats(LifecycleStats::new(0, 0, 1, 1, 0))
+                } else {
                     MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
-                        .with_source_error(error);
+                        .with_source_error(error)
+                };
                 return self.finish_locked_publish(task, outcome);
             }
         };
@@ -2153,6 +2173,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 table_catalog,
                 prepared,
                 Some(&self.budget),
+                &self.sweep_staged_names,
+                self.services.table_object(),
             )
         })();
         let compaction = match install {
@@ -2166,6 +2188,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 let outcome = if error.is_stale_compaction_candidate() {
                     MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
                         .with_reason("compaction candidate superseded by concurrent maintenance")
+                        .with_stats(LifecycleStats::new(0, 0, 1, 1, 0))
+                } else if error.is_rewrite_output_sweep_race() {
+                    // #2553: the build adopted a content-identical object a
+                    // sweep already staged or deleted; the rebuilt pass
+                    // publishes fresh bytes once the sweep completes.
+                    MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Deferred)
+                        .with_reason("rewrite output raced a table-object sweep")
                         .with_stats(LifecycleStats::new(0, 0, 1, 1, 0))
                 } else {
                     MaintenanceOutcome::new(task.kind(), MaintenanceOutcomeStatus::Failed)
@@ -2219,6 +2248,8 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 table_catalog,
                 prepared,
                 Some(&self.budget),
+                &self.sweep_staged_names,
+                self.services.table_object(),
             )
         })();
         let materialization = match install {
@@ -3047,6 +3078,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 table_manifest,
                 table_catalog,
                 budget,
+                sweep_staged: &self.sweep_staged_names,
                 data_block_bytes: self.open_plan.lifecycle_config().data_block_bytes(),
                 compaction_io_policy: self.open_plan.lifecycle_config().compaction_io_policy(),
             };
@@ -3292,6 +3324,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 table_manifest,
                 table_catalog,
                 budget,
+                sweep_staged: &self.sweep_staged_names,
             };
             maintenance.run_next_matching(state, &mut runner, |task| task.id() == task_id)
         }?;
@@ -3693,6 +3726,13 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
             .cloned()
             .collect();
         let remaining_candidates = candidates.len().saturating_sub(capped.len());
+        // #2553: freeze the staged names in the sweep registry BEFORE the
+        // lock is released — installs check it so a content-identical rewrite
+        // output cannot adopt an object this stage deletes off-lock.
+        let staged_guard = self.sweep_staged_names.guard();
+        for name in &capped {
+            staged_guard.reserve(name.clone());
+        }
         Ok(Some(DurableBackgroundMaintenanceStep::SweepStage(
             Box::new(SweepStageInputs {
                 task,
@@ -3705,6 +3745,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 remaining_candidates,
                 quarantine: self.services.quarantine().clone(),
                 block_cache: self.services.table_object().block_cache().cloned(),
+                staged_guard,
             }),
         )))
     }
@@ -4372,6 +4413,7 @@ struct DurableCompactionMaintenanceRunner<'a, 'b> {
     budget: &'a crate::lifecycle::StorageBudgetLedger,
     compaction_io_policy: LifecycleCompactionIoPolicy,
     data_block_bytes: Option<u32>,
+    sweep_staged: &'a super::inflight::InFlightTableOutputs,
 }
 
 impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
@@ -4399,6 +4441,7 @@ impl MaintenanceTaskRunner for DurableCompactionMaintenanceRunner<'_, '_> {
             self.table_catalog,
             &request,
             Some(self.budget),
+            self.sweep_staged,
         )?;
         record_lifecycle_compaction_outcome(&compaction);
         Ok(compaction.maintenance_outcome())
@@ -4412,6 +4455,7 @@ struct DurableMaterializationMaintenanceRunner<'a, 'b> {
     table_manifest: &'a TableManifestService<'b>,
     table_catalog: &'a mut crate::lifecycle::LifecycleDurableTableCatalog,
     budget: &'a crate::lifecycle::StorageBudgetLedger,
+    sweep_staged: &'a super::inflight::InFlightTableOutputs,
 }
 
 impl MaintenanceTaskRunner for DurableMaterializationMaintenanceRunner<'_, '_> {
@@ -4425,6 +4469,7 @@ impl MaintenanceTaskRunner for DurableMaterializationMaintenanceRunner<'_, '_> {
             self.table_catalog,
             &request,
             Some(self.budget),
+            self.sweep_staged,
         )?
         .maintenance_outcome())
     }
@@ -4442,6 +4487,13 @@ pub(crate) struct SweepStageInputs {
     candidates: Vec<crate::object::ObjectName>,
     remaining_candidates: usize,
     quarantine: QuarantineService<'static>,
+    /// #2553: registers the candidate names in the runtime's sweep-staged
+    /// registry from stage-prepare (under the lock) until the staged result
+    /// folds back (under the lock). Installs consult the registry so an
+    /// adopted content-identical output cannot resurrect a name this stage
+    /// is deleting off-lock.
+    #[allow(dead_code, reason = "held for its Drop; never read")]
+    staged_guard: super::inflight::InFlightOutputsGuard,
     // C2: dead tables' blocks are dropped from the cache as their objects are
     // swept — without this, `remove_table` had no production caller and
     // compacted-away blocks held pool capacity forever (starving the no-evict
@@ -4459,6 +4511,10 @@ pub(crate) struct SweepStaged {
     remaining_candidates: usize,
     sweep_health: Option<RecoveryHealth>,
     request_error: Option<LifecycleError>,
+    /// #2553: keeps the staged names registered until this result folds back
+    /// under the lock (see `SweepStageInputs::staged_guard`).
+    #[allow(dead_code, reason = "held for its Drop; never read")]
+    staged_guard: super::inflight::InFlightOutputsGuard,
 }
 
 /// C2: one preheat chunk reads at most this many source bytes before folding
@@ -4736,6 +4792,7 @@ impl SweepStageInputs {
             remaining_candidates: self.remaining_candidates,
             sweep_health,
             request_error,
+            staged_guard: self.staged_guard,
         }
     }
 }

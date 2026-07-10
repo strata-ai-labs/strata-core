@@ -127,6 +127,20 @@ pub(crate) struct PreparedDurableFlush {
     outputs: Result<Vec<PreparedFlushOutput>, FlushFrozenOutcome>,
 }
 
+impl PreparedDurableFlush {
+    /// #2553: the published output object names, for the install-time
+    /// sweep-race check (adoption of a staged orphan must defer).
+    pub(crate) fn output_object_names(&self) -> Vec<crate::object::ObjectName> {
+        match &self.outputs {
+            Ok(outputs) => outputs
+                .iter()
+                .map(|output| output.object_facts.object().clone())
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedDurableFlushDrain {
     request: FlushDrainRequest,
