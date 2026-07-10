@@ -3,9 +3,12 @@
 //! download, verification, reconstitution, and origin recording live in
 //! `strata_hub`).
 
+#[cfg(feature = "hub")]
 use std::path::PathBuf;
 
+#[cfg(feature = "hub")]
 use strata_hub::stratahub_protocol::{BranchName, DatasetName};
+#[cfg(feature = "hub")]
 use strata_hub::{
     clone_dataset, resolve_hub_url, ClientTransport, CloneError, CloneRequest, HubUrlError,
     HubUrlInputs,
@@ -14,6 +17,7 @@ use strata_hub::{
 use super::{Executor, ExecutorResult, Output};
 use crate::ExecutorError;
 
+#[cfg(feature = "hub")]
 impl Executor {
     // Clone never touches the session database, but the verb dispatches
     // through the executor like every hub.* command so all frontends share
@@ -65,6 +69,28 @@ impl Executor {
     }
 }
 
+#[cfg(not(feature = "hub"))]
+impl Executor {
+    #[allow(
+        clippy::unused_self,
+        clippy::needless_pass_by_value,
+        reason = "stub mirrors the hub-enabled signature at the dispatch site"
+    )]
+    pub(super) fn execute_hub_clone(
+        &mut self,
+        _dataset: &str,
+        _branch: Option<&str>,
+        _dest: &str,
+        _hub_url: Option<String>,
+    ) -> ExecutorResult<Output> {
+        Err(ExecutorError::invalid_input(
+            "invalid_argument.executor.hub_feature_disabled",
+            "hub clone requires the executor hub feature",
+        ))
+    }
+}
+
+#[cfg(feature = "hub")]
 fn hub_url_error(error: &HubUrlError) -> ExecutorError {
     ExecutorError::new(
         crate::ExecutorErrorClass::Unavailable,
@@ -74,6 +100,7 @@ fn hub_url_error(error: &HubUrlError) -> ExecutorError {
     )
 }
 
+#[cfg(feature = "hub")]
 fn clone_error(error: &CloneError) -> ExecutorError {
     match error {
         CloneError::Transport { .. } => ExecutorError::new(

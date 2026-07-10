@@ -10,8 +10,12 @@ publish = false
 description = "Serializable command boundary for the rebuilt engine"
 
 [features]
-default = ["localfs", "arrow"]
+default = ["localfs", "arrow", "hub"]
 arrow = ["dep:arrow", "dep:parquet"]
+# StrataHub clone support. Off for targets that cannot carry the native
+# HTTP/tokio client stack (the wasm build consumes the executor with
+# default-features = false).
+hub = ["dep:strata-hub"]
 idl-tooling = ["dep:serde_yaml", "dep:sha2"]
 inference = ["dep:strata-inference"]
 inference-anthropic = ["inference"]
@@ -38,7 +42,7 @@ serde_yaml = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 strata-core = { path = "../core" }
 strata-engine = { path = "../engine", default-features = false }
-strata-hub = { path = "../hub" }
+strata-hub = { path = "../hub", optional = true }
 strata-inference = { path = "../inference", optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

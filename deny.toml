@@ -5,13 +5,14 @@
 targets = []
 all-features = false
 no-default-features = false
+# Gate the shipping graph. Dev-only tooling (test servers, proptest,
+# criterion, stratahub-testkit's wire-conformance stack) never reaches a
+# user build; advisories and licenses for it are the owning repo's concern.
+exclude-dev = true
 
 [advisories]
-# Only bincode remains - unmaintained with no drop-in replacement
-# Migration to bitcode/postcard tracked separately
 ignore = [
-    { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained - migration to bitcode/postcard tracked separately" },
-    { id = "RUSTSEC-2026-0097", reason = "rand 0.8.5 only used by phf_generator at build time - no custom logger context" },
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained - compile-time proc-macro via arrow/parquet; drops with the next arrow upgrade" },
 ]
 
 [licenses]
@@ -29,7 +30,13 @@ allow = [
     "CDLA-Permissive-2.0",
     "BSL-1.0",
 ]
-exceptions = []
+exceptions = [
+    # dirs -> dirs-sys -> option-ext (hub global-config path). MPL-2.0 is
+    # file-scoped weak copyleft; the crate ships unmodified.
+    { allow = ["MPL-2.0"], crate = "option-ext" },
+    # const-random proc-macro via arrow/ahash; compile-time only.
+    { allow = ["CC0-1.0"], crate = "tiny-keccak" },
+]
 confidence-threshold = 0.8
 
 [licenses.private]
@@ -44,4 +51,10 @@ highlight = "all"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = [
+    # The StrataHub protocol/client crates, pinned by rev in strata-hub.
+    "https://github.com/stratalab/stratahub",
+    # stratahub-metadata pins strata-executor at the blessed engine-swap
+    # SHA; enters the graph only behind strata-hub's `ingest` feature.
+    "https://github.com/stratalab/strata-core.git",
+]

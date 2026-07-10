@@ -526,6 +526,9 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="invalid_argument.executor.hub_dataset"></a>
 - `invalid_argument.executor.hub_dataset`
 
+<a id="invalid_argument.executor.hub_feature_disabled"></a>
+- `invalid_argument.executor.hub_feature_disabled`
+
 <a id="invalid_argument.executor.arrow_base64"></a>
 - `invalid_argument.executor.arrow_base64`
 

@@ -3,8 +3,6 @@
 
 # Rust
 target/
-Cargo.lock
-!crates/storage-next/fuzz/Cargo.lock
 *.rs.bk
 
 # IDE
