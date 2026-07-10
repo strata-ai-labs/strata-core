@@ -219,9 +219,19 @@ fn export_graphs(
 
     for graph in graphs {
         let mut encoder = SectionEncoder::default();
-        let ontology = service
-            .ontology(&graph)?
-            .map(|ontology| encode_json(&ontology));
+        // The ontology read shape carries the commit facts of the row that
+        // produced it (version/timestamp). Those are branch-local
+        // coordinates, not logical content — strip them so artifact bytes
+        // are a pure function of ontology definitions and status.
+        let ontology = service.ontology(&graph)?.map(|ontology| {
+            let mut value =
+                serde_json::to_value(&ontology).expect("artifact payload values serialize");
+            if let Some(object) = value.as_object_mut() {
+                object.remove("version");
+                object.remove("timestamp");
+            }
+            encode_json(&value)
+        });
         encoder.record(|body| {
             put_opt_bytes(body, ontology.as_deref());
         });

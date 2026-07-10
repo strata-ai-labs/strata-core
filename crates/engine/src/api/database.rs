@@ -189,6 +189,23 @@ impl Database {
         crate::artifact::export_branch(self, branch)
     }
 
+    /// Imports a branch artifact's content into this database.
+    ///
+    /// The artifact's branch is created when absent and must hold no
+    /// content (`conflict.engine.artifact_import` otherwise). Rows replay
+    /// with their original commit timestamps, so re-exporting the imported
+    /// branch reproduces the source artifact byte-for-byte.
+    pub fn import_branch_artifact(
+        &mut self,
+        artifact: &crate::artifact::BranchArtifact,
+    ) -> EngineResult<crate::artifact::BranchImportSummary> {
+        crate::artifact::import_branch(self, artifact)
+    }
+
+    pub(crate) fn arm_replay_commit_timestamp(&mut self, timestamp: strata_core::Timestamp) {
+        self.persistence.arm_replay_commit_timestamp(timestamp);
+    }
+
     /// Returns a branch service for this database.
     pub fn branches(&mut self) -> EngineResult<BranchService<'_>> {
         self.require_open()?;

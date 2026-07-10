@@ -155,6 +155,68 @@ impl<'a> EventService<'a> {
         ))
     }
 
+    /// Replays events with explicit record timestamps (artifact import).
+    ///
+    /// Mirrors [`Self::batch_append`] but stamps each record with the
+    /// caller-supplied timestamp instead of the wall clock, so hash chains
+    /// re-derive to the source values. Timestamps must be non-decreasing
+    /// and strictly after the log's last timestamp, matching the
+    /// normalization invariant ordinary appends maintain.
+    pub(crate) fn replay_append(
+        &mut self,
+        entries: Vec<(EventType, super::EventPayload, Timestamp)>,
+    ) -> EngineResult<()> {
+        let record = self.branch_record()?;
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut metadata = self.read_metadata(&record, ReadSelector::Latest)?;
+        let mut mutations = Vec::with_capacity(entries.len().saturating_mul(2).saturating_add(1));
+        for (event_type, payload, timestamp) in entries {
+            let floor = metadata
+                .last_timestamp_micros()
+                .map_or(0, |last| last.saturating_add(1));
+            if timestamp.as_micros() < floor {
+                return Err(EngineError::corruption(
+                    "corruption.engine.artifact_payload",
+                    "replayed event timestamp regresses below the log's monotonic floor",
+                ));
+            }
+            let sequence = metadata.next_sequence();
+            let previous_hash = metadata.head_hash();
+            let hash = compute_event_hash(
+                sequence,
+                &event_type,
+                &payload,
+                timestamp.as_micros(),
+                &previous_hash,
+            )?;
+            let event = EventRecordEnvelope::new(
+                EventSequence::new(sequence),
+                event_type,
+                payload,
+                timestamp,
+                previous_hash,
+                hash,
+            );
+            metadata.push(&event);
+            mutations.push(RowMutation::put(
+                self.event_address(&record, event.sequence()),
+                encode_event_record(&event)?,
+            ));
+            mutations.push(RowMutation::put(
+                self.type_index_address(&record, event.event_type(), event.sequence()),
+                TYPE_INDEX_VALUE.to_vec(),
+            ));
+        }
+        mutations.push(RowMutation::put(
+            self.metadata_address(&record),
+            encode_event_metadata(&metadata)?,
+        ));
+        self.commit_batch(&record, mutations)?;
+        Ok(())
+    }
+
     /// Reads one latest event by sequence.
     pub fn get(&mut self, sequence: EventSequence) -> EngineResult<Option<EventVersionedRecord>> {
         self.get_with_selector(sequence, ReadSelector::Latest)

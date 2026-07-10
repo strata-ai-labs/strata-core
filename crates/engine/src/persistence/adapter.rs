@@ -57,6 +57,9 @@ impl PersistenceOpenSummary {
 pub(crate) struct StoragePersistence {
     runtime: StorageRuntime<'static>,
     durable: bool,
+    /// Armed by artifact import replay: the NEXT commit is stamped with
+    /// this timestamp (consumed exactly once). See `crate::artifact`.
+    replay_commit_timestamp: Option<Timestamp>,
     #[cfg(any(test, feature = "testkit"))]
     faults: FaultSchedule,
 }
@@ -334,6 +337,7 @@ impl StoragePersistence {
             Self {
                 runtime,
                 durable,
+                replay_commit_timestamp: None,
                 #[cfg(any(test, feature = "testkit"))]
                 faults: FaultSchedule::default(),
             },
@@ -486,6 +490,12 @@ impl StoragePersistence {
         map_branch_outcome(&outcome)
     }
 
+    /// Arms the next commit with an explicit replay timestamp (consumed
+    /// exactly once by [`Self::commit`]).
+    pub(crate) fn arm_replay_commit_timestamp(&mut self, timestamp: Timestamp) {
+        self.replay_commit_timestamp = Some(timestamp);
+    }
+
     pub(crate) fn commit(&mut self, plan: &CommitPlan) -> EngineResult<CommitOutcome> {
         self.guard_fault(FaultOp::Commit)?;
         let mut mutations = Vec::with_capacity(plan.mutations().len());
@@ -498,7 +508,13 @@ impl StoragePersistence {
         }
         let batch =
             CommitBatch::new(plan.branch_id(), mutations, options).map_err(map_storage_error)?;
-        let summary = self.runtime.commit(&batch).map_err(map_storage_error)?;
+        let summary = match self.replay_commit_timestamp.take() {
+            Some(timestamp) => self
+                .runtime
+                .commit_at(&batch, timestamp)
+                .map_err(map_storage_error)?,
+            None => self.runtime.commit(&batch).map_err(map_storage_error)?,
+        };
         Ok(CommitOutcome::new(
             summary.commit_version(),
             summary.commit_timestamp(),

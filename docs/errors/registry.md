@@ -46,11 +46,17 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="ambiguous_commit.engine.persistence"></a>
 - `ambiguous_commit.engine.persistence`
 
+<a id="conflict.engine.artifact_import"></a>
+- `conflict.engine.artifact_import`
+
 <a id="conflict.engine.branch_generation"></a>
 - `conflict.engine.branch_generation`
 
 <a id="conflict.engine.persistence"></a>
 - `conflict.engine.persistence`
+
+<a id="corruption.engine.artifact_payload"></a>
+- `corruption.engine.artifact_payload`
 
 <a id="corruption.engine.persistence_recovery"></a>
 - `corruption.engine.persistence_recovery`
