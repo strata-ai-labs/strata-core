@@ -19,13 +19,18 @@
 
 #![deny(unsafe_code)]
 
+mod clone;
 mod error;
 mod export;
 mod import;
 mod info;
 mod remote;
+mod resolve;
 mod schema_preview;
 
+pub use clone::{
+    clone_dataset, CloneError, CloneOutcome, CloneProgress, CloneRequest, HubTransport,
+};
 pub use error::BundleExportError;
 pub use export::{
     AuxiliaryHashes, BundleObject, EngineExportOptions, EngineExportOutput, StrataCoreEngine,
@@ -35,3 +40,4 @@ pub use info::{engine_info, EngineInfo, CAPABILITY_REGISTRY_VERSION};
 pub use remote::{
     read_remote_tracking_ref, write_remote_tracking_ref, RemoteRefError, RemoteTrackingRef,
 };
+pub use resolve::{resolve_hub_url, HubUrlError, HubUrlInputs, HubUrlSource, ResolvedHubUrl};

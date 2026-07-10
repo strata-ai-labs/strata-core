@@ -20,7 +20,10 @@ serde_json = "1"
 strata-core = { path = "../core" }
 strata-engine = { path = "../engine" }
 tempfile = "3"
+semver = "1"
 time = "0.3"
+toml = "0.8"
+url = "2"
 stratahub-protocol = { git = "https://github.com/stratalab/stratahub", rev = "a79b63edc00ca6ee7e65f2c8343e1d957926db64" }
 
 [dev-dependencies]
