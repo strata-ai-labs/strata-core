@@ -13,9 +13,9 @@
 //! `docs/architecture/engine/dataset-clone-artifact-contract.md`; the local
 //! slice plan in `docs/design/hub-bundle-adapter-plan.md`.
 //!
-//! The M8E2 `Engine` trait is not yet published by `stratahub-ingest`; the
-//! types here follow the M8E2 shapes exactly so the eventual trait impl is
-//! pure delegation (slice HB5).
+//! [`IngestEngine`] implements `stratahub-ingest`'s `Engine` trait by pure
+//! delegation over [`StrataCoreEngine`], and [`ClientTransport`] binds
+//! `stratahub-client` to the clone orchestration's transport seam.
 
 #![deny(unsafe_code)]
 
@@ -24,9 +24,11 @@ mod error;
 mod export;
 mod import;
 mod info;
+mod ingest_adapter;
 mod remote;
 mod resolve;
 mod schema_preview;
+mod transport;
 
 pub use clone::{
     clone_dataset, CloneError, CloneOutcome, CloneProgress, CloneRequest, HubTransport,
@@ -37,7 +39,9 @@ pub use export::{
 };
 pub use import::{import_bundle, BundleImportError};
 pub use info::{engine_info, EngineInfo, CAPABILITY_REGISTRY_VERSION};
+pub use ingest_adapter::IngestEngine;
 pub use remote::{
     read_remote_tracking_ref, write_remote_tracking_ref, RemoteRefError, RemoteTrackingRef,
 };
 pub use resolve::{resolve_hub_url, HubUrlError, HubUrlInputs, HubUrlSource, ResolvedHubUrl};
+pub use transport::ClientTransport;
