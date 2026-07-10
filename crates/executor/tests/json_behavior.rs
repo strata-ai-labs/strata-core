@@ -1805,3 +1805,107 @@ fn error_message_is_public(message: &str) -> bool {
 fn _bytes(value: &str) -> Bytes {
     Bytes::from(value)
 }
+
+/// Pins the `JsonList` pagination contract: ascending key order, cursors as
+/// durable plain positions (valid across interleaved writes and cursor-key
+/// deletion, no duplicates), latest-state pages by default, snapshot-stable
+/// enumeration under `as_of`, and terminal-page shape.
+#[test]
+fn json_list_cursor_contract_survives_interleaved_writes() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    let mut seed_timestamp = 0;
+    for key in ["doc-a", "doc-c", "doc-e"] {
+        let output = executor
+            .execute(Command::JsonSet {
+                branch: None,
+                space: None,
+                key: key.to_owned(),
+                path: "$".to_owned(),
+                value: json!({"seed": true}),
+            })
+            .expect("seed set succeeds");
+        let Output::JsonWriteResult { commit, .. } = output else {
+            panic!("unexpected seed output: {output:?}");
+        };
+        seed_timestamp = commit.timestamp();
+    }
+
+    let (items, has_more, cursor) = json_list_page(&mut executor, None, Some(2), None);
+    assert_eq!(items, vec!["doc-a", "doc-c"]);
+    assert!(has_more);
+    assert_eq!(cursor.as_deref(), Some("doc-c"));
+
+    // Interleave writes around the cursor position: behind it, ahead of it,
+    // and a deletion ahead of it.
+    for key in ["doc-b", "doc-d"] {
+        executor
+            .execute(Command::JsonSet {
+                branch: None,
+                space: None,
+                key: key.to_owned(),
+                path: "$".to_owned(),
+                value: json!({"interleaved": true}),
+            })
+            .expect("interleaved set succeeds");
+    }
+    executor
+        .execute(Command::JsonDelete {
+            branch: None,
+            space: None,
+            key: "doc-e".to_owned(),
+            path: "$".to_owned(),
+        })
+        .expect("interleaved delete succeeds");
+
+    // Resuming strictly after the cursor reflects writes ahead of it (doc-d
+    // appears, doc-e is gone) and never revisits keys behind it (doc-b does
+    // not appear). The terminal page reports has_more false + null cursor.
+    let (items, has_more, cursor) = json_list_page(&mut executor, cursor, Some(10), None);
+    assert_eq!(items, vec!["doc-d"]);
+    assert!(!has_more);
+    assert!(cursor.is_none());
+
+    // A fresh enumeration sees the merged latest state, in ascending order.
+    let (items, _, _) = json_list_page(&mut executor, None, Some(10), None);
+    assert_eq!(items, vec!["doc-a", "doc-b", "doc-c", "doc-d"]);
+
+    // Cursors survive deletion of the cursor key itself.
+    executor
+        .execute(Command::JsonDelete {
+            branch: None,
+            space: None,
+            key: "doc-c".to_owned(),
+            path: "$".to_owned(),
+        })
+        .expect("cursor-key delete succeeds");
+    let (items, _, _) = json_list_page(&mut executor, Some("doc-c".to_owned()), Some(10), None);
+    assert_eq!(items, vec!["doc-d"]);
+
+    // as_of pins the enumeration to the seed snapshot regardless of every
+    // write that happened since.
+    let (items, _, _) = json_list_page(&mut executor, None, Some(10), Some(seed_timestamp));
+    assert_eq!(items, vec!["doc-a", "doc-c", "doc-e"]);
+}
+
+fn json_list_page(
+    executor: &mut Executor,
+    cursor: Option<String>,
+    limit: Option<u64>,
+    as_of: Option<u64>,
+) -> (Vec<String>, bool, Option<String>) {
+    let output = executor
+        .execute(Command::JsonList {
+            branch: None,
+            space: None,
+            prefix: None,
+            cursor,
+            limit,
+            as_of,
+        })
+        .expect("json list succeeds");
+    let Output::JsonListResult { items, page } = output else {
+        panic!("unexpected json list output: {output:?}");
+    };
+    (items, page.has_more(), page.cursor().cloned())
+}

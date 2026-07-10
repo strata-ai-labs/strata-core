@@ -1046,3 +1046,48 @@ fn assert_history_has_tombstone(executor: &mut Executor, key: &str) {
 fn bytes(value: &str) -> Bytes {
     Bytes::from(value)
 }
+
+/// Pins the `KvPut` contract: each put is one atomic commit with a strictly
+/// increasing version, and an acknowledged write is immediately visible to
+/// subsequent reads from the same database — never transiently invisible.
+#[test]
+fn kv_put_is_atomic_with_read_after_write_visibility() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    let mut last_version = 0;
+    for (round, value) in ["one", "two", "three"].iter().enumerate() {
+        let output = executor
+            .execute(Command::KvPut {
+                branch: None,
+                space: None,
+                key: bytes("raw-key"),
+                value: bytes(value),
+            })
+            .expect("put succeeds");
+        let Output::WriteResult { effect, commit, .. } = output else {
+            panic!("unexpected put output: {output:?}");
+        };
+        assert!(effect.applied());
+        assert!(
+            commit.version() > last_version,
+            "commit versions increase monotonically"
+        );
+        last_version = commit.version();
+
+        // Read-after-write: the acknowledged value is immediately visible.
+        let read = match executor
+            .execute(Command::KvGet {
+                branch: None,
+                space: None,
+                key: bytes("raw-key"),
+                as_of: None,
+            })
+            .expect("get succeeds")
+        {
+            Output::KvVersionedValue(Some(versioned)) => versioned,
+            output => panic!("unexpected get output on round {round}: {output:?}"),
+        };
+        assert_eq!(read.value(), &bytes(value));
+        assert!(read.version() >= last_version);
+    }
+}
