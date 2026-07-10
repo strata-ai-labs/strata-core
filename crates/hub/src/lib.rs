@@ -21,6 +21,7 @@
 
 mod error;
 mod export;
+mod import;
 mod info;
 mod schema_preview;
 
@@ -28,4 +29,5 @@ pub use error::BundleExportError;
 pub use export::{
     AuxiliaryHashes, BundleObject, EngineExportOptions, EngineExportOutput, StrataCoreEngine,
 };
+pub use import::{import_bundle, BundleImportError};
 pub use info::{engine_info, EngineInfo, CAPABILITY_REGISTRY_VERSION};
