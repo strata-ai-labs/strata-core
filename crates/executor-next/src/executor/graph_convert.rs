@@ -12,13 +12,13 @@ use super::{
     EngineGraphObjectTypeDef, EngineGraphOntology, EngineGraphOntologyFreezeOutcome,
     EngineGraphOntologyStatus, EngineGraphOntologySummary, EngineGraphOntologyWriteOutcome,
     EngineGraphPageRankOptions, EngineGraphPageRankResult, EngineGraphProperties,
-    EngineGraphPropertyDef, EngineGraphSsspResult, EngineGraphTypeName, EngineGraphWccResult,
-    EngineGraphWriteOutcome, ExecutorError, ExecutorResult, GraphAnalyticsBudget,
-    GraphBatchItemResult, GraphBatchOperation, GraphBfsData, GraphBfsEdgeData, GraphBindingHit,
-    GraphBindingPrimitive, GraphBindingTarget, GraphCdlpData, GraphDirection, GraphEdgeData,
-    GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData, GraphLccData, GraphLinkTypeDefData,
-    GraphLinkTypeSummaryData, GraphNeighborHit, GraphNodeData, GraphNodeDataOutput,
-    GraphObjectTypeDefData, GraphObjectTypeSummaryData, GraphOntologyData,
+    EngineGraphPropertyDef, EngineGraphSsspResult, EngineGraphTargetStatus, EngineGraphTypeName,
+    EngineGraphWccResult, EngineGraphWriteOutcome, ExecutorError, ExecutorResult,
+    GraphAnalyticsBudget, GraphBatchItemResult, GraphBatchOperation, GraphBfsData,
+    GraphBfsEdgeData, GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget, GraphCdlpData,
+    GraphDirection, GraphEdgeData, GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData,
+    GraphLccData, GraphLinkTypeDefData, GraphLinkTypeSummaryData, GraphNeighborHit, GraphNodeData,
+    GraphNodeDataOutput, GraphObjectTypeDefData, GraphObjectTypeSummaryData, GraphOntologyData,
     GraphOntologySummaryData, GraphPagerankData, GraphPropertyDef, GraphSsspData, GraphWccData,
     MutationEffect, Output, PageInfo, DEFAULT_BRANCH, DEFAULT_SPACE,
 };
@@ -259,7 +259,22 @@ pub(super) fn graph_neighbor_hit(neighbor: &EngineGraphNeighbor) -> GraphNeighbo
         graph_node_data_output(neighbor.node()),
         graph_edge_data_output(neighbor.edge()),
         output_graph_direction(neighbor.direction()),
+        neighbor
+            .target_status()
+            .map(|status| graph_target_status(status).to_owned()),
     )
+}
+
+pub(super) fn graph_target_status(status: EngineGraphTargetStatus) -> &'static str {
+    match status {
+        EngineGraphTargetStatus::Present => "present",
+        EngineGraphTargetStatus::Deleted => "deleted",
+        EngineGraphTargetStatus::Missing => "missing",
+        EngineGraphTargetStatus::MalformedTarget => "malformed_target",
+        // Unsupported, plus any future state the non-exhaustive contract
+        // vocabulary adds before it gains a deliberate wire name.
+        _ => "unsupported",
+    }
 }
 
 pub(super) fn graph_binding_hit(binding: &EngineGraphBinding) -> GraphBindingHit {

@@ -274,6 +274,7 @@ fn graph_output_json_uses_stable_tags_and_field_shape() {
             graph_node_output("deps", "node-b"),
             graph_edge_output("deps", "node-a", "depends_on", "node-b"),
             GraphDirection::Outgoing,
+            None,
         )],
         page: PageInfo::terminal(),
     };

@@ -22,7 +22,7 @@ pub use ontology::{
 pub use outcome::{
     GraphBatchOpOutcome, GraphBatchWriteOutcome, GraphBinding, GraphBindingPage,
     GraphDeleteOutcome, GraphEdge, GraphEdgeWriteOutcome, GraphInfo, GraphNamePage, GraphNeighbor,
-    GraphNeighborPage, GraphNode, GraphNodePage, GraphWriteOutcome,
+    GraphNeighborPage, GraphNode, GraphNodePage, GraphTargetStatus, GraphWriteOutcome,
 };
 pub use service::GraphService;
 pub use traversal::{GraphBfsOptions, GraphBfsResult, GraphSubgraphResult, GraphTraversalEdge};

@@ -10,6 +10,6 @@ pub use crate::data::graph::{
     GraphNodeData, GraphNodeId, GraphNodePage, GraphObjectTypeDef, GraphObjectTypeSummary,
     GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyStatus, GraphOntologySummary,
     GraphOntologyWriteOutcome, GraphPageRankOptions, GraphPageRankResult, GraphProperties,
-    GraphPropertyDef, GraphService, GraphSsspResult, GraphSubgraphResult, GraphTraversalEdge,
-    GraphTypeName, GraphWccResult, GraphWriteOutcome,
+    GraphPropertyDef, GraphService, GraphSsspResult, GraphSubgraphResult, GraphTargetStatus,
+    GraphTraversalEdge, GraphTypeName, GraphWccResult, GraphWriteOutcome,
 };

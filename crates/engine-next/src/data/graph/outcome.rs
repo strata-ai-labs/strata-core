@@ -305,14 +305,21 @@ pub struct GraphNeighbor {
     node: GraphNode,
     edge: GraphEdge,
     direction: GraphDirection,
+    target_status: Option<GraphTargetStatus>,
 }
 
 impl GraphNeighbor {
-    pub(crate) const fn new(node: GraphNode, edge: GraphEdge, direction: GraphDirection) -> Self {
+    pub(crate) const fn new(
+        node: GraphNode,
+        edge: GraphEdge,
+        direction: GraphDirection,
+        target_status: Option<GraphTargetStatus>,
+    ) -> Self {
         Self {
             node,
             edge,
             direction,
+            target_status,
         }
     }
 
@@ -333,6 +340,32 @@ impl GraphNeighbor {
     pub const fn direction(&self) -> GraphDirection {
         self.direction
     }
+
+    #[must_use]
+    /// Returns the neighbor's bound-entity status (`None` when the node
+    /// has no binding), resolved at the read's temporal context.
+    pub const fn target_status(&self) -> Option<GraphTargetStatus> {
+        self.target_status
+    }
+}
+
+/// Resolution status of one binding target, per the relationship-layer
+/// contract vocabulary. Dangling references are explicit: traversal
+/// reports the target's state instead of silently dropping it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum GraphTargetStatus {
+    /// The target row is visible in the read's temporal context.
+    Present,
+    /// The target has a visible tombstone: it existed and was deleted.
+    Deleted,
+    /// No target row exists in the requested context.
+    Missing,
+    /// The binding key cannot address a row of the target primitive.
+    MalformedTarget,
+    /// The target primitive uses a composite address this engine does
+    /// not resolve yet (vector and graph targets).
+    Unsupported,
 }
 
 /// Paginated neighbor hits.
@@ -796,7 +829,8 @@ mod tests {
         assert!(node_page.has_more());
         assert_eq!(node_page.cursor(), Some(&node_id));
 
-        let neighbor = GraphNeighbor::new(node.clone(), edge.clone(), GraphDirection::Outgoing);
+        let neighbor =
+            GraphNeighbor::new(node.clone(), edge.clone(), GraphDirection::Outgoing, None);
         assert_eq!(neighbor.node(), &node);
         assert_eq!(neighbor.edge(), &edge);
         assert_eq!(neighbor.direction(), GraphDirection::Outgoing);

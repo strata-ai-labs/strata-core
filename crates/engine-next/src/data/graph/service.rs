@@ -8,18 +8,22 @@ use crate::branch::catalog::BranchCatalogRecord;
 use crate::branch::BranchName;
 use crate::commit::CommitOutcome;
 use crate::control::ControlPlane;
+use crate::data::event::EventSequence;
+use crate::data::json::JsonDocumentId;
 use crate::data::kv::ProductSpace;
 use crate::diagnostics::{EngineError, EngineResult};
 use crate::persistence::{
     decode_graph_binding_key, decode_graph_edge_key, decode_graph_metadata_key,
-    decode_graph_node_key, decode_graph_reverse_edge_key, encode_graph_binding_key,
-    encode_graph_binding_space_prefix, encode_graph_binding_target_prefix, encode_graph_edge_key,
-    encode_graph_edge_prefix, encode_graph_incoming_edge_prefix, encode_graph_metadata_key,
-    encode_graph_metadata_prefix, encode_graph_node_key, encode_graph_node_prefix,
-    encode_graph_ontology_key, encode_graph_outgoing_edge_prefix, encode_graph_reverse_edge_key,
+    decode_graph_node_key, decode_graph_reverse_edge_key, encode_event_key,
+    encode_graph_binding_key, encode_graph_binding_space_prefix,
+    encode_graph_binding_target_prefix, encode_graph_edge_key, encode_graph_edge_prefix,
+    encode_graph_incoming_edge_prefix, encode_graph_metadata_key, encode_graph_metadata_prefix,
+    encode_graph_node_key, encode_graph_node_prefix, encode_graph_ontology_key,
+    encode_graph_outgoing_edge_prefix, encode_graph_reverse_edge_key,
     encode_graph_reverse_edge_prefix, encode_graph_type_index_graph_prefix,
-    encode_graph_type_index_key, encode_graph_type_index_type_prefix, CommitPlan,
-    PersistenceReadRow, ReadSelector, RowAddress, RowClass, RowMutation, StoragePersistence,
+    encode_graph_type_index_key, encode_graph_type_index_type_prefix, encode_json_key,
+    encode_kv_key_bytes, CommitPlan, PersistenceReadRow, ReadSelector, RowAddress, RowClass,
+    RowMutation, StoragePersistence,
 };
 
 use super::{
@@ -29,12 +33,13 @@ use super::{
     encode_graph_node_record, encode_graph_ontology_record, encode_graph_type_index_record,
     GraphAdjacencyIndex, GraphAdjacencyIndexBuilder, GraphAnalyticsBudget, GraphBatchOpOutcome,
     GraphBatchOperation, GraphBatchWrite, GraphBatchWriteOutcome, GraphBinding, GraphBindingPage,
-    GraphBindingRecord, GraphBindingTarget, GraphDeleteOutcome, GraphDirection, GraphEdge,
-    GraphEdgeRecord, GraphEdgeType, GraphEdgeWriteOutcome, GraphInfo, GraphLinkTypeDef,
-    GraphLinkTypeSummary, GraphName, GraphNamePage, GraphNeighbor, GraphNeighborPage, GraphNode,
-    GraphNodeId, GraphNodePage, GraphNodeRecord, GraphObjectTypeDef, GraphObjectTypeSummary,
-    GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyRecord, GraphOntologySummary,
-    GraphOntologyWriteOutcome, GraphTypeIndexRecord, GraphTypeName, GraphWriteOutcome,
+    GraphBindingPrimitive, GraphBindingRecord, GraphBindingTarget, GraphDeleteOutcome,
+    GraphDirection, GraphEdge, GraphEdgeRecord, GraphEdgeType, GraphEdgeWriteOutcome, GraphInfo,
+    GraphLinkTypeDef, GraphLinkTypeSummary, GraphName, GraphNamePage, GraphNeighbor,
+    GraphNeighborPage, GraphNode, GraphNodeId, GraphNodePage, GraphNodeRecord, GraphObjectTypeDef,
+    GraphObjectTypeSummary, GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyRecord,
+    GraphOntologySummary, GraphOntologyWriteOutcome, GraphTargetStatus, GraphTypeIndexRecord,
+    GraphTypeName, GraphWriteOutcome,
 };
 
 type EdgeIdentity = (GraphNodeId, GraphEdgeType, GraphNodeId);
@@ -272,6 +277,98 @@ impl<'a> GraphService<'a> {
     /// Decision 6 / conformance test 9). A `None` target branch means "the
     /// node's own branch" and is accepted; an explicit target branch is accepted
     /// only when it equals the node's branch.
+    /// Resolves the current status of one binding target: whether the
+    /// bound entity's row is visible, tombstoned, or absent. Vector and
+    /// graph targets use composite addresses and report
+    /// [`GraphTargetStatus::Unsupported`].
+    pub fn resolve_binding_target(
+        &mut self,
+        target: &GraphBindingTarget,
+    ) -> EngineResult<GraphTargetStatus> {
+        let record = self.branch_record()?;
+        self.binding_target_status(&record, target, ReadSelector::Latest)
+    }
+
+    /// Resolves a binding target's status at a commit version.
+    pub fn resolve_binding_target_at_version(
+        &mut self,
+        target: &GraphBindingTarget,
+        version: CommitVersion,
+    ) -> EngineResult<GraphTargetStatus> {
+        let record = self.branch_record()?;
+        self.binding_target_status(&record, target, ReadSelector::AtVersion(version))
+    }
+
+    /// Resolves a binding target's status at a timestamp.
+    pub fn resolve_binding_target_at(
+        &mut self,
+        target: &GraphBindingTarget,
+        timestamp: Timestamp,
+    ) -> EngineResult<GraphTargetStatus> {
+        let record = self.branch_record()?;
+        self.binding_target_status(&record, target, ReadSelector::AtTimestamp(timestamp))
+    }
+
+    /// Point-reads the target's row in its owning capability's row class.
+    /// Row existence only: value decoding and interpretation stay with
+    /// the owning capability.
+    fn binding_target_status(
+        &mut self,
+        record: &BranchCatalogRecord,
+        target: &GraphBindingTarget,
+        selector: ReadSelector,
+    ) -> EngineResult<GraphTargetStatus> {
+        let (class, key) = match target.primitive() {
+            GraphBindingPrimitive::Kv => (
+                RowClass::Kv,
+                encode_kv_key_bytes(target.space(), target.key().as_bytes()),
+            ),
+            GraphBindingPrimitive::Json => {
+                let Ok(id) = JsonDocumentId::new(target.key()) else {
+                    return Ok(GraphTargetStatus::MalformedTarget);
+                };
+                (RowClass::Json, encode_json_key(target.space(), &id))
+            }
+            GraphBindingPrimitive::Event => {
+                let Ok(sequence) = target.key().parse::<u64>() else {
+                    return Ok(GraphTargetStatus::MalformedTarget);
+                };
+                (
+                    RowClass::Event,
+                    encode_event_key(target.space(), EventSequence::new(sequence)),
+                )
+            }
+            GraphBindingPrimitive::Vector | GraphBindingPrimitive::Graph => {
+                return Ok(GraphTargetStatus::Unsupported);
+            }
+        };
+        let row = self.persistence.read_row(
+            RowAddress::new(record.storage_branch_id(), class, key),
+            selector,
+        )?;
+        Ok(match row {
+            None => GraphTargetStatus::Missing,
+            Some(row) if row.is_tombstone() => GraphTargetStatus::Deleted,
+            Some(_) => GraphTargetStatus::Present,
+        })
+    }
+
+    fn neighbor_target_status(
+        &mut self,
+        record: &BranchCatalogRecord,
+        node: &GraphNode,
+        selector: ReadSelector,
+    ) -> EngineResult<Option<GraphTargetStatus>> {
+        match node.data().binding() {
+            Some(binding) => Ok(Some(self.binding_target_status(
+                record,
+                binding.target(),
+                selector,
+            )?)),
+            None => Ok(None),
+        }
+    }
+
     fn validate_binding_target(&self, target: &GraphBindingTarget) -> EngineResult<()> {
         if let Some(target_branch) = target.branch() {
             if target_branch != &self.branch {
@@ -1879,10 +1976,12 @@ impl<'a> GraphService<'a> {
                     return Ok(None);
                 }
                 let node = self.visible_node_or_corruption(record, graph, edge.dst(), selector)?;
+                let target_status = self.neighbor_target_status(record, &node, selector)?;
                 Ok(Some(GraphNeighbor::new(
                     node,
                     edge,
                     GraphDirection::Outgoing,
+                    target_status,
                 )))
             })
             .filter_map(Result::transpose)
@@ -1913,10 +2012,12 @@ impl<'a> GraphService<'a> {
                     return Ok(None);
                 }
                 let node = self.visible_node_or_corruption(record, graph, edge.src(), selector)?;
+                let target_status = self.neighbor_target_status(record, &node, selector)?;
                 Ok(Some(GraphNeighbor::new(
                     node,
                     edge,
                     GraphDirection::Incoming,
+                    target_status,
                 )))
             })
             .filter_map(Result::transpose)
@@ -2264,7 +2365,7 @@ mod tests {
             CommitVersion::new(1),
             Timestamp::from_micros(1),
         );
-        let hit = GraphNeighbor::new(node, edge, GraphDirection::Outgoing);
+        let hit = GraphNeighbor::new(node, edge, GraphDirection::Outgoing, None);
         assert!(neighbor_cursor(&hit).starts_with("o\u{1f}links"));
     }
 

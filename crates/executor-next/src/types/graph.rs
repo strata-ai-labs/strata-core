@@ -460,6 +460,9 @@ pub struct GraphNeighborHit {
     direction: GraphDirection,
     node: GraphNodeDataOutput,
     edge: GraphEdgeDataOutput,
+    /// Bound-entity resolution status; absent when the node is unbound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    target_status: Option<String>,
 }
 
 impl GraphNeighborHit {
@@ -468,6 +471,7 @@ impl GraphNeighborHit {
         node: GraphNodeDataOutput,
         edge: GraphEdgeDataOutput,
         direction: GraphDirection,
+        target_status: Option<String>,
     ) -> Self {
         debug_assert_eq!(node.graph(), edge.graph());
         Self {
@@ -479,7 +483,13 @@ impl GraphNeighborHit {
             direction,
             node,
             edge,
+            target_status,
         }
+    }
+
+    /// Returns the bound-entity resolution status, when the node is bound.
+    pub fn target_status(&self) -> Option<&str> {
+        self.target_status.as_deref()
     }
 
     /// Returns the graph name.
