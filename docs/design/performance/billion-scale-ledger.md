@@ -1484,6 +1484,63 @@ Readings:
    its own attribution pass (suspects: flush/compaction overlap, commit
    admission, WAL cadence).
 
+## 1B YCSB matrix night — two store-bricking bugs, partial numbers (2026-07-10, @61b3f19a)
+
+First billion-record attempt. 100B random values (1KB x 1B does not fit
+the box), NEW shared-store protocol (`engine-ycsb --data-dir/--skip-load`:
+load once per scale, C on the virgin store, then b,d,e, then a,f), 500K
+ops, 32g, settles 120/300/600s; RocksDB fresh-per-workload at all three
+scales (stock options).
+
+**The headline is two product bugs, not the numbers:**
+
+1. **#2553 — 1B: manifest-listed compaction output missing on disk
+   (in-process data loss).** Load (288GiB, ~2.7h) + 600s settle clean;
+   the C run's reads then hit
+   `tables/.../l0001/maintenance-compaction-...-c04f315e4c7f9cb2-00000001`
+   -> NotFound; every reopen fails `TableManifestRecoveryMismatch`. The
+   index-0 SIBLING of the same multi-output family exists (51MB); index 1
+   is in neither tables/ nor quarantine/. Suspect seam: multi-output
+   publish->install->reclaim (the #2531-#2533 machinery). Needed 1B rows
+   of sustained load+maintenance; 10M/100M never showed it.
+2. **#2555 — reopen WAL next-segment collision (clean close + reopen +
+   first write bricks the store).** At 10M AND 100M: reopen + reads +
+   settle fine; first update commit fails
+   `CreateSegment wal/<max-existing-id> AlreadyExists`; the NEXT recovery
+   refuses `recovered WAL package must be strictly ordered`. Scale-gated
+   by WAL truncation history (a -q store reopens fine — e2e's reopen
+   tests are all tiny = CI blind spot). Killed all non-C Strata cells.
+   Cutover-blocking.
+
+Numbers that survived (100B family, single pass):
+
+| cell | Strata | RocksDB | gap |
+|---|---|---|---|
+| 10M load (rows/s) | 294,586 | ~3.2M | 10.9x |
+| 100M load | 207,645 | ~3.2M | 15.5x |
+| 1B load | ~100K (wall-clock est; result line lost to #2553) | ~3.2M (flat!) | ~32x |
+| 10M C | 124,396 (store cache-resident) | 392,816 | 3.2x |
+| 100M C | 23,789 (26GiB vs 15GiB pool) | 48,710 | **2.0x** |
+| 1B C | n/a (#2553) | 23,538 (p50 58us) | — |
+
+RocksDB full 1B row for later reference: A 41.5K / B 23.8K / C 23.5K /
+D 15.0K / E 10.5K / F 23.6K; read p50 58-78us (page cache holds ~half of
+its 107GB store).
+
+Readings:
+
+1. Strata ingest slope within one value family: 295K -> 208K -> ~100K
+   rows/s (-30% then -52% per decade, steepening at depth) while RocksDB
+   loads FLAT at ~3.2M rows/s across three decades (ordered keys,
+   no-sync batches). The 100M attribution pass (prior row) is now a 1B
+   attribution pass.
+2. 100M C at 2.0x RocksDB is Strata's best-ever relative read cell —
+   the 1.7x-over-budget regime is kind to us; the 40%-miss regime
+   (100M x 1KB: 3.1x) and their page-cache-heavy 1B regime remain to be
+   fought after the read-miss cost work.
+3. Evidence preserved: store-10m (3GiB, #2555 cheap repro), store-100m
+   (26GiB, #2555), store-1b (288GiB, #2553). run.log alongside.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
