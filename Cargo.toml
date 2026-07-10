@@ -8,6 +8,7 @@ default-members = [
     "crates/inference",
     "crates/cli",
     "crates/stratadb",
+    "crates/hub",
 ]
 exclude = ["benchmarks"]
 members = [
@@ -20,6 +21,7 @@ members = [
     "crates/wasm",
     "crates/gpu-cache",
     "crates/stratadb",
+    "crates/hub",
 ]
 
 [workspace.package]
