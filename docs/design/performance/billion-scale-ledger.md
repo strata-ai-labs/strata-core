@@ -1383,6 +1383,63 @@ feature sets, format goldens, engine-next, e2e 17/17.
 Shelf: fork-of-fork (sources WITH inherited layers) still takes the eager
 path — needs layer-chain composition, separate slice.
 
+## 100M YCSB degradation scout — the out-of-cache cliff (2026-07-09, v1-content @ 88715bca, /data2)
+
+First 100M-record suite (1KB random values, ~103GiB logical). Single pass
+(scout, not medians), durable, 500K ops, 32g budget, settle 120s at 10M /
+300s at 100M, fresh load per workload, same-session interleaved 10M
+control, same binary/box. 10M control took 28min; 100M took 3h30 (six
+~28.5min loads dominate).
+
+| workload | 10M control | 100M | ratio |
+|---|---|---|---|
+| load (rows/s) | 75.3-86.4K | 57.5-62.7K | -29% |
+| A 50/50 update | 10,967 | 8,414 | -23% |
+| B 95/5 read | 139,273 | 9,920 | **14.0x** |
+| C read-only | 117,990 | 9,413 | **12.5x** |
+| D read-latest | 97,986 | 5,376 | **18.2x** |
+| E scan(<=100) | 5,908 | 2,683 | 2.2x |
+| F read-RMW | 8,115 | 3,778 | 2.1x |
+
+Read p50/p99 (C): 8.59us/13.3us -> 25.2us/320us. D read p50 218us.
+E scan p50 170 -> 246us, p99 236us -> 911us. A update p99.9 12.1 -> 4.4ms
+(single-pass lottery noise; A/F medians need reps).
+
+Readings:
+
+1. **The B/C/D cliff is the out-of-cache transition, and its unit cost is
+   the target.** At 10M the whole 12GiB store fits in cache (miss ~0 after
+   preheat); at 100M the C cell runs at **40.6% block-cache miss** (203K
+   misses / 500K reads, exactly one 16KiB data block and 16.5KB read per
+   miss — the format layer is fine), and `api_point_ms` = 52.9s of the
+   53.1s run: the whole regression is read-path wall. Derived miss cost
+   **~248us per missed block vs ~100us device floor** for a QD1 16KiB
+   NVMe read — ~2.5x of overhead (checked-path checksum + decode + cache
+   insert + eviction churn: 537K evictions over the run). D is worse (75%
+   miss, p50 218us) because the latest-distribution head is exactly what
+   preheat did not retain.
+2. **Preheat thrashes when store >> cache.** During D's 300s settle the
+   preheat cycled 110GiB through the 15GiB block pool (868 passes, 6.7M
+   blocks admitted, self-evicting). At over-budget scale it needs an
+   admit-until-full / hot-first policy instead of full-store passes —
+   today it burns settle-window IO for a cache that ends up holding an
+   arbitrary residue. (Probe oddity to check while there: `cache_gb`
+   prints 45-60/15.00 — used 3-4x capacity — either an accounting bug or
+   a mislabeled cumulative counter.)
+3. **Write side and space health scale cleanly.** Load -29% at 10x data;
+   A -23% (already stall-lottery-bound, not read-bound); residual
+   118-120GiB post-settle ~= **1.15x logical** — the #2524 fixes hold at
+   10x scale, slightly better than the 10M shape.
+4. E/F degrade only ~2.2x/2.1x — both were already bound elsewhere (scan
+   arithmetic; RMW stall lottery + the read tax on the R half).
+
+Next candidates, in leverage order: (a) RocksDB 100M control on the same
+box (both engines pay the disk at this scale — the honest gap is the
+miss-cost ratio, not the 10M cache-race); (b) miss-cost decomposition
+slice (~248us -> device floor: pread, checksum/decode, insert/evict); (c)
+preheat policy for over-budget stores; (d) medians-of-3 re-run of the
+cells that matter after any fix.
+
 ## Backfilling a row after a perf run
 
 1. Run the scoreboard: `regression.rs --capture-baseline` (writes `baselines/*.json`) and
