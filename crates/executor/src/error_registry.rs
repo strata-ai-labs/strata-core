@@ -39,8 +39,8 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         ErrorClass::FailedPrecondition,
         RetryPolicy::Never,
         CommitOutcomeStatus::NotStarted,
-        "No hub URL is configured for this invocation.",
-        "Pass --hub <url>, set STRATA_HUB_URL, or configure hub.url in a project or global strata config.",
+        "The hub URL supplied for this invocation is invalid.",
+        "Provide a valid URL via --hub, STRATA_HUB_URL, or hub.url in a project or global strata config.",
         EXECUTOR_SCHEMA,
     ),
     entry(

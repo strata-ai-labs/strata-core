@@ -49,6 +49,6 @@ pub use remote::{
 };
 pub use resolve::{
     global_config_path, read_global_hub_url, resolve_hub_url, unset_global_hub_url,
-    write_global_hub_url, HubUrlError, HubUrlInputs, HubUrlSource, ResolvedHubUrl,
+    write_global_hub_url, HubUrlError, HubUrlInputs, HubUrlSource, ResolvedHubUrl, DEFAULT_HUB_URL,
 };
 pub use transport::ClientTransport;
