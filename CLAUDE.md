@@ -2,9 +2,11 @@
 
 ## Status
 
-Strata is in the **V1 architecture rewrite**. Active branch: `v1` (integration line). `main` is frozen for old-architecture work — do not extend it on the V1 line.
+The **V1 architecture is the product**. `main` carries the V1 line; the `v1` integration branch has been promoted and retired. Pre-V1 code exists only in git history — do not resurrect it.
 
-The V1 line is a clean break. No compatibility shims between old and new code, no migration tooling for pre-V1 databases, no parallel old/new paths held alive indefinitely.
+Workspace version is `1.0.0`, inherited from `[workspace.package]`. Publish names are decided: `stratadb` (embedded-library facade crate) and `strata-cli` (the `strata` binary). All crates remain `publish = false` until the release train lands.
+
+The V1 line is a clean break. No compatibility shims between old and new code, no migration tooling for pre-V1 databases, no parallel old/new paths held alive indefinitely. Opening a pre-V1 database directory fails with `failed_precondition.engine.layout_version`.
 
 ## V1 Stack
 

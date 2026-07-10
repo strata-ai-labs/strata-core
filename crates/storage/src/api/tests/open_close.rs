@@ -701,3 +701,37 @@ fn outcome_summaries_expose_stored_fields() {
     assert_eq!(commit.commit_version(), CommitVersion::new(7));
     assert_eq!(commit.commit_timestamp(), Timestamp::from_micros(8));
 }
+
+/// V1 cutover (hard rule 42): a directory holding a pre-V1 database layout
+/// is rejected with a structured layout error — a fresh V1 layout is never
+/// silently created inside one. The pre-V1 signature is a root `strata.toml`
+/// or the uppercase `MANIFEST` file; V1 uses a `manifest/` directory and
+/// creates neither name.
+#[test]
+#[cfg(feature = "localfs")]
+fn open_durable_local_rejects_pre_v1_layout() {
+    for marker in ["strata.toml", "MANIFEST"] {
+        let dir = temp_dir_for_api_test(&format!("pre-v1-{marker}"));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        std::fs::write(dir.join(marker), b"pre-v1").expect("write marker");
+        let error = StorageRuntime::open_durable_local(&dir, StorageDurabilityPolicy::Standard)
+            .expect_err("pre-V1 layout must refuse");
+        assert_eq!(
+            error.code(),
+            "failed_precondition.storage_api.incompatible_layout",
+            "marker {marker}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A clean directory still opens and creates a fresh V1 database.
+    let dir = temp_dir_for_api_test("pre-v1-clean");
+    std::fs::create_dir_all(&dir).expect("create dir");
+    let outcome = StorageRuntime::open_durable_local(&dir, StorageDurabilityPolicy::Standard)
+        .expect("clean dir opens");
+    assert_eq!(
+        outcome.summary().disposition(),
+        StorageOpenDisposition::Created
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

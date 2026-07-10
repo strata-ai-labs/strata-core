@@ -7,6 +7,7 @@ default-members = [
     "crates/executor",
     "crates/inference",
     "crates/cli",
+    "crates/stratadb",
 ]
 exclude = ["benchmarks"]
 members = [
@@ -18,10 +19,11 @@ members = [
     "crates/cli",
     "crates/wasm",
     "crates/gpu-cache",
+    "crates/stratadb",
 ]
 
 [workspace.package]
-version = "0.6.1"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.88"
 authors = ["Strata contributors"]

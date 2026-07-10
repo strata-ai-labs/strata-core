@@ -100,6 +100,9 @@ pub enum StorageApiError {
         limit_bytes: u64,
         reason: &'static str,
     },
+    IncompatibleLayout {
+        reason: &'static str,
+    },
     LowerLayer {
         layer: StorageApiLowerLayer,
         reason: &'static str,
@@ -126,6 +129,9 @@ impl StorageApiError {
             Self::MaintenanceRejected { .. } => "failed_precondition.storage_api.maintenance",
             Self::StoragePressure { .. } => "failed_precondition.storage_api.storage_pressure",
             Self::ResourceExhausted { .. } => "resource_exhausted.storage_api.memory_budget",
+            Self::IncompatibleLayout { .. } => {
+                "failed_precondition.storage_api.incompatible_layout"
+            }
             Self::LowerLayer { .. } => "internal.storage_api.lower_layer",
         }
     }
@@ -182,6 +188,9 @@ impl StorageApiError {
             Self::ResourceExhausted { .. } => {
                 "Reduce resident memory pressure or raise the configured storage memory budget, then retry the operation."
             }
+            Self::IncompatibleLayout { .. } => {
+                "Choose an empty directory or an existing V1 database directory; pre-V1 layouts are not readable by this version."
+            }
             Self::LowerLayer { .. } => {
                 "Inspect the source error and storage diagnostics for the underlying failure."
             }
@@ -196,7 +205,8 @@ impl StorageApiError {
             | Self::BranchGenerationMismatch { .. }
             | Self::MaintenanceRejected { .. }
             | Self::StoragePressure { .. }
-            | Self::RecoveryDegraded { .. } => StorageApiErrorClass::FailedPrecondition,
+            | Self::RecoveryDegraded { .. }
+            | Self::IncompatibleLayout { .. } => StorageApiErrorClass::FailedPrecondition,
             Self::BranchNotFound { .. } => StorageApiErrorClass::NotFound,
             Self::BranchAlreadyExists { .. } => StorageApiErrorClass::AlreadyExists,
             Self::Conflict { .. } => StorageApiErrorClass::Conflict,
@@ -253,6 +263,9 @@ impl fmt::Display for StorageApiError {
             }
             Self::InvalidRuntimeState { reason } => {
                 write!(formatter, "invalid storage runtime state: {reason}")
+            }
+            Self::IncompatibleLayout { reason } => {
+                write!(formatter, "incompatible storage layout: {reason}")
             }
             Self::BranchNotFound { branch_id } => write!(formatter, "branch {branch_id} not found"),
             Self::BranchAlreadyExists { branch_id } => {

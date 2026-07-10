@@ -1,6 +1,7 @@
 [package]
 name = "strata-engine"
-version = "1.0.0"
+version.workspace = true
+description = "Database engine for Strata: data services, branches, time travel, retrieval"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true

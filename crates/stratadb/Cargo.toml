@@ -1,0 +1,21 @@
+[package]
+name = "stratadb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Strata: an embedded, branchable, time-traveling database for AI applications — KV, JSON, events, vectors, and graph over one substrate"
+# Publishing flips on with the release-train automation (first-run D7);
+# the crates.io names are decided: stratadb (this facade) and strata-cli.
+publish = false
+
+[dependencies]
+strata-engine = { path = "../engine" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
