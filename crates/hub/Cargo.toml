@@ -1,0 +1,26 @@
+[package]
+name = "strata-hub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "StrataHub adapter: bundle export/import and hub orchestration over the Strata engine"
+publish = false
+
+[dependencies]
+# Wire-contract dependencies (coordination doc §3.1): serde_jcs is pinned
+# byte-for-byte to stratahub's workspace pin; blake3 is byte-deterministic
+# by spec at any 1.x.
+blake3 = "1"
+serde_jcs = "=0.2.0"
+serde = { version = "1", features = ["derive"] }
+stratahub-protocol = { git = "https://github.com/stratalab/stratahub", rev = "a79b63edc00ca6ee7e65f2c8343e1d957926db64" }
+
+[dev-dependencies]
+serde_json = "1"
+stratahub-testkit = { git = "https://github.com/stratalab/stratahub", rev = "a79b63edc00ca6ee7e65f2c8343e1d957926db64" }
+
+[lints]
+workspace = true

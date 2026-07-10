@@ -1,0 +1,2 @@
+# Extends (not replaces) the default doc-valid-idents set.
+doc-valid-idents = ["StrataHub", ".."]
