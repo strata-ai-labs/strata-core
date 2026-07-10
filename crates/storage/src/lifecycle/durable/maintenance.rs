@@ -394,6 +394,10 @@ pub(crate) struct PreparedPublish<'a> {
     branch_id: BranchId,
     base_outcome: MaintenanceOutcome,
     manifest: TableManifest,
+    /// The manifest's object names, collected at build time so the frontier advance in
+    /// [`LifecycleDurableTableCatalog::confirm_reserved_manifest_published`] stays an O(1)
+    /// `Arc` swap (#2553, BS5.3).
+    manifest_objects: std::sync::Arc<std::collections::BTreeSet<crate::object::ObjectName>>,
     service: TableManifestService<'a>,
     budget: crate::lifecycle::StorageBudgetLedger,
     guard: BranchPublishGuard,
@@ -1211,8 +1215,9 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         require_admitted(self.state, LifecycleOperationKind::OrdinaryMaintenance)?;
         let health = self.current_recovery_health.clone();
         if let LifecycleRetentionScope::TableObjects { branch_id } = request.scope() {
-            let pinned_objects =
-                in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
+            // #2553 rider: this entry previously omitted the in-flight output pins the other
+            // mark sites carried; the unified helper closes that gap too.
+            let pinned_objects = self.reclaim_pinned_table_objects();
             let table_request = table_object_retention_request(&self.services, branch_id, &health)?
                 .with_pinned_objects(pinned_objects);
             let outcome = table_object_retention_outcome(&table_request)?;
@@ -2013,6 +2018,20 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     /// WAL-truncation, deferred/error short-circuits, and the off-lock finish). Mirrors the
     /// health bookkeeping the previous single-phase `finish_background_maintenance` applied to
     /// every outcome it returned.
+    /// The complete pinned set for a table-object reclaim mark: in-memory branch state,
+    /// in-flight build outputs (#2531), and the manifest frontier — objects the last
+    /// durably-confirmed manifest or a built-but-unconfirmed publication still lists (#2553).
+    /// Every mark entry point MUST use this helper; a mark missing any component can classify
+    /// a recovery-relevant object as garbage.
+    fn reclaim_pinned_table_objects(&self) -> Vec<crate::object::ObjectName> {
+        let mut pinned = in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
+        pinned.extend(self.inflight_outputs.snapshot());
+        let frontier = self.table_catalog.manifest_frontier_pinned_objects();
+        crate::observability::perf_trace::record_table_object_frontier_pins(frontier.len() as u64);
+        pinned.extend(frontier);
+        pinned
+    }
+
     fn record_publish_phase_health(
         &mut self,
         outcome: LifecycleResult<MaintenanceOutcome>,
@@ -2266,11 +2285,20 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 .with_reason("table manifest publish slot is busy for this branch");
             return self.finish_locked_publish(task, outcome);
         };
+        // #2553: from this point the manifest WILL be persisted (possibly ending uncertain),
+        // so its object names become recovery-relevant. Register them as the branch's pending
+        // publication before the lock is released — the reclaim mark must not sweep an object
+        // this manifest lists while the persist is in flight or its durability is unconfirmed.
+        // Inserted only after guard acquisition: deferred attempts never persist.
+        let manifest_objects = crate::lifecycle::table_manifest::manifest_object_names(&manifest);
+        self.table_catalog
+            .record_pending_publication(branch_id, manifest_objects.clone());
         PreparedPublishStep::OffLock(PreparedPublish {
             task,
             branch_id,
             base_outcome,
             manifest,
+            manifest_objects,
             service: self.services.table_manifest().clone(),
             budget: self.budget.clone(),
             guard,
@@ -2315,9 +2343,10 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
     ) -> LifecycleResult<MaintenanceOutcome> {
         let PreparedPublish {
             task,
-            branch_id: _,
+            branch_id,
             base_outcome,
             manifest: _,
+            manifest_objects,
             service: _,
             budget: _,
             guard,
@@ -2336,10 +2365,14 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         let outcome = match post {
             PreparedPublishPost::Flush => match write_result {
                 Ok(_write) => {
-                    self.table_catalog.confirm_reserved_manifest_published();
+                    self.table_catalog
+                        .confirm_reserved_manifest_published(branch_id, manifest_objects);
                     flush_published = true;
                     base_outcome
                 }
+                // Publication-uncertain persist: the pending publication registered at guard
+                // acquisition stays in place — the manifest may be durable even though its
+                // durability is unconfirmed, so its listed objects remain protected (#2553).
                 Err(error) => table_manifest_debt_outcome(base_outcome, error),
             },
             PreparedPublishPost::Compaction {
@@ -2347,20 +2380,26 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
                 level,
                 outcome,
             } => {
-                let outcome =
-                    self.fold_rewrite_publish(write_result, *outcome, |outcome, error| {
-                        outcome.manifest_debt(error)
-                    });
+                let outcome = self.fold_rewrite_publish(
+                    write_result,
+                    branch_id,
+                    manifest_objects,
+                    *outcome,
+                    LifecycleCompactionOutcome::manifest_debt,
+                );
                 record_lifecycle_compaction_outcome(&outcome);
                 let maintenance = outcome.maintenance_outcome();
                 self.apply_compaction_post(branch_id, level, &maintenance);
                 maintenance
             }
             PreparedPublishPost::Materialization { branch_id, outcome } => {
-                let outcome =
-                    self.fold_rewrite_publish(write_result, *outcome, |outcome, error| {
-                        outcome.manifest_debt(error)
-                    });
+                let outcome = self.fold_rewrite_publish(
+                    write_result,
+                    branch_id,
+                    manifest_objects,
+                    *outcome,
+                    LifecycleMaterializationOutcome::manifest_debt,
+                );
                 let maintenance = outcome.maintenance_outcome();
                 if table_rewrite_outcome_allows_chain_resubmit(&maintenance) {
                     self.resubmit_table_rewrite_if_any_branch_still_unhealthy(branch_id);
@@ -2398,16 +2437,20 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
 
     /// Fold an off-lock persist result into a rewrite outcome: record the persisted manifest's
     /// tables on success (the sequence was advanced at reserve time), or stamp the outcome with
-    /// manifest debt on persist or record failure.
+    /// manifest debt on persist or record failure. On the debt arm the pending publication
+    /// registered at guard acquisition stays in place (#2553).
     fn fold_rewrite_publish<T>(
         &mut self,
         write_result: LifecycleResult<TableManifestWrite>,
+        branch_id: BranchId,
+        manifest_objects: std::sync::Arc<std::collections::BTreeSet<crate::object::ObjectName>>,
         outcome: T,
         manifest_debt: impl FnOnce(T, LifecycleError) -> T,
     ) -> T {
         match write_result {
             Ok(_write) => {
-                self.table_catalog.confirm_reserved_manifest_published();
+                self.table_catalog
+                    .confirm_reserved_manifest_published(branch_id, manifest_objects);
                 outcome
             }
             Err(error) => manifest_debt(outcome, error),
@@ -3405,9 +3448,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         // pinned by name (reserved before their bytes land), so the wholesale
         // `has_active_build_task` defer that starved reclaim under sustained
         // load (zero retention runs across a whole seed) is gone.
-        let mut pinned_objects =
-            in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
-        pinned_objects.extend(self.inflight_outputs.snapshot());
+        let pinned_objects = self.reclaim_pinned_table_objects();
         let maintenance = &mut self.maintenance;
         let services = &self.services;
         let health = self.current_recovery_health.clone();
@@ -3522,9 +3563,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         let retired_readers_alive = self.snapshot_publisher.retired_views_alive();
         // #2524: in-flight build outputs are pinned by name (see the
         // background sweep entry) — no wholesale build defer.
-        let mut pinned_objects =
-            in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
-        pinned_objects.extend(self.inflight_outputs.snapshot());
+        let pinned_objects = self.reclaim_pinned_table_objects();
         let mut runner = DurableTableObjectSweepRunner {
             services: &self.services,
             branch_id: self.initial_branch_id,
@@ -3586,9 +3625,7 @@ impl<'a, S> LifecycleDurableLocalRuntime<'a, S> {
         // #2524: in-flight build outputs are pinned by name (reserved before
         // their bytes land), so the mark no longer defers wholesale on
         // `has_active_build_task` — reclaim stays live under sustained load.
-        let mut pinned_objects =
-            in_memory_pinned_table_objects(&self.branch_catalog, &self.table_catalog);
-        pinned_objects.extend(self.inflight_outputs.snapshot());
+        let pinned_objects = self.reclaim_pinned_table_objects();
         let Some(task) = self
             .maintenance
             .start_next_matching(state, |queued| queued.id() == pending.id())?

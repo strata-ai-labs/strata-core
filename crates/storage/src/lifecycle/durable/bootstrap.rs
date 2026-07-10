@@ -1447,6 +1447,10 @@ impl<S> LifecycleDurableLocalRuntime<'_, S> {
         self.pending_releases.push(plan);
         self.publish_branch_catalog()?;
         self.publish_pending_releases()?;
+        // #2553: the branch tombstone is durable (catalog published above), so recovery ignores
+        // the branch's table manifest — drop its frontier sets or they would permanently
+        // protect exactly the objects deletion frees.
+        self.table_catalog.clear_branch_frontier(branch_id);
         // Table-object GC: the deleted branch's now-unreachable objects are reclaimed by the
         // retention → quarantine → purge cycle. Best-effort, coalescing.
         let _ = self.enqueue_maintenance(

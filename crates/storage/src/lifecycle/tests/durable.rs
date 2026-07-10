@@ -3579,6 +3579,10 @@ struct DurableTestBackend {
     release_count: Arc<AtomicUsize>,
     fail_lock: bool,
     publish_failure: Mutex<Option<PublishFailureKind>>,
+    // #2553 (T2): one-shot apply-then-fail for a TARGETED object — the bytes land, then the
+    // publish reports the failure kind. Models a visible-but-durability-unconfirmed manifest
+    // replace, which `set_publish_failure` (fails BEFORE writing) cannot.
+    publish_apply_then_fail: Mutex<Option<(ObjectName, PublishFailureKind)>>,
     create_race_manifest: Mutex<Option<DatabaseManifest>>,
     fail_metadata: bool,
     fail_sync: AtomicBool,
@@ -3648,6 +3652,7 @@ impl DurableTestBackend {
             release_count: Arc::new(AtomicUsize::new(0)),
             fail_lock: false,
             publish_failure: Mutex::new(None),
+            publish_apply_then_fail: Mutex::new(None),
             create_race_manifest: Mutex::new(None),
             fail_metadata: false,
             fail_sync: AtomicBool::new(false),
@@ -3664,6 +3669,7 @@ impl DurableTestBackend {
     fn with_publish_failure(kind: PublishFailureKind) -> Self {
         Self {
             publish_failure: Mutex::new(Some(kind)),
+            publish_apply_then_fail: Mutex::new(None),
             ..Self::new()
         }
     }
@@ -3694,6 +3700,13 @@ impl DurableTestBackend {
 
     fn set_publish_failure(&self, failure: Option<PublishFailureKind>) {
         *self.publish_failure.lock().expect("publish failure") = failure;
+    }
+
+    fn set_publish_apply_then_fail(&self, target: Option<(ObjectName, PublishFailureKind)>) {
+        *self
+            .publish_apply_then_fail
+            .lock()
+            .expect("apply then fail") = target;
     }
 
     fn write_raw(&self, object: ObjectName, bytes: Vec<u8>) {
@@ -3874,6 +3887,30 @@ impl Backend for DurableTestBackend {
                 BackendError::new(BackendErrorKind::Unavailable, "injected publish failure"),
             ));
         }
+        let apply_then_fail = {
+            let mut armed = self
+                .publish_apply_then_fail
+                .lock()
+                .expect("apply then fail");
+            match armed.as_ref() {
+                Some((target, _)) if target == name => armed.take(),
+                _ => None,
+            }
+        };
+        if let Some((_, kind)) = apply_then_fail {
+            self.objects
+                .lock()
+                .expect("objects")
+                .insert(name.clone(), bytes.to_vec());
+            return Err(PublishError::new(
+                name.clone(),
+                kind,
+                BackendError::new(
+                    BackendErrorKind::Unavailable,
+                    "injected apply-then-fail publish",
+                ),
+            ));
+        }
         let mut objects = self.objects.lock().expect("objects");
         if mode == PublishMode::Create && objects.contains_key(name) {
             return Err(PublishError::precondition_failed(
@@ -3978,4 +4015,301 @@ fn fork_of_an_all_unsealed_source_stays_eager() {
         .expect("eager fork");
     assert_eq!(outcome.inherited_layer_count(), 0, "no table to reference");
     assert_eq!(outcome.inherited_table_count(), 0);
+}
+
+/// #2553 test scaffolding: commit one row, rotate, and drive a background
+/// flush through its off-lock build. Returns the built step (publish NOT yet
+/// begun) and the flush's published output names, still pinned in-flight.
+fn build_flush_for_frontier_tests(
+    runtime: &mut LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource>,
+    branch: BranchId,
+    key: &'static [u8],
+    value: &'static [u8],
+) -> (DurableBackgroundMaintenanceBuilt, Vec<ObjectName>) {
+    runtime
+        .execute_durable_commit(durable_put_batch(branch, key, value), generation_guard())
+        .expect("frontier commit");
+    runtime
+        .rotate_active_for_maintenance()
+        .expect("frontier rotate");
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::flush(branch))
+        .expect("frontier enqueue flush");
+    let step = runtime
+        .start_next_background_flush_maintenance()
+        .expect("frontier start flush")
+        .expect("frontier flush step");
+    let DurableBackgroundMaintenanceStep::Build(pending) = step else {
+        panic!("expected a flush build step");
+    };
+    let built = pending.build().expect("frontier build flush");
+    let outputs = runtime.inflight_table_outputs().snapshot();
+    assert!(!outputs.is_empty(), "the flush published an output");
+    (built, outputs)
+}
+
+/// #2553 test scaffolding: run a built maintenance step through publish to a
+/// CONFIRMED durable manifest (both publish arms).
+fn publish_to_confirmation(
+    runtime: &mut LifecycleDurableLocalRuntime<'static, CommitManualTimestampSource>,
+    built: DurableBackgroundMaintenanceBuilt,
+) {
+    match runtime.begin_publish_phase(built).expect("begin publish") {
+        PreparedPublishStep::OffLock(prepared) => {
+            let (prepared, write_result) = prepared.persist_off_lock();
+            runtime
+                .finish_publish_phase(prepared, write_result)
+                .expect("finish publish");
+        }
+        PreparedPublishStep::Done(result) => {
+            result.expect("publish done");
+        }
+    }
+}
+
+/// #2553: an object consumed OUT of branch state while the manifest that still
+/// lists it is mid-persist (per-branch publish slot held, global lock released)
+/// must not be swept — the landing manifest is what recovery loads.
+///
+/// Shape: flush A's publish is HELD at the off-lock step (its manifest `M_A`
+/// lists t1,t2); a compaction consumes t1,t2 (installs, then its own publish
+/// DEFERS on the busy slot); the mark+sweep runs; `M_A` then persists and
+/// confirms. Pre-fix the sweep deleted t2 (absent from the visible manifest
+/// and from branch state, unpinned) and recovery failed with
+/// `corruption.lifecycle.table_manifest`. The pending-publication frontier
+/// keeps every M_A-listed object protected until the persist resolves.
+#[test]
+fn sweep_spares_objects_listed_by_a_mid_persist_manifest() {
+    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let branch = branch_id(0x79);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
+
+    // Flush 1 → t1, fully published + confirmed (M0 lists t1).
+    let (built, flush_one_outputs) =
+        build_flush_for_frontier_tests(&mut runtime, branch, b"frontier-row-1", b"value-1");
+    publish_to_confirmation(&mut runtime, built);
+
+    // Flush 2 → t2; its publish is HELD at the off-lock step: `M_A` (listing
+    // t1,t2) is built and the branch publish slot is taken, but nothing has
+    // been persisted yet.
+    let (built, flush_two_outputs) =
+        build_flush_for_frontier_tests(&mut runtime, branch, b"frontier-row-2", b"value-2");
+    let held_publish = match runtime.begin_publish_phase(built).expect("publish flush 2") {
+        PreparedPublishStep::OffLock(prepared) => prepared,
+        PreparedPublishStep::Done(_) => panic!("flush 2 publish must reach the off-lock step"),
+    };
+
+    // Compaction consumes t1,t2 into an L1 output; its install lands but its
+    // own manifest publish DEFERS on the slot flush 2 holds.
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+    let step = runtime
+        .start_next_background_table_rewrite_maintenance()
+        .expect("start compaction")
+        .expect("compaction step");
+    let DurableBackgroundMaintenanceStep::Build(pending) = step else {
+        panic!("expected compaction build step");
+    };
+    let built = pending.build().expect("build compaction");
+    let outcome = match runtime
+        .begin_publish_phase(built)
+        .expect("publish compaction")
+    {
+        PreparedPublishStep::Done(result) => result.expect("compaction publish resolves locked"),
+        PreparedPublishStep::OffLock(_) => {
+            panic!("compaction publish must defer on the held slot")
+        }
+    };
+    assert_eq!(
+        outcome.status(),
+        MaintenanceOutcomeStatus::Deferred,
+        "the compaction's manifest publish defers while flush 2 holds the slot",
+    );
+
+    // Mark + sweep while M_A is mid-persist. Pre-fix this deleted the
+    // consumed inputs; the pending-publication frontier must pin them.
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch))
+        .expect("enqueue retention");
+    runtime
+        .run_next_retention_maintenance()
+        .expect("run retention")
+        .expect("retention outcome");
+    if let Some(sweep) = runtime
+        .run_next_quarantine_maintenance()
+        .expect("run sweep")
+    {
+        assert_eq!(sweep.status(), MaintenanceOutcomeStatus::Completed);
+    }
+    for name in flush_one_outputs.iter().chain(flush_two_outputs.iter()) {
+        assert!(
+            backend.object_metadata(name).is_ok(),
+            "mid-persist-manifest-listed object {name} must survive the sweep",
+        );
+    }
+
+    // `M_A` lands and confirms: the durable manifest now lists t1,t2.
+    let (held_publish, write_result) = held_publish.persist_off_lock();
+    runtime
+        .finish_publish_phase(held_publish, write_result)
+        .expect("finish flush 2 publish");
+    drop(runtime);
+
+    // Recovery loads `M_A`; every listed object must exist.
+    let mut shell =
+        assemble_shell(StorageMode::DurableLocalStandard, branch, backend).expect("reopen shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let recovery = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery after mid-persist manifest landed");
+    shell.complete_recovery(&recovery).expect("reopen runtime");
+}
+
+/// #2553 (hole 2): a manifest replace that lands VISIBLE but reports its
+/// durability unconfirmed must not expose the PRIOR manifest's objects to the
+/// sweep — a crash reverts recovery to the last confirmed manifest, which
+/// still lists them. The confirmed frontier (advanced only on confirmed
+/// publishes) keeps them pinned.
+#[test]
+fn sweep_spares_objects_listed_by_the_last_confirmed_manifest() {
+    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let branch = branch_id(0x7a);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
+    let manifest_object =
+        ObjectLayout::branch_table_manifest(&branch.to_string()).expect("manifest object");
+
+    // Two flushes, fully published + confirmed: the durable manifest M1 lists t1,t2.
+    let mut flush_outputs = Vec::new();
+    for (key, value) in [
+        (&b"confirmed-row-1"[..], &b"value-1"[..]),
+        (&b"confirmed-row-2"[..], &b"value-2"[..]),
+    ] {
+        let (built, outputs) = build_flush_for_frontier_tests(&mut runtime, branch, key, value);
+        flush_outputs.extend(outputs);
+        publish_to_confirmation(&mut runtime, built);
+    }
+    assert_eq!(flush_outputs.len(), 2, "two confirmed L0 tables");
+    let confirmed_manifest_bytes = backend
+        .read_object(&manifest_object)
+        .expect("confirmed manifest bytes");
+
+    // Inline compaction consumes t1,t2; its manifest replace LANDS (visible)
+    // but reports durability unconfirmed → manifest debt, no confirm.
+    backend.set_publish_apply_then_fail(Some((
+        manifest_object.clone(),
+        PublishFailureKind::VisibleDurabilityUnconfirmed,
+    )));
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+    let outcome = runtime
+        .run_next_table_rewrite_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    assert_ne!(
+        outcome.status(),
+        MaintenanceOutcomeStatus::Deferred,
+        "the inline compaction ran (its manifest persist ended uncertain)",
+    );
+
+    // Sweep while the visible manifest is unconfirmed. Pre-fix the mark read
+    // the visible manifest (which no longer lists t1,t2) and swept them; the
+    // confirmed frontier must keep the crash-revert targets alive.
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch))
+        .expect("enqueue retention");
+    runtime
+        .run_next_retention_maintenance()
+        .expect("run retention")
+        .expect("retention outcome");
+    if let Some(sweep) = runtime
+        .run_next_quarantine_maintenance()
+        .expect("run sweep")
+    {
+        assert_eq!(sweep.status(), MaintenanceOutcomeStatus::Completed);
+    }
+    for name in &flush_outputs {
+        assert!(
+            backend.object_metadata(name).is_ok(),
+            "confirmed-manifest-listed object {name} must survive the sweep",
+        );
+    }
+
+    // Simulated crash-revert: the unconfirmed replace never became durable —
+    // restore the confirmed manifest bytes and recover. Every object it lists
+    // must exist.
+    drop(runtime);
+    backend.write_raw(manifest_object, confirmed_manifest_bytes);
+    let mut shell =
+        assemble_shell(StorageMode::DurableLocalStandard, branch, backend).expect("reopen shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let recovery = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery from the crash-reverted confirmed manifest");
+    shell.complete_recovery(&recovery).expect("reopen runtime");
+}
+
+/// #2553 anti-starvation guard: frontier protection RELEASES once a confirmed
+/// publish stops listing the objects — superseded tables still get reclaimed
+/// (the #2524 reclaim-liveness regression this fix must not reintroduce).
+#[test]
+fn frontier_protection_releases_after_the_next_confirmed_publish() {
+    let backend: &'static DurableTestBackend = Box::leak(Box::new(DurableTestBackend::new()));
+    let branch = branch_id(0x7b);
+    let mut runtime = open_runtime(StorageMode::DurableLocalStandard, branch, backend);
+
+    // Two confirmed L0 tables, then an inline compaction that consumes them
+    // and CONFIRMS its manifest (no fault): t1,t2 are superseded and no
+    // recovery-relevant manifest lists them.
+    let mut flush_outputs = Vec::new();
+    for (key, value) in [
+        (&b"released-row-1"[..], &b"value-1"[..]),
+        (&b"released-row-2"[..], &b"value-2"[..]),
+    ] {
+        let (built, outputs) = build_flush_for_frontier_tests(&mut runtime, branch, key, value);
+        flush_outputs.extend(outputs);
+        publish_to_confirmation(&mut runtime, built);
+    }
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::compaction(branch, 0))
+        .expect("enqueue compaction");
+    let outcome = runtime
+        .run_next_table_rewrite_maintenance()
+        .expect("run compaction")
+        .expect("compaction outcome");
+    assert_eq!(outcome.status(), MaintenanceOutcomeStatus::Completed);
+
+    // The superseded inputs must now be sweepable: mark + sweep reclaims them.
+    runtime
+        .enqueue_maintenance(MaintenanceTaskRequest::table_object_retention(branch))
+        .expect("enqueue retention");
+    runtime
+        .run_next_retention_maintenance()
+        .expect("run retention")
+        .expect("retention outcome");
+    let sweep = runtime
+        .run_next_quarantine_maintenance()
+        .expect("run sweep")
+        .expect("sweep outcome");
+    assert_eq!(sweep.status(), MaintenanceOutcomeStatus::Completed);
+    for name in &flush_outputs {
+        assert!(
+            backend.object_metadata(name).is_err(),
+            "superseded object {name} must be reclaimed once no manifest lists it",
+        );
+    }
+
+    // And the store still recovers cleanly.
+    drop(runtime);
+    let mut shell =
+        assemble_shell(StorageMode::DurableLocalStandard, branch, backend).expect("reopen shell");
+    let request =
+        LifecycleRecoveryRequest::from_open_plan(shell.open_plan()).expect("recovery request");
+    let recovery = LifecycleRecoveryRuntime::new(&mut shell)
+        .recover(&request)
+        .expect("recovery after frontier release");
+    shell.complete_recovery(&recovery).expect("reopen runtime");
 }

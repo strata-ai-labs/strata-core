@@ -1212,7 +1212,10 @@ fn durable_table_catalog_reserves_monotonic_sequences_without_double_advance() {
     // Confirming the reserved manifest's publish clears the debt but must NOT re-advance the
     // marker (the reservation already did). A second advance here would let a later publish
     // reuse a sequence and regress the durable manifest.
-    catalog.confirm_reserved_manifest_published();
+    catalog.confirm_reserved_manifest_published(
+        branch_id(0x77),
+        std::sync::Arc::new(std::collections::BTreeSet::new()),
+    );
     assert_eq!(
         catalog.next_manifest_sequence(),
         3,
@@ -2160,4 +2163,134 @@ impl Drop for HeldWriterLock {
     fn drop(&mut self) {
         self.locked.store(false, Ordering::SeqCst);
     }
+}
+
+/// #2553: the catalog's manifest-frontier bookkeeping — per-branch confirmed
+/// and pending object-name sets that the reclaim mark unions into its pinned
+/// set. Isolation across branches is load-bearing: the catalog-global
+/// `manifest_publish_pending` flag's masking mistake must not repeat here.
+#[test]
+fn durable_table_catalog_tracks_manifest_frontiers_per_branch() {
+    let backend: &'static ManifestRecoveryBackend =
+        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+    let branch_a = branch_id(0x51);
+    let branch_b = branch_id(0x52);
+    let table_a1 = publish_manifest_table(
+        backend,
+        branch_a,
+        BranchLevel::ZERO,
+        "frontier-a1",
+        &[put_row(branch_a, 21, b"frontier-a1", b"value")],
+    );
+    let table_a2 = publish_manifest_table(
+        backend,
+        branch_a,
+        BranchLevel::ZERO,
+        "frontier-a2",
+        &[put_row(branch_a, 22, b"frontier-a2", b"value")],
+    );
+    let table_other = publish_manifest_table(
+        backend,
+        branch_b,
+        BranchLevel::ZERO,
+        "frontier-b1",
+        &[put_row(branch_b, 23, b"frontier-b1", b"value")],
+    );
+    let object_a1 = table_a1.reference.object().clone();
+    let object_a2 = table_a2.reference.object().clone();
+    let object_other = table_other.reference.object().clone();
+    let manifest_for = |branch, sequence, reference: &TableManifestTableRef| {
+        TableManifest::new(
+            branch,
+            None,
+            sequence,
+            vec![
+                TableManifestLevel::new(BranchLevel::ZERO, vec![reference.clone()]).expect("level"),
+            ],
+            Vec::new(),
+            Vec::new(),
+        )
+        .expect("manifest")
+    };
+
+    let mut catalog = LifecycleDurableTableCatalog::new();
+    assert!(catalog.manifest_frontier_pinned_objects().is_empty());
+
+    // A durably-recorded manifest advances branch A's confirmed frontier.
+    catalog
+        .record_manifest(&manifest_for(branch_a, 1, &table_a1.reference))
+        .expect("record manifest a1");
+    assert_eq!(
+        catalog.manifest_frontier_pinned_objects(),
+        vec![object_a1.clone()]
+    );
+
+    // A pending publication protects its names ALONGSIDE the confirmed set.
+    let pending_a = std::sync::Arc::new(std::collections::BTreeSet::from([object_a2.clone()]));
+    catalog.record_pending_publication(branch_a, pending_a.clone());
+    let pinned = catalog.manifest_frontier_pinned_objects();
+    assert!(pinned.contains(&object_a1) && pinned.contains(&object_a2));
+
+    // Branch B's confirmed publish must not disturb branch A's sets.
+    catalog
+        .record_manifest(&manifest_for(branch_b, 2, &table_other.reference))
+        .expect("record manifest b1");
+    let pinned = catalog.manifest_frontier_pinned_objects();
+    assert!(
+        pinned.contains(&object_a1)
+            && pinned.contains(&object_a2)
+            && pinned.contains(&object_other),
+        "branch B's confirm must not clear branch A's frontier or pending sets",
+    );
+
+    // Confirming A's reserved publish swaps its frontier and clears its pending set.
+    catalog.confirm_reserved_manifest_published(branch_a, pending_a);
+    let pinned = catalog.manifest_frontier_pinned_objects();
+    assert!(
+        !pinned.contains(&object_a1)
+            && pinned.contains(&object_a2)
+            && pinned.contains(&object_other),
+        "a confirmed publish supersedes the prior frontier and its pending entry",
+    );
+
+    // Branch deletion drops both sets for that branch only.
+    catalog.clear_branch_frontier(branch_a);
+    assert_eq!(
+        catalog.manifest_frontier_pinned_objects(),
+        vec![object_other]
+    );
+}
+
+/// #2553: a manifest loaded during recovery seeds the confirmed frontier —
+/// the reclaim mark protects its listed objects from the first post-reopen
+/// sweep onward.
+#[test]
+fn recovered_manifest_seeds_the_confirmed_frontier() {
+    let backend: &'static ManifestRecoveryBackend =
+        Box::leak(Box::new(ManifestRecoveryBackend::new()));
+    let branch = branch_id(0x53);
+    let table = publish_manifest_table(
+        backend,
+        branch,
+        BranchLevel::ZERO,
+        "frontier-recovered",
+        &[put_row(branch, 24, b"frontier-recovered", b"value")],
+    );
+    let object = table.reference.object().clone();
+    let manifest = TableManifest::new(
+        branch,
+        None,
+        7,
+        vec![TableManifestLevel::new(BranchLevel::ZERO, vec![table.reference]).expect("level")],
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("manifest");
+
+    let mut catalog = LifecycleDurableTableCatalog::new();
+    catalog
+        .record_recovered_manifest(&manifest)
+        .expect("record recovered manifest");
+
+    assert_eq!(catalog.manifest_frontier_pinned_objects(), vec![object]);
 }
