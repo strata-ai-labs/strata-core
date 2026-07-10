@@ -591,6 +591,25 @@ impl<S> LifecycleCacheRuntime<S> {
     /// BS2.3: capture and publish a fresh snapshot for `branch_id` (under the runtime lock). The
     /// capture is O(#tables) refcount-bumps (BS2.1); on capture error — infallible on a well-formed
     /// post-mutation state — the prior snapshot is kept. Called at every branch mutation site.
+    /// Republish the branch snapshot when a commit's append auto-rotated the active
+    /// memtable (frozen count grew). Mirrors the durable runtime's helper of the same
+    /// name: rotation is a structural change, and the Model-2 published snapshot's
+    /// live-active handle stops covering new appends the moment the active is swapped.
+    fn republish_branch_snapshot_after_rotation(
+        &mut self,
+        branch_id: BranchId,
+        frozen_before: usize,
+    ) -> LifecycleResult<()> {
+        let frozen_after = self
+            .branch_catalog
+            .branch_state(branch_id)?
+            .frozen_table_count();
+        if frozen_after != frozen_before {
+            self.publish_branch_snapshot(branch_id);
+        }
+        Ok(())
+    }
+
     fn publish_branch_snapshot(&mut self, branch_id: BranchId) {
         let view = match self.branch_catalog.branch_state(branch_id) {
             Ok(state) => match state.capture_snapshot() {
@@ -2455,6 +2474,10 @@ where
             .generation();
         Self::require_generation_guard(branch_id, generation, generation_guard)?;
         Self::require_cache_commit_mode(&batch)?;
+        let frozen_before = self
+            .branch_catalog
+            .branch_state(branch_id)?
+            .frozen_table_count();
         if batch.kind() == CommitBatchKind::Mutating {
             self.require_no_unresolved_durable_commit()?;
             self.require_branch_commit_guard_available(branch_id)?;
@@ -2480,16 +2503,26 @@ where
             .map_err(commit_error)
         };
         if outcome.is_ok() {
+            // Commit-triggered auto-rotation is a STRUCTURAL change: per the Model-2 contract
+            // below, it must republish the snapshot in the same lock hold — the published
+            // view's live-active handle now points at the rotated-out (frozen) table, so later
+            // commits' rows in the fresh active would otherwise be invisible until the next
+            // structural publish (which a pure-commit cache workload may never perform; #2538
+            // lost every acknowledged row after the first rotation this way). Republish BEFORE
+            // advancing the atomic mirror so any reader observing the new visible version finds
+            // a covering snapshot (V-before-S).
+            self.republish_branch_snapshot_after_rotation(branch_id, frozen_before)?;
             // BS2.2: mirror the just-advanced visible version to the atomic (release) so off-lock
             // readers (BS2.4) observe it without the runtime lock. On the `applied_not_visible`
             // error path `outcome` is `Err`, so the atomic correctly does not advance.
             self.visible_commit_version
                 .store(self.visible.visible_version().as_u64(), Ordering::Release);
         }
-        // BS2.4 Model 2: commits do NOT republish the snapshot. The published snapshot holds the
-        // live (unpinned) active handle, so it already sees this commit's appends; each off-lock
-        // read pins the active at read time and bounds by the visible version. Only structural
-        // changes (rotation/flush/compaction/materialization/fork/lifecycle) republish.
+        // BS2.4 Model 2: commits do NOT republish the snapshot (except the rotation case above).
+        // The published snapshot holds the live (unpinned) active handle, so it already sees this
+        // commit's appends; each off-lock read pins the active at read time and bounds by the
+        // visible version. Only structural changes (rotation/flush/compaction/materialization/
+        // fork/lifecycle) republish.
         if outcome.is_ok()
             && self
                 .open_plan

@@ -447,3 +447,71 @@ fn open_cache_can_select_non_background_maintenance_policies_for_tests() {
         );
     }
 }
+
+/// #2538 regression: commits appended after a commit-triggered active-memtable
+/// rotation must stay readable through the published-snapshot read path.
+///
+/// The Model-2 published snapshot holds a live handle to the active memtable,
+/// so commits do not republish. Rotation swaps the active out; before the fix,
+/// the commit path rotated without republishing, so every acknowledged row
+/// after the first rotation was invisible to `read_point` (a permanent,
+/// contiguous tail in a pure-commit cache workload).
+///
+/// Rotation is legal only when the frozen pool (20% of the budget) can hold
+/// the rotated table (min(68% of budget, 64MB)), so the budget must be at
+/// least 320MB for one rotation; 400MB mirrors the engine's default split.
+/// Large values keep the row count (and test time) small.
+#[test]
+fn cache_commits_after_active_rotation_stay_readable() {
+    let budget = StorageMemoryBudget::new(400 * 1024 * 1024).expect("valid budget");
+    let runtime = StorageRuntime::open(StorageOpenOptions::cache().with_memory_budget(budget))
+        .expect("cache open")
+        .into_runtime();
+    let branch = StorageRuntime::default_branch_id_for_test();
+    let space = StorageSpaceId::new(vec![0x20]).expect("engine storage space");
+
+    // Rotation triggers at 64MB of approximate active bytes; 300 rows of
+    // 256KiB cross it with margin while the 80MB frozen pool holds the one
+    // rotated table.
+    let value = vec![0x42u8; 256 * 1024];
+    let total_rows = 300usize;
+    for index in 0..total_rows {
+        let key = StorageKey::new(format!("rotation-{index:06}").into_bytes()).expect("key");
+        let batch = CommitBatch::new(
+            branch,
+            vec![CommitMutation::Put {
+                storage_space: space.clone(),
+                key,
+                value: StorageValue::new(value.clone()),
+                ttl: None,
+            }],
+            CommitOptions::default(),
+        )
+        .expect("valid batch");
+        runtime
+            .commit(&batch)
+            .unwrap_or_else(|error| panic!("commit {index} acknowledged: {error:?}"));
+    }
+
+    let mut missing = Vec::new();
+    for index in 0..total_rows {
+        let key = StorageKey::new(format!("rotation-{index:06}").into_bytes()).expect("key");
+        let outcome = runtime
+            .read_point(&PointReadRequest::new(
+                branch,
+                space.clone(),
+                key,
+                ReadBound::Latest,
+            ))
+            .expect("read succeeds");
+        if outcome.row().is_none() {
+            missing.push(index);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "acknowledged rows unreadable after rotation: {} missing, first at {:?}",
+        missing.len(),
+        missing.first()
+    );
+}
