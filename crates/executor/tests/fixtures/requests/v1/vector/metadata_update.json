@@ -1,0 +1,8 @@
+{
+  "type": "vector_update_metadata",
+  "collection": "docs",
+  "key": "doc-a",
+  "patch": {
+    "rank": 2
+  }
+}

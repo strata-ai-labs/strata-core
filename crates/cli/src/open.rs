@@ -1,217 +1,86 @@
+//! Executor open helpers.
+
 use std::path::PathBuf;
 
-use clap::ArgMatches;
-use strata_executor::{AccessMode, Command, OpenOptions, Output, Session, Strata};
+use strata_executor::Executor;
 
-use crate::context::Context;
+use crate::CliError;
 
-pub(crate) struct OpenRequest {
-    db_path: Option<PathBuf>,
+/// How the invocation intends to use the database (first-run D2).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OpenIntent {
+    /// A single command: refuses to run without an explicit target.
+    OneShot,
+    /// An interactive TTY session: falls back to an ephemeral cache session.
+    Interactive,
+    /// A piped (non-TTY) session: refuses like one-shot commands — an agent
+    /// streaming commands must never write to an implicit location.
+    Pipe,
+}
+
+/// An opened executor plus how its target was chosen.
+pub(crate) struct OpenedExecutor {
+    pub(crate) executor: Executor,
+    /// True when a bare interactive invocation fell back to cache mode; the
+    /// caller prints the nothing-is-persisted banner.
+    pub(crate) implicit_cache: bool,
+}
+
+/// Resolves the database target: explicit flag/path, then the `STRATA_DB`
+/// environment variable, then intent-specific fallback. A one-shot or piped
+/// invocation with no target refuses with a teaching error instead of opening
+/// the current directory implicitly — agents run commands from arbitrary
+/// directories, and an accidental durable database in cwd is data loss
+/// waiting to happen.
+pub(crate) fn open_executor(
     cache: bool,
-    follower: bool,
-    read_only: bool,
-    initial_branch: Option<String>,
-    initial_space: Option<String>,
-}
-
-pub(crate) struct OpenedCli {
-    pub(crate) db: Strata,
-    pub(crate) session: Session,
-    pub(crate) context: Context,
-}
-
-impl OpenRequest {
-    pub(crate) fn from_matches(matches: &ArgMatches) -> Self {
-        Self {
-            db_path: matches.get_one::<String>("db").map(PathBuf::from),
-            cache: matches.get_flag("cache"),
-            follower: matches.get_flag("follower"),
-            read_only: matches.get_flag("read-only"),
-            initial_branch: matches.get_one::<String>("branch").cloned(),
-            initial_space: matches.get_one::<String>("space").cloned(),
+    db_flag: Option<PathBuf>,
+    db_path: Option<PathBuf>,
+    intent: OpenIntent,
+) -> Result<OpenedExecutor, CliError> {
+    if cache {
+        if db_flag.is_some() || db_path.is_some() {
+            return Err(CliError::usage(
+                "`--cache` cannot be combined with `--db` or a database path",
+            ));
         }
+        return Ok(OpenedExecutor {
+            executor: Executor::open_cache()?,
+            implicit_cache: false,
+        });
     }
 
-    #[cfg(test)]
-    pub(crate) fn new_for_test(
-        db_path: Option<PathBuf>,
-        cache: bool,
-        follower: bool,
-        read_only: bool,
-        initial_branch: Option<String>,
-        initial_space: Option<String>,
-    ) -> Self {
-        Self {
-            db_path,
-            cache,
-            follower,
-            read_only,
-            initial_branch,
-            initial_space,
+    let path = match (db_flag, db_path) {
+        (Some(_), Some(_)) => {
+            return Err(CliError::usage(
+                "provide either `--db <path>` or positional database path, not both",
+            ));
         }
-    }
-}
-
-pub(crate) fn open_cli(request: OpenRequest) -> Result<OpenedCli, String> {
-    let db = if request.cache {
-        Strata::cache().map_err(|error| format!("Failed to open cache database: {error}"))?
-    } else {
-        let mut options = OpenOptions::new();
-        if request.read_only || request.follower {
-            options = options.access_mode(AccessMode::ReadOnly);
-        }
-        if request.follower {
-            options = options.follower(true);
-        }
-
-        let path = request.db_path.unwrap_or_else(|| PathBuf::from(".strata"));
-        Strata::open_with(path, options)
-            .map_err(|error| format!("Failed to open database: {error}"))?
+        (Some(path), None) | (None, Some(path)) => Some(path),
+        (None, None) => env_database_path(),
     };
 
-    let default_branch = db.current_branch().to_string();
-    let branch = request
-        .initial_branch
-        .unwrap_or_else(|| default_branch.clone());
-    let space = request
-        .initial_space
-        .unwrap_or_else(|| "default".to_string());
-
-    let mut session = if request.cache && request.read_only {
-        Session::new_with_mode(db.database(), AccessMode::ReadOnly)
-    } else {
-        db.session()
-            .map_err(|error| format!("Failed to create session: {error}"))?
-    };
-    if !request.follower {
-        ensure_branch_exists(&mut session, &branch)?;
+    if let Some(path) = path {
+        return Ok(OpenedExecutor {
+            executor: Executor::open_durable_local(path)?,
+            implicit_cache: false,
+        });
     }
-    let context = Context::new(default_branch, branch, space);
 
-    Ok(OpenedCli {
-        db,
-        session,
-        context,
-    })
-}
-
-pub(crate) fn ensure_branch_exists(session: &mut Session, branch: &str) -> Result<(), String> {
-    match session
-        .execute(Command::BranchExists {
-            branch: branch.into(),
-        })
-        .map_err(|error| error.to_string())?
-    {
-        Output::Bool(true) => Ok(()),
-        Output::Bool(false) => Err(format!("Branch not found: {branch}")),
-        other => Err(format!(
-            "Unexpected output when checking branch existence: {other:?}"
+    match intent {
+        OpenIntent::Interactive => Ok(OpenedExecutor {
+            executor: Executor::open_cache()?,
+            implicit_cache: true,
+        }),
+        OpenIntent::OneShot | OpenIntent::Pipe => Err(CliError::usage(
+            "[invalid_argument.cli.no_database]: no database specified\n  hint: pass a path (strata ./mydb kv put …), set STRATA_DB, or use --cache for ephemeral",
         )),
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use tempfile::tempdir;
-
-    use super::{open_cli, OpenRequest};
-    use strata_executor::{Command, Error, Session, Strata, Value};
-
-    fn kv_put(session: &mut Session, branch: &str, space: &str) -> Result<(), Error> {
-        session.execute(Command::KvPut {
-            branch: Some(branch.into()),
-            space: Some(space.to_string()),
-            key: "k".to_string(),
-            value: Value::Int(1),
-        })?;
-        Ok(())
-    }
-
-    #[test]
-    fn cache_read_only_rejects_writes() {
-        let mut opened = open_cli(OpenRequest {
-            db_path: None,
-            cache: true,
-            follower: false,
-            read_only: true,
-            initial_branch: None,
-            initial_space: None,
-        })
-        .expect("cache open should succeed");
-
-        let error = kv_put(
-            &mut opened.session,
-            opened.context.branch(),
-            opened.context.space(),
-        )
-        .expect_err("write should be rejected");
-        assert!(matches!(error, Error::AccessDenied { .. }));
-    }
-
-    #[test]
-    fn disk_read_only_rejects_writes() {
-        let temp = tempdir().expect("tempdir should succeed");
-        let db = Strata::open(temp.path()).expect("db create should succeed");
-        db.close().expect("db close should succeed");
-
-        let mut opened = open_cli(OpenRequest {
-            db_path: Some(temp.path().to_path_buf()),
-            cache: false,
-            follower: false,
-            read_only: true,
-            initial_branch: None,
-            initial_space: None,
-        })
-        .expect("read-only open should succeed");
-
-        let error = kv_put(
-            &mut opened.session,
-            opened.context.branch(),
-            opened.context.space(),
-        )
-        .expect_err("write should be rejected");
-        assert!(matches!(error, Error::AccessDenied { .. }));
-    }
-
-    #[test]
-    fn follower_open_rejects_writes() {
-        let temp = tempdir().expect("tempdir should succeed");
-        let db = Strata::open(temp.path()).expect("db create should succeed");
-        db.close().expect("db close should succeed");
-
-        let mut opened = open_cli(OpenRequest {
-            db_path: Some(temp.path().to_path_buf()),
-            cache: false,
-            follower: true,
-            read_only: false,
-            initial_branch: None,
-            initial_space: None,
-        })
-        .expect("follower open should succeed");
-
-        let error = kv_put(
-            &mut opened.session,
-            opened.context.branch(),
-            opened.context.space(),
-        )
-        .expect_err("write should be rejected");
-        assert!(matches!(error, Error::AccessDenied { .. }));
-    }
-
-    #[test]
-    fn missing_initial_branch_is_rejected() {
-        let result = open_cli(OpenRequest {
-            db_path: None,
-            cache: true,
-            follower: false,
-            read_only: false,
-            initial_branch: Some("missing".to_string()),
-            initial_space: None,
-        });
-        let error = match result {
-            Ok(_) => panic!("missing branch should fail"),
-            Err(error) => error,
-        };
-        assert!(error.contains("Branch not found"));
-    }
+/// Reads the `STRATA_DB` fallback database target (empty means unset).
+pub(crate) fn env_database_path() -> Option<PathBuf> {
+    std::env::var_os("STRATA_DB")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }

@@ -1,5 +1,8 @@
 //! Embedding engine: text → dense vector embedding via llama.cpp.
 //!
+//! llama.cpp batch sizes are `i32`; casts at that boundary are the interface.
+#![allow(clippy::cast_possible_wrap)]
+//!
 //! [`EmbeddingEngine`] provides a high-level API for producing L2-normalized
 //! text embeddings from any supported GGUF embedding model.
 //!
@@ -13,6 +16,7 @@ use std::sync::Mutex;
 use tracing::info;
 
 use crate::llama::context::LlamaCppContext;
+use crate::llama::ffi::llama_api_lock;
 use crate::InferenceError;
 
 /// High-level embedding engine backed by llama.cpp.
@@ -109,6 +113,7 @@ impl EmbeddingEngine {
             .ctx
             .lock()
             .map_err(|e| InferenceError::LlamaCpp(format!("mutex poisoned: {}", e)))?;
+        let _api_guard = llama_api_lock();
 
         // 1. Tokenize
         let mut tokens = ctx.tokenize(text, true);
@@ -175,6 +180,10 @@ impl EmbeddingEngine {
     /// `get_embeddings` when `get_embeddings_seq` returns null. Per-sequence
     /// pooled embeddings are required, which is guaranteed when the context is
     /// created with `pooling_type = MEAN` (our default in `load_for_embedding`).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single linear sub-batching pipeline over the llama batch API"
+    )]
     pub fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, InferenceError> {
         if texts.is_empty() {
             return Ok(Vec::new());
@@ -187,6 +196,7 @@ impl EmbeddingEngine {
             .ctx
             .lock()
             .map_err(|e| InferenceError::LlamaCpp(format!("mutex poisoned: {}", e)))?;
+        let _api_guard = llama_api_lock();
 
         let n_embd = ctx.n_embd;
         let n_ctx = ctx.n_ctx;

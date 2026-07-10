@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "metadata": {
+    "timestamp": "2026-06-05T07:14:14Z",
+    "git_commit": "12d2790b",
+    "git_branch": "perf/storage-traces-fixes",
+    "git_dirty": true,
+    "sdk": "rust",
+    "sdk_version": "0.1.0",
+    "hardware": {
+      "cpu": "Apple M1 Pro",
+      "cores": 8,
+      "ram_gb": 16,
+      "os": "macos",
+      "arch": "aarch64"
+    }
+  },
+  "results": [
+    {
+      "benchmark": "storage-old-cache/load-seq",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "scale_keys": 10000000,
+        "branch_samples": 100,
+        "scan_limit": 64,
+        "load_phase_trace": {
+          "batch_build_ns": 2003653785,
+          "commit_call_ns": 33052812044
+        },
+        "value_bytes": 64,
+        "samples": 10000,
+        "batch_size": 1000,
+        "seed": 5860399455655764006,
+        "engine": "old-cache"
+      },
+      "metrics": {
+        "ops_per_sec": 285172.50209685724,
+        "avg_ns": 3506,
+        "samples": 10000000
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/point-latest",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "seed": 5860399455655764006,
+        "batch_size": 1000,
+        "branch_samples": 100,
+        "value_bytes": 64,
+        "engine": "old-cache",
+        "scale_keys": 10000000,
+        "samples": 10000,
+        "scan_limit": 64
+      },
+      "metrics": {
+        "ops_per_sec": 82090.62897380212,
+        "p50_ns": 8875,
+        "p95_ns": 31208,
+        "p99_ns": 53292,
+        "min_ns": 1250,
+        "max_ns": 292667,
+        "avg_ns": 12143,
+        "samples": 10000
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/point-latest-throughput",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "engine": "old-cache",
+        "seed": 5860399455655764006,
+        "scan_limit": 64,
+        "value_bytes": 64,
+        "scale_keys": 10000000,
+        "batch_size": 1000,
+        "samples": 10000,
+        "branch_samples": 100
+      },
+      "metrics": {
+        "ops_per_sec": 111430.28707294565,
+        "avg_ns": 8974,
+        "samples": 10000
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/scan-prefix",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "branch_samples": 100,
+        "batch_size": 1000,
+        "engine": "old-cache",
+        "scan_limit": 64,
+        "seed": 5860399455655764006,
+        "value_bytes": 64,
+        "scale_keys": 10000000,
+        "samples": 10000,
+        "perf_trace": {
+          "kv_scan_calls": 10000,
+          "kv_scan_iter_create_ns": 2531375,
+          "kv_scan_map_ns": 15522852,
+          "kv_scan_next_ns": 450053552,
+          "kv_scan_rows_returned": 640000,
+          "kv_scan_seek_ns": 189579590,
+          "storage_iterator_pipeline_builds": 10000,
+          "storage_iterator_rows_yielded": 640000,
+          "storage_iterator_seeks": 10000
+        }
+      },
+      "metrics": {
+        "ops_per_sec": 13866.60200466775,
+        "p50_ns": 69625,
+        "p95_ns": 91833,
+        "p99_ns": 107375,
+        "min_ns": 52250,
+        "max_ns": 218250,
+        "avg_ns": 72078,
+        "samples": 10000
+      }
+    },
+    {
+      "benchmark": "storage-old-cache/scan-range-throughput",
+      "category": "storage-old-cache-scale",
+      "parameters": {
+        "seed": 5860399455655764006,
+        "scan_limit": 64,
+        "value_bytes": 64,
+        "engine": "old-cache",
+        "batch_size": 1000,
+        "samples": 10000,
+        "branch_samples": 100,
+        "perf_trace": {
+          "kv_scan_calls": 10000,
+          "kv_scan_iter_create_ns": 2805109,
+          "kv_scan_map_ns": 15617297,
+          "kv_scan_next_ns": 688307847,
+          "kv_scan_rows_returned": 640000,
+          "kv_scan_seek_ns": 239551941,
+          "storage_iterator_pipeline_builds": 10000,
+          "storage_iterator_rows_yielded": 640000,
+          "storage_iterator_seeks": 10000
+        },
+        "scale_keys": 10000000
+      },
+      "metrics": {
+        "ops_per_sec": 9867.51991111338,
+        "avg_ns": 101342,
+        "samples": 10000
+      }
+    }
+  ]
+}

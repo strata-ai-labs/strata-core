@@ -1,12 +1,16 @@
 //! Local generation provider backed by llama.cpp.
 //!
+//! llama.cpp speaks `i32` token ids and counts; the casts at this boundary
+//! are the interface, not accidents.
+#![allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
+//!
 //! [`LocalProvider`] wraps a [`LlamaCppContext`] loaded for generation and
 //! implements the autoregressive decode loop with sampler chain support.
 
 use std::path::Path;
 
 use crate::llama::context::LlamaCppContext;
-use crate::llama::ffi::*;
+use crate::llama::ffi::{llama_api_lock, LlamaSampler};
 use crate::{GenerateRequest, GenerateResponse, InferenceError, StopReason};
 
 /// Local generation provider using llama.cpp.
@@ -19,7 +23,7 @@ pub(crate) struct LocalProvider {
 
 impl LocalProvider {
     /// Load from a GGUF file with an optional context size override.
-    pub fn from_gguf(path: &Path, ctx_size: Option<usize>) -> Result<Self, InferenceError> {
+    pub(crate) fn from_gguf(path: &Path, ctx_size: Option<usize>) -> Result<Self, InferenceError> {
         let ctx = LlamaCppContext::load_for_generation(path, ctx_size)?;
         Ok(Self { ctx })
     }
@@ -35,10 +39,12 @@ impl LocalProvider {
     /// 6. Autoregressive decode loop with stop condition checks
     /// 7. Cleanup (free sampler, clear memory)
     /// 8. Detokenize and return response
-    pub fn generate(
+    pub(crate) fn generate(
         &mut self,
         request: &GenerateRequest,
     ) -> Result<GenerateResponse, InferenceError> {
+        let _api_guard = llama_api_lock();
+
         // 1. Tokenize prompt
         let mut prompt_tokens = self.ctx.tokenize(&request.prompt, true);
         let prompt_token_count = prompt_tokens.len();
@@ -186,7 +192,7 @@ impl LocalProvider {
             self.ctx
                 .api
                 .sampler_chain_add(chain, self.ctx.api.sampler_init_temp(request.temperature));
-            let seed = request.seed.unwrap_or(0xFFFFFFFF) as u32;
+            let seed = request.seed.unwrap_or(0xFFFF_FFFF) as u32;
             self.ctx
                 .api
                 .sampler_chain_add(chain, self.ctx.api.sampler_init_dist(seed));
@@ -196,7 +202,8 @@ impl LocalProvider {
     }
 
     /// Encode text to token IDs using the model's tokenizer.
-    pub fn encode(&self, text: &str, add_special: bool) -> Vec<u32> {
+    pub(crate) fn encode(&self, text: &str, add_special: bool) -> Vec<u32> {
+        let _api_guard = llama_api_lock();
         self.ctx
             .tokenize(text, add_special)
             .into_iter()
@@ -205,18 +212,19 @@ impl LocalProvider {
     }
 
     /// Decode token IDs back to text using the model's tokenizer.
-    pub fn decode(&self, ids: &[u32]) -> String {
+    pub(crate) fn decode(&self, ids: &[u32]) -> String {
+        let _api_guard = llama_api_lock();
         let i32_ids: Vec<i32> = ids.iter().map(|&id| id as i32).collect();
         self.ctx.detokenize(&i32_ids)
     }
 
     /// The vocabulary size of the loaded model.
-    pub fn vocab_size(&self) -> usize {
+    pub(crate) fn vocab_size(&self) -> usize {
         self.ctx.vocab_size
     }
 
     /// The context size of the loaded model.
-    pub fn context_size(&self) -> usize {
+    pub(crate) fn context_size(&self) -> usize {
         self.ctx.n_ctx
     }
 }

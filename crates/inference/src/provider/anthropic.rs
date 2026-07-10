@@ -24,7 +24,7 @@ impl std::fmt::Debug for AnthropicProvider {
 }
 
 impl AnthropicProvider {
-    pub fn new(api_key: String, model: String) -> Result<Self, InferenceError> {
+    pub(crate) fn new(api_key: String, model: String) -> Result<Self, InferenceError> {
         if api_key.trim().is_empty() {
             return Err(InferenceError::Provider(
                 "Anthropic API key is empty".to_string(),
@@ -38,7 +38,10 @@ impl AnthropicProvider {
         Ok(Self { api_key, model })
     }
 
-    pub fn generate(&self, request: &GenerateRequest) -> Result<GenerateResponse, InferenceError> {
+    pub(crate) fn generate(
+        &self,
+        request: &GenerateRequest,
+    ) -> Result<GenerateResponse, InferenceError> {
         if request.max_tokens == 0 {
             return Err(InferenceError::Provider(
                 "max_tokens must be greater than 0".to_string(),
@@ -67,7 +70,7 @@ impl AnthropicProvider {
         parse_response_json(&response_body)
     }
 
-    pub fn model(&self) -> &str {
+    pub(crate) fn model(&self) -> &str {
         &self.model
     }
 }

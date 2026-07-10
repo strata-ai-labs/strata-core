@@ -1,0 +1,14 @@
+{
+  "type": "version_history",
+  "data": {
+    "count": 1,
+    "items": [
+      {
+        "value": "b25l",
+        "tombstone": false,
+        "version": 1,
+        "timestamp": 10
+      }
+    ]
+  }
+}

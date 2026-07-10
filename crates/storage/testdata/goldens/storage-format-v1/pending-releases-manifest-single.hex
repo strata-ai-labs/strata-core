@@ -1,0 +1,5 @@
+# PendingReleasesManifest carrying a single branch release with one table identity.
+# branch_id [0x21; 16], released_tables = ["table-alpha"], sequence 5.
+5354505201000000cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd0500000000000000
+0100000021212121212121212121212121212121010000000b0000007461626c
+652d616c7068612e5f5453

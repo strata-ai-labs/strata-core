@@ -1,0 +1,35 @@
+{
+  "type": "vector_batch_get_results",
+  "data": {
+    "mode": "itemwise",
+    "status": "ok",
+    "applied": false,
+    "commit": null,
+    "items": [
+      {
+        "index": 0,
+        "status": "ok",
+        "applied": false,
+        "effect": null,
+        "commit": null,
+        "result": {
+          "found": true,
+          "value": {
+            "key": "doc-a",
+            "data": {
+              "embedding": [
+                1.0,
+                0.0
+              ]
+            },
+            "version": 1,
+            "timestamp": 10,
+            "vector_revision": 1
+          },
+          "error": null
+        },
+        "error": null
+      }
+    ]
+  }
+}

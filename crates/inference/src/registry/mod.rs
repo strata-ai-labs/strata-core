@@ -27,10 +27,14 @@ use std::path::{Path, PathBuf};
 use crate::error::InferenceError;
 
 /// What a model is designed for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ModelTask {
+    /// Embedding model.
     Embed,
+    /// Text generation model.
     Generate,
+    /// Passage ranking model.
     Rank,
 }
 
@@ -80,16 +84,25 @@ pub struct CatalogEntry {
 }
 
 /// Information about a resolved model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ModelInfo {
+    /// Stable model catalog name.
     pub name: String,
+    /// Model task type.
     pub task: ModelTask,
+    /// Model architecture family.
     pub architecture: String,
+    /// Default quantization variant.
     pub default_quant: String,
+    /// Embedding dimension, or zero for non-embedding models.
     pub embedding_dim: usize,
+    /// Whether the model artifact is present locally.
     pub is_local: bool,
+    /// Local GGUF path when present.
     pub local_path: Option<PathBuf>,
+    /// Approximate model artifact size in bytes.
     pub size_bytes: u64,
+    /// HuggingFace repository for the model artifact.
     pub hf_repo: String,
 }
 

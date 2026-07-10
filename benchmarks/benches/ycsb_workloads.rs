@@ -404,3 +404,88 @@ fn fnv_hash(mut val: u64) -> u64 {
 pub fn ycsb_key(index: usize) -> String {
     format!("user{:010}", index)
 }
+
+// ---------------------------------------------------------------------------
+// Value payloads
+// ---------------------------------------------------------------------------
+
+/// Fill pattern for generated values.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ValueFill {
+    /// Constant bytes. Compresses ~perfectly, so an engine with block
+    /// compression stores the dataset at a fraction of its logical size and
+    /// cross-engine cells stop being comparable. Kept for A/B quantification
+    /// against historical ledger rows.
+    Constant,
+    /// Unique seeded-random bytes per value (splitmix64) — incompressible,
+    /// matching standard YCSB's random field payloads. The default.
+    Random,
+}
+
+impl ValueFill {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "constant" => Some(Self::Constant),
+            "random" => Some(Self::Random),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Constant => "constant",
+            Self::Random => "random",
+        }
+    }
+}
+
+/// Generate the payload for one value. `stream` separates load/insert values
+/// (0) from run-phase update values (1); `index` is the record index for
+/// loads/inserts and a per-run update counter for updates. Every `Random`
+/// value is unique — repeated payloads inside a block would hand block
+/// compressors their win back even with random bytes.
+pub fn ycsb_value(fill: ValueFill, stream: u64, index: u64, len: usize) -> Vec<u8> {
+    match fill {
+        // 0x42 load / 0x43 update preserved from the pre-C1 harness so
+        // `constant` cells stay comparable to historical ledger rows.
+        ValueFill::Constant => vec![0x42u8 + stream as u8; len],
+        ValueFill::Random => {
+            let mut state = index ^ (stream << 62);
+            let mut value = Vec::with_capacity(len);
+            while value.len() < len {
+                // splitmix64 step
+                state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = state;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^= z >> 31;
+                let take = (len - value.len()).min(8);
+                value.extend_from_slice(&z.to_le_bytes()[..take]);
+            }
+            value
+        }
+    }
+}
+
+/// Total bytes of regular files under `path`, recursive. Best-effort: walk
+/// errors are skipped so a mid-compaction file swap cannot kill a bench run.
+pub fn dir_size_bytes(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total += metadata.len();
+            }
+        }
+    }
+    total
+}

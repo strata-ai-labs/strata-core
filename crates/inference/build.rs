@@ -1,3 +1,5 @@
+//! Build script for the optional llama.cpp local inference backend.
+
 fn main() {
     #[cfg(feature = "local")]
     build_llama_cpp();
@@ -16,7 +18,15 @@ fn build_llama_cpp() {
         return;
     }
 
-    let mut config = cmake::Config::new("vendor/llama.cpp");
+    let llama_cpp_dir = llama_cpp_dir();
+    assert!(
+        llama_cpp_dir.join("CMakeLists.txt").exists(),
+        "llama.cpp source not found at {}. Set STRATA_LLAMA_CPP_DIR to a \
+         populated llama.cpp checkout before building with --features local",
+        llama_cpp_dir.display()
+    );
+
+    let mut config = cmake::Config::new(&llama_cpp_dir);
 
     config
         .define("BUILD_SHARED_LIBS", "OFF")
@@ -106,7 +116,23 @@ fn build_llama_cpp() {
         println!("cargo:rustc-link-lib=framework=MetalKit");
     }
 
-    println!("cargo:rerun-if-changed=vendor/llama.cpp/CMakeLists.txt");
+    println!(
+        "cargo:rerun-if-changed={}",
+        llama_cpp_dir.join("CMakeLists.txt").display()
+    );
+    println!("cargo:rerun-if-env-changed=STRATA_LLAMA_CPP_DIR");
+}
+
+#[cfg(feature = "local")]
+fn llama_cpp_dir() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("STRATA_LLAMA_CPP_DIR") {
+        return std::path::PathBuf::from(path);
+    }
+
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo"),
+    );
+    manifest_dir.join("vendor").join("llama.cpp")
 }
 
 /// Check if CUDA toolkit is available by looking for `nvcc`.

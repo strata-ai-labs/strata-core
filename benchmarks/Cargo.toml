@@ -9,64 +9,93 @@ autobins = false
 
 [features]
 default = []
-embed = ["stratadb/embed"]
+rocksdb-compare = ["dep:rocksdb"]
 
 [dependencies]
-stratadb = { path = ".." }
-strata-core = { path = "../crates/core" }
-strata-engine = { path = "../crates/engine" }
-# Required only for the B6 materialize smoke in `src/bin/regression.rs`:
-# the benchmark opens a fresh engine `Database` rather than reusing the
-# `Strata` executor, which does not expose `storage().materialize_layer`.
-# The engine-owned graph/vector/search subsystems preserve the product runtime
-# hooks needed by that direct engine open.
+strata-engine = { path = "../crates/engine", features = ["testkit"] }
+strata-storage = { path = "../crates/storage", features = ["perf-trace"] }
 serde = { version = "1.0", features = ["derive"] }
+# The old root `stratadb` package (a bench dependency until the V1 cutover)
+# installed jemalloc as the global allocator, so every recorded benchmark
+# number is a jemalloc number. Pin it here explicitly to keep the instrument
+# comparable across the cutover — glibc malloc costs ~25% on the write path.
+tikv-jemallocator = { version = "0.6", features = ["profiling"] }
+# Live allocator gauges for the RSS-attribution probe (roadmap-v2 T4): the
+# allocated/active/resident/retained split separates app-held memory from
+# allocator retention per benchmark phase.
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
+
 serde_json = "1.0"
 tempfile = "3.8"
 fastrand = "2.0.0"
 chrono = "0.4"
+rocksdb = { version = "0.22.0", default-features = false, features = [
+    "lz4",
+], optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-redb = "2"
-heed = "0.22"
-rocksdb = { version = "0.22.0", default-features = false, features = ["lz4"] }
-sled = "0.34.7"
-fjall = "=2.11"
-rusqlite = { version = "0.32", features = ["bundled"] }
-ctrlc = "3.2.3"
-env_logger = "0.11"
-comfy-table = "7.0.1"
 byte-unit = "5.1.6"
 walkdir = "2.5.0"
 hex = "0.4"
-
-[[bench]]
-name = "redb_benchmark"
-path = "benches/redb_benchmark.rs"
-harness = false
-
-[[bench]]
-name = "ycsb_compare"
-path = "benches/ycsb_compare.rs"
-harness = false
-
-[[bench]]
-name = "wal_latency"
-path = "benches/wal_latency.rs"
-harness = false
-
-[[bin]]
-name = "beir"
-path = "src/bin/beir.rs"
 
 [[bin]]
 name = "bench-compare"
 path = "src/bin/compare.rs"
 
 [[bin]]
-name = "regression"
-path = "src/bin/regression.rs"
+name = "storage-l9-scale"
+path = "src/bin/storage_next_l9_scale.rs"
+
+[[bin]]
+name = "storage-point-spike"
+path = "src/bin/storage_next_point_spike.rs"
+
+[[bin]]
+name = "storage-concurrent-writers"
+path = "src/bin/storage_next_concurrent_writers.rs"
+
+[[bin]]
+name = "storage-concurrent-reads"
+path = "src/bin/storage_next_concurrent_reads.rs"
+
+[[bin]]
+name = "engine-kv-scan-regression"
+path = "src/bin/engine_kv_scan_regression.rs"
+
+[[bin]]
+name = "engine-kv-scale"
+path = "src/bin/engine_kv_scale.rs"
+
+[[bin]]
+name = "engine-ycsb"
+path = "src/bin/engine_ycsb.rs"
+
+[[bin]]
+name = "amp-repro"
+path = "src/bin/amp_repro.rs"
+
+[[bin]]
+name = "rocksdb-ycsb"
+path = "src/bin/rocksdb_ycsb.rs"
+required-features = ["rocksdb-compare"]
+
+[[bin]]
+name = "engine-vector-indexing"
+path = "src/bin/engine_vector_indexing.rs"
+
+[[bin]]
+name = "storage-after-version-scan"
+path = "src/bin/storage_next_after_version_scan.rs"
+
+[[bin]]
+name = "storage-l0-compact"
+path = "src/bin/storage_next_l0_compact.rs"
 
 [profile.bench]
 debug = true
+
+# Explicit standalone-workspace root. A no-op in the main checkout (the root manifest already
+# excludes `benchmarks/`), but required for git worktrees: without it, cargo walks up past the
+# worktree and resolves against the ORIGINAL checkout's root manifest, whose `exclude`
+# entries don't match the worktree path — "current package believes it's in a workspace".
+[workspace]

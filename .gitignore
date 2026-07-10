@@ -4,6 +4,7 @@
 # Rust
 target/
 Cargo.lock
+!crates/storage-next/fuzz/Cargo.lock
 *.rs.bk
 
 # IDE
@@ -16,11 +17,30 @@ Cargo.lock
 *.o
 *.so
 *.dylib
+crates/wasm-next/www/pkg/
+/test
+.benchmark/
+benchmarks/results/
+!benchmarks/results/
+benchmarks/results/*
+!benchmarks/results/storage-next-l9/
+benchmarks/results/storage-next-l9/*
+!benchmarks/results/storage-next-l9/storage-next-l9-scale-2026-06-05T07-13-25Z-12d2790b.json
+!benchmarks/results/storage-next-l9/storage-next-l9-scale-2026-06-05T13-19-49Z-12d2790b.json
+!benchmarks/results/storage-next-l9/storage-next-l9-scale-2026-06-08T02-08-53Z-7d124aeb.json
+!benchmarks/results/storage-next-l9/storage-next-l9-scale-2026-06-08T02-09-28Z-7d124aeb.json
+!benchmarks/results/storage-old-cache/
+benchmarks/results/storage-old-cache/*
+!benchmarks/results/storage-old-cache/storage-old-cache-scale-2026-06-05T06-57-50Z-12d2790b.json
+!benchmarks/results/storage-old-cache/storage-old-cache-scale-2026-06-05T07-14-14Z-12d2790b.json
 
 # Working documents (superseded by final docs)
 AGENT_MENTAL_MODEL.md
 ARCHITECTURE.md
 architecture-plan.md
+
+# Old-CLI cwd-relative database artifacts (testing the frozen main binary)
+.strata/
 
 # Claude Code and local development
 .claude
@@ -37,10 +57,3 @@ all-MiniLM-L6-v2/
 stratadb.org/
 
 .env
-/docs/*
-!/docs/core/
-!/docs/core/*.md
-!/docs/engine/
-!/docs/engine/*.md
-!/docs/storage/
-!/docs/storage/*.md

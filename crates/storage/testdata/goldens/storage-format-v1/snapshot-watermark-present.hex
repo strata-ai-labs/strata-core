@@ -1,0 +1,10 @@
+# format: snapshot_watermark
+# has_data: true
+# snapshot_id: 3
+# watermark_commit_version: 42
+# updated_at_micros: 1700000000123456
+# hex:
+01
+03 00 00 00 00 00 00 00
+2a 00 00 00 00 00 00 00
+40 22 20 18 24 0a 06 00

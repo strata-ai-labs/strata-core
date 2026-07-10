@@ -1,0 +1,13 @@
+families:
+  - id: kv
+    docs: /docs/kv/{op_path}
+    errors:
+      - invalid_argument.engine.product_space
+      - invalid_argument.engine.kv_key
+  - id: vector
+    docs: /docs/vector/{op_path}
+    errors:
+      - invalid_argument.engine.product_space
+      - invalid_argument.engine.vector_collection
+      - invalid_argument.engine.vector_key
+      - not_found.executor.vector_collection

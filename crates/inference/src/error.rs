@@ -1,27 +1,299 @@
+use std::error::Error;
+use std::fmt;
+
+use serde::ser::Serializer;
+
 /// Errors that can occur during inference operations.
 #[non_exhaustive]
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Clone, PartialEq, Eq, serde::Deserialize)]
 pub enum InferenceError {
-    #[error("llama.cpp: {0}")]
+    /// Local llama.cpp runtime failure.
     LlamaCpp(String),
 
-    #[error("provider error: {0}")]
+    /// Cloud provider failure.
     Provider(String),
 
-    #[error("registry error: {0}")]
+    /// Model registry or model download failure.
     Registry(String),
 
-    #[error("IO error: {0}")]
+    /// Filesystem or process IO failure.
     Io(String),
 
-    #[error("not supported: {0}")]
+    /// Requested provider, model, or operation is unavailable.
     NotSupported(String),
+}
+
+impl fmt::Debug for InferenceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LlamaCpp(message) => formatter
+                .debug_tuple("LlamaCpp")
+                .field(&redact_secrets(message))
+                .finish(),
+            Self::Provider(message) => formatter
+                .debug_tuple("Provider")
+                .field(&redact_secrets(message))
+                .finish(),
+            Self::Registry(message) => formatter
+                .debug_tuple("Registry")
+                .field(&redact_secrets(message))
+                .finish(),
+            Self::Io(message) => formatter
+                .debug_tuple("Io")
+                .field(&redact_secrets(message))
+                .finish(),
+            Self::NotSupported(message) => formatter
+                .debug_tuple("NotSupported")
+                .field(&redact_secrets(message))
+                .finish(),
+        }
+    }
+}
+
+impl fmt::Display for InferenceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LlamaCpp(message) => write!(formatter, "llama.cpp: {}", redact_secrets(message)),
+            Self::Provider(message) => {
+                write!(formatter, "provider error: {}", redact_secrets(message))
+            }
+            Self::Registry(message) => {
+                write!(formatter, "registry error: {}", redact_secrets(message))
+            }
+            Self::Io(message) => write!(formatter, "IO error: {}", redact_secrets(message)),
+            Self::NotSupported(message) => {
+                write!(formatter, "not supported: {}", redact_secrets(message))
+            }
+        }
+    }
+}
+
+impl serde::Serialize for InferenceError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::LlamaCpp(message) => serializer.serialize_newtype_variant(
+                "InferenceError",
+                0,
+                "LlamaCpp",
+                &redact_secrets(message),
+            ),
+            Self::Provider(message) => serializer.serialize_newtype_variant(
+                "InferenceError",
+                1,
+                "Provider",
+                &redact_secrets(message),
+            ),
+            Self::Registry(message) => serializer.serialize_newtype_variant(
+                "InferenceError",
+                2,
+                "Registry",
+                &redact_secrets(message),
+            ),
+            Self::Io(message) => serializer.serialize_newtype_variant(
+                "InferenceError",
+                3,
+                "Io",
+                &redact_secrets(message),
+            ),
+            Self::NotSupported(message) => serializer.serialize_newtype_variant(
+                "InferenceError",
+                4,
+                "NotSupported",
+                &redact_secrets(message),
+            ),
+        }
+    }
+}
+
+impl Error for InferenceError {}
+
+/// Stable inference error class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InferenceErrorClass {
+    /// Caller supplied invalid input.
+    InvalidInput,
+    /// Requested model/provider is not available.
+    NotFound,
+    /// Required provider, model, or runtime is unavailable.
+    Unavailable,
+    /// Operation can be retried without changing user input.
+    Retryable,
+    /// Stored or downloaded model data is corrupt.
+    Corruption,
+    /// Internal runtime failure.
+    Internal,
 }
 
 impl From<std::io::Error> for InferenceError {
     fn from(e: std::io::Error) -> Self {
         InferenceError::Io(e.to_string())
     }
+}
+
+impl InferenceError {
+    /// Returns the stable public error code.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::LlamaCpp(message) => llama_code(message),
+            Self::Provider(message) => provider_code(message),
+            Self::Registry(message) => registry_code(message),
+            Self::Io(_) => "inference.io_failure",
+            Self::NotSupported(message) => not_supported_code(message),
+        }
+    }
+
+    /// Returns the stable public error class.
+    pub fn class(&self) -> InferenceErrorClass {
+        match self.code() {
+            "inference.invalid_request"
+            | "inference.unsupported_parameter"
+            | "inference.download_disabled" => InferenceErrorClass::InvalidInput,
+            "inference.missing_model" | "inference.unsupported_provider" => {
+                InferenceErrorClass::NotFound
+            }
+            "inference.provider_rate_limited" | "inference.provider_timeout" => {
+                InferenceErrorClass::Retryable
+            }
+            "inference.download_verification_failed"
+            | "inference.registry_corrupt"
+            | "inference.provider_malformed_response" => InferenceErrorClass::Corruption,
+            "inference.local_runtime_failed" | "inference.io_failure" => {
+                InferenceErrorClass::Internal
+            }
+            _ => InferenceErrorClass::Unavailable,
+        }
+    }
+
+    /// Returns whether retrying without changing input may succeed.
+    pub fn retryable(&self) -> bool {
+        matches!(
+            self.code(),
+            "inference.provider_rate_limited"
+                | "inference.provider_timeout"
+                | "inference.provider_unavailable"
+                | "inference.download_failed"
+                | "inference.io_failure"
+        )
+    }
+
+    /// Returns the public redacted message.
+    pub fn public_message(&self) -> String {
+        redact_secrets(&self.to_string())
+    }
+}
+
+fn llama_code(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("load") || lower.contains("not found") || lower.contains("no such file") {
+        "inference.model_load_failed"
+    } else {
+        "inference.local_runtime_failed"
+    }
+}
+
+fn provider_code(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    let mentions_api_key =
+        lower.contains("api key") || lower.contains("api_key") || lower.contains("_api_key");
+    if lower.contains("invalid request") || lower.contains("bad request") || lower.contains("400") {
+        "inference.invalid_request"
+    } else if mentions_api_key && (lower.contains("not set") || lower.contains("empty")) {
+        "inference.missing_api_key"
+    } else if lower.contains("invalid api key")
+        || lower.contains("auth")
+        || lower.contains("401")
+        || lower.contains("403")
+    {
+        "inference.provider_auth_failed"
+    } else if lower.contains("rate limit") || lower.contains("429") {
+        "inference.provider_rate_limited"
+    } else if lower.contains("timeout") || lower.contains("timed out") {
+        "inference.provider_timeout"
+    } else if lower.contains("500")
+        || lower.contains("502")
+        || lower.contains("503")
+        || lower.contains("unavailable")
+    {
+        "inference.provider_unavailable"
+    } else if lower.contains("invalid json")
+        || lower.contains("missing")
+        || lower.contains("empty choices")
+        || lower.contains("empty candidates")
+        || lower.contains("malformed")
+    {
+        "inference.provider_malformed_response"
+    } else if lower.contains("unsupported") {
+        "inference.unsupported_parameter"
+    } else {
+        "inference.provider_unavailable"
+    }
+}
+
+fn registry_code(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("unknown model") || lower.contains("not found locally") {
+        "inference.missing_model"
+    } else if lower.contains("download disabled") || lower.contains("network access") {
+        "inference.download_disabled"
+    } else if lower.contains("sha-256") || lower.contains("hash mismatch") {
+        "inference.download_verification_failed"
+    } else if lower.contains("download") {
+        "inference.download_failed"
+    } else if lower.contains("corrupt") {
+        "inference.registry_corrupt"
+    } else {
+        "inference.registry_corrupt"
+    }
+}
+
+fn not_supported_code(message: &str) -> &'static str {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("provider") {
+        "inference.unsupported_provider"
+    } else if lower.contains("parameter") || lower.contains("knob") {
+        "inference.unsupported_parameter"
+    } else if lower.contains("download") {
+        "inference.download_disabled"
+    } else {
+        "inference.unsupported_operation"
+    }
+}
+
+fn redact_secrets(message: &str) -> String {
+    let mut redacted = String::with_capacity(message.len());
+    let mut index = 0;
+    while index < message.len() {
+        let rest = &message[index..];
+        let lower = rest.to_ascii_lowercase();
+        let secret_prefix = ["sk-ant", "sk_ant", "sk-", "aiza"]
+            .iter()
+            .find(|prefix| lower.starts_with(**prefix));
+        if secret_prefix.is_some() {
+            redacted.push_str("[REDACTED]");
+            index += secret_len(rest);
+            continue;
+        }
+
+        let ch = rest
+            .chars()
+            .next()
+            .expect("index is within string boundary");
+        redacted.push(ch);
+        index += ch.len_utf8();
+    }
+    redacted
+}
+
+fn secret_len(value: &str) -> usize {
+    value
+        .char_indices()
+        .take_while(|(_, ch)| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+        .last()
+        .map_or(value.len(), |(index, ch)| index + ch.len_utf8())
 }
 
 #[cfg(test)]

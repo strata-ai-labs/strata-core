@@ -1,0 +1,8 @@
+# BranchCatalogManifest with two entries: one Active, one Deleted.
+# database_id [0xAB; 16], manifest_sequence 7.
+# Entry 1: branch [0x10; 16], generation 1, status Active (no parent/created_at/deleted_at).
+# Entry 2: branch [0x22; 16], generation 4, status Deleted, deleted_at 11.
+5354424301000000abababababababababababababababab0700000000000000
+0200000010101010101010101010101010101010010000000000000000000000
+0000000000002222222222222222222222222222222204000000000000000104
+00000000000000000b000000000000006f9dc0aa

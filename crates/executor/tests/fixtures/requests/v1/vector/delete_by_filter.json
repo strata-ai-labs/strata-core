@@ -1,0 +1,16 @@
+{
+  "type": "vector_delete_by_filter",
+  "collection": "docs",
+  "filter": {
+    "conditions": [
+      {
+        "field": "kind",
+        "op": "eq",
+        "value": {
+          "type": "string",
+          "value": "doc"
+        }
+      }
+    ]
+  }
+}

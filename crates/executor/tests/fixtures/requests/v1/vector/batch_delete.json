@@ -1,0 +1,8 @@
+{
+  "type": "vector_batch_delete",
+  "collection": "docs",
+  "keys": [
+    "doc-a",
+    "missing"
+  ]
+}

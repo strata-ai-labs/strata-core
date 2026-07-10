@@ -5,8 +5,28 @@
 //! once and runs layout probes, then returns a zero-sized handle whose methods
 //! call directly into the extern symbols.
 
+// The llama.cpp C API speaks i32 lengths and mutable pointers; the casts
+// at this boundary are the interface, not accidents.
+#![allow(dead_code, missing_docs, unreachable_pub)]
+#![allow(clippy::cast_possible_wrap, clippy::ptr_as_ptr)]
+
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_void};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+static LLAMA_API_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+/// Serializes calls into llama.cpp.
+///
+/// The C API exposes process-global backend state, and some backend paths
+/// (notably Metal model loading) are not safe to exercise concurrently even
+/// when contexts are independent.
+pub(crate) fn llama_api_lock() -> MutexGuard<'static, ()> {
+    LLAMA_API_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 // ---------------------------------------------------------------------------
 // llama.cpp C types
@@ -142,7 +162,7 @@ unsafe extern "C" fn shim_get_memory(ctx: LlamaContext) -> LlamaMemory {
 
 /// Calls llama_kv_self_clear with the ctx pointer (passed as mem).
 unsafe extern "C" fn shim_memory_clear(mem: LlamaMemory, _data: bool) {
-    llama_kv_self_clear(mem as LlamaContext);
+    unsafe { llama_kv_self_clear(mem as LlamaContext) };
 }
 
 extern "C" {
@@ -242,7 +262,10 @@ extern "C" {
 
 /// Handle to the statically linked llama.cpp API.
 ///
-/// Created once via [`LlamaCppApi::load()`]. `Drop` calls `llama_backend_free()`.
+/// [`LlamaCppApi::load()`] initializes the process-wide llama.cpp backend once.
+/// Model and context handles are still freed explicitly, but the backend itself
+/// stays initialized for the lifetime of the process because llama.cpp exposes
+/// global backend state that can be shared by independently-created contexts.
 ///
 /// The struct is zero-sized — all methods call directly into extern symbols.
 pub struct LlamaCppApi {
@@ -594,12 +617,6 @@ impl LlamaCppApi {
             return Err("llama_sampler_init_grammar returned null (invalid grammar?)".to_string());
         }
         Ok(sampler)
-    }
-}
-
-impl Drop for LlamaCppApi {
-    fn drop(&mut self) {
-        unsafe { llama_backend_free() };
     }
 }
 

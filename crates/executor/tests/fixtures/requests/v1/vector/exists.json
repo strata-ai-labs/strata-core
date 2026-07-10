@@ -1,0 +1,5 @@
+{
+  "type": "vector_exists",
+  "collection": "docs",
+  "key": "doc-a"
+}

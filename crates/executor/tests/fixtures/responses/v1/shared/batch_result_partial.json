@@ -1,0 +1,76 @@
+{
+  "type": "json_batch_results",
+  "data": {
+    "mode": "itemwise",
+    "status": "partial",
+    "applied": true,
+    "commit": {
+      "version": 7,
+      "timestamp": 70,
+      "durable": true,
+      "put_count": 1,
+      "delete_count": 0
+    },
+    "items": [
+      {
+        "index": 0,
+        "status": "ok",
+        "applied": true,
+        "effect": {
+          "applied": true,
+          "kind": "created",
+          "matched": false,
+          "affected_count": 1
+        },
+        "commit": {
+          "version": 7,
+          "timestamp": 70,
+          "durable": true,
+          "put_count": 1,
+          "delete_count": 0
+        },
+        "result": {
+          "effect": {
+            "applied": true,
+            "kind": "created",
+            "matched": false,
+            "affected_count": 1
+          },
+          "commit": {
+            "version": 7,
+            "timestamp": 70,
+            "durable": true,
+            "put_count": 1,
+            "delete_count": 0
+          },
+          "document_version": 1,
+          "error": null
+        },
+        "error": null
+      },
+      {
+        "index": 1,
+        "status": "ok",
+        "applied": false,
+        "effect": {
+          "applied": false,
+          "kind": "not_found",
+          "matched": false,
+          "affected_count": 0
+        },
+        "commit": null,
+        "result": {
+          "effect": {
+            "applied": false,
+            "kind": "not_found",
+            "matched": false,
+            "affected_count": 0
+          },
+          "document_version": null,
+          "error": null
+        },
+        "error": null
+      }
+    ]
+  }
+}

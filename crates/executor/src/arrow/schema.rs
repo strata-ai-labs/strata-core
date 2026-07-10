@@ -1,325 +1,285 @@
-//! Column mapping and type coercion for Arrow import.
-//!
-//! Resolves which columns in an input file map to key/value/embedding/metadata,
-//! and converts Arrow array values to Strata `Value` types.
+//! Arrow schema mapping and row coercion.
 
 use arrow::array::{self, Array};
 use arrow::datatypes::{DataType, Schema};
 use arrow::record_batch::RecordBatch;
-use strata_core::Value;
+use base64::Engine;
+use serde_json::Value;
 
-use crate::{Error, Result};
+use crate::error::ExecutorResult;
+use crate::types::ArrowImportTarget;
 
-/// Target primitive for import.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImportPrimitive {
-    /// Key-value pairs.
-    Kv,
-    /// JSON documents.
-    Json,
-    /// Vector embeddings.
-    Vector,
+use super::{internal_error, invalid_input};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ImportMapping {
+    pub(crate) key_idx: usize,
+    pub(crate) value_idx: Option<usize>,
+    pub(crate) extra_indices: Vec<usize>,
+    pub(crate) extra_names: Vec<String>,
+    pub(crate) key_encoding_idx: Option<usize>,
+    pub(crate) value_encoding_idx: Option<usize>,
 }
 
-/// Resolved column mapping from an Arrow schema.
-#[derive(Debug)]
-pub struct ImportMapping {
-    /// Column index for the key field.
-    pub key_idx: usize,
-    /// Column index for the explicit value/document/embedding field (if any).
-    pub value_idx: Option<usize>,
-    /// Column indices for remaining fields (become JSON metadata).
-    pub extra_indices: Vec<usize>,
-    /// Column names for extra fields (for JSON serialization).
-    pub extra_names: Vec<String>,
-}
-
-/// Resolve column mapping from CLI flags + file schema.
-pub fn resolve_mapping(
+pub(crate) fn resolve_mapping(
     schema: &Schema,
-    primitive: ImportPrimitive,
+    target: ArrowImportTarget,
     key_column: Option<&str>,
     value_column: Option<&str>,
-) -> Result<ImportMapping> {
+) -> ExecutorResult<ImportMapping> {
     let key_idx = resolve_key_column(schema, key_column)?;
-
-    let (value_idx, extra_indices, extra_names) = match primitive {
-        ImportPrimitive::Kv => resolve_kv_value(schema, key_idx, value_column)?,
-        ImportPrimitive::Json => resolve_json_document(schema, key_idx, value_column)?,
-        ImportPrimitive::Vector => resolve_vector_embedding(schema, key_idx, value_column)?,
+    let (value_idx, extra_indices, extra_names) = match target {
+        ArrowImportTarget::Kv => resolve_kv_value(schema, key_idx, value_column)?,
+        ArrowImportTarget::Json => resolve_json_document(schema, key_idx, value_column)?,
+        ArrowImportTarget::Vector => resolve_vector_embedding(schema, key_idx, value_column)?,
     };
-
+    let key_encoding_idx = schema.index_of("key_encoding").ok();
+    let value_encoding_idx = schema.index_of("value_encoding").ok();
     Ok(ImportMapping {
         key_idx,
         value_idx,
         extra_indices,
         extra_names,
+        key_encoding_idx,
+        value_encoding_idx,
     })
 }
 
-/// Extract a single value from an Arrow array at the given row index.
-pub fn arrow_to_value(col: &dyn Array, row: usize) -> Result<Value> {
-    if col.is_null(row) {
-        return Ok(Value::Null);
+pub(crate) fn key_bytes(
+    batch: &RecordBatch,
+    mapping: &ImportMapping,
+    row: usize,
+) -> ExecutorResult<Option<Vec<u8>>> {
+    let key_col = batch.column(mapping.key_idx);
+    if key_col.is_null(row) {
+        return Ok(None);
     }
-
-    match col.data_type() {
-        DataType::Utf8 => {
-            let arr = col.as_any().downcast_ref::<array::StringArray>().unwrap();
-            Ok(Value::String(arr.value(row).to_string()))
-        }
-        DataType::LargeUtf8 => {
-            let arr = col
-                .as_any()
-                .downcast_ref::<array::LargeStringArray>()
-                .unwrap();
-            Ok(Value::String(arr.value(row).to_string()))
-        }
-        DataType::Int8 => {
-            let arr = col.as_any().downcast_ref::<array::Int8Array>().unwrap();
-            Ok(Value::Int(arr.value(row) as i64))
-        }
-        DataType::Int16 => {
-            let arr = col.as_any().downcast_ref::<array::Int16Array>().unwrap();
-            Ok(Value::Int(arr.value(row) as i64))
-        }
-        DataType::Int32 => {
-            let arr = col.as_any().downcast_ref::<array::Int32Array>().unwrap();
-            Ok(Value::Int(arr.value(row) as i64))
-        }
-        DataType::Int64 => {
-            let arr = col.as_any().downcast_ref::<array::Int64Array>().unwrap();
-            Ok(Value::Int(arr.value(row)))
-        }
-        DataType::UInt8 => {
-            let arr = col.as_any().downcast_ref::<array::UInt8Array>().unwrap();
-            Ok(Value::Int(arr.value(row) as i64))
-        }
-        DataType::UInt16 => {
-            let arr = col.as_any().downcast_ref::<array::UInt16Array>().unwrap();
-            Ok(Value::Int(arr.value(row) as i64))
-        }
-        DataType::UInt32 => {
-            let arr = col.as_any().downcast_ref::<array::UInt32Array>().unwrap();
-            Ok(Value::Int(arr.value(row) as i64))
-        }
-        DataType::UInt64 => {
-            let arr = col.as_any().downcast_ref::<array::UInt64Array>().unwrap();
-            Ok(Value::Int(arr.value(row) as i64))
-        }
-        DataType::Float32 => {
-            let arr = col.as_any().downcast_ref::<array::Float32Array>().unwrap();
-            Ok(Value::Float(arr.value(row) as f64))
-        }
-        DataType::Float64 => {
-            let arr = col.as_any().downcast_ref::<array::Float64Array>().unwrap();
-            Ok(Value::Float(arr.value(row)))
-        }
-        DataType::Boolean => {
-            let arr = col.as_any().downcast_ref::<array::BooleanArray>().unwrap();
-            Ok(Value::Bool(arr.value(row)))
-        }
-        DataType::Binary => {
-            let arr = col.as_any().downcast_ref::<array::BinaryArray>().unwrap();
-            Ok(Value::Bytes(arr.value(row).to_vec()))
-        }
-        DataType::LargeBinary => {
-            let arr = col
-                .as_any()
-                .downcast_ref::<array::LargeBinaryArray>()
-                .unwrap();
-            Ok(Value::Bytes(arr.value(row).to_vec()))
-        }
-        DataType::Null => Ok(Value::Null),
-        // List, Struct, and other complex types → JSON-serialized string.
-        other => {
-            let json_val = array_value_to_json(col, row)?;
-            let s = serde_json::to_string(&json_val).map_err(|e| Error::Io {
-                reason: format!("failed to serialize {other} value to JSON: {e}"),
-                hint: None,
-            })?;
-            Ok(Value::String(s))
-        }
-    }
+    let encoding = encoding_at(batch, mapping.key_encoding_idx, row);
+    cell_to_bytes(key_col.as_ref(), row, encoding.as_deref()).map(Some)
 }
 
-/// Serialize specified columns of a row as a JSON object string.
-pub fn row_to_json(batch: &RecordBatch, row: usize, columns: &[(usize, &str)]) -> Result<String> {
+pub(crate) fn value_bytes(
+    batch: &RecordBatch,
+    mapping: &ImportMapping,
+    row: usize,
+) -> ExecutorResult<Vec<u8>> {
+    if let Some(value_idx) = mapping.value_idx {
+        let value_col = batch.column(value_idx);
+        let encoding = encoding_at(batch, mapping.value_encoding_idx, row);
+        return cell_to_bytes(value_col.as_ref(), row, encoding.as_deref());
+    }
+    let value = row_to_json_object(batch, row, &mapping.extra_indices, &mapping.extra_names)?;
+    serde_json::to_vec(&value).map_err(|error| {
+        internal_error(format!(
+            "failed to serialize Arrow row as JSON bytes: {error}"
+        ))
+    })
+}
+
+pub(crate) fn json_document(
+    batch: &RecordBatch,
+    mapping: &ImportMapping,
+    row: usize,
+) -> ExecutorResult<Value> {
+    if let Some(value_idx) = mapping.value_idx {
+        return cell_to_json_document(batch.column(value_idx).as_ref(), row);
+    }
+    row_to_json_object(batch, row, &mapping.extra_indices, &mapping.extra_names)
+}
+
+pub(crate) fn vector_embedding(
+    batch: &RecordBatch,
+    mapping: &ImportMapping,
+    row: usize,
+) -> Option<Vec<f32>> {
+    let value_idx = mapping.value_idx?;
+    let column = batch.column(value_idx);
+    extract_embedding(column.as_ref(), row)
+}
+
+pub(crate) fn vector_metadata(
+    batch: &RecordBatch,
+    mapping: &ImportMapping,
+    row: usize,
+) -> ExecutorResult<Option<Value>> {
+    if mapping.extra_indices.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(row_to_json_object(
+        batch,
+        row,
+        &mapping.extra_indices,
+        &mapping.extra_names,
+    )?))
+}
+
+pub(crate) fn row_to_json_object(
+    batch: &RecordBatch,
+    row: usize,
+    indices: &[usize],
+    names: &[String],
+) -> ExecutorResult<Value> {
     let mut map = serde_json::Map::new();
-    for &(idx, name) in columns {
-        let col = batch.column(idx);
-        if col.is_null(row) {
-            map.insert(name.to_string(), serde_json::Value::Null);
-        } else {
-            let json_val = array_value_to_json(col.as_ref(), row)?;
-            map.insert(name.to_string(), json_val);
-        }
+    for (index, name) in indices.iter().zip(names) {
+        let column = batch.column(*index);
+        map.insert(name.clone(), cell_to_json(column.as_ref(), row)?);
     }
-    serde_json::to_string(&serde_json::Value::Object(map)).map_err(|e| Error::Io {
-        reason: format!("failed to serialize row to JSON: {e}"),
-        hint: None,
-    })
+    Ok(Value::Object(map))
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-fn resolve_key_column(schema: &Schema, key_column: Option<&str>) -> Result<usize> {
-    if let Some(name) = key_column {
-        return schema.index_of(name).map_err(|_| Error::InvalidInput {
-            reason: format!(
-                "key column '{name}' not found. Available columns: {}",
-                format_columns(schema)
-            ),
-            hint: None,
+fn resolve_key_column(schema: &Schema, key_column: Option<&str>) -> ExecutorResult<usize> {
+    if let Some(column) = key_column {
+        return schema.index_of(column).map_err(|_| {
+            invalid_input(
+                "invalid_argument.executor.arrow_key_column",
+                format!(
+                    "key column '{column}' not found; available columns: {}",
+                    format_columns(schema)
+                ),
+            )
         });
     }
-
-    for candidate in &["key", "_id", "id"] {
-        if let Ok(idx) = schema.index_of(candidate) {
-            return Ok(idx);
+    for candidate in ["key", "_id", "id"] {
+        if let Ok(index) = schema.index_of(candidate) {
+            return Ok(index);
         }
     }
-
-    Err(Error::InvalidInput {
-        reason: format!(
-            "no key column found. Available columns: {}",
+    Err(invalid_input(
+        "invalid_argument.executor.arrow_key_column",
+        format!(
+            "no key column found; available columns: {}",
             format_columns(schema)
         ),
-        hint: Some("Specify --key-column <COL>".into()),
-    })
+    ))
 }
 
 fn resolve_kv_value(
     schema: &Schema,
     key_idx: usize,
     value_column: Option<&str>,
-) -> Result<(Option<usize>, Vec<usize>, Vec<String>)> {
-    if let Some(name) = value_column {
-        let idx = schema.index_of(name).map_err(|_| Error::InvalidInput {
-            reason: format!(
-                "value column '{name}' not found. Available columns: {}",
-                format_columns(schema)
-            ),
-            hint: None,
+) -> ExecutorResult<(Option<usize>, Vec<usize>, Vec<String>)> {
+    if let Some(column) = value_column {
+        let value_idx = schema.index_of(column).map_err(|_| {
+            invalid_input(
+                "invalid_argument.executor.arrow_value_column",
+                format!(
+                    "value column '{column}' not found; available columns: {}",
+                    format_columns(schema)
+                ),
+            )
         })?;
-        let (extra_i, extra_n) = collect_extras(schema, &[key_idx, idx]);
-        return Ok((Some(idx), extra_i, extra_n));
+        return Ok(resolve_extras(schema, &[key_idx, value_idx]));
     }
-
-    // Auto-detect: try "value".
-    if let Ok(idx) = schema.index_of("value") {
-        let (extra_i, extra_n) = collect_extras(schema, &[key_idx, idx]);
-        return Ok((Some(idx), extra_i, extra_n));
+    if let Ok(value_idx) = schema.index_of("value") {
+        return Ok(resolve_extras(schema, &[key_idx, value_idx]));
     }
-
-    // 2-column shortcut: the non-key column is the value.
     if schema.fields().len() == 2 {
-        let idx = if key_idx == 0 { 1 } else { 0 };
-        return Ok((Some(idx), vec![], vec![]));
+        let value_idx = usize::from(key_idx == 0);
+        return Ok((Some(value_idx), Vec::new(), Vec::new()));
     }
-
-    // Remaining columns become a JSON object.
-    let (extra_i, extra_n) = collect_extras(schema, &[key_idx]);
-    Ok((None, extra_i, extra_n))
+    let (extra_indices, extra_names) = collect_extras(schema, &[key_idx]);
+    Ok((None, extra_indices, extra_names))
 }
 
 fn resolve_json_document(
     schema: &Schema,
     key_idx: usize,
     value_column: Option<&str>,
-) -> Result<(Option<usize>, Vec<usize>, Vec<String>)> {
-    if let Some(name) = value_column {
-        let idx = schema.index_of(name).map_err(|_| Error::InvalidInput {
-            reason: format!(
-                "document column '{name}' not found. Available columns: {}",
-                format_columns(schema)
-            ),
-            hint: None,
+) -> ExecutorResult<(Option<usize>, Vec<usize>, Vec<String>)> {
+    if let Some(column) = value_column {
+        let value_idx = schema.index_of(column).map_err(|_| {
+            invalid_input(
+                "invalid_argument.executor.arrow_value_column",
+                format!(
+                    "document column '{column}' not found; available columns: {}",
+                    format_columns(schema)
+                ),
+            )
         })?;
-        let (extra_i, extra_n) = collect_extras(schema, &[key_idx, idx]);
-        return Ok((Some(idx), extra_i, extra_n));
+        return Ok(resolve_extras(schema, &[key_idx, value_idx]));
     }
-
-    for candidate in &["document", "value", "doc", "body"] {
-        if let Ok(idx) = schema.index_of(candidate) {
-            let (extra_i, extra_n) = collect_extras(schema, &[key_idx, idx]);
-            return Ok((Some(idx), extra_i, extra_n));
+    for candidate in ["document", "value", "doc", "body"] {
+        if let Ok(value_idx) = schema.index_of(candidate) {
+            return Ok(resolve_extras(schema, &[key_idx, value_idx]));
         }
     }
-
-    // No explicit document column: all non-key columns become JSON.
-    let (extra_i, extra_n) = collect_extras(schema, &[key_idx]);
-    Ok((None, extra_i, extra_n))
+    let (extra_indices, extra_names) = collect_extras(schema, &[key_idx]);
+    Ok((None, extra_indices, extra_names))
 }
 
 fn resolve_vector_embedding(
     schema: &Schema,
     key_idx: usize,
     value_column: Option<&str>,
-) -> Result<(Option<usize>, Vec<usize>, Vec<String>)> {
-    let idx = if let Some(name) = value_column {
-        schema.index_of(name).map_err(|_| Error::InvalidInput {
-            reason: format!(
-                "embedding column '{name}' not found. Available columns: {}",
-                format_columns(schema)
-            ),
-            hint: None,
+) -> ExecutorResult<(Option<usize>, Vec<usize>, Vec<String>)> {
+    let value_idx = if let Some(column) = value_column {
+        schema.index_of(column).map_err(|_| {
+            invalid_input(
+                "invalid_argument.executor.arrow_value_column",
+                format!(
+                    "embedding column '{column}' not found; available columns: {}",
+                    format_columns(schema)
+                ),
+            )
         })?
     } else {
-        let mut found = None;
-        for candidate in &["embedding", "vector", "embeddings", "emb"] {
-            if let Ok(idx) = schema.index_of(candidate) {
-                found = Some(idx);
-                break;
-            }
-        }
-        found.ok_or_else(|| Error::InvalidInput {
-            reason: format!(
-                "no embedding column found. Available columns: {}",
-                format_columns(schema)
-            ),
-            hint: Some("Specify --value-column <COL> pointing to a float list column".into()),
-        })?
+        ["embedding", "vector", "embeddings", "emb"]
+            .iter()
+            .find_map(|candidate| schema.index_of(candidate).ok())
+            .ok_or_else(|| {
+                invalid_input(
+                    "invalid_argument.executor.arrow_value_column",
+                    format!(
+                        "no embedding column found; available columns: {}",
+                        format_columns(schema)
+                    ),
+                )
+            })?
     };
-
-    // Validate that the column is a list of floats.
-    let field = schema.field(idx);
+    let field = schema.field(value_idx);
     match field.data_type() {
         DataType::FixedSizeList(inner, _) | DataType::List(inner) => match inner.data_type() {
             DataType::Float32 | DataType::Float64 => {}
-            dt => {
-                return Err(Error::InvalidInput {
-                    reason: format!(
-                        "embedding column '{}' has inner type {dt}, expected Float32 or Float64",
+            data_type => {
+                return Err(invalid_input(
+                    "invalid_argument.executor.arrow_embedding_type",
+                    format!(
+                        "embedding column '{}' has inner type {data_type}; expected Float32 or Float64",
                         field.name()
                     ),
-                    hint: None,
-                });
+                ));
             }
         },
-        dt => {
-            return Err(Error::InvalidInput {
-                reason: format!(
-                    "embedding column '{}' has type {dt}, expected FixedSizeList<f32> or List<f32>",
+        data_type => {
+            return Err(invalid_input(
+                "invalid_argument.executor.arrow_embedding_type",
+                format!(
+                    "embedding column '{}' has type {data_type}; expected a float list",
                     field.name()
                 ),
-                hint: None,
-            });
+            ));
         }
     }
+    Ok(resolve_extras(schema, &[key_idx, value_idx]))
+}
 
-    let (extra_i, extra_n) = collect_extras(schema, &[key_idx, idx]);
-    Ok((Some(idx), extra_i, extra_n))
+fn resolve_extras(schema: &Schema, exclude: &[usize]) -> (Option<usize>, Vec<usize>, Vec<String>) {
+    let value_idx = exclude.last().copied();
+    let (extra_indices, extra_names) = collect_extras(schema, exclude);
+    (value_idx, extra_indices, extra_names)
 }
 
 fn collect_extras(schema: &Schema, exclude: &[usize]) -> (Vec<usize>, Vec<String>) {
     let mut indices = Vec::new();
     let mut names = Vec::new();
-    for (i, field) in schema.fields().iter().enumerate() {
-        if !exclude.contains(&i) {
-            indices.push(i);
+    for (index, field) in schema.fields().iter().enumerate() {
+        let ignored = exclude.contains(&index)
+            || matches!(
+                field.name().as_str(),
+                "key_encoding" | "value_encoding" | "version" | "timestamp"
+            );
+        if !ignored {
+            indices.push(index);
             names.push(field.name().clone());
         }
     }
@@ -330,266 +290,599 @@ fn format_columns(schema: &Schema) -> String {
     schema
         .fields()
         .iter()
-        .map(|f| format!("{} ({})", f.name(), f.data_type()))
+        .map(|field| format!("{} ({})", field.name(), field.data_type()))
         .collect::<Vec<_>>()
         .join(", ")
 }
 
-/// Convert a single array element to a serde_json::Value.
-fn array_value_to_json(col: &dyn Array, row: usize) -> Result<serde_json::Value> {
-    if col.is_null(row) {
-        return Ok(serde_json::Value::Null);
-    }
+fn encoding_at(batch: &RecordBatch, index: Option<usize>, row: usize) -> Option<String> {
+    index
+        .and_then(|index| cell_to_string(batch.column(index).as_ref(), row).ok())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+}
 
-    match col.data_type() {
+fn cell_to_bytes(
+    column: &dyn Array,
+    row: usize,
+    encoding: Option<&str>,
+) -> ExecutorResult<Vec<u8>> {
+    if column.is_null(row) {
+        return Ok(Vec::new());
+    }
+    if matches!(encoding, Some("base64")) {
+        let encoded = cell_to_string(column, row)?;
+        return base64::engine::general_purpose::STANDARD
+            .decode(encoded.as_bytes())
+            .map_err(|error| {
+                invalid_input(
+                    "invalid_argument.executor.arrow_base64",
+                    format!("failed to decode base64 Arrow cell: {error}"),
+                )
+            });
+    }
+    match column.data_type() {
+        DataType::Binary => {
+            let array = column
+                .as_any()
+                .downcast_ref::<array::BinaryArray>()
+                .unwrap();
+            Ok(array.value(row).to_vec())
+        }
+        DataType::LargeBinary => {
+            let array = column
+                .as_any()
+                .downcast_ref::<array::LargeBinaryArray>()
+                .unwrap();
+            Ok(array.value(row).to_vec())
+        }
+        _ => Ok(cell_to_string(column, row)?.into_bytes()),
+    }
+}
+
+fn cell_to_json_document(column: &dyn Array, row: usize) -> ExecutorResult<Value> {
+    if column.is_null(row) {
+        return Ok(Value::Null);
+    }
+    match column.data_type() {
+        DataType::Utf8 | DataType::LargeUtf8 => {
+            let text = cell_to_string(column, row)?;
+            Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
+        }
+        _ => cell_to_json(column, row),
+    }
+}
+
+fn cell_to_json(column: &dyn Array, row: usize) -> ExecutorResult<Value> {
+    if column.is_null(row) {
+        return Ok(Value::Null);
+    }
+    match column.data_type() {
+        DataType::Null => Ok(Value::Null),
+        DataType::Int8 => {
+            let array = column.as_any().downcast_ref::<array::Int8Array>().unwrap();
+            Ok(serde_json::json!(array.value(row)))
+        }
+        DataType::Int16 => {
+            let array = column.as_any().downcast_ref::<array::Int16Array>().unwrap();
+            Ok(serde_json::json!(array.value(row)))
+        }
+        DataType::Int32 => {
+            let array = column.as_any().downcast_ref::<array::Int32Array>().unwrap();
+            Ok(serde_json::json!(array.value(row)))
+        }
+        DataType::Int64 => {
+            let array = column.as_any().downcast_ref::<array::Int64Array>().unwrap();
+            Ok(serde_json::json!(array.value(row)))
+        }
+        DataType::UInt8 => {
+            let array = column.as_any().downcast_ref::<array::UInt8Array>().unwrap();
+            Ok(serde_json::json!(array.value(row)))
+        }
+        DataType::UInt16 => {
+            let array = column
+                .as_any()
+                .downcast_ref::<array::UInt16Array>()
+                .unwrap();
+            Ok(serde_json::json!(array.value(row)))
+        }
+        DataType::UInt32 => {
+            let array = column
+                .as_any()
+                .downcast_ref::<array::UInt32Array>()
+                .unwrap();
+            Ok(serde_json::json!(array.value(row)))
+        }
+        DataType::UInt64 => {
+            let array = column
+                .as_any()
+                .downcast_ref::<array::UInt64Array>()
+                .unwrap();
+            Ok(serde_json::json!(array.value(row)))
+        }
+        DataType::Float32 => {
+            let array = column
+                .as_any()
+                .downcast_ref::<array::Float32Array>()
+                .unwrap();
+            Ok(serde_json::json!(array.value(row)))
+        }
+        DataType::Float64 => {
+            let array = column
+                .as_any()
+                .downcast_ref::<array::Float64Array>()
+                .unwrap();
+            Ok(serde_json::json!(array.value(row)))
+        }
+        DataType::Boolean => {
+            let array = column
+                .as_any()
+                .downcast_ref::<array::BooleanArray>()
+                .unwrap();
+            Ok(Value::Bool(array.value(row)))
+        }
+        DataType::Binary => {
+            let array = column
+                .as_any()
+                .downcast_ref::<array::BinaryArray>()
+                .unwrap();
+            Ok(Value::String(
+                base64::engine::general_purpose::STANDARD.encode(array.value(row)),
+            ))
+        }
+        DataType::LargeBinary => {
+            let array = column
+                .as_any()
+                .downcast_ref::<array::LargeBinaryArray>()
+                .unwrap();
+            Ok(Value::String(
+                base64::engine::general_purpose::STANDARD.encode(array.value(row)),
+            ))
+        }
+        _ => Ok(Value::String(cell_to_string(column, row)?)),
+    }
+}
+
+fn cell_to_string(column: &dyn Array, row: usize) -> ExecutorResult<String> {
+    if column.is_null(row) {
+        return Ok(String::new());
+    }
+    match column.data_type() {
         DataType::Utf8 => {
-            let arr = col.as_any().downcast_ref::<array::StringArray>().unwrap();
-            Ok(serde_json::Value::String(arr.value(row).to_string()))
+            let array = column
+                .as_any()
+                .downcast_ref::<array::StringArray>()
+                .unwrap();
+            Ok(array.value(row).to_owned())
         }
         DataType::LargeUtf8 => {
-            let arr = col
+            let array = column
                 .as_any()
                 .downcast_ref::<array::LargeStringArray>()
                 .unwrap();
-            Ok(serde_json::Value::String(arr.value(row).to_string()))
-        }
-        DataType::Int8 => {
-            let arr = col.as_any().downcast_ref::<array::Int8Array>().unwrap();
-            Ok(serde_json::json!(arr.value(row)))
-        }
-        DataType::Int16 => {
-            let arr = col.as_any().downcast_ref::<array::Int16Array>().unwrap();
-            Ok(serde_json::json!(arr.value(row)))
-        }
-        DataType::Int32 => {
-            let arr = col.as_any().downcast_ref::<array::Int32Array>().unwrap();
-            Ok(serde_json::json!(arr.value(row)))
-        }
-        DataType::Int64 => {
-            let arr = col.as_any().downcast_ref::<array::Int64Array>().unwrap();
-            Ok(serde_json::json!(arr.value(row)))
-        }
-        DataType::UInt8 => {
-            let arr = col.as_any().downcast_ref::<array::UInt8Array>().unwrap();
-            Ok(serde_json::json!(arr.value(row)))
-        }
-        DataType::UInt16 => {
-            let arr = col.as_any().downcast_ref::<array::UInt16Array>().unwrap();
-            Ok(serde_json::json!(arr.value(row)))
-        }
-        DataType::UInt32 => {
-            let arr = col.as_any().downcast_ref::<array::UInt32Array>().unwrap();
-            Ok(serde_json::json!(arr.value(row)))
-        }
-        DataType::UInt64 => {
-            let arr = col.as_any().downcast_ref::<array::UInt64Array>().unwrap();
-            Ok(serde_json::json!(arr.value(row)))
-        }
-        DataType::Float32 => {
-            let arr = col.as_any().downcast_ref::<array::Float32Array>().unwrap();
-            Ok(serde_json::json!(arr.value(row)))
-        }
-        DataType::Float64 => {
-            let arr = col.as_any().downcast_ref::<array::Float64Array>().unwrap();
-            Ok(serde_json::json!(arr.value(row)))
-        }
-        DataType::Boolean => {
-            let arr = col.as_any().downcast_ref::<array::BooleanArray>().unwrap();
-            Ok(serde_json::json!(arr.value(row)))
+            Ok(array.value(row).to_owned())
         }
         _ => {
-            // Fallback: use Arrow's JSON formatter via display.
-            let formatter = arrow::util::display::ArrayFormatter::try_new(col, &Default::default())
-                .map_err(|e| Error::Io {
-                    reason: format!("failed to format array value: {e}"),
-                    hint: None,
-                })?;
-            let s = formatter.value(row).to_string();
-            Ok(serde_json::Value::String(s))
+            let formatter = arrow::util::display::ArrayFormatter::try_new(
+                column,
+                &arrow::util::display::FormatOptions::default(),
+            )
+            .map_err(|error| {
+                internal_error(format!("failed to format Arrow cell as string: {error}"))
+            })?;
+            Ok(formatter.value(row).to_string())
         }
+    }
+}
+
+fn extract_embedding(column: &dyn Array, row: usize) -> Option<Vec<f32>> {
+    if column.is_null(row) {
+        return None;
+    }
+    let values = match column.data_type() {
+        DataType::FixedSizeList(_, _) => {
+            let array = column
+                .as_any()
+                .downcast_ref::<array::FixedSizeListArray>()?;
+            array.value(row)
+        }
+        DataType::List(_) => {
+            let array = column.as_any().downcast_ref::<array::ListArray>()?;
+            array.value(row)
+        }
+        _ => return None,
+    };
+    if let Some(array) = values.as_any().downcast_ref::<array::Float32Array>() {
+        if (0..array.len()).any(|index| array.is_null(index)) {
+            return None;
+        }
+        return Some(array.values().to_vec());
+    }
+    values
+        .as_any()
+        .downcast_ref::<array::Float64Array>()
+        .and_then(|array| {
+            if (0..array.len()).any(|index| array.is_null(index)) {
+                return None;
+            }
+            array
+                .values()
+                .iter()
+                .copied()
+                .map(f64_embedding_value_to_f32)
+                .collect()
+        })
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn f64_embedding_value_to_f32(value: f64) -> Option<f32> {
+    if value.is_finite() && value >= f64::from(f32::MIN) && value <= f64::from(f32::MAX) {
+        Some(value as f32)
+    } else {
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use arrow::array::*;
-    use arrow::datatypes::{DataType, Field};
     use std::sync::Arc;
 
-    fn schema(fields: Vec<(&str, DataType)>) -> Schema {
-        Schema::new(
-            fields
-                .into_iter()
-                .map(|(name, dt)| Field::new(name, dt, true))
-                .collect::<Vec<_>>(),
-        )
-    }
+    use arrow::array::{
+        BinaryArray, BooleanArray, FixedSizeListBuilder, Float32Array, Float32Builder,
+        Float64Array, Float64Builder, Int16Array, Int32Array, Int64Array, Int8Array,
+        LargeBinaryArray, LargeStringArray, ListBuilder, NullArray, StringArray, UInt16Array,
+        UInt32Array, UInt64Array, UInt8Array,
+    };
+    use arrow::datatypes::Field;
+    use base64::Engine;
+    use serde_json::json;
 
-    // -----------------------------------------------------------------------
-    // Column resolution tests
-    // -----------------------------------------------------------------------
+    use crate::ExecutorErrorClass;
 
-    #[test]
-    fn test_resolve_key_column_auto() {
-        let s = schema(vec![("key", DataType::Utf8), ("value", DataType::Utf8)]);
-        let m = resolve_mapping(&s, ImportPrimitive::Kv, None, None).unwrap();
-        assert_eq!(m.key_idx, 0);
-    }
+    use super::*;
 
     #[test]
-    fn test_resolve_key_column_id_fallback() {
-        let s = schema(vec![
-            ("name", DataType::Utf8),
-            ("id", DataType::Utf8),
-            ("value", DataType::Utf8),
+    fn key_value_and_document_columns_follow_old_detection_order() {
+        let schema = Schema::new(vec![
+            utf8_field("_id"),
+            utf8_field("id"),
+            utf8_field("key"),
+            utf8_field("value"),
         ]);
-        let m = resolve_mapping(&s, ImportPrimitive::Kv, None, None).unwrap();
-        assert_eq!(m.key_idx, 1);
+        let mapping =
+            resolve_mapping(&schema, ArrowImportTarget::Kv, None, None).expect("mapping resolves");
+        assert_eq!(mapping.key_idx, 2);
+        assert_eq!(mapping.value_idx, Some(3));
+
+        let schema = Schema::new(vec![
+            utf8_field("_id"),
+            utf8_field("id"),
+            utf8_field("payload"),
+        ]);
+        let mapping = resolve_mapping(&schema, ArrowImportTarget::Kv, Some("id"), Some("payload"))
+            .expect("explicit mapping resolves");
+        assert_eq!(mapping.key_idx, 1);
+        assert_eq!(mapping.value_idx, Some(2));
+
+        for candidate in ["document", "value", "doc", "body"] {
+            let schema = Schema::new(vec![utf8_field("key"), utf8_field(candidate)]);
+            let mapping = resolve_mapping(&schema, ArrowImportTarget::Json, None, None)
+                .expect("json mapping resolves");
+            assert_eq!(mapping.value_idx, Some(1), "{candidate}");
+        }
     }
 
     #[test]
-    fn test_resolve_key_column_explicit() {
-        let s = schema(vec![("user_id", DataType::Utf8), ("value", DataType::Utf8)]);
-        let m = resolve_mapping(&s, ImportPrimitive::Kv, Some("user_id"), None).unwrap();
-        assert_eq!(m.key_idx, 0);
+    fn mapping_errors_include_stable_codes_and_available_columns() {
+        let schema = Schema::new(vec![utf8_field("name"), utf8_field("payload")]);
+        let error = resolve_mapping(&schema, ArrowImportTarget::Kv, None, None)
+            .expect_err("missing key fails");
+        assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+        assert_eq!(error.code(), "invalid_argument.executor.arrow_key_column");
+        assert!(error.message().contains("name (Utf8)"));
+
+        let error = resolve_mapping(&schema, ArrowImportTarget::Json, Some("name"), Some("doc"))
+            .expect_err("missing document fails");
+        assert_eq!(error.code(), "invalid_argument.executor.arrow_value_column");
+        assert!(error.message().contains("payload (Utf8)"));
     }
 
     #[test]
-    fn test_resolve_key_column_missing() {
-        let s = schema(vec![("name", DataType::Utf8), ("email", DataType::Utf8)]);
-        let err = resolve_mapping(&s, ImportPrimitive::Kv, None, None).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("no key column found"), "got: {msg}");
-        assert!(
-            msg.contains("name"),
-            "should list available columns, got: {msg}"
+    fn kv_mapping_uses_two_column_shortcut_and_extra_object_fallback() {
+        let schema = Schema::new(vec![utf8_field("id"), utf8_field("payload")]);
+        let mapping =
+            resolve_mapping(&schema, ArrowImportTarget::Kv, None, None).expect("mapping resolves");
+        assert_eq!(mapping.key_idx, 0);
+        assert_eq!(mapping.value_idx, Some(1));
+        assert!(mapping.extra_indices.is_empty());
+
+        let schema = Schema::new(vec![
+            utf8_field("id"),
+            utf8_field("name"),
+            Field::new("active", DataType::Boolean, false),
+        ]);
+        let mapping =
+            resolve_mapping(&schema, ArrowImportTarget::Kv, None, None).expect("mapping resolves");
+        assert_eq!(mapping.value_idx, None);
+        assert_eq!(mapping.extra_names, vec!["name", "active"]);
+    }
+
+    #[test]
+    fn bytes_respect_binary_columns_and_exported_base64_encodings() {
+        let encoded_key = base64::engine::general_purpose::STANDARD.encode([0, 255]);
+        let encoded_value = base64::engine::general_purpose::STANDARD.encode([255, 254]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                utf8_field("key"),
+                utf8_field("key_encoding"),
+                utf8_field("value"),
+                utf8_field("value_encoding"),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec![encoded_key])),
+                Arc::new(StringArray::from(vec!["base64"])),
+                Arc::new(StringArray::from(vec![encoded_value])),
+                Arc::new(StringArray::from(vec!["base64"])),
+            ],
+        )
+        .expect("batch");
+        let mapping = resolve_mapping(batch.schema().as_ref(), ArrowImportTarget::Kv, None, None)
+            .expect("mapping resolves");
+        assert_eq!(
+            key_bytes(&batch, &mapping, 0).expect("key"),
+            Some(vec![0, 255])
+        );
+        assert_eq!(
+            value_bytes(&batch, &mapping, 0).expect("value"),
+            vec![255, 254]
+        );
+
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("key", DataType::Binary, false),
+                Field::new("value", DataType::LargeBinary, false),
+            ])),
+            vec![
+                Arc::new(BinaryArray::from(vec![b"k".as_slice()])),
+                Arc::new(LargeBinaryArray::from(vec![b"raw".as_slice()])),
+            ],
+        )
+        .expect("binary batch");
+        let mapping = resolve_mapping(batch.schema().as_ref(), ArrowImportTarget::Kv, None, None)
+            .expect("mapping resolves");
+        assert_eq!(
+            key_bytes(&batch, &mapping, 0).expect("key"),
+            Some(b"k".to_vec())
+        );
+        assert_eq!(
+            value_bytes(&batch, &mapping, 0).expect("value"),
+            b"raw".to_vec()
         );
     }
 
     #[test]
-    fn test_resolve_value_column_kv() {
-        let s = schema(vec![("key", DataType::Utf8), ("value", DataType::Utf8)]);
-        let m = resolve_mapping(&s, ImportPrimitive::Kv, None, None).unwrap();
-        assert_eq!(m.value_idx, Some(1));
-        assert!(m.extra_indices.is_empty());
+    fn json_document_and_object_conversion_cover_arrow_scalars() {
+        let batch = scalar_batch();
+        let names = batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect::<Vec<_>>();
+        let indices = (0..batch.num_columns()).collect::<Vec<_>>();
+        let value = row_to_json_object(&batch, 0, &indices, &names).expect("json object");
+        assert_eq!(
+            value,
+            json!({
+                "utf8": "text",
+                "large_utf8": "large",
+                "binary": "Ymlu",
+                "large_binary": "bGFyZ2U=",
+                "int8": -8,
+                "int16": -16,
+                "int32": -32,
+                "int64": -64,
+                "uint8": 8,
+                "uint16": 16,
+                "uint32": 32,
+                "uint64": 64,
+                "float32": 1.5,
+                "float64": 2.5,
+                "bool": true,
+                "null": null,
+            })
+        );
+
+        let document_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![utf8_field("key"), utf8_field("document")])),
+            vec![
+                Arc::new(StringArray::from(vec!["doc-a", "doc-b"])),
+                Arc::new(StringArray::from(vec!["{\"ok\":true}", "not-json"])),
+            ],
+        )
+        .expect("document batch");
+        let mapping = resolve_mapping(
+            document_batch.schema().as_ref(),
+            ArrowImportTarget::Json,
+            None,
+            None,
+        )
+        .expect("mapping resolves");
+        assert_eq!(
+            json_document(&document_batch, &mapping, 0).expect("json document"),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            json_document(&document_batch, &mapping, 1).expect("json document"),
+            json!("not-json")
+        );
     }
 
     #[test]
-    fn test_resolve_embedding_column() {
-        let s = Schema::new(vec![
-            Field::new("key", DataType::Utf8, false),
+    fn vector_mapping_accepts_float_lists_and_rejects_other_embedding_shapes() {
+        for candidate in ["embedding", "vector", "embeddings", "emb"] {
+            let schema = Schema::new(vec![
+                utf8_field("key"),
+                Field::new(
+                    candidate,
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, true)),
+                        2,
+                    ),
+                    false,
+                ),
+            ]);
+            let mapping = resolve_mapping(&schema, ArrowImportTarget::Vector, None, None)
+                .expect("vector mapping resolves");
+            assert_eq!(mapping.value_idx, Some(1), "{candidate}");
+        }
+
+        let non_list = Schema::new(vec![utf8_field("key"), utf8_field("embedding")]);
+        let error = resolve_mapping(&non_list, ArrowImportTarget::Vector, None, None)
+            .expect_err("non-list embedding fails");
+        assert_eq!(
+            error.code(),
+            "invalid_argument.executor.arrow_embedding_type"
+        );
+
+        let non_float_list = Schema::new(vec![
+            utf8_field("key"),
             Field::new(
                 "embedding",
-                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 3),
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
                 false,
             ),
         ]);
-        let m = resolve_mapping(&s, ImportPrimitive::Vector, None, None).unwrap();
-        assert_eq!(m.value_idx, Some(1));
-    }
-
-    #[test]
-    fn test_resolve_embedding_wrong_type() {
-        let s = schema(vec![("key", DataType::Utf8), ("embedding", DataType::Utf8)]);
-        let err = resolve_mapping(&s, ImportPrimitive::Vector, None, None).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("expected FixedSizeList") || msg.contains("expected List"),
-            "got: {msg}"
+        let error = resolve_mapping(&non_float_list, ArrowImportTarget::Vector, None, None)
+            .expect_err("non-float embedding fails");
+        assert_eq!(
+            error.code(),
+            "invalid_argument.executor.arrow_embedding_type"
         );
     }
 
     #[test]
-    fn test_resolve_extra_columns_as_json() {
-        let s = schema(vec![
-            ("id", DataType::Utf8),
-            ("name", DataType::Utf8),
-            ("email", DataType::Utf8),
-            ("age", DataType::Int64),
-        ]);
-        let m = resolve_mapping(&s, ImportPrimitive::Kv, Some("id"), None).unwrap();
-        // No "value" column → all non-key columns become extras.
-        assert_eq!(m.value_idx, None);
-        assert_eq!(m.extra_indices, vec![1, 2, 3]);
-        assert_eq!(m.extra_names, vec!["name", "email", "age"]);
+    fn vector_embeddings_accept_supported_lists_and_skip_invalid_rows() {
+        let fixed_float64 = fixed_float64_embedding_batch(&[1.0, 2.0, f64::INFINITY, 4.0]);
+        let mapping = resolve_mapping(
+            fixed_float64.schema().as_ref(),
+            ArrowImportTarget::Vector,
+            None,
+            None,
+        )
+        .expect("mapping resolves");
+        assert_eq!(
+            vector_embedding(&fixed_float64, &mapping, 0).expect("embedding"),
+            vec![1.0, 2.0]
+        );
+        assert!(vector_embedding(&fixed_float64, &mapping, 1).is_none());
+
+        let list_float32 = list_float32_embedding_batch();
+        let mapping = resolve_mapping(
+            list_float32.schema().as_ref(),
+            ArrowImportTarget::Vector,
+            None,
+            None,
+        )
+        .expect("mapping resolves");
+        assert_eq!(
+            vector_embedding(&list_float32, &mapping, 0).expect("embedding"),
+            vec![3.0, 4.0]
+        );
     }
 
-    // -----------------------------------------------------------------------
-    // Type coercion tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_arrow_to_value_string() {
-        let arr = StringArray::from(vec!["hello"]);
-        let val = arrow_to_value(&arr, 0).unwrap();
-        assert_eq!(val, Value::String("hello".into()));
+    fn utf8_field(name: &str) -> Field {
+        Field::new(name, DataType::Utf8, false)
     }
 
-    #[test]
-    fn test_arrow_to_value_int() {
-        let arr = Int64Array::from(vec![42]);
-        let val = arrow_to_value(&arr, 0).unwrap();
-        assert_eq!(val, Value::Int(42));
-    }
-
-    #[test]
-    fn test_arrow_to_value_float() {
-        let arr = Float64Array::from(vec![2.5]);
-        let val = arrow_to_value(&arr, 0).unwrap();
-        assert_eq!(val, Value::Float(2.5));
-    }
-
-    #[test]
-    fn test_arrow_to_value_bool() {
-        let arr = BooleanArray::from(vec![true]);
-        let val = arrow_to_value(&arr, 0).unwrap();
-        assert_eq!(val, Value::Bool(true));
-    }
-
-    #[test]
-    fn test_arrow_to_value_null() {
-        let arr = Int64Array::from(vec![None::<i64>]);
-        let val = arrow_to_value(&arr, 0).unwrap();
-        assert_eq!(val, Value::Null);
-    }
-
-    // -----------------------------------------------------------------------
-    // Additional coverage
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_resolve_kv_two_column_shortcut() {
-        // Schema has exactly 2 columns, neither named "value" — the non-key column
-        // should be auto-selected as the value.
-        let s = schema(vec![("id", DataType::Utf8), ("payload", DataType::Utf8)]);
-        let m = resolve_mapping(&s, ImportPrimitive::Kv, Some("id"), None).unwrap();
-        assert_eq!(m.key_idx, 0);
-        assert_eq!(m.value_idx, Some(1));
-        assert!(m.extra_indices.is_empty());
-    }
-
-    #[test]
-    fn test_row_to_json() {
-        let s = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Utf8, false),
-            Field::new("name", DataType::Utf8, false),
-            Field::new("age", DataType::Int64, false),
-        ]));
-        let batch = RecordBatch::try_new(
-            s,
+    fn scalar_batch() -> RecordBatch {
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                utf8_field("utf8"),
+                Field::new("large_utf8", DataType::LargeUtf8, false),
+                Field::new("binary", DataType::Binary, false),
+                Field::new("large_binary", DataType::LargeBinary, false),
+                Field::new("int8", DataType::Int8, false),
+                Field::new("int16", DataType::Int16, false),
+                Field::new("int32", DataType::Int32, false),
+                Field::new("int64", DataType::Int64, false),
+                Field::new("uint8", DataType::UInt8, false),
+                Field::new("uint16", DataType::UInt16, false),
+                Field::new("uint32", DataType::UInt32, false),
+                Field::new("uint64", DataType::UInt64, false),
+                Field::new("float32", DataType::Float32, false),
+                Field::new("float64", DataType::Float64, false),
+                Field::new("bool", DataType::Boolean, false),
+                Field::new("null", DataType::Null, true),
+            ])),
             vec![
-                Arc::new(StringArray::from(vec!["k1"])) as _,
-                Arc::new(StringArray::from(vec!["Alice"])) as _,
-                Arc::new(Int64Array::from(vec![30])) as _,
+                Arc::new(StringArray::from(vec!["text"])),
+                Arc::new(LargeStringArray::from(vec!["large"])),
+                Arc::new(BinaryArray::from(vec![b"bin".as_slice()])),
+                Arc::new(LargeBinaryArray::from(vec![b"large".as_slice()])),
+                Arc::new(Int8Array::from(vec![-8])),
+                Arc::new(Int16Array::from(vec![-16])),
+                Arc::new(Int32Array::from(vec![-32])),
+                Arc::new(Int64Array::from(vec![-64])),
+                Arc::new(UInt8Array::from(vec![8])),
+                Arc::new(UInt16Array::from(vec![16])),
+                Arc::new(UInt32Array::from(vec![32])),
+                Arc::new(UInt64Array::from(vec![64])),
+                Arc::new(Float32Array::from(vec![1.5])),
+                Arc::new(Float64Array::from(vec![2.5])),
+                Arc::new(BooleanArray::from(vec![true])),
+                Arc::new(NullArray::new(1)),
             ],
         )
-        .unwrap();
+        .expect("scalar batch")
+    }
 
-        // Serialize columns 1 ("name") and 2 ("age") as JSON.
-        let json_str = row_to_json(&batch, 0, &[(1, "name"), (2, "age")]).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(parsed["name"], "Alice");
-        assert_eq!(parsed["age"], 30);
+    fn fixed_float64_embedding_batch(values: &[f64; 4]) -> RecordBatch {
+        let mut embedding_builder = FixedSizeListBuilder::new(Float64Builder::new(), 2);
+        for value in values {
+            embedding_builder.values().append_value(*value);
+        }
+        embedding_builder.append(true);
+        embedding_builder.append(true);
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                utf8_field("key"),
+                Field::new(
+                    "embedding",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float64, true)),
+                        2,
+                    ),
+                    false,
+                ),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec!["a", "b"])),
+                Arc::new(embedding_builder.finish()),
+            ],
+        )
+        .expect("embedding batch")
+    }
+
+    fn list_float32_embedding_batch() -> RecordBatch {
+        let mut embedding_builder = ListBuilder::new(Float32Builder::new());
+        embedding_builder.values().append_value(3.0);
+        embedding_builder.values().append_value(4.0);
+        embedding_builder.append(true);
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                utf8_field("key"),
+                Field::new(
+                    "embedding",
+                    DataType::List(Arc::new(Field::new("item", DataType::Float32, true))),
+                    false,
+                ),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec!["a"])),
+                Arc::new(embedding_builder.finish()),
+            ],
+        )
+        .expect("embedding batch")
     }
 }

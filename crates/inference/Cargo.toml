@@ -7,29 +7,30 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "Inference engine for Strata — local (llama.cpp) and cloud providers"
+description = "Inference runtime for Strata model execution"
 
 [lints]
 workspace = true
 
 [features]
-default = ["local"]
-local = ["dep:cmake"]   # Compile llama.cpp from vendored source (GPU auto-detected)
-download = ["dep:ureq", "dep:sha2"]  # Enable model download from HuggingFace
-anthropic = ["dep:ureq", "dep:serde", "dep:serde_json"]   # Enable Anthropic (Claude) cloud provider
-openai = ["dep:ureq", "dep:serde", "dep:serde_json"]      # Enable OpenAI (GPT) cloud provider
-google = ["dep:ureq", "dep:serde", "dep:serde_json"]       # Enable Google (Gemini) cloud provider
+default = ["anthropic", "openai", "google"]
+local = ["dep:cmake"]
+download = ["dep:ureq", "dep:sha2"]
+anthropic = ["dep:ureq", "dep:serde_json"]
+openai = ["dep:ureq", "dep:serde_json"]
+google = ["dep:ureq", "dep:serde_json"]
+testkit = []
 
 [build-dependencies]
 cmake = { version = "0.1", optional = true }
 
 [dependencies]
-thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 tracing = { workspace = true }
 ureq = { workspace = true, optional = true }
-sha2 = { workspace = true, optional = true }
-serde = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 tempfile = { workspace = true }

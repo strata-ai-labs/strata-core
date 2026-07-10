@@ -1,16 +1,48 @@
-//! Arrow interoperability layer for Strata.
-//!
-//! Provides import/export between Strata primitives and Apache Arrow RecordBatches,
-//! with file I/O support for Parquet, CSV, and JSONL formats.
+//! Arrow import/export helpers for the executor command boundary.
 
-mod export;
-mod ingest;
-mod reader;
-mod schema;
-mod writer;
+pub(crate) mod export;
+pub(crate) mod format;
+pub(crate) mod import;
+pub(crate) mod reader;
+pub(crate) mod schema;
+pub(crate) mod writer;
 
-pub use export::{export_to_batches, value_to_string, ExportSource};
-pub use ingest::{ingest_json, ingest_kv, ingest_vector, ImportResult};
-pub use reader::read_file;
-pub use schema::{arrow_to_value, resolve_mapping, row_to_json, ImportMapping, ImportPrimitive};
-pub use writer::{detect_format, write_file, FileFormat};
+use crate::error::{ExecutorError, ExecutorResult};
+
+fn invalid_input(code: &'static str, message: impl Into<String>) -> ExecutorError {
+    ExecutorError::invalid_input(code, message)
+}
+
+fn not_found(code: &'static str, message: impl Into<String>) -> ExecutorError {
+    ExecutorError::not_found(code, message)
+}
+
+fn io_error(message: impl Into<String>) -> ExecutorError {
+    ExecutorError::new(
+        crate::ExecutorErrorClass::Unavailable,
+        "unavailable.executor.arrow_io",
+        true,
+        message,
+    )
+}
+
+fn internal_error(message: impl Into<String>) -> ExecutorError {
+    ExecutorError::new(
+        crate::ExecutorErrorClass::Internal,
+        "internal.executor.arrow",
+        false,
+        message,
+    )
+}
+
+fn unexpected_output(command: &'static str) -> ExecutorError {
+    internal_error(format!("unexpected output for {command}"))
+}
+
+fn required_option<T>(
+    value: Option<T>,
+    code: &'static str,
+    message: &'static str,
+) -> ExecutorResult<T> {
+    value.ok_or_else(|| invalid_input(code, message))
+}

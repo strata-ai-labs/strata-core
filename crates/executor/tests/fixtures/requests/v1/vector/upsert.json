@@ -1,0 +1,12 @@
+{
+  "type": "vector_upsert",
+  "collection": "docs",
+  "key": "doc-a",
+  "vector": [
+    1.0,
+    0.0
+  ],
+  "metadata": {
+    "kind": "doc"
+  }
+}

@@ -15,6 +15,7 @@ use std::sync::Mutex;
 use tracing::info;
 
 use crate::llama::context::LlamaCppContext;
+use crate::llama::ffi::llama_api_lock;
 use crate::InferenceError;
 
 /// High-level ranking engine backed by llama.cpp.
@@ -113,6 +114,7 @@ impl RankingEngine {
             .ctx
             .lock()
             .map_err(|e| InferenceError::LlamaCpp(format!("mutex poisoned: {}", e)))?;
+        let _api_guard = llama_api_lock();
 
         let mut scores = Vec::with_capacity(passages.len());
 
@@ -144,12 +146,9 @@ impl RankingEngine {
         // query already provides one (non-empty query_tokens starts with BOS).
         let mut tokens = query_tokens;
         let has_query_bos = !tokens.is_empty() && tokens[0] == ctx.bos_id;
-        let passage_start =
-            if has_query_bos && !passage_tokens.is_empty() && passage_tokens[0] == ctx.bos_id {
-                1
-            } else {
-                0
-            };
+        let passage_start = usize::from(
+            has_query_bos && !passage_tokens.is_empty() && passage_tokens[0] == ctx.bos_id,
+        );
         tokens.extend_from_slice(&passage_tokens[passage_start..]);
 
         // Truncate to context size, preserving the trailing [SEP] when

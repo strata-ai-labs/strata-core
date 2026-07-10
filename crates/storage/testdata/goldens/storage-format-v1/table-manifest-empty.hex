@@ -1,0 +1,10 @@
+# Empty durable table manifest.
+#
+# branch_id: 11111111-1111-1111-1111-111111111111
+# branch_generation: absent
+# manifest_sequence: 1
+# levels/inherited_layers/extensions: empty
+53 54 54 4d 01 00 00 00 11 11 11 11 11 11 11 11
+11 11 11 11 11 11 11 11 00 00 00 00 00 00 00 00
+00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+00 00 00 00 00 b4 4d a8 30

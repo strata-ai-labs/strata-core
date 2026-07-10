@@ -1,8 +1,34 @@
+//! Public inference runtime and provider API.
+
+#![cfg_attr(all(not(feature = "local"), not(test)), deny(unsafe_code))]
+#![allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::case_sensitive_file_extension_comparisons,
+    clippy::doc_link_with_quotes,
+    clippy::doc_markdown,
+    clippy::float_cmp,
+    clippy::if_same_then_else,
+    clippy::manual_let_else,
+    clippy::manual_string_new,
+    clippy::match_same_arms,
+    clippy::needless_raw_string_hashes,
+    clippy::needless_pass_by_value,
+    clippy::redundant_closure_for_method_calls,
+    clippy::single_match_else,
+    clippy::struct_excessive_bools,
+    clippy::uninlined_format_args,
+    clippy::unused_self,
+    clippy::used_underscore_binding
+)]
+
+pub mod api;
 mod error;
 pub mod registry;
+pub mod runtime;
 
 #[cfg(feature = "local")]
-pub mod llama;
+mod llama;
 
 #[cfg(feature = "local")]
 mod embed;
@@ -29,8 +55,13 @@ mod provider;
 ))]
 mod generate;
 
-pub use error::InferenceError;
+pub use error::{InferenceError, InferenceErrorClass};
 pub use registry::{ModelInfo, ModelRegistry, ModelTask};
+pub use runtime::{
+    EmbedRequest, EmbedResponse, EmbedRuntimeOutcome, InferenceCapability, InferenceRuntime,
+    InferenceRuntimeConfig, ModelCacheStatus, PullModelOutput, RankRequest, RankResponse,
+    RankRuntimeOutcome,
+};
 
 #[cfg(feature = "local")]
 pub use embed::EmbeddingEngine;
@@ -53,15 +84,24 @@ use std::fmt;
 use std::str::FromStr;
 
 /// A request for text generation, provider-agnostic.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct GenerateRequest {
+    /// Input prompt text.
     pub prompt: String,
+    /// Maximum number of completion tokens to produce.
     pub max_tokens: usize,
+    /// Sampling temperature.
     pub temperature: f32,
+    /// Top-k sampling cutoff for providers that support it.
     pub top_k: usize,
+    /// Nucleus sampling cutoff for providers that support it.
     pub top_p: f32,
+    /// Optional deterministic sampling seed for providers that support it.
     pub seed: Option<u64>,
+    /// String stop sequences.
     pub stop_sequences: Vec<String>,
+    /// Token-id stop sequences for local providers.
     pub stop_tokens: Vec<u32>,
     /// Optional GBNF grammar string for constrained generation.
     ///
@@ -88,20 +128,29 @@ impl Default for GenerateRequest {
 }
 
 /// The result of a generation request.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GenerateResponse {
+    /// Generated output text.
     pub text: String,
+    /// Why generation stopped.
     pub stop_reason: StopReason,
+    /// Provider-reported prompt token count.
     pub prompt_tokens: usize,
+    /// Provider-reported completion token count.
     pub completion_tokens: usize,
 }
 
 /// Why generation stopped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StopReason {
+    /// Generation reached a stop token or stop sequence.
     StopToken,
+    /// Generation reached the configured maximum token count.
     MaxTokens,
+    /// Generation reached the model context limit.
     ContextLength,
+    /// Generation was cancelled by provider policy or caller control.
     Cancelled,
 }
 
@@ -117,11 +166,17 @@ impl fmt::Display for StopReason {
 }
 
 /// Which inference provider to use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
+    /// Local GGUF model provider.
     Local,
+    /// Anthropic cloud provider.
     Anthropic,
+    /// OpenAI cloud provider.
+    #[serde(rename = "openai")]
     OpenAI,
+    /// Google Gemini cloud provider.
     Google,
 }
 
@@ -255,12 +310,32 @@ pub fn parse_model_spec(spec: &str) -> Result<(ProviderKind, String), InferenceE
 }
 
 /// Environment variable name for a provider's API key.
-fn api_key_env_var(provider: ProviderKind) -> &'static str {
+#[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
+pub(crate) fn api_key_env_var(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Anthropic => "ANTHROPIC_API_KEY",
         ProviderKind::OpenAI => "OPENAI_API_KEY",
         ProviderKind::Google => "GOOGLE_API_KEY",
         ProviderKind::Local => "STRATA_LOCAL_API_KEY", // unused, but complete
+    }
+}
+
+pub(crate) fn generation_provider_feature_enabled(provider: ProviderKind) -> bool {
+    match provider {
+        ProviderKind::Local => cfg!(feature = "local"),
+        ProviderKind::Anthropic => cfg!(feature = "anthropic"),
+        ProviderKind::OpenAI => cfg!(feature = "openai"),
+        ProviderKind::Google => cfg!(feature = "google"),
+    }
+}
+
+#[cfg(any(feature = "openai", feature = "google"))]
+pub(crate) fn embedding_provider_feature_enabled(provider: ProviderKind) -> bool {
+    match provider {
+        ProviderKind::Local => cfg!(feature = "local"),
+        ProviderKind::OpenAI => cfg!(feature = "openai"),
+        ProviderKind::Google => cfg!(feature = "google"),
+        ProviderKind::Anthropic => false,
     }
 }
 
@@ -291,7 +366,13 @@ pub fn load(model_spec: &str) -> Result<Box<dyn InferenceEngine>, InferenceError
         ProviderKind::Local => Err(InferenceError::NotSupported(
             "local provider requires the 'local' feature".to_string(),
         )),
+        #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
         cloud_provider => {
+            if !generation_provider_feature_enabled(cloud_provider) {
+                return Err(InferenceError::NotSupported(format!(
+                    "{cloud_provider} provider not enabled"
+                )));
+            }
             let env_var = api_key_env_var(cloud_provider);
             let api_key = std::env::var(env_var).map_err(|_| {
                 InferenceError::Provider(format!(
@@ -304,6 +385,13 @@ pub fn load(model_spec: &str) -> Result<Box<dyn InferenceEngine>, InferenceError
                 api_key,
                 model,
             )?))
+        }
+        #[cfg(not(any(feature = "anthropic", feature = "openai", feature = "google")))]
+        other => {
+            let _ = model;
+            Err(InferenceError::NotSupported(format!(
+                "{other} provider not enabled"
+            )))
         }
     }
 }
@@ -348,6 +436,11 @@ pub fn load_embedder(
 
         #[cfg(any(feature = "openai", feature = "google"))]
         cloud_provider => {
+            if !embedding_provider_feature_enabled(cloud_provider) {
+                return Err(InferenceError::NotSupported(format!(
+                    "{cloud_provider} embedding provider not enabled"
+                )));
+            }
             // Use provided API key, fall back to environment variable.
             let key = match _api_key.filter(|k| !k.is_empty()) {
                 Some(k) => k.to_string(),
@@ -404,6 +497,42 @@ pub fn load_ranker(model_spec: &str) -> Result<Box<dyn InferenceEngine>, Inferen
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
+    use std::ffi::OsString;
+    #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
+    use std::sync::Mutex;
+
+    #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
+    fn with_env_set<T>(env_var: &str, value: &str, test: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let previous = std::env::var_os(env_var);
+        std::env::set_var(env_var, value);
+        let result = test();
+        restore_env(env_var, previous);
+        result
+    }
+
+    #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
+    fn with_env_unset<T>(env_var: &str, test: impl FnOnce() -> T) -> T {
+        let _guard = ENV_LOCK.lock().expect("env lock poisoned");
+        let previous = std::env::var_os(env_var);
+        std::env::remove_var(env_var);
+        let result = test();
+        restore_env(env_var, previous);
+        result
+    }
+
+    #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
+    fn restore_env(env_var: &str, previous: Option<OsString>) {
+        if let Some(previous) = previous {
+            std::env::set_var(env_var, previous);
+        } else {
+            std::env::remove_var(env_var);
+        }
+    }
 
     // --- GenerateRequest ---
 
@@ -802,14 +931,44 @@ string ::= "\"" [a-zA-Z]+ "\""
 
     // --- load ---
 
+    #[cfg(feature = "openai")]
+    fn enabled_generation_spec() -> (&'static str, &'static str, &'static str) {
+        (
+            "OPENAI_API_KEY",
+            "sk-test-fake-key-12345",
+            "openai:gpt-4o-mini",
+        )
+    }
+
+    #[cfg(all(not(feature = "openai"), feature = "anthropic"))]
+    fn enabled_generation_spec() -> (&'static str, &'static str, &'static str) {
+        (
+            "ANTHROPIC_API_KEY",
+            "sk-ant-test-fake-key-12345",
+            "anthropic:claude-sonnet-4-6",
+        )
+    }
+
+    #[cfg(all(
+        not(feature = "openai"),
+        not(feature = "anthropic"),
+        feature = "google"
+    ))]
+    fn enabled_generation_spec() -> (&'static str, &'static str, &'static str) {
+        (
+            "GOOGLE_API_KEY",
+            "AIza-test-fake-key-12345",
+            "google:gemini-2.5-flash",
+        )
+    }
+
     #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
     #[test]
     fn model_spec_load_cloud_missing_api_key() {
-        // Ensure the env var is unset for this test
-        std::env::remove_var("ANTHROPIC_API_KEY");
-        let err = load("anthropic:claude-sonnet-4-6").unwrap_err();
+        let (env_var, _api_key, model_spec) = enabled_generation_spec();
+        let err = with_env_unset(env_var, || load(model_spec).unwrap_err());
         assert!(
-            err.to_string().contains("ANTHROPIC_API_KEY"),
+            err.to_string().contains(env_var),
             "error should mention env var: {err}"
         );
     }
@@ -817,10 +976,8 @@ string ::= "\"" [a-zA-Z]+ "\""
     #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
     #[test]
     fn model_spec_load_cloud_with_api_key_constructs() {
-        // Set a fake key — construction should succeed (actual API call isn't made)
-        std::env::set_var("OPENAI_API_KEY", "sk-test-fake-key-12345");
-        let result = load("openai:gpt-4o-mini");
-        std::env::remove_var("OPENAI_API_KEY");
+        let (env_var, api_key, model_spec) = enabled_generation_spec();
+        let result = with_env_set(env_var, api_key, || load(model_spec));
         assert!(
             result.is_ok(),
             "load should succeed with API key set: {:?}",
@@ -833,10 +990,9 @@ string ::= "\"" [a-zA-Z]+ "\""
     #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
     #[test]
     fn trait_load_returns_box_dyn() {
-        // load() should return Box<dyn InferenceEngine>
-        std::env::set_var("OPENAI_API_KEY", "sk-test-fake-key");
-        let engine: Box<dyn InferenceEngine> = load("openai:gpt-4o-mini").unwrap();
-        std::env::remove_var("OPENAI_API_KEY");
+        let (env_var, api_key, model_spec) = enabled_generation_spec();
+        let engine: Box<dyn InferenceEngine> =
+            with_env_set(env_var, api_key, || load(model_spec).unwrap());
         // Cloud engine should not support embed
         let err = engine.embed("test").unwrap_err();
         assert!(
@@ -848,9 +1004,9 @@ string ::= "\"" [a-zA-Z]+ "\""
     #[cfg(feature = "openai")]
     #[test]
     fn load_embedder_openai_constructs_with_api_key() {
-        std::env::set_var("OPENAI_API_KEY", "sk-test-embed-key");
-        let result = load_embedder("openai:text-embedding-3-small", None);
-        std::env::remove_var("OPENAI_API_KEY");
+        let result = with_env_set("OPENAI_API_KEY", "sk-test-embed-key", || {
+            load_embedder("openai:text-embedding-3-small", None)
+        });
         assert!(
             result.is_ok(),
             "load_embedder should succeed for OpenAI: {:?}",
@@ -864,8 +1020,9 @@ string ::= "\"" [a-zA-Z]+ "\""
     #[cfg(feature = "openai")]
     #[test]
     fn load_embedder_openai_missing_api_key() {
-        std::env::remove_var("OPENAI_API_KEY");
-        let err = load_embedder("openai:text-embedding-3-small", None).unwrap_err();
+        let err = with_env_unset("OPENAI_API_KEY", || {
+            load_embedder("openai:text-embedding-3-small", None).unwrap_err()
+        });
         assert!(
             err.to_string().contains("OPENAI_API_KEY"),
             "error should mention env var: {err}"
@@ -875,9 +1032,9 @@ string ::= "\"" [a-zA-Z]+ "\""
     #[cfg(feature = "google")]
     #[test]
     fn load_embedder_google_constructs_with_api_key() {
-        std::env::set_var("GOOGLE_API_KEY", "AIza-test-embed-key");
-        let result = load_embedder("google:text-embedding-004", None);
-        std::env::remove_var("GOOGLE_API_KEY");
+        let result = with_env_set("GOOGLE_API_KEY", "AIza-test-embed-key", || {
+            load_embedder("google:text-embedding-004", None)
+        });
         assert!(
             result.is_ok(),
             "load_embedder should succeed for Google: {:?}",
@@ -890,8 +1047,9 @@ string ::= "\"" [a-zA-Z]+ "\""
     #[cfg(feature = "google")]
     #[test]
     fn load_embedder_google_missing_api_key() {
-        std::env::remove_var("GOOGLE_API_KEY");
-        let err = load_embedder("google:text-embedding-004", None).unwrap_err();
+        let err = with_env_unset("GOOGLE_API_KEY", || {
+            load_embedder("google:text-embedding-004", None).unwrap_err()
+        });
         assert!(
             err.to_string().contains("GOOGLE_API_KEY"),
             "error should mention env var: {err}"
@@ -901,9 +1059,9 @@ string ::= "\"" [a-zA-Z]+ "\""
     #[cfg(feature = "anthropic")]
     #[test]
     fn load_embedder_anthropic_returns_not_supported() {
-        std::env::set_var("ANTHROPIC_API_KEY", "sk-ant-test");
-        let err = load_embedder("anthropic:some-model", None).unwrap_err();
-        std::env::remove_var("ANTHROPIC_API_KEY");
+        let err = with_env_set("ANTHROPIC_API_KEY", "sk-ant-test", || {
+            load_embedder("anthropic:some-model", None).unwrap_err()
+        });
         assert!(
             err.to_string().contains("Anthropic"),
             "error should mention Anthropic: {err}"
@@ -941,9 +1099,9 @@ string ::= "\"" [a-zA-Z]+ "\""
     #[cfg(any(feature = "anthropic", feature = "openai", feature = "google"))]
     #[test]
     fn trait_rank_default_returns_not_supported() {
-        std::env::set_var("OPENAI_API_KEY", "sk-test-key");
-        let engine: Box<dyn InferenceEngine> = load("openai:gpt-4o-mini").unwrap();
-        std::env::remove_var("OPENAI_API_KEY");
+        let (env_var, api_key, model_spec) = enabled_generation_spec();
+        let engine: Box<dyn InferenceEngine> =
+            with_env_set(env_var, api_key, || load(model_spec).unwrap());
         let err = engine.rank("query", &["passage"]).unwrap_err();
         assert!(
             err.to_string().contains("not supported"),
@@ -958,9 +1116,9 @@ string ::= "\"" [a-zA-Z]+ "\""
         // Cloud GenerationEngine via trait should support generate (not return NotSupported)
         // We can't actually call generate without a real API key hitting the server,
         // but we can verify the trait object is constructable
-        std::env::set_var("OPENAI_API_KEY", "sk-test-key");
-        let engine: Box<dyn InferenceEngine> = load("openai:gpt-4o-mini").unwrap();
-        std::env::remove_var("OPENAI_API_KEY");
+        let (env_var, api_key, model_spec) = enabled_generation_spec();
+        let engine: Box<dyn InferenceEngine> =
+            with_env_set(env_var, api_key, || load(model_spec).unwrap());
         // Verify it's a trait object we can hold
         assert!(!engine.supports_embed());
         assert!(engine.supports_generate());

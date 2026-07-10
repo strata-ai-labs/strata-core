@@ -7,7 +7,7 @@
 //! Anthropic does not offer an embedding API — attempting to construct a
 //! `CloudEmbeddingEngine` with `ProviderKind::Anthropic` returns `NotSupported`.
 
-use crate::{InferenceError, ProviderKind};
+use crate::{embedding_provider_feature_enabled, InferenceError, ProviderKind};
 
 /// Embedding engine backed by a cloud provider (OpenAI or Google).
 ///
@@ -52,7 +52,13 @@ impl CloudEmbeddingEngine {
                     "use EmbeddingEngine for local models, not CloudEmbeddingEngine".to_string(),
                 ));
             }
-            ProviderKind::OpenAI | ProviderKind::Google => {}
+            ProviderKind::OpenAI | ProviderKind::Google => {
+                if !embedding_provider_feature_enabled(provider) {
+                    return Err(InferenceError::NotSupported(format!(
+                        "{provider} embedding provider not enabled"
+                    )));
+                }
+            }
         }
 
         if api_key.trim().is_empty() {
@@ -245,6 +251,8 @@ impl crate::InferenceEngine for CloudEmbeddingEngine {
             "text-embedding-3-large" => 3072,
             "text-embedding-ada-002" => 1536,
             "text-embedding-004" => 768, // Google
+            "gemini-embedding-001" => 3072,
+            "gemini-embedding-2" => 3072,
             _ => 0,
         }
     }

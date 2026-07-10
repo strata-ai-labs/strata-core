@@ -1,0 +1,13 @@
+# format: wal_record
+# status: historical pre-M3F fixture, not a valid V1 row-native WAL record
+# version: 1
+# record_len: 41
+# length_crc32: 0xfc7e3fa8
+# commit_version: 41
+# branch_id: 00010203-0405-0607-0809-0a0b0c0d0e0f
+# commit_timestamp_micros: 1700000000123456
+# commit_payload_len: 0
+# payload_crc32: 0x15542544
+29 00 00 00 01 a8 3f 7e fc 29 00 00 00 00 00 00
+00 00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e
+0f 40 22 20 18 24 0a 06 00 44 25 54 15

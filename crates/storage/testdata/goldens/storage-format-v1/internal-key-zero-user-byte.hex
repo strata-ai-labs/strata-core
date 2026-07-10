@@ -1,0 +1,14 @@
+# format: internal_key
+# branch_id: 10111213-1415-1617-1819-1a1b1c1d1e1f
+# space: timeline
+# storage_space_id: 0x01
+# user_key_bytes: 00 41 00
+# user_key_escaped: 00 01 41 00 01 00 00
+# commit_version: 7
+# descending_commit_suffix: bitwise_not_be(7) = ff ff ff ff ff ff ff f8
+# hex:
+10 11 12 13 14 15 16 17 18 19 1a 1b 1c 1d 1e 1f
+74 69 6d 65 6c 69 6e 65 00
+01
+00 01 41 00 01 00 00
+ff ff ff ff ff ff ff f8

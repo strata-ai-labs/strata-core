@@ -1,0 +1,14 @@
+# format: internal_key
+# branch_id: 00010203-0405-0607-0809-0a0b0c0d0e0f
+# space: default
+# storage_space_id: 0x20
+# user_key_utf8: alpha
+# user_key_bytes: 61 6c 70 68 61
+# commit_version: 42
+# descending_commit_suffix: bitwise_not_be(42) = ff ff ff ff ff ff ff d5
+# hex:
+00 01 02 03 04 05 06 07 08 09 0a 0b 0c 0d 0e 0f
+64 65 66 61 75 6c 74 00
+20
+61 6c 70 68 61 00 00
+ff ff ff ff ff ff ff d5

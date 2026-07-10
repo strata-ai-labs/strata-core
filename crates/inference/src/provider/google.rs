@@ -27,7 +27,7 @@ impl std::fmt::Debug for GoogleProvider {
 }
 
 impl GoogleProvider {
-    pub fn new(api_key: String, model: String) -> Result<Self, InferenceError> {
+    pub(crate) fn new(api_key: String, model: String) -> Result<Self, InferenceError> {
         if api_key.trim().is_empty() {
             return Err(InferenceError::Provider(
                 "Google API key is empty".to_string(),
@@ -41,7 +41,10 @@ impl GoogleProvider {
         Ok(Self { api_key, model })
     }
 
-    pub fn generate(&self, request: &GenerateRequest) -> Result<GenerateResponse, InferenceError> {
+    pub(crate) fn generate(
+        &self,
+        request: &GenerateRequest,
+    ) -> Result<GenerateResponse, InferenceError> {
         if request.max_tokens == 0 {
             return Err(InferenceError::Provider(
                 "max_tokens must be greater than 0".to_string(),
@@ -70,14 +73,14 @@ impl GoogleProvider {
         parse_response_json(&response_body)
     }
 
-    pub fn model(&self) -> &str {
+    pub(crate) fn model(&self) -> &str {
         &self.model
     }
 }
 
 /// Build the full URL with the model name (API key sent via header).
 pub(crate) fn build_url(model: &str) -> String {
-    format!("{API_BASE}/{model}:generateContent")
+    format!("{API_BASE}/{}:generateContent", model_path(model))
 }
 
 /// Build the Google Gemini API request JSON.
@@ -221,12 +224,12 @@ pub(crate) fn parse_response_json(body: &str) -> Result<GenerateResponse, Infere
 
 /// Build the URL for the Google embedContent API (single text).
 pub(crate) fn build_embed_url(model: &str) -> String {
-    format!("{API_BASE}/{model}:embedContent")
+    format!("{API_BASE}/{}:embedContent", model_path(model))
 }
 
 /// Build the URL for the Google batchEmbedContents API (multiple texts).
 pub(crate) fn build_batch_embed_url(model: &str) -> String {
-    format!("{API_BASE}/{model}:batchEmbedContents")
+    format!("{API_BASE}/{}:batchEmbedContents", model_path(model))
 }
 
 /// Build the Google embedContent request JSON for a single text.
@@ -241,11 +244,12 @@ pub(crate) fn build_embed_request_json(text: &str) -> String {
 
 /// Build the Google batchEmbedContents request JSON for multiple texts.
 pub(crate) fn build_batch_embed_request_json(model: &str, texts: &[&str]) -> String {
+    let model = format!("models/{}", model_name(model));
     let requests: Vec<serde_json::Value> = texts
         .iter()
         .map(|text| {
             serde_json::json!({
-                "model": format!("models/{model}"),
+                "model": model,
                 "content": {
                     "parts": [{"text": text}]
                 }
@@ -254,6 +258,14 @@ pub(crate) fn build_batch_embed_request_json(model: &str, texts: &[&str]) -> Str
         .collect();
 
     serde_json::json!({ "requests": requests }).to_string()
+}
+
+fn model_path(model: &str) -> &str {
+    model.strip_prefix("models/").unwrap_or(model)
+}
+
+fn model_name(model: &str) -> &str {
+    model.strip_prefix("models/").unwrap_or(model)
 }
 
 /// Parse the Google embedContent response JSON into a single embedding vector.

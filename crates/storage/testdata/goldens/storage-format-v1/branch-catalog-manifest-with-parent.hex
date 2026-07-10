@@ -1,0 +1,7 @@
+# BranchCatalogManifest with one entry that has a fork parent.
+# database_id [0xAB; 16], manifest_sequence 3.
+# Entry: branch [0x40; 16], generation 2, status Active, parent (source [0x10; 16], fork_version 9), created_at 10.
+5354424301000000abababababababababababababababab0300000000000000
+0100000040404040404040404040404040404040020000000000000000030000
+0000000000001010101010101010101010101010101009000000000000000a00
+000000000000b8fe0071

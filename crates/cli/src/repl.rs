@@ -1,262 +1,243 @@
-use std::io::{self, BufRead};
+//! Interactive and piped command execution.
 
+use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
+
+use clap::{CommandFactory, Parser};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
+use serde_json::json;
+use strata_executor::{Command, Executor, Output};
 
-use crate::app::{CliApp, ReplOutcome};
-use crate::parse;
+use crate::context::CommandContext;
+use crate::options::{Cli, Format};
+use crate::render::render_value;
+use crate::{execute_parsed_command, CliError};
 
-fn process_line(app: &mut CliApp, trimmed: &str) -> Result<ReplOutcome, String> {
-    let request = parse::parse_repl_line(trimmed, app.context())?;
-    app.execute_request(request)
-}
-
-fn print_outcome(outcome: ReplOutcome) {
-    match outcome {
-        ReplOutcome::Continue { rendered } => {
-            if let Some(rendered) = rendered {
-                if !rendered.is_empty() {
-                    println!("{rendered}");
-                }
-            }
-        }
-        ReplOutcome::Clear => {
-            print!("\x1B[2J\x1B[1;1H");
-        }
-        ReplOutcome::Exit => {}
-    }
-}
-
-/// Run the interactive CLI.
-pub(crate) fn run_repl(app: &mut CliApp) -> i32 {
-    let mut editor = match DefaultEditor::new() {
-        Ok(editor) => editor,
-        Err(error) => {
-            eprintln!("Failed to initialize line editor: {error}");
-            return 1;
-        }
-    };
-
-    if let Some(history_path) = history_path() {
-        let _ = editor.load_history(&history_path);
+pub(crate) fn run_repl(
+    executor: &mut Executor,
+    context: &mut CommandContext,
+    format: Format,
+) -> Result<(), CliError> {
+    let mut editor = DefaultEditor::new().map_err(|error| CliError::usage(error.to_string()))?;
+    let history = history_path();
+    if let Some(path) = history.as_ref() {
+        let _ = editor.load_history(path);
     }
 
     loop {
-        match editor.readline(&app.context().prompt()) {
+        match editor.readline(&context.prompt(executor.default_branch())) {
             Ok(line) => {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let _ = editor.add_history_entry(trimmed);
-
-                match process_line(app, trimmed) {
-                    Ok(ReplOutcome::Exit) => break,
-                    Ok(outcome) => print_outcome(outcome),
-                    Err(error) => eprintln!("{error}"),
+                let _ = editor.add_history_entry(line.as_str());
+                if handle_line(executor, context, &line, format)? == LineOutcome::Exit {
+                    break;
                 }
             }
-            Err(ReadlineError::Interrupted) => continue,
+            Err(ReadlineError::Interrupted) => {}
             Err(ReadlineError::Eof) => break,
-            Err(error) => {
-                eprintln!("Readline error: {error}");
-                return 1;
-            }
+            Err(error) => return Err(CliError::usage(error.to_string())),
         }
     }
 
-    if let Some(history_path) = history_path() {
-        let _ = editor.save_history(&history_path);
+    if let Some(path) = history.as_ref() {
+        let _ = editor.save_history(path);
     }
-
-    0
+    Ok(())
 }
 
-/// Run in stdin-driven pipe mode.
-pub(crate) fn run_pipe(app: &mut CliApp) -> i32 {
-    let stdin = io::stdin();
-    run_pipe_reader(app, stdin.lock())
-}
-
-fn run_pipe_reader<R: BufRead>(app: &mut CliApp, reader: R) -> i32 {
-    let mut exit_code = 0;
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(line) => line,
+pub(crate) fn run_pipe(
+    executor: &mut Executor,
+    context: &mut CommandContext,
+    format: Format,
+) -> Result<bool, CliError> {
+    let mut saw_error = false;
+    for line in io::stdin().lock().lines() {
+        let line = line?;
+        match handle_line(executor, context, &line, format) {
+            Ok(LineOutcome::Continue | LineOutcome::Exit) => {}
             Err(error) => {
-                eprintln!("Failed to read stdin: {error}");
-                return 1;
-            }
-        };
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        match process_line(app, trimmed) {
-            Ok(ReplOutcome::Exit) => break,
-            Ok(outcome) => print_outcome(outcome),
-            Err(error) => {
-                eprintln!("{error}");
-                exit_code = 1;
+                saw_error = true;
+                eprintln!("error: {error}");
             }
         }
     }
-
-    exit_code
+    Ok(saw_error)
 }
 
-fn history_path() -> Option<String> {
-    std::env::var_os("HOME")
-        .map(std::path::PathBuf::from)
-        .map(|path| path.join(".strata_history"))
-        .map(|path| path.to_string_lossy().to_string())
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LineOutcome {
+    Continue,
+    Exit,
+}
+
+fn handle_line(
+    executor: &mut Executor,
+    context: &mut CommandContext,
+    line: &str,
+    format: Format,
+) -> Result<LineOutcome, CliError> {
+    match parse_line(line)? {
+        ParsedLine::Empty => Ok(LineOutcome::Continue),
+        ParsedLine::Exit => Ok(LineOutcome::Exit),
+        ParsedLine::Clear => {
+            print!("\x1b[2J\x1b[H");
+            let _ = io::stdout().flush();
+            Ok(LineOutcome::Continue)
+        }
+        ParsedLine::Help => {
+            Cli::command().print_long_help().map_err(CliError::from)?;
+            println!();
+            Ok(LineOutcome::Continue)
+        }
+        ParsedLine::Use { branch, space } => {
+            validate_context(executor, &branch, space.as_deref())?;
+            context.set_branch(branch.clone());
+            context.set_space(space.clone());
+            render_value(
+                &json!({
+                    "type": "context",
+                    "data": {
+                        "branch": branch,
+                        "space": space.unwrap_or_else(|| context.space_or_default().to_owned())
+                    }
+                }),
+                format,
+            )?;
+            Ok(LineOutcome::Continue)
+        }
+        ParsedLine::Command(cli) => {
+            let scope = context.scope_with_overrides(cli.branch, cli.space);
+            let Some(command) = cli.command else {
+                return Ok(LineOutcome::Continue);
+            };
+            execute_parsed_command(executor, command, &scope, format)?;
+            Ok(LineOutcome::Continue)
+        }
+    }
+}
+
+fn parse_line(line: &str) -> Result<ParsedLine, CliError> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return Ok(ParsedLine::Empty);
+    }
+
+    let words = shlex::split(trimmed)
+        .ok_or_else(|| CliError::usage("could not parse command line quoting"))?;
+    if words.is_empty() {
+        return Ok(ParsedLine::Empty);
+    }
+
+    match words[0].as_str() {
+        "quit" | "exit" => return Ok(ParsedLine::Exit),
+        "clear" => return Ok(ParsedLine::Clear),
+        "help" if words.len() == 1 => return Ok(ParsedLine::Help),
+        "use" => return parse_use(&words),
+        _ => {}
+    }
+
+    let mut argv = Vec::with_capacity(words.len() + 1);
+    argv.push("strata".to_owned());
+    argv.extend(words);
+    Cli::try_parse_from(argv)
+        .map(|cli| ParsedLine::Command(Box::new(cli)))
+        .map_err(|error| CliError::usage(error.to_string()))
+}
+
+fn parse_use(words: &[String]) -> Result<ParsedLine, CliError> {
+    match words {
+        [_, branch_space] => {
+            if let Some((branch, space)) = branch_space.split_once('/') {
+                if branch.is_empty() || space.is_empty() {
+                    return Err(CliError::usage("usage: use <branch>/<space>"));
+                }
+                Ok(ParsedLine::Use {
+                    branch: branch.to_owned(),
+                    space: Some(space.to_owned()),
+                })
+            } else {
+                Ok(ParsedLine::Use {
+                    branch: branch_space.clone(),
+                    space: None,
+                })
+            }
+        }
+        [_, branch, space] => Ok(ParsedLine::Use {
+            branch: branch.clone(),
+            space: Some(space.clone()),
+        }),
+        _ => Err(CliError::usage("usage: use <branch> [space]")),
+    }
+}
+
+fn validate_context(
+    executor: &mut Executor,
+    branch: &str,
+    space: Option<&str>,
+) -> Result<(), CliError> {
+    let _ = executor.execute(Command::BranchGet {
+        branch: branch.to_owned(),
+    })?;
+    if let Some(space) = space {
+        let output = executor.execute(Command::SpaceExists {
+            branch: Some(branch.to_owned()),
+            space: space.to_owned(),
+        })?;
+        match output {
+            Output::Bool(true) => {}
+            Output::Bool(false) => {
+                return Err(CliError::usage(format!(
+                    "space `{space}` does not exist on branch `{branch}`"
+                )));
+            }
+            _ => {
+                return Err(CliError::usage(
+                    "space existence check returned an unexpected output",
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn history_path() -> Option<PathBuf> {
+    std::env::var_os("STRATA_HISTORY")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".strata_history"))
+        })
+}
+
+enum ParsedLine {
+    Empty,
+    Exit,
+    Clear,
+    Help,
+    Use {
+        branch: String,
+        space: Option<String>,
+    },
+    Command(Box<Cli>),
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
-
-    use strata_executor::{Command, Output, Session, Strata};
-
-    use super::{process_line, run_pipe_reader};
-    use crate::app::{CliApp, ReplOutcome};
-    use crate::context::Context;
-    use crate::render::RenderMode;
-
-    fn cache_app() -> CliApp {
-        let db = Strata::cache().expect("cache db should open");
-        let default_branch = db.current_branch().to_string();
-        let session = db.session().expect("session should open");
-        let context = Context::new(
-            default_branch.clone(),
-            default_branch,
-            "default".to_string(),
-        );
-        CliApp::new_for_test(db, session, context, RenderMode::Human)
-    }
-
-    fn kv_get(session: &mut Session, branch: &str, space: &str) -> Output {
-        session
-            .execute(Command::KvGet {
-                branch: Some(branch.into()),
-                space: Some(space.to_string()),
-                key: "k".to_string(),
-                as_of: None,
-            })
-            .expect("kv get should succeed")
-    }
+    use super::*;
 
     #[test]
-    fn process_line_handles_help_and_quit_meta_commands() {
-        let mut app = cache_app();
-
-        match process_line(&mut app, "help kv").expect("help should parse") {
-            ReplOutcome::Continue { rendered } => {
-                let rendered = rendered.expect("help should render");
-                assert!(rendered.contains("kv"));
-            }
-            _ => panic!("expected continue outcome"),
-        }
-
-        assert!(matches!(
-            process_line(&mut app, "quit").expect("quit should parse"),
-            ReplOutcome::Exit
-        ));
-    }
-
-    #[test]
-    fn process_line_use_updates_context_only_after_validation() {
-        let mut app = cache_app();
-
-        app.execute_command(Command::BranchCreate {
-            branch_id: Some("feature".into()),
-            metadata: None,
-        })
-        .expect("branch create should succeed");
-
-        assert!(matches!(
-            process_line(&mut app, "use feature analytics").expect("use should succeed"),
-            ReplOutcome::Continue { .. }
-        ));
-        assert_eq!(app.context().branch(), "feature");
-        assert_eq!(app.context().space(), "analytics");
-
-        let error = match process_line(&mut app, "use missing") {
-            Ok(_) => panic!("missing branch should fail"),
-            Err(error) => error,
+    fn parses_use_branch_and_space() {
+        let ParsedLine::Use { branch, space } = parse_line("use main docs").expect("parse") else {
+            panic!("expected use command");
         };
-        assert!(error.contains("Branch not found"));
-        assert_eq!(app.context().branch(), "feature");
+        assert_eq!(branch, "main");
+        assert_eq!(space.as_deref(), Some("docs"));
     }
 
     #[test]
-    fn process_line_use_preserves_current_space_when_omitted() {
-        let mut app = cache_app();
-
-        app.execute_command(Command::SpaceCreate {
-            branch: Some(app.context().branch().into()),
-            space: "analytics".to_string(),
-        })
-        .expect("space create should succeed");
-        app.execute_command(Command::BranchCreate {
-            branch_id: Some("feature".into()),
-            metadata: None,
-        })
-        .expect("branch create should succeed");
-
-        assert!(matches!(
-            process_line(&mut app, "use default analytics").expect("explicit use should succeed"),
-            ReplOutcome::Continue { .. }
-        ));
-        assert_eq!(app.context().space(), "analytics");
-
-        assert!(matches!(
-            process_line(&mut app, "use feature").expect("implicit-space use should succeed"),
-            ReplOutcome::Continue { .. }
-        ));
-        assert_eq!(app.context().branch(), "feature");
-        assert_eq!(app.context().space(), "analytics");
-    }
-
-    #[test]
-    fn run_pipe_reader_skips_blank_and_comment_lines() {
-        let mut app = cache_app();
-        let input = Cursor::new("# comment\n\nping\n");
-
-        assert_eq!(run_pipe_reader(&mut app, input), 0);
-    }
-
-    #[test]
-    fn run_pipe_reader_accumulates_failures_but_continues() {
-        let mut app = cache_app();
-        let input = Cursor::new("use missing\nkv put k 1\n");
-
-        assert_eq!(run_pipe_reader(&mut app, input), 1);
-        let branch = app.context().branch().to_string();
-        let space = app.context().space().to_string();
-        assert!(matches!(
-            kv_get(app.session_mut(), &branch, &space),
-            Output::MaybeVersioned(Some(_))
-        ));
-    }
-
-    #[test]
-    fn run_pipe_reader_stops_after_quit() {
-        let mut app = cache_app();
-        let input = Cursor::new("quit\nuse missing\n");
-
-        assert_eq!(run_pipe_reader(&mut app, input), 0);
-        assert_eq!(app.context().branch(), "default");
-    }
-
-    #[test]
-    fn run_pipe_reader_reports_failure_before_quit() {
-        let mut app = cache_app();
-        let input = Cursor::new("use missing\nquit\nkv put k 1\n");
-
-        assert_eq!(run_pipe_reader(&mut app, input), 1);
-        assert_eq!(app.context().branch(), "default");
+    fn parses_repl_command() {
+        let ParsedLine::Command(cli) = parse_line("kv put a b").expect("parse") else {
+            panic!("expected executor command");
+        };
+        assert!(cli.command.is_some());
     }
 }

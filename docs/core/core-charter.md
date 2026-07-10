@@ -13,11 +13,11 @@ that belongs in lower or higher layers. Before restructuring `storage` or
 This document is not a migration plan. It is the target scope definition that
 should guide future cleanup.
 
-For the staged rewrite plan, see
-[core-minimal-surface-implementation-plan.md](./core-minimal-surface-implementation-plan.md).
+For the historical staged rewrite plan, see
+[archive/core-minimal-surface-implementation-plan.md](./archive/core-minimal-surface-implementation-plan.md).
 
-For the broader CO3 error-ownership review, see
-[core-error-review.md](./core-error-review.md).
+For the broader historical error-ownership review, see
+[archive/core-error-review.md](./archive/core-error-review.md).
 
 ## Core Thesis
 
@@ -371,14 +371,11 @@ If `engine` is rebuilt on top of an overgrown `core`, then the new `engine`
 will inherit the same bad lower boundary and we will mistake dependency cleanup
 for architectural cleanup.
 
-The likely migration shape is:
-
-1. define the clean `core` target
-2. rename the current crate to `strata-core-legacy`
-3. create a new minimal `strata-core`
-4. move only true bottom-layer language into it
-5. move the rest downward or upward to its real owner
-6. then restructure `engine` against that cleaned foundation
+The historical migration used a temporary compatibility split to reach the
+current small `strata-core` crate. V1 should not recreate that transition. It
+should start from the current crate, keep only true bottom-layer language, move
+the rest downward or upward to its real owner, and then restructure `engine`
+against that cleaned foundation.
 
 ## Non-Goals
 

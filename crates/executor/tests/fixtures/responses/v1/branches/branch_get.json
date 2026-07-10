@@ -1,0 +1,19 @@
+{
+  "type": "branch",
+  "data": {
+    "name": "main",
+    "branch_id": "00000000-0000-0000-0000-000000000000",
+    "generation": 1,
+    "status": "active",
+    "parent": {
+      "name": "default",
+      "branch_id": "00000000-0000-0000-0000-000000000000",
+      "generation": 1,
+      "fork_version": 7,
+      "fork_timestamp": 99
+    },
+    "created_at": 7,
+    "deleted_at": null,
+    "state_revision": 1
+  }
+}

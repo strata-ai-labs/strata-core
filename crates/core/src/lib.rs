@@ -1,18 +1,14 @@
-//! Minimal foundational core for Strata.
+//! Shared identity and ordering atoms for Strata.
 //!
-//! This crate defines the foundational shared language of the system.
-//! It is the home for stable identifiers, values, contract DTOs, and other
-//! low-level types that every higher layer must agree on.
+//! This crate intentionally keeps a narrow public surface. It owns only the
+//! identity and ordering atoms that must be shared below engine policy.
 
-pub mod branch;
-pub mod contract;
-pub mod error;
-pub mod id;
-pub mod value;
+#![deny(unsafe_code)]
 
-pub use contract::{
-    BranchName, BranchNameError, EntityRef, PrimitiveType, Timestamp, Version, Versioned,
-    VersionedHistory, VersionedValue, MAX_BRANCH_NAME_LENGTH,
-};
-pub use id::{BranchId, CommitVersion, TxnId};
-pub use value::Value;
+mod branch;
+mod time;
+mod version;
+
+pub use branch::{BranchId, BranchIdError};
+pub use time::{ParseTimestampError, Timestamp};
+pub use version::{CommitVersion, ParseCommitVersionError};

@@ -1,11 +1,18 @@
 //! Shared llama.cpp model/context lifecycle and tokenization helpers.
+//!
+//! llama.cpp reports counts as `i32`; converting them to `usize` at this
+//! boundary is the interface, not an accident.
+#![allow(clippy::cast_sign_loss)]
 
 use std::path::Path;
 use std::sync::Arc;
 
 use tracing::info;
 
-use super::ffi::*;
+use super::ffi::{
+    llama_api_lock, LlamaContext, LlamaCppApi, LlamaModel, LlamaToken, LlamaVocab,
+    LLAMA_POOLING_TYPE_MEAN, LLAMA_POOLING_TYPE_RANK,
+};
 use crate::InferenceError;
 
 /// Shared llama.cpp model and context state.
@@ -32,7 +39,7 @@ unsafe impl Send for LlamaCppContext {}
 
 impl LlamaCppContext {
     /// Load a model configured for embedding (pooling enabled).
-    pub fn load_for_embedding(path: &Path) -> Result<Self, InferenceError> {
+    pub(crate) fn load_for_embedding(path: &Path) -> Result<Self, InferenceError> {
         Self::load_pooled(path, LLAMA_POOLING_TYPE_MEAN, 512, "embedding")
     }
 
@@ -40,7 +47,7 @@ impl LlamaCppContext {
     ///
     /// Uses `LLAMA_POOLING_TYPE_RANK`, which causes `get_embeddings_seq` to
     /// return a single relevance score instead of an embedding vector.
-    pub fn load_for_ranking(path: &Path) -> Result<Self, InferenceError> {
+    pub(crate) fn load_for_ranking(path: &Path) -> Result<Self, InferenceError> {
         // One (query, passage) pair at a time. Batched ranking (multiple
         // pairs per encode call) would need n_seq_max > 1 plus per-token
         // seq_id assignment in rank_single.
@@ -54,6 +61,7 @@ impl LlamaCppContext {
         n_seq_max: u32,
         mode: &str,
     ) -> Result<Self, InferenceError> {
+        let _api_guard = llama_api_lock();
         let api = Arc::new(LlamaCppApi::load().map_err(InferenceError::LlamaCpp)?);
 
         let c_path = path_to_cstring(path)?;
@@ -132,10 +140,11 @@ impl LlamaCppContext {
     }
 
     /// Load a model configured for text generation.
-    pub fn load_for_generation(
+    pub(crate) fn load_for_generation(
         path: &Path,
         ctx_override: Option<usize>,
     ) -> Result<Self, InferenceError> {
+        let _api_guard = llama_api_lock();
         let api = Arc::new(LlamaCppApi::load().map_err(InferenceError::LlamaCpp)?);
 
         let c_path = path_to_cstring(path)?;
@@ -212,7 +221,7 @@ impl LlamaCppContext {
     }
 
     /// Tokenize text into token IDs.
-    pub fn tokenize(&self, text: &str, add_special: bool) -> Vec<LlamaToken> {
+    pub(crate) fn tokenize(&self, text: &str, add_special: bool) -> Vec<LlamaToken> {
         let text_bytes = text.as_bytes();
 
         // First call: get required buffer size
@@ -248,7 +257,7 @@ impl LlamaCppContext {
     }
 
     /// Detokenize token IDs back to text.
-    pub fn detokenize(&self, tokens: &[LlamaToken]) -> String {
+    pub(crate) fn detokenize(&self, tokens: &[LlamaToken]) -> String {
         if tokens.is_empty() {
             return String::new();
         }
@@ -293,7 +302,7 @@ impl LlamaCppContext {
     }
 
     /// Clear the KV cache / memory state for a fresh inference.
-    pub fn clear_memory(&self) {
+    pub(crate) fn clear_memory(&self) {
         let mem = self.api.get_memory(self.ctx);
         self.api.memory_clear(mem, true);
     }
@@ -301,6 +310,7 @@ impl LlamaCppContext {
 
 impl Drop for LlamaCppContext {
     fn drop(&mut self) {
+        let _api_guard = llama_api_lock();
         // Free context first (references model internals), then model
         self.api.free(self.ctx);
         self.api.model_free(self.model);
@@ -310,10 +320,11 @@ impl Drop for LlamaCppContext {
 /// Convert a Path to a CString for C API calls.
 fn path_to_cstring(path: &Path) -> Result<std::ffi::CString, InferenceError> {
     let path_str = path.to_str().ok_or_else(|| {
-        InferenceError::LlamaCpp(format!("path contains invalid UTF-8: {:?}", path))
+        InferenceError::LlamaCpp(format!("path contains invalid UTF-8: {}", path.display()))
     })?;
-    std::ffi::CString::new(path_str)
-        .map_err(|_| InferenceError::LlamaCpp(format!("path contains null byte: {:?}", path)))
+    std::ffi::CString::new(path_str).map_err(|_| {
+        InferenceError::LlamaCpp(format!("path contains null byte: {}", path.display()))
+    })
 }
 
 #[cfg(test)]

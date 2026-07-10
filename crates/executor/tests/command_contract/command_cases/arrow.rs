@@ -1,0 +1,101 @@
+use crate::support::*;
+
+pub(super) fn arrow_commands() -> Vec<Command> {
+    vec![
+        Command::ArrowImport {
+            branch: None,
+            space: None,
+            file_path: "input.csv".to_owned(),
+            format: None,
+            target: ArrowImportTarget::Json,
+            key_column: None,
+            value_column: None,
+            collection: None,
+        },
+        Command::ArrowExport {
+            branch: None,
+            space: None,
+            primitive: ArrowExportPrimitive::Kv,
+            format: ArrowFileFormat::Csv,
+            path: "kv.csv".to_owned(),
+            prefix: None,
+            limit: None,
+            collection: None,
+            graph: None,
+            event_type: None,
+        },
+    ]
+}
+
+pub(super) fn arrow_round_trip_edge_commands() -> Vec<Command> {
+    vec![
+        Command::ArrowImport {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            file_path: "input.parquet".to_owned(),
+            format: Some(ArrowFileFormat::Parquet),
+            target: ArrowImportTarget::Kv,
+            key_column: Some("id".to_owned()),
+            value_column: Some("payload".to_owned()),
+            collection: None,
+        },
+        Command::ArrowImport {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            file_path: "vectors.jsonl".to_owned(),
+            format: Some(ArrowFileFormat::Jsonl),
+            target: ArrowImportTarget::Vector,
+            key_column: Some("_id".to_owned()),
+            value_column: Some("emb".to_owned()),
+            collection: Some("docs".to_owned()),
+        },
+        Command::ArrowExport {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            primitive: ArrowExportPrimitive::Json,
+            format: ArrowFileFormat::Parquet,
+            path: "docs.parquet".to_owned(),
+            prefix: Some("doc-".to_owned()),
+            limit: Some(10),
+            collection: None,
+            graph: None,
+            event_type: None,
+        },
+        Command::ArrowExport {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            primitive: ArrowExportPrimitive::Event,
+            format: ArrowFileFormat::Jsonl,
+            path: "events.jsonl".to_owned(),
+            prefix: None,
+            limit: Some(10),
+            collection: None,
+            graph: None,
+            event_type: Some("audit.created".to_owned()),
+        },
+        Command::ArrowExport {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            primitive: ArrowExportPrimitive::Vector,
+            format: ArrowFileFormat::Jsonl,
+            path: "output.jsonl".to_owned(),
+            prefix: Some("doc-".to_owned()),
+            limit: Some(100),
+            collection: Some("docs".to_owned()),
+            graph: None,
+            event_type: None,
+        },
+        Command::ArrowExport {
+            branch: Some("feature".to_owned()),
+            space: Some("space-a".to_owned()),
+            primitive: ArrowExportPrimitive::Graph,
+            format: ArrowFileFormat::Csv,
+            path: "graph.csv".to_owned(),
+            prefix: Some("node-".to_owned()),
+            limit: Some(10),
+            collection: None,
+            graph: Some("deps".to_owned()),
+            event_type: None,
+        },
+    ]
+}

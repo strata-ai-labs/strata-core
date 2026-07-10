@@ -7,35 +7,52 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "Public command boundary for Strata"
+description = "Serializable command boundary for the rebuilt engine"
+
+[features]
+default = ["localfs", "arrow"]
+arrow = ["dep:arrow", "dep:parquet"]
+idl-tooling = ["dep:serde_yaml", "dep:sha2"]
+inference = ["dep:strata-inference"]
+inference-anthropic = ["inference"]
+inference-google = ["inference"]
+# Local model execution implies pull: the local story is catalog -> download
+# -> load, so `download` rides with `local` (cloud-only builds stay pull-free
+# and return unsupported from InferenceModelsPull).
+inference-local = [
+    "inference",
+    "strata-inference/local",
+    "strata-inference/download",
+]
+inference-openai = ["inference"]
+localfs = ["strata-engine/localfs"]
+testkit = ["strata-engine/testkit"]
+
+[dependencies]
+arrow = { workspace = true, optional = true }
+base64 = { workspace = true }
+parquet = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+strata-core = { path = "../core" }
+strata-engine = { path = "../engine", default-features = false }
+strata-inference = { path = "../inference", optional = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# std::time clocks trap on wasm32; time_compat routes through JS clocks.
+web-time = { workspace = true }
+
+[[bin]]
+name = "strata-idl"
+path = "src/bin/strata-idl/main.rs"
+required-features = ["idl-tooling"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
-
-[features]
-default = []
-embed = ["strata-intelligence/embed", "strata-engine/embed"]
-anthropic = ["embed", "strata-intelligence/anthropic"]
-openai = ["embed", "strata-intelligence/openai"]
-google = ["embed", "strata-intelligence/google"]
-arrow = ["dep:arrow", "dep:parquet"]
-
-[dependencies]
-strata-core = { package = "strata-core", path = "../core" }
-strata-engine = { path = "../engine" }
-strata-intelligence = { path = "../intelligence" }
-rmp-serde = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-strsim = { workspace = true }
-thiserror = { workspace = true }
-uuid = { workspace = true }
-base64 = { workspace = true }
-tracing = { workspace = true }
-libc = { workspace = true }
-arrow = { workspace = true, optional = true }
-parquet = { workspace = true, optional = true }
-
-[dev-dependencies]
-strata-engine = { path = "../engine", features = ["test-support"] }
-tempfile = { workspace = true }

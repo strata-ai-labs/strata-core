@@ -1,0 +1,19 @@
+# format: segment_metadata
+# format_version: 1
+# segment_id: 5
+# min_timestamp_micros: 1700000000000000
+# max_timestamp_micros: 1700000000123456
+# min_commit_version: 7
+# max_commit_version: 11
+# record_count: 2
+# crc32: 0x6d533f3f
+# hex:
+53 54 41 4d
+01 00 00 00
+05 00 00 00 00 00 00 00
+00 40 1e 18 24 0a 06 00
+40 22 20 18 24 0a 06 00
+07 00 00 00 00 00 00 00
+0b 00 00 00 00 00 00 00
+02 00 00 00 00 00 00 00
+3f 3f 53 6d

@@ -31,10 +31,6 @@ db.kv.get("user:1")                 # {"name": "Alice", "role": "engineer"}
 # Event log — immutable audit trail
 db.events.append("actions", {"tool": "search", "query": "docs"})
 
-# State cell — CAS-based coordination
-db.state.set("status", "idle")
-db.state.cas("status", "running", expected="idle")
-
 # JSON — structured documents with path-level mutations
 db.json.set("config", "$.model", "gpt-4")
 db.json.get("config", "$.model")    # "gpt-4"
@@ -51,13 +47,12 @@ db.checkout("experiment")
 db.merge("experiment")
 ```
 
-## Six Primitives
+## Five Primitives
 
 | Primitive | Purpose | Example |
 |-----------|---------|---------|
 | **KV Store** | Versioned key-value pairs with prefix scan | `db.kv.put("key", value)` |
 | **Event Log** | Append-only streams for replay and audit | `db.events.append("stream", event)` |
-| **State Cell** | Compare-and-swap for locks and counters | `db.state.cas("lock", new, expected=old)` |
 | **JSON Store** | Documents with atomic path-level updates | `db.json.set("doc", "$.path", value)` |
 | **Vector Store** | HNSW-indexed embeddings + metadata filtering | `coll.search(query_vec, k=10)` |
 | **Branch** | Fork, diff, and merge entire data states | `db.branches.create("experiment")` |
@@ -139,7 +134,7 @@ with db.transaction():
 
 ```
 +-----------------------------------------------------------+
-|  Strata API (KV, Event, State, JSON, Vector, Branch)      |
+|  Strata API (KV, Event, JSON, Vector, Branch)             |
 +-----------------------------------------------------------+
 |  Executor (Command dispatch, Session management)          |
 +-----------------------------------------------------------+
