@@ -1,181 +1,170 @@
-# StrataDB
+<div align="center">
 
-**The embedded database with git-like powers.**
+# Strata
 
-Branch, time-travel, merge, and search — across six built-in data primitives. Zero dependencies. Built in Rust.
+**Branch, time-travel, and search your data like code.**
 
-[Documentation](https://stratadb.org/docs/getting-started) | [Playground](https://stratadb.org/playground) | [Changelog](https://stratadb.org/changelog)
+The embedded database for the agent era — five data models, git-like branching,
+and built-in time travel. One binary, one directory, zero infrastructure.
+
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
+[![Version](https://img.shields.io/badge/version-1.0.0-brightgreen.svg)](https://stratadb.org/changelog)
+
+[Website](https://stratadb.org) · [Documentation](https://stratadb.org/docs) · [Playground](https://stratadb.org/playground)
+
+</div>
 
 ---
 
-## Install
+Strata is what a database looks like when versioning isn't an afterthought. It runs inside your process like SQLite — no server, no containers, no ops — but every write is versioned, any state can be forked instantly, and any moment in history can be read back, across key-value pairs, JSON documents, event logs, vectors, and graphs.
 
 ```bash
-pip install stratadb            # Python
-npm install @stratadb/core      # Node.js
-cargo install strata-cli        # Rust CLI
-brew install stratadb/tap/strata  # Homebrew
+strata ./mydb kv put user:ada '{"role":"engineer"}'
+
+strata ./mydb branch fork default experiment              # instant copy-on-write fork
+strata ./mydb --branch experiment kv put user:ada '{"role":"cto"}'
+
+strata ./mydb --branch experiment kv get user:ada         # {"role":"cto"}
+strata ./mydb kv get user:ada                             # {"role":"engineer"} — untouched
 ```
 
-## Quick Start
+Run an experiment on a fork. Let an agent loose on a branch. Read yesterday's state without having built a snapshot system. Delete the branch, and it never happened.
 
-```python
-from stratadb import Strata
+## Highlights
 
-db = Strata.open("./mydb")          # persistent (or Strata.cache() for in-memory)
+- 🌿 **Branch anything, instantly.** Forks are copy-on-write and constant-time regardless of database size. Branches isolate *all* data models at once.
+- ⏳ **Time travel is built in.** Every write gets a version and timestamp. Read any key, document, event range, vector search, or graph *as of* any past moment with `--as-of`.
+- 🧩 **Five data models, one engine.** KV, JSON documents, append-only events, vector search, and property graphs share one storage substrate, one branch model, one history.
+- 📦 **Embedded, like SQLite.** A single binary and a single data directory. Use it as a Rust library, a CLI, or an MCP server. It also runs in the browser via WebAssembly.
+- 🤖 **Agent-native.** `strata mcp serve` exposes the database to Claude, Cursor, or any MCP client. Every command emits clean JSON with `--json`. Events are hash-chained for tamper-evident audit trails.
+- 🛡️ **Durable by default.** Write-ahead log, crash recovery, and explicit durability modes — or run pure in-memory with `--cache` when persistence is noise.
 
-# KV — working memory
-db.kv.put("user:1", {"name": "Alice", "role": "engineer"})
-db.kv.get("user:1")                 # {"name": "Alice", "role": "engineer"}
+## The five data models
 
-# Event log — immutable audit trail
-db.events.append("actions", {"tool": "search", "query": "docs"})
+Point any command at a database path (or `--cache` for ephemeral in-memory). Every command accepts `--branch` and `--space`, and reads accept `--as-of`.
 
-# JSON — structured documents with path-level mutations
-db.json.set("config", "$.model", "gpt-4")
-db.json.get("config", "$.model")    # "gpt-4"
+**Key-value** — working memory with full version history:
 
-# Vectors — similarity search
-coll = db.vectors.create("docs", dimension=384)
-coll.upsert("d1", embedding, metadata={"title": "Hello"})
-coll.search(query_vec, k=5)
-
-# Branches — git-like data isolation
-db.branches.create("experiment")
-db.checkout("experiment")
-# ...make changes safely, then merge or delete
-db.merge("experiment")
+```bash
+strata ./mydb kv put user:ada '{"name":"Ada","role":"engineer"}'
+strata ./mydb kv history user:ada
+strata ./mydb kv list --prefix user:
 ```
 
-## Five Primitives
+**JSON documents** — path-level reads and writes, secondary indexes:
 
-| Primitive | Purpose | Example |
-|-----------|---------|---------|
-| **KV Store** | Versioned key-value pairs with prefix scan | `db.kv.put("key", value)` |
-| **Event Log** | Append-only streams for replay and audit | `db.events.append("stream", event)` |
-| **JSON Store** | Documents with atomic path-level updates | `db.json.set("doc", "$.path", value)` |
-| **Vector Store** | HNSW-indexed embeddings + metadata filtering | `coll.search(query_vec, k=10)` |
-| **Branch** | Fork, diff, and merge entire data states | `db.branches.create("experiment")` |
-
-Every primitive supports **version history** and **time-travel queries** out of the box.
-
-## Key Features
-
-### Branch and Merge
-
-Fork your data state in microseconds. Run experiments in isolation. Merge successful results back — production data stays untouched.
-
-```python
-db.branches.create("redesign")
-db.checkout("redesign")
-
-db.kv.put("config", {"theme": "new-look"})
-# main is completely untouched
-
-db.merge("redesign")  # worked? merge it
+```bash
+strata ./mydb json set config '$.model' '"claude"'
+strata ./mydb json get config '$.model'          # "claude"
 ```
 
-### Time Travel
+**Events** — append-only, hash-chained, verifiable:
 
-Query any past state with point-in-time snapshots. Every change is versioned with timestamps.
-
-```python
-snapshot = db.at(yesterday)
-old_config = snapshot.kv.get("config")
-
-db.kv.history("config")
-# [{"value": ..., "version": 3, "timestamp": ...}, ...]
+```bash
+strata ./mydb event append tool_call '{"tool":"search","query":"docs"}'
+strata ./mydb event list --event-type tool_call
+strata ./mydb event verify-chain                 # sequence density + hash linkage
 ```
 
-### Intelligent Search
+**Vectors** — similarity search with metadata filters:
 
-Natural language search across all data types with automatic query expansion and reranking.
-
-```python
-db.search("what changed before the deploy failed?",
-          mode="hybrid", expand=True, rerank=True)
+```bash
+strata ./mydb vector collection create embeddings 384
+strata ./mydb vector upsert embeddings doc1 @embedding.json --metadata '{"title":"intro"}'
+strata ./mydb vector query embeddings @query.json -k 5
 ```
 
-### Auto Embedding
+**Graph** — property graphs with real algorithms, not just traversal:
 
-One flag makes every write searchable via built-in MiniLM embeddings.
-
-```python
-db = Strata.open("./mydb", auto_embed=True)
-
-db.kv.put("user:1", {"name": "Alice", "role": "engineer"})
-db.search("who is an engineer?")  # finds user:1
+```bash
+strata ./mydb graph create social
+strata ./mydb graph add-edge social ada knows lin
+strata ./mydb graph pagerank social              # also: wcc, sssp, cdlp, lcc, neighbors
+strata ./mydb graph bulk-insert social --file graph.json
 ```
 
-### Transactions
+## Branching and time travel
 
-OCC with snapshot isolation. Atomic commits across multiple primitives.
+Branches are the core abstraction, not a bolt-on. A fork captures every data model at a point in time; branches then evolve independently.
 
-```python
-with db.transaction():
-    db.kv.put("balance:alice", 50)
-    db.kv.put("balance:bob", 150)
-    db.events.append("transfers", {"from": "bob", "to": "alice", "amount": 100})
+```bash
+# Agent A explores on its own branch; production is untouchable from there
+strata ./mydb branch fork default agent-a
+strata ./mydb --branch agent-a kv put plan '{"step":1}'
+
+# Time travel: read state as of any past timestamp — on any branch
+strata ./mydb kv get user:ada --as-of 1783660565504764
+strata ./mydb vector query embeddings @query.json --as-of 1783660565504764
+
+# Keep the branch, or make it never have happened
+strata ./mydb branch delete agent-a
 ```
 
-## Performance
+This is what makes Strata fit agents: exploration is cheap, mistakes are disposable, and every state an agent ever produced remains inspectable after the fact.
 
-| Durability Mode | Throughput | Latency | Data Loss on Crash |
-|-----------------|-----------|---------|-------------------|
-| **Cache** | 250K+ ops/sec | <3 us | All (in-memory) |
-| **Standard** | 50K+ ops/sec | <30 us | Last ~100ms |
-| **Always** | ~500 ops/sec | ~2 ms | None |
+## Built for agents
 
-- **P99 read latency:** <10 microseconds
-- **Branch creation:** <1 millisecond
-- **Multi-threaded:** 800K+ ops/sec across 4 threads
-
-## Architecture
-
-```
-+-----------------------------------------------------------+
-|  Strata API (KV, Event, JSON, Vector, Branch)             |
-+-----------------------------------------------------------+
-|  Executor (Command dispatch, Session management)          |
-+-----------------------------------------------------------+
-|  Engine (Database, Primitives, Transaction coordination)  |
-+-----+-----------------------+-----------------------------+
-      |                       |                       |
-+-----v-------+  +------------v----------+  +---------v----+
-| Concurrency |  |  Durability           |  | Intelligence |
-| (OCC, CAS)  |  |  (WAL, Snapshots)     |  | (BM25, RRF)  |
-+------+------+  +----------+------------+  +--------------+
-       |                     |
-+------v---------------------v---------+  +--------------+
-|  Storage (ShardedStore, DashMap)     |  |  Security    |
-+--------------------------------------+  +--------------+
-|  Core (Value types, BranchId, etc.)  |
-+--------------------------------------+
+```bash
+strata --db ./agent-memory mcp serve       # MCP server over stdio — plug into Claude, Cursor, ...
+strata ./mydb agents guide                 # self-describing surface, written for LLMs
+strata ./mydb kv get user:ada --json       # every command speaks compact JSON
 ```
 
-**Design choices:** unified storage for multi-primitive atomicity, branch-tagged keys for O(branch) isolation, optimistic concurrency (lock-free transactions), pluggable vector indexing (brute-force or HNSW per collection).
+Model execution is in the box too — run local GGUF models or call cloud providers for embeddings and generation:
 
-## SDKs
+```bash
+strata inference models list
+strata inference embed <model> "how do branches work?"
+strata inference generate <model> "summarize this changelog"
+```
 
-| Language | Package | Install |
-|----------|---------|---------|
-| **Python** | [stratadb](https://pypi.org/project/stratadb/) | `pip install stratadb` |
-| **Node.js** | [@stratadb/core](https://www.npmjs.com/package/@stratadb/core) | `npm install @stratadb/core` |
-| **Rust** | [stratadb](https://crates.io/crates/stratadb) | `cargo add stratadb` |
+## Use it as a library
 
-## Documentation
+The same engine, embedded in your Rust process:
 
-- [Getting Started](https://stratadb.org/docs/getting-started) — installation and first database
-- [Concepts](docs/concepts/index.md) — branches, primitives, transactions, durability, time-travel
-- [Guides](docs/guides/index.md) — per-primitive walkthroughs
-- [Cookbook](docs/cookbook/index.md) — agent state, multi-agent coordination, RAG, A/B testing, replay
-- [API Reference](docs/reference/api-quick-reference.md) — every method at a glance
-- [Python SDK](docs/reference/python-sdk.md) | [Node.js SDK](docs/reference/node-sdk.md) | [MCP Server](docs/reference/mcp-reference.md)
-- [Architecture](docs/architecture/index.md) — storage engine, durability, concurrency model
-- [FAQ](docs/faq.md) | [Troubleshooting](docs/troubleshooting.md)
-- [Contributing](CONTRIBUTING.md) — development setup and PR process
-- [Roadmap](roadmap/README.md)
+```rust
+use stratadb::{BranchName, CacheOpenOptions, Database, KvKey, KvValue, ProductSpace};
+
+let mut db = Database::open_cache(CacheOpenOptions::new())?.into_database();
+let mut kv = db.kv(
+    BranchName::new("default")?,
+    ProductSpace::new("default")?,
+)?;
+
+kv.put(KvKey::new("greeting")?, KvValue::new(b"hello".to_vec()))?;
+assert!(kv.get(&KvKey::new("greeting")?)?.is_some());
+```
+
+Durable databases open the same way with `Database::open_local(path, DurableLocalOpenOptions::new())`. The browser build (`crates/wasm`) exposes the cache-mode engine to JavaScript via WebAssembly.
+
+## Install
+
+Package releases (crates.io, PyPI, npm, Homebrew) are on the way. Today, build from source:
+
+```bash
+git clone https://github.com/stratalab/strata-core
+cd strata-core
+cargo install --path crates/cli     # installs the `strata` binary
+
+strata init
+strata --cache ping                 # pong 1.0.0
+```
+
+Rust 1.88+ required.
+
+## How it works
+
+Under every data model sits a single branch-aware MVCC storage engine: one write-ahead log, one commit clock, one copy-on-write branch tree. KV, JSON, events, vectors, and graph are capabilities layered over that substrate — which is why a fork captures all of them atomically and why time travel works uniformly everywhere. Durable databases recover from crashes via WAL replay; cache mode skips persistence entirely and lives in memory.
+
+A database is a directory. Copy it, back it up, `rsync` it — it behaves the way embedded databases should.
+
+Deeper internals live in [`docs/architecture/`](docs/architecture/).
+
+## Status
+
+Strata 1.0 is complete and hardening toward its public release: package channels, the Python and TypeScript SDKs, and the hosted docs are landing next. The on-disk format, error codes, and CLI surface documented here are the stable 1.0 contracts.
 
 ## License
 
-[Apache License 2.0](LICENSE)
+[Apache 2.0](LICENSE)
