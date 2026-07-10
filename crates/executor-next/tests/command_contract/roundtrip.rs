@@ -134,6 +134,7 @@ fn command_names_cover_every_variant() {
             "graph_cdlp",
             "graph_bfs",
             "graph_apply_delete_policy",
+            "graph_bulk_insert",
             "arrow_import",
             "arrow_export",
         ]

@@ -349,6 +349,64 @@ impl GraphNeighbor {
     }
 }
 
+/// Result of one chunked bulk ingest.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphBulkInsertOutcome {
+    graph: GraphName,
+    nodes_inserted: u64,
+    edges_inserted: u64,
+    commits: u64,
+    last_commit: Option<CommitOutcome>,
+}
+
+impl GraphBulkInsertOutcome {
+    pub(crate) const fn new(
+        graph: GraphName,
+        nodes_inserted: u64,
+        edges_inserted: u64,
+        commits: u64,
+        last_commit: Option<CommitOutcome>,
+    ) -> Self {
+        Self {
+            graph,
+            nodes_inserted,
+            edges_inserted,
+            commits,
+            last_commit,
+        }
+    }
+
+    #[must_use]
+    /// Returns the graph name.
+    pub const fn graph(&self) -> &GraphName {
+        &self.graph
+    }
+
+    #[must_use]
+    /// Returns how many node upserts the ingest applied.
+    pub const fn nodes_inserted(&self) -> u64 {
+        self.nodes_inserted
+    }
+
+    #[must_use]
+    /// Returns how many edge upserts the ingest applied.
+    pub const fn edges_inserted(&self) -> u64 {
+        self.edges_inserted
+    }
+
+    #[must_use]
+    /// Returns how many chunk commits the ingest produced.
+    pub const fn commits(&self) -> u64 {
+        self.commits
+    }
+
+    #[must_use]
+    /// Returns the final chunk's commit, when any chunk committed.
+    pub const fn last_commit(&self) -> Option<&CommitOutcome> {
+        self.last_commit.as_ref()
+    }
+}
+
 /// Result of applying a delete policy to every graph fact bound to
 /// one entity target.
 #[derive(Clone, Debug, PartialEq)]

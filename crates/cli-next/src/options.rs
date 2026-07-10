@@ -1083,6 +1083,20 @@ pub(crate) enum GraphCommand {
         #[arg(long)]
         as_of: Option<u64>,
     },
+    /// Ingest nodes and edges from JSON in chunked commits.
+    BulkInsert {
+        /// Graph name.
+        graph: String,
+        /// Inline JSON payload: {"nodes": [...], "edges": [...]}.
+        #[arg(long, conflicts_with = "file")]
+        data: Option<String>,
+        /// Path to a JSON payload file.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Optional items-per-commit chunk size.
+        #[arg(long)]
+        chunk_size: Option<u64>,
+    },
     /// Run a bounded breadth-first traversal.
     Bfs {
         /// Graph name.

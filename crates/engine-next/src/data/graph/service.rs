@@ -33,12 +33,12 @@ use super::{
     encode_graph_node_record, encode_graph_ontology_record, encode_graph_type_index_record,
     GraphAdjacencyIndex, GraphAdjacencyIndexBuilder, GraphAnalyticsBudget, GraphBatchOpOutcome,
     GraphBatchOperation, GraphBatchWrite, GraphBatchWriteOutcome, GraphBinding, GraphBindingPage,
-    GraphBindingPrimitive, GraphBindingRecord, GraphBindingTarget, GraphDeleteOutcome,
-    GraphDeletePolicy, GraphDeletePolicyOutcome, GraphDirection, GraphEdge, GraphEdgeRecord,
-    GraphEdgeType, GraphEdgeWriteOutcome, GraphInfo, GraphLinkTypeDef, GraphLinkTypeSummary,
-    GraphName, GraphNamePage, GraphNeighbor, GraphNeighborPage, GraphNode, GraphNodeId,
-    GraphNodePage, GraphNodeRecord, GraphObjectTypeDef, GraphObjectTypeSummary, GraphOntology,
-    GraphOntologyFreezeOutcome, GraphOntologyRecord, GraphOntologySummary,
+    GraphBindingPrimitive, GraphBindingRecord, GraphBindingTarget, GraphBulkInsertOutcome,
+    GraphDeleteOutcome, GraphDeletePolicy, GraphDeletePolicyOutcome, GraphDirection, GraphEdge,
+    GraphEdgeRecord, GraphEdgeType, GraphEdgeWriteOutcome, GraphInfo, GraphLinkTypeDef,
+    GraphLinkTypeSummary, GraphName, GraphNamePage, GraphNeighbor, GraphNeighborPage, GraphNode,
+    GraphNodeId, GraphNodePage, GraphNodeRecord, GraphObjectTypeDef, GraphObjectTypeSummary,
+    GraphOntology, GraphOntologyFreezeOutcome, GraphOntologyRecord, GraphOntologySummary,
     GraphOntologyWriteOutcome, GraphTargetStatus, GraphTypeIndexRecord, GraphTypeName,
     GraphWriteOutcome,
 };
@@ -767,6 +767,180 @@ impl<'a> GraphService<'a> {
             created,
             commit,
         ))
+    }
+
+    /// Default number of input items per bulk-ingest chunk commit.
+    pub const DEFAULT_BULK_CHUNK_SIZE: usize = 250_000;
+
+    /// Ingests nodes and edges in chunked commits — the ingest-scale
+    /// companion to the transactional `batch_write`. Nodes commit before
+    /// edges, so edges may reference nodes from the same call; every
+    /// endpoint must exist among committed rows or this call's nodes.
+    /// Upsert semantics match `upsert_node` / `upsert_edge`, including
+    /// derived-index maintenance and frozen-ontology enforcement.
+    ///
+    /// Returns per-kind counts and the number of chunk commits. An empty
+    /// input commits nothing.
+    pub fn bulk_insert(
+        &mut self,
+        graph: &GraphName,
+        nodes: &[(GraphNodeId, super::GraphNodeData)],
+        edges: &[(
+            GraphNodeId,
+            GraphEdgeType,
+            GraphNodeId,
+            super::GraphEdgeData,
+        )],
+        chunk_size: Option<usize>,
+    ) -> EngineResult<GraphBulkInsertOutcome> {
+        let record = self.branch_record()?;
+        self.require_graph(&record, graph)?;
+        if nodes.is_empty() && edges.is_empty() {
+            return Ok(GraphBulkInsertOutcome::new(graph.clone(), 0, 0, 0, None));
+        }
+        let chunk_size = chunk_size.unwrap_or(Self::DEFAULT_BULK_CHUNK_SIZE).max(1);
+        self.validate_bulk_input(&record, graph, nodes, edges)?;
+
+        let mut commits = 0u64;
+        let mut last_commit = None;
+        for chunk in nodes.chunks(chunk_size) {
+            let mut mutations = MutationMap::default();
+            for (node_id, data) in chunk {
+                // Upsert discipline: drop stale derived rows before the
+                // new node row lands, exactly like `upsert_node`.
+                let current = self.node_record(&record, graph, node_id)?;
+                let new_record = GraphNodeRecord::new(graph.clone(), node_id.clone(), data.clone());
+                if let Some(old) = current.as_ref().and_then(|record| record.data().binding()) {
+                    if Some(old) != new_record.data().binding() {
+                        mutations.delete(self.binding_address(
+                            &record,
+                            old.target(),
+                            graph,
+                            node_id,
+                        ));
+                    }
+                }
+                let old_type = current
+                    .as_ref()
+                    .and_then(|record| record.data().object_type());
+                let new_type = new_record.data().object_type();
+                if let Some(old_type) = old_type {
+                    if Some(old_type) != new_type {
+                        mutations
+                            .delete(self.type_index_address(&record, graph, old_type, node_id));
+                    }
+                }
+                if let Some(new_type) = new_type {
+                    mutations.put(
+                        self.type_index_address(&record, graph, new_type, node_id),
+                        encode_graph_type_index_record(&GraphTypeIndexRecord::new(
+                            graph.clone(),
+                            new_type.clone(),
+                            node_id.clone(),
+                        ))?,
+                    );
+                }
+                mutations.put(
+                    self.node_address(&record, graph, node_id),
+                    encode_graph_node_record(&new_record)?,
+                );
+                if let Some(binding) = new_record.data().binding() {
+                    mutations.put(
+                        self.binding_address(&record, binding.target(), graph, node_id),
+                        encode_graph_binding_record(&GraphBindingRecord::new(
+                            graph.clone(),
+                            node_id.clone(),
+                            binding.clone(),
+                        ))?,
+                    );
+                }
+            }
+            last_commit = Some(self.commit_batch(&record, mutations.into_mutations())?);
+            commits += 1;
+        }
+        for chunk in edges.chunks(chunk_size) {
+            let mut mutations = MutationMap::default();
+            for (src, edge_type, dst, data) in chunk {
+                let edge = GraphEdgeRecord::new(
+                    graph.clone(),
+                    src.clone(),
+                    edge_type.clone(),
+                    dst.clone(),
+                    data.clone(),
+                );
+                mutations.put(
+                    self.edge_address(&record, graph, src, edge_type, dst),
+                    encode_graph_edge_record(&edge)?,
+                );
+                mutations.put(
+                    self.reverse_edge_address(&record, graph, dst, edge_type, src),
+                    encode_graph_edge_record(&edge)?,
+                );
+            }
+            last_commit = Some(self.commit_batch(&record, mutations.into_mutations())?);
+            commits += 1;
+        }
+
+        Ok(GraphBulkInsertOutcome::new(
+            graph.clone(),
+            nodes.len() as u64,
+            edges.len() as u64,
+            commits,
+            last_commit,
+        ))
+    }
+
+    /// Validates every bulk input before the first commit: a mid-stream
+    /// refusal must not leave earlier chunks half-applied.
+    fn validate_bulk_input(
+        &mut self,
+        record: &BranchCatalogRecord,
+        graph: &GraphName,
+        nodes: &[(GraphNodeId, super::GraphNodeData)],
+        edges: &[(
+            GraphNodeId,
+            GraphEdgeType,
+            GraphNodeId,
+            super::GraphEdgeData,
+        )],
+    ) -> EngineResult<()> {
+        let ontology = self.frozen_ontology(record, graph)?;
+        let mut call_nodes: BTreeMap<&GraphNodeId, &super::GraphNodeData> = BTreeMap::new();
+        for (node_id, data) in nodes {
+            if let Some(binding) = data.binding() {
+                self.validate_binding_target(binding.target())?;
+            }
+            if let Some(ontology) = ontology.as_ref() {
+                ontology.validate_node(data)?;
+            }
+            call_nodes.insert(node_id, data);
+        }
+        let mut endpoint_cache: BTreeMap<GraphNodeId, Option<super::GraphNodeData>> =
+            BTreeMap::new();
+        for (src, edge_type, dst, _) in edges {
+            for endpoint in [src, dst] {
+                if call_nodes.contains_key(endpoint) || endpoint_cache.contains_key(endpoint) {
+                    continue;
+                }
+                let data = self
+                    .node_record(record, graph, endpoint)?
+                    .map(|existing| existing.data().clone());
+                endpoint_cache.insert(endpoint.clone(), data);
+            }
+            let resolve = |endpoint: &GraphNodeId| {
+                call_nodes
+                    .get(endpoint)
+                    .copied()
+                    .or_else(|| endpoint_cache.get(endpoint).and_then(Option::as_ref))
+            };
+            let (Some(src_data), Some(dst_data)) = (resolve(src), resolve(dst)) else {
+                return Err(missing_edge_endpoint());
+            };
+            if let Some(ontology) = ontology.as_ref() {
+                ontology.validate_edge(edge_type, src_data, dst_data)?;
+            }
+        }
+        Ok(())
     }
 
     /// Reads one graph edge.

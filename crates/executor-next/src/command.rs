@@ -7,8 +7,8 @@ use crate::types::{
     ArrowExportPrimitive, ArrowFileFormat, ArrowImportTarget, BatchEventEntry,
     BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchVectorEntry, Bytes,
     EventRangeDirection, GraphAnalyticsBudget, GraphBatchOperation, GraphBindingTarget,
-    GraphDeletePolicy, GraphDirection, GraphEntityBinding, GraphPropertyDef, JsonIndexType,
-    VectorDistanceMetric, VectorMetadataFilter,
+    GraphBulkEdge, GraphBulkNode, GraphDeletePolicy, GraphDirection, GraphEntityBinding,
+    GraphPropertyDef, JsonIndexType, VectorDistanceMetric, VectorMetadataFilter,
 };
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -1408,6 +1408,26 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<u64>,
     },
+    /// Ingests nodes and edges in chunked commits.
+    GraphBulkInsert {
+        /// Target branch. Defaults to the executor handle branch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        /// Target product space. Defaults to `"default"`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        /// Graph name.
+        graph: String,
+        /// Nodes to upsert (committed before edges).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        nodes: Vec<GraphBulkNode>,
+        /// Edges to upsert; endpoints must exist or arrive in `nodes`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        edges: Vec<GraphBulkEdge>,
+        /// Optional items-per-commit chunk size. Defaults to 250000.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chunk_size: Option<u64>,
+    },
     /// Applies an explicit delete policy to graph facts bound to an entity.
     GraphApplyDeletePolicy {
         /// Target branch. Defaults to the executor handle branch.
@@ -1663,6 +1683,7 @@ impl Command {
             Self::GraphPagerank { .. } => "graph_pagerank",
             Self::GraphCdlp { .. } => "graph_cdlp",
             Self::GraphBfs { .. } => "graph_bfs",
+            Self::GraphBulkInsert { .. } => "graph_bulk_insert",
             Self::GraphApplyDeletePolicy { .. } => "graph_apply_delete_policy",
             Self::ArrowImport { .. } => "arrow_import",
             Self::ArrowExport { .. } => "arrow_export",

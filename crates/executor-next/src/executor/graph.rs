@@ -505,11 +505,12 @@ impl Executor {
 }
 
 use super::{
-    engine_graph_bfs_options, engine_graph_budget, engine_graph_cdlp_options,
-    engine_graph_delete_policy, engine_graph_pagerank_options, engine_graph_personalization,
-    graph_bfs_output, graph_cdlp_output, graph_delete_policy_output, graph_lcc_output,
+    engine_graph_bfs_options, engine_graph_budget, engine_graph_bulk_edges,
+    engine_graph_bulk_nodes, engine_graph_cdlp_options, engine_graph_delete_policy,
+    engine_graph_pagerank_options, engine_graph_personalization, graph_bfs_output,
+    graph_bulk_insert_output, graph_cdlp_output, graph_delete_policy_output, graph_lcc_output,
     graph_pagerank_output, graph_sssp_output, graph_wcc_output, EngineGraphAdjacencyIndex,
-    EngineGraphName, GraphAnalyticsBudget, GraphDeletePolicy,
+    EngineGraphName, GraphAnalyticsBudget, GraphBulkEdge, GraphBulkNode, GraphDeletePolicy,
 };
 
 impl Executor {
@@ -651,5 +652,23 @@ impl Executor {
         let mut service = self.graph_service(branch, space)?;
         let outcome = service.apply_binding_delete_policy(&target, policy)?;
         Ok(graph_delete_policy_output(&outcome))
+    }
+
+    pub(super) fn execute_graph_bulk_insert(
+        &mut self,
+        branch: Option<&str>,
+        space: Option<&str>,
+        graph: String,
+        nodes: Vec<GraphBulkNode>,
+        edges: Vec<GraphBulkEdge>,
+        chunk_size: Option<u64>,
+    ) -> ExecutorResult<Output> {
+        let graph = graph_name(graph)?;
+        let nodes = engine_graph_bulk_nodes(nodes)?;
+        let edges = engine_graph_bulk_edges(edges)?;
+        let chunk_size = optional_limit(chunk_size)?;
+        let mut service = self.graph_service(branch, space)?;
+        let outcome = service.bulk_insert(&graph, &nodes, &edges, chunk_size)?;
+        Ok(graph_bulk_insert_output(&outcome))
     }
 }

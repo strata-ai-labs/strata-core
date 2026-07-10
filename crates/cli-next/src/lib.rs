@@ -1019,6 +1019,28 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             budget: None,
             as_of,
         },
+        GraphCommand::BulkInsert {
+            graph,
+            data,
+            file,
+            chunk_size,
+        } => {
+            let payload =
+                parse_json_argument(data.as_deref(), file.as_ref(), "bulk-insert payload")?;
+            let payload: BulkInsertPayload = serde_json::from_value(payload).map_err(|error| {
+                CliError::usage(format!(
+                    "bulk-insert payload must be {{\"nodes\": [...], \"edges\": [...]}}: {error}"
+                ))
+            })?;
+            Command::GraphBulkInsert {
+                branch: scope.branch.clone(),
+                space: scope.space.clone(),
+                graph,
+                nodes: payload.nodes,
+                edges: payload.edges,
+                chunk_size,
+            }
+        }
         GraphCommand::Bfs {
             graph,
             start,
@@ -1044,6 +1066,14 @@ fn graph_command(command: GraphCommand, scope: &Scope) -> Result<Command, CliErr
             as_of,
         },
     })
+}
+
+#[derive(serde::Deserialize)]
+struct BulkInsertPayload {
+    #[serde(default)]
+    nodes: Vec<strata_executor_next::GraphBulkNode>,
+    #[serde(default)]
+    edges: Vec<strata_executor_next::GraphBulkEdge>,
 }
 
 fn parse_personalization(raw: &str) -> Result<std::collections::BTreeMap<String, f64>, CliError> {

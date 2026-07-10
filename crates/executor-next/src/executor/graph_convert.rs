@@ -3,25 +3,26 @@ use super::{
     usize_to_u64, CommitOutcome, EngineGraphAdjacencyIndex, EngineGraphAnalyticsBudget,
     EngineGraphBatchOpOutcome, EngineGraphBatchOperation, EngineGraphBatchWriteOutcome,
     EngineGraphBfsOptions, EngineGraphBfsResult, EngineGraphBinding, EngineGraphBindingPage,
-    EngineGraphBindingPrimitive, EngineGraphBindingTarget, EngineGraphCdlpOptions,
-    EngineGraphCdlpResult, EngineGraphDeleteOutcome, EngineGraphDeletePolicy,
-    EngineGraphDeletePolicyOutcome, EngineGraphDirection, EngineGraphEdge, EngineGraphEdgeData,
-    EngineGraphEdgeType, EngineGraphEdgeWriteOutcome, EngineGraphEntityBinding, EngineGraphInfo,
-    EngineGraphLccResult, EngineGraphLinkTypeDef, EngineGraphName, EngineGraphNamePage,
-    EngineGraphNeighbor, EngineGraphNeighborPage, EngineGraphNode, EngineGraphNodeData,
-    EngineGraphNodeId, EngineGraphNodePage, EngineGraphObjectTypeDef, EngineGraphOntology,
-    EngineGraphOntologyFreezeOutcome, EngineGraphOntologyStatus, EngineGraphOntologySummary,
-    EngineGraphOntologyWriteOutcome, EngineGraphPageRankOptions, EngineGraphPageRankResult,
-    EngineGraphProperties, EngineGraphPropertyDef, EngineGraphSsspResult, EngineGraphTargetStatus,
-    EngineGraphTypeName, EngineGraphWccResult, EngineGraphWriteOutcome, ExecutorError,
-    ExecutorResult, GraphAnalyticsBudget, GraphBatchItemResult, GraphBatchOperation, GraphBfsData,
-    GraphBfsEdgeData, GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget, GraphCdlpData,
-    GraphDeletePolicy, GraphDirection, GraphEdgeData, GraphEdgeDataOutput, GraphEntityBinding,
-    GraphInfoData, GraphLccData, GraphLinkTypeDefData, GraphLinkTypeSummaryData, GraphNeighborHit,
-    GraphNodeData, GraphNodeDataOutput, GraphObjectTypeDefData, GraphObjectTypeSummaryData,
-    GraphOntologyData, GraphOntologySummaryData, GraphPagerankData, GraphPropertyDef,
-    GraphSsspData, GraphWccData, MutationEffect, MutationEffectKind, Output, PageInfo,
-    DEFAULT_BRANCH, DEFAULT_SPACE,
+    EngineGraphBindingPrimitive, EngineGraphBindingTarget, EngineGraphBulkInsertOutcome,
+    EngineGraphCdlpOptions, EngineGraphCdlpResult, EngineGraphDeleteOutcome,
+    EngineGraphDeletePolicy, EngineGraphDeletePolicyOutcome, EngineGraphDirection, EngineGraphEdge,
+    EngineGraphEdgeData, EngineGraphEdgeType, EngineGraphEdgeWriteOutcome,
+    EngineGraphEntityBinding, EngineGraphInfo, EngineGraphLccResult, EngineGraphLinkTypeDef,
+    EngineGraphName, EngineGraphNamePage, EngineGraphNeighbor, EngineGraphNeighborPage,
+    EngineGraphNode, EngineGraphNodeData, EngineGraphNodeId, EngineGraphNodePage,
+    EngineGraphObjectTypeDef, EngineGraphOntology, EngineGraphOntologyFreezeOutcome,
+    EngineGraphOntologyStatus, EngineGraphOntologySummary, EngineGraphOntologyWriteOutcome,
+    EngineGraphPageRankOptions, EngineGraphPageRankResult, EngineGraphProperties,
+    EngineGraphPropertyDef, EngineGraphSsspResult, EngineGraphTargetStatus, EngineGraphTypeName,
+    EngineGraphWccResult, EngineGraphWriteOutcome, ExecutorError, ExecutorResult,
+    GraphAnalyticsBudget, GraphBatchItemResult, GraphBatchOperation, GraphBfsData,
+    GraphBfsEdgeData, GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget, GraphBulkEdge,
+    GraphBulkNode, GraphCdlpData, GraphDeletePolicy, GraphDirection, GraphEdgeData,
+    GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData, GraphLccData, GraphLinkTypeDefData,
+    GraphLinkTypeSummaryData, GraphNeighborHit, GraphNodeData, GraphNodeDataOutput,
+    GraphObjectTypeDefData, GraphObjectTypeSummaryData, GraphOntologyData,
+    GraphOntologySummaryData, GraphPagerankData, GraphPropertyDef, GraphSsspData, GraphWccData,
+    MutationEffect, MutationEffectKind, Output, PageInfo, DEFAULT_BRANCH, DEFAULT_SPACE,
 };
 
 pub(super) fn graph_name(name: String) -> ExecutorResult<EngineGraphName> {
@@ -264,6 +265,62 @@ pub(super) fn graph_neighbor_hit(neighbor: &EngineGraphNeighbor) -> GraphNeighbo
             .target_status()
             .map(|status| graph_target_status(status).to_owned()),
     )
+}
+
+pub(super) fn engine_graph_bulk_nodes(
+    nodes: Vec<GraphBulkNode>,
+) -> ExecutorResult<Vec<(EngineGraphNodeId, EngineGraphNodeData)>> {
+    nodes
+        .into_iter()
+        .map(|node| {
+            let (node_id, properties, binding, object_type) = node.into_parts();
+            let mut data = GraphNodeData::new(properties, binding);
+            if let Some(object_type) = object_type {
+                data = data.with_object_type(object_type);
+            }
+            Ok((graph_node_id(node_id)?, engine_graph_node_data(data)?))
+        })
+        .collect()
+}
+
+pub(super) fn engine_graph_bulk_edges(
+    edges: Vec<GraphBulkEdge>,
+) -> ExecutorResult<
+    Vec<(
+        EngineGraphNodeId,
+        EngineGraphEdgeType,
+        EngineGraphNodeId,
+        EngineGraphEdgeData,
+    )>,
+> {
+    edges
+        .into_iter()
+        .map(|edge| {
+            let (src, edge_type, dst, weight, properties) = edge.into_parts();
+            Ok((
+                graph_node_id(src)?,
+                graph_edge_type(edge_type)?,
+                graph_node_id(dst)?,
+                engine_graph_edge_data(GraphEdgeData::new(weight, properties))?,
+            ))
+        })
+        .collect()
+}
+
+pub(super) fn graph_bulk_insert_output(outcome: &EngineGraphBulkInsertOutcome) -> Output {
+    Output::GraphBulkInsertResult {
+        graph: outcome.graph().as_str().to_owned(),
+        nodes_inserted: outcome.nodes_inserted(),
+        edges_inserted: outcome.edges_inserted(),
+        commits: outcome.commits(),
+        commit: outcome.last_commit().map(|commit| commit_receipt(*commit)),
+        version: outcome
+            .last_commit()
+            .map(|commit| commit.version().as_u64()),
+        timestamp: outcome
+            .last_commit()
+            .map(|commit| commit.timestamp().as_micros()),
+    }
 }
 
 pub(super) const fn engine_graph_delete_policy(

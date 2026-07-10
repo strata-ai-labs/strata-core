@@ -1,6 +1,6 @@
 use super::super::{
-    Command, Executor, ExecutorResult, GraphBatchOperation, GraphBindingTarget, GraphDeletePolicy,
-    GraphDirection, GraphEntityBinding, Output,
+    Command, Executor, ExecutorResult, GraphBatchOperation, GraphBindingTarget, GraphBulkEdge,
+    GraphBulkNode, GraphDeletePolicy, GraphDirection, GraphEntityBinding, Output,
 };
 
 impl Executor {
@@ -465,6 +465,23 @@ impl Executor {
             space: None,
             target,
             policy,
+        })
+    }
+
+    /// Executes a default-branch bulk ingest.
+    pub fn graph_bulk_insert(
+        &mut self,
+        graph: impl Into<String>,
+        nodes: Vec<GraphBulkNode>,
+        edges: Vec<GraphBulkEdge>,
+    ) -> ExecutorResult<Output> {
+        self.execute(Command::GraphBulkInsert {
+            branch: None,
+            space: None,
+            graph: graph.into(),
+            nodes,
+            edges,
+            chunk_size: None,
         })
     }
 }

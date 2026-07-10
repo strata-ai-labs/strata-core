@@ -122,6 +122,15 @@ pub(super) fn graph_read_outputs() -> Vec<Output> {
             version: Some(3),
             timestamp: Some(30),
         },
+        Output::GraphBulkInsertResult {
+            graph: "deps".to_owned(),
+            nodes_inserted: 3,
+            edges_inserted: 2,
+            commits: 2,
+            commit: Some(commit_receipt(4, 40, 4, 0)),
+            version: Some(4),
+            timestamp: Some(40),
+        },
         Output::GraphDeletePolicyResult {
             policy: "keep_dangling".to_owned(),
             nodes_affected: 2,

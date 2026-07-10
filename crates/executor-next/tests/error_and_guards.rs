@@ -918,12 +918,10 @@ fn forbidden_response_fixture_terms() -> &'static [&'static str] {
 
 fn excluded_graph_command_names() -> &'static [&'static str] {
     &[
-        // GO4 ported the ontology surface onto 8 commands and GA5 the
-        // analytics surface onto 6; the v0.6 per-kind read commands below
-        // stay excluded by design — the one canonical read is
-        // GraphGetOntology (status + all definitions). Bulk ingest stays
-        // deferred until its slice lands.
-        "GraphBulkInsert",
+        // GO4 ported the ontology surface onto 8 commands, GA5 the
+        // analytics surface onto 6, and GI3 bulk ingest; the v0.6
+        // per-kind read commands below stay excluded by design — the one
+        // canonical read is GraphGetOntology (status + all definitions).
         "GraphGetObjectType",
         "GraphListObjectTypes",
         "GraphGetLinkType",

@@ -1363,3 +1363,104 @@ impl GraphBfsData {
         &self.edges
     }
 }
+
+/// One node in a bulk ingest (input form).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphBulkNode {
+    /// Node id.
+    node_id: String,
+    /// Optional JSON properties.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    properties: Option<Value>,
+    /// Optional entity binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    binding: Option<GraphEntityBinding>,
+    /// Optional declared object type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    object_type: Option<String>,
+}
+
+impl GraphBulkNode {
+    /// Creates a bulk node entry.
+    #[must_use]
+    pub const fn new(
+        node_id: String,
+        properties: Option<Value>,
+        binding: Option<GraphEntityBinding>,
+        object_type: Option<String>,
+    ) -> Self {
+        Self {
+            node_id,
+            properties,
+            binding,
+            object_type,
+        }
+    }
+
+    /// Splits the entry into its parts.
+    #[must_use]
+    pub fn into_parts(
+        self,
+    ) -> (
+        String,
+        Option<Value>,
+        Option<GraphEntityBinding>,
+        Option<String>,
+    ) {
+        (
+            self.node_id,
+            self.properties,
+            self.binding,
+            self.object_type,
+        )
+    }
+}
+
+/// One edge in a bulk ingest (input form).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphBulkEdge {
+    /// Source node id.
+    src: String,
+    /// Edge type.
+    edge_type: String,
+    /// Destination node id.
+    dst: String,
+    /// Optional weight. Defaults to 1.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    weight: Option<f64>,
+    /// Optional JSON properties.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    properties: Option<Value>,
+}
+
+impl GraphBulkEdge {
+    /// Creates a bulk edge entry.
+    #[must_use]
+    pub const fn new(
+        src: String,
+        edge_type: String,
+        dst: String,
+        weight: Option<f64>,
+        properties: Option<Value>,
+    ) -> Self {
+        Self {
+            src,
+            edge_type,
+            dst,
+            weight,
+            properties,
+        }
+    }
+
+    /// Splits the entry into its parts.
+    #[must_use]
+    pub fn into_parts(self) -> (String, String, String, Option<f64>, Option<Value>) {
+        (
+            self.src,
+            self.edge_type,
+            self.dst,
+            self.weight,
+            self.properties,
+        )
+    }
+}

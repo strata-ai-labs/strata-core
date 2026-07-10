@@ -230,6 +230,25 @@ pub(super) fn graph_commands() -> Vec<Command> {
             target: graph_binding_target(),
             policy: GraphDeletePolicy::Detach,
         },
+        Command::GraphBulkInsert {
+            branch: None,
+            space: None,
+            graph: "deps".to_owned(),
+            nodes: vec![GraphBulkNode::new(
+                "node-a".to_owned(),
+                Some(json!({"kind": "doc"})),
+                Some(graph_binding()),
+                Some("Document".to_owned()),
+            )],
+            edges: vec![GraphBulkEdge::new(
+                "node-a".to_owned(),
+                "depends_on".to_owned(),
+                "node-b".to_owned(),
+                Some(2.5),
+                None,
+            )],
+            chunk_size: Some(1000),
+        },
     ]
 }
 

@@ -549,6 +549,26 @@ pub enum Output {
     GraphCdlpResult(GraphCdlpData),
     /// Breadth-first traversal computed over a graph snapshot.
     GraphBfsResult(GraphBfsData),
+    /// Bulk ingest acknowledgement.
+    GraphBulkInsertResult {
+        /// Graph name.
+        graph: String,
+        /// How many node upserts the ingest applied.
+        nodes_inserted: u64,
+        /// How many edge upserts the ingest applied.
+        edges_inserted: u64,
+        /// How many chunk commits the ingest produced.
+        commits: u64,
+        /// Final chunk's commit receipt, when any chunk committed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        commit: Option<CommitReceipt>,
+        /// Final chunk's commit version, when any chunk committed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<u64>,
+        /// Final chunk's commit timestamp, when any chunk committed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<u64>,
+    },
     /// Delete-policy application acknowledgement.
     GraphDeletePolicyResult {
         /// Applied policy: `cascade`, `detach`, or `keep_dangling`.

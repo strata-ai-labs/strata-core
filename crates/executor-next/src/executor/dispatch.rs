@@ -839,6 +839,21 @@ impl Executor {
                 budget,
                 as_of,
             ),
+            Command::GraphBulkInsert {
+                branch,
+                space,
+                graph,
+                nodes,
+                edges,
+                chunk_size,
+            } => self.execute_graph_bulk_insert(
+                branch.as_deref(),
+                space.as_deref(),
+                graph,
+                nodes,
+                edges,
+                chunk_size,
+            ),
             Command::GraphApplyDeletePolicy {
                 branch,
                 space,
