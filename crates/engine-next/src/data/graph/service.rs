@@ -770,7 +770,19 @@ impl<'a> GraphService<'a> {
     }
 
     /// Default number of input items per bulk-ingest chunk commit.
-    pub const DEFAULT_BULK_CHUNK_SIZE: usize = 250_000;
+    ///
+    /// Sized against the storage layer's per-commit mutation budget
+    /// (4096 by default): a node item can produce up to five row
+    /// mutations (stale binding and type-index deletes, node row, new
+    /// binding and type-index rows) and an edge item two, so chunks are
+    /// capped at [`Self::MAX_BULK_CHUNK_SIZE`] items to keep every
+    /// chunk inside one storage commit.
+    pub const DEFAULT_BULK_CHUNK_SIZE: usize = 512;
+
+    /// Largest admitted items-per-chunk value; larger requests clamp
+    /// here so a chunk commit cannot exceed the storage mutation budget
+    /// (800 items x 5 mutations <= 4096).
+    pub const MAX_BULK_CHUNK_SIZE: usize = 800;
 
     /// Ingests nodes and edges in chunked commits — the ingest-scale
     /// companion to the transactional `batch_write`. Nodes commit before
@@ -798,7 +810,9 @@ impl<'a> GraphService<'a> {
         if nodes.is_empty() && edges.is_empty() {
             return Ok(GraphBulkInsertOutcome::new(graph.clone(), 0, 0, 0, None));
         }
-        let chunk_size = chunk_size.unwrap_or(Self::DEFAULT_BULK_CHUNK_SIZE).max(1);
+        let chunk_size = chunk_size
+            .unwrap_or(Self::DEFAULT_BULK_CHUNK_SIZE)
+            .clamp(1, Self::MAX_BULK_CHUNK_SIZE);
         self.validate_bulk_input(&record, graph, nodes, edges)?;
 
         let mut commits = 0u64;

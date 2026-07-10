@@ -1424,7 +1424,8 @@ pub enum Command {
         /// Edges to upsert; endpoints must exist or arrive in `nodes`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         edges: Vec<GraphBulkEdge>,
-        /// Optional items-per-commit chunk size. Defaults to 250000.
+        /// Optional items-per-commit chunk size. Defaults to 512;
+        /// values above 800 clamp so one chunk fits one storage commit.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         chunk_size: Option<u64>,
     },
