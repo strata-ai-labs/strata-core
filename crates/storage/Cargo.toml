@@ -1,6 +1,7 @@
 [package]
 name = "strata-storage"
-version = "1.0.0"
+version.workspace = true
+description = "Branch-aware MVCC storage substrate for the Strata database"
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
