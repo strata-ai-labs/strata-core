@@ -1,0 +1,11 @@
+{
+  "data": {
+    "cursor": null,
+    "has_more": false,
+    "items": [
+      "user.created",
+      "user.updated"
+    ]
+  },
+  "type": "event_type_list"
+}

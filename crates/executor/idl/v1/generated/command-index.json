@@ -4,6 +4,642 @@
   "generator_version": "strata-executor-idl.1",
   "commands": [
     {
+      "id": "event.append",
+      "family": "event",
+      "op": "append",
+      "kind": "mutation.create",
+      "title": "Append event",
+      "summary": "Append one event to the branch event log.",
+      "description": "Appends one event to the selected branch and space. Strata assigns the next sequence number, stamps the event with its append timestamp, and links it into the tamper-evident hash chain. Events are immutable once appended.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/event/append",
+      "cli": {
+        "path": [
+          "event",
+          "append"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_append",
+        "description": "Use this when the user wants to record, log, or emit a single application event with a type and JSON payload."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::EventAppend",
+      "output": "Output::EventAppendResult",
+      "outputs": [
+        "Output::EventAppendResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<EventAppend>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.engine.event_payload",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_payload"
+        },
+        {
+          "code": "invalid_argument.engine.event_payload_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_payload_too_large"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/append.json",
+        "response": "responses/v1/event/append_applied.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.append.md"
+      }
+    },
+    {
+      "id": "event.batch_append",
+      "family": "event",
+      "op": "batch_append",
+      "kind": "batch.itemwise_mutation",
+      "title": "Batch append events",
+      "summary": "Append multiple events in one commit.",
+      "description": "Appends multiple events to the selected branch and space in one engine commit. Sequences are assigned in entry order. Entries that fail validation report a positional item error while valid entries still append.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/event/batch_append",
+      "cli": {
+        "path": [
+          "event",
+          "batch-append"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_event_batch_append",
+        "description": "Use this when the user wants to record several events atomically in a single engine commit."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::EventBatchAppend",
+      "output": "Output::EventBatchAppendResults",
+      "outputs": [
+        "Output::EventBatchAppendResults"
+      ],
+      "wire_status": "stable",
+      "response_model": "BatchResult<EventBatchAppendItem>",
+      "commit": "itemwise_shared_commit",
+      "pagination": "none",
+      "batch": "itemwise",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_batch",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_batch"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.engine.event_payload",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_payload"
+        },
+        {
+          "code": "invalid_argument.engine.event_payload_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_payload_too_large"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/batch_append.json",
+        "response": "responses/v1/event/batch_append_ok.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.batch_append.md"
+      }
+    },
+    {
+      "id": "event.exists",
+      "family": "event",
+      "op": "exists",
+      "kind": "read.status",
+      "title": "Check event existence",
+      "summary": "Check whether an event sequence exists.",
+      "description": "Checks whether one event sequence exists in the selected branch and space without returning the record.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/event/exists",
+      "cli": {
+        "path": [
+          "event",
+          "exists"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_exists",
+        "description": "Use this when the user wants to test whether a specific event sequence number is present without reading the record."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventExists",
+      "output": "Output::Bool",
+      "outputs": [
+        "Output::Bool"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusValue<bool>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/exists.json",
+        "response": "responses/v1/status/bool_true.json",
+        "setup": [
+          "requests/v1/event/append.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.exists.md"
+      }
+    },
+    {
+      "id": "event.get",
+      "family": "event",
+      "op": "get",
+      "kind": "read.get",
+      "title": "Get event",
+      "summary": "Read one event by sequence number.",
+      "description": "Reads one event from the selected branch and space by sequence number. The optional timestamp reads the record visible at that commit time. The record carries its payload, append timestamp, and hash-chain facts.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/event/get",
+      "cli": {
+        "path": [
+          "event",
+          "get"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_get",
+        "description": "Use this when the user wants to fetch a single event record by its sequence number."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventGet",
+      "output": "Output::EventRecord",
+      "outputs": [
+        "Output::EventRecord"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<EventVersionedData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/get.json",
+        "response": "responses/v1/event/get_found.json",
+        "setup": [
+          "requests/v1/event/append.json"
+        ],
+        "replay_skip": "wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.get.md"
+      }
+    },
+    {
+      "id": "event.len",
+      "family": "event",
+      "op": "len",
+      "kind": "read.status",
+      "title": "Count events",
+      "summary": "Count visible events in the log.",
+      "description": "Counts events visible in the selected branch and space. The optional timestamp counts the events visible at that commit time.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/event/len",
+      "cli": {
+        "path": [
+          "event",
+          "len"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_len",
+        "description": "Use this when the user wants the number of events in the event log, optionally at a historical point in time."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventLen",
+      "output": "Output::EventLength",
+      "outputs": [
+        "Output::EventLength"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusValue<u64>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/len.json",
+        "response": "responses/v1/event/len_two.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.len.md"
+      }
+    },
+    {
+      "id": "event.list",
+      "family": "event",
+      "op": "list",
+      "kind": "read.page",
+      "title": "List events",
+      "summary": "List events with optional type filter and cursor.",
+      "description": "Lists events from the selected branch and space in sequence order. An optional event type narrows the results, the sequence cursor continues a previous page, and the optional timestamp reads the log visible at that commit time.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/event/list",
+      "cli": {
+        "path": [
+          "event",
+          "list"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_list",
+        "description": "Use this when the user wants to page through events, optionally filtered by event type, using a sequence cursor."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventList",
+      "output": "Output::EventRecords",
+      "outputs": [
+        "Output::EventRecords"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<EventVersionedData, u64>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.executor.limit",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.limit"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/list.json",
+        "response": "responses/v1/event/list_page.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ],
+        "replay_skip": "wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.list.md"
+      }
+    },
+    {
+      "id": "event.range",
+      "family": "event",
+      "op": "range",
+      "kind": "read.page",
+      "title": "Read event sequence range",
+      "summary": "Read a range of events by sequence number.",
+      "description": "Reads events from the selected branch and space by sequence range. The start sequence is inclusive and the optional end sequence is exclusive; reverse direction walks backward from the start sequence. An optional event type narrows the results.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/event/range",
+      "cli": {
+        "path": [
+          "event",
+          "range"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_range",
+        "description": "Use this when the user wants events between two sequence numbers, optionally filtered by event type, in forward or reverse order."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventRange",
+      "output": "Output::EventRangeResult",
+      "outputs": [
+        "Output::EventRangeResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<EventVersionedData, u64>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.executor.limit",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.limit"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/range.json",
+        "response": "responses/v1/event/range_forward.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ],
+        "replay_skip": "wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.range.md"
+      }
+    },
+    {
+      "id": "event.range_time",
+      "family": "event",
+      "op": "range_time",
+      "kind": "read.page",
+      "title": "Read event time range",
+      "summary": "Read a range of events by occurrence time.",
+      "description": "Reads events from the selected branch and space whose append timestamps fall inside an inclusive microsecond window. This queries when events occurred; historical log states are the timestamped read commands' job. An optional event type narrows the results.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/event/range_time",
+      "cli": {
+        "path": [
+          "event",
+          "range-time"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_range_time",
+        "description": "Use this when the user wants events whose append timestamps fall inside a time window, optionally filtered by event type."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventRangeByTime",
+      "output": "Output::EventRangeResult",
+      "outputs": [
+        "Output::EventRangeResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<EventVersionedData, u64>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.executor.limit",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.limit"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/range_time.json",
+        "response": "responses/v1/event/range_time_forward.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ],
+        "replay_skip": "wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.range_time.md"
+      }
+    },
+    {
+      "id": "event.types",
+      "family": "event",
+      "op": "types",
+      "kind": "read.page",
+      "title": "List event types",
+      "summary": "List distinct event types in the log.",
+      "description": "Lists the distinct event types visible in the selected branch and space in sorted order. The optional timestamp lists the types visible at that commit time.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/event/types",
+      "cli": {
+        "path": [
+          "event",
+          "types"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_types",
+        "description": "Use this when the user wants the set of event types recorded in the event log."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventListTypes",
+      "output": "Output::EventTypeList",
+      "outputs": [
+        "Output::EventTypeList"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<String, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/types.json",
+        "response": "responses/v1/event/types.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.types.md"
+      }
+    },
+    {
+      "id": "event.verify_chain",
+      "family": "event",
+      "op": "verify_chain",
+      "kind": "read.status",
+      "title": "Verify event chain",
+      "summary": "Verify event log density and hash linkage.",
+      "description": "Verifies that the visible event log in the selected branch and space is dense and hash-linked: sequences are contiguous from zero, the genesis record links to the all-zeros hash, and every record's hash matches its content and predecessor.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/event/verify_chain",
+      "cli": {
+        "path": [
+          "event",
+          "verify-chain"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_verify_chain",
+        "description": "Use this when the user wants to audit the event log's integrity by checking sequence density and the hash chain."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventVerifyChain",
+      "output": "Output::EventChainVerification",
+      "outputs": [
+        "Output::EventChainVerification"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusValue<EventChainVerification>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/verify_chain.json",
+        "response": "responses/v1/event/verify_chain_valid.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.verify_chain.md"
+      }
+    },
+    {
       "id": "json.batch_delete",
       "family": "json",
       "op": "batch_delete",

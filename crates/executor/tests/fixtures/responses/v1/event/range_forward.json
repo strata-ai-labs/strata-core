@@ -1,0 +1,38 @@
+{
+  "data": {
+    "cursor": null,
+    "has_more": false,
+    "items": [
+      {
+        "event": {
+          "event_type": "user.created",
+          "hash": "10b5b342f73d9df9aa1d2c96077063d11361d7abc68b94d686be200df7d7571f",
+          "payload": {
+            "name": "Ada"
+          },
+          "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "sequence": 0,
+          "timestamp": 1783742390448165
+        },
+        "timestamp": 3,
+        "version": 3
+      },
+      {
+        "event": {
+          "event_type": "user.updated",
+          "hash": "998df51fb4d93d47aa277eb9e18b9055e19bf3888d479ad471edb70d3a041fe0",
+          "payload": {
+            "name": "Ada",
+            "plan": "pro"
+          },
+          "previous_hash": "10b5b342f73d9df9aa1d2c96077063d11361d7abc68b94d686be200df7d7571f",
+          "sequence": 1,
+          "timestamp": 1783742390448342
+        },
+        "timestamp": 4,
+        "version": 4
+      }
+    ]
+  },
+  "type": "event_range_result"
+}

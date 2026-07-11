@@ -11,6 +11,19 @@ use strata_executor::idl_tooling::{
     resolve_default_index, resolve_default_schemas, to_generated_cli_json, to_generated_json,
 };
 
+const REQUIRED_EVENT: &[&str] = &[
+    "event.append",
+    "event.batch_append",
+    "event.get",
+    "event.exists",
+    "event.len",
+    "event.range",
+    "event.range_time",
+    "event.types",
+    "event.list",
+    "event.verify_chain",
+];
+
 const REQUIRED_JSON: &[&str] = &[
     "json.set",
     "json.get",
@@ -29,7 +42,7 @@ const REQUIRED_JSON: &[&str] = &[
 ];
 
 fn required_command_count() -> usize {
-    REQUIRED_JSON.len() + REQUIRED_KV.len() + REQUIRED_VECTOR.len()
+    REQUIRED_EVENT.len() + REQUIRED_JSON.len() + REQUIRED_KV.len() + REQUIRED_VECTOR.len()
 }
 
 const REQUIRED_KV: &[&str] = &[
@@ -79,8 +92,9 @@ fn kv_and_vector_overlay_has_required_command_coverage() {
         .map(|command| command.id.as_str())
         .collect();
 
-    for id in REQUIRED_JSON
+    for id in REQUIRED_EVENT
         .iter()
+        .chain(REQUIRED_JSON.iter())
         .chain(REQUIRED_KV.iter())
         .chain(REQUIRED_VECTOR.iter())
     {
@@ -339,8 +353,9 @@ fn cli_command_index_has_required_coverage_and_lookup_tables() {
         .iter()
         .map(|command| command.id.as_str())
         .collect();
-    for id in REQUIRED_JSON
+    for id in REQUIRED_EVENT
         .iter()
+        .chain(REQUIRED_JSON.iter())
         .chain(REQUIRED_KV.iter())
         .chain(REQUIRED_VECTOR.iter())
     {

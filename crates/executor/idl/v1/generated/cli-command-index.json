@@ -4,12 +4,28 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "ffb32c24b24fa92f9231e8e7067fdf8b9e927faa07cd169431c629cd83a030a9",
+    "checksum_sha256": "d99da60b096727701002217ab1508690e6329b4ff2d25b2a7445716b12c5b7fe",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
-  "command_count": 46,
+  "command_count": 56,
   "families": [
+    {
+      "id": "event",
+      "command_count": 10,
+      "commands": [
+        "event.append",
+        "event.batch_append",
+        "event.exists",
+        "event.get",
+        "event.len",
+        "event.list",
+        "event.range",
+        "event.range_time",
+        "event.types",
+        "event.verify_chain"
+      ]
+    },
     {
       "id": "json",
       "command_count": 14,
@@ -76,6 +92,542 @@
     }
   ],
   "commands": [
+    {
+      "id": "event.append",
+      "path": [
+        "event",
+        "append"
+      ],
+      "path_display": "event append",
+      "surface": "verb",
+      "family": "event",
+      "op": "append",
+      "kind": "mutation.create",
+      "title": "Append event",
+      "summary": "Append one event to the branch event log.",
+      "description": "Appends one event to the selected branch and space. Strata assigns the next sequence number, stamps the event with its append timestamp, and links it into the tamper-evident hash chain. Events are immutable once appended.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/event/append",
+      "feature": "core",
+      "access": "write",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::EventAppend",
+      "outputs": [
+        "Output::EventAppendResult"
+      ],
+      "response_model": "MutationAck<EventAppend>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.engine.event_payload",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_payload"
+        },
+        {
+          "code": "invalid_argument.engine.event_payload_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_payload_too_large"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/append.json",
+        "response": "responses/v1/event/append_applied.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "event.batch_append",
+      "path": [
+        "event",
+        "batch-append"
+      ],
+      "path_display": "event batch-append",
+      "surface": "wire",
+      "family": "event",
+      "op": "batch_append",
+      "kind": "batch.itemwise_mutation",
+      "title": "Batch append events",
+      "summary": "Append multiple events in one commit.",
+      "description": "Appends multiple events to the selected branch and space in one engine commit. Sequences are assigned in entry order. Entries that fail validation report a positional item error while valid entries still append.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/event/batch_append",
+      "feature": "core",
+      "access": "write",
+      "commit": "itemwise_shared_commit",
+      "pagination": "none",
+      "batch": "itemwise",
+      "input": "Command::EventBatchAppend",
+      "outputs": [
+        "Output::EventBatchAppendResults"
+      ],
+      "response_model": "BatchResult<EventBatchAppendItem>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_batch",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_batch"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.engine.event_payload",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_payload"
+        },
+        {
+          "code": "invalid_argument.engine.event_payload_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_payload_too_large"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/batch_append.json",
+        "response": "responses/v1/event/batch_append_ok.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "event.exists",
+      "path": [
+        "event",
+        "exists"
+      ],
+      "path_display": "event exists",
+      "surface": "verb",
+      "family": "event",
+      "op": "exists",
+      "kind": "read.status",
+      "title": "Check event existence",
+      "summary": "Check whether an event sequence exists.",
+      "description": "Checks whether one event sequence exists in the selected branch and space without returning the record.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/event/exists",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::EventExists",
+      "outputs": [
+        "Output::Bool"
+      ],
+      "response_model": "StatusValue<bool>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/exists.json",
+        "response": "responses/v1/status/bool_true.json",
+        "setup": [
+          "requests/v1/event/append.json"
+        ]
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "event.get",
+      "path": [
+        "event",
+        "get"
+      ],
+      "path_display": "event get",
+      "surface": "verb",
+      "family": "event",
+      "op": "get",
+      "kind": "read.get",
+      "title": "Get event",
+      "summary": "Read one event by sequence number.",
+      "description": "Reads one event from the selected branch and space by sequence number. The optional timestamp reads the record visible at that commit time. The record carries its payload, append timestamp, and hash-chain facts.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/event/get",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::EventGet",
+      "outputs": [
+        "Output::EventRecord"
+      ],
+      "response_model": "Maybe<EventVersionedData>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/get.json",
+        "response": "responses/v1/event/get_found.json",
+        "setup": [
+          "requests/v1/event/append.json"
+        ],
+        "replay_skip": "wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "event.len",
+      "path": [
+        "event",
+        "len"
+      ],
+      "path_display": "event len",
+      "surface": "verb",
+      "family": "event",
+      "op": "len",
+      "kind": "read.status",
+      "title": "Count events",
+      "summary": "Count visible events in the log.",
+      "description": "Counts events visible in the selected branch and space. The optional timestamp counts the events visible at that commit time.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/event/len",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::EventLen",
+      "outputs": [
+        "Output::EventLength"
+      ],
+      "response_model": "StatusValue<u64>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/len.json",
+        "response": "responses/v1/event/len_two.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ]
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "event.list",
+      "path": [
+        "event",
+        "list"
+      ],
+      "path_display": "event list",
+      "surface": "verb",
+      "family": "event",
+      "op": "list",
+      "kind": "read.page",
+      "title": "List events",
+      "summary": "List events with optional type filter and cursor.",
+      "description": "Lists events from the selected branch and space in sequence order. An optional event type narrows the results, the sequence cursor continues a previous page, and the optional timestamp reads the log visible at that commit time.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/event/list",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "input": "Command::EventList",
+      "outputs": [
+        "Output::EventRecords"
+      ],
+      "response_model": "Page<EventVersionedData, u64>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.executor.limit",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.limit"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/list.json",
+        "response": "responses/v1/event/list_page.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ],
+        "replay_skip": "wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "event.range",
+      "path": [
+        "event",
+        "range"
+      ],
+      "path_display": "event range",
+      "surface": "verb",
+      "family": "event",
+      "op": "range",
+      "kind": "read.page",
+      "title": "Read event sequence range",
+      "summary": "Read a range of events by sequence number.",
+      "description": "Reads events from the selected branch and space by sequence range. The start sequence is inclusive and the optional end sequence is exclusive; reverse direction walks backward from the start sequence. An optional event type narrows the results.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/event/range",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "input": "Command::EventRange",
+      "outputs": [
+        "Output::EventRangeResult"
+      ],
+      "response_model": "Page<EventVersionedData, u64>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.executor.limit",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.limit"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/range.json",
+        "response": "responses/v1/event/range_forward.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ],
+        "replay_skip": "wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "event.range_time",
+      "path": [
+        "event",
+        "range-time"
+      ],
+      "path_display": "event range-time",
+      "surface": "verb",
+      "family": "event",
+      "op": "range_time",
+      "kind": "read.page",
+      "title": "Read event time range",
+      "summary": "Read a range of events by occurrence time.",
+      "description": "Reads events from the selected branch and space whose append timestamps fall inside an inclusive microsecond window. This queries when events occurred; historical log states are the timestamped read commands' job. An optional event type narrows the results.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/event/range_time",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "input": "Command::EventRangeByTime",
+      "outputs": [
+        "Output::EventRangeResult"
+      ],
+      "response_model": "Page<EventVersionedData, u64>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.executor.limit",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.limit"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/range_time.json",
+        "response": "responses/v1/event/range_time_forward.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ],
+        "replay_skip": "wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "event.types",
+      "path": [
+        "event",
+        "types"
+      ],
+      "path_display": "event types",
+      "surface": "verb",
+      "family": "event",
+      "op": "types",
+      "kind": "read.page",
+      "title": "List event types",
+      "summary": "List distinct event types in the log.",
+      "description": "Lists the distinct event types visible in the selected branch and space in sorted order. The optional timestamp lists the types visible at that commit time.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/event/types",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "input": "Command::EventListTypes",
+      "outputs": [
+        "Output::EventTypeList"
+      ],
+      "response_model": "Page<String, String>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/types.json",
+        "response": "responses/v1/event/types.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ]
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "event.verify_chain",
+      "path": [
+        "event",
+        "verify-chain"
+      ],
+      "path_display": "event verify-chain",
+      "surface": "verb",
+      "family": "event",
+      "op": "verify_chain",
+      "kind": "read.status",
+      "title": "Verify event chain",
+      "summary": "Verify event log density and hash linkage.",
+      "description": "Verifies that the visible event log in the selected branch and space is dense and hash-linked: sequences are contiguous from zero, the genesis record links to the all-zeros hash, and every record's hash matches its content and predecessor.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/event/verify_chain",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::EventVerifyChain",
+      "outputs": [
+        "Output::EventChainVerification"
+      ],
+      "response_model": "StatusValue<EventChainVerification>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/verify_chain.json",
+        "response": "responses/v1/event/verify_chain_valid.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ]
+      },
+      "wire_status": "stable"
+    },
     {
       "id": "json.batch_delete",
       "path": [
@@ -2889,54 +3441,74 @@
   ],
   "lookup": {
     "by_id": {
-      "json.batch_delete": 0,
-      "json.batch_get": 1,
-      "json.batch_set": 2,
-      "json.count": 3,
-      "json.delete": 4,
-      "json.exists": 5,
-      "json.get": 6,
-      "json.history": 7,
-      "json.index.create": 8,
-      "json.index.drop": 9,
-      "json.index.list": 10,
-      "json.list": 11,
-      "json.sample": 12,
-      "json.set": 13,
-      "kv.batch_delete": 14,
-      "kv.batch_exists": 15,
-      "kv.batch_get": 16,
-      "kv.batch_put": 17,
-      "kv.count": 18,
-      "kv.delete": 19,
-      "kv.exists": 20,
-      "kv.get": 21,
-      "kv.history": 22,
-      "kv.list": 23,
-      "kv.put": 24,
-      "kv.sample": 25,
-      "kv.scan": 26,
-      "vector.batch_delete": 27,
-      "vector.batch_get": 28,
-      "vector.batch_upsert": 29,
-      "vector.collection.create": 30,
-      "vector.collection.delete": 31,
-      "vector.collection.list": 32,
-      "vector.collection.stats": 33,
-      "vector.count": 34,
-      "vector.delete": 35,
-      "vector.delete_all": 36,
-      "vector.delete_by_filter": 37,
-      "vector.exists": 38,
-      "vector.get": 39,
-      "vector.history": 40,
-      "vector.index.query": 41,
-      "vector.keys": 42,
-      "vector.metadata.update": 44,
-      "vector.query": 43,
-      "vector.upsert": 45
+      "event.append": 0,
+      "event.batch_append": 1,
+      "event.exists": 2,
+      "event.get": 3,
+      "event.len": 4,
+      "event.list": 5,
+      "event.range": 6,
+      "event.range_time": 7,
+      "event.types": 8,
+      "event.verify_chain": 9,
+      "json.batch_delete": 10,
+      "json.batch_get": 11,
+      "json.batch_set": 12,
+      "json.count": 13,
+      "json.delete": 14,
+      "json.exists": 15,
+      "json.get": 16,
+      "json.history": 17,
+      "json.index.create": 18,
+      "json.index.drop": 19,
+      "json.index.list": 20,
+      "json.list": 21,
+      "json.sample": 22,
+      "json.set": 23,
+      "kv.batch_delete": 24,
+      "kv.batch_exists": 25,
+      "kv.batch_get": 26,
+      "kv.batch_put": 27,
+      "kv.count": 28,
+      "kv.delete": 29,
+      "kv.exists": 30,
+      "kv.get": 31,
+      "kv.history": 32,
+      "kv.list": 33,
+      "kv.put": 34,
+      "kv.sample": 35,
+      "kv.scan": 36,
+      "vector.batch_delete": 37,
+      "vector.batch_get": 38,
+      "vector.batch_upsert": 39,
+      "vector.collection.create": 40,
+      "vector.collection.delete": 41,
+      "vector.collection.list": 42,
+      "vector.collection.stats": 43,
+      "vector.count": 44,
+      "vector.delete": 45,
+      "vector.delete_all": 46,
+      "vector.delete_by_filter": 47,
+      "vector.exists": 48,
+      "vector.get": 49,
+      "vector.history": 50,
+      "vector.index.query": 51,
+      "vector.keys": 52,
+      "vector.metadata.update": 54,
+      "vector.query": 53,
+      "vector.upsert": 55
     },
     "by_path": {
+      "event append": "event.append",
+      "event batch-append": "event.batch_append",
+      "event exists": "event.exists",
+      "event get": "event.get",
+      "event len": "event.len",
+      "event list": "event.list",
+      "event range": "event.range",
+      "event range-time": "event.range_time",
+      "event types": "event.types",
+      "event verify-chain": "event.verify_chain",
       "json batch-delete": "json.batch_delete",
       "json batch-get": "json.batch_get",
       "json batch-set": "json.batch_set",

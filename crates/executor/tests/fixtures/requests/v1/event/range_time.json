@@ -1,0 +1,5 @@
+{
+  "type": "event_range_by_time",
+  "start_ts": 0,
+  "direction": "forward"
+}

@@ -145,9 +145,11 @@ fn public_response_family_goldens_match_public_json() {
                 sequence: 0,
                 event_type: "user.created".to_owned(),
                 effect: MutationEffect::created(),
-                commit: commit_receipt(1, 10, 2, 0),
-                version: 1,
-                timestamp: 10,
+                // Mirrors the blessed cache-replay fixture (event row +
+                // type-index row + log metadata row in one commit).
+                commit: CommitReceipt::new(3, 3, false, 3, 0),
+                version: 3,
+                timestamp: 3,
             },
             include_str!("../fixtures/responses/v1/event/append_applied.json"),
         ),

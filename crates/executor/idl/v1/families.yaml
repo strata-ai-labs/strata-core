@@ -1,4 +1,8 @@
 families:
+  - id: event
+    docs: /docs/event/{op_path}
+    errors:
+      - invalid_argument.engine.product_space
   - id: json
     docs: /docs/json/{op_path}
     errors:

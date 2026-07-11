@@ -31,3 +31,8 @@ errors:
   - invalid_argument.engine.json_index_name
   - invalid_argument.engine.json_index_name_reserved
   - already_exists.engine.json_index
+  - invalid_argument.engine.event_type
+  - invalid_argument.engine.event_payload
+  - invalid_argument.engine.event_payload_too_large
+  - invalid_argument.engine.event_batch
+  - invalid_argument.executor.limit

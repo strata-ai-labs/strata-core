@@ -1,0 +1,9 @@
+{
+  "data": {
+    "error": null,
+    "first_invalid": null,
+    "length": 2,
+    "valid": true
+  },
+  "type": "event_chain_verification"
+}

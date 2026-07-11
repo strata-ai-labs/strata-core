@@ -1,0 +1,7 @@
+{
+  "type": "event_batch_append",
+  "entries": [
+    {"event_type": "user.created", "payload": {"name": "Ada"}},
+    {"event_type": "user.updated", "payload": {"plan": "pro"}}
+  ]
+}

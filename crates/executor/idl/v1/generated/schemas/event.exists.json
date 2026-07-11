@@ -1,0 +1,57 @@
+{
+  "$id": "https://stratadb.org/idl/v1/schemas/event.exists.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "event.exists",
+  "request": {
+    "additionalProperties": false,
+    "description": "Checks whether one event sequence exists.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "sequence": {
+        "description": "Event sequence.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "event_exists",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "sequence"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Boolean result.",
+    "properties": {
+      "data": {
+        "type": "boolean"
+      },
+      "type": {
+        "const": "bool",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

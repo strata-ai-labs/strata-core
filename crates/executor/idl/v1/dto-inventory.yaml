@@ -36,3 +36,8 @@ response_models:
   - MutationAck<JsonIndexCreate>
   - MutationAck<JsonIndexDrop>
   - Page<JsonIndexDefinition, String>
+  - MutationAck<EventAppend>
+  - BatchResult<EventBatchAppendItem>
+  - Maybe<EventVersionedData>
+  - Page<EventVersionedData, u64>
+  - StatusValue<EventChainVerification>

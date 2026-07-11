@@ -16,9 +16,9 @@ fn embedded_cli_metadata_loads_without_generator_feature() {
         catalog.index().generator_version,
         "strata-executor-cli-idl.1"
     );
-    assert_eq!(catalog.index().command_count, 46);
-    assert_eq!(catalog.commands().len(), 46);
-    assert_eq!(catalog.families().len(), 3);
+    assert_eq!(catalog.index().command_count, 56);
+    assert_eq!(catalog.commands().len(), 56);
+    assert_eq!(catalog.families().len(), 4);
 }
 
 #[test]
@@ -73,9 +73,10 @@ fn command_listing_is_grouped_and_sorted() {
     let catalog = CliCommandCatalog::embedded().expect("embedded CLI metadata loads");
 
     let families = catalog.families();
-    assert_eq!(families[0].id, "json");
-    assert_eq!(families[1].id, "kv");
-    assert_eq!(families[2].id, "vector");
+    assert_eq!(families[0].id, "event");
+    assert_eq!(families[1].id, "json");
+    assert_eq!(families[2].id, "kv");
+    assert_eq!(families[3].id, "vector");
 
     let kv_commands = catalog
         .commands_for_family("kv")
@@ -86,7 +87,7 @@ fn command_listing_is_grouped_and_sorted() {
             .iter()
             .map(|command| command.id.as_str())
             .collect::<Vec<_>>(),
-        families[1]
+        families[2]
             .commands
             .iter()
             .map(String::as_str)
@@ -101,7 +102,7 @@ fn command_listing_is_grouped_and_sorted() {
     let actual_paths = sorted_paths.clone();
     sorted_paths.sort();
     assert_eq!(actual_paths, sorted_paths);
-    assert!(catalog.commands_for_family("event").is_none());
+    assert!(catalog.commands_for_family("admin").is_none());
 }
 
 #[test]

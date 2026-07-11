@@ -1,0 +1,95 @@
+{
+  "data": {
+    "applied": true,
+    "commit": {
+      "delete_count": 0,
+      "durable": false,
+      "put_count": 5,
+      "timestamp": 3,
+      "version": 3
+    },
+    "items": [
+      {
+        "applied": true,
+        "commit": {
+          "delete_count": 0,
+          "durable": false,
+          "put_count": 5,
+          "timestamp": 3,
+          "version": 3
+        },
+        "effect": {
+          "affected_count": 1,
+          "applied": true,
+          "kind": "created",
+          "matched": false
+        },
+        "error": null,
+        "index": 0,
+        "result": {
+          "commit": {
+            "delete_count": 0,
+            "durable": false,
+            "put_count": 5,
+            "timestamp": 3,
+            "version": 3
+          },
+          "effect": {
+            "affected_count": 1,
+            "applied": true,
+            "kind": "created",
+            "matched": false
+          },
+          "error": null,
+          "event_type": "user.created",
+          "sequence": 0,
+          "timestamp": 3,
+          "version": 3
+        },
+        "status": "ok"
+      },
+      {
+        "applied": true,
+        "commit": {
+          "delete_count": 0,
+          "durable": false,
+          "put_count": 5,
+          "timestamp": 3,
+          "version": 3
+        },
+        "effect": {
+          "affected_count": 1,
+          "applied": true,
+          "kind": "created",
+          "matched": false
+        },
+        "error": null,
+        "index": 1,
+        "result": {
+          "commit": {
+            "delete_count": 0,
+            "durable": false,
+            "put_count": 5,
+            "timestamp": 3,
+            "version": 3
+          },
+          "effect": {
+            "affected_count": 1,
+            "applied": true,
+            "kind": "created",
+            "matched": false
+          },
+          "error": null,
+          "event_type": "user.updated",
+          "sequence": 1,
+          "timestamp": 3,
+          "version": 3
+        },
+        "status": "ok"
+      }
+    ],
+    "mode": "itemwise",
+    "status": "ok"
+  },
+  "type": "event_batch_append_results"
+}
