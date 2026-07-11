@@ -1,0 +1,48 @@
+{
+  "$id": "https://stratadb.org/idl/v1/schemas/space.exists.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "space.exists",
+  "request": {
+    "additionalProperties": false,
+    "description": "Checks whether a product space exists for a branch.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "space": {
+        "description": "Product space name.",
+        "type": "string"
+      },
+      "type": {
+        "const": "space_exists",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "space"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Boolean result.",
+    "properties": {
+      "data": {
+        "type": "boolean"
+      },
+      "type": {
+        "const": "bool",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

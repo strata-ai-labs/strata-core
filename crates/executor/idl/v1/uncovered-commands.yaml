@@ -8,13 +8,6 @@
 uncovered:
   - Command::ArrowExport
   - Command::ArrowImport
-  - Command::BranchCreate
-  - Command::BranchDelete
-  - Command::BranchForkAtTimestamp
-  - Command::BranchForkAtVersion
-  - Command::BranchForkCurrent
-  - Command::BranchGet
-  - Command::BranchList
   - Command::ConfigGet
   - Command::ConfigureGetKey
   - Command::Describe
@@ -66,7 +59,3 @@ uncovered:
   - Command::Metrics
   - Command::Ping
   - Command::RemoteGet
-  - Command::SpaceCreate
-  - Command::SpaceDelete
-  - Command::SpaceExists
-  - Command::SpaceList

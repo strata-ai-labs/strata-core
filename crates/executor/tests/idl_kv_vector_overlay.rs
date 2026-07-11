@@ -11,6 +11,18 @@ use strata_executor::idl_tooling::{
     resolve_default_index, resolve_default_schemas, to_generated_cli_json, to_generated_json,
 };
 
+const REQUIRED_BRANCH: &[&str] = &[
+    "branch.list",
+    "branch.get",
+    "branch.create",
+    "branch.fork",
+    "branch.fork_at_version",
+    "branch.fork_at_timestamp",
+    "branch.delete",
+];
+
+const REQUIRED_SPACE: &[&str] = &["space.list", "space.create", "space.exists", "space.delete"];
+
 const REQUIRED_EVENT: &[&str] = &[
     "event.append",
     "event.batch_append",
@@ -42,7 +54,12 @@ const REQUIRED_JSON: &[&str] = &[
 ];
 
 fn required_command_count() -> usize {
-    REQUIRED_EVENT.len() + REQUIRED_JSON.len() + REQUIRED_KV.len() + REQUIRED_VECTOR.len()
+    REQUIRED_BRANCH.len()
+        + REQUIRED_EVENT.len()
+        + REQUIRED_JSON.len()
+        + REQUIRED_KV.len()
+        + REQUIRED_SPACE.len()
+        + REQUIRED_VECTOR.len()
 }
 
 const REQUIRED_KV: &[&str] = &[
@@ -92,10 +109,12 @@ fn kv_and_vector_overlay_has_required_command_coverage() {
         .map(|command| command.id.as_str())
         .collect();
 
-    for id in REQUIRED_EVENT
+    for id in REQUIRED_BRANCH
         .iter()
+        .chain(REQUIRED_EVENT.iter())
         .chain(REQUIRED_JSON.iter())
         .chain(REQUIRED_KV.iter())
+        .chain(REQUIRED_SPACE.iter())
         .chain(REQUIRED_VECTOR.iter())
     {
         assert!(ids.contains(id), "missing required command `{id}`");
@@ -353,10 +372,12 @@ fn cli_command_index_has_required_coverage_and_lookup_tables() {
         .iter()
         .map(|command| command.id.as_str())
         .collect();
-    for id in REQUIRED_EVENT
+    for id in REQUIRED_BRANCH
         .iter()
+        .chain(REQUIRED_EVENT.iter())
         .chain(REQUIRED_JSON.iter())
         .chain(REQUIRED_KV.iter())
+        .chain(REQUIRED_SPACE.iter())
         .chain(REQUIRED_VECTOR.iter())
     {
         assert!(ids.contains(id), "missing required CLI command `{id}`");

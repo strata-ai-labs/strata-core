@@ -4,6 +4,449 @@
   "generator_version": "strata-executor-idl.1",
   "commands": [
     {
+      "id": "branch.create",
+      "family": "branch",
+      "op": "create",
+      "kind": "mutation.create",
+      "title": "Create empty branch",
+      "summary": "Create a new empty root branch.",
+      "description": "Creates an empty root branch with no parent and no data. This is not a fork: the new branch starts from nothing, and its `parent` is null. Use `branch.fork` to start from an existing branch's data. Creating a name that already exists fails with `already_exists.engine.branch`; names reserved for engine control data are rejected.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/branch/create",
+      "cli": {
+        "path": [
+          "branch",
+          "create"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_branch_create",
+        "description": "Use this when the user wants a fresh branch that shares no history with any existing branch."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::BranchCreate",
+      "output": "Output::Branch",
+      "outputs": [
+        "Output::Branch"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<BranchItem>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name_reserved"
+        },
+        {
+          "code": "already_exists.engine.branch",
+          "docs": "https://stratadb.org/e/already_exists.engine.branch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/create.json",
+        "response": "responses/v1/branches/create.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.create.md"
+      }
+    },
+    {
+      "id": "branch.delete",
+      "family": "branch",
+      "op": "delete",
+      "kind": "mutation.delete",
+      "title": "Delete branch",
+      "summary": "Delete an active branch and release its storage claims.",
+      "description": "Deletes an active branch and reports the deleted branch summary, generation facts, and storage cleanup counts. The `default` branch refuses deletion with `invalid_argument.engine.branch_delete`. There is no merge in V1: work on a fork is either kept by continuing on that branch or discarded by deleting it.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/branch/delete",
+      "cli": {
+        "path": [
+          "branch",
+          "delete"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_branch_delete",
+        "description": "Use this when the user wants to remove a branch. The default branch cannot be deleted."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::BranchDelete",
+      "output": "Output::BranchDeleteResult",
+      "outputs": [
+        "Output::BranchDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<BranchDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name_reserved"
+        },
+        {
+          "code": "invalid_argument.engine.branch_delete",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_delete"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/delete.json",
+        "response": "responses/v1/branches/delete.json",
+        "setup": [
+          "requests/v1/branches/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.delete.md"
+      }
+    },
+    {
+      "id": "branch.fork",
+      "family": "branch",
+      "op": "fork",
+      "kind": "mutation.create",
+      "title": "Fork branch from current head",
+      "summary": "Fork a new branch from the current head of a source branch.",
+      "description": "Forks a new branch from the source branch's current head. The new branch sees all data visible on the source at fork time; later writes on either branch stay isolated. The returned branch summary records the parent name, fork version, and generation.\n\nOn the CLI, all three fork commands share the single verb `strata branch fork <SOURCE> <BRANCH>`: with no flags it runs this command, while `--version` routes to `branch.fork_at_version` and `--timestamp` routes to `branch.fork_at_timestamp` (both wire-surface commands).\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/branch/fork",
+      "cli": {
+        "path": [
+          "branch",
+          "fork"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_branch_fork",
+        "description": "Use this when the user wants to branch off the latest state of an existing branch."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::BranchForkCurrent",
+      "output": "Output::Branch",
+      "outputs": [
+        "Output::Branch"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<BranchItem>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name_reserved"
+        },
+        {
+          "code": "already_exists.engine.branch",
+          "docs": "https://stratadb.org/e/already_exists.engine.branch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/fork.json",
+        "response": "responses/v1/branches/fork.json",
+        "setup": [
+          "requests/v1/kv/put.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.fork.md"
+      }
+    },
+    {
+      "id": "branch.fork_at_timestamp",
+      "family": "branch",
+      "op": "fork_at_timestamp",
+      "kind": "mutation.create",
+      "title": "Fork branch at timestamp",
+      "summary": "Fork a new branch from a retained source timestamp.",
+      "description": "Forks a new branch anchored at a retained source timestamp (microseconds, on Strata's logical commit clock). The engine resolves the timestamp to the covering retained commit; the returned parent lineage records both the fork timestamp and the resolved fork version. A timestamp outside retained history fails with `history_unavailable.engine.persistence_history`.\n\nThis command has no dedicated CLI verb: the CLI expresses it as `strata branch fork <SOURCE> <BRANCH> --timestamp <TIMESTAMP>` (one shared `branch fork` verb routes to all three fork commands, so only `branch.fork` owns the CLI path). It remains fully reachable through the generic wire surface — `strata command run`, MCP, and SDKs.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/branch/fork_at_timestamp",
+      "cli": {
+        "path": [
+          "branch",
+          "fork-at-timestamp"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_branch_fork_at_timestamp",
+        "description": "Use this when the user wants to branch from an existing branch as of a point in time."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::BranchForkAtTimestamp",
+      "output": "Output::Branch",
+      "outputs": [
+        "Output::Branch"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<BranchItem>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name_reserved"
+        },
+        {
+          "code": "already_exists.engine.branch",
+          "docs": "https://stratadb.org/e/already_exists.engine.branch"
+        },
+        {
+          "code": "history_unavailable.engine.persistence_history",
+          "docs": "https://stratadb.org/e/history_unavailable.engine.persistence_history"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/fork_at_timestamp.json",
+        "response": "responses/v1/branches/fork_at_timestamp.json",
+        "setup": [
+          "requests/v1/kv/put.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.fork_at_timestamp.md"
+      }
+    },
+    {
+      "id": "branch.fork_at_version",
+      "family": "branch",
+      "op": "fork_at_version",
+      "kind": "mutation.create",
+      "title": "Fork branch at version",
+      "summary": "Fork a new branch from a retained source commit version.",
+      "description": "Forks a new branch anchored at a retained commit version of the source branch, giving time-travel semantics: the new branch sees exactly the data visible at that version. A version outside retained history fails with `history_unavailable.engine.persistence_history`.\n\nThis command has no dedicated CLI verb: the CLI expresses it as `strata branch fork <SOURCE> <BRANCH> --version <VERSION>` (one shared `branch fork` verb routes to all three fork commands, so only `branch.fork` owns the CLI path). It remains fully reachable through the generic wire surface — `strata command run`, MCP, and SDKs.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/branch/fork_at_version",
+      "cli": {
+        "path": [
+          "branch",
+          "fork-at-version"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_branch_fork_at_version",
+        "description": "Use this when the user wants to branch from a specific historical commit version of an existing branch."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::BranchForkAtVersion",
+      "output": "Output::Branch",
+      "outputs": [
+        "Output::Branch"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<BranchItem>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name_reserved"
+        },
+        {
+          "code": "already_exists.engine.branch",
+          "docs": "https://stratadb.org/e/already_exists.engine.branch"
+        },
+        {
+          "code": "history_unavailable.engine.persistence_history",
+          "docs": "https://stratadb.org/e/history_unavailable.engine.persistence_history"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/fork_at_version.json",
+        "response": "responses/v1/branches/fork_at_version.json",
+        "setup": [
+          "requests/v1/kv/put.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.fork_at_version.md"
+      }
+    },
+    {
+      "id": "branch.get",
+      "family": "branch",
+      "op": "get",
+      "kind": "read.status",
+      "title": "Read one branch",
+      "summary": "Read one branch summary by name.",
+      "description": "Reads the summary for one branch: name, deterministic branch id, generation, status, parent lineage, and logical creation version. A branch that does not exist is a `not_found.engine.branch` error, not an empty result.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/branch/get",
+      "cli": {
+        "path": [
+          "branch",
+          "get"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_branch_get",
+        "description": "Use this when the user asks about a specific branch's status, lineage, or fork point."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::BranchGet",
+      "output": "Output::Branch",
+      "outputs": [
+        "Output::Branch"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<BranchItem>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name_reserved"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/get.json",
+        "response": "responses/v1/branches/get.json",
+        "setup": [
+          "requests/v1/branches/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.get.md"
+      }
+    },
+    {
+      "id": "branch.list",
+      "family": "branch",
+      "op": "list",
+      "kind": "read.page",
+      "title": "List branches",
+      "summary": "List active branches with their lineage facts.",
+      "description": "Lists every active branch as a terminal page. Each item carries the branch name, deterministic branch id, generation, status, parent lineage (fork version and timestamp when forked), and logical creation version.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/branch/list",
+      "cli": {
+        "path": [
+          "branch",
+          "list"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_branch_list",
+        "description": "Use this when the user wants to see all branches in the database."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::BranchList",
+      "output": "Output::Branches",
+      "outputs": [
+        "Output::Branches"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<BranchItem, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/list.json",
+        "response": "responses/v1/branches/list.json",
+        "setup": [
+          "requests/v1/branches/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.list.md"
+      }
+    },
+    {
       "id": "event.append",
       "family": "event",
       "op": "append",
@@ -2479,6 +2922,255 @@
       "source": {
         "command": "crates/executor/idl/v1/commands/kv.yaml",
         "prose": "commands/kv.scan.md"
+      }
+    },
+    {
+      "id": "space.create",
+      "family": "space",
+      "op": "create",
+      "kind": "mutation.create",
+      "title": "Create product space",
+      "summary": "Create a product space on a branch.",
+      "description": "Creates a product space in the branch catalog. Creation is idempotent: creating a space that already exists succeeds with `created: false` and no mutation effect. Names reserved for engine control data are rejected with `invalid_argument.engine.product_space_reserved`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/space/create",
+      "cli": {
+        "path": [
+          "space",
+          "create"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_space_create",
+        "description": "Use this when the user wants a new named data namespace (space) on a branch."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::SpaceCreate",
+      "output": "Output::SpaceCreateResult",
+      "outputs": [
+        "Output::SpaceCreateResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<SpaceCreate>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.product_space_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space_reserved"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/spaces/create.json",
+        "response": "responses/v1/spaces/create.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/space.yaml",
+        "prose": "commands/space.create.md"
+      }
+    },
+    {
+      "id": "space.delete",
+      "family": "space",
+      "op": "delete",
+      "kind": "mutation.delete",
+      "title": "Delete product space",
+      "summary": "Delete a product space from a branch.",
+      "description": "Drops the product space from the branch catalog. The `default` space refuses deletion with `invalid_argument.engine.space_delete_default`. A space that still contains visible data refuses deletion with `failed_precondition.engine.space_not_empty` unless `force: true` is set, which tombstones the visible rows first and reports the count. Deleting a space that does not exist succeeds with `deleted: false`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/space/delete",
+      "cli": {
+        "path": [
+          "space",
+          "delete"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_space_delete",
+        "description": "Use this when the user wants to remove a space, optionally force-deleting its data."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::SpaceDelete",
+      "output": "Output::SpaceDeleteResult",
+      "outputs": [
+        "Output::SpaceDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<SpaceDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.product_space_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space_reserved"
+        },
+        {
+          "code": "invalid_argument.engine.space_delete_default",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.space_delete_default"
+        },
+        {
+          "code": "failed_precondition.engine.space_not_empty",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.space_not_empty"
+        },
+        {
+          "code": "invalid_argument.engine.space_delete_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.space_delete_too_large"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/spaces/delete.json",
+        "response": "responses/v1/spaces/delete.json",
+        "setup": [
+          "requests/v1/spaces/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/space.yaml",
+        "prose": "commands/space.delete.md"
+      }
+    },
+    {
+      "id": "space.exists",
+      "family": "space",
+      "op": "exists",
+      "kind": "read.status",
+      "title": "Check product space existence",
+      "summary": "Check whether a product space exists on a branch.",
+      "description": "Reports whether the named product space is cataloged on the target branch. A missing space is `false`, not an error; reserved names are rejected with `invalid_argument.engine.product_space_reserved`.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/space/exists",
+      "cli": {
+        "path": [
+          "space",
+          "exists"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_space_exists",
+        "description": "Use this when the user asks whether a specific space exists."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::SpaceExists",
+      "output": "Output::Bool",
+      "outputs": [
+        "Output::Bool"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusValue<bool>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.product_space_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space_reserved"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/spaces/exists.json",
+        "response": "responses/v1/spaces/exists_true.json",
+        "setup": [
+          "requests/v1/spaces/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/space.yaml",
+        "prose": "commands/space.exists.md"
+      }
+    },
+    {
+      "id": "space.list",
+      "family": "space",
+      "op": "list",
+      "kind": "read.page",
+      "title": "List product spaces",
+      "summary": "List product spaces on a branch.",
+      "description": "Lists the product space names cataloged on the target branch as a terminal page. Every branch has a `default` space; additional spaces isolate data namespaces within the same branch.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/space/list",
+      "cli": {
+        "path": [
+          "space",
+          "list"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_space_list",
+        "description": "Use this when the user wants to see which product spaces exist on a branch."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::SpaceList",
+      "output": "Output::SpaceList",
+      "outputs": [
+        "Output::SpaceList"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<String, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/spaces/list.json",
+        "response": "responses/v1/spaces/list.json",
+        "setup": [
+          "requests/v1/spaces/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/space.yaml",
+        "prose": "commands/space.list.md"
       }
     },
     {

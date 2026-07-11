@@ -1,0 +1,11 @@
+{
+  "data": {
+    "cursor": null,
+    "has_more": false,
+    "items": [
+      "default",
+      "tenant_a"
+    ]
+  },
+  "type": "space_list"
+}

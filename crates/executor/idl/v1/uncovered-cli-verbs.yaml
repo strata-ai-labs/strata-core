@@ -12,11 +12,6 @@ uncovered:
   - agents init
   - arrow export
   - arrow import
-  - branch create
-  - branch delete
-  - branch fork
-  - branch get
-  - branch list
   - clone
   - command print
   - command run
@@ -75,7 +70,3 @@ uncovered:
   - metrics
   - ping
   - remote
-  - space create
-  - space delete
-  - space exists
-  - space list

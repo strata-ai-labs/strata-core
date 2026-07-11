@@ -41,3 +41,9 @@ response_models:
   - Maybe<EventVersionedData>
   - Page<EventVersionedData, u64>
   - StatusValue<EventChainVerification>
+  - Page<BranchItem, String>
+  - StatusResponse<BranchItem>
+  - MutationAck<BranchItem>
+  - MutationAck<BranchDelete>
+  - MutationAck<SpaceCreate>
+  - MutationAck<SpaceDelete>

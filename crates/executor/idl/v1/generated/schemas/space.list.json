@@ -1,0 +1,66 @@
+{
+  "$id": "https://stratadb.org/idl/v1/schemas/space.list.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "space.list",
+  "request": {
+    "additionalProperties": false,
+    "description": "Lists product spaces for a branch.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "space_list",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Product space list.",
+    "properties": {
+      "data": {
+        "description": "Shared pagination continuation facts.",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "description": "Spaces in this page.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "space_list",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

@@ -633,7 +633,14 @@ pub fn resolve_index(repo_root: &Path) -> Result<CommandIndex> {
     let response_models: BTreeSet<String> = dto_inventory.response_models.into_iter().collect();
 
     let mut command_entries = Vec::new();
-    for file_name in ["event.yaml", "json.yaml", "kv.yaml", "vector.yaml"] {
+    for file_name in [
+        "branch.yaml",
+        "event.yaml",
+        "json.yaml",
+        "kv.yaml",
+        "space.yaml",
+        "vector.yaml",
+    ] {
         let command_path = idl_root.join("commands").join(file_name);
         validate_command_source_text(&command_path)?;
         let command_file: CommandsFileSource = read_yaml(&command_path)?;

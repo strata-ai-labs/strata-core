@@ -1,0 +1,29 @@
+{
+  "data": {
+    "branch": {
+      "branch_id": "dc42122c-83b7-5436-89bc-9ffa4299697c",
+      "created_at": 3,
+      "deleted_at": 6,
+      "generation": 1,
+      "name": "feature",
+      "parent": null,
+      "state_revision": 2,
+      "status": "deleted"
+    },
+    "cleanup": {
+      "protected_tables": 0,
+      "releasable_tables": 0,
+      "removed_refs": 0
+    },
+    "deleted": true,
+    "effect": {
+      "affected_count": 1,
+      "applied": true,
+      "kind": "deleted",
+      "matched": true
+    },
+    "generation_after": 1,
+    "generation_before": 1
+  },
+  "type": "branch_delete_result"
+}

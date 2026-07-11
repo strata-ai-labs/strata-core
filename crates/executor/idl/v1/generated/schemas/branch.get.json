@@ -1,0 +1,152 @@
+{
+  "$defs": {
+    "BranchItem": {
+      "description": "Branch summary exposed through the command boundary.",
+      "properties": {
+        "branch_id": {
+          "type": "string"
+        },
+        "created_at": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "deleted_at": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "generation": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BranchParentItem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/BranchStatus"
+        }
+      },
+      "required": [
+        "name",
+        "branch_id",
+        "generation",
+        "status",
+        "state_revision"
+      ],
+      "type": "object"
+    },
+    "BranchParentItem": {
+      "description": "Fork parent facts exposed through the command boundary.",
+      "properties": {
+        "branch_id": {
+          "type": "string"
+        },
+        "fork_timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "fork_version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generation": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "branch_id",
+        "generation",
+        "fork_version"
+      ],
+      "type": "object"
+    },
+    "BranchStatus": {
+      "description": "Branch status exposed through the command boundary.",
+      "oneOf": [
+        {
+          "const": "active",
+          "description": "Branch accepts reads and writes.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "Branch was deleted and is hidden from normal listing.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/branch.get.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "branch.get",
+  "request": {
+    "additionalProperties": false,
+    "description": "Reads one branch summary.",
+    "properties": {
+      "branch": {
+        "description": "Branch name.",
+        "type": "string"
+      },
+      "type": {
+        "const": "branch_get",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "branch"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "One branch summary.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/BranchItem"
+      },
+      "type": {
+        "const": "branch",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

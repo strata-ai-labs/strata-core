@@ -1,0 +1,105 @@
+commands:
+  - id: branch.list
+    kind: read.page
+    title: List branches
+    input: Command::BranchList
+    output: Output::Branches
+    result: BranchItem
+    response_model: Page<BranchItem, String>
+    prose: commands/branch.list.md
+    errors-:
+      - not_found.engine.branch
+      - invalid_argument.engine.branch_name
+      - invalid_argument.engine.branch_name_reserved
+    fixtures:
+      setup:
+        - requests/v1/branches/create.json
+      request: requests/v1/branches/list.json
+      response: responses/v1/branches/list.json
+  - id: branch.get
+    kind: read.status
+    title: Read one branch
+    input: Command::BranchGet
+    output: Output::Branch
+    result: BranchItem
+    response_model: StatusResponse<BranchItem>
+    prose: commands/branch.get.md
+    fixtures:
+      setup:
+        - requests/v1/branches/create.json
+      request: requests/v1/branches/get.json
+      response: responses/v1/branches/get.json
+  - id: branch.create
+    kind: mutation.create
+    title: Create empty branch
+    input: Command::BranchCreate
+    output: Output::Branch
+    result: BranchItem
+    prose: commands/branch.create.md
+    errors+:
+      - already_exists.engine.branch
+    errors-:
+      - not_found.engine.branch
+    fixtures:
+      request: requests/v1/branches/create.json
+      response: responses/v1/branches/create.json
+  - id: branch.fork
+    kind: mutation.create
+    title: Fork branch from current head
+    input: Command::BranchForkCurrent
+    output: Output::Branch
+    result: BranchItem
+    prose: commands/branch.fork.md
+    errors+:
+      - already_exists.engine.branch
+    fixtures:
+      setup:
+        - requests/v1/kv/put.json
+      request: requests/v1/branches/fork.json
+      response: responses/v1/branches/fork.json
+  - id: branch.fork_at_version
+    kind: mutation.create
+    title: Fork branch at version
+    input: Command::BranchForkAtVersion
+    output: Output::Branch
+    result: BranchItem
+    cli_surface: wire
+    prose: commands/branch.fork_at_version.md
+    errors+:
+      - already_exists.engine.branch
+      - history_unavailable.engine.persistence_history
+    fixtures:
+      setup:
+        - requests/v1/kv/put.json
+      request: requests/v1/branches/fork_at_version.json
+      response: responses/v1/branches/fork_at_version.json
+  - id: branch.fork_at_timestamp
+    kind: mutation.create
+    title: Fork branch at timestamp
+    input: Command::BranchForkAtTimestamp
+    output: Output::Branch
+    result: BranchItem
+    cli_surface: wire
+    prose: commands/branch.fork_at_timestamp.md
+    errors+:
+      - already_exists.engine.branch
+      - history_unavailable.engine.persistence_history
+    fixtures:
+      setup:
+        - requests/v1/kv/put.json
+      request: requests/v1/branches/fork_at_timestamp.json
+      response: responses/v1/branches/fork_at_timestamp.json
+  - id: branch.delete
+    kind: mutation.delete
+    title: Delete branch
+    input: Command::BranchDelete
+    output: Output::BranchDeleteResult
+    result: BranchDelete
+    prose: commands/branch.delete.md
+    errors+:
+      - invalid_argument.engine.branch_delete
+    fixtures:
+      setup:
+        - requests/v1/branches/create.json
+      request: requests/v1/branches/delete.json
+      response: responses/v1/branches/delete.json

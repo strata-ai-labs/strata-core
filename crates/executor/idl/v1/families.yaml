@@ -1,4 +1,9 @@
 families:
+  - id: branch
+    docs: /docs/branch/{op_path}
+    errors:
+      - invalid_argument.engine.branch_name
+      - invalid_argument.engine.branch_name_reserved
   - id: event
     docs: /docs/event/{op_path}
     errors:
@@ -13,6 +18,11 @@ families:
     errors:
       - invalid_argument.engine.product_space
       - invalid_argument.engine.kv_key
+  - id: space
+    docs: /docs/space/{op_path}
+    errors:
+      - invalid_argument.engine.product_space
+      - invalid_argument.engine.product_space_reserved
   - id: vector
     docs: /docs/vector/{op_path}
     errors:
