@@ -4935,6 +4935,10 @@
         {
           "code": "invalid_argument.engine.json_path_type",
           "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_type"
+        },
+        {
+          "code": "invalid_argument.executor.json_batch_duplicate_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.json_batch_duplicate_key"
         }
       ],
       "fixtures": {
@@ -5099,6 +5103,10 @@
         {
           "code": "invalid_argument.engine.json_array_too_large",
           "docs": "https://stratadb.org/e/invalid_argument.engine.json_array_too_large"
+        },
+        {
+          "code": "invalid_argument.executor.json_batch_duplicate_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.json_batch_duplicate_key"
         }
       ],
       "fixtures": {
@@ -7012,6 +7020,10 @@
         {
           "code": "invalid_argument.engine.vector_batch",
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_batch"
+        },
+        {
+          "code": "invalid_argument.executor.vector_batch_duplicate_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.vector_batch_duplicate_key"
         }
       ],
       "fixtures": {
@@ -7176,6 +7188,10 @@
         {
           "code": "invalid_argument.executor.vector_dimension",
           "docs": "https://stratadb.org/e/invalid_argument.executor.vector_dimension"
+        },
+        {
+          "code": "invalid_argument.executor.vector_batch_duplicate_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.vector_batch_duplicate_key"
         }
       ],
       "fixtures": {

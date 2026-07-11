@@ -5,10 +5,10 @@ use super::{
     json_batch_result, json_delete_output, json_document_id, json_get_entry, json_history_items,
     json_index_definition, json_index_name, json_list_output, json_path, json_sample_output,
     json_value, json_value_output, json_versioned_value, json_write_output,
-    optional_json_document_id, optional_json_prefix, optional_limit, upsert_effect, usize_to_u64,
-    BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, Executor, ExecutorResult,
-    JsonIndexType, JsonSetEntry, MaybeJsonValue, MaybeJsonVersionedValue, Output, PageInfo,
-    Timestamp, DEFAULT_JSON_LIST_LIMIT,
+    optional_json_document_id, optional_json_prefix, optional_limit, reject_duplicate_json_targets,
+    upsert_effect, usize_to_u64, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, Executor,
+    ExecutorResult, JsonIndexType, JsonSetEntry, MaybeJsonValue, MaybeJsonVersionedValue, Output,
+    PageInfo, Timestamp, DEFAULT_JSON_LIST_LIMIT,
 };
 
 impl Executor {
@@ -111,6 +111,7 @@ impl Executor {
         let mut valid_entries = Vec::with_capacity(entries.len());
         for (index, entry) in entries.into_iter().enumerate() {
             let (key, path, value) = entry.into_parts();
+            let target = (key.clone(), path.clone());
             let validation: ExecutorResult<JsonSetEntry> = (|| {
                 let id = json_document_id(key)?;
                 let path = json_path(&path)?;
@@ -118,7 +119,7 @@ impl Executor {
                 Ok(JsonSetEntry::new(id, path, value))
             })();
             match validation {
-                Ok(entry) => valid_entries.push((index, entry)),
+                Ok(entry) => valid_entries.push((index, entry, target)),
                 Err(error) => {
                     results[index] = Some(json_batch_item_failed(usize_to_u64(index), error));
                 }
@@ -127,15 +128,20 @@ impl Executor {
         if valid_entries.is_empty() {
             return Ok(Output::JsonBatchResults(finish_json_batch_results(results)));
         }
+        reject_duplicate_json_targets(
+            valid_entries
+                .iter()
+                .map(|(_, _, (key, path))| (key.as_str(), path.as_str())),
+        )?;
         let engine_entries = valid_entries
             .iter()
-            .map(|(_, entry)| entry.clone())
+            .map(|(_, entry, _)| entry.clone())
             .collect::<Vec<_>>();
-        // The engine owns create-vs-update per item, including intra-batch
-        // repeats (a document id written earlier in this batch is an update for
-        // its later entries), so the executor relays `created` with no pre-read.
+        // The engine owns create-vs-update per item, so the executor relays
+        // `created` with no pre-read. Two items targeting the same document and
+        // path are rejected above, matching KV's whole-batch duplicate rule.
         let outcome = service.batch_set_or_create(engine_entries)?;
-        for ((index, _), item) in valid_entries.into_iter().zip(outcome.results()) {
+        for ((index, _, _), item) in valid_entries.into_iter().zip(outcome.results()) {
             results[index] = Some(json_batch_item_result(
                 usize_to_u64(index),
                 upsert_effect(!item.created()),
@@ -201,8 +207,9 @@ impl Executor {
         let mut valid_entries = Vec::with_capacity(entries.len());
         for (index, entry) in entries.into_iter().enumerate() {
             let (key, path) = entry.into_parts();
+            let target = (key.clone(), path.clone());
             match json_get_entry(key, &path) {
-                Ok(entry) => valid_entries.push((index, entry)),
+                Ok(entry) => valid_entries.push((index, entry, target)),
                 Err(error) => {
                     results[index] = Some(json_batch_item_failed(usize_to_u64(index), error));
                 }
@@ -211,12 +218,17 @@ impl Executor {
         if valid_entries.is_empty() {
             return Ok(Output::JsonBatchResults(finish_json_batch_results(results)));
         }
+        reject_duplicate_json_targets(
+            valid_entries
+                .iter()
+                .map(|(_, _, (key, path))| (key.as_str(), path.as_str())),
+        )?;
         let engine_entries = valid_entries
             .iter()
-            .map(|(_, entry)| entry.clone())
+            .map(|(_, entry, _)| entry.clone())
             .collect::<Vec<_>>();
         let outcome = service.batch_delete_entries(engine_entries)?;
-        for ((index, _), deleted) in valid_entries
+        for ((index, _, _), deleted) in valid_entries
             .into_iter()
             .zip(outcome.deleted().iter().copied())
         {

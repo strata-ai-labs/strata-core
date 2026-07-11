@@ -147,20 +147,51 @@ fn unwrap_slots<T>(results: Vec<Option<BatchItem<T>>>, label: &str) -> Vec<Batch
 pub(super) fn reject_duplicate_valid_keys<'a>(
     keys: impl IntoIterator<Item = &'a Bytes>,
 ) -> ExecutorResult<()> {
-    reject_duplicate_bytes(keys)
+    reject_duplicates(
+        keys.into_iter().map(Bytes::as_slice),
+        "invalid_argument.executor.kv_batch_duplicate_key",
+        "KV batch contains duplicate keys",
+    )
 }
 
-pub(super) fn reject_duplicate_bytes<'a>(
-    keys: impl IntoIterator<Item = &'a Bytes>,
+/// A JSON batch item targets a (document id, path) pair; two items writing the
+/// same pair are a duplicate, while two paths of one document are distinct.
+pub(super) fn reject_duplicate_json_targets<'a>(
+    targets: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> ExecutorResult<()> {
+    reject_duplicates(
+        targets,
+        "invalid_argument.executor.json_batch_duplicate_key",
+        "JSON batch contains duplicate document targets",
+    )
+}
+
+pub(super) fn reject_duplicate_vector_keys<'a>(
+    keys: impl IntoIterator<Item = &'a str>,
+) -> ExecutorResult<()> {
+    reject_duplicates(
+        keys,
+        "invalid_argument.executor.vector_batch_duplicate_key",
+        "vector batch contains duplicate keys",
+    )
+}
+
+/// Rejects the whole batch when any key repeats, matching KV's contract so
+/// every mutation batch answers a duplicate target the same way rather than
+/// silently applying last-wins.
+fn reject_duplicates<T: Ord>(
+    keys: impl IntoIterator<Item = T>,
+    code: &'static str,
+    message: &'static str,
 ) -> ExecutorResult<()> {
     let mut seen = BTreeSet::new();
     for key in keys {
-        if !seen.insert(key.as_slice().to_vec()) {
+        if !seen.insert(key) {
             return Err(ExecutorError::new(
                 ExecutorErrorClass::InvalidInput,
-                "invalid_argument.executor.kv_batch_duplicate_key",
+                code,
                 false,
-                "KV batch contains duplicate keys",
+                message,
             ));
         }
     }

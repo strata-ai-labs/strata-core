@@ -247,6 +247,7 @@ commands:
       - invalid_argument.engine.vector_dimension
       - invalid_argument.engine.vector_embedding
       - invalid_argument.executor.vector_dimension
+      - invalid_argument.executor.vector_batch_duplicate_key
     fixtures:
       setup:
         - requests/v1/vector/collection_create.json
@@ -277,6 +278,7 @@ commands:
     prose: commands/vector.batch_delete.md
     errors+:
       - invalid_argument.engine.vector_batch
+      - invalid_argument.executor.vector_batch_duplicate_key
     fixtures:
       setup:
         - requests/v1/vector/collection_create.json

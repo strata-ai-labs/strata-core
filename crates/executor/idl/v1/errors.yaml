@@ -5,6 +5,8 @@ errors:
   - invalid_argument.engine.kv_batch
   - invalid_argument.engine.kv_batch_duplicate_key
   - invalid_argument.executor.kv_batch_duplicate_key
+  - invalid_argument.executor.json_batch_duplicate_key
+  - invalid_argument.executor.vector_batch_duplicate_key
   - not_found.engine.branch
   - invalid_argument.engine.vector_collection
   - invalid_argument.engine.vector_collection_reserved

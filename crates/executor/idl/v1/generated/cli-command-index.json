@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "29e73e4e5e98e748b44c7a34852a5d923c9389c79acb58e828d5d6ebc8395bae",
+    "checksum_sha256": "dca1500058b6b3e81b53e380f5a636362c16f40f8d7a928331ce536a136625c2",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -4301,6 +4301,10 @@
         {
           "code": "invalid_argument.engine.json_path_type",
           "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_type"
+        },
+        {
+          "code": "invalid_argument.executor.json_batch_duplicate_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.json_batch_duplicate_key"
         }
       ],
       "fixtures": {
@@ -4445,6 +4449,10 @@
         {
           "code": "invalid_argument.engine.json_array_too_large",
           "docs": "https://stratadb.org/e/invalid_argument.engine.json_array_too_large"
+        },
+        {
+          "code": "invalid_argument.executor.json_batch_duplicate_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.json_batch_duplicate_key"
         }
       ],
       "fixtures": {
@@ -6184,6 +6192,10 @@
         {
           "code": "invalid_argument.engine.vector_batch",
           "docs": "https://stratadb.org/e/invalid_argument.engine.vector_batch"
+        },
+        {
+          "code": "invalid_argument.executor.vector_batch_duplicate_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.vector_batch_duplicate_key"
         }
       ],
       "fixtures": {
@@ -6328,6 +6340,10 @@
         {
           "code": "invalid_argument.executor.vector_dimension",
           "docs": "https://stratadb.org/e/invalid_argument.executor.vector_dimension"
+        },
+        {
+          "code": "invalid_argument.executor.vector_batch_duplicate_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.vector_batch_duplicate_key"
         }
       ],
       "fixtures": {
