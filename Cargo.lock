@@ -3630,7 +3630,6 @@ dependencies = [
  "rustyline",
  "serde",
  "serde_json",
- "serde_yaml",
  "shlex",
  "strata-executor 1.0.0",
  "strata-hub",
