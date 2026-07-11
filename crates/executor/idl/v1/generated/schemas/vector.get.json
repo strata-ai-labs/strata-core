@@ -1,0 +1,129 @@
+{
+  "$defs": {
+    "VectorData": {
+      "description": "Vector value payload.",
+      "properties": {
+        "embedding": {
+          "items": {
+            "format": "float",
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "metadata": true
+      },
+      "required": [
+        "embedding"
+      ],
+      "type": "object"
+    },
+    "VectorVersionedData": {
+      "description": "Vector value with commit metadata.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/VectorData"
+        },
+        "key": {
+          "type": "string"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vector_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "data",
+        "version",
+        "timestamp",
+        "vector_revision"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/vector.get.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "vector.get",
+  "request": {
+    "additionalProperties": false,
+    "description": "Reads one vector.",
+    "properties": {
+      "as_of": {
+        "description": "Optional timestamp in microseconds.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "collection": {
+        "description": "Collection name.",
+        "type": "string"
+      },
+      "key": {
+        "description": "Vector key.",
+        "type": "string"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "vector_get",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "collection",
+      "key"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Optional vector value.",
+    "properties": {
+      "data": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/VectorVersionedData"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "type": {
+        "const": "vector_data",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

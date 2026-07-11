@@ -18,6 +18,7 @@ const fn is_false(value: &bool) -> bool {
 
 /// Serializable executor command.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     /// Lightweight admin liveness check.

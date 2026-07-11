@@ -1,0 +1,68 @@
+{
+  "$defs": {
+    "Bytes": {
+      "contentEncoding": "base64",
+      "description": "Binary payload encoded as a standard base64 string.",
+      "type": "string"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/kv.batch_exists.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "kv.batch_exists",
+  "request": {
+    "additionalProperties": false,
+    "description": "Checks multiple keys for existence.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "keys": {
+        "description": "Keys to check.",
+        "items": {
+          "$ref": "#/$defs/Bytes"
+        },
+        "type": "array"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "kv_batch_exists",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "keys"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Positional boolean results.",
+    "properties": {
+      "data": {
+        "items": {
+          "type": "boolean"
+        },
+        "type": "array"
+      },
+      "type": {
+        "const": "bool_list",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

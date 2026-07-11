@@ -2,6 +2,7 @@ use super::{Bytes, Deserialize, Serialize, Value};
 
 /// Entry for a batch KV write.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BatchKvEntry {
     key: Bytes,
     value: Bytes,
@@ -31,6 +32,7 @@ impl BatchKvEntry {
 
 /// Entry for a batch JSON set.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BatchJsonEntry {
     key: String,
     path: String,
@@ -70,6 +72,7 @@ impl BatchJsonEntry {
 
 /// Entry for a batch JSON get.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BatchJsonGetEntry {
     key: String,
     path: String,
@@ -102,6 +105,7 @@ impl BatchJsonGetEntry {
 
 /// Entry for a batch JSON delete.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BatchJsonDeleteEntry {
     key: String,
     path: String,

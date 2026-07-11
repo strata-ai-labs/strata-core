@@ -5,6 +5,7 @@ use super::{
 
 /// Graph neighbor traversal direction.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum GraphDirection {
     /// Outgoing edges from the selected node.
@@ -18,6 +19,7 @@ pub enum GraphDirection {
 
 /// Explicit policy for graph facts bound to a deleted entity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum GraphDeletePolicy {
     /// Delete the bound graph nodes and their incident edges.
@@ -30,6 +32,7 @@ pub enum GraphDeletePolicy {
 
 /// Product primitive kind used by graph entity bindings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum GraphBindingPrimitive {
     /// KV primitive.
@@ -46,6 +49,7 @@ pub enum GraphBindingPrimitive {
 
 /// Typed product identity attached to a graph node.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphBindingTarget {
     primitive: GraphBindingPrimitive,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -98,6 +102,7 @@ impl GraphBindingTarget {
 
 /// Node-to-entity binding.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphEntityBinding {
     target: GraphBindingTarget,
 }
@@ -121,6 +126,7 @@ impl GraphEntityBinding {
 
 /// Graph node input payload.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphNodeData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     properties: Option<Value>,
@@ -171,6 +177,7 @@ impl GraphNodeData {
 
 /// Graph edge input payload.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphEdgeData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     weight: Option<f64>,
@@ -202,6 +209,7 @@ impl GraphEdgeData {
 
 /// One graph batch write operation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum GraphBatchOperation {
     /// Upserts one node.
@@ -240,6 +248,7 @@ pub enum GraphBatchOperation {
 
 /// Serializable graph metadata.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphInfoData {
     graph: String,
     node_count: u64,
@@ -310,6 +319,7 @@ impl GraphInfoData {
 
 /// Serializable graph node output.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphNodeDataOutput {
     graph: String,
     node_id: String,
@@ -383,6 +393,7 @@ impl GraphNodeDataOutput {
 
 /// Serializable graph edge output.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphEdgeDataOutput {
     graph: String,
     src: String,
@@ -463,6 +474,7 @@ impl GraphEdgeDataOutput {
 
 /// Serializable graph neighbor hit.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphNeighborHit {
     graph: String,
     node_id: String,
@@ -547,6 +559,7 @@ impl GraphNeighborHit {
 
 /// Serializable graph entity binding hit.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphBindingHit {
     graph: String,
     node_id: String,
@@ -601,6 +614,7 @@ impl GraphBindingHit {
 
 /// Positional graph batch write result.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphBatchItemResult {
     operation_index: u64,
     operation: String,
@@ -758,6 +772,7 @@ impl GraphBatchItemResult {
 /// One declared property on a graph object or link type (wire form).
 /// `value_type` is a recorded hint, not an enforced constraint.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphPropertyDef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     value_type: Option<String>,
@@ -792,6 +807,7 @@ impl GraphPropertyDef {
 
 /// A declared object type (wire form).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphObjectTypeDefData {
     name: String,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
@@ -820,6 +836,7 @@ impl GraphObjectTypeDefData {
 
 /// A declared link type (wire form). `cardinality` is a recorded hint.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphLinkTypeDefData {
     name: String,
     source: String,
@@ -876,6 +893,7 @@ impl GraphLinkTypeDefData {
 
 /// A graph's ontology: status plus every declared type (wire form).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphOntologyData {
     graph: String,
     status: String,
@@ -940,6 +958,7 @@ impl GraphOntologyData {
 
 /// One object type with its visible node count (wire form).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphObjectTypeSummaryData {
     #[serde(flatten)]
     def: GraphObjectTypeDefData,
@@ -965,6 +984,7 @@ impl GraphObjectTypeSummaryData {
 
 /// One link type with its visible edge count (wire form).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphLinkTypeSummaryData {
     #[serde(flatten)]
     def: GraphLinkTypeDefData,
@@ -990,6 +1010,7 @@ impl GraphLinkTypeSummaryData {
 
 /// The ontology with per-type usage counts (wire form).
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphOntologySummaryData {
     graph: String,
     status: String,
@@ -1055,6 +1076,7 @@ impl GraphOntologySummaryData {
 /// Optional size bounds for one graph analytics snapshot (input form).
 /// Unset fields use the engine defaults.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphAnalyticsBudget {
     /// Maximum node count admitted into the snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1088,6 +1110,7 @@ impl GraphAnalyticsBudget {
 /// Weakly-connected-components result (wire form). Every node maps to
 /// its component representative: the smallest node id in the component.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphWccData {
     graph: String,
     components: std::collections::BTreeMap<String, String>,
@@ -1126,6 +1149,7 @@ impl GraphWccData {
 
 /// Local-clustering-coefficient result (wire form).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphLccData {
     graph: String,
     coefficients: std::collections::BTreeMap<String, f64>,
@@ -1153,6 +1177,7 @@ impl GraphLccData {
 
 /// Shortest-path result (wire form). Unreachable nodes are omitted.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphSsspData {
     graph: String,
     source: String,
@@ -1199,6 +1224,7 @@ impl GraphSsspData {
 
 /// `PageRank` result (wire form).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphPagerankData {
     graph: String,
     ranks: std::collections::BTreeMap<String, f64>,
@@ -1246,6 +1272,7 @@ impl GraphPagerankData {
 /// Community-detection result (wire form). Every node maps to its
 /// community representative node id.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphCdlpData {
     graph: String,
     labels: std::collections::BTreeMap<String, String>,
@@ -1271,6 +1298,7 @@ impl GraphCdlpData {
 /// One traversal step recorded by a breadth-first search (wire form).
 /// `src`/`dst` follow traversal order.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphBfsEdgeData {
     src: String,
     dst: String,
@@ -1312,6 +1340,7 @@ impl GraphBfsEdgeData {
 
 /// Breadth-first-search result (wire form).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphBfsData {
     graph: String,
     start: String,
@@ -1366,6 +1395,7 @@ impl GraphBfsData {
 
 /// One node in a bulk ingest (input form).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphBulkNode {
     /// Node id.
     node_id: String,
@@ -1418,6 +1448,7 @@ impl GraphBulkNode {
 
 /// One edge in a bulk ingest (input form).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphBulkEdge {
     /// Source node id.
     src: String,

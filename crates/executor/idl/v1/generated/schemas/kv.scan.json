@@ -1,0 +1,132 @@
+{
+  "$defs": {
+    "Bytes": {
+      "contentEncoding": "base64",
+      "description": "Binary payload encoded as a standard base64 string.",
+      "type": "string"
+    },
+    "ScanItem": {
+      "description": "KV scan item.",
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/Bytes"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "value": {
+          "$ref": "#/$defs/Bytes"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "value",
+        "version",
+        "timestamp"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/kv.scan.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "kv.scan",
+  "request": {
+    "additionalProperties": false,
+    "description": "Scans KV rows.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "limit": {
+        "description": "Optional row limit.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "start": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Bytes"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional inclusive start key."
+      },
+      "type": {
+        "const": "kv_scan",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "KV scan result.",
+    "properties": {
+      "data": {
+        "description": "Shared pagination continuation facts.",
+        "properties": {
+          "cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Bytes"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "description": "Rows in this page.",
+            "items": {
+              "$ref": "#/$defs/ScanItem"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "kv_scan_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

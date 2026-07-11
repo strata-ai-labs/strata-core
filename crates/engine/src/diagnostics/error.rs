@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 /// V1 public error class.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorClass {
     /// A requested object does not exist.
@@ -46,6 +47,7 @@ pub enum ErrorClass {
 /// V1 retry policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum RetryPolicy {
     /// Retrying the same request without changing input or state should not help.
@@ -72,6 +74,7 @@ impl RetryPolicy {
 /// V1 commit outcome status.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 #[non_exhaustive]
 pub enum CommitOutcomeStatus {
     /// The operation did not attempt a commit.
@@ -88,6 +91,7 @@ pub enum CommitOutcomeStatus {
 
 /// Redacted structured error detail.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wire-schemas", derive(schemars::JsonSchema))]
 pub struct ErrorDetail {
     key: String,
     value: String,

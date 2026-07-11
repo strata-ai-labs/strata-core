@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "Bytes": {
+      "contentEncoding": "base64",
+      "description": "Binary payload encoded as a standard base64 string.",
+      "type": "string"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/kv.count.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "kv.count",
+  "request": {
+    "additionalProperties": false,
+    "description": "Counts keys.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "prefix": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/Bytes"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional key prefix."
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "kv_count",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Unsigned integer result.",
+    "properties": {
+      "data": {
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "type": {
+        "const": "uint",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

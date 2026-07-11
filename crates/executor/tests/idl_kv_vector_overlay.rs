@@ -8,7 +8,7 @@ use std::path::Path;
 
 use strata_executor::idl_tooling::{
     check, check_cli, default_repo_root, resolve_cli_index, resolve_default_cli_index,
-    resolve_default_index, to_generated_cli_json, to_generated_json,
+    resolve_default_index, resolve_default_schemas, to_generated_cli_json, to_generated_json,
 };
 
 const REQUIRED_KV: &[&str] = &[
@@ -451,4 +451,73 @@ fn has_extension(path: &str, extension: &str) -> bool {
     Path::new(path)
         .extension()
         .is_some_and(|actual| actual.eq_ignore_ascii_case(extension))
+}
+
+#[test]
+fn schema_documents_cover_every_resolved_command() {
+    let index = resolve_default_index().expect("index resolves");
+    let schemas_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("idl/v1/generated/schemas");
+    let mut expected = BTreeSet::new();
+    for command in &index.commands {
+        let path = schemas_dir.join(format!("{}.json", command.id));
+        let text = fs::read_to_string(&path).expect("schema document exists for every command");
+        let document: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(document["command"], serde_json::json!(command.id));
+        assert!(
+            document["request"].is_object(),
+            "{} has a request schema",
+            command.id
+        );
+        assert!(
+            document["response"].is_object(),
+            "{} has a response schema",
+            command.id
+        );
+        expected.insert(format!("{}.json", command.id));
+    }
+    for entry in fs::read_dir(&schemas_dir).expect("schemas dir") {
+        let name = entry
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .into_owned();
+        assert!(expected.contains(&name), "no stray schema document: {name}");
+    }
+}
+
+#[test]
+fn schemas_accept_the_wire_and_reject_field_type_lies() {
+    let documents = resolve_default_schemas().expect("schemas resolve");
+    let document = documents.get("kv.put").expect("kv.put covered");
+    // Standalone request schema: the sub-schema plus the document's $defs.
+    let mut request = document["request"].clone();
+    request["$defs"] = document["$defs"].clone();
+    let validator = jsonschema::validator_for(&request).expect("schema compiles");
+
+    let good: serde_json::Value =
+        serde_json::json!({"type": "kv_put", "key": "YQ==", "value": "b25l"});
+    assert!(validator.is_valid(&good), "real wire shape validates");
+
+    let bad_key_type: serde_json::Value =
+        serde_json::json!({"type": "kv_put", "key": 123, "value": "b25l"});
+    assert!(
+        !validator.is_valid(&bad_key_type),
+        "non-string key is rejected"
+    );
+
+    let unknown_field: serde_json::Value = serde_json::json!(
+        {"type": "kv_put", "key": "YQ==", "value": "b25l", "surprise": true});
+    assert!(
+        !validator.is_valid(&unknown_field),
+        "deny_unknown_fields reaches the schema"
+    );
+}
+
+#[test]
+fn bytes_schema_stays_base64_on_the_wire() {
+    let documents = resolve_default_schemas().expect("schemas resolve");
+    let document = documents.get("kv.put").expect("kv.put covered");
+    let bytes = &document["$defs"]["Bytes"];
+    assert_eq!(bytes["type"], serde_json::json!("string"));
+    assert_eq!(bytes["contentEncoding"], serde_json::json!("base64"));
 }

@@ -11,6 +11,8 @@ use thiserror::Error;
 
 use crate::{public_error_code_entries, Command, Output};
 
+mod schemas;
+
 const IDL_DIR: &str = "crates/executor/idl/v1";
 const FIXTURE_ROOT: &str = "crates/executor/tests/fixtures";
 const COMMAND_INDEX_FILE: &str = "command-index.json";
@@ -549,6 +551,14 @@ pub fn resolve_default_index() -> Result<CommandIndex> {
     resolve_index(&default_repo_root())
 }
 
+/// Resolves the per-command schema documents for the default IDL tree,
+/// keyed by command ID. This is the artifact MCP tool schemas, SDK stubs,
+/// and generic command-runner validation consume.
+pub fn resolve_default_schemas() -> Result<BTreeMap<String, serde_json::Value>> {
+    let index = resolve_index(&default_repo_root())?;
+    schemas::schema_documents(&index)
+}
+
 /// Resolves the IDL source tree under `repo_root`.
 pub fn resolve_index(repo_root: &Path) -> Result<CommandIndex> {
     let idl_root = repo_root.join(IDL_DIR);
@@ -638,15 +648,52 @@ pub fn to_generated_json(index: &CommandIndex) -> Result<String> {
     Ok(json)
 }
 
-/// Generates `crates/executor/idl/v1/generated/command-index.json`.
+/// Generates `crates/executor/idl/v1/generated/command-index.json` and the
+/// per-command schema documents under `generated/schemas/`.
 pub fn generate(repo_root: &Path) -> Result<()> {
     let index = resolve_index(repo_root)?;
+    let documents = schemas::schema_documents(&index)?;
+    schemas::validate_fixtures(repo_root, &index, &documents)?;
+
     let json = to_generated_json(&index)?;
     let path = command_index_path(repo_root);
-    fs::write(&path, json).map_err(|source| IdlError::Write { path, source })
+    fs::write(&path, json).map_err(|source| IdlError::Write { path, source })?;
+
+    let schemas_dir = schemas_dir_path(repo_root);
+    fs::create_dir_all(&schemas_dir).map_err(|source| IdlError::Write {
+        path: schemas_dir.clone(),
+        source,
+    })?;
+    let mut expected_files = BTreeSet::new();
+    for (id, document) in &documents {
+        let file = format!("{id}.json");
+        let path = schemas_dir.join(&file);
+        let json = schemas::to_schema_json(document)?;
+        fs::write(&path, json).map_err(|source| IdlError::Write { path, source })?;
+        expected_files.insert(file);
+    }
+    // Drop schema files for commands that no longer resolve, so the
+    // generated tree never carries stale documents.
+    for entry in fs::read_dir(&schemas_dir).map_err(|source| IdlError::Read {
+        path: schemas_dir.clone(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| IdlError::Read {
+            path: schemas_dir.clone(),
+            source,
+        })?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !expected_files.contains(&name) {
+            fs::remove_file(entry.path()).map_err(|source| IdlError::Write {
+                path: entry.path(),
+                source,
+            })?;
+        }
+    }
+    Ok(())
 }
 
-/// Checks whether the generated command index is fresh.
+/// Checks whether the generated command index and schema documents are fresh.
 pub fn check(repo_root: &Path) -> Result<()> {
     let index = resolve_index(repo_root)?;
     let expected = to_generated_json(&index)?;
@@ -655,11 +702,43 @@ pub fn check(repo_root: &Path) -> Result<()> {
         path: path.clone(),
         source,
     })?;
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(IdlError::Stale { path })
+    if actual != expected {
+        return Err(IdlError::Stale { path });
     }
+
+    let documents = schemas::schema_documents(&index)?;
+    schemas::validate_fixtures(repo_root, &index, &documents)?;
+    let schemas_dir = schemas_dir_path(repo_root);
+    let mut expected_files = BTreeSet::new();
+    for (id, document) in &documents {
+        let file = format!("{id}.json");
+        let path = schemas_dir.join(&file);
+        let expected = schemas::to_schema_json(document)?;
+        let actual = fs::read_to_string(&path).map_err(|source| IdlError::Read {
+            path: path.clone(),
+            source,
+        })?;
+        if actual != expected {
+            return Err(IdlError::Stale { path });
+        }
+        expected_files.insert(file);
+    }
+    for entry in fs::read_dir(&schemas_dir).map_err(|source| IdlError::Read {
+        path: schemas_dir.clone(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| IdlError::Read {
+            path: schemas_dir.clone(),
+            source,
+        })?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !expected_files.contains(&name) {
+            return Err(invalid(format!(
+                "unexpected file in generated schemas dir: {name}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Resolves generated CLI command metadata from the checked-in command index.
@@ -930,6 +1009,10 @@ fn command_index_path(repo_root: &Path) -> PathBuf {
         .join(IDL_DIR)
         .join("generated")
         .join(COMMAND_INDEX_FILE)
+}
+
+fn schemas_dir_path(repo_root: &Path) -> PathBuf {
+    repo_root.join(IDL_DIR).join("generated").join("schemas")
 }
 
 fn cli_command_index_path(repo_root: &Path) -> PathBuf {

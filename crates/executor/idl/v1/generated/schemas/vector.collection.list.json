@@ -1,0 +1,123 @@
+{
+  "$defs": {
+    "VectorCollectionInfo": {
+      "description": "Vector collection facts.",
+      "properties": {
+        "count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dimension": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "metric": {
+          "$ref": "#/$defs/VectorDistanceMetric"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "dimension",
+        "metric",
+        "count"
+      ],
+      "type": "object"
+    },
+    "VectorDistanceMetric": {
+      "description": "Vector distance metric exposed through the command boundary.",
+      "oneOf": [
+        {
+          "const": "cosine",
+          "description": "Cosine similarity.",
+          "type": "string"
+        },
+        {
+          "const": "euclidean",
+          "description": "Euclidean similarity.",
+          "type": "string"
+        },
+        {
+          "const": "dot_product",
+          "description": "Raw dot product.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/vector.collection.list.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "vector.collection.list",
+  "request": {
+    "additionalProperties": false,
+    "description": "Lists vector collections.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "vector_list_collections",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Vector collection list.",
+    "properties": {
+      "data": {
+        "description": "Shared pagination continuation facts.",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "description": "Collections in this page.",
+            "items": {
+              "$ref": "#/$defs/VectorCollectionInfo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "vector_collection_list",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

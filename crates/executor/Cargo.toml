@@ -16,7 +16,7 @@ arrow = ["dep:arrow", "dep:parquet"]
 # HTTP/tokio client stack (the wasm build consumes the executor with
 # default-features = false).
 hub = ["dep:strata-hub"]
-idl-tooling = ["dep:serde_yaml", "dep:sha2"]
+idl-tooling = ["dep:serde_yaml", "dep:sha2", "dep:schemars", "dep:jsonschema", "strata-engine/wire-schemas"]
 inference = ["dep:strata-inference"]
 inference-anthropic = ["inference"]
 inference-google = ["inference"]
@@ -31,6 +31,7 @@ inference-local = [
 inference-openai = ["inference"]
 localfs = ["strata-engine/localfs"]
 testkit = ["strata-engine/testkit"]
+jsonschema = ["dep:jsonschema"]
 
 [dependencies]
 arrow = { workspace = true, optional = true }
@@ -38,6 +39,7 @@ base64 = { workspace = true }
 parquet = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+schemars = { workspace = true, optional = true }
 serde_yaml = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 strata-core = { path = "../core" }
@@ -46,6 +48,7 @@ strata-hub = { path = "../hub", optional = true }
 strata-inference = { path = "../inference", optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+jsonschema = { version = "0.47", default-features = false, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # std::time clocks trap on wasm32; time_compat routes through JS clocks.

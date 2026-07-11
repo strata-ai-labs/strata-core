@@ -5,6 +5,7 @@ use super::{
 
 /// JSON secondary index kind exposed through the command boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum JsonIndexType {
     /// Numeric field index.
@@ -17,6 +18,7 @@ pub enum JsonIndexType {
 
 /// Stored JSON value with commit metadata.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct JsonVersionedValue {
     value: Value,
     version: u64,
@@ -58,6 +60,7 @@ impl JsonVersionedValue {
 
 /// JSON point-read result that distinguishes absence from a stored JSON null.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct MaybeJsonValue {
     found: bool,
     value: Value,
@@ -116,6 +119,7 @@ impl MaybeJsonValue {
 
 /// JSON versioned point-read result that distinguishes absence from a stored JSON null.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct MaybeJsonVersionedValue {
     found: bool,
     #[serde(default)]
@@ -178,6 +182,7 @@ impl MaybeJsonVersionedValue {
 
 /// JSON version-history item.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct JsonHistoryItem {
     value: Option<Value>,
     version: u64,
@@ -232,6 +237,7 @@ impl JsonHistoryItem {
 
 /// Positional JSON batch write/delete result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct JsonBatchItemResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     effect: Option<MutationEffect>,
@@ -328,6 +334,7 @@ impl JsonBatchItemResult {
 
 /// Positional JSON batch read result.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct JsonBatchGetItemResult {
     found: bool,
     value: Value,
@@ -429,6 +436,7 @@ impl JsonBatchGetItemResult {
 
 /// Sampled JSON document.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct JsonSampleItem {
     key: String,
     value: Value,
@@ -483,6 +491,7 @@ impl JsonSampleItem {
 
 /// JSON secondary index definition exposed through the command boundary.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct JsonIndexDefinition {
     name: String,
     space: String,

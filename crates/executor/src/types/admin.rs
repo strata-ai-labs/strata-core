@@ -2,6 +2,7 @@ use super::{Deserialize, Serialize, VectorDistanceMetric};
 
 /// Database open target exposed in admin outputs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AdminOpenTarget {
     /// Volatile cache-backed database.
@@ -12,6 +13,7 @@ pub enum AdminOpenTarget {
 
 /// Health status exposed in admin outputs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AdminHealthStatus {
     /// All required facts are healthy.
@@ -24,6 +26,7 @@ pub enum AdminHealthStatus {
 
 /// Control-plane status exposed in admin health outputs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AdminControlStatus {
     /// Required facts are healthy.
@@ -38,6 +41,7 @@ pub enum AdminControlStatus {
 
 /// Database information output.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct AdminDatabaseInfo {
     /// Engine package version.
     pub version: String,
@@ -59,6 +63,7 @@ pub struct AdminDatabaseInfo {
 
 /// Health output.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct AdminHealth {
     /// Worst health status.
     pub status: AdminHealthStatus,
@@ -79,6 +84,7 @@ pub struct AdminHealth {
 
 /// Metrics output.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct AdminMetrics {
     /// Open target.
     pub target: AdminOpenTarget,
@@ -96,6 +102,7 @@ pub struct AdminMetrics {
 
 /// Sanitized config output.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct AdminConfig {
     /// Open target.
     pub target: AdminOpenTarget,
@@ -110,6 +117,7 @@ pub struct AdminConfig {
 /// Capability flags in describe output.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct AdminCapabilities {
     /// KV primitive is available.
     pub kv: bool,
@@ -131,6 +139,7 @@ pub struct AdminCapabilities {
 
 /// Vector collection summary in describe output.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct AdminVectorCollection {
     /// Collection name.
     pub name: String,
@@ -144,6 +153,7 @@ pub struct AdminVectorCollection {
 
 /// Graph summary in describe output.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct AdminGraph {
     /// Graph name.
     pub name: String,
@@ -155,6 +165,7 @@ pub struct AdminGraph {
 
 /// Primitive summaries in describe output.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct AdminPrimitives {
     /// Visible KV row count in the described space.
     pub kv_count: u64,
@@ -170,6 +181,7 @@ pub struct AdminPrimitives {
 
 /// Database describe output.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct AdminDescribe {
     /// Engine package version.
     pub version: String,

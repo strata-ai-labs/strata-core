@@ -1,0 +1,102 @@
+{
+  "$defs": {
+    "Bytes": {
+      "contentEncoding": "base64",
+      "description": "Binary payload encoded as a standard base64 string.",
+      "type": "string"
+    },
+    "VersionedValue": {
+      "description": "Stored value with commit metadata.",
+      "properties": {
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "value": {
+          "$ref": "#/$defs/Bytes"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "value",
+        "version",
+        "timestamp"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/kv.get.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "kv.get",
+  "request": {
+    "additionalProperties": false,
+    "description": "Reads one KV entry.",
+    "properties": {
+      "as_of": {
+        "description": "Optional timestamp in microseconds.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "key": {
+        "$ref": "#/$defs/Bytes",
+        "description": "Key bytes."
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "kv_get",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "key"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Optional KV value with commit metadata.",
+    "properties": {
+      "data": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/VersionedValue"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "type": {
+        "const": "kv_versioned_value",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

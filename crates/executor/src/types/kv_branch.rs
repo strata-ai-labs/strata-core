@@ -5,6 +5,7 @@ use super::{
 
 /// Stored value with commit metadata.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VersionedValue {
     value: Bytes,
     version: u64,
@@ -13,6 +14,7 @@ pub struct VersionedValue {
 
 /// Branch status exposed through the command boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum BranchStatus {
     /// Branch accepts reads and writes.
@@ -23,6 +25,7 @@ pub enum BranchStatus {
 
 /// Fork parent facts exposed through the command boundary.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BranchParentItem {
     name: String,
     branch_id: String,
@@ -77,6 +80,7 @@ impl BranchParentItem {
 
 /// Branch summary exposed through the command boundary.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BranchItem {
     name: String,
     branch_id: String,
@@ -156,6 +160,7 @@ impl BranchItem {
 
 /// Cleanup facts for branch deletion.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BranchCleanupItem {
     removed_refs: u64,
     releasable_tables: u64,
@@ -216,6 +221,7 @@ impl VersionedValue {
 
 /// Positional batch write result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BatchItemResult {
     key: Bytes,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -308,6 +314,7 @@ impl BatchItemResult {
 
 /// Positional batch read result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BatchGetItemResult {
     key: Bytes,
     found: bool,
@@ -399,6 +406,7 @@ impl BatchGetItemResult {
 
 /// KV scan item.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct ScanItem {
     key: Bytes,
     value: Bytes,
@@ -440,6 +448,7 @@ impl ScanItem {
 
 /// Version-history item.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct HistoryItem {
     value: Option<Bytes>,
     tombstone: bool,
@@ -481,6 +490,7 @@ impl HistoryItem {
 
 /// Version-history result for one key.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct HistoryResult {
     count: usize,
     items: Vec<HistoryItem>,
@@ -513,6 +523,7 @@ impl HistoryResult {
 
 /// Sampled KV item.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct SampleItem {
     key: Bytes,
     value: Bytes,

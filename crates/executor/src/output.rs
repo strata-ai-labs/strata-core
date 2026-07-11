@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 /// Successful executor output.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum Output {
     /// Lightweight admin liveness result.
@@ -694,6 +695,7 @@ pub enum Output {
 
 /// Serialized view of a database's recorded remote origin.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct RemoteOriginInfo {
     /// The remote host the database was fetched from.
     pub remote_url: String,
@@ -711,6 +713,7 @@ pub struct RemoteOriginInfo {
 
 /// One fetched branch in the recorded base frontier.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct RemoteOriginFrontierInfo {
     /// The fetched branch name.
     pub branch: String,
