@@ -165,9 +165,8 @@ fn duplicate_and_missing_branches_are_stable_errors() {
 
     let error = database
         .kv(branch("missing"), space("default"))
-        .expect("KV service opens")
-        .put(key(b"k"), value(b"v"))
-        .expect_err("missing branch rejected");
+        .map(|_| ())
+        .expect_err("missing branch rejected at service construction");
     assert_eq!(error.class(), EngineErrorClass::NotFound);
     assert_eq!(error.code(), "not_found.engine.branch");
     assert!(!error.retryable());
@@ -256,17 +255,15 @@ fn kv_edge_cases_are_stable() {
 
     let error = database
         .kv(branch("missing"), space("default"))
-        .expect("KV service opens")
-        .get(&key(b"k"))
-        .expect_err("missing branch read rejected");
+        .map(|_| ())
+        .expect_err("missing branch rejected at service construction");
     assert_eq!(error.class(), EngineErrorClass::NotFound);
     assert_eq!(error.code(), "not_found.engine.branch");
 
     let error = database
         .kv(branch("missing"), space("default"))
-        .expect("KV service opens")
-        .delete(key(b"k"))
-        .expect_err("missing branch delete rejected");
+        .map(|_| ())
+        .expect_err("missing branch delete rejected at service construction");
     assert_eq!(error.class(), EngineErrorClass::NotFound);
     assert_eq!(error.code(), "not_found.engine.branch");
 }

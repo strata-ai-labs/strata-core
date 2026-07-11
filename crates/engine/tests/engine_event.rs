@@ -246,20 +246,13 @@ fn event_forked_branches_diverge_without_cross_visibility() {
 #[test]
 fn event_missing_branch_errors_are_stable() {
     run_database_modes(|database| {
-        let mut events = event_service(database, "missing", "default");
-        let error = events.len().expect_err("missing branch rejected");
-        assert_eq!(error.class(), EngineErrorClass::NotFound);
-        assert_eq!(error.code(), "not_found.engine.branch");
-
-        let error = events
-            .batch_append(Vec::<EventBatchAppendEntry>::new())
-            .expect_err("empty batch still checks branch");
-        assert_eq!(error.class(), EngineErrorClass::NotFound);
-        assert_eq!(error.code(), "not_found.engine.branch");
-
-        let error = events
-            .batch_append([EventBatchAppendEntry::from_raw("", json!({}))])
-            .expect_err("invalid batch still checks branch");
+        // Branch existence is validated at service construction, so a missing
+        // branch fails fast before any op — including empty/invalid batches,
+        // which previously relied on the append path to re-check the branch.
+        let error = database
+            .event(branch("missing"), space("default"))
+            .map(|_| ())
+            .expect_err("missing branch rejected at service construction");
         assert_eq!(error.class(), EngineErrorClass::NotFound);
         assert_eq!(error.code(), "not_found.engine.branch");
     });

@@ -830,9 +830,8 @@ fn json_error_surfaces_are_engine_owned() {
     let mut database = open_cache_database().expect("cache open succeeds");
     let missing_branch = database
         .json(branch("missing"), space("default"))
-        .expect("JSON service opens")
-        .get(&doc_id("doc"), &root())
-        .expect_err("missing branch rejected");
+        .map(|_| ())
+        .expect_err("missing branch rejected at service construction");
     assert_eq!(missing_branch.class(), EngineErrorClass::NotFound);
     assert_eq!(missing_branch.code(), "not_found.engine.branch");
     assert_no_storage_detail(&missing_branch);
