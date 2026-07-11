@@ -33,11 +33,11 @@
           "value": null,
           "version": null
         },
-        "status": "ok"
+        "status": "miss"
       }
     ],
     "mode": "itemwise",
-    "status": "ok"
+    "status": "partial"
   },
   "type": "json_batch_get_results"
 }

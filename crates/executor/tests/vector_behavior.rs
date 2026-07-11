@@ -3,9 +3,9 @@
 use serde_json::json;
 use strata_engine::{CacheOpenOptions, Database};
 use strata_executor::{
-    BatchStatus, BatchVectorEntry, Command, Executor, ExecutorErrorClass, MutationEffect, Output,
-    VectorDistanceMetric, VectorFilterCondition, VectorFilterOp, VectorMetadataFilter,
-    VectorScalar, VectorVersionedData, DEFAULT_BRANCH,
+    BatchItemStatus, BatchStatus, BatchVectorEntry, Command, Executor, ExecutorErrorClass,
+    MutationEffect, Output, VectorDistanceMetric, VectorFilterCondition, VectorFilterOp,
+    VectorMetadataFilter, VectorScalar, VectorVersionedData, DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -13,6 +13,58 @@ use tempfile::TempDir;
 fn cache_executor_runs_complete_vector_command_suite() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
     run_vector_command_suite(&mut executor);
+}
+
+#[test]
+fn vector_batch_get_reports_missing_keys_as_misses() {
+    // A missing key in a batch read is a positional miss, not a success —
+    // matching kv batch-get. The outer batch is then partial.
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .execute(Command::VectorCreateCollection {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            dimension: 2,
+            metric: VectorDistanceMetric::Cosine,
+        })
+        .expect("create collection");
+    executor
+        .execute(Command::VectorUpsert {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            key: "present".to_owned(),
+            vector: vec![1.0, 0.0],
+            metadata: None,
+        })
+        .expect("upsert present vector");
+
+    let Output::VectorBatchGetResults(results) = executor
+        .execute(Command::VectorBatchGet {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            keys: vec!["present".to_owned(), "absent".to_owned()],
+        })
+        .expect("batch get succeeds")
+    else {
+        panic!("unexpected batch get output");
+    };
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].status(), BatchItemStatus::Ok);
+    assert!(results[0].error_status().is_none());
+    assert_eq!(
+        results[1].status(),
+        BatchItemStatus::Miss,
+        "a missing vector is a miss, not an ok"
+    );
+    assert!(results[1].error_status().is_none());
+    assert_eq!(
+        results.status(),
+        BatchStatus::Partial,
+        "a batch with a miss is partial, not ok"
+    );
 }
 
 #[test]
