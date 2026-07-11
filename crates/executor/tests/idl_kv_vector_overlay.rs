@@ -11,6 +11,27 @@ use strata_executor::idl_tooling::{
     resolve_default_index, resolve_default_schemas, to_generated_cli_json, to_generated_json,
 };
 
+const REQUIRED_JSON: &[&str] = &[
+    "json.set",
+    "json.get",
+    "json.delete",
+    "json.history",
+    "json.exists",
+    "json.batch_set",
+    "json.batch_get",
+    "json.batch_delete",
+    "json.list",
+    "json.count",
+    "json.sample",
+    "json.index.create",
+    "json.index.drop",
+    "json.index.list",
+];
+
+fn required_command_count() -> usize {
+    REQUIRED_JSON.len() + REQUIRED_KV.len() + REQUIRED_VECTOR.len()
+}
+
 const REQUIRED_KV: &[&str] = &[
     "kv.put",
     "kv.get",
@@ -58,10 +79,14 @@ fn kv_and_vector_overlay_has_required_command_coverage() {
         .map(|command| command.id.as_str())
         .collect();
 
-    for id in REQUIRED_KV.iter().chain(REQUIRED_VECTOR.iter()) {
+    for id in REQUIRED_JSON
+        .iter()
+        .chain(REQUIRED_KV.iter())
+        .chain(REQUIRED_VECTOR.iter())
+    {
         assert!(ids.contains(id), "missing required command `{id}`");
     }
-    assert_eq!(ids.len(), REQUIRED_KV.len() + REQUIRED_VECTOR.len());
+    assert_eq!(ids.len(), required_command_count());
 }
 
 #[test]
@@ -210,6 +235,8 @@ fn transitional_vector_collection_wire_shapes_are_explicit() {
     assert_eq!(
         transitional,
         BTreeSet::from([
+            "json.index.create",
+            "json.index.drop",
             "vector.collection.create",
             "vector.collection.delete",
             "vector.collection.stats"
@@ -293,10 +320,7 @@ fn generated_cli_command_index_is_fresh_and_deterministic() {
         .checksum_sha256
         .chars()
         .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()));
-    assert_eq!(
-        first.command_count,
-        REQUIRED_KV.len() + REQUIRED_VECTOR.len()
-    );
+    assert_eq!(first.command_count, required_command_count());
     assert_eq!(first.command_count, first.commands.len());
 
     let generated = to_generated_cli_json(&first).expect("CLI index serializes");
@@ -315,7 +339,11 @@ fn cli_command_index_has_required_coverage_and_lookup_tables() {
         .iter()
         .map(|command| command.id.as_str())
         .collect();
-    for id in REQUIRED_KV.iter().chain(REQUIRED_VECTOR.iter()) {
+    for id in REQUIRED_JSON
+        .iter()
+        .chain(REQUIRED_KV.iter())
+        .chain(REQUIRED_VECTOR.iter())
+    {
         assert!(ids.contains(id), "missing required CLI command `{id}`");
     }
 
@@ -399,10 +427,7 @@ fn cli_generation_reads_resolved_index_not_authored_yaml_or_prose() {
 
     let index =
         resolve_cli_index(temp.path()).expect("CLI index resolves from generated JSON only");
-    assert_eq!(
-        index.command_count,
-        REQUIRED_KV.len() + REQUIRED_VECTOR.len()
-    );
+    assert_eq!(index.command_count, required_command_count());
     assert_eq!(
         index.source.path,
         "crates/executor/idl/v1/generated/command-index.json"

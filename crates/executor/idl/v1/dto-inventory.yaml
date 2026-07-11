@@ -26,3 +26,13 @@ response_models:
   - SearchResult<VectorMatch> + IndexDiagnostics
   - BatchResult<VectorMutationItem>
   - BatchResult<Maybe<VectorVersionedData>>
+  - MutationAck<JsonWrite>
+  - Maybe<JsonVersionedValue>
+  - MutationAck<JsonDelete>
+  - Maybe<Vec<JsonHistoryItem>>
+  - BatchResult<JsonMutationItem>
+  - BatchResult<Maybe<JsonValue>>
+  - SamplePage<JsonSampleItem>
+  - MutationAck<JsonIndexCreate>
+  - MutationAck<JsonIndexDrop>
+  - Page<JsonIndexDefinition, String>

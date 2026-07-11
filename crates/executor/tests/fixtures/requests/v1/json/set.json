@@ -1,0 +1,8 @@
+{
+  "type": "json_set",
+  "key": "user:ada",
+  "path": "$",
+  "value": {
+    "name": "Ada"
+  }
+}

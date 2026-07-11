@@ -1,0 +1,43 @@
+{
+  "data": {
+    "applied": false,
+    "commit": null,
+    "items": [
+      {
+        "applied": false,
+        "commit": null,
+        "effect": null,
+        "error": null,
+        "index": 0,
+        "result": {
+          "document_version": 1,
+          "error": null,
+          "found": true,
+          "timestamp": 3,
+          "value": "Ada",
+          "version": 3
+        },
+        "status": "ok"
+      },
+      {
+        "applied": false,
+        "commit": null,
+        "effect": null,
+        "error": null,
+        "index": 1,
+        "result": {
+          "document_version": null,
+          "error": null,
+          "found": false,
+          "timestamp": null,
+          "value": null,
+          "version": null
+        },
+        "status": "ok"
+      }
+    ],
+    "mode": "itemwise",
+    "status": "ok"
+  },
+  "type": "json_batch_get_results"
+}

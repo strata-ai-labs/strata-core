@@ -1,0 +1,1 @@
+{"type": "json_set", "key": "user:ada", "path": "$.age", "value": 36}

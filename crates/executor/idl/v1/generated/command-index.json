@@ -4,6 +4,999 @@
   "generator_version": "strata-executor-idl.1",
   "commands": [
     {
+      "id": "json.batch_delete",
+      "family": "json",
+      "op": "batch_delete",
+      "kind": "batch.itemwise_mutation",
+      "title": "Batch delete JSON values",
+      "summary": "Delete multiple JSON documents or paths in one itemwise batch.",
+      "description": "Deletes multiple document/path entries and returns one positional mutation result per entry. Missing documents and paths are represented as no-op item results; applied items share one engine commit.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/json/batch_delete",
+      "cli": {
+        "path": [
+          "json",
+          "batch-delete"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_json_batch_delete",
+        "description": "Use this when the user wants to remove several JSON documents or nested fields together."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::JsonBatchDelete",
+      "output": "Output::JsonBatchResults",
+      "outputs": [
+        "Output::JsonBatchResults"
+      ],
+      "wire_status": "stable",
+      "response_model": "BatchResult<JsonMutationItem>",
+      "commit": "itemwise_shared_commit",
+      "pagination": "none",
+      "batch": "itemwise",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        },
+        {
+          "code": "invalid_argument.engine.json_path",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_too_long",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_too_long"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/batch_delete.json",
+        "response": "responses/v1/json/batch_delete_partial.json",
+        "setup": [
+          "requests/v1/json/set.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.batch_delete.md"
+      }
+    },
+    {
+      "id": "json.batch_get",
+      "family": "json",
+      "op": "batch_get",
+      "kind": "batch.itemwise_read",
+      "title": "Batch get JSON values",
+      "summary": "Read multiple JSON values by document and path.",
+      "description": "Reads several document/path entries and returns positional item results. Each item records whether the value was found and includes version metadata when present.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/json/batch_get",
+      "cli": {
+        "path": [
+          "json",
+          "batch-get"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_json_batch_get",
+        "description": "Use this when the user wants to fetch several JSON documents or fields in one request."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonBatchGet",
+      "output": "Output::JsonBatchGetResults",
+      "outputs": [
+        "Output::JsonBatchGetResults"
+      ],
+      "wire_status": "stable",
+      "response_model": "BatchResult<Maybe<JsonValue>>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "itemwise",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        },
+        {
+          "code": "invalid_argument.engine.json_path",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_too_long",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_too_long"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/batch_get.json",
+        "response": "responses/v1/json/batch_get_ok.json",
+        "setup": [
+          "requests/v1/json/set.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.batch_get.md"
+      }
+    },
+    {
+      "id": "json.batch_set",
+      "family": "json",
+      "op": "batch_set",
+      "kind": "batch.itemwise_mutation",
+      "title": "Batch set JSON values",
+      "summary": "Set multiple JSON values in one itemwise batch.",
+      "description": "Writes multiple document/path/value entries using the executor batch contract. Valid items share one engine commit; entries targeting the same document are merged in order into a single new document version.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/json/batch_set",
+      "cli": {
+        "path": [
+          "json",
+          "batch-set"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_json_batch_set",
+        "description": "Use this when the user wants to write several JSON documents or fields together in one commit."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::JsonBatchSet",
+      "output": "Output::JsonBatchResults",
+      "outputs": [
+        "Output::JsonBatchResults"
+      ],
+      "wire_status": "stable",
+      "response_model": "BatchResult<JsonMutationItem>",
+      "commit": "itemwise_shared_commit",
+      "pagination": "none",
+      "batch": "itemwise",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        },
+        {
+          "code": "invalid_argument.engine.json_path",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_too_long",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_too_long"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_not_found",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_not_found"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_type"
+        },
+        {
+          "code": "invalid_argument.engine.json_value",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_value"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_too_large"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_too_deep",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_too_deep"
+        },
+        {
+          "code": "invalid_argument.engine.json_array_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_array_too_large"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/batch_set.json",
+        "response": "responses/v1/json/batch_set_ok.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.batch_set.md"
+      }
+    },
+    {
+      "id": "json.count",
+      "family": "json",
+      "op": "count",
+      "kind": "read.status",
+      "title": "Count JSON documents",
+      "summary": "Count visible JSON documents.",
+      "description": "Counts visible JSON documents in the selected branch and space, optionally constrained by a document key prefix.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/json/count",
+      "cli": {
+        "path": [
+          "json",
+          "count"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_count",
+        "description": "Use this when the user wants the number of visible JSON documents."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonCount",
+      "output": "Output::Uint",
+      "outputs": [
+        "Output::Uint"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusValue<u64>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/count.json",
+        "response": "responses/v1/status/uint_count.json",
+        "setup": [
+          "requests/v1/json/batch_set.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.count.md"
+      }
+    },
+    {
+      "id": "json.delete",
+      "family": "json",
+      "op": "delete",
+      "kind": "mutation.delete",
+      "title": "Delete JSON value",
+      "summary": "Delete a whole JSON document or one path inside it.",
+      "description": "Deletes the root path `$` to remove the whole document, or a nested path to remove one field or array element. Missing documents and paths produce a no-op delete acknowledgement rather than an error.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/json/delete",
+      "cli": {
+        "path": [
+          "json",
+          "delete"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_delete",
+        "description": "Use this when the user wants to remove a JSON document or delete one nested field from it."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::JsonDelete",
+      "output": "Output::JsonDeleteResult",
+      "outputs": [
+        "Output::JsonDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<JsonDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        },
+        {
+          "code": "invalid_argument.engine.json_path",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_too_long",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_too_long"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/delete.json",
+        "response": "responses/v1/json/delete_missing.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.delete.md"
+      }
+    },
+    {
+      "id": "json.exists",
+      "family": "json",
+      "op": "exists",
+      "kind": "read.status",
+      "title": "Check JSON document existence",
+      "summary": "Check whether one JSON document exists.",
+      "description": "Returns a boolean status for one JSON document key without loading the stored document.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/json/exists",
+      "cli": {
+        "path": [
+          "json",
+          "exists"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_exists",
+        "description": "Use this when the user only needs to know if a JSON document is present."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonExists",
+      "output": "Output::Bool",
+      "outputs": [
+        "Output::Bool"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusValue<bool>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/exists.json",
+        "response": "responses/v1/status/bool_true.json",
+        "setup": [
+          "requests/v1/json/set.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.exists.md"
+      }
+    },
+    {
+      "id": "json.get",
+      "family": "json",
+      "op": "get",
+      "kind": "read.get",
+      "title": "Get JSON value",
+      "summary": "Read the current or historical JSON value at a document path.",
+      "description": "Reads the JSON value at a path inside a document. Current reads return the value with commit metadata; passing a timestamp returns the bare value visible at that point in time. A missing document or path is a found-false result, distinct from a stored JSON null.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/json/get",
+      "cli": {
+        "path": [
+          "json",
+          "get"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_get",
+        "description": "Use this when the user wants to fetch a JSON document or one nested field by key and path."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonGet",
+      "output": "Output::JsonVersionedValue",
+      "outputs": [
+        "Output::JsonValue",
+        "Output::JsonVersionedValue"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<JsonVersionedValue>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        },
+        {
+          "code": "invalid_argument.engine.json_path",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_too_long",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_too_long"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/get.json",
+        "response": "responses/v1/json/get_versioned_found.json",
+        "responses": [
+          "responses/v1/json/get_found.json"
+        ],
+        "setup": [
+          "requests/v1/json/set.json"
+        ],
+        "cases": [
+          {
+            "setup": [
+              "requests/v1/json/set.json"
+            ],
+            "request": "requests/v1/json/get_as_of.json",
+            "response": "responses/v1/json/get_found.json"
+          }
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.get.md"
+      }
+    },
+    {
+      "id": "json.history",
+      "family": "json",
+      "op": "history",
+      "kind": "read.history",
+      "title": "Read JSON document history",
+      "summary": "Read retained version history for one JSON document.",
+      "description": "Returns retained full-document history rows for a JSON document, newest first, including delete tombstones. A document with no retained history maps to an optional-read result.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/json/history",
+      "cli": {
+        "path": [
+          "json",
+          "history"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_history",
+        "description": "Use this when the user wants prior versions, edits, or tombstones of a JSON document."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonGetv",
+      "output": "Output::JsonVersionHistory",
+      "outputs": [
+        "Output::JsonVersionHistory"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<Vec<JsonHistoryItem>>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/history.json",
+        "response": "responses/v1/json/history_found.json",
+        "setup": [
+          "requests/v1/json/set.json",
+          "requests/v1/setup/json_set_user_age.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.history.md"
+      }
+    },
+    {
+      "id": "json.index.create",
+      "family": "json",
+      "op": "index.create",
+      "kind": "mutation.create",
+      "title": "Create JSON index",
+      "summary": "Create a JSON secondary index on a field path.",
+      "description": "Creates a secondary index over one JSON field path with a numeric, tag, or text kind. Existing documents are indexed at creation and future writes maintain the index automatically. The current wire response is a transitional bare index definition.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/json/index/create",
+      "cli": {
+        "path": [
+          "json",
+          "index",
+          "create"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_index_create",
+        "description": "Use this when the user wants to index a JSON field (numeric, tag, or text) for faster lookups."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::JsonCreateIndex",
+      "output": "Output::JsonIndexDefinition",
+      "outputs": [
+        "Output::JsonIndexDefinition"
+      ],
+      "wire_status": "transitional",
+      "response_model": "MutationAck<JsonIndexCreate>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_index_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_index_name"
+        },
+        {
+          "code": "invalid_argument.engine.json_index_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_index_name_reserved"
+        },
+        {
+          "code": "invalid_argument.engine.json_path",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_too_long",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_too_long"
+        },
+        {
+          "code": "already_exists.engine.json_index",
+          "docs": "https://stratadb.org/e/already_exists.engine.json_index"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/index_create.json",
+        "response": "responses/v1/json/index_definition.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.index.create.md"
+      }
+    },
+    {
+      "id": "json.index.drop",
+      "family": "json",
+      "op": "index.drop",
+      "kind": "mutation.delete",
+      "title": "Drop JSON index",
+      "summary": "Drop a JSON secondary index by name.",
+      "description": "Drops the named JSON secondary index and its stored entries. Documents are unaffected. The current wire response is a transitional boolean status.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/json/index/drop",
+      "cli": {
+        "path": [
+          "json",
+          "index",
+          "drop"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_index_drop",
+        "description": "Use this when the user wants to remove an existing JSON field index."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::JsonDropIndex",
+      "output": "Output::Bool",
+      "outputs": [
+        "Output::Bool"
+      ],
+      "wire_status": "transitional",
+      "response_model": "MutationAck<JsonIndexDrop>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_index_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_index_name"
+        },
+        {
+          "code": "invalid_argument.engine.json_index_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_index_name_reserved"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/index_drop.json",
+        "response": "responses/v1/status/bool_true.json",
+        "setup": [
+          "requests/v1/json/index_create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.index.drop.md"
+      }
+    },
+    {
+      "id": "json.index.list",
+      "family": "json",
+      "op": "index.list",
+      "kind": "read.page",
+      "title": "List JSON indexes",
+      "summary": "List JSON secondary indexes.",
+      "description": "Lists JSON secondary index definitions in the selected branch and space, including each index's field path and kind.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/json/index/list",
+      "cli": {
+        "path": [
+          "json",
+          "index",
+          "list"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_index_list",
+        "description": "Use this when the user wants to discover which JSON field indexes exist."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonListIndexes",
+      "output": "Output::JsonIndexList",
+      "outputs": [
+        "Output::JsonIndexList"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<JsonIndexDefinition, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/index_list.json",
+        "response": "responses/v1/json/index_list.json",
+        "setup": [
+          "requests/v1/json/index_create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.index.list.md"
+      }
+    },
+    {
+      "id": "json.list",
+      "family": "json",
+      "op": "list",
+      "kind": "read.page",
+      "title": "List JSON document keys",
+      "summary": "List JSON document keys with optional prefix filtering.",
+      "description": "Lists visible JSON document keys in byte order. Prefix, cursor, limit, and timestamp parameters constrain the page returned by the executor.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/json/list",
+      "cli": {
+        "path": [
+          "json",
+          "list"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_list",
+        "description": "Use this when the user wants to page through JSON document keys."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonList",
+      "output": "Output::JsonListResult",
+      "outputs": [
+        "Output::JsonListResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<String, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/list.json",
+        "response": "responses/v1/json/list_page.json",
+        "setup": [
+          "requests/v1/json/batch_set.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.list.md"
+      }
+    },
+    {
+      "id": "json.sample",
+      "family": "json",
+      "op": "sample",
+      "kind": "read.sample",
+      "title": "Sample JSON documents",
+      "summary": "Sample visible JSON documents.",
+      "description": "Returns a bounded sample of visible JSON documents plus the total matching count. Useful for inspecting document shape before writing queries or indexes.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/json/sample",
+      "cli": {
+        "path": [
+          "json",
+          "sample"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_sample",
+        "description": "Use this when the user wants a quick look at stored JSON documents without paging through all of them."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonSample",
+      "output": "Output::JsonSampleResult",
+      "outputs": [
+        "Output::JsonSampleResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "SamplePage<JsonSampleItem>",
+      "commit": "none",
+      "pagination": "sample",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/sample.json",
+        "response": "responses/v1/json/sample_page.json",
+        "setup": [
+          "requests/v1/json/batch_set.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.sample.md"
+      }
+    },
+    {
+      "id": "json.set",
+      "family": "json",
+      "op": "set",
+      "kind": "mutation.put",
+      "title": "Set JSON value",
+      "summary": "Set a JSON value at a document path, creating the document when missing.",
+      "description": "Writes a JSON value at a path inside a document, creating the document and any missing intermediate objects when needed. Setting the root path `$` replaces the whole document; setting a nested path like `$.profile.name` updates one field and records a new document version.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/json/set",
+      "cli": {
+        "path": [
+          "json",
+          "set"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_set",
+        "description": "Use this when the user wants to write, update, or upsert JSON data — a whole document (path `$`) or one nested field."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::JsonSet",
+      "output": "Output::JsonWriteResult",
+      "outputs": [
+        "Output::JsonWriteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<JsonWrite>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        },
+        {
+          "code": "invalid_argument.engine.json_path",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_too_long",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_too_long"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_not_found",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_not_found"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_type"
+        },
+        {
+          "code": "invalid_argument.engine.json_value",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_value"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_too_large"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_too_deep",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_too_deep"
+        },
+        {
+          "code": "invalid_argument.engine.json_array_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_array_too_large"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/set.json",
+        "response": "responses/v1/json/set_applied.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.set.md"
+      }
+    },
+    {
       "id": "kv.batch_delete",
       "family": "kv",
       "op": "batch_delete",

@@ -1,0 +1,5 @@
+{
+  "type": "json_list",
+  "prefix": "user:",
+  "limit": 1
+}

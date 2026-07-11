@@ -1,0 +1,17 @@
+{
+  "data": {
+    "cursor": null,
+    "has_more": false,
+    "items": [
+      {
+        "created_timestamp": 3,
+        "created_version": 3,
+        "field_path": "name",
+        "index_type": "tag",
+        "name": "by_name",
+        "space": "default"
+      }
+    ]
+  },
+  "type": "json_index_list"
+}

@@ -1,0 +1,13 @@
+{
+  "type": "json_batch_delete",
+  "entries": [
+    {
+      "key": "user:ada",
+      "path": "$"
+    },
+    {
+      "key": "user:missing",
+      "path": "$"
+    }
+  ]
+}

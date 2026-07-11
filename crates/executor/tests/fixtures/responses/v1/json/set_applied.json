@@ -1,0 +1,19 @@
+{
+  "data": {
+    "commit": {
+      "delete_count": 0,
+      "durable": false,
+      "put_count": 1,
+      "timestamp": 3,
+      "version": 3
+    },
+    "effect": {
+      "affected_count": 1,
+      "applied": true,
+      "kind": "created",
+      "matched": false
+    },
+    "key": "user:ada"
+  },
+  "type": "json_write_result"
+}

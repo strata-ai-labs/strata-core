@@ -1,4 +1,9 @@
 families:
+  - id: json
+    docs: /docs/json/{op_path}
+    errors:
+      - invalid_argument.engine.product_space
+      - invalid_argument.engine.json_document_id
   - id: kv
     docs: /docs/kv/{op_path}
     errors:

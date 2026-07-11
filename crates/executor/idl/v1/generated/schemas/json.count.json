@@ -1,0 +1,59 @@
+{
+  "$id": "https://stratadb.org/idl/v1/schemas/json.count.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "json.count",
+  "request": {
+    "additionalProperties": false,
+    "description": "Counts JSON documents.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "prefix": {
+        "description": "Optional document key prefix.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "json_count",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Unsigned integer result.",
+    "properties": {
+      "data": {
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "type": {
+        "const": "uint",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

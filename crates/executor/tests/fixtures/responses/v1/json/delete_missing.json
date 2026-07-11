@@ -1,0 +1,12 @@
+{
+  "data": {
+    "effect": {
+      "affected_count": 0,
+      "applied": false,
+      "kind": "not_found",
+      "matched": false
+    },
+    "key": "user:ada"
+  },
+  "type": "json_delete_result"
+}

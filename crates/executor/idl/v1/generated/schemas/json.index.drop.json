@@ -1,0 +1,55 @@
+{
+  "$id": "https://stratadb.org/idl/v1/schemas/json.index.drop.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "json.index.drop",
+  "request": {
+    "additionalProperties": false,
+    "description": "Drops a JSON secondary index.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "name": {
+        "description": "Index name.",
+        "type": "string"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "json_drop_index",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "name"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Boolean result.",
+    "properties": {
+      "data": {
+        "type": "boolean"
+      },
+      "type": {
+        "const": "bool",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

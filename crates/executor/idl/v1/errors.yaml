@@ -19,3 +19,15 @@ errors:
   - invalid_argument.executor.vector_limit
   - not_found.engine.vector_collection
   - not_found.executor.vector_collection
+  - invalid_argument.engine.json_document_id
+  - invalid_argument.engine.json_path
+  - invalid_argument.engine.json_path_too_long
+  - invalid_argument.engine.json_path_not_found
+  - invalid_argument.engine.json_path_type
+  - invalid_argument.engine.json_value
+  - invalid_argument.engine.json_document_too_large
+  - invalid_argument.engine.json_document_too_deep
+  - invalid_argument.engine.json_array_too_large
+  - invalid_argument.engine.json_index_name
+  - invalid_argument.engine.json_index_name_reserved
+  - already_exists.engine.json_index

@@ -1,0 +1,24 @@
+{
+  "data": [
+    {
+      "document_version": 2,
+      "timestamp": 4,
+      "tombstone": false,
+      "value": {
+        "age": 36,
+        "name": "Ada"
+      },
+      "version": 4
+    },
+    {
+      "document_version": 1,
+      "timestamp": 3,
+      "tombstone": false,
+      "value": {
+        "name": "Ada"
+      },
+      "version": 3
+    }
+  ],
+  "type": "json_version_history"
+}
