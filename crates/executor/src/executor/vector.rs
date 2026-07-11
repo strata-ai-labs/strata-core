@@ -412,6 +412,8 @@ impl Executor {
     ) -> ExecutorResult<Output> {
         let collection = vector_collection(collection)?;
         let mut service = self.vector_service(branch, space)?;
+        // The `?` validates the collection exists (surfacing not-found); the
+        // returned info is unused on this path, so the value is discarded.
         let _ = require_vector_collection_info(&mut service, &collection)?;
         let mut results = empty_vector_batch_get_results(keys.len());
         let mut valid_keys = Vec::with_capacity(keys.len());
@@ -453,6 +455,8 @@ impl Executor {
     ) -> ExecutorResult<Output> {
         let collection = vector_collection(collection)?;
         let mut service = self.vector_service(branch, space)?;
+        // The `?` validates the collection exists (surfacing not-found); the
+        // returned info is unused on this path, so the value is discarded.
         let _ = require_vector_collection_info(&mut service, &collection)?;
         let mut results = empty_vector_batch_results(keys.len());
         let mut valid_keys = Vec::with_capacity(keys.len());
