@@ -731,20 +731,6 @@ const fn override_commit_outcome(
     }
 }
 
-pub(crate) fn batch_item_error_status(message: impl Into<String>) -> ErrorStatus {
-    render_status(
-        ErrorClass::InvalidArgument,
-        "invalid_argument.executor.batch_item",
-        RetryPolicy::Never,
-        CommitOutcomeStatus::NotStarted,
-        message,
-        "Correct the batch item input and retry.",
-        None,
-        Vec::new(),
-        Vec::new(),
-    )
-}
-
 pub(crate) fn engine_error_status(status: &EngineErrorStatus) -> ErrorStatus {
     render_status(
         status.class(),
@@ -793,12 +779,10 @@ fn public_class_for_executor(class: ExecutorErrorClass, code: &str) -> ErrorClas
 
 fn executor_class_for_status(status: &ErrorStatus) -> ExecutorErrorClass {
     match status.code() {
-        "failed_precondition.engine.runtime_closed"
-        | "failed_precondition.executor.runtime_closed" => {
+        "failed_precondition.engine.runtime_closed" => {
             return ExecutorErrorClass::ClosedHandle;
         }
-        "failed_precondition.engine.space_not_empty"
-        | "failed_precondition.executor.space_not_empty" => return ExecutorErrorClass::Conflict,
+        "failed_precondition.engine.space_not_empty" => return ExecutorErrorClass::Conflict,
         _ => {}
     }
     match status.class() {

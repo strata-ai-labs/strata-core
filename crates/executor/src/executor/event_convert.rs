@@ -1,11 +1,10 @@
 use super::{
-    batch_item_error_status, commit_receipt, engine_error_status, BatchEventEntry, BatchItem,
-    CommitOutcome, EngineEventAppendOutcome, EngineEventBatchAppendEntry,
-    EngineEventBatchAppendItemOutcome, EngineEventChainVerification, EngineEventPayload,
-    EngineEventRangeDirection, EngineEventRangePage, EngineEventSequence, EngineEventType,
-    EngineEventVersionedRecord, EventBatchAppendItemResult, EventData, EventRangeDirection,
-    EventVersionedData, ExecutorError, ExecutorResult, MutationEffect, Output,
-    OutputEventChainVerification, PageInfo,
+    commit_receipt, engine_error_status, BatchEventEntry, BatchItem, CommitOutcome,
+    EngineEventAppendOutcome, EngineEventBatchAppendEntry, EngineEventBatchAppendItemOutcome,
+    EngineEventChainVerification, EngineEventPayload, EngineEventRangeDirection,
+    EngineEventRangePage, EngineEventSequence, EngineEventType, EngineEventVersionedRecord,
+    EventBatchAppendItemResult, EventData, EventRangeDirection, EventVersionedData, ExecutorError,
+    ExecutorResult, MutationEffect, Output, OutputEventChainVerification, PageInfo,
 };
 
 pub(super) fn engine_event_type(event_type: String) -> ExecutorResult<EngineEventType> {
@@ -102,13 +101,6 @@ pub(super) fn event_batch_append_item_result(
             index,
             Some(EventBatchAppendItemResult::new(None, None)),
             engine_error_status(error),
-        );
-    }
-    if let Some(error) = item.error_message() {
-        return BatchItem::failed(
-            index,
-            Some(EventBatchAppendItemResult::new(None, None)),
-            batch_item_error_status(error),
         );
     }
     let commit = item

@@ -505,12 +505,6 @@ the public registry when adding, renaming, or removing a public error code.
 <a id="failed_precondition.executor.hub_clone"></a>
 - `failed_precondition.executor.hub_clone`
 
-<a id="failed_precondition.executor.runtime_closed"></a>
-- `failed_precondition.executor.runtime_closed`
-
-<a id="failed_precondition.executor.space_not_empty"></a>
-- `failed_precondition.executor.space_not_empty`
-
 <a id="internal.executor.arrow"></a>
 - `internal.executor.arrow`
 
