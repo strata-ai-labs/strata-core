@@ -4253,6 +4253,10 @@
         {
           "code": "inference.local_runtime_failed",
           "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        },
+        {
+          "code": "inference.registry_corrupt",
+          "docs": "https://stratadb.org/e/inference.registry_corrupt"
         }
       ],
       "fixtures": {
@@ -4329,6 +4333,22 @@
         {
           "code": "inference.provider_unavailable",
           "docs": "https://stratadb.org/e/inference.provider_unavailable"
+        },
+        {
+          "code": "inference.provider_malformed_response",
+          "docs": "https://stratadb.org/e/inference.provider_malformed_response"
+        },
+        {
+          "code": "inference.unsupported_provider",
+          "docs": "https://stratadb.org/e/inference.unsupported_provider"
+        },
+        {
+          "code": "inference.unsupported_parameter",
+          "docs": "https://stratadb.org/e/inference.unsupported_parameter"
+        },
+        {
+          "code": "inference.registry_corrupt",
+          "docs": "https://stratadb.org/e/inference.registry_corrupt"
         }
       ],
       "fixtures": {
@@ -4405,6 +4425,22 @@
         {
           "code": "inference.provider_unavailable",
           "docs": "https://stratadb.org/e/inference.provider_unavailable"
+        },
+        {
+          "code": "inference.provider_malformed_response",
+          "docs": "https://stratadb.org/e/inference.provider_malformed_response"
+        },
+        {
+          "code": "inference.unsupported_provider",
+          "docs": "https://stratadb.org/e/inference.unsupported_provider"
+        },
+        {
+          "code": "inference.unsupported_parameter",
+          "docs": "https://stratadb.org/e/inference.unsupported_parameter"
+        },
+        {
+          "code": "inference.registry_corrupt",
+          "docs": "https://stratadb.org/e/inference.registry_corrupt"
         }
       ],
       "fixtures": {
@@ -4497,6 +4533,22 @@
         {
           "code": "inference.invalid_request",
           "docs": "https://stratadb.org/e/inference.invalid_request"
+        },
+        {
+          "code": "inference.provider_malformed_response",
+          "docs": "https://stratadb.org/e/inference.provider_malformed_response"
+        },
+        {
+          "code": "inference.unsupported_provider",
+          "docs": "https://stratadb.org/e/inference.unsupported_provider"
+        },
+        {
+          "code": "inference.unsupported_parameter",
+          "docs": "https://stratadb.org/e/inference.unsupported_parameter"
+        },
+        {
+          "code": "inference.registry_corrupt",
+          "docs": "https://stratadb.org/e/inference.registry_corrupt"
         }
       ],
       "fixtures": {
@@ -4676,6 +4728,10 @@
         {
           "code": "inference.io_failure",
           "docs": "https://stratadb.org/e/inference.io_failure"
+        },
+        {
+          "code": "inference.registry_corrupt",
+          "docs": "https://stratadb.org/e/inference.registry_corrupt"
         }
       ],
       "fixtures": {
@@ -4744,6 +4800,10 @@
         {
           "code": "inference.local_runtime_failed",
           "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        },
+        {
+          "code": "inference.registry_corrupt",
+          "docs": "https://stratadb.org/e/inference.registry_corrupt"
         }
       ],
       "fixtures": {
@@ -4812,6 +4872,10 @@
         {
           "code": "inference.local_runtime_failed",
           "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        },
+        {
+          "code": "inference.registry_corrupt",
+          "docs": "https://stratadb.org/e/inference.registry_corrupt"
         }
       ],
       "fixtures": {

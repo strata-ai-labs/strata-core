@@ -19,6 +19,7 @@ const FIXTURE_ROOT: &str = "crates/executor/tests/fixtures";
 const COMMAND_INDEX_FILE: &str = "command-index.json";
 const CLI_COMMAND_INDEX_FILE: &str = "cli-command-index.json";
 const UNCOVERED_COMMANDS_FILE: &str = "uncovered-commands.yaml";
+const UNCOVERED_ERROR_CODES_FILE: &str = "uncovered-error-codes.yaml";
 const CLI_SURFACES: &[&str] = &["verb", "wire"];
 const SUPPORTED_COMMAND_SCHEMA_VERSION: &str = "strata.idl.v1";
 const SUPPORTED_COMMAND_GENERATOR_VERSION: &str = "strata-executor-idl.1";
@@ -441,6 +442,14 @@ struct UncoveredCommandsSource {
     uncovered: Vec<String>,
 }
 
+/// `uncovered-error-codes.yaml`: the shrink-only error-code exhaustiveness
+/// allowlist (drift guard, mirrors `uncovered-commands.yaml`).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UncoveredErrorCodesSource {
+    uncovered: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CommandSource {
@@ -627,6 +636,7 @@ pub fn resolve_index(repo_root: &Path) -> Result<CommandIndex> {
     let kind_layers = named_layers(kinds.kinds, "kind")?;
     let registered_errors = registered_error_map();
     validate_error_overlay(&overlay_errors.errors, &registered_errors)?;
+    enforce_error_code_exhaustiveness(&idl_root, &overlay_errors.errors, &registered_errors)?;
 
     let command_refs = enum_variants(&repo_root.join("crates/executor/src/command.rs"))?;
     let output_refs = enum_variants(&repo_root.join("crates/executor/src/output.rs"))?;
@@ -1438,6 +1448,57 @@ fn validate_error_overlay(
     Ok(())
 }
 
+/// Every registered public error code must be declared in `errors.yaml` — so
+/// SDK-facing docs surface it — or listed in `uncovered-error-codes.yaml`. The
+/// allowlist may only shrink: a listed code that gains overlay coverage must be
+/// removed, a listed code that is not registered is rejected, and a newly
+/// registered code that is neither declared nor listed fails the build.
+fn enforce_error_code_exhaustiveness(
+    idl_root: &Path,
+    overlay_errors: &[String],
+    registered_errors: &BTreeMap<String, String>,
+) -> Result<()> {
+    let allowlist: UncoveredErrorCodesSource =
+        read_yaml(&idl_root.join(UNCOVERED_ERROR_CODES_FILE))?;
+    let registered: BTreeSet<&str> = registered_errors.keys().map(String::as_str).collect();
+    enforce_error_code_lists(&registered, overlay_errors, &allowlist.uncovered)
+}
+
+fn enforce_error_code_lists(
+    registered: &BTreeSet<&str>,
+    overlay_errors: &[String],
+    allowlist: &[String],
+) -> Result<()> {
+    let declared: BTreeSet<&str> = overlay_errors.iter().map(String::as_str).collect();
+    let mut listed = BTreeSet::new();
+    for code in allowlist {
+        if !registered.contains(code.as_str()) {
+            return Err(invalid(format!(
+                "uncovered-error-codes.yaml lists `{code}` which is not a registered error code"
+            )));
+        }
+        if declared.contains(code.as_str()) {
+            return Err(invalid(format!(
+                "`{code}` is declared in errors.yaml; remove it from uncovered-error-codes.yaml (the allowlist may only shrink)"
+            )));
+        }
+        if !listed.insert(code.as_str()) {
+            return Err(invalid(format!(
+                "duplicate `{code}` in uncovered-error-codes.yaml"
+            )));
+        }
+    }
+
+    for code in registered {
+        if !declared.contains(code) && !listed.contains(code) {
+            return Err(invalid(format!(
+                "registered error `{code}` is not declared in errors.yaml and not listed in uncovered-error-codes.yaml; declare it or list it explicitly"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn resolve_errors(
     command_id: &str,
     errors: &[String],
@@ -1980,6 +2041,44 @@ mod tests {
         let listed = vec!["Command::Ghost".to_owned()];
         let error = enforce_exhaustiveness_lists(&all, &covered, &listed).unwrap_err();
         assert!(error.to_string().contains("Ghost"));
+    }
+
+    fn code_refs<'a>(codes: &'a [&str]) -> BTreeSet<&'a str> {
+        codes.iter().copied().collect()
+    }
+
+    #[test]
+    fn error_code_exhaustiveness_accepts_declared_plus_listed() {
+        let registered = code_refs(&["a.b.c", "d.e.f", "g.h.i"]);
+        let declared = vec!["a.b.c".to_owned(), "d.e.f".to_owned()];
+        let listed = vec!["g.h.i".to_owned()];
+        assert!(enforce_error_code_lists(&registered, &declared, &listed).is_ok());
+    }
+
+    #[test]
+    fn error_code_exhaustiveness_rejects_a_new_undeclared_code() {
+        let registered = code_refs(&["a.b.c", "new.code.here"]);
+        let declared = vec!["a.b.c".to_owned()];
+        let error = enforce_error_code_lists(&registered, &declared, &[]).unwrap_err();
+        assert!(error.to_string().contains("new.code.here"));
+    }
+
+    #[test]
+    fn error_code_exhaustiveness_shrinks_only() {
+        let registered = code_refs(&["a.b.c"]);
+        let declared = vec!["a.b.c".to_owned()];
+        let listed = vec!["a.b.c".to_owned()];
+        let error = enforce_error_code_lists(&registered, &declared, &listed).unwrap_err();
+        assert!(error.to_string().contains("only shrink"));
+    }
+
+    #[test]
+    fn error_code_exhaustiveness_rejects_unregistered_allowlist_codes() {
+        let registered = code_refs(&["a.b.c"]);
+        let declared = vec!["a.b.c".to_owned()];
+        let listed = vec!["ghost.code.here".to_owned()];
+        let error = enforce_error_code_lists(&registered, &declared, &listed).unwrap_err();
+        assert!(error.to_string().contains("ghost.code.here"));
     }
 
     #[test]

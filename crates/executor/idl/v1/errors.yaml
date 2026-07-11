@@ -111,3 +111,7 @@ errors:
   - inference.download_failed
   - inference.download_verification_failed
   - inference.io_failure
+  - inference.provider_malformed_response
+  - inference.unsupported_provider
+  - inference.unsupported_parameter
+  - inference.registry_corrupt
