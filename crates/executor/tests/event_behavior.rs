@@ -383,7 +383,7 @@ fn event_convenience_facade_runs_complete_event_command_suite() {
     ));
     assert!(matches!(
         executor.event_get(0).expect("get succeeds"),
-        Output::EventRecord(Some(_))
+        Output::EventRecord(record) if record.is_found()
     ));
     assert_eq!(
         executor.event_exists(0).expect("exists succeeds"),
@@ -1068,7 +1068,7 @@ fn get_event(
         })
         .expect("get succeeds")
     {
-        Output::EventRecord(record) => record,
+        Output::EventRecord(record) => record.into_option(),
         output => panic!("unexpected get output: {output:?}"),
     }
 }

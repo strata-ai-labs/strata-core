@@ -32,8 +32,8 @@ pub(super) fn graph_read_outputs() -> Vec<Output> {
             items: Vec::new(),
             page: PageInfo::terminal(),
         },
-        Output::GraphNodeResult(Some(graph_node_output("deps", "node-a"))),
-        Output::GraphNodeResult(None),
+        Output::GraphNodeResult(Maybe::found(graph_node_output("deps", "node-a"))),
+        Output::GraphNodeResult(Maybe::missing()),
         Output::GraphNodePage {
             items: vec![graph_node_output("deps", "node-a")],
             page: PageInfo::new(true, Some("node-a".to_owned())),
@@ -42,13 +42,13 @@ pub(super) fn graph_read_outputs() -> Vec<Output> {
             items: Vec::new(),
             page: PageInfo::terminal(),
         },
-        Output::GraphEdgeResult(Some(graph_edge_output(
+        Output::GraphEdgeResult(Maybe::found(graph_edge_output(
             "deps",
             "node-a",
             "depends_on",
             "node-b",
         ))),
-        Output::GraphEdgeResult(None),
+        Output::GraphEdgeResult(Maybe::missing()),
         Output::GraphNeighborPage {
             items: vec![GraphNeighborHit::new(
                 graph_node_output("deps", "node-b"),

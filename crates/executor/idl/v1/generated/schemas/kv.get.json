@@ -5,6 +5,28 @@
       "description": "Binary payload encoded as a standard base64 string.",
       "type": "string"
     },
+    "Maybe": {
+      "description": "Point-read envelope shared by every capability's single-record `get`.\n\n`found` is the authoritative presence flag; `value` carries the record only\nwhen it exists. A missing record serializes as `{found: false, value: null}`\nand a present one as `{found: true, value: <record>}`, so absence never\naliases a bare `null` payload and every primitive answers a point read the\nsame shape.\n\nThe payload is `Option<T>` because these primitives never store a JSON\n`null` as a record — struct payloads round-trip cleanly through\n`Option<T>`. JSON is the one exception: a stored JSON `null` is a real value\nthat `Option<serde_json::Value>` would collapse to absence on deserialize,\nso JSON reads use the dedicated [`MaybeJsonValue`](super::MaybeJsonValue)\nenvelope, which carries a non-optional `value` to keep found-null distinct\nfrom absent. Both envelopes serialize the same `{found, value}` wire shape.",
+      "properties": {
+        "found": {
+          "type": "boolean"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VersionedValue"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "found"
+      ],
+      "type": "object"
+    },
     "VersionedValue": {
       "description": "Stored value with commit metadata.",
       "properties": {
@@ -76,17 +98,10 @@
     "type": "object"
   },
   "response": {
-    "description": "Optional KV value with commit metadata.",
+    "description": "KV point-read result: present value with commit metadata, or absence.",
     "properties": {
       "data": {
-        "anyOf": [
-          {
-            "$ref": "#/$defs/VersionedValue"
-          },
-          {
-            "type": "null"
-          }
-        ]
+        "$ref": "#/$defs/Maybe"
       },
       "type": {
         "const": "kv_versioned_value",

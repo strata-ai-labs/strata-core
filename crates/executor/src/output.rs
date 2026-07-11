@@ -8,8 +8,8 @@ use crate::types::{
     GraphBindingHit, GraphCdlpData, GraphEdgeDataOutput, GraphInfoData, GraphLccData,
     GraphNeighborHit, GraphNodeDataOutput, GraphOntologyData, GraphOntologySummaryData,
     GraphPagerankData, GraphSsspData, GraphWccData, HistoryResult, JsonBatchGetItemResult,
-    JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition, JsonSampleItem, MaybeJsonValue,
-    MaybeJsonVersionedValue, MutationEffect, PageInfo, SampleItem, ScanItem,
+    JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition, JsonSampleItem, Maybe,
+    MaybeJsonValue, MaybeJsonVersionedValue, MutationEffect, PageInfo, SampleItem, ScanItem,
     VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorHistoryResult,
     VectorIndexQueryResult, VectorMatch, VectorVersionedData, VersionedValue,
 };
@@ -114,8 +114,8 @@ pub enum Output {
         /// Cleanup facts.
         cleanup: Option<BranchCleanupItem>,
     },
-    /// Optional KV value with commit metadata.
-    KvVersionedValue(Option<VersionedValue>),
+    /// KV point-read result: present value with commit metadata, or absence.
+    KvVersionedValue(Maybe<VersionedValue>),
     /// Optional JSON value.
     JsonValue(MaybeJsonValue),
     /// Optional JSON value with commit metadata.
@@ -290,8 +290,8 @@ pub enum Output {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<CommitReceipt>,
     },
-    /// Optional vector value.
-    VectorData(Option<VectorVersionedData>),
+    /// Vector point-read result: present value with commit metadata, or absence.
+    VectorData(Maybe<VectorVersionedData>),
     /// Full vector history.
     VectorVersionHistory(Option<VectorHistoryResult>),
     /// Vector search matches.
@@ -331,8 +331,8 @@ pub enum Output {
         /// Commit receipt.
         commit: CommitReceipt,
     },
-    /// Optional event record.
-    EventRecord(Option<EventVersionedData>),
+    /// Event point-read result: present record with commit metadata, or absence.
+    EventRecord(Maybe<EventVersionedData>),
     /// Event records.
     EventRecords {
         /// Events in this page.
@@ -386,8 +386,8 @@ pub enum Output {
         #[serde(flatten)]
         page: PageInfo<String>,
     },
-    /// Optional graph node.
-    GraphNodeResult(Option<GraphNodeDataOutput>),
+    /// Graph node point-read result: present node, or absence.
+    GraphNodeResult(Maybe<GraphNodeDataOutput>),
     /// Paginated graph node list.
     GraphNodePage {
         /// Nodes in this page.
@@ -396,8 +396,8 @@ pub enum Output {
         #[serde(flatten)]
         page: PageInfo<String>,
     },
-    /// Optional graph edge.
-    GraphEdgeResult(Option<GraphEdgeDataOutput>),
+    /// Graph edge point-read result: present edge, or absence.
+    GraphEdgeResult(Maybe<GraphEdgeDataOutput>),
     /// Paginated graph neighbor list.
     GraphNeighborPage {
         /// Neighbor hits in this page.

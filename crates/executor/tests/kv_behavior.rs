@@ -763,8 +763,7 @@ fn execute_get(executor: &mut Executor, key: &str) -> Option<Bytes> {
         })
         .expect("get succeeds")
     {
-        Output::KvVersionedValue(Some(value)) => Some(value.value().clone()),
-        Output::KvVersionedValue(None) => None,
+        Output::KvVersionedValue(value) => value.into_option().map(|v| v.value().clone()),
         output => panic!("unexpected get output: {output:?}"),
     }
 }
@@ -784,8 +783,7 @@ fn execute_get_in(
         })
         .expect("get succeeds")
     {
-        Output::KvVersionedValue(Some(value)) => Some(value.value().clone()),
-        Output::KvVersionedValue(None) => None,
+        Output::KvVersionedValue(value) => value.into_option().map(|v| v.value().clone()),
         output => panic!("unexpected get output: {output:?}"),
     }
 }
@@ -800,7 +798,7 @@ fn execute_get_as_of(executor: &mut Executor, key: &str, as_of: u64) -> Option<V
         })
         .expect("historical get succeeds")
     {
-        Output::KvVersionedValue(value) => value,
+        Output::KvVersionedValue(value) => value.into_option(),
         output => panic!("unexpected historical get output: {output:?}"),
     }
 }
@@ -1169,7 +1167,9 @@ fn kv_put_is_atomic_with_read_after_write_visibility() {
             })
             .expect("get succeeds")
         {
-            Output::KvVersionedValue(Some(versioned)) => versioned,
+            Output::KvVersionedValue(value) => {
+                value.into_option().expect("value present after write")
+            }
             output => panic!("unexpected get output on round {round}: {output:?}"),
         };
         assert_eq!(read.value(), &bytes(value));

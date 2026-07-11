@@ -3,7 +3,7 @@ use super::{
     event_batch_entry, event_batch_result, event_chain_verification, event_payload,
     event_range_output, event_records, event_sequence, event_versioned_data,
     optional_engine_event_type, optional_limit, usize_to_u64, BatchEventEntry, EventRangeDirection,
-    Executor, ExecutorResult, Output, PageInfo, Timestamp,
+    Executor, ExecutorResult, Maybe, Output, PageInfo, Timestamp,
 };
 
 impl Executor {
@@ -59,9 +59,9 @@ impl Executor {
         } else {
             service.get(sequence)?
         };
-        Ok(Output::EventRecord(
+        Ok(Output::EventRecord(Maybe::from_option(
             record.as_ref().map(event_versioned_data),
-        ))
+        )))
     }
 
     pub(super) fn execute_event_exists(

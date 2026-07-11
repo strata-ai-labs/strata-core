@@ -204,6 +204,69 @@ where
     }
 }
 
+/// Point-read envelope shared by every capability's single-record `get`.
+///
+/// `found` is the authoritative presence flag; `value` carries the record only
+/// when it exists. A missing record serializes as `{found: false, value: null}`
+/// and a present one as `{found: true, value: <record>}`, so absence never
+/// aliases a bare `null` payload and every primitive answers a point read the
+/// same shape.
+///
+/// The payload is `Option<T>` because these primitives never store a JSON
+/// `null` as a record — struct payloads round-trip cleanly through
+/// `Option<T>`. JSON is the one exception: a stored JSON `null` is a real value
+/// that `Option<serde_json::Value>` would collapse to absence on deserialize,
+/// so JSON reads use the dedicated [`MaybeJsonValue`](super::MaybeJsonValue)
+/// envelope, which carries a non-optional `value` to keep found-null distinct
+/// from absent. Both envelopes serialize the same `{found, value}` wire shape.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+pub struct Maybe<T> {
+    found: bool,
+    value: Option<T>,
+}
+
+impl<T> Maybe<T> {
+    /// Creates a present point-read result.
+    pub fn found(value: T) -> Self {
+        Self {
+            found: true,
+            value: Some(value),
+        }
+    }
+
+    /// Creates an absent point-read result.
+    pub const fn missing() -> Self {
+        Self {
+            found: false,
+            value: None,
+        }
+    }
+
+    /// Creates a result from an optional record.
+    pub fn from_option(value: Option<T>) -> Self {
+        match value {
+            Some(value) => Self::found(value),
+            None => Self::missing(),
+        }
+    }
+
+    /// Returns true when the record exists.
+    pub const fn is_found(&self) -> bool {
+        self.found
+    }
+
+    /// Returns the record when it exists.
+    pub const fn value(&self) -> Option<&T> {
+        self.value.as_ref()
+    }
+
+    /// Consumes the result and returns the record when it exists.
+    pub fn into_option(self) -> Option<T> {
+        self.value
+    }
+}
+
 /// Batch execution semantics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]

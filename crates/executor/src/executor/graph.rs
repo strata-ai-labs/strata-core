@@ -10,8 +10,8 @@ use super::{
     graph_type_name, optional_graph_edge_type, optional_graph_name, optional_graph_node_id,
     optional_limit, EngineGraphBatchWrite, EngineGraphLinkTypeDef, EngineGraphObjectTypeDef,
     Executor, ExecutorError, ExecutorResult, GraphBatchOperation, GraphBindingTarget,
-    GraphDirection, GraphEdgeData, GraphEntityBinding, GraphNodeData, GraphPropertyDef, Output,
-    Timestamp, DEFAULT_GRAPH_LIST_LIMIT,
+    GraphDirection, GraphEdgeData, GraphEntityBinding, GraphNodeData, GraphPropertyDef, Maybe,
+    Output, Timestamp, DEFAULT_GRAPH_LIST_LIMIT,
 };
 
 impl Executor {
@@ -127,9 +127,9 @@ impl Executor {
         } else {
             service.get_node(&graph, &node_id)?
         };
-        Ok(Output::GraphNodeResult(
+        Ok(Output::GraphNodeResult(Maybe::from_option(
             node.as_ref().map(graph_node_data_output),
-        ))
+        )))
     }
 
     pub(super) fn execute_graph_remove_node(
@@ -231,9 +231,9 @@ impl Executor {
         } else {
             service.get_edge(&graph, &src, &edge_type, &dst)?
         };
-        Ok(Output::GraphEdgeResult(
+        Ok(Output::GraphEdgeResult(Maybe::from_option(
             edge.as_ref().map(graph_edge_data_output),
-        ))
+        )))
     }
 
     #[allow(clippy::too_many_arguments)]

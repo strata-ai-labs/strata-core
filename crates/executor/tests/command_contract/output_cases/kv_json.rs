@@ -2,8 +2,8 @@ use crate::support::*;
 
 pub(super) fn kv_outputs() -> Vec<Output> {
     vec![
-        Output::KvVersionedValue(Some(VersionedValue::new(bytes("one"), 1, 10))),
-        Output::KvVersionedValue(None),
+        Output::KvVersionedValue(Maybe::found(VersionedValue::new(bytes("one"), 1, 10))),
+        Output::KvVersionedValue(Maybe::missing()),
         Output::VersionHistory(Some(HistoryResult::new(vec![HistoryItem::new(
             Some(bytes("one")),
             false,

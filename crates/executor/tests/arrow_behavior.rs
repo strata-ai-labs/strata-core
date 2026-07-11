@@ -651,7 +651,9 @@ fn kv_get_in(
     let Output::KvVersionedValue(value) = output else {
         panic!("unexpected kv get output");
     };
-    value.map(|value| value.value().as_slice().to_vec())
+    value
+        .into_option()
+        .map(|value| value.value().as_slice().to_vec())
 }
 
 fn json_get(executor: &mut Executor, key: &str) -> Option<Value> {
@@ -717,10 +719,16 @@ fn vector_get_metadata(executor: &mut Executor, collection: &str, key: &str) -> 
             as_of: None,
         })
         .expect("vector get succeeds");
-    let Output::VectorData(Some(value)) = output else {
+    let Output::VectorData(value) = output else {
         panic!("unexpected vector get output");
     };
-    value.data().metadata().cloned().expect("metadata")
+    value
+        .into_option()
+        .expect("vector value present")
+        .data()
+        .metadata()
+        .cloned()
+        .expect("metadata")
 }
 
 fn create_docs_collection(executor: &mut Executor) {

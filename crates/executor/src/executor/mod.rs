@@ -103,7 +103,7 @@ use crate::types::{
     GraphOntologySummaryData, GraphPagerankData, GraphPropertyDef, GraphSsspData, GraphWccData,
     HistoryItem, HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
     JsonIndexDefinition, JsonIndexType, JsonSampleItem,
-    JsonVersionedValue as OutputJsonVersionedValue, MaybeJsonValue, MaybeJsonVersionedValue,
+    JsonVersionedValue as OutputJsonVersionedValue, Maybe, MaybeJsonValue, MaybeJsonVersionedValue,
     MutationEffect, MutationEffectKind, PageInfo, SampleItem, ScanItem, VectorBatchGetItemResult,
     VectorBatchItemResult, VectorCollectionInfo as OutputVectorCollectionInfo, VectorData,
     VectorDistanceMetric, VectorFilterOp, VectorHistoryItem, VectorHistoryResult,

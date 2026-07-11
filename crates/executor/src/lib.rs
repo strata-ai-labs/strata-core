@@ -59,7 +59,7 @@ pub use types::{
     GraphNodeDataOutput, GraphObjectTypeDefData, GraphObjectTypeSummaryData, GraphOntologyData,
     GraphOntologySummaryData, GraphPagerankData, GraphPropertyDef, GraphSsspData, GraphWccData,
     HistoryItem, HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
-    JsonIndexDefinition, JsonIndexType, JsonSampleItem, JsonVersionedValue, MaybeJsonValue,
+    JsonIndexDefinition, JsonIndexType, JsonSampleItem, JsonVersionedValue, Maybe, MaybeJsonValue,
     MaybeJsonVersionedValue, MutationEffect, MutationEffectKind, PageInfo, SampleItem, ScanItem,
     VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorData,
     VectorDistanceMetric, VectorFilterCondition, VectorFilterOp, VectorHistoryItem,

@@ -178,12 +178,13 @@ fn exercise_typed_nodes(executor: &mut Executor) {
         .expect("untyped node still passes");
 
     // The object type round-trips node reads.
-    let Output::GraphNodeResult(Some(node)) = executor
+    let Output::GraphNodeResult(node) = executor
         .graph_get_node("deps", "d1")
         .expect("read succeeds")
     else {
         panic!("expected node");
     };
+    let node = node.into_option().expect("expected node");
     assert_eq!(node.object_type(), Some("Document"));
 
     // nodes-by-type pages through the index.

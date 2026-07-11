@@ -39,14 +39,14 @@ pub(super) fn vector_mutation_outputs() -> Vec<Output> {
 
 pub(super) fn vector_read_outputs() -> Vec<Output> {
     vec![
-        Output::VectorData(Some(VectorVersionedData::new(
+        Output::VectorData(Maybe::found(VectorVersionedData::new(
             "doc-a".to_owned(),
             VectorData::new(vec![1.0, 0.0], Some(json!({"kind": "doc"}))),
             1,
             10,
             1,
         ))),
-        Output::VectorData(None),
+        Output::VectorData(Maybe::missing()),
         Output::VectorVersionHistory(Some(VectorHistoryResult::new(vec![
             VectorHistoryItem::new(
                 "doc-a".to_owned(),
