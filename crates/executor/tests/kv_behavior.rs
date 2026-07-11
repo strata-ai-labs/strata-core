@@ -2,8 +2,8 @@
 
 use strata_engine::{CacheOpenOptions, Database};
 use strata_executor::{
-    BatchKvEntry, Bytes, Command, Executor, ExecutorErrorClass, MutationEffectKind, Output,
-    VersionedValue, DEFAULT_BRANCH,
+    BatchItemStatus, BatchKvEntry, BatchStatus, Bytes, Command, Executor, ExecutorErrorClass,
+    MutationEffectKind, Output, VersionedValue, DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -141,6 +141,40 @@ fn kv_batch_write_outputs_report_per_item_commit_receipts_and_effects() {
     assert!(!missing.matched());
     assert!(results[0].commit().is_some());
     assert!(results[1].commit().is_none());
+}
+
+#[test]
+fn kv_batch_exists_reports_invalid_keys_as_positional_errors() {
+    // A malformed key is a positional item error, not a whole-batch abort —
+    // matching kv_batch_get. Valid answers (present/absent) are ok items.
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    write(&mut executor, None, None, "present", "v");
+
+    let Output::BatchExistsResults(results) = executor
+        .execute(Command::KvBatchExists {
+            branch: None,
+            space: None,
+            keys: vec![bytes("present"), bytes("absent"), Bytes::new(Vec::new())],
+        })
+        .expect("batch exists does not abort on a bad key")
+    else {
+        panic!("unexpected batch exists output");
+    };
+    assert_eq!(results.len(), 3);
+    assert_eq!(results[0].status(), BatchItemStatus::Ok);
+    assert!(results[0].exists());
+    assert_eq!(results[1].status(), BatchItemStatus::Ok);
+    assert!(!results[1].exists());
+    assert_eq!(
+        results[2].status(),
+        BatchItemStatus::Error,
+        "an empty key is a positional error, not a whole-batch abort"
+    );
+    assert_eq!(
+        results[2].error_status().expect("item error").code(),
+        "invalid_argument.engine.kv_key"
+    );
+    assert_eq!(results.status(), BatchStatus::Partial);
 }
 
 #[test]
@@ -397,7 +431,7 @@ fn command_to_output_mapping_is_explicit_for_every_variant() {
     assert!(matches!(outputs[5], Output::BatchResults(_)));
     assert!(matches!(outputs[6], Output::BatchGetResults(_)));
     assert!(matches!(outputs[7], Output::BatchResults(_)));
-    assert!(matches!(outputs[8], Output::BoolList(_)));
+    assert!(matches!(outputs[8], Output::BatchExistsResults(_)));
     assert!(matches!(outputs[9], Output::Bool(_)));
     assert!(matches!(outputs[10], Output::VersionHistory(_)));
     assert!(matches!(outputs[11], Output::Uint(_)));
@@ -970,7 +1004,9 @@ fn execute_batch_exists(executor: &mut Executor, keys: Vec<&str>) -> Vec<bool> {
         })
         .expect("batch exists succeeds")
     {
-        Output::BoolList(values) => values,
+        Output::BatchExistsResults(results) => {
+            results.into_iter().map(|item| item.exists()).collect()
+        }
         output => panic!("unexpected batch exists output: {output:?}"),
     }
 }

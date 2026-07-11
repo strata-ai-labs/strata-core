@@ -121,8 +121,8 @@ commands:
     kind: batch.itemwise_status
     title: Batch check KV existence
     input: Command::KvBatchExists
-    output: Output::BoolList
-    result: StatusValue<bool>
+    output: Output::BatchExistsResults
+    result: BatchExistsItemResult
     prose: commands/kv.batch_exists.md
     errors+:
       - invalid_argument.engine.kv_batch

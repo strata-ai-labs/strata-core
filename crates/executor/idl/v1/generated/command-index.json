@@ -5965,12 +5965,12 @@
       "feature": "core",
       "access": "read",
       "input": "Command::KvBatchExists",
-      "output": "Output::BoolList",
+      "output": "Output::BatchExistsResults",
       "outputs": [
-        "Output::BoolList"
+        "Output::BatchExistsResults"
       ],
       "wire_status": "stable",
-      "response_model": "BatchResult<StatusValue<bool>>",
+      "response_model": "BatchResult<BatchExistsItemResult>",
       "commit": "none",
       "pagination": "none",
       "batch": "itemwise",

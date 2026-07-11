@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "83402ff0c9242cec1f6d1cbe8bbffce68b04e0b3b08d1f69ea27bb1abf7525b3",
+    "checksum_sha256": "59fb4dbe01df6d6a0b5031f410d93ad99bcd7271928a0ea1fd8303c77cd4ba14",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -5187,9 +5187,9 @@
       "batch": "itemwise",
       "input": "Command::KvBatchExists",
       "outputs": [
-        "Output::BoolList"
+        "Output::BatchExistsResults"
       ],
-      "response_model": "BatchResult<StatusValue<bool>>",
+      "response_model": "BatchResult<BatchExistsItemResult>",
       "errors": [
         {
           "code": "failed_precondition.engine.runtime_closed",

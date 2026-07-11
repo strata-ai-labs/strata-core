@@ -4,17 +4,17 @@ pub(super) use strata_executor::{
     AdminCapabilities, AdminConfig, AdminControlStatus, AdminDatabaseInfo, AdminDescribe,
     AdminGraph, AdminHealth, AdminHealthStatus, AdminMetrics, AdminOpenTarget, AdminPrimitives,
     AdminVectorCollection, ArrowExportPrimitive, ArrowExportResult, ArrowFileFormat,
-    ArrowImportResult, ArrowImportTarget, BatchEventEntry, BatchGetItemResult, BatchItem,
-    BatchItemResult, BatchItemStatus, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry,
-    BatchKvEntry, BatchMode, BatchResult, BatchStatus, BatchVectorEntry, BranchCleanupItem,
-    BranchItem, BranchParentItem, BranchStatus, Bytes, Command, CommitReceipt, ErrorStatus,
-    EventBatchAppendItemResult, EventChainVerification, EventData, EventRangeDirection,
-    EventVersionedData, GraphAnalyticsBudget, GraphBatchItemResult, GraphBatchOperation,
-    GraphBfsData, GraphBfsEdgeData, GraphBindingHit, GraphBindingPrimitive, GraphBindingTarget,
-    GraphBulkEdge, GraphBulkNode, GraphCdlpData, GraphDeletePolicy, GraphDirection, GraphEdgeData,
-    GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData, GraphLccData, GraphLinkTypeDefData,
-    GraphLinkTypeSummaryData, GraphNeighborHit, GraphNodeData, GraphNodeDataOutput,
-    GraphObjectTypeDefData, GraphObjectTypeSummaryData, GraphOntologyData,
+    ArrowImportResult, ArrowImportTarget, BatchEventEntry, BatchExistsItemResult,
+    BatchGetItemResult, BatchItem, BatchItemResult, BatchItemStatus, BatchJsonDeleteEntry,
+    BatchJsonEntry, BatchJsonGetEntry, BatchKvEntry, BatchMode, BatchResult, BatchStatus,
+    BatchVectorEntry, BranchCleanupItem, BranchItem, BranchParentItem, BranchStatus, Bytes,
+    Command, CommitReceipt, ErrorStatus, EventBatchAppendItemResult, EventChainVerification,
+    EventData, EventRangeDirection, EventVersionedData, GraphAnalyticsBudget, GraphBatchItemResult,
+    GraphBatchOperation, GraphBfsData, GraphBfsEdgeData, GraphBindingHit, GraphBindingPrimitive,
+    GraphBindingTarget, GraphBulkEdge, GraphBulkNode, GraphCdlpData, GraphDeletePolicy,
+    GraphDirection, GraphEdgeData, GraphEdgeDataOutput, GraphEntityBinding, GraphInfoData,
+    GraphLccData, GraphLinkTypeDefData, GraphLinkTypeSummaryData, GraphNeighborHit, GraphNodeData,
+    GraphNodeDataOutput, GraphObjectTypeDefData, GraphObjectTypeSummaryData, GraphOntologyData,
     GraphOntologySummaryData, GraphPagerankData, GraphPropertyDef, GraphSsspData, GraphWccData,
     HistoryItem, HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
     JsonIndexDefinition, JsonIndexType, JsonSampleItem, JsonVersionedValue, MaybeJsonValue,
@@ -136,6 +136,26 @@ pub(super) fn kv_batch_get(items: Vec<BatchGetItemResult>) -> BatchResult<BatchG
                     BatchItem::ok(index, false, None, None, item)
                 } else {
                     BatchItem::miss(index, item)
+                }
+            })
+            .collect(),
+    )
+}
+
+pub(super) fn kv_batch_exists(
+    items: Vec<BatchExistsItemResult>,
+) -> BatchResult<BatchExistsItemResult> {
+    BatchResult::from_items(
+        BatchMode::Itemwise,
+        items
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let index = u64::try_from(index).expect("fixture index fits in u64");
+                if let Some(error) = item.error_status().cloned() {
+                    BatchItem::failed(index, Some(item), error)
+                } else {
+                    BatchItem::ok(index, false, None, None, item)
                 }
             })
             .collect(),

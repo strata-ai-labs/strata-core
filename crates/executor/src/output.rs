@@ -2,16 +2,16 @@
 
 use crate::types::{
     AdminConfig, AdminDatabaseInfo, AdminDescribe, AdminHealth, AdminMetrics, ArrowExportResult,
-    ArrowImportResult, BatchGetItemResult, BatchItemResult, BatchResult, BranchCleanupItem,
-    BranchItem, Bytes, CommitReceipt, EventBatchAppendItemResult, EventChainVerification,
-    EventVersionedData, GraphBatchItemResult, GraphBfsData, GraphBindingHit, GraphCdlpData,
-    GraphEdgeDataOutput, GraphInfoData, GraphLccData, GraphNeighborHit, GraphNodeDataOutput,
-    GraphOntologyData, GraphOntologySummaryData, GraphPagerankData, GraphSsspData, GraphWccData,
-    HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult, JsonHistoryItem,
-    JsonIndexDefinition, JsonSampleItem, MaybeJsonValue, MaybeJsonVersionedValue, MutationEffect,
-    PageInfo, SampleItem, ScanItem, VectorBatchGetItemResult, VectorBatchItemResult,
-    VectorCollectionInfo, VectorHistoryResult, VectorIndexQueryResult, VectorMatch,
-    VectorVersionedData, VersionedValue,
+    ArrowImportResult, BatchExistsItemResult, BatchGetItemResult, BatchItemResult, BatchResult,
+    BranchCleanupItem, BranchItem, Bytes, CommitReceipt, EventBatchAppendItemResult,
+    EventChainVerification, EventVersionedData, GraphBatchItemResult, GraphBfsData,
+    GraphBindingHit, GraphCdlpData, GraphEdgeDataOutput, GraphInfoData, GraphLccData,
+    GraphNeighborHit, GraphNodeDataOutput, GraphOntologyData, GraphOntologySummaryData,
+    GraphPagerankData, GraphSsspData, GraphWccData, HistoryResult, JsonBatchGetItemResult,
+    JsonBatchItemResult, JsonHistoryItem, JsonIndexDefinition, JsonSampleItem, MaybeJsonValue,
+    MaybeJsonVersionedValue, MutationEffect, PageInfo, SampleItem, ScanItem,
+    VectorBatchGetItemResult, VectorBatchItemResult, VectorCollectionInfo, VectorHistoryResult,
+    VectorIndexQueryResult, VectorMatch, VectorVersionedData, VersionedValue,
 };
 use serde::{Deserialize, Serialize};
 
@@ -219,8 +219,8 @@ pub enum Output {
     JsonBatchGetResults(BatchResult<JsonBatchGetItemResult>),
     /// Boolean result.
     Bool(bool),
-    /// Positional boolean results.
-    BoolList(Vec<bool>),
+    /// Positional batch existence results.
+    BatchExistsResults(BatchResult<BatchExistsItemResult>),
     /// Unsigned integer result.
     Uint(u64),
     /// Sampled KV result.
