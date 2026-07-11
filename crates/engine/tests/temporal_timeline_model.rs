@@ -75,7 +75,10 @@ proptest! {
         for op in ops {
             match op {
                 KvOp::Put(index, byte) => {
-                    let outcome = kv.put(key(KEYS[index]), value(&[byte])).expect("put commits");
+                    let outcome = kv
+                        .put(key(KEYS[index]), value(&[byte]))
+                        .expect("put commits")
+                        .commit();
                     timelines[index].push(Event {
                         version: outcome.version(),
                         timestamp: outcome.timestamp(),
@@ -173,7 +176,10 @@ proptest! {
         {
             let mut kv = db.kv(branch("default"), space("default")).expect("kv service");
             for &byte in &bytes {
-                let outcome = kv.put(key(b"target"), value(&[byte])).expect("put commits");
+                let outcome = kv
+                    .put(key(b"target"), value(&[byte]))
+                    .expect("put commits")
+                    .commit();
                 versions.push(outcome.version());
             }
         }

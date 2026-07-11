@@ -52,8 +52,9 @@ pub use json::{
     JsonSetEntry, JsonValue, JsonVersionedValue, JsonWriteOutcome,
 };
 pub use kv::{
-    KvBatchDeleteOutcome, KvDeleteOutcome, KvHistory, KvHistoryRow, KvKey, KvListPage, KvSample,
-    KvScanRow, KvService, KvValue, KvVersionedValue, ProductSpace,
+    KvBatchDeleteOutcome, KvBatchPutOutcome, KvDeleteOutcome, KvHistory, KvHistoryRow, KvKey,
+    KvListPage, KvSample, KvScanRow, KvService, KvValue, KvVersionedValue, KvWriteOutcome,
+    ProductSpace,
 };
 pub use options::{CacheOpenOptions, CachePreheat, DurableLocalOpenOptions};
 pub use space::{SpaceCreateOutcome, SpaceDeleteOutcome, SpaceService, SpaceUsageSummary};

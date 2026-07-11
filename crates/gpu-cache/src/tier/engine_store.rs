@@ -277,9 +277,10 @@ impl PageStore for EnginePageStore {
             KvValue::new(watermark.0.to_be_bytes().to_vec()),
         ));
         let outcome = self.with_kv(|kv| kv.put_batch(rows).map_err(store_error("put_batch")))?;
+        let commit = outcome.commit();
         Ok(CommitReceipt {
-            version: outcome.version().as_u64(),
-            timestamp: outcome.timestamp().as_micros(),
+            version: commit.version().as_u64(),
+            timestamp: commit.timestamp().as_micros(),
         })
     }
 

@@ -128,7 +128,13 @@ impl<'a> JsonService<'a> {
             &indexes,
         ));
         let commit = self.commit_batch(&record, mutations)?;
-        Ok(JsonWriteOutcome::new(commit, document.document_version()))
+        // `create` refuses to overwrite an existing document, so a successful
+        // commit here always installed a brand-new document.
+        Ok(JsonWriteOutcome::new(
+            commit,
+            document.document_version(),
+            true,
+        ))
     }
 
     /// Sets a root value or path, creating the document when missing.
@@ -320,6 +326,9 @@ impl<'a> JsonService<'a> {
 
         for entry in &entries {
             if let Some((document, _old_value)) = documents.get_mut(entry.id()) {
+                // A document id already touched earlier in this batch is an
+                // update from its second occurrence on, regardless of whether it
+                // existed before the batch — the engine owns this classification.
                 set_at_path(
                     document.value_mut(),
                     entry.path(),
@@ -327,7 +336,10 @@ impl<'a> JsonService<'a> {
                     true,
                 )?;
                 document.touch();
-                results.push(JsonBatchSetItemOutcome::new(document.document_version()));
+                results.push(JsonBatchSetItemOutcome::new(
+                    document.document_version(),
+                    false,
+                ));
                 continue;
             }
             let (document, old_value) = self.apply_set(
@@ -337,7 +349,13 @@ impl<'a> JsonService<'a> {
                 entry.value().clone(),
                 true,
             )?;
-            results.push(JsonBatchSetItemOutcome::new(document.document_version()));
+            // First occurrence in this batch: created only when no prior visible
+            // document existed (`apply_set` returns `None` for the old value).
+            let created = old_value.is_none();
+            results.push(JsonBatchSetItemOutcome::new(
+                document.document_version(),
+                created,
+            ));
             documents.insert(entry.id().clone(), (document, old_value));
         }
 
@@ -647,6 +665,9 @@ impl<'a> JsonService<'a> {
         let record = self.branch_record()?;
         let indexes = self.load_indexes(&record)?;
         let (document, old_value) = self.apply_set(&record, id, path, value, create_if_missing)?;
+        // `apply_set` returns `None` for the prior value only when it created the
+        // document fresh; a present prior value means this write updated it.
+        let created = old_value.is_none();
         let mut mutations = vec![RowMutation::put(
             self.row_address(&record, document.id()),
             encode_stored_document(&document)?,
@@ -659,7 +680,11 @@ impl<'a> JsonService<'a> {
             &indexes,
         ));
         let commit = self.commit_batch(&record, mutations)?;
-        Ok(JsonWriteOutcome::new(commit, document.document_version()))
+        Ok(JsonWriteOutcome::new(
+            commit,
+            document.document_version(),
+            created,
+        ))
     }
 
     fn apply_set(

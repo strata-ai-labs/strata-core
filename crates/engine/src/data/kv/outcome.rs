@@ -225,6 +225,65 @@ impl KvSample {
     }
 }
 
+/// Write outcome for one KV key.
+///
+/// The engine owns the create-vs-update fact: `created` is true when the write
+/// installed a value for a key that had no latest visible value, false when it
+/// overwrote an existing one. Executors relay this rather than re-deriving it
+/// with a separate existence read (rule 7).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KvWriteOutcome {
+    commit: CommitOutcome,
+    created: bool,
+}
+
+impl KvWriteOutcome {
+    pub(crate) const fn new(commit: CommitOutcome, created: bool) -> Self {
+        Self { commit, created }
+    }
+
+    #[must_use]
+    /// Returns the storage commit facts for the write.
+    pub const fn commit(self) -> CommitOutcome {
+        self.commit
+    }
+
+    #[must_use]
+    /// Returns true when the write created a new visible value.
+    pub const fn created(self) -> bool {
+        self.created
+    }
+}
+
+/// Write outcome for a positional KV batch put.
+///
+/// Carries the shared storage commit plus a per-input create-vs-update flag.
+/// KV batch puts reject duplicate keys, so every flag reflects the key's latest
+/// visible state before the batch committed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KvBatchPutOutcome {
+    commit: CommitOutcome,
+    created: Vec<bool>,
+}
+
+impl KvBatchPutOutcome {
+    pub(crate) const fn new(commit: CommitOutcome, created: Vec<bool>) -> Self {
+        Self { commit, created }
+    }
+
+    #[must_use]
+    /// Returns the shared storage commit facts for the batch.
+    pub const fn commit(&self) -> CommitOutcome {
+        self.commit
+    }
+
+    #[must_use]
+    /// Returns positional create/update facts, one per input entry.
+    pub fn created(&self) -> &[bool] {
+        &self.created
+    }
+}
+
 /// Delete outcome for one KV key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KvDeleteOutcome {
@@ -279,8 +338,33 @@ impl KvBatchDeleteOutcome {
 mod tests {
     use strata_core::{CommitVersion, Timestamp};
 
-    use super::{KvHistory, KvHistoryRow, KvListPage, KvSample, KvScanRow, KvVersionedValue};
+    use super::{
+        KvBatchPutOutcome, KvHistory, KvHistoryRow, KvListPage, KvSample, KvScanRow,
+        KvVersionedValue, KvWriteOutcome,
+    };
+    use crate::commit::CommitOutcome;
     use crate::data::kv::{KvKey, KvValue};
+
+    #[test]
+    fn write_outcomes_expose_engine_created_facts() {
+        let commit = CommitOutcome::new(
+            CommitVersion::new(11),
+            Timestamp::from_micros(110),
+            2,
+            0,
+            true,
+        );
+
+        let created = KvWriteOutcome::new(commit, true);
+        assert_eq!(created.commit(), commit);
+        assert!(created.created());
+        let updated = KvWriteOutcome::new(commit, false);
+        assert!(!updated.created());
+
+        let batch = KvBatchPutOutcome::new(commit, vec![true, false, true]);
+        assert_eq!(batch.commit(), commit);
+        assert_eq!(batch.created(), &[true, false, true]);
+    }
 
     #[test]
     fn outcome_accessors_return_stored_facts() {

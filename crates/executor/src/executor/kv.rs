@@ -20,9 +20,12 @@ impl Executor {
         let output_key = key.clone();
         let key = kv_key(key)?;
         let mut service = self.kv_service(branch, space)?;
-        let effect = upsert_effect(service.exists(&key)?);
         let outcome = service.put(key, kv_value(value))?;
-        Ok(write_output(output_key, effect, outcome))
+        Ok(write_output(
+            output_key,
+            upsert_effect(!outcome.created()),
+            outcome.commit(),
+        ))
     }
 
     pub(super) fn execute_kv_get(
@@ -165,18 +168,16 @@ impl Executor {
             .iter()
             .map(|(_, _, key, value)| (key.clone(), value.clone()))
             .collect::<Vec<_>>();
-        let existing_keys = valid_entries
-            .iter()
-            .map(|(_, _, key, _)| key.clone())
-            .collect::<Vec<_>>();
-        let existing = service.batch_exists(&existing_keys)?;
         let outcome = service.put_batch(engine_entries)?;
-        for ((index, output_key, ..), existed) in valid_entries.into_iter().zip(existing) {
+        for ((index, output_key, ..), created) in valid_entries
+            .into_iter()
+            .zip(outcome.created().iter().copied())
+        {
             results[index] = Some(batch_item_result(
                 usize_to_u64(index),
                 output_key,
-                upsert_effect(existed),
-                Some(outcome),
+                upsert_effect(!created),
+                Some(outcome.commit()),
             ));
         }
         Ok(Output::BatchResults(finish_batch_results(results)))
