@@ -11,13 +11,15 @@ use super::{JsonDocumentId, JsonValue};
 pub struct JsonWriteOutcome {
     commit: CommitOutcome,
     document_version: u64,
+    created: bool,
 }
 
 impl JsonWriteOutcome {
-    pub(crate) const fn new(commit: CommitOutcome, document_version: u64) -> Self {
+    pub(crate) const fn new(commit: CommitOutcome, document_version: u64, created: bool) -> Self {
         Self {
             commit,
             document_version,
+            created,
         }
     }
 
@@ -31,6 +33,13 @@ impl JsonWriteOutcome {
     /// Returns the JSON document version after the write.
     pub const fn document_version(self) -> u64 {
         self.document_version
+    }
+
+    #[must_use]
+    /// Returns true when the write created a new document (rather than mutating
+    /// an existing one). Computed by the engine so executors need no pre-read.
+    pub const fn created(self) -> bool {
+        self.created
     }
 }
 
@@ -311,17 +320,29 @@ impl JsonDeleteOutcome {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct JsonBatchSetItemOutcome {
     document_version: u64,
+    created: bool,
 }
 
 impl JsonBatchSetItemOutcome {
-    pub(crate) const fn new(document_version: u64) -> Self {
-        Self { document_version }
+    pub(crate) const fn new(document_version: u64, created: bool) -> Self {
+        Self {
+            document_version,
+            created,
+        }
     }
 
     #[must_use]
     /// Returns the document version after this entry.
     pub const fn document_version(self) -> u64 {
         self.document_version
+    }
+
+    #[must_use]
+    /// Returns true when this entry created a new document. A repeated document
+    /// id within one batch is an update from its second occurrence on; the
+    /// engine owns this classification so executors need no intra-batch tracking.
+    pub const fn created(self) -> bool {
+        self.created
     }
 }
 
@@ -396,9 +417,12 @@ mod tests {
         let value = value(serde_json::json!({"a": 1}));
         let id = doc_id("doc");
 
-        let write = JsonWriteOutcome::new(commit, 3);
+        let write = JsonWriteOutcome::new(commit, 3, true);
         assert_eq!(write.commit(), commit);
         assert_eq!(write.document_version(), 3);
+        assert!(write.created());
+        let overwrite = JsonWriteOutcome::new(commit, 4, false);
+        assert!(!overwrite.created());
 
         let versioned =
             JsonVersionedValue::new(value.clone(), commit.version(), commit.timestamp(), 3);
@@ -483,8 +507,10 @@ mod tests {
         assert!(!missing_delete.deleted());
         assert_eq!(missing_delete.commit(), None);
 
-        let set = JsonBatchSetOutcome::new(vec![JsonBatchSetItemOutcome::new(1)], Some(committed));
+        let set =
+            JsonBatchSetOutcome::new(vec![JsonBatchSetItemOutcome::new(1, true)], Some(committed));
         assert_eq!(set.results()[0].document_version(), 1);
+        assert!(set.results()[0].created());
         assert_eq!(set.commit(), Some(committed));
 
         let empty_set = JsonBatchSetOutcome::new(Vec::new(), None);

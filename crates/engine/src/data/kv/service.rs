@@ -15,8 +15,8 @@ use crate::persistence::{
 };
 
 use super::{
-    KvBatchDeleteOutcome, KvDeleteOutcome, KvHistory, KvHistoryRow, KvKey, KvListPage, KvSample,
-    KvScanRow, KvValue, KvVersionedValue, ProductSpace,
+    KvBatchDeleteOutcome, KvBatchPutOutcome, KvDeleteOutcome, KvHistory, KvHistoryRow, KvKey,
+    KvListPage, KvSample, KvScanRow, KvValue, KvVersionedValue, KvWriteOutcome, ProductSpace,
 };
 
 const KV_SCAN_RAW_PAGE_MIN: usize = 64;
@@ -46,12 +46,21 @@ impl<'a> KvService<'a> {
     }
 
     /// Writes a KV value.
-    pub fn put(&mut self, key: KvKey, value: KvValue) -> EngineResult<CommitOutcome> {
-        self.put_batch([(key, value)])
+    ///
+    /// The returned outcome carries the create-vs-update fact computed by the
+    /// engine, so callers never need a separate existence probe (rule 7).
+    pub fn put(&mut self, key: KvKey, value: KvValue) -> EngineResult<KvWriteOutcome> {
+        let outcome = self.put_batch([(key, value)])?;
+        let created = outcome.created().first().copied().unwrap_or(false);
+        Ok(KvWriteOutcome::new(outcome.commit(), created))
     }
 
     /// Writes multiple KV values in one commit.
-    pub fn put_batch<I>(&mut self, entries: I) -> EngineResult<CommitOutcome>
+    ///
+    /// The engine determines whether each key was a create or an update by
+    /// reading its latest visible state before the batch commits; duplicate keys
+    /// are rejected, so the per-input flags stay positional with the input.
+    pub fn put_batch<I>(&mut self, entries: I) -> EngineResult<KvBatchPutOutcome>
     where
         I: IntoIterator<Item = (KvKey, KvValue)>,
     {
@@ -59,12 +68,19 @@ impl<'a> KvService<'a> {
         let mut seen = BTreeSet::new();
         let iterator = entries.into_iter();
         let mut mutations = Vec::with_capacity(iterator.size_hint().0);
+        let mut created = Vec::with_capacity(iterator.size_hint().0);
         for (key, value) in iterator {
             let encoded_key = self.encode_batch_key(key, &mut seen)?;
             let address = RowAddress::new(record.storage_branch_id(), RowClass::Kv, encoded_key);
+            let existed = self
+                .persistence
+                .read_row(address.clone(), ReadSelector::Latest)?
+                .is_some_and(|row| !row.is_tombstone());
+            created.push(!existed);
             mutations.push(RowMutation::put(address, value.into_bytes()));
         }
-        self.commit_batch(&record, mutations)
+        let commit = self.commit_batch(&record, mutations)?;
+        Ok(KvBatchPutOutcome::new(commit, created))
     }
 
     /// Reads the latest visible KV value.

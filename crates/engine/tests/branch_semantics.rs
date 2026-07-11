@@ -267,7 +267,8 @@ fn historical_forks_resolve_version_and_timestamp_boundaries() {
         .kv(branch("default"), space("default"))
         .expect("default KV opens")
         .put(key(b"history"), value(b"one"))
-        .expect("first put succeeds");
+        .expect("first put succeeds")
+        .commit();
     database
         .kv(branch("default"), space("default"))
         .expect("default KV opens")

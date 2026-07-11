@@ -284,7 +284,8 @@ fn kv_batch_put_and_delete_are_single_commit_operations() {
             (key(b"batch-b"), value(b"value-b")),
             (key(b"batch-c"), value(b"value-c")),
         ])
-        .expect("batch put succeeds");
+        .expect("batch put succeeds")
+        .commit();
     assert_eq!(outcome.put_count(), 3);
     assert_eq!(outcome.delete_count(), 0);
 
@@ -489,7 +490,8 @@ fn kv_first_write_in_new_space_hides_control_rows_from_commit_counts() {
 
     let outcome = kv
         .put(key(b"first"), value(b"value"))
-        .expect("first tenant put succeeds");
+        .expect("first tenant put succeeds")
+        .commit();
     assert_eq!(outcome.put_count(), 1);
     assert_eq!(outcome.delete_count(), 0);
 
@@ -498,7 +500,8 @@ fn kv_first_write_in_new_space_hides_control_rows_from_commit_counts() {
             (key(b"second"), value(b"value-2")),
             (key(b"third"), value(b"value-3")),
         ])
-        .expect("tenant batch put succeeds");
+        .expect("tenant batch put succeeds")
+        .commit();
     assert_eq!(batch.put_count(), 2);
     assert_eq!(batch.delete_count(), 0);
 }
@@ -718,10 +721,12 @@ fn durable_reopen_preserves_kv_read_surface() {
             .expect("KV service opens");
         first = kv
             .put(key(b"alpha"), value(b"first"))
-            .expect("first put succeeds");
+            .expect("first put succeeds")
+            .commit();
         second = kv
             .put(key(b"alpha"), value(b"second"))
-            .expect("second put succeeds");
+            .expect("second put succeeds")
+            .commit();
         kv.put_batch([
             (key(b"prefix-a"), value(b"value-a")),
             (key(b"prefix-b"), value(b"value-b")),
@@ -826,10 +831,12 @@ fn write_alpha_history(kv: &mut KvService<'_>) -> AlphaHistory {
     let missing = key(b"missing");
     let first = kv
         .put(alpha.clone(), value(b"first"))
-        .expect("first put succeeds");
+        .expect("first put succeeds")
+        .commit();
     let second = kv
         .put(alpha.clone(), value(b"second"))
-        .expect("second put succeeds");
+        .expect("second put succeeds")
+        .commit();
     let removed = kv
         .delete(alpha.clone())
         .expect("delete commit succeeds")
@@ -837,7 +844,8 @@ fn write_alpha_history(kv: &mut KvService<'_>) -> AlphaHistory {
         .expect("delete committed");
     let third = kv
         .put(alpha.clone(), value(b"third"))
-        .expect("third put succeeds");
+        .expect("third put succeeds")
+        .commit();
     AlphaHistory {
         alpha,
         missing,
@@ -872,6 +880,7 @@ fn open_database_with_kv_shape() -> (Database, Timestamp) {
         );
         kv.put(key(b"app:005"), value(b"value-5"))
             .expect("tail put succeeds")
+            .commit()
             .timestamp()
     };
     database
@@ -972,7 +981,8 @@ fn seed_default_kv(
 ) -> (CommitOutcome, CommitOutcome, CommitOutcome) {
     let alpha_first = kv
         .put(keys.alpha.clone(), value(b"one"))
-        .expect("first put succeeds");
+        .expect("first put succeeds")
+        .commit();
     assert_eq!(alpha_first.put_count(), 1);
     assert_eq!(alpha_first.delete_count(), 0);
     assert_eq!(
@@ -991,17 +1001,20 @@ fn seed_default_kv(
 
     let beta_create = kv
         .put(keys.beta.clone(), value(b"beta"))
-        .expect("beta put succeeds");
+        .expect("beta put succeeds")
+        .commit();
     let alpha_second = kv
         .put(keys.alpha.clone(), value(b"two"))
-        .expect("second put succeeds");
+        .expect("second put succeeds")
+        .commit();
     let app_batch = kv
         .put_batch([
             (key(b"app:001"), value(b"value-1")),
             (key(b"app:003"), value(b"value-3")),
             (key(&[0, 1]), value(b"binary")),
         ])
-        .expect("batch put succeeds");
+        .expect("batch put succeeds")
+        .commit();
     assert_eq!(app_batch.put_count(), 3);
     assert_eq!(app_batch.delete_count(), 0);
     (alpha_second, beta_create, app_batch)

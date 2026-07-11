@@ -6,7 +6,7 @@ use super::{
     json_index_definition, json_index_name, json_list_output, json_path, json_sample_output,
     json_value, json_value_output, json_versioned_value, json_write_output,
     optional_json_document_id, optional_json_prefix, optional_limit, upsert_effect, usize_to_u64,
-    BTreeSet, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, Executor, ExecutorResult,
+    BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, Executor, ExecutorResult,
     JsonIndexType, JsonSetEntry, MaybeJsonValue, MaybeJsonVersionedValue, Output, PageInfo,
     Timestamp, DEFAULT_JSON_LIST_LIMIT,
 };
@@ -24,9 +24,12 @@ impl Executor {
         let path = json_path(path)?;
         let value = json_value(value)?;
         let mut service = self.json_service(branch, space)?;
-        let effect = upsert_effect(service.exists(&id)?);
         let outcome = service.set_or_create(id, &path, value)?;
-        Ok(json_write_output(key, effect, outcome.commit()))
+        Ok(json_write_output(
+            key,
+            upsert_effect(!outcome.created()),
+            outcome.commit(),
+        ))
     }
 
     pub(super) fn execute_json_get(
@@ -106,22 +109,16 @@ impl Executor {
         }
         let mut results = empty_json_batch_results(entries.len());
         let mut valid_entries = Vec::with_capacity(entries.len());
-        let mut written_docs = BTreeSet::new();
         for (index, entry) in entries.into_iter().enumerate() {
             let (key, path, value) = entry.into_parts();
-            let validation: ExecutorResult<(String, JsonSetEntry)> = (|| {
-                let id = json_document_id(key.clone())?;
+            let validation: ExecutorResult<JsonSetEntry> = (|| {
+                let id = json_document_id(key)?;
                 let path = json_path(&path)?;
                 let value = json_value(value)?;
-                Ok((key, JsonSetEntry::new(id, path, value)))
+                Ok(JsonSetEntry::new(id, path, value))
             })();
             match validation {
-                Ok((key, entry)) => {
-                    let existed = service.exists(&json_document_id(key.clone())?)?;
-                    let already_written = !written_docs.insert(key);
-                    let effect = upsert_effect(existed || already_written);
-                    valid_entries.push((index, effect, entry));
-                }
+                Ok(entry) => valid_entries.push((index, entry)),
                 Err(error) => {
                     results[index] = Some(json_batch_item_failed(usize_to_u64(index), error));
                 }
@@ -132,13 +129,16 @@ impl Executor {
         }
         let engine_entries = valid_entries
             .iter()
-            .map(|(_, _, entry)| entry.clone())
+            .map(|(_, entry)| entry.clone())
             .collect::<Vec<_>>();
+        // The engine owns create-vs-update per item, including intra-batch
+        // repeats (a document id written earlier in this batch is an update for
+        // its later entries), so the executor relays `created` with no pre-read.
         let outcome = service.batch_set_or_create(engine_entries)?;
-        for ((index, effect, _), item) in valid_entries.into_iter().zip(outcome.results()) {
+        for ((index, _), item) in valid_entries.into_iter().zip(outcome.results()) {
             results[index] = Some(json_batch_item_result(
                 usize_to_u64(index),
-                effect,
+                upsert_effect(!item.created()),
                 outcome.commit(),
                 Some(item.document_version()),
             ));
