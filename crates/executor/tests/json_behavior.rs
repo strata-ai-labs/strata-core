@@ -3,8 +3,9 @@
 use serde_json::{json, Value};
 use strata_engine::{CacheOpenOptions, Database};
 use strata_executor::{
-    BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, Bytes, Command, Executor,
-    ExecutorErrorClass, JsonIndexType, MutationEffectKind, Output, DEFAULT_BRANCH,
+    BatchItemStatus, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, BatchStatus, Bytes,
+    Command, Executor, ExecutorErrorClass, JsonIndexType, MutationEffectKind, Output,
+    DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -559,6 +560,50 @@ fn assert_json_mapping_outputs(outputs: &[Output]) {
     assert!(matches!(outputs[11], Output::JsonIndexDefinition(_)));
     assert!(matches!(outputs[12], Output::Bool(_)));
     assert!(matches!(outputs[13], Output::JsonIndexList { .. }));
+}
+
+#[test]
+fn json_batch_get_reports_missing_documents_as_misses() {
+    // A missing document in a batch read is a positional miss, not a
+    // success — matching kv batch-get. The outer batch is then partial.
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    executor
+        .execute(Command::JsonSet {
+            branch: None,
+            space: None,
+            key: "present".to_owned(),
+            path: "$".to_owned(),
+            value: json!({"name": "Ada"}),
+        })
+        .expect("set present document");
+
+    let output = executor
+        .execute(Command::JsonBatchGet {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonGetEntry::new("present", "$"),
+                BatchJsonGetEntry::new("absent", "$"),
+            ],
+        })
+        .expect("batch get succeeds");
+    let Output::JsonBatchGetResults(results) = output else {
+        panic!("unexpected batch get output: {output:?}");
+    };
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].status(), BatchItemStatus::Ok);
+    assert!(results[0].error().is_none());
+    assert_eq!(
+        results[1].status(),
+        BatchItemStatus::Miss,
+        "a missing document is a miss, not an ok"
+    );
+    assert!(results[1].error().is_none());
+    assert_eq!(
+        results.status(),
+        BatchStatus::Partial,
+        "a batch with a miss is partial, not ok"
+    );
 }
 
 #[test]

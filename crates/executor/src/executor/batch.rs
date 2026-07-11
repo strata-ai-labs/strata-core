@@ -124,9 +124,25 @@ pub(super) fn finish_json_batch_results(
 pub(super) fn json_batch_get_batch_result(
     results: Vec<JsonBatchGetItemResult>,
 ) -> BatchResult<JsonBatchGetItemResult> {
-    wrap_batch_items(BatchMode::Itemwise, results, |item| {
-        (false, None, None, item.error_status().cloned())
-    })
+    // Mirror kv_batch_get_result: a not-found document is a positional miss,
+    // not an ok, so the outer batch reads as partial rather than ok.
+    BatchResult::from_items(
+        BatchMode::Itemwise,
+        results
+            .into_iter()
+            .enumerate()
+            .map(|(index, result)| {
+                let index = usize_to_u64(index);
+                if let Some(error) = result.error_status().cloned() {
+                    BatchItem::failed(index, Some(result), error)
+                } else if result.found() {
+                    BatchItem::ok(index, false, None, None, result)
+                } else {
+                    BatchItem::miss(index, result)
+                }
+            })
+            .collect(),
+    )
 }
 
 pub(super) fn finish_json_batch_get_results(
@@ -169,9 +185,25 @@ pub(super) fn finish_vector_batch_results(
 pub(super) fn vector_batch_get_result(
     results: Vec<VectorBatchGetItemResult>,
 ) -> BatchResult<VectorBatchGetItemResult> {
-    wrap_batch_items(BatchMode::Itemwise, results, |item| {
-        (false, None, None, item.error_status().cloned())
-    })
+    // Mirror kv_batch_get_result: a not-found key is a positional miss, not
+    // an ok, so the outer batch reads as partial rather than ok.
+    BatchResult::from_items(
+        BatchMode::Itemwise,
+        results
+            .into_iter()
+            .enumerate()
+            .map(|(index, result)| {
+                let index = usize_to_u64(index);
+                if let Some(error) = result.error_status().cloned() {
+                    BatchItem::failed(index, Some(result), error)
+                } else if result.found() {
+                    BatchItem::ok(index, false, None, None, result)
+                } else {
+                    BatchItem::miss(index, result)
+                }
+            })
+            .collect(),
+    )
 }
 
 pub(super) fn empty_vector_batch_get_results(len: usize) -> Vec<Option<VectorBatchGetItemResult>> {
