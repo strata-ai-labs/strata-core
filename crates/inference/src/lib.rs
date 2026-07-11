@@ -204,7 +204,7 @@ impl FromStr for ProviderKind {
             "anthropic" => Ok(ProviderKind::Anthropic),
             "openai" => Ok(ProviderKind::OpenAI),
             "google" => Ok(ProviderKind::Google),
-            _ => Err(InferenceError::Provider(format!(
+            _ => Err(InferenceError::InvalidSpec(format!(
                 "unknown provider: {:?} (expected: local, anthropic, openai, google)",
                 s.trim()
             ))),
@@ -291,7 +291,9 @@ pub trait InferenceEngine: Send + std::fmt::Debug {
 pub fn parse_model_spec(spec: &str) -> Result<(ProviderKind, String), InferenceError> {
     let spec = spec.trim();
     if spec.is_empty() {
-        return Err(InferenceError::Provider("model spec is empty".to_string()));
+        return Err(InferenceError::InvalidSpec(
+            "model spec is empty".to_string(),
+        ));
     }
 
     // Split on first colon only
@@ -304,7 +306,7 @@ pub fn parse_model_spec(spec: &str) -> Result<(ProviderKind, String), InferenceE
 
     let model = model.trim();
     if model.is_empty() {
-        return Err(InferenceError::Provider(format!(
+        return Err(InferenceError::InvalidSpec(format!(
             "model name is empty in spec {:?}",
             spec
         )));

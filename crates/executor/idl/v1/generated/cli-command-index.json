@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "b62a6b7275a828d50968f0001c991420538b8a05269e3381c0388380255bf5be",
+    "checksum_sha256": "83402ff0c9242cec1f6d1cbe8bbffce68b04e0b3b08d1f69ea27bb1abf7525b3",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -3616,8 +3616,8 @@
           "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
-          "code": "inference.provider_unavailable",
-          "docs": "https://stratadb.org/e/inference.provider_unavailable"
+          "code": "inference.invalid_request",
+          "docs": "https://stratadb.org/e/inference.invalid_request"
         }
       ],
       "fixtures": {

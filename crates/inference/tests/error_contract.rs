@@ -172,3 +172,27 @@ fn public_error_surfaces_redact_provider_secrets() {
         );
     }
 }
+
+#[test]
+fn invalid_model_spec_is_invalid_input_not_a_retryable_provider_error() {
+    // A malformed model spec is caller input error, not a provider outage.
+    // Classifying it as the retryable `provider_unavailable` would invite a
+    // client to retry a request that can never succeed.
+    for spec in ["", "   ", "anthropic:", "bogus:model"] {
+        let error = strata_inference::parse_model_spec(spec).expect_err("invalid spec is rejected");
+        assert_eq!(
+            error.code(),
+            "inference.invalid_request",
+            "spec {spec:?} classified as invalid request"
+        );
+        assert_eq!(
+            error.class(),
+            InferenceErrorClass::InvalidInput,
+            "spec {spec:?} is caller input error"
+        );
+        assert!(
+            !error.retryable(),
+            "spec {spec:?} must not be retryable — retrying the same spec never helps"
+        );
+    }
+}

@@ -4184,8 +4184,8 @@
           "docs": "https://stratadb.org/e/not_found.engine.branch"
         },
         {
-          "code": "inference.provider_unavailable",
-          "docs": "https://stratadb.org/e/inference.provider_unavailable"
+          "code": "inference.invalid_request",
+          "docs": "https://stratadb.org/e/inference.invalid_request"
         }
       ],
       "fixtures": {

@@ -48,7 +48,7 @@ commands:
     response_model: InferenceCapability
     prose: commands/inference.capability.md
     errors+:
-      - inference.provider_unavailable
+      - inference.invalid_request
     fixtures:
       request: requests/v1/inference/capability.json
       response: responses/v1/inference/capability.json
