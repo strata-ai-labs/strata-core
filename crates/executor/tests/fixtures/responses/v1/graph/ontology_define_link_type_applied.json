@@ -1,0 +1,24 @@
+{
+  "data": {
+    "commit": {
+      "delete_count": 0,
+      "durable": false,
+      "put_count": 1,
+      "timestamp": 5,
+      "version": 5
+    },
+    "created": true,
+    "effect": {
+      "affected_count": 1,
+      "applied": true,
+      "kind": "created",
+      "matched": false
+    },
+    "graph": "social",
+    "kind": "link",
+    "timestamp": 5,
+    "type_name": "follows",
+    "version": 5
+  },
+  "type": "graph_ontology_write_result"
+}

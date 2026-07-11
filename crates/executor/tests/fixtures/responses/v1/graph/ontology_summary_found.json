@@ -1,0 +1,34 @@
+{
+  "data": {
+    "graph": "social",
+    "link_types": [
+      {
+        "cardinality": "many-to-many",
+        "edge_count": 0,
+        "name": "follows",
+        "source": "Person",
+        "target": "Person"
+      }
+    ],
+    "object_types": [
+      {
+        "name": "Person",
+        "node_count": 2,
+        "properties": {
+          "level": {
+            "required": false,
+            "value_type": "integer"
+          },
+          "name": {
+            "required": true,
+            "value_type": "string"
+          }
+        }
+      }
+    ],
+    "status": "draft",
+    "timestamp": 5,
+    "version": 5
+  },
+  "type": "graph_ontology_summary_result"
+}

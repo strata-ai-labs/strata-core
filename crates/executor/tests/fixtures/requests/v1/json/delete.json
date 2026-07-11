@@ -1,0 +1,5 @@
+{
+  "type": "json_delete",
+  "key": "user:ada",
+  "path": "$"
+}

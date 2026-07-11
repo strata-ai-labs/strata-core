@@ -26,3 +26,48 @@ response_models:
   - SearchResult<VectorMatch> + IndexDiagnostics
   - BatchResult<VectorMutationItem>
   - BatchResult<Maybe<VectorVersionedData>>
+  - MutationAck<JsonWrite>
+  - Maybe<JsonVersionedValue>
+  - MutationAck<JsonDelete>
+  - Maybe<Vec<JsonHistoryItem>>
+  - BatchResult<JsonMutationItem>
+  - BatchResult<Maybe<JsonValue>>
+  - SamplePage<JsonSampleItem>
+  - MutationAck<JsonIndexCreate>
+  - MutationAck<JsonIndexDrop>
+  - Page<JsonIndexDefinition, String>
+  - MutationAck<EventAppend>
+  - BatchResult<EventBatchAppendItem>
+  - Maybe<EventVersionedData>
+  - Page<EventVersionedData, u64>
+  - StatusValue<EventChainVerification>
+  - Page<BranchItem, String>
+  - StatusResponse<BranchItem>
+  - MutationAck<BranchItem>
+  - MutationAck<BranchDelete>
+  - MutationAck<SpaceCreate>
+  - MutationAck<SpaceDelete>
+  - MutationAck<GraphInfoData>
+  - MutationAck<GraphDelete>
+  - Maybe<GraphInfoData>
+  - MutationAck<GraphNodeWrite>
+  - Maybe<GraphNodeDataOutput>
+  - Page<GraphNodeDataOutput, String>
+  - MutationAck<GraphEdgeWrite>
+  - Maybe<GraphEdgeDataOutput>
+  - Page<GraphNeighborHit, String>
+  - Page<GraphBindingHit, String>
+  - BatchResult<GraphBatchItemResult>
+  - MutationAck<GraphOntologyWrite>
+  - MutationAck<GraphOntologyDelete>
+  - MutationAck<GraphOntologyFreeze>
+  - Maybe<GraphOntologyData>
+  - Maybe<GraphOntologySummaryData>
+  - AnalyticsResult<GraphWccData>
+  - AnalyticsResult<GraphLccData>
+  - AnalyticsResult<GraphSsspData>
+  - AnalyticsResult<GraphPagerankData>
+  - AnalyticsResult<GraphCdlpData>
+  - AnalyticsResult<GraphBfsData>
+  - MutationAck<GraphBulkInsert>
+  - MutationAck<GraphDeletePolicyApply>

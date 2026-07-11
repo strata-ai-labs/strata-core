@@ -1,0 +1,19 @@
+{
+  "data": {
+    "branch_id": "338a0c4e-73b4-5f8d-82bd-5f2846698908",
+    "created_at": 3,
+    "deleted_at": null,
+    "generation": 1,
+    "name": "feature-fork",
+    "parent": {
+      "branch_id": "00000000-0000-0000-0000-000000000000",
+      "fork_timestamp": null,
+      "fork_version": 3,
+      "generation": 1,
+      "name": "default"
+    },
+    "state_revision": 0,
+    "status": "active"
+  },
+  "type": "branch"
+}

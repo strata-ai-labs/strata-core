@@ -1,0 +1,9 @@
+{
+  "type": "graph_apply_delete_policy",
+  "target": {
+    "primitive": "kv",
+    "space": "default",
+    "key": "user:alice"
+  },
+  "policy": "detach"
+}

@@ -1,0 +1,14 @@
+{
+  "data": {
+    "graph": "social",
+    "node_id": "alice",
+    "object_type": "Person",
+    "properties": {
+      "name": "Alice",
+      "role": "eng"
+    },
+    "timestamp": 4,
+    "version": 4
+  },
+  "type": "graph_node_result"
+}

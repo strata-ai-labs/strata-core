@@ -1,0 +1,223 @@
+commands:
+  - id: json.set
+    kind: mutation.put
+    title: Set JSON value
+    input: Command::JsonSet
+    output: Output::JsonWriteResult
+    result: JsonWrite
+    prose: commands/json.set.md
+    errors+:
+      - invalid_argument.engine.json_path
+      - invalid_argument.engine.json_path_too_long
+      - invalid_argument.engine.json_path_not_found
+      - invalid_argument.engine.json_path_type
+      - invalid_argument.engine.json_value
+      - invalid_argument.engine.json_document_too_large
+      - invalid_argument.engine.json_document_too_deep
+      - invalid_argument.engine.json_array_too_large
+    fixtures:
+      request: requests/v1/json/set.json
+      response: responses/v1/json/set_applied.json
+  - id: json.get
+    kind: read.get
+    title: Get JSON value
+    input: Command::JsonGet
+    output: Output::JsonVersionedValue
+    outputs:
+      - Output::JsonValue
+      - Output::JsonVersionedValue
+    result: JsonVersionedValue
+    prose: commands/json.get.md
+    errors+:
+      - invalid_argument.engine.json_path
+      - invalid_argument.engine.json_path_too_long
+    fixtures:
+      request: requests/v1/json/get.json
+      response: responses/v1/json/get_versioned_found.json
+      responses:
+        - responses/v1/json/get_found.json
+      setup:
+        - requests/v1/json/set.json
+      cases:
+        - setup:
+            - requests/v1/json/set.json
+          request: requests/v1/json/get_as_of.json
+          response: responses/v1/json/get_found.json
+  - id: json.delete
+    kind: mutation.delete
+    title: Delete JSON value
+    input: Command::JsonDelete
+    output: Output::JsonDeleteResult
+    result: JsonDelete
+    prose: commands/json.delete.md
+    errors+:
+      - invalid_argument.engine.json_path
+      - invalid_argument.engine.json_path_too_long
+      - invalid_argument.engine.json_path_type
+    fixtures:
+      request: requests/v1/json/delete.json
+      response: responses/v1/json/delete_missing.json
+  - id: json.history
+    kind: read.history
+    title: Read JSON document history
+    input: Command::JsonGetv
+    output: Output::JsonVersionHistory
+    result: JsonHistoryItem
+    prose: commands/json.history.md
+    fixtures:
+      setup:
+        - requests/v1/json/set.json
+        - requests/v1/setup/json_set_user_age.json
+      request: requests/v1/json/history.json
+      response: responses/v1/json/history_found.json
+  - id: json.exists
+    kind: read.status
+    title: Check JSON document existence
+    input: Command::JsonExists
+    output: Output::Bool
+    result: bool
+    prose: commands/json.exists.md
+    fixtures:
+      setup:
+        - requests/v1/json/set.json
+      request: requests/v1/json/exists.json
+      response: responses/v1/status/bool_true.json
+  - id: json.batch_set
+    kind: batch.itemwise_mutation
+    title: Batch set JSON values
+    input: Command::JsonBatchSet
+    output: Output::JsonBatchResults
+    result: JsonMutationItem
+    prose: commands/json.batch_set.md
+    errors+:
+      - invalid_argument.engine.json_path
+      - invalid_argument.engine.json_path_too_long
+      - invalid_argument.engine.json_path_not_found
+      - invalid_argument.engine.json_path_type
+      - invalid_argument.engine.json_value
+      - invalid_argument.engine.json_document_too_large
+      - invalid_argument.engine.json_document_too_deep
+      - invalid_argument.engine.json_array_too_large
+    fixtures:
+      request: requests/v1/json/batch_set.json
+      response: responses/v1/json/batch_set_ok.json
+  - id: json.batch_get
+    kind: batch.itemwise_read
+    title: Batch get JSON values
+    input: Command::JsonBatchGet
+    output: Output::JsonBatchGetResults
+    result: Maybe<JsonValue>
+    prose: commands/json.batch_get.md
+    errors+:
+      - invalid_argument.engine.json_path
+      - invalid_argument.engine.json_path_too_long
+    fixtures:
+      setup:
+        - requests/v1/json/set.json
+      request: requests/v1/json/batch_get.json
+      response: responses/v1/json/batch_get_ok.json
+  - id: json.batch_delete
+    kind: batch.itemwise_mutation
+    title: Batch delete JSON values
+    input: Command::JsonBatchDelete
+    output: Output::JsonBatchResults
+    result: JsonMutationItem
+    prose: commands/json.batch_delete.md
+    errors+:
+      - invalid_argument.engine.json_path
+      - invalid_argument.engine.json_path_too_long
+      - invalid_argument.engine.json_path_type
+    fixtures:
+      setup:
+        - requests/v1/json/set.json
+      request: requests/v1/json/batch_delete.json
+      response: responses/v1/json/batch_delete_partial.json
+  - id: json.list
+    kind: read.page
+    title: List JSON document keys
+    input: Command::JsonList
+    output: Output::JsonListResult
+    result: String
+    response_model: Page<String, String>
+    prose: commands/json.list.md
+    fixtures:
+      setup:
+        - requests/v1/json/batch_set.json
+      request: requests/v1/json/list.json
+      response: responses/v1/json/list_page.json
+  - id: json.count
+    kind: read.status
+    title: Count JSON documents
+    input: Command::JsonCount
+    output: Output::Uint
+    result: u64
+    prose: commands/json.count.md
+    fixtures:
+      setup:
+        - requests/v1/json/batch_set.json
+      request: requests/v1/json/count.json
+      response: responses/v1/status/uint_count.json
+  - id: json.sample
+    kind: read.sample
+    title: Sample JSON documents
+    input: Command::JsonSample
+    output: Output::JsonSampleResult
+    result: JsonSampleItem
+    prose: commands/json.sample.md
+    fixtures:
+      setup:
+        - requests/v1/json/batch_set.json
+      request: requests/v1/json/sample.json
+      response: responses/v1/json/sample_page.json
+  - id: json.index.create
+    kind: mutation.create
+    title: Create JSON index
+    input: Command::JsonCreateIndex
+    output: Output::JsonIndexDefinition
+    result: JsonIndexCreate
+    prose: commands/json.index.create.md
+    wire_status: transitional
+    errors+:
+      - invalid_argument.engine.json_index_name
+      - invalid_argument.engine.json_index_name_reserved
+      - invalid_argument.engine.json_path
+      - invalid_argument.engine.json_path_too_long
+      - already_exists.engine.json_index
+    errors-:
+      - invalid_argument.engine.json_document_id
+    fixtures:
+      request: requests/v1/json/index_create.json
+      response: responses/v1/json/index_definition.json
+  - id: json.index.drop
+    kind: mutation.delete
+    title: Drop JSON index
+    input: Command::JsonDropIndex
+    output: Output::Bool
+    result: JsonIndexDrop
+    prose: commands/json.index.drop.md
+    wire_status: transitional
+    errors+:
+      - invalid_argument.engine.json_index_name
+      - invalid_argument.engine.json_index_name_reserved
+    errors-:
+      - invalid_argument.engine.json_document_id
+    fixtures:
+      setup:
+        - requests/v1/json/index_create.json
+      request: requests/v1/json/index_drop.json
+      response: responses/v1/status/bool_true.json
+  - id: json.index.list
+    kind: read.page
+    title: List JSON indexes
+    input: Command::JsonListIndexes
+    output: Output::JsonIndexList
+    result: JsonIndexDefinition
+    response_model: Page<JsonIndexDefinition, String>
+    prose: commands/json.index.list.md
+    errors-:
+      - invalid_argument.engine.json_document_id
+    fixtures:
+      setup:
+        - requests/v1/json/index_create.json
+      request: requests/v1/json/index_list.json
+      response: responses/v1/json/index_list.json

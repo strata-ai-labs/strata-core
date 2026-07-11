@@ -1,0 +1,280 @@
+{
+  "$defs": {
+    "CommitReceipt": {
+      "description": "Commit facts returned by mutating operations.",
+      "properties": {
+        "delete_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "durable": {
+          "type": "boolean"
+        },
+        "put_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "timestamp",
+        "durable",
+        "put_count",
+        "delete_count"
+      ],
+      "type": "object"
+    },
+    "GraphBindingPrimitive": {
+      "description": "Product primitive kind used by graph entity bindings.",
+      "oneOf": [
+        {
+          "const": "kv",
+          "description": "KV primitive.",
+          "type": "string"
+        },
+        {
+          "const": "json",
+          "description": "JSON primitive.",
+          "type": "string"
+        },
+        {
+          "const": "vector",
+          "description": "Vector primitive.",
+          "type": "string"
+        },
+        {
+          "const": "event",
+          "description": "Event primitive.",
+          "type": "string"
+        },
+        {
+          "const": "graph",
+          "description": "Graph primitive.",
+          "type": "string"
+        }
+      ]
+    },
+    "GraphBindingTarget": {
+      "description": "Typed product identity attached to a graph node.",
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "primitive": {
+          "$ref": "#/$defs/GraphBindingPrimitive"
+        },
+        "space": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "primitive",
+        "space",
+        "key"
+      ],
+      "type": "object"
+    },
+    "GraphDeletePolicy": {
+      "description": "Explicit policy for graph facts bound to a deleted entity.",
+      "oneOf": [
+        {
+          "const": "cascade",
+          "description": "Delete the bound graph nodes and their incident edges.",
+          "type": "string"
+        },
+        {
+          "const": "detach",
+          "description": "Preserve the graph nodes and remove their entity bindings.",
+          "type": "string"
+        },
+        {
+          "const": "keep_dangling",
+          "description": "Preserve the bindings; traversal reports the target's status.",
+          "type": "string"
+        }
+      ]
+    },
+    "MutationEffect": {
+      "description": "Normalized mutation effect facts.",
+      "properties": {
+        "affected_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/MutationEffectKind"
+        },
+        "matched": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "applied",
+        "kind",
+        "matched",
+        "affected_count"
+      ],
+      "type": "object"
+    },
+    "MutationEffectKind": {
+      "description": "High-level mutation effect for idempotent and conditional operations.",
+      "oneOf": [
+        {
+          "const": "created",
+          "description": "A new logical entity was created.",
+          "type": "string"
+        },
+        {
+          "const": "updated",
+          "description": "An existing logical entity was updated.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "An existing logical entity was deleted.",
+          "type": "string"
+        },
+        {
+          "const": "unchanged",
+          "description": "The operation matched but left state unchanged.",
+          "type": "string"
+        },
+        {
+          "const": "not_found",
+          "description": "The operation did not match a visible entity.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/graph.apply_delete_policy.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "graph.apply_delete_policy",
+  "request": {
+    "additionalProperties": false,
+    "description": "Applies an explicit delete policy to graph facts bound to an entity.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "policy": {
+        "$ref": "#/$defs/GraphDeletePolicy",
+        "description": "Policy to apply: `cascade`, `detach`, or `keep_dangling`."
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "target": {
+        "$ref": "#/$defs/GraphBindingTarget",
+        "description": "The bound entity target."
+      },
+      "type": {
+        "const": "graph_apply_delete_policy",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "target",
+      "policy"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Delete-policy application acknowledgement.",
+    "properties": {
+      "data": {
+        "properties": {
+          "commit": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CommitReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Commit receipt when rows changed."
+          },
+          "effect": {
+            "$ref": "#/$defs/MutationEffect",
+            "description": "Mutation effect facts."
+          },
+          "nodes_affected": {
+            "description": "How many bound nodes the policy covered.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "policy": {
+            "description": "Applied policy: `cascade`, `detach`, or `keep_dangling`.",
+            "type": "string"
+          },
+          "timestamp": {
+            "description": "Commit timestamp when rows changed.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "version": {
+            "description": "Commit version when rows changed.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "policy",
+          "nodes_affected",
+          "effect"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "graph_delete_policy_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

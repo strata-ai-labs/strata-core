@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "GraphAnalyticsBudget": {
+      "description": "Optional size bounds for one graph analytics snapshot (input form).\nUnset fields use the engine defaults.",
+      "properties": {
+        "max_edges": {
+          "description": "Maximum edge count admitted into the snapshot.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_nodes": {
+          "description": "Maximum node count admitted into the snapshot.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "GraphLccData": {
+      "description": "Local-clustering-coefficient result (wire form).",
+      "properties": {
+        "coefficients": {
+          "additionalProperties": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "object"
+        },
+        "graph": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "graph",
+        "coefficients"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/graph.analytics.lcc.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "graph.analytics.lcc",
+  "request": {
+    "additionalProperties": false,
+    "description": "Computes local clustering coefficients over a graph snapshot.",
+    "properties": {
+      "as_of": {
+        "description": "Optional timestamp in microseconds. Reads the graph state visible at that instant.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "budget": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/GraphAnalyticsBudget"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional snapshot size bounds. Defaults to the engine limits."
+      },
+      "graph": {
+        "description": "Graph name.",
+        "type": "string"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "graph_lcc",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "graph"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Local clustering coefficients computed over a graph snapshot.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/GraphLccData"
+      },
+      "type": {
+        "const": "graph_lcc_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

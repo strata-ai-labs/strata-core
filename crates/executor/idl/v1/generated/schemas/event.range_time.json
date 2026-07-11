@@ -1,0 +1,187 @@
+{
+  "$defs": {
+    "EventData": {
+      "description": "Event record payload and chain facts.",
+      "properties": {
+        "event_type": {
+          "type": "string"
+        },
+        "hash": {
+          "type": "string"
+        },
+        "payload": true,
+        "previous_hash": {
+          "type": "string"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sequence",
+        "event_type",
+        "payload",
+        "timestamp",
+        "previous_hash",
+        "hash"
+      ],
+      "type": "object"
+    },
+    "EventRangeDirection": {
+      "description": "Event range direction exposed through the command boundary.",
+      "oneOf": [
+        {
+          "const": "forward",
+          "description": "Increasing sequence or timestamp order.",
+          "type": "string"
+        },
+        {
+          "const": "reverse",
+          "description": "Decreasing sequence or timestamp order.",
+          "type": "string"
+        }
+      ]
+    },
+    "EventVersionedData": {
+      "description": "Event record with commit metadata.",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/EventData"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event",
+        "version",
+        "timestamp"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/event.range_time.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "event.range_time",
+  "request": {
+    "additionalProperties": false,
+    "description": "Reads an event timestamp range.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "direction": {
+        "$ref": "#/$defs/EventRangeDirection",
+        "description": "Result ordering."
+      },
+      "end_ts": {
+        "description": "Optional inclusive end timestamp in microseconds.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "event_type": {
+        "description": "Optional event type filter.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "limit": {
+        "description": "Optional item limit.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "start_ts": {
+        "description": "Inclusive start timestamp in microseconds.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "type": {
+        "const": "event_range_by_time",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "start_ts",
+      "direction"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Paginated event range.",
+    "properties": {
+      "data": {
+        "description": "Shared pagination continuation facts.",
+        "properties": {
+          "cursor": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "description": "Events in this page.",
+            "items": {
+              "$ref": "#/$defs/EventVersionedData"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "event_range_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

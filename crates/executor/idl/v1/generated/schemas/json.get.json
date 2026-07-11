@@ -1,0 +1,172 @@
+{
+  "$defs": {
+    "JsonVersionedValue": {
+      "description": "Stored JSON value with commit metadata.",
+      "properties": {
+        "document_version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "value": true,
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "value",
+        "version",
+        "timestamp",
+        "document_version"
+      ],
+      "type": "object"
+    },
+    "MaybeJsonValue": {
+      "description": "JSON point-read result that distinguishes absence from a stored JSON null.",
+      "properties": {
+        "found": {
+          "type": "boolean"
+        },
+        "value": true
+      },
+      "required": [
+        "found",
+        "value"
+      ],
+      "type": "object"
+    },
+    "MaybeJsonVersionedValue": {
+      "description": "JSON versioned point-read result that distinguishes absence from a stored JSON null.",
+      "properties": {
+        "found": {
+          "type": "boolean"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonVersionedValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "found"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/json.get.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "json.get",
+  "request": {
+    "additionalProperties": false,
+    "description": "Reads a JSON value at a document path.",
+    "properties": {
+      "as_of": {
+        "description": "Optional timestamp in microseconds.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "key": {
+        "description": "Document key.",
+        "type": "string"
+      },
+      "path": {
+        "description": "JSON path.",
+        "type": "string"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "json_get",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "key",
+      "path"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Optional JSON value with commit metadata.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/MaybeJsonVersionedValue"
+      },
+      "type": {
+        "const": "json_versioned_value",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  },
+  "responses": [
+    {
+      "description": "Optional JSON value.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/MaybeJsonValue"
+        },
+        "type": {
+          "const": "json_value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "Optional JSON value with commit metadata.",
+      "properties": {
+        "data": {
+          "$ref": "#/$defs/MaybeJsonVersionedValue"
+        },
+        "type": {
+          "const": "json_versioned_value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "data"
+      ],
+      "type": "object"
+    }
+  ]
+}

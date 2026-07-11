@@ -1,0 +1,5 @@
+{
+  "type": "event_append",
+  "event_type": "user.created",
+  "payload": {"name": "Ada"}
+}

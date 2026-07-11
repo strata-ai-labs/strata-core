@@ -1,0 +1,6 @@
+{
+  "type": "json_create_index",
+  "name": "by_name",
+  "field_path": "$.name",
+  "index_type": "tag"
+}

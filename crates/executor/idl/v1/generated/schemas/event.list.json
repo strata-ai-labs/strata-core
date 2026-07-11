@@ -1,0 +1,169 @@
+{
+  "$defs": {
+    "EventData": {
+      "description": "Event record payload and chain facts.",
+      "properties": {
+        "event_type": {
+          "type": "string"
+        },
+        "hash": {
+          "type": "string"
+        },
+        "payload": true,
+        "previous_hash": {
+          "type": "string"
+        },
+        "sequence": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sequence",
+        "event_type",
+        "payload",
+        "timestamp",
+        "previous_hash",
+        "hash"
+      ],
+      "type": "object"
+    },
+    "EventVersionedData": {
+      "description": "Event record with commit metadata.",
+      "properties": {
+        "event": {
+          "$ref": "#/$defs/EventData"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event",
+        "version",
+        "timestamp"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/event.list.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "event.list",
+  "request": {
+    "additionalProperties": false,
+    "description": "Lists events.",
+    "properties": {
+      "after_sequence": {
+        "description": "Optional exclusive sequence cursor.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "as_of": {
+        "description": "Optional timestamp in microseconds.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "event_type": {
+        "description": "Optional event type filter.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "limit": {
+        "description": "Optional item limit.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "event_list",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Event records.",
+    "properties": {
+      "data": {
+        "description": "Shared pagination continuation facts.",
+        "properties": {
+          "cursor": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "description": "Events in this page.",
+            "items": {
+              "$ref": "#/$defs/EventVersionedData"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "event_records",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "type": "graph_delete_object_type",
+  "graph": "social",
+  "name": "Robot"
+}

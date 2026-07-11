@@ -1,0 +1,6 @@
+{
+  "type": "graph_nodes_by_type",
+  "graph": "social",
+  "object_type": "Person",
+  "limit": 2
+}

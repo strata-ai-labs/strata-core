@@ -1,0 +1,149 @@
+commands:
+  - id: event.append
+    kind: mutation.create
+    title: Append event
+    input: Command::EventAppend
+    output: Output::EventAppendResult
+    result: EventAppend
+    prose: commands/event.append.md
+    errors+:
+      - invalid_argument.engine.event_type
+      - invalid_argument.engine.event_payload
+      - invalid_argument.engine.event_payload_too_large
+    fixtures:
+      request: requests/v1/event/append.json
+      response: responses/v1/event/append_applied.json
+  - id: event.batch_append
+    kind: batch.itemwise_mutation
+    title: Batch append events
+    input: Command::EventBatchAppend
+    output: Output::EventBatchAppendResults
+    result: EventBatchAppendItem
+    prose: commands/event.batch_append.md
+    errors+:
+      - invalid_argument.engine.event_batch
+      - invalid_argument.engine.event_type
+      - invalid_argument.engine.event_payload
+      - invalid_argument.engine.event_payload_too_large
+    fixtures:
+      request: requests/v1/event/batch_append.json
+      response: responses/v1/event/batch_append_ok.json
+  - id: event.get
+    kind: read.get
+    title: Get event
+    input: Command::EventGet
+    output: Output::EventRecord
+    result: EventVersionedData
+    prose: commands/event.get.md
+    fixtures:
+      setup:
+        - requests/v1/event/append.json
+      request: requests/v1/event/get.json
+      response: responses/v1/event/get_found.json
+      replay_skip: wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)
+  - id: event.exists
+    kind: read.status
+    title: Check event existence
+    input: Command::EventExists
+    output: Output::Bool
+    result: bool
+    prose: commands/event.exists.md
+    fixtures:
+      setup:
+        - requests/v1/event/append.json
+      request: requests/v1/event/exists.json
+      response: responses/v1/status/bool_true.json
+  - id: event.len
+    kind: read.status
+    title: Count events
+    input: Command::EventLen
+    output: Output::EventLength
+    result: u64
+    prose: commands/event.len.md
+    fixtures:
+      setup:
+        - requests/v1/event/append.json
+        - requests/v1/setup/event_append_updated.json
+      request: requests/v1/event/len.json
+      response: responses/v1/event/len_two.json
+  - id: event.range
+    kind: read.page
+    title: Read event sequence range
+    input: Command::EventRange
+    output: Output::EventRangeResult
+    result: EventVersionedData
+    response_model: Page<EventVersionedData, u64>
+    prose: commands/event.range.md
+    errors+:
+      - invalid_argument.engine.event_type
+      - invalid_argument.executor.limit
+    fixtures:
+      setup:
+        - requests/v1/event/append.json
+        - requests/v1/setup/event_append_updated.json
+      request: requests/v1/event/range.json
+      response: responses/v1/event/range_forward.json
+      replay_skip: wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)
+  - id: event.range_time
+    kind: read.page
+    title: Read event time range
+    input: Command::EventRangeByTime
+    output: Output::EventRangeResult
+    result: EventVersionedData
+    response_model: Page<EventVersionedData, u64>
+    prose: commands/event.range_time.md
+    errors+:
+      - invalid_argument.engine.event_type
+      - invalid_argument.executor.limit
+    fixtures:
+      setup:
+        - requests/v1/event/append.json
+        - requests/v1/setup/event_append_updated.json
+      request: requests/v1/event/range_time.json
+      response: responses/v1/event/range_time_forward.json
+      replay_skip: wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)
+  - id: event.types
+    kind: read.page
+    title: List event types
+    input: Command::EventListTypes
+    output: Output::EventTypeList
+    result: String
+    response_model: Page<String, String>
+    prose: commands/event.types.md
+    fixtures:
+      setup:
+        - requests/v1/event/append.json
+        - requests/v1/setup/event_append_updated.json
+      request: requests/v1/event/types.json
+      response: responses/v1/event/types.json
+  - id: event.list
+    kind: read.page
+    title: List events
+    input: Command::EventList
+    output: Output::EventRecords
+    result: EventVersionedData
+    response_model: Page<EventVersionedData, u64>
+    prose: commands/event.list.md
+    errors+:
+      - invalid_argument.engine.event_type
+      - invalid_argument.executor.limit
+    fixtures:
+      setup:
+        - requests/v1/event/append.json
+        - requests/v1/setup/event_append_updated.json
+      request: requests/v1/event/list.json
+      response: responses/v1/event/list_page.json
+      replay_skip: wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)
+  - id: event.verify_chain
+    kind: read.status
+    title: Verify event chain
+    input: Command::EventVerifyChain
+    output: Output::EventChainVerification
+    result: EventChainVerification
+    prose: commands/event.verify_chain.md
+    fixtures:
+      setup:
+        - requests/v1/event/append.json
+        - requests/v1/setup/event_append_updated.json
+      request: requests/v1/event/verify_chain.json
+      response: responses/v1/event/verify_chain_valid.json

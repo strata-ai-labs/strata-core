@@ -1,0 +1,24 @@
+{
+  "data": {
+    "commit": {
+      "delete_count": 0,
+      "durable": false,
+      "put_count": 0,
+      "timestamp": 4,
+      "version": 4
+    },
+    "deleted": true,
+    "deleted_rows": 0,
+    "effect": {
+      "affected_count": 1,
+      "applied": true,
+      "kind": "deleted",
+      "matched": true
+    },
+    "force": false,
+    "space": "tenant_a",
+    "timestamp": 4,
+    "version": 4
+  },
+  "type": "space_delete_result"
+}

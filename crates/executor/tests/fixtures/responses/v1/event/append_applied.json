@@ -1,22 +1,22 @@
 {
-  "type": "event_append_result",
   "data": {
-    "sequence": 0,
-    "event_type": "user.created",
+    "commit": {
+      "delete_count": 0,
+      "durable": false,
+      "put_count": 3,
+      "timestamp": 3,
+      "version": 3
+    },
     "effect": {
+      "affected_count": 1,
       "applied": true,
       "kind": "created",
-      "matched": false,
-      "affected_count": 1
+      "matched": false
     },
-    "commit": {
-      "version": 1,
-      "timestamp": 10,
-      "durable": true,
-      "put_count": 2,
-      "delete_count": 0
-    },
-    "version": 1,
-    "timestamp": 10
-  }
+    "event_type": "user.created",
+    "sequence": 0,
+    "timestamp": 3,
+    "version": 3
+  },
+  "type": "event_append_result"
 }

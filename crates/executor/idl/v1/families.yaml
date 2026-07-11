@@ -1,9 +1,34 @@
 families:
+  - id: branch
+    docs: /docs/branch/{op_path}
+    errors:
+      - invalid_argument.engine.branch_name
+      - invalid_argument.engine.branch_name_reserved
+  - id: event
+    docs: /docs/event/{op_path}
+    errors:
+      - invalid_argument.engine.product_space
+  - id: graph
+    docs: /docs/graph/{op_path}
+    errors:
+      - invalid_argument.engine.product_space
+      - invalid_argument.engine.graph_name
+      - not_found.engine.graph
+  - id: json
+    docs: /docs/json/{op_path}
+    errors:
+      - invalid_argument.engine.product_space
+      - invalid_argument.engine.json_document_id
   - id: kv
     docs: /docs/kv/{op_path}
     errors:
       - invalid_argument.engine.product_space
       - invalid_argument.engine.kv_key
+  - id: space
+    docs: /docs/space/{op_path}
+    errors:
+      - invalid_argument.engine.product_space
+      - invalid_argument.engine.product_space_reserved
   - id: vector
     docs: /docs/vector/{op_path}
     errors:

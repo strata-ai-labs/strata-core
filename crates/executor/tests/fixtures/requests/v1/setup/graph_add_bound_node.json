@@ -1,0 +1,12 @@
+{
+  "type": "graph_add_node",
+  "graph": "social",
+  "node_id": "alice-profile",
+  "binding": {
+    "target": {
+      "primitive": "kv",
+      "space": "default",
+      "key": "user:alice"
+    }
+  }
+}

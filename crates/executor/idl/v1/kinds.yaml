@@ -100,3 +100,17 @@ kinds:
     response_model: BatchResult<{result}>
     snippets:
       - itemwise-batch.md
+  - id: read.analytics
+    access: read
+    commit: none
+    response_model: AnalyticsResult<{result}>
+    snippets:
+      - analytics-result.md
+  - id: batch.atomic_mutation
+    cli_surface: wire
+    access: write
+    commit: commits_on_success
+    batch: atomic
+    response_model: BatchResult<{result}>
+    snippets:
+      - atomic-batch.md

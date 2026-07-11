@@ -1,0 +1,31 @@
+{
+  "data": {
+    "depths": {
+      "alice": 0,
+      "bob": 1,
+      "carol": 1
+    },
+    "edges": [
+      {
+        "dst": "bob",
+        "edge_type": "follows",
+        "src": "alice",
+        "weight": 1.0
+      },
+      {
+        "dst": "carol",
+        "edge_type": "knows",
+        "src": "alice",
+        "weight": 1.0
+      }
+    ],
+    "graph": "social",
+    "start": "alice",
+    "visited": [
+      "alice",
+      "bob",
+      "carol"
+    ]
+  },
+  "type": "graph_bfs_result"
+}

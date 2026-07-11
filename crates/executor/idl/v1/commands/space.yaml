@@ -1,0 +1,55 @@
+commands:
+  - id: space.list
+    kind: read.page
+    title: List product spaces
+    input: Command::SpaceList
+    output: Output::SpaceList
+    result: String
+    response_model: Page<String, String>
+    prose: commands/space.list.md
+    errors-:
+      - invalid_argument.engine.product_space
+      - invalid_argument.engine.product_space_reserved
+    fixtures:
+      setup:
+        - requests/v1/spaces/create.json
+      request: requests/v1/spaces/list.json
+      response: responses/v1/spaces/list.json
+  - id: space.create
+    kind: mutation.create
+    title: Create product space
+    input: Command::SpaceCreate
+    output: Output::SpaceCreateResult
+    result: SpaceCreate
+    prose: commands/space.create.md
+    fixtures:
+      request: requests/v1/spaces/create.json
+      response: responses/v1/spaces/create.json
+  - id: space.exists
+    kind: read.status
+    title: Check product space existence
+    input: Command::SpaceExists
+    output: Output::Bool
+    result: bool
+    prose: commands/space.exists.md
+    fixtures:
+      setup:
+        - requests/v1/spaces/create.json
+      request: requests/v1/spaces/exists.json
+      response: responses/v1/spaces/exists_true.json
+  - id: space.delete
+    kind: mutation.delete
+    title: Delete product space
+    input: Command::SpaceDelete
+    output: Output::SpaceDeleteResult
+    result: SpaceDelete
+    prose: commands/space.delete.md
+    errors+:
+      - invalid_argument.engine.space_delete_default
+      - failed_precondition.engine.space_not_empty
+      - invalid_argument.engine.space_delete_too_large
+    fixtures:
+      setup:
+        - requests/v1/spaces/create.json
+      request: requests/v1/spaces/delete.json
+      response: responses/v1/spaces/delete.json

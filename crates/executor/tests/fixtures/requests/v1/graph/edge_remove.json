@@ -1,0 +1,7 @@
+{
+  "type": "graph_remove_edge",
+  "graph": "social",
+  "src": "alice",
+  "edge_type": "follows",
+  "dst": "bob"
+}

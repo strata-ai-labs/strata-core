@@ -1,0 +1,567 @@
+commands:
+  - id: graph.create
+    kind: mutation.create
+    title: Create graph
+    input: Command::GraphCreate
+    output: Output::GraphInfo
+    result: GraphInfoData
+    response_model: MutationAck<GraphInfoData>
+    prose: commands/graph.create.md
+    errors+:
+      - already_exists.engine.graph
+      - invalid_argument.engine.graph_name_reserved
+    errors-:
+      - not_found.engine.graph
+    fixtures:
+      request: requests/v1/graph/create.json
+      response: responses/v1/graph/create_applied.json
+  - id: graph.delete
+    kind: mutation.delete
+    title: Delete graph
+    input: Command::GraphDelete
+    output: Output::GraphDeleteResult
+    result: GraphDelete
+    prose: commands/graph.delete.md
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+      request: requests/v1/graph/delete.json
+      response: responses/v1/graph/delete_applied.json
+  - id: graph.list
+    kind: read.page
+    title: List graphs
+    input: Command::GraphList
+    output: Output::GraphNamePage
+    result: String
+    response_model: Page<String, String>
+    prose: commands/graph.list.md
+    errors-:
+      - not_found.engine.graph
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+      request: requests/v1/graph/list.json
+      response: responses/v1/graph/list_page.json
+  - id: graph.meta
+    kind: read.get
+    title: Read graph metadata
+    input: Command::GraphGetMeta
+    output: Output::GraphInfoResult
+    result: GraphInfoData
+    prose: commands/graph.meta.md
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+        - requests/v1/graph/edge_add.json
+      request: requests/v1/graph/meta.json
+      response: responses/v1/graph/meta_found.json
+  - id: graph.node.add
+    kind: mutation.put
+    title: Add graph node
+    cli_path: ["graph", "add-node"]
+    input: Command::GraphAddNode
+    output: Output::GraphNodeWriteResult
+    result: GraphNodeWrite
+    prose: commands/graph.node.add.md
+    errors+:
+      - invalid_argument.engine.graph_node_id
+      - invalid_argument.engine.graph_properties
+      - invalid_argument.engine.graph_properties_too_large
+      - invalid_argument.engine.graph_type_hint
+      - invalid_argument.engine.graph_binding
+      - unsupported.engine.graph_binding_cross_branch
+      - failed_precondition.engine.graph_ontology_node_type
+      - failed_precondition.engine.graph_ontology_required_property
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+      request: requests/v1/graph/node_add.json
+      response: responses/v1/graph/node_add_applied.json
+  - id: graph.node.get
+    kind: read.get
+    title: Get graph node
+    cli_path: ["graph", "get-node"]
+    input: Command::GraphGetNode
+    output: Output::GraphNodeResult
+    result: GraphNodeDataOutput
+    prose: commands/graph.node.get.md
+    errors+:
+      - invalid_argument.engine.graph_node_id
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+      request: requests/v1/graph/node_get.json
+      response: responses/v1/graph/node_get_found.json
+  - id: graph.node.remove
+    kind: mutation.delete
+    title: Remove graph node
+    cli_path: ["graph", "remove-node"]
+    input: Command::GraphRemoveNode
+    output: Output::GraphDeleteResult
+    result: GraphDelete
+    prose: commands/graph.node.remove.md
+    errors+:
+      - invalid_argument.engine.graph_node_id
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+      request: requests/v1/graph/node_remove.json
+      response: responses/v1/graph/node_remove_applied.json
+  - id: graph.node.list
+    kind: read.page
+    title: List graph nodes
+    cli_path: ["graph", "list-nodes"]
+    input: Command::GraphListNodes
+    output: Output::GraphNodePage
+    result: GraphNodeDataOutput
+    response_model: Page<GraphNodeDataOutput, String>
+    prose: commands/graph.node.list.md
+    errors+:
+      - invalid_argument.engine.graph_node_id
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+        - requests/v1/setup/graph_add_carol.json
+      request: requests/v1/graph/node_list.json
+      response: responses/v1/graph/node_list_page.json
+  - id: graph.edge.add
+    kind: mutation.put
+    title: Add graph edge
+    cli_path: ["graph", "add-edge"]
+    input: Command::GraphAddEdge
+    output: Output::GraphEdgeWriteResult
+    result: GraphEdgeWrite
+    prose: commands/graph.edge.add.md
+    errors+:
+      - invalid_argument.engine.graph_node_id
+      - invalid_argument.engine.graph_edge_type
+      - invalid_argument.engine.graph_edge_type_reserved
+      - invalid_argument.engine.graph_edge_weight
+      - invalid_argument.engine.graph_edge_endpoint
+      - invalid_argument.engine.graph_properties
+      - invalid_argument.engine.graph_properties_too_large
+      - failed_precondition.engine.graph_negative_weight
+      - failed_precondition.engine.graph_ontology_edge_type
+      - failed_precondition.engine.graph_ontology_endpoint_type
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+      request: requests/v1/graph/edge_add.json
+      response: responses/v1/graph/edge_add_applied.json
+  - id: graph.edge.get
+    kind: read.get
+    title: Get graph edge
+    cli_path: ["graph", "get-edge"]
+    input: Command::GraphGetEdge
+    output: Output::GraphEdgeResult
+    result: GraphEdgeDataOutput
+    prose: commands/graph.edge.get.md
+    errors+:
+      - invalid_argument.engine.graph_node_id
+      - invalid_argument.engine.graph_edge_type
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+        - requests/v1/graph/edge_add.json
+      request: requests/v1/graph/edge_get.json
+      response: responses/v1/graph/edge_get_found.json
+  - id: graph.edge.remove
+    kind: mutation.delete
+    title: Remove graph edge
+    cli_path: ["graph", "remove-edge"]
+    input: Command::GraphRemoveEdge
+    output: Output::GraphDeleteResult
+    result: GraphDelete
+    prose: commands/graph.edge.remove.md
+    errors+:
+      - invalid_argument.engine.graph_node_id
+      - invalid_argument.engine.graph_edge_type
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+        - requests/v1/graph/edge_add.json
+      request: requests/v1/graph/edge_remove.json
+      response: responses/v1/graph/edge_remove_applied.json
+  - id: graph.neighbors
+    kind: read.page
+    title: List graph neighbors
+    input: Command::GraphNeighbors
+    output: Output::GraphNeighborPage
+    result: GraphNeighborHit
+    response_model: Page<GraphNeighborHit, String>
+    prose: commands/graph.neighbors.md
+    errors+:
+      - invalid_argument.engine.graph_node_id
+      - invalid_argument.engine.graph_edge_type
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+        - requests/v1/setup/graph_add_carol.json
+        - requests/v1/graph/edge_add.json
+        - requests/v1/setup/graph_edge_alice_carol.json
+      request: requests/v1/graph/neighbors.json
+      response: responses/v1/graph/neighbors_page.json
+  - id: graph.bindings
+    kind: read.page
+    title: List graph bindings for entity
+    cli_surface: wire
+    input: Command::GraphBindingsForEntity
+    output: Output::GraphBindingPage
+    result: GraphBindingHit
+    response_model: Page<GraphBindingHit, String>
+    prose: commands/graph.bindings.md
+    errors+:
+      - invalid_argument.engine.graph_binding
+    errors-:
+      - invalid_argument.engine.graph_name
+      - not_found.engine.graph
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/setup/graph_add_bound_node.json
+      request: requests/v1/graph/bindings_for_entity.json
+      response: responses/v1/graph/bindings_page.json
+  - id: graph.batch_write
+    kind: batch.atomic_mutation
+    title: Batch write graph
+    input: Command::GraphBatchWrite
+    output: Output::GraphBatchWriteResult
+    result: GraphBatchItemResult
+    prose: commands/graph.batch_write.md
+    errors+:
+      - invalid_argument.engine.graph_batch
+      - invalid_argument.engine.graph_node_id
+      - invalid_argument.engine.graph_edge_type
+      - invalid_argument.engine.graph_edge_endpoint
+      - failed_precondition.engine.graph_ontology_node_type
+      - failed_precondition.engine.graph_ontology_edge_type
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+      request: requests/v1/graph/batch_write.json
+      response: responses/v1/graph/batch_write_ok.json
+  - id: graph.ontology.define_object_type
+    kind: mutation.put
+    title: Define graph object type
+    input: Command::GraphDefineObjectType
+    output: Output::GraphOntologyWriteResult
+    result: GraphOntologyWrite
+    prose: commands/graph.ontology.define_object_type.md
+    errors+:
+      - invalid_argument.engine.graph_type_name
+      - invalid_argument.engine.graph_type_name_reserved
+      - invalid_argument.engine.graph_property_name
+      - failed_precondition.engine.graph_ontology_frozen
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+      request: requests/v1/graph/ontology_define_object_type.json
+      response: responses/v1/graph/ontology_define_object_type_applied.json
+  - id: graph.ontology.define_link_type
+    kind: mutation.put
+    title: Define graph link type
+    input: Command::GraphDefineLinkType
+    output: Output::GraphOntologyWriteResult
+    result: GraphOntologyWrite
+    prose: commands/graph.ontology.define_link_type.md
+    errors+:
+      - invalid_argument.engine.graph_type_name
+      - invalid_argument.engine.graph_type_name_reserved
+      - invalid_argument.engine.graph_property_name
+      - failed_precondition.engine.graph_ontology_frozen
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/ontology_define_object_type.json
+      request: requests/v1/graph/ontology_define_link_type.json
+      response: responses/v1/graph/ontology_define_link_type_applied.json
+  - id: graph.ontology.delete_object_type
+    kind: mutation.delete
+    title: Delete graph object type
+    input: Command::GraphDeleteObjectType
+    output: Output::GraphOntologyDeleteResult
+    result: GraphOntologyDelete
+    prose: commands/graph.ontology.delete_object_type.md
+    errors+:
+      - invalid_argument.engine.graph_type_name
+      - failed_precondition.engine.graph_ontology_frozen
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/setup/graph_define_object_type_robot.json
+      request: requests/v1/graph/ontology_delete_object_type.json
+      response: responses/v1/graph/ontology_delete_object_type_applied.json
+  - id: graph.ontology.delete_link_type
+    kind: mutation.delete
+    title: Delete graph link type
+    input: Command::GraphDeleteLinkType
+    output: Output::GraphOntologyDeleteResult
+    result: GraphOntologyDelete
+    prose: commands/graph.ontology.delete_link_type.md
+    errors+:
+      - invalid_argument.engine.graph_type_name
+      - failed_precondition.engine.graph_ontology_frozen
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/ontology_define_object_type.json
+        - requests/v1/setup/graph_define_link_type_knows.json
+      request: requests/v1/graph/ontology_delete_link_type.json
+      response: responses/v1/graph/ontology_delete_link_type_applied.json
+  - id: graph.ontology.freeze
+    kind: mutation.put
+    title: Freeze graph ontology
+    input: Command::GraphFreezeOntology
+    output: Output::GraphOntologyFreezeResult
+    result: GraphOntologyFreeze
+    prose: commands/graph.ontology.freeze.md
+    errors+:
+      - failed_precondition.engine.graph_ontology_freeze
+      - failed_precondition.engine.graph_ontology_frozen
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/ontology_define_object_type.json
+        - requests/v1/graph/ontology_define_link_type.json
+      request: requests/v1/graph/ontology_freeze.json
+      response: responses/v1/graph/ontology_freeze_applied.json
+  - id: graph.ontology.get
+    kind: read.get
+    title: Read graph ontology
+    input: Command::GraphGetOntology
+    output: Output::GraphOntologyResult
+    result: GraphOntologyData
+    prose: commands/graph.ontology.get.md
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/ontology_define_object_type.json
+        - requests/v1/graph/ontology_define_link_type.json
+        - requests/v1/graph/ontology_freeze.json
+      request: requests/v1/graph/ontology_get.json
+      response: responses/v1/graph/ontology_get_frozen.json
+  - id: graph.ontology.summary
+    kind: read.get
+    title: Read graph ontology summary
+    input: Command::GraphOntologySummary
+    output: Output::GraphOntologySummaryResult
+    result: GraphOntologySummaryData
+    prose: commands/graph.ontology.summary.md
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/ontology_define_object_type.json
+        - requests/v1/graph/ontology_define_link_type.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+      request: requests/v1/graph/ontology_summary.json
+      response: responses/v1/graph/ontology_summary_found.json
+  - id: graph.nodes_by_type
+    kind: read.page
+    title: List graph nodes by type
+    input: Command::GraphNodesByType
+    output: Output::GraphNodePage
+    result: GraphNodeDataOutput
+    response_model: Page<GraphNodeDataOutput, String>
+    prose: commands/graph.nodes_by_type.md
+    errors+:
+      - invalid_argument.engine.graph_type_name
+      - invalid_argument.engine.graph_node_id
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+        - requests/v1/setup/graph_add_carol.json
+      request: requests/v1/graph/nodes_by_type.json
+      response: responses/v1/graph/nodes_by_type_page.json
+  - id: graph.analytics.wcc
+    kind: read.analytics
+    title: Compute graph connected components
+    cli_path: ["graph", "wcc"]
+    input: Command::GraphWcc
+    output: Output::GraphWccResult
+    result: GraphWccData
+    prose: commands/graph.analytics.wcc.md
+    errors+:
+      - resource_exhausted.engine.graph_analytics_budget
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+        - requests/v1/setup/graph_add_carol.json
+        - requests/v1/setup/graph_add_dave.json
+        - requests/v1/graph/edge_add.json
+        - requests/v1/setup/graph_edge_bob_carol.json
+        - requests/v1/setup/graph_edge_carol_alice.json
+      request: requests/v1/graph/wcc.json
+      response: responses/v1/graph/wcc_components.json
+  - id: graph.analytics.lcc
+    kind: read.analytics
+    title: Compute graph clustering coefficients
+    cli_path: ["graph", "lcc"]
+    input: Command::GraphLcc
+    output: Output::GraphLccResult
+    result: GraphLccData
+    prose: commands/graph.analytics.lcc.md
+    errors+:
+      - resource_exhausted.engine.graph_analytics_budget
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+        - requests/v1/setup/graph_add_carol.json
+        - requests/v1/graph/edge_add.json
+        - requests/v1/setup/graph_edge_bob_carol.json
+        - requests/v1/setup/graph_edge_alice_carol.json
+      request: requests/v1/graph/lcc.json
+      response: responses/v1/graph/lcc_coefficients.json
+  - id: graph.analytics.sssp
+    kind: read.analytics
+    title: Compute graph shortest paths
+    cli_path: ["graph", "sssp"]
+    input: Command::GraphSssp
+    output: Output::GraphSsspResult
+    result: GraphSsspData
+    prose: commands/graph.analytics.sssp.md
+    errors+:
+      - invalid_argument.engine.graph_node_id
+      - not_found.engine.graph_node
+      - resource_exhausted.engine.graph_analytics_budget
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+        - requests/v1/setup/graph_add_carol.json
+        - requests/v1/graph/edge_add.json
+        - requests/v1/setup/graph_edge_bob_carol.json
+      request: requests/v1/graph/sssp.json
+      response: responses/v1/graph/sssp_distances.json
+  - id: graph.analytics.pagerank
+    kind: read.analytics
+    title: Compute graph pagerank
+    cli_path: ["graph", "pagerank"]
+    input: Command::GraphPagerank
+    output: Output::GraphPagerankResult
+    result: GraphPagerankData
+    prose: commands/graph.analytics.pagerank.md
+    errors+:
+      - invalid_argument.engine.graph_pagerank_options
+      - invalid_argument.engine.graph_personalization
+      - resource_exhausted.engine.graph_analytics_budget
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+        - requests/v1/setup/graph_add_carol.json
+        - requests/v1/setup/graph_add_dave.json
+        - requests/v1/graph/edge_add.json
+        - requests/v1/setup/graph_edge_bob_carol.json
+        - requests/v1/setup/graph_edge_carol_alice.json
+      request: requests/v1/graph/pagerank.json
+      response: responses/v1/graph/pagerank_ranks.json
+  - id: graph.analytics.cdlp
+    kind: read.analytics
+    title: Detect graph communities
+    cli_path: ["graph", "cdlp"]
+    input: Command::GraphCdlp
+    output: Output::GraphCdlpResult
+    result: GraphCdlpData
+    prose: commands/graph.analytics.cdlp.md
+    errors+:
+      - resource_exhausted.engine.graph_analytics_budget
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+        - requests/v1/setup/graph_add_carol.json
+        - requests/v1/setup/graph_add_dave.json
+        - requests/v1/graph/edge_add.json
+        - requests/v1/setup/graph_edge_bob_carol.json
+        - requests/v1/setup/graph_edge_carol_alice.json
+      request: requests/v1/graph/cdlp.json
+      response: responses/v1/graph/cdlp_labels.json
+  - id: graph.analytics.bfs
+    kind: read.analytics
+    title: Traverse graph breadth-first
+    cli_path: ["graph", "bfs"]
+    input: Command::GraphBfs
+    output: Output::GraphBfsResult
+    result: GraphBfsData
+    prose: commands/graph.analytics.bfs.md
+    errors+:
+      - invalid_argument.engine.graph_node_id
+      - invalid_argument.engine.graph_edge_type
+      - not_found.engine.graph_node
+      - resource_exhausted.engine.graph_analytics_budget
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/graph/node_add.json
+        - requests/v1/setup/graph_add_bob.json
+        - requests/v1/setup/graph_add_carol.json
+        - requests/v1/graph/edge_add.json
+        - requests/v1/setup/graph_edge_alice_carol.json
+      request: requests/v1/graph/bfs.json
+      response: responses/v1/graph/bfs_traversal.json
+  - id: graph.bulk_insert
+    kind: mutation.put
+    title: Bulk insert graph data
+    commit: chunked_commits
+    input: Command::GraphBulkInsert
+    output: Output::GraphBulkInsertResult
+    result: GraphBulkInsert
+    prose: commands/graph.bulk_insert.md
+    errors+:
+      - invalid_argument.engine.graph_node_id
+      - invalid_argument.engine.graph_edge_type
+      - invalid_argument.engine.graph_edge_weight
+      - invalid_argument.engine.graph_edge_endpoint
+      - invalid_argument.engine.graph_properties
+      - invalid_argument.engine.graph_properties_too_large
+      - failed_precondition.engine.graph_negative_weight
+      - failed_precondition.engine.graph_ontology_node_type
+      - failed_precondition.engine.graph_ontology_edge_type
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+      request: requests/v1/graph/bulk_insert.json
+      response: responses/v1/graph/bulk_insert_applied.json
+  - id: graph.apply_delete_policy
+    kind: mutation.bulk_delete
+    title: Apply graph delete policy
+    cli_surface: wire
+    input: Command::GraphApplyDeletePolicy
+    output: Output::GraphDeletePolicyResult
+    result: GraphDeletePolicyApply
+    prose: commands/graph.apply_delete_policy.md
+    errors+:
+      - invalid_argument.engine.graph_binding
+    errors-:
+      - invalid_argument.engine.graph_name
+      - not_found.engine.graph
+    fixtures:
+      setup:
+        - requests/v1/graph/create.json
+        - requests/v1/setup/graph_add_bound_node.json
+      request: requests/v1/graph/apply_delete_policy.json
+      response: responses/v1/graph/apply_delete_policy_applied.json

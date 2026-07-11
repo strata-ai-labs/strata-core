@@ -1,0 +1,5 @@
+{
+  "type": "graph_get_node",
+  "graph": "social",
+  "node_id": "alice"
+}

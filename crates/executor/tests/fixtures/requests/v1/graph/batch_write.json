@@ -1,0 +1,29 @@
+{
+  "type": "graph_batch_write",
+  "graph": "social",
+  "operations": [
+    {
+      "type": "upsert_node",
+      "node_id": "bw1",
+      "data": {}
+    },
+    {
+      "type": "upsert_node",
+      "node_id": "bw2",
+      "data": {
+        "properties": {
+          "team": "core"
+        }
+      }
+    },
+    {
+      "type": "upsert_edge",
+      "src": "bw1",
+      "edge_type": "link",
+      "dst": "bw2",
+      "data": {
+        "weight": 2.0
+      }
+    }
+  ]
+}

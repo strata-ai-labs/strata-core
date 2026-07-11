@@ -1,0 +1,24 @@
+{
+  "data": {
+    "commit": {
+      "delete_count": 0,
+      "durable": false,
+      "put_count": 1,
+      "timestamp": 5,
+      "version": 5
+    },
+    "deleted": true,
+    "effect": {
+      "affected_count": 1,
+      "applied": true,
+      "kind": "deleted",
+      "matched": true
+    },
+    "graph": "social",
+    "kind": "object",
+    "timestamp": 5,
+    "type_name": "Robot",
+    "version": 5
+  },
+  "type": "graph_ontology_delete_result"
+}

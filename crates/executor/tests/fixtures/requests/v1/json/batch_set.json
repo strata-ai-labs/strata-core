@@ -1,0 +1,19 @@
+{
+  "type": "json_batch_set",
+  "entries": [
+    {
+      "key": "user:ada",
+      "path": "$",
+      "value": {
+        "name": "Ada"
+      }
+    },
+    {
+      "key": "user:grace",
+      "path": "$",
+      "value": {
+        "name": "Grace"
+      }
+    }
+  ]
+}

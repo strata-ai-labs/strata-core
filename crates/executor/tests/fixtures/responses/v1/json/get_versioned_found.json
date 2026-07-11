@@ -1,0 +1,14 @@
+{
+  "data": {
+    "found": true,
+    "value": {
+      "document_version": 1,
+      "timestamp": 3,
+      "value": {
+        "name": "Ada"
+      },
+      "version": 3
+    }
+  },
+  "type": "json_versioned_value"
+}

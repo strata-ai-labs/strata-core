@@ -1,0 +1,17 @@
+{
+  "data": {
+    "event": {
+      "event_type": "user.created",
+      "hash": "ef66c75b71e03746e96de6ecd282d9f60bc6047f024fd87a22bcbb9eacb2775d",
+      "payload": {
+        "name": "Ada"
+      },
+      "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sequence": 0,
+      "timestamp": 1783742390446216
+    },
+    "timestamp": 3,
+    "version": 3
+  },
+  "type": "event_record"
+}

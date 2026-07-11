@@ -1,0 +1,15 @@
+{
+  "type": "graph_define_object_type",
+  "graph": "social",
+  "name": "Person",
+  "properties": {
+    "name": {
+      "value_type": "string",
+      "required": true
+    },
+    "level": {
+      "value_type": "integer",
+      "required": false
+    }
+  }
+}

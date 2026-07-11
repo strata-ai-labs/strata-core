@@ -1,0 +1,7 @@
+{
+  "type": "graph_get_edge",
+  "graph": "social",
+  "src": "alice",
+  "edge_type": "follows",
+  "dst": "bob"
+}

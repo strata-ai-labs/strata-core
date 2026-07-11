@@ -1,0 +1,5 @@
+{
+  "type": "json_get",
+  "key": "user:ada",
+  "path": "$"
+}

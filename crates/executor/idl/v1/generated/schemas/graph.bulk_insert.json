@@ -1,0 +1,311 @@
+{
+  "$defs": {
+    "CommitReceipt": {
+      "description": "Commit facts returned by mutating operations.",
+      "properties": {
+        "delete_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "durable": {
+          "type": "boolean"
+        },
+        "put_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "timestamp",
+        "durable",
+        "put_count",
+        "delete_count"
+      ],
+      "type": "object"
+    },
+    "GraphBindingPrimitive": {
+      "description": "Product primitive kind used by graph entity bindings.",
+      "oneOf": [
+        {
+          "const": "kv",
+          "description": "KV primitive.",
+          "type": "string"
+        },
+        {
+          "const": "json",
+          "description": "JSON primitive.",
+          "type": "string"
+        },
+        {
+          "const": "vector",
+          "description": "Vector primitive.",
+          "type": "string"
+        },
+        {
+          "const": "event",
+          "description": "Event primitive.",
+          "type": "string"
+        },
+        {
+          "const": "graph",
+          "description": "Graph primitive.",
+          "type": "string"
+        }
+      ]
+    },
+    "GraphBindingTarget": {
+      "description": "Typed product identity attached to a graph node.",
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "primitive": {
+          "$ref": "#/$defs/GraphBindingPrimitive"
+        },
+        "space": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "primitive",
+        "space",
+        "key"
+      ],
+      "type": "object"
+    },
+    "GraphBulkEdge": {
+      "description": "One edge in a bulk ingest (input form).",
+      "properties": {
+        "dst": {
+          "description": "Destination node id.",
+          "type": "string"
+        },
+        "edge_type": {
+          "description": "Edge type.",
+          "type": "string"
+        },
+        "properties": {
+          "description": "Optional JSON properties."
+        },
+        "src": {
+          "description": "Source node id.",
+          "type": "string"
+        },
+        "weight": {
+          "description": "Optional weight. Defaults to 1.0.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "src",
+        "edge_type",
+        "dst"
+      ],
+      "type": "object"
+    },
+    "GraphBulkNode": {
+      "description": "One node in a bulk ingest (input form).",
+      "properties": {
+        "binding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GraphEntityBinding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional entity binding."
+        },
+        "node_id": {
+          "description": "Node id.",
+          "type": "string"
+        },
+        "object_type": {
+          "description": "Optional declared object type.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "properties": {
+          "description": "Optional JSON properties."
+        }
+      },
+      "required": [
+        "node_id"
+      ],
+      "type": "object"
+    },
+    "GraphEntityBinding": {
+      "description": "Node-to-entity binding.",
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/GraphBindingTarget"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/graph.bulk_insert.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "graph.bulk_insert",
+  "request": {
+    "additionalProperties": false,
+    "description": "Ingests nodes and edges in chunked commits.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "chunk_size": {
+        "description": "Optional items-per-commit chunk size. Defaults to 512;\nvalues above 800 clamp so one chunk fits one storage commit.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "edges": {
+        "description": "Edges to upsert; endpoints must exist or arrive in `nodes`.",
+        "items": {
+          "$ref": "#/$defs/GraphBulkEdge"
+        },
+        "type": "array"
+      },
+      "graph": {
+        "description": "Graph name.",
+        "type": "string"
+      },
+      "nodes": {
+        "description": "Nodes to upsert (committed before edges).",
+        "items": {
+          "$ref": "#/$defs/GraphBulkNode"
+        },
+        "type": "array"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "graph_bulk_insert",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "graph"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Bulk ingest acknowledgement.",
+    "properties": {
+      "data": {
+        "properties": {
+          "commit": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CommitReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Final chunk's commit receipt, when any chunk committed."
+          },
+          "commits": {
+            "description": "How many chunk commits the ingest produced.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "edges_inserted": {
+            "description": "How many edge upserts the ingest applied.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "graph": {
+            "description": "Graph name.",
+            "type": "string"
+          },
+          "nodes_inserted": {
+            "description": "How many node upserts the ingest applied.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "timestamp": {
+            "description": "Final chunk's commit timestamp, when any chunk committed.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "version": {
+            "description": "Final chunk's commit version, when any chunk committed.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "graph",
+          "nodes_inserted",
+          "edges_inserted",
+          "commits"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "graph_bulk_insert_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

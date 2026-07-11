@@ -1,0 +1,13 @@
+{
+  "data": {
+    "direction": "outgoing",
+    "distances": {
+      "alice": 0.0,
+      "bob": 1.0,
+      "carol": 3.0
+    },
+    "graph": "social",
+    "source": "alice"
+  },
+  "type": "graph_sssp_result"
+}

@@ -11,6 +11,91 @@ use strata_executor::idl_tooling::{
     resolve_default_index, resolve_default_schemas, to_generated_cli_json, to_generated_json,
 };
 
+const REQUIRED_BRANCH: &[&str] = &[
+    "branch.list",
+    "branch.get",
+    "branch.create",
+    "branch.fork",
+    "branch.fork_at_version",
+    "branch.fork_at_timestamp",
+    "branch.delete",
+];
+
+const REQUIRED_SPACE: &[&str] = &["space.list", "space.create", "space.exists", "space.delete"];
+
+const REQUIRED_GRAPH: &[&str] = &[
+    "graph.create",
+    "graph.delete",
+    "graph.list",
+    "graph.meta",
+    "graph.node.add",
+    "graph.node.get",
+    "graph.node.remove",
+    "graph.node.list",
+    "graph.edge.add",
+    "graph.edge.get",
+    "graph.edge.remove",
+    "graph.neighbors",
+    "graph.bindings",
+    "graph.batch_write",
+    "graph.ontology.define_object_type",
+    "graph.ontology.define_link_type",
+    "graph.ontology.delete_object_type",
+    "graph.ontology.delete_link_type",
+    "graph.ontology.freeze",
+    "graph.ontology.get",
+    "graph.ontology.summary",
+    "graph.nodes_by_type",
+    "graph.analytics.wcc",
+    "graph.analytics.lcc",
+    "graph.analytics.sssp",
+    "graph.analytics.pagerank",
+    "graph.analytics.cdlp",
+    "graph.analytics.bfs",
+    "graph.bulk_insert",
+    "graph.apply_delete_policy",
+];
+
+const REQUIRED_EVENT: &[&str] = &[
+    "event.append",
+    "event.batch_append",
+    "event.get",
+    "event.exists",
+    "event.len",
+    "event.range",
+    "event.range_time",
+    "event.types",
+    "event.list",
+    "event.verify_chain",
+];
+
+const REQUIRED_JSON: &[&str] = &[
+    "json.set",
+    "json.get",
+    "json.delete",
+    "json.history",
+    "json.exists",
+    "json.batch_set",
+    "json.batch_get",
+    "json.batch_delete",
+    "json.list",
+    "json.count",
+    "json.sample",
+    "json.index.create",
+    "json.index.drop",
+    "json.index.list",
+];
+
+fn required_command_count() -> usize {
+    REQUIRED_BRANCH.len()
+        + REQUIRED_EVENT.len()
+        + REQUIRED_GRAPH.len()
+        + REQUIRED_JSON.len()
+        + REQUIRED_KV.len()
+        + REQUIRED_SPACE.len()
+        + REQUIRED_VECTOR.len()
+}
+
 const REQUIRED_KV: &[&str] = &[
     "kv.put",
     "kv.get",
@@ -58,10 +143,18 @@ fn kv_and_vector_overlay_has_required_command_coverage() {
         .map(|command| command.id.as_str())
         .collect();
 
-    for id in REQUIRED_KV.iter().chain(REQUIRED_VECTOR.iter()) {
+    for id in REQUIRED_BRANCH
+        .iter()
+        .chain(REQUIRED_EVENT.iter())
+        .chain(REQUIRED_GRAPH.iter())
+        .chain(REQUIRED_JSON.iter())
+        .chain(REQUIRED_KV.iter())
+        .chain(REQUIRED_SPACE.iter())
+        .chain(REQUIRED_VECTOR.iter())
+    {
         assert!(ids.contains(id), "missing required command `{id}`");
     }
-    assert_eq!(ids.len(), REQUIRED_KV.len() + REQUIRED_VECTOR.len());
+    assert_eq!(ids.len(), required_command_count());
 }
 
 #[test]
@@ -210,6 +303,8 @@ fn transitional_vector_collection_wire_shapes_are_explicit() {
     assert_eq!(
         transitional,
         BTreeSet::from([
+            "json.index.create",
+            "json.index.drop",
             "vector.collection.create",
             "vector.collection.delete",
             "vector.collection.stats"
@@ -293,10 +388,7 @@ fn generated_cli_command_index_is_fresh_and_deterministic() {
         .checksum_sha256
         .chars()
         .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()));
-    assert_eq!(
-        first.command_count,
-        REQUIRED_KV.len() + REQUIRED_VECTOR.len()
-    );
+    assert_eq!(first.command_count, required_command_count());
     assert_eq!(first.command_count, first.commands.len());
 
     let generated = to_generated_cli_json(&first).expect("CLI index serializes");
@@ -315,7 +407,15 @@ fn cli_command_index_has_required_coverage_and_lookup_tables() {
         .iter()
         .map(|command| command.id.as_str())
         .collect();
-    for id in REQUIRED_KV.iter().chain(REQUIRED_VECTOR.iter()) {
+    for id in REQUIRED_BRANCH
+        .iter()
+        .chain(REQUIRED_EVENT.iter())
+        .chain(REQUIRED_GRAPH.iter())
+        .chain(REQUIRED_JSON.iter())
+        .chain(REQUIRED_KV.iter())
+        .chain(REQUIRED_SPACE.iter())
+        .chain(REQUIRED_VECTOR.iter())
+    {
         assert!(ids.contains(id), "missing required CLI command `{id}`");
     }
 
@@ -399,10 +499,7 @@ fn cli_generation_reads_resolved_index_not_authored_yaml_or_prose() {
 
     let index =
         resolve_cli_index(temp.path()).expect("CLI index resolves from generated JSON only");
-    assert_eq!(
-        index.command_count,
-        REQUIRED_KV.len() + REQUIRED_VECTOR.len()
-    );
+    assert_eq!(index.command_count, required_command_count());
     assert_eq!(
         index.source.path,
         "crates/executor/idl/v1/generated/command-index.json"

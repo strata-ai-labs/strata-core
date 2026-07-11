@@ -1,0 +1,820 @@
+{
+  "$defs": {
+    "BatchItem8": {
+      "description": "Shared positional item wrapper for all public batch responses.",
+      "properties": {
+        "applied": {
+          "type": "boolean"
+        },
+        "commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "effect": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MutationEffect"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "index": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GraphBatchItemResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/$defs/BatchItemStatus"
+        }
+      },
+      "required": [
+        "index",
+        "status",
+        "applied"
+      ],
+      "type": "object"
+    },
+    "BatchItemStatus": {
+      "description": "Normalized positional item status within a batch response.",
+      "oneOf": [
+        {
+          "const": "ok",
+          "description": "The item was accepted by the command.",
+          "type": "string"
+        },
+        {
+          "const": "miss",
+          "description": "The item was valid, but the requested record was not found.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "The item failed validation or execution.",
+          "type": "string"
+        }
+      ]
+    },
+    "BatchMode": {
+      "description": "Batch execution semantics.",
+      "oneOf": [
+        {
+          "const": "atomic",
+          "description": "The command is one atomic unit. Invalid operations fail the whole\ncommand before item results are returned.",
+          "type": "string"
+        },
+        {
+          "const": "itemwise",
+          "description": "Valid items are applied together while invalid items are reported in\npositional item results.",
+          "type": "string"
+        }
+      ]
+    },
+    "BatchStatus": {
+      "description": "Normalized batch-level outcome status.",
+      "oneOf": [
+        {
+          "const": "ok",
+          "description": "The batch completed without item-level errors or mixed apply/no-op\nmutation results.",
+          "type": "string"
+        },
+        {
+          "const": "partial",
+          "description": "The batch contains a mix of successful and failed, missed, or no-op\nitems.",
+          "type": "string"
+        },
+        {
+          "const": "error",
+          "description": "Every item failed.",
+          "type": "string"
+        }
+      ]
+    },
+    "CommitOutcomeStatus": {
+      "description": "V1 commit outcome status.",
+      "oneOf": [
+        {
+          "const": "not_applicable",
+          "description": "The operation did not attempt a commit.",
+          "type": "string"
+        },
+        {
+          "const": "not_started",
+          "description": "Validation failed before commit machinery began.",
+          "type": "string"
+        },
+        {
+          "const": "definitely_not_committed",
+          "description": "Commit machinery began, but no commit became visible or durable.",
+          "type": "string"
+        },
+        {
+          "const": "maybe_committed",
+          "description": "Strata cannot prove whether the commit became visible or durable.",
+          "type": "string"
+        },
+        {
+          "const": "committed_post_commit_failed",
+          "description": "The commit succeeded, but a post-commit action failed.",
+          "type": "string"
+        }
+      ]
+    },
+    "CommitReceipt": {
+      "description": "Commit facts returned by mutating operations.",
+      "properties": {
+        "delete_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "durable": {
+          "type": "boolean"
+        },
+        "put_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "timestamp",
+        "durable",
+        "put_count",
+        "delete_count"
+      ],
+      "type": "object"
+    },
+    "ErrorClass": {
+      "description": "V1 public error class.",
+      "oneOf": [
+        {
+          "const": "not_found",
+          "description": "A requested object does not exist.",
+          "type": "string"
+        },
+        {
+          "const": "already_exists",
+          "description": "A create operation targeted an object that already exists.",
+          "type": "string"
+        },
+        {
+          "const": "invalid_argument",
+          "description": "Caller supplied malformed input or an invalid option.",
+          "type": "string"
+        },
+        {
+          "const": "failed_precondition",
+          "description": "Current database state or mode does not allow the operation.",
+          "type": "string"
+        },
+        {
+          "const": "access_denied",
+          "description": "Caller or backend lacks permission for the operation.",
+          "type": "string"
+        },
+        {
+          "const": "conflict",
+          "description": "Request conflicts with current state.",
+          "type": "string"
+        },
+        {
+          "const": "ambiguous_commit",
+          "description": "The system cannot prove whether a write committed.",
+          "type": "string"
+        },
+        {
+          "const": "history_unavailable",
+          "description": "Requested history is outside the retained window.",
+          "type": "string"
+        },
+        {
+          "const": "unsupported",
+          "description": "Feature, backend, mode, format, provider, or capability is unsupported.",
+          "type": "string"
+        },
+        {
+          "const": "resource_exhausted",
+          "description": "A capacity, quota, memory, disk, or configured limit was exceeded.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "Required service, backend, provider, lock, endpoint, or model is unavailable.",
+          "type": "string"
+        },
+        {
+          "const": "io",
+          "description": "Storage or filesystem IO failed without stronger classification.",
+          "type": "string"
+        },
+        {
+          "const": "corruption",
+          "description": "Durable state or provider output violates integrity expectations.",
+          "type": "string"
+        },
+        {
+          "const": "serialization",
+          "description": "Encoding, decoding, schema, format, or protocol conversion failed.",
+          "type": "string"
+        },
+        {
+          "const": "internal",
+          "description": "Strata hit an invariant failure.",
+          "type": "string"
+        }
+      ]
+    },
+    "ErrorDetail": {
+      "description": "Redacted structured error detail.",
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "value"
+      ],
+      "type": "object"
+    },
+    "ErrorStatus": {
+      "description": "Public V1 executor error status.",
+      "properties": {
+        "class": {
+          "$ref": "#/$defs/ErrorClass"
+        },
+        "code": {
+          "type": "string"
+        },
+        "commit_outcome": {
+          "$ref": "#/$defs/CommitOutcomeStatus"
+        },
+        "details": {
+          "items": {
+            "$ref": "#/$defs/ErrorDetail"
+          },
+          "type": "array"
+        },
+        "docs_url": {
+          "type": "string"
+        },
+        "hints": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "message": {
+          "type": "string"
+        },
+        "reference_id": {
+          "type": "string"
+        },
+        "retry_policy": {
+          "$ref": "#/$defs/RetryPolicy"
+        },
+        "retryable": {
+          "type": "boolean"
+        },
+        "suggested_fix": {
+          "type": "string"
+        },
+        "trace_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "class",
+        "code",
+        "retry_policy",
+        "retryable",
+        "commit_outcome",
+        "message",
+        "suggested_fix",
+        "docs_url",
+        "reference_id"
+      ],
+      "type": "object"
+    },
+    "GraphBatchItemResult": {
+      "description": "Positional graph batch write result.",
+      "properties": {
+        "commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "created": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "deleted": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "effect": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MutationEffect"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ErrorStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation": {
+          "type": "string"
+        },
+        "operation_index": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "operation_index",
+        "operation"
+      ],
+      "type": "object"
+    },
+    "GraphBatchOperation": {
+      "description": "One graph batch write operation.",
+      "oneOf": [
+        {
+          "description": "Upserts one node.",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/GraphNodeData",
+              "description": "Node payload."
+            },
+            "node_id": {
+              "description": "Node id.",
+              "type": "string"
+            },
+            "type": {
+              "const": "upsert_node",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "node_id",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Deletes one node and incident edges.",
+          "properties": {
+            "node_id": {
+              "description": "Node id.",
+              "type": "string"
+            },
+            "type": {
+              "const": "delete_node",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "node_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Upserts one edge.",
+          "properties": {
+            "data": {
+              "$ref": "#/$defs/GraphEdgeData",
+              "description": "Edge payload."
+            },
+            "dst": {
+              "description": "Destination node id.",
+              "type": "string"
+            },
+            "edge_type": {
+              "description": "Edge type.",
+              "type": "string"
+            },
+            "src": {
+              "description": "Source node id.",
+              "type": "string"
+            },
+            "type": {
+              "const": "upsert_edge",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "src",
+            "edge_type",
+            "dst",
+            "data"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Deletes one edge.",
+          "properties": {
+            "dst": {
+              "description": "Destination node id.",
+              "type": "string"
+            },
+            "edge_type": {
+              "description": "Edge type.",
+              "type": "string"
+            },
+            "src": {
+              "description": "Source node id.",
+              "type": "string"
+            },
+            "type": {
+              "const": "delete_edge",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "src",
+            "edge_type",
+            "dst"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "GraphBindingPrimitive": {
+      "description": "Product primitive kind used by graph entity bindings.",
+      "oneOf": [
+        {
+          "const": "kv",
+          "description": "KV primitive.",
+          "type": "string"
+        },
+        {
+          "const": "json",
+          "description": "JSON primitive.",
+          "type": "string"
+        },
+        {
+          "const": "vector",
+          "description": "Vector primitive.",
+          "type": "string"
+        },
+        {
+          "const": "event",
+          "description": "Event primitive.",
+          "type": "string"
+        },
+        {
+          "const": "graph",
+          "description": "Graph primitive.",
+          "type": "string"
+        }
+      ]
+    },
+    "GraphBindingTarget": {
+      "description": "Typed product identity attached to a graph node.",
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "primitive": {
+          "$ref": "#/$defs/GraphBindingPrimitive"
+        },
+        "space": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "primitive",
+        "space",
+        "key"
+      ],
+      "type": "object"
+    },
+    "GraphEdgeData": {
+      "description": "Graph edge input payload.",
+      "properties": {
+        "properties": true,
+        "weight": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "GraphEntityBinding": {
+      "description": "Node-to-entity binding.",
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/GraphBindingTarget"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "GraphNodeData": {
+      "description": "Graph node input payload.",
+      "properties": {
+        "binding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GraphEntityBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "object_type": {
+          "description": "Optional declared object type (validated against a frozen ontology).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "properties": true
+      },
+      "type": "object"
+    },
+    "MutationEffect": {
+      "description": "Normalized mutation effect facts.",
+      "properties": {
+        "affected_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/MutationEffectKind"
+        },
+        "matched": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "applied",
+        "kind",
+        "matched",
+        "affected_count"
+      ],
+      "type": "object"
+    },
+    "MutationEffectKind": {
+      "description": "High-level mutation effect for idempotent and conditional operations.",
+      "oneOf": [
+        {
+          "const": "created",
+          "description": "A new logical entity was created.",
+          "type": "string"
+        },
+        {
+          "const": "updated",
+          "description": "An existing logical entity was updated.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "An existing logical entity was deleted.",
+          "type": "string"
+        },
+        {
+          "const": "unchanged",
+          "description": "The operation matched but left state unchanged.",
+          "type": "string"
+        },
+        {
+          "const": "not_found",
+          "description": "The operation did not match a visible entity.",
+          "type": "string"
+        }
+      ]
+    },
+    "RetryPolicy": {
+      "description": "V1 retry policy.",
+      "oneOf": [
+        {
+          "const": "never",
+          "description": "Retrying the same request without changing input or state should not help.",
+          "type": "string"
+        },
+        {
+          "const": "after_state_change",
+          "description": "Retry may work after configuration, branch, backend, model, or permission changes.",
+          "type": "string"
+        },
+        {
+          "const": "same_request",
+          "description": "Retrying the exact same request is safe and may succeed.",
+          "type": "string"
+        },
+        {
+          "const": "idempotent_only",
+          "description": "Retry is safe only for proven-idempotent operations.",
+          "type": "string"
+        },
+        {
+          "const": "unknown",
+          "description": "Strata cannot safely classify retryability.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/graph.batch_write.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "graph.batch_write",
+  "request": {
+    "additionalProperties": false,
+    "description": "Applies graph mutations in one engine commit.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "graph": {
+        "description": "Graph name.",
+        "type": "string"
+      },
+      "operations": {
+        "description": "Batch operations.",
+        "items": {
+          "$ref": "#/$defs/GraphBatchOperation"
+        },
+        "type": "array"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "graph_batch_write",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "graph",
+      "operations"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Graph batch write acknowledgement.",
+    "properties": {
+      "data": {
+        "description": "Shared batch response wrapper for all public batch commands.",
+        "properties": {
+          "applied": {
+            "type": "boolean"
+          },
+          "commit": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CommitReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "graph": {
+            "description": "Graph name.",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/$defs/BatchItem8"
+            },
+            "type": "array"
+          },
+          "mode": {
+            "$ref": "#/$defs/BatchMode"
+          },
+          "status": {
+            "$ref": "#/$defs/BatchStatus"
+          }
+        },
+        "required": [
+          "graph",
+          "mode",
+          "status",
+          "applied",
+          "items"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "graph_batch_write_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

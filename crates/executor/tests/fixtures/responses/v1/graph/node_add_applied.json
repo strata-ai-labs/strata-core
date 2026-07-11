@@ -1,0 +1,23 @@
+{
+  "data": {
+    "commit": {
+      "delete_count": 0,
+      "durable": false,
+      "put_count": 1,
+      "timestamp": 4,
+      "version": 4
+    },
+    "created": true,
+    "effect": {
+      "affected_count": 1,
+      "applied": true,
+      "kind": "created",
+      "matched": false
+    },
+    "graph": "social",
+    "node_id": "alice",
+    "timestamp": 4,
+    "version": 4
+  },
+  "type": "graph_node_write_result"
+}

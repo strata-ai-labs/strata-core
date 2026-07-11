@@ -1,0 +1,55 @@
+{
+  "$id": "https://stratadb.org/idl/v1/schemas/json.exists.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "json.exists",
+  "request": {
+    "additionalProperties": false,
+    "description": "Checks whether a JSON document exists.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "key": {
+        "description": "Document key.",
+        "type": "string"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "json_exists",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "key"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Boolean result.",
+    "properties": {
+      "data": {
+        "type": "boolean"
+      },
+      "type": {
+        "const": "bool",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

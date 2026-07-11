@@ -1,0 +1,230 @@
+{
+  "$defs": {
+    "CommitReceipt": {
+      "description": "Commit facts returned by mutating operations.",
+      "properties": {
+        "delete_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "durable": {
+          "type": "boolean"
+        },
+        "put_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "timestamp",
+        "durable",
+        "put_count",
+        "delete_count"
+      ],
+      "type": "object"
+    },
+    "MutationEffect": {
+      "description": "Normalized mutation effect facts.",
+      "properties": {
+        "affected_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/MutationEffectKind"
+        },
+        "matched": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "applied",
+        "kind",
+        "matched",
+        "affected_count"
+      ],
+      "type": "object"
+    },
+    "MutationEffectKind": {
+      "description": "High-level mutation effect for idempotent and conditional operations.",
+      "oneOf": [
+        {
+          "const": "created",
+          "description": "A new logical entity was created.",
+          "type": "string"
+        },
+        {
+          "const": "updated",
+          "description": "An existing logical entity was updated.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "An existing logical entity was deleted.",
+          "type": "string"
+        },
+        {
+          "const": "unchanged",
+          "description": "The operation matched but left state unchanged.",
+          "type": "string"
+        },
+        {
+          "const": "not_found",
+          "description": "The operation did not match a visible entity.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/graph.node.remove.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "graph.node.remove",
+  "request": {
+    "additionalProperties": false,
+    "description": "Deletes a graph node and incident edges.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "graph": {
+        "description": "Graph name.",
+        "type": "string"
+      },
+      "node_id": {
+        "description": "Node id.",
+        "type": "string"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "graph_remove_node",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "graph",
+      "node_id"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Graph delete acknowledgement.",
+    "properties": {
+      "data": {
+        "properties": {
+          "commit": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CommitReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Commit receipt when a delete was applied."
+          },
+          "deleted": {
+            "description": "True when a visible graph fact was deleted.",
+            "type": "boolean"
+          },
+          "dst": {
+            "description": "Deleted edge destination for edge deletes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "edge_type": {
+            "description": "Deleted edge type for edge deletes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effect": {
+            "$ref": "#/$defs/MutationEffect",
+            "description": "Mutation effect facts."
+          },
+          "graph": {
+            "description": "Graph name.",
+            "type": "string"
+          },
+          "node_id": {
+            "description": "Deleted node id for node deletes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "src": {
+            "description": "Deleted edge source for edge deletes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timestamp": {
+            "description": "Commit timestamp when a delete was applied.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "version": {
+            "description": "Commit version when a delete was applied.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "graph",
+          "deleted",
+          "effect"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "graph_delete_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

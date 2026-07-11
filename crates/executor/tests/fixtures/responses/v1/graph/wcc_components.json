@@ -1,0 +1,13 @@
+{
+  "data": {
+    "component_count": 2,
+    "components": {
+      "alice": "alice",
+      "bob": "alice",
+      "carol": "alice",
+      "dave": "dave"
+    },
+    "graph": "social"
+  },
+  "type": "graph_wcc_result"
+}

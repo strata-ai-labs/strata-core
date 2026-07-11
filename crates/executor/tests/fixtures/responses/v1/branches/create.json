@@ -1,0 +1,13 @@
+{
+  "data": {
+    "branch_id": "dc42122c-83b7-5436-89bc-9ffa4299697c",
+    "created_at": 3,
+    "deleted_at": null,
+    "generation": 1,
+    "name": "feature",
+    "parent": null,
+    "state_revision": 0,
+    "status": "active"
+  },
+  "type": "branch"
+}

@@ -1,0 +1,6 @@
+{
+  "type": "graph_bfs",
+  "graph": "social",
+  "start": "alice",
+  "max_depth": 2
+}

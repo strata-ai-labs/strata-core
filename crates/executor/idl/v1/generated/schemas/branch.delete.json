@@ -1,0 +1,282 @@
+{
+  "$defs": {
+    "BranchCleanupItem": {
+      "description": "Cleanup facts for branch deletion.",
+      "properties": {
+        "protected_tables": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "releasable_tables": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "removed_refs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "removed_refs",
+        "releasable_tables",
+        "protected_tables"
+      ],
+      "type": "object"
+    },
+    "BranchItem": {
+      "description": "Branch summary exposed through the command boundary.",
+      "properties": {
+        "branch_id": {
+          "type": "string"
+        },
+        "created_at": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "deleted_at": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "generation": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BranchParentItem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state_revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "status": {
+          "$ref": "#/$defs/BranchStatus"
+        }
+      },
+      "required": [
+        "name",
+        "branch_id",
+        "generation",
+        "status",
+        "state_revision"
+      ],
+      "type": "object"
+    },
+    "BranchParentItem": {
+      "description": "Fork parent facts exposed through the command boundary.",
+      "properties": {
+        "branch_id": {
+          "type": "string"
+        },
+        "fork_timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "fork_version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "generation": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "branch_id",
+        "generation",
+        "fork_version"
+      ],
+      "type": "object"
+    },
+    "BranchStatus": {
+      "description": "Branch status exposed through the command boundary.",
+      "oneOf": [
+        {
+          "const": "active",
+          "description": "Branch accepts reads and writes.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "Branch was deleted and is hidden from normal listing.",
+          "type": "string"
+        }
+      ]
+    },
+    "MutationEffect": {
+      "description": "Normalized mutation effect facts.",
+      "properties": {
+        "affected_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/MutationEffectKind"
+        },
+        "matched": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "applied",
+        "kind",
+        "matched",
+        "affected_count"
+      ],
+      "type": "object"
+    },
+    "MutationEffectKind": {
+      "description": "High-level mutation effect for idempotent and conditional operations.",
+      "oneOf": [
+        {
+          "const": "created",
+          "description": "A new logical entity was created.",
+          "type": "string"
+        },
+        {
+          "const": "updated",
+          "description": "An existing logical entity was updated.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "An existing logical entity was deleted.",
+          "type": "string"
+        },
+        {
+          "const": "unchanged",
+          "description": "The operation matched but left state unchanged.",
+          "type": "string"
+        },
+        {
+          "const": "not_found",
+          "description": "The operation did not match a visible entity.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/branch.delete.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "branch.delete",
+  "request": {
+    "additionalProperties": false,
+    "description": "Deletes an active branch.",
+    "properties": {
+      "branch": {
+        "description": "Branch name.",
+        "type": "string"
+      },
+      "type": {
+        "const": "branch_delete",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "branch"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Branch deletion result.",
+    "properties": {
+      "data": {
+        "properties": {
+          "branch": {
+            "$ref": "#/$defs/BranchItem",
+            "description": "Deleted branch summary."
+          },
+          "cleanup": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/BranchCleanupItem"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Cleanup facts."
+          },
+          "deleted": {
+            "description": "True when the branch was deleted.",
+            "type": "boolean"
+          },
+          "effect": {
+            "$ref": "#/$defs/MutationEffect",
+            "description": "Mutation effect facts."
+          },
+          "generation_after": {
+            "description": "Generation after delete.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "generation_before": {
+            "description": "Generation before delete.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "deleted",
+          "effect",
+          "branch"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "branch_delete_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

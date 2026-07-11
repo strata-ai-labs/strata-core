@@ -4,6 +4,4414 @@
   "generator_version": "strata-executor-idl.1",
   "commands": [
     {
+      "id": "branch.create",
+      "family": "branch",
+      "op": "create",
+      "kind": "mutation.create",
+      "title": "Create empty branch",
+      "summary": "Create a new empty root branch.",
+      "description": "Creates an empty root branch with no parent and no data. This is not a fork: the new branch starts from nothing, and its `parent` is null. Use `branch.fork` to start from an existing branch's data. Creating a name that already exists fails with `already_exists.engine.branch`; names reserved for engine control data are rejected.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/branch/create",
+      "cli": {
+        "path": [
+          "branch",
+          "create"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_branch_create",
+        "description": "Use this when the user wants a fresh branch that shares no history with any existing branch."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::BranchCreate",
+      "output": "Output::Branch",
+      "outputs": [
+        "Output::Branch"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<BranchItem>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name_reserved"
+        },
+        {
+          "code": "already_exists.engine.branch",
+          "docs": "https://stratadb.org/e/already_exists.engine.branch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/create.json",
+        "response": "responses/v1/branches/create.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.create.md"
+      }
+    },
+    {
+      "id": "branch.delete",
+      "family": "branch",
+      "op": "delete",
+      "kind": "mutation.delete",
+      "title": "Delete branch",
+      "summary": "Delete an active branch and release its storage claims.",
+      "description": "Deletes an active branch and reports the deleted branch summary, generation facts, and storage cleanup counts. The `default` branch refuses deletion with `invalid_argument.engine.branch_delete`. There is no merge in V1: work on a fork is either kept by continuing on that branch or discarded by deleting it.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/branch/delete",
+      "cli": {
+        "path": [
+          "branch",
+          "delete"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_branch_delete",
+        "description": "Use this when the user wants to remove a branch. The default branch cannot be deleted."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::BranchDelete",
+      "output": "Output::BranchDeleteResult",
+      "outputs": [
+        "Output::BranchDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<BranchDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name_reserved"
+        },
+        {
+          "code": "invalid_argument.engine.branch_delete",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_delete"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/delete.json",
+        "response": "responses/v1/branches/delete.json",
+        "setup": [
+          "requests/v1/branches/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.delete.md"
+      }
+    },
+    {
+      "id": "branch.fork",
+      "family": "branch",
+      "op": "fork",
+      "kind": "mutation.create",
+      "title": "Fork branch from current head",
+      "summary": "Fork a new branch from the current head of a source branch.",
+      "description": "Forks a new branch from the source branch's current head. The new branch sees all data visible on the source at fork time; later writes on either branch stay isolated. The returned branch summary records the parent name, fork version, and generation.\n\nOn the CLI, all three fork commands share the single verb `strata branch fork <SOURCE> <BRANCH>`: with no flags it runs this command, while `--version` routes to `branch.fork_at_version` and `--timestamp` routes to `branch.fork_at_timestamp` (both wire-surface commands).\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/branch/fork",
+      "cli": {
+        "path": [
+          "branch",
+          "fork"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_branch_fork",
+        "description": "Use this when the user wants to branch off the latest state of an existing branch."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::BranchForkCurrent",
+      "output": "Output::Branch",
+      "outputs": [
+        "Output::Branch"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<BranchItem>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name_reserved"
+        },
+        {
+          "code": "already_exists.engine.branch",
+          "docs": "https://stratadb.org/e/already_exists.engine.branch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/fork.json",
+        "response": "responses/v1/branches/fork.json",
+        "setup": [
+          "requests/v1/kv/put.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.fork.md"
+      }
+    },
+    {
+      "id": "branch.fork_at_timestamp",
+      "family": "branch",
+      "op": "fork_at_timestamp",
+      "kind": "mutation.create",
+      "title": "Fork branch at timestamp",
+      "summary": "Fork a new branch from a retained source timestamp.",
+      "description": "Forks a new branch anchored at a retained source timestamp (microseconds, on Strata's logical commit clock). The engine resolves the timestamp to the covering retained commit; the returned parent lineage records both the fork timestamp and the resolved fork version. A timestamp outside retained history fails with `history_unavailable.engine.persistence_history`.\n\nThis command has no dedicated CLI verb: the CLI expresses it as `strata branch fork <SOURCE> <BRANCH> --timestamp <TIMESTAMP>` (one shared `branch fork` verb routes to all three fork commands, so only `branch.fork` owns the CLI path). It remains fully reachable through the generic wire surface — `strata command run`, MCP, and SDKs.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/branch/fork_at_timestamp",
+      "cli": {
+        "path": [
+          "branch",
+          "fork-at-timestamp"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_branch_fork_at_timestamp",
+        "description": "Use this when the user wants to branch from an existing branch as of a point in time."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::BranchForkAtTimestamp",
+      "output": "Output::Branch",
+      "outputs": [
+        "Output::Branch"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<BranchItem>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name_reserved"
+        },
+        {
+          "code": "already_exists.engine.branch",
+          "docs": "https://stratadb.org/e/already_exists.engine.branch"
+        },
+        {
+          "code": "history_unavailable.engine.persistence_history",
+          "docs": "https://stratadb.org/e/history_unavailable.engine.persistence_history"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/fork_at_timestamp.json",
+        "response": "responses/v1/branches/fork_at_timestamp.json",
+        "setup": [
+          "requests/v1/kv/put.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.fork_at_timestamp.md"
+      }
+    },
+    {
+      "id": "branch.fork_at_version",
+      "family": "branch",
+      "op": "fork_at_version",
+      "kind": "mutation.create",
+      "title": "Fork branch at version",
+      "summary": "Fork a new branch from a retained source commit version.",
+      "description": "Forks a new branch anchored at a retained commit version of the source branch, giving time-travel semantics: the new branch sees exactly the data visible at that version. A version outside retained history fails with `history_unavailable.engine.persistence_history`.\n\nThis command has no dedicated CLI verb: the CLI expresses it as `strata branch fork <SOURCE> <BRANCH> --version <VERSION>` (one shared `branch fork` verb routes to all three fork commands, so only `branch.fork` owns the CLI path). It remains fully reachable through the generic wire surface — `strata command run`, MCP, and SDKs.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/branch/fork_at_version",
+      "cli": {
+        "path": [
+          "branch",
+          "fork-at-version"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_branch_fork_at_version",
+        "description": "Use this when the user wants to branch from a specific historical commit version of an existing branch."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::BranchForkAtVersion",
+      "output": "Output::Branch",
+      "outputs": [
+        "Output::Branch"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<BranchItem>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name_reserved"
+        },
+        {
+          "code": "already_exists.engine.branch",
+          "docs": "https://stratadb.org/e/already_exists.engine.branch"
+        },
+        {
+          "code": "history_unavailable.engine.persistence_history",
+          "docs": "https://stratadb.org/e/history_unavailable.engine.persistence_history"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/fork_at_version.json",
+        "response": "responses/v1/branches/fork_at_version.json",
+        "setup": [
+          "requests/v1/kv/put.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.fork_at_version.md"
+      }
+    },
+    {
+      "id": "branch.get",
+      "family": "branch",
+      "op": "get",
+      "kind": "read.status",
+      "title": "Read one branch",
+      "summary": "Read one branch summary by name.",
+      "description": "Reads the summary for one branch: name, deterministic branch id, generation, status, parent lineage, and logical creation version. A branch that does not exist is a `not_found.engine.branch` error, not an empty result.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/branch/get",
+      "cli": {
+        "path": [
+          "branch",
+          "get"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_branch_get",
+        "description": "Use this when the user asks about a specific branch's status, lineage, or fork point."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::BranchGet",
+      "output": "Output::Branch",
+      "outputs": [
+        "Output::Branch"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<BranchItem>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name_reserved"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/get.json",
+        "response": "responses/v1/branches/get.json",
+        "setup": [
+          "requests/v1/branches/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.get.md"
+      }
+    },
+    {
+      "id": "branch.list",
+      "family": "branch",
+      "op": "list",
+      "kind": "read.page",
+      "title": "List branches",
+      "summary": "List active branches with their lineage facts.",
+      "description": "Lists every active branch as a terminal page. Each item carries the branch name, deterministic branch id, generation, status, parent lineage (fork version and timestamp when forked), and logical creation version.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/branch/list",
+      "cli": {
+        "path": [
+          "branch",
+          "list"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_branch_list",
+        "description": "Use this when the user wants to see all branches in the database."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::BranchList",
+      "output": "Output::Branches",
+      "outputs": [
+        "Output::Branches"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<BranchItem, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/branches/list.json",
+        "response": "responses/v1/branches/list.json",
+        "setup": [
+          "requests/v1/branches/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/branch.yaml",
+        "prose": "commands/branch.list.md"
+      }
+    },
+    {
+      "id": "event.append",
+      "family": "event",
+      "op": "append",
+      "kind": "mutation.create",
+      "title": "Append event",
+      "summary": "Append one event to the branch event log.",
+      "description": "Appends one event to the selected branch and space. Strata assigns the next sequence number, stamps the event with its append timestamp, and links it into the tamper-evident hash chain. Events are immutable once appended.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/event/append",
+      "cli": {
+        "path": [
+          "event",
+          "append"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_append",
+        "description": "Use this when the user wants to record, log, or emit a single application event with a type and JSON payload."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::EventAppend",
+      "output": "Output::EventAppendResult",
+      "outputs": [
+        "Output::EventAppendResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<EventAppend>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.engine.event_payload",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_payload"
+        },
+        {
+          "code": "invalid_argument.engine.event_payload_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_payload_too_large"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/append.json",
+        "response": "responses/v1/event/append_applied.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.append.md"
+      }
+    },
+    {
+      "id": "event.batch_append",
+      "family": "event",
+      "op": "batch_append",
+      "kind": "batch.itemwise_mutation",
+      "title": "Batch append events",
+      "summary": "Append multiple events in one commit.",
+      "description": "Appends multiple events to the selected branch and space in one engine commit. Sequences are assigned in entry order. Entries that fail validation report a positional item error while valid entries still append.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/event/batch_append",
+      "cli": {
+        "path": [
+          "event",
+          "batch-append"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_event_batch_append",
+        "description": "Use this when the user wants to record several events atomically in a single engine commit."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::EventBatchAppend",
+      "output": "Output::EventBatchAppendResults",
+      "outputs": [
+        "Output::EventBatchAppendResults"
+      ],
+      "wire_status": "stable",
+      "response_model": "BatchResult<EventBatchAppendItem>",
+      "commit": "itemwise_shared_commit",
+      "pagination": "none",
+      "batch": "itemwise",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_batch",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_batch"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.engine.event_payload",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_payload"
+        },
+        {
+          "code": "invalid_argument.engine.event_payload_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_payload_too_large"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/batch_append.json",
+        "response": "responses/v1/event/batch_append_ok.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.batch_append.md"
+      }
+    },
+    {
+      "id": "event.exists",
+      "family": "event",
+      "op": "exists",
+      "kind": "read.status",
+      "title": "Check event existence",
+      "summary": "Check whether an event sequence exists.",
+      "description": "Checks whether one event sequence exists in the selected branch and space without returning the record.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/event/exists",
+      "cli": {
+        "path": [
+          "event",
+          "exists"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_exists",
+        "description": "Use this when the user wants to test whether a specific event sequence number is present without reading the record."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventExists",
+      "output": "Output::Bool",
+      "outputs": [
+        "Output::Bool"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusValue<bool>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/exists.json",
+        "response": "responses/v1/status/bool_true.json",
+        "setup": [
+          "requests/v1/event/append.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.exists.md"
+      }
+    },
+    {
+      "id": "event.get",
+      "family": "event",
+      "op": "get",
+      "kind": "read.get",
+      "title": "Get event",
+      "summary": "Read one event by sequence number.",
+      "description": "Reads one event from the selected branch and space by sequence number. The optional timestamp reads the record visible at that commit time. The record carries its payload, append timestamp, and hash-chain facts.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/event/get",
+      "cli": {
+        "path": [
+          "event",
+          "get"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_get",
+        "description": "Use this when the user wants to fetch a single event record by its sequence number."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventGet",
+      "output": "Output::EventRecord",
+      "outputs": [
+        "Output::EventRecord"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<EventVersionedData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/get.json",
+        "response": "responses/v1/event/get_found.json",
+        "setup": [
+          "requests/v1/event/append.json"
+        ],
+        "replay_skip": "wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.get.md"
+      }
+    },
+    {
+      "id": "event.len",
+      "family": "event",
+      "op": "len",
+      "kind": "read.status",
+      "title": "Count events",
+      "summary": "Count visible events in the log.",
+      "description": "Counts events visible in the selected branch and space. The optional timestamp counts the events visible at that commit time.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/event/len",
+      "cli": {
+        "path": [
+          "event",
+          "len"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_len",
+        "description": "Use this when the user wants the number of events in the event log, optionally at a historical point in time."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventLen",
+      "output": "Output::EventLength",
+      "outputs": [
+        "Output::EventLength"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusValue<u64>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/len.json",
+        "response": "responses/v1/event/len_two.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.len.md"
+      }
+    },
+    {
+      "id": "event.list",
+      "family": "event",
+      "op": "list",
+      "kind": "read.page",
+      "title": "List events",
+      "summary": "List events with optional type filter and cursor.",
+      "description": "Lists events from the selected branch and space in sequence order. An optional event type narrows the results, the sequence cursor continues a previous page, and the optional timestamp reads the log visible at that commit time.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/event/list",
+      "cli": {
+        "path": [
+          "event",
+          "list"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_list",
+        "description": "Use this when the user wants to page through events, optionally filtered by event type, using a sequence cursor."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventList",
+      "output": "Output::EventRecords",
+      "outputs": [
+        "Output::EventRecords"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<EventVersionedData, u64>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.executor.limit",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.limit"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/list.json",
+        "response": "responses/v1/event/list_page.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ],
+        "replay_skip": "wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.list.md"
+      }
+    },
+    {
+      "id": "event.range",
+      "family": "event",
+      "op": "range",
+      "kind": "read.page",
+      "title": "Read event sequence range",
+      "summary": "Read a range of events by sequence number.",
+      "description": "Reads events from the selected branch and space by sequence range. The start sequence is inclusive and the optional end sequence is exclusive; reverse direction walks backward from the start sequence. An optional event type narrows the results.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/event/range",
+      "cli": {
+        "path": [
+          "event",
+          "range"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_range",
+        "description": "Use this when the user wants events between two sequence numbers, optionally filtered by event type, in forward or reverse order."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventRange",
+      "output": "Output::EventRangeResult",
+      "outputs": [
+        "Output::EventRangeResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<EventVersionedData, u64>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.executor.limit",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.limit"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/range.json",
+        "response": "responses/v1/event/range_forward.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ],
+        "replay_skip": "wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.range.md"
+      }
+    },
+    {
+      "id": "event.range_time",
+      "family": "event",
+      "op": "range_time",
+      "kind": "read.page",
+      "title": "Read event time range",
+      "summary": "Read a range of events by occurrence time.",
+      "description": "Reads events from the selected branch and space whose append timestamps fall inside an inclusive microsecond window. This queries when events occurred; historical log states are the timestamped read commands' job. An optional event type narrows the results.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/event/range_time",
+      "cli": {
+        "path": [
+          "event",
+          "range-time"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_range_time",
+        "description": "Use this when the user wants events whose append timestamps fall inside a time window, optionally filtered by event type."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventRangeByTime",
+      "output": "Output::EventRangeResult",
+      "outputs": [
+        "Output::EventRangeResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<EventVersionedData, u64>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.event_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.event_type"
+        },
+        {
+          "code": "invalid_argument.executor.limit",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.limit"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/range_time.json",
+        "response": "responses/v1/event/range_time_forward.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ],
+        "replay_skip": "wall-clock event timestamps are hashed into event content; outputs never reproduce (see engine next_event_timestamp)"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.range_time.md"
+      }
+    },
+    {
+      "id": "event.types",
+      "family": "event",
+      "op": "types",
+      "kind": "read.page",
+      "title": "List event types",
+      "summary": "List distinct event types in the log.",
+      "description": "Lists the distinct event types visible in the selected branch and space in sorted order. The optional timestamp lists the types visible at that commit time.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/event/types",
+      "cli": {
+        "path": [
+          "event",
+          "types"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_types",
+        "description": "Use this when the user wants the set of event types recorded in the event log."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventListTypes",
+      "output": "Output::EventTypeList",
+      "outputs": [
+        "Output::EventTypeList"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<String, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/types.json",
+        "response": "responses/v1/event/types.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.types.md"
+      }
+    },
+    {
+      "id": "event.verify_chain",
+      "family": "event",
+      "op": "verify_chain",
+      "kind": "read.status",
+      "title": "Verify event chain",
+      "summary": "Verify event log density and hash linkage.",
+      "description": "Verifies that the visible event log in the selected branch and space is dense and hash-linked: sequences are contiguous from zero, the genesis record links to the all-zeros hash, and every record's hash matches its content and predecessor.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/event/verify_chain",
+      "cli": {
+        "path": [
+          "event",
+          "verify-chain"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_event_verify_chain",
+        "description": "Use this when the user wants to audit the event log's integrity by checking sequence density and the hash chain."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::EventVerifyChain",
+      "output": "Output::EventChainVerification",
+      "outputs": [
+        "Output::EventChainVerification"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusValue<EventChainVerification>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/event/verify_chain.json",
+        "response": "responses/v1/event/verify_chain_valid.json",
+        "setup": [
+          "requests/v1/event/append.json",
+          "requests/v1/setup/event_append_updated.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/event.yaml",
+        "prose": "commands/event.verify_chain.md"
+      }
+    },
+    {
+      "id": "graph.analytics.bfs",
+      "family": "graph",
+      "op": "analytics.bfs",
+      "kind": "read.analytics",
+      "title": "Traverse graph breadth-first",
+      "summary": "Run a bounded breadth-first traversal.",
+      "description": "Runs a breadth-first traversal from a start node over a consistent snapshot, bounded by `max_depth` (default 100) and `max_nodes` (default 10000). Returns visited node ids in traversal order, a depth per node, and the tree edges in discovery order. Direction defaults to `outgoing`; an optional edge-type list restricts every hop. The start node must exist (`not_found.engine.graph_node`).\n\nAnalytics commands compute over a consistent snapshot of the visible graph and return a complete result payload in one response. They accept optional snapshot budgets and an `as_of` timestamp for time travel; results are deterministic for a fixed graph state.",
+      "docs": "/docs/graph/analytics/bfs",
+      "cli": {
+        "path": [
+          "graph",
+          "bfs"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_analytics_bfs",
+        "description": "Use this when the user wants to explore outward from a node level by level - reachability, hop distance, or a bounded expansion with depth, node, and edge-type limits."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphBfs",
+      "output": "Output::GraphBfsResult",
+      "outputs": [
+        "Output::GraphBfsResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "AnalyticsResult<GraphBfsData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type"
+        },
+        {
+          "code": "not_found.engine.graph_node",
+          "docs": "https://stratadb.org/e/not_found.engine.graph_node"
+        },
+        {
+          "code": "resource_exhausted.engine.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/bfs.json",
+        "response": "responses/v1/graph/bfs_traversal.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json",
+          "requests/v1/graph/edge_add.json",
+          "requests/v1/setup/graph_edge_alice_carol.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.analytics.bfs.md"
+      }
+    },
+    {
+      "id": "graph.analytics.cdlp",
+      "family": "graph",
+      "op": "analytics.cdlp",
+      "kind": "read.analytics",
+      "title": "Detect graph communities",
+      "summary": "Detect communities via label propagation.",
+      "description": "Detects communities by label propagation over a consistent snapshot: every node repeatedly adopts the most common label among its neighbors until labels stabilize or the iteration bound (default 10) is reached. Every node maps to its community representative node id. Propagation direction defaults to `both`. Accepts an optional snapshot budget and `as_of` for time travel.\n\nAnalytics commands compute over a consistent snapshot of the visible graph and return a complete result payload in one response. They accept optional snapshot budgets and an `as_of` timestamp for time travel; results are deterministic for a fixed graph state.",
+      "docs": "/docs/graph/analytics/cdlp",
+      "cli": {
+        "path": [
+          "graph",
+          "cdlp"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_analytics_cdlp",
+        "description": "Use this when the user wants community detection, graph clustering, or group structure via the community detection label propagation (CDLP) algorithm."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphCdlp",
+      "output": "Output::GraphCdlpResult",
+      "outputs": [
+        "Output::GraphCdlpResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "AnalyticsResult<GraphCdlpData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "resource_exhausted.engine.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/cdlp.json",
+        "response": "responses/v1/graph/cdlp_labels.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json",
+          "requests/v1/setup/graph_add_dave.json",
+          "requests/v1/graph/edge_add.json",
+          "requests/v1/setup/graph_edge_bob_carol.json",
+          "requests/v1/setup/graph_edge_carol_alice.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.analytics.cdlp.md"
+      }
+    },
+    {
+      "id": "graph.analytics.lcc",
+      "family": "graph",
+      "op": "analytics.lcc",
+      "kind": "read.analytics",
+      "title": "Compute graph clustering coefficients",
+      "summary": "Compute local clustering coefficients.",
+      "description": "Computes the local clustering coefficient for every node over a consistent snapshot: the fraction of a node's neighbor pairs that are themselves connected. Nodes in fully-triangulated neighborhoods score 1.0. Accepts an optional snapshot budget and `as_of` for time travel.\n\nAnalytics commands compute over a consistent snapshot of the visible graph and return a complete result payload in one response. They accept optional snapshot budgets and an `as_of` timestamp for time travel; results are deterministic for a fixed graph state.",
+      "docs": "/docs/graph/analytics/lcc",
+      "cli": {
+        "path": [
+          "graph",
+          "lcc"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_analytics_lcc",
+        "description": "Use this when the user wants per-node clustering coefficients - how densely each node's neighbors connect to each other (triangle density)."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphLcc",
+      "output": "Output::GraphLccResult",
+      "outputs": [
+        "Output::GraphLccResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "AnalyticsResult<GraphLccData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "resource_exhausted.engine.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/lcc.json",
+        "response": "responses/v1/graph/lcc_coefficients.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json",
+          "requests/v1/graph/edge_add.json",
+          "requests/v1/setup/graph_edge_bob_carol.json",
+          "requests/v1/setup/graph_edge_alice_carol.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.analytics.lcc.md"
+      }
+    },
+    {
+      "id": "graph.analytics.pagerank",
+      "family": "graph",
+      "op": "analytics.pagerank",
+      "kind": "read.analytics",
+      "title": "Compute graph pagerank",
+      "summary": "Compute PageRank importance scores.",
+      "description": "Computes PageRank over a consistent snapshot. Tunable damping (default 0.85), iteration bound (default 20), and convergence tolerance (default 1e-6); the response reports how many iterations actually ran. Optional personalization seeds steer both teleport and dangling mass toward weighted nodes, and the response flags `personalized: true`. Results are deterministic for a fixed graph state. Accepts an optional snapshot budget and `as_of` for time travel.\n\nAnalytics commands compute over a consistent snapshot of the visible graph and return a complete result payload in one response. They accept optional snapshot budgets and an `as_of` timestamp for time travel; results are deterministic for a fixed graph state.",
+      "docs": "/docs/graph/analytics/pagerank",
+      "cli": {
+        "path": [
+          "graph",
+          "pagerank"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_analytics_pagerank",
+        "description": "Use this when the user wants node importance, influence ranking, or personalized PageRank with seed weights."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphPagerank",
+      "output": "Output::GraphPagerankResult",
+      "outputs": [
+        "Output::GraphPagerankResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "AnalyticsResult<GraphPagerankData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_pagerank_options",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_pagerank_options"
+        },
+        {
+          "code": "invalid_argument.engine.graph_personalization",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_personalization"
+        },
+        {
+          "code": "resource_exhausted.engine.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/pagerank.json",
+        "response": "responses/v1/graph/pagerank_ranks.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json",
+          "requests/v1/setup/graph_add_dave.json",
+          "requests/v1/graph/edge_add.json",
+          "requests/v1/setup/graph_edge_bob_carol.json",
+          "requests/v1/setup/graph_edge_carol_alice.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.analytics.pagerank.md"
+      }
+    },
+    {
+      "id": "graph.analytics.sssp",
+      "family": "graph",
+      "op": "analytics.sssp",
+      "kind": "read.analytics",
+      "title": "Compute graph shortest paths",
+      "summary": "Compute shortest-path distances from a source.",
+      "description": "Computes weighted shortest-path distances from a source node over a consistent snapshot. Edge weights (default 1.0) accumulate along paths; unreachable nodes are omitted from the result. Direction defaults to `outgoing`. The source node must exist (`not_found.engine.graph_node`). Accepts an optional snapshot budget and `as_of` for time travel.\n\nAnalytics commands compute over a consistent snapshot of the visible graph and return a complete result payload in one response. They accept optional snapshot budgets and an `as_of` timestamp for time travel; results are deterministic for a fixed graph state.",
+      "docs": "/docs/graph/analytics/sssp",
+      "cli": {
+        "path": [
+          "graph",
+          "sssp"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_analytics_sssp",
+        "description": "Use this when the user wants weighted shortest-path distances from one node to every reachable node (single-source shortest path / Dijkstra-style queries)."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphSssp",
+      "output": "Output::GraphSsspResult",
+      "outputs": [
+        "Output::GraphSsspResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "AnalyticsResult<GraphSsspData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "not_found.engine.graph_node",
+          "docs": "https://stratadb.org/e/not_found.engine.graph_node"
+        },
+        {
+          "code": "resource_exhausted.engine.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/sssp.json",
+        "response": "responses/v1/graph/sssp_distances.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json",
+          "requests/v1/graph/edge_add.json",
+          "requests/v1/setup/graph_edge_bob_carol.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.analytics.sssp.md"
+      }
+    },
+    {
+      "id": "graph.analytics.wcc",
+      "family": "graph",
+      "op": "analytics.wcc",
+      "kind": "read.analytics",
+      "title": "Compute graph connected components",
+      "summary": "Compute weakly connected components.",
+      "description": "Computes weakly connected components over a consistent snapshot of the graph, ignoring edge direction. Every node maps to its component representative - the smallest node id in its component - and the response carries the distinct component count. Accepts an optional snapshot budget and `as_of` for time travel.\n\nAnalytics commands compute over a consistent snapshot of the visible graph and return a complete result payload in one response. They accept optional snapshot budgets and an `as_of` timestamp for time travel; results are deterministic for a fixed graph state.",
+      "docs": "/docs/graph/analytics/wcc",
+      "cli": {
+        "path": [
+          "graph",
+          "wcc"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_analytics_wcc",
+        "description": "Use this when the user wants to find connected components, clusters of mutually reachable nodes, or check whether a graph is fully connected. Reachable via the generic command runner or the CLI verb `graph wcc`."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphWcc",
+      "output": "Output::GraphWccResult",
+      "outputs": [
+        "Output::GraphWccResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "AnalyticsResult<GraphWccData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "resource_exhausted.engine.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/wcc.json",
+        "response": "responses/v1/graph/wcc_components.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json",
+          "requests/v1/setup/graph_add_dave.json",
+          "requests/v1/graph/edge_add.json",
+          "requests/v1/setup/graph_edge_bob_carol.json",
+          "requests/v1/setup/graph_edge_carol_alice.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.analytics.wcc.md"
+      }
+    },
+    {
+      "id": "graph.apply_delete_policy",
+      "family": "graph",
+      "op": "apply_delete_policy",
+      "kind": "mutation.bulk_delete",
+      "title": "Apply graph delete policy",
+      "summary": "Apply a delete policy to bound graph facts.",
+      "description": "Applies an explicit policy to every graph node bound to the given entity target: `cascade` deletes the bound nodes and their incident edges, `detach` keeps the nodes but removes their bindings, and `keep_dangling` preserves the bindings so traversal can report the target's status. The acknowledgement reports how many bound nodes the policy covered.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/apply_delete_policy",
+      "cli": {
+        "path": [
+          "graph",
+          "apply-delete-policy"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_graph_apply_delete_policy",
+        "description": "Use this after deleting an entity in another primitive, when the user must decide what happens to graph nodes bound to it - cascade-delete them, detach the bindings, or keep them dangling. Wire-only; invoke via the generic command runner."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphApplyDeletePolicy",
+      "output": "Output::GraphDeletePolicyResult",
+      "outputs": [
+        "Output::GraphDeletePolicyResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphDeletePolicyApply>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_binding",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_binding"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/apply_delete_policy.json",
+        "response": "responses/v1/graph/apply_delete_policy_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/setup/graph_add_bound_node.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.apply_delete_policy.md"
+      }
+    },
+    {
+      "id": "graph.batch_write",
+      "family": "graph",
+      "op": "batch_write",
+      "kind": "batch.atomic_mutation",
+      "title": "Batch write graph",
+      "summary": "Apply graph mutations atomically.",
+      "description": "Applies a list of graph operations - `upsert_node`, `delete_node`, `upsert_edge`, `delete_edge` - in one engine commit. Validation failures (bad ids, missing edge endpoints, frozen-ontology violations) reject the whole batch; nothing is partially applied. The response reports one positional item result per operation, all sharing the same commit receipt.\n\nAtomic batches validate every operation up front and apply all of them in one engine commit, or none at all. The response still reports one positional item result per operation; all item results share the same commit receipt.",
+      "docs": "/docs/graph/batch_write",
+      "cli": {
+        "path": [
+          "graph",
+          "batch-write"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_graph_batch_write",
+        "description": "Use this when the user wants several graph mutations (node/edge upserts and deletes) applied together in one atomic commit - all succeed or none do. Wire-only; invoke via the generic command runner."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphBatchWrite",
+      "output": "Output::GraphBatchWriteResult",
+      "outputs": [
+        "Output::GraphBatchWriteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "BatchResult<GraphBatchItemResult>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "atomic",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_batch",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_batch"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_endpoint",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_endpoint"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_node_type",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_node_type"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_edge_type",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_edge_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/batch_write.json",
+        "response": "responses/v1/graph/batch_write_ok.json",
+        "setup": [
+          "requests/v1/graph/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.batch_write.md"
+      }
+    },
+    {
+      "id": "graph.bindings",
+      "family": "graph",
+      "op": "bindings",
+      "kind": "read.page",
+      "title": "List graph bindings for entity",
+      "summary": "Find graph nodes bound to an entity.",
+      "description": "Searches every graph in the selected branch and space for nodes whose entity binding matches the given target (primitive, space, key). This is the reverse index of node bindings: given an entity, find the graph facts attached to it. Results paginate by an opaque cursor.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/graph/bindings",
+      "cli": {
+        "path": [
+          "graph",
+          "bindings"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_graph_bindings",
+        "description": "Use this when the user wants to find every graph node bound to a specific KV, JSON, vector, event, or graph entity (reverse lookup from entity to nodes). Wire-only; invoke via the generic command runner."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphBindingsForEntity",
+      "output": "Output::GraphBindingPage",
+      "outputs": [
+        "Output::GraphBindingPage"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<GraphBindingHit, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_binding",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_binding"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/bindings_for_entity.json",
+        "response": "responses/v1/graph/bindings_page.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/setup/graph_add_bound_node.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.bindings.md"
+      }
+    },
+    {
+      "id": "graph.bulk_insert",
+      "family": "graph",
+      "op": "bulk_insert",
+      "kind": "mutation.put",
+      "title": "Bulk insert graph data",
+      "summary": "Bulk-load nodes and edges in chunks.",
+      "description": "Ingests a payload of nodes and edges in chunked commits: nodes first, then edges, so edges may reference nodes from the same payload. Node objects use the key `node_id`; edges use `src`, `edge_type`, `dst`, and optional `weight` (default 1.0) and `properties`. `chunk_size` bounds items per commit (default 512, clamped at 800). The acknowledgement reports inserted counts, the number of chunk commits, and the final chunk's commit receipt.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/bulk_insert",
+      "cli": {
+        "path": [
+          "graph",
+          "bulk-insert"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_bulk_insert",
+        "description": "Use this when the user wants to load many nodes and edges into a graph at once. Nodes commit before edges in chunked commits; edge endpoints must exist or arrive in the same payload."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphBulkInsert",
+      "output": "Output::GraphBulkInsertResult",
+      "outputs": [
+        "Output::GraphBulkInsertResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphBulkInsert>",
+      "commit": "chunked_commits",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_weight",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_weight"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_endpoint",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_endpoint"
+        },
+        {
+          "code": "invalid_argument.engine.graph_properties",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_properties"
+        },
+        {
+          "code": "invalid_argument.engine.graph_properties_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_properties_too_large"
+        },
+        {
+          "code": "failed_precondition.engine.graph_negative_weight",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_negative_weight"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_node_type",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_node_type"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_edge_type",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_edge_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/bulk_insert.json",
+        "response": "responses/v1/graph/bulk_insert_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.bulk_insert.md"
+      }
+    },
+    {
+      "id": "graph.create",
+      "family": "graph",
+      "op": "create",
+      "kind": "mutation.create",
+      "title": "Create graph",
+      "summary": "Create a named graph.",
+      "description": "Creates an empty named graph in the selected space and returns its metadata, including node and edge counts (zero at creation) and the create commit coordinates. A database can hold many graphs; graph names are unique per branch and space. Creating a name that already exists fails with `already_exists.engine.graph`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/create",
+      "cli": {
+        "path": [
+          "graph",
+          "create"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_create",
+        "description": "Use this when the user wants to create a new named graph for nodes and edges. Fails if a graph with this name already exists."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphCreate",
+      "output": "Output::GraphInfo",
+      "outputs": [
+        "Output::GraphInfo"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphInfoData>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "already_exists.engine.graph",
+          "docs": "https://stratadb.org/e/already_exists.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name_reserved"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/create.json",
+        "response": "responses/v1/graph/create_applied.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.create.md"
+      }
+    },
+    {
+      "id": "graph.delete",
+      "family": "graph",
+      "op": "delete",
+      "kind": "mutation.delete",
+      "title": "Delete graph",
+      "summary": "Delete a graph and its visible data.",
+      "description": "Deletes a named graph and every visible node, edge, binding, and ontology row it owns. Deleting a graph that does not exist is not an error: the acknowledgement reports `deleted: false` with a `not_found` effect. Earlier states remain readable through time travel on other commands.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/delete",
+      "cli": {
+        "path": [
+          "graph",
+          "delete"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_delete",
+        "description": "Use this when the user wants to delete an entire named graph, including all of its nodes and edges. Returns deleted=false if the graph does not exist."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphDelete",
+      "output": "Output::GraphDeleteResult",
+      "outputs": [
+        "Output::GraphDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/delete.json",
+        "response": "responses/v1/graph/delete_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.delete.md"
+      }
+    },
+    {
+      "id": "graph.edge.add",
+      "family": "graph",
+      "op": "edge.add",
+      "kind": "mutation.put",
+      "title": "Add graph edge",
+      "summary": "Add or replace a graph edge.",
+      "description": "Adds a directed edge `src -[edge_type]-> dst` or replaces it if the same triple already exists. Both endpoints must already exist; writing an edge to a missing node fails with `invalid_argument.engine.graph_edge_endpoint`. Weight defaults to 1.0 and must not be negative. Once the graph's ontology is frozen, the edge type and its endpoint object types are validated against the declared link types.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/edge/add",
+      "cli": {
+        "path": [
+          "graph",
+          "add-edge"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_edge_add",
+        "description": "Use this when the user wants to connect two existing nodes with a directed, typed edge, optionally weighted or carrying JSON properties."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphAddEdge",
+      "output": "Output::GraphEdgeWriteResult",
+      "outputs": [
+        "Output::GraphEdgeWriteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphEdgeWrite>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type_reserved"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_weight",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_weight"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_endpoint",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_endpoint"
+        },
+        {
+          "code": "invalid_argument.engine.graph_properties",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_properties"
+        },
+        {
+          "code": "invalid_argument.engine.graph_properties_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_properties_too_large"
+        },
+        {
+          "code": "failed_precondition.engine.graph_negative_weight",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_negative_weight"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_edge_type",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_edge_type"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_endpoint_type",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_endpoint_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/edge_add.json",
+        "response": "responses/v1/graph/edge_add_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.edge.add.md"
+      }
+    },
+    {
+      "id": "graph.edge.get",
+      "family": "graph",
+      "op": "edge.get",
+      "kind": "read.get",
+      "title": "Get graph edge",
+      "summary": "Read one graph edge.",
+      "description": "Reads one edge by its `(src, edge_type, dst)` triple, returning its weight, properties, and last-write commit coordinates. A missing edge reads back as no data. Accepts `as_of` for time travel.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/graph/edge/get",
+      "cli": {
+        "path": [
+          "graph",
+          "get-edge"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_edge_get",
+        "description": "Use this when the user wants to read an edge's weight or properties by its source, edge type, and destination. Returns null for a missing edge."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphGetEdge",
+      "output": "Output::GraphEdgeResult",
+      "outputs": [
+        "Output::GraphEdgeResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<GraphEdgeDataOutput>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/edge_get.json",
+        "response": "responses/v1/graph/edge_get_found.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/graph/edge_add.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.edge.get.md"
+      }
+    },
+    {
+      "id": "graph.edge.remove",
+      "family": "graph",
+      "op": "edge.remove",
+      "kind": "mutation.delete",
+      "title": "Remove graph edge",
+      "summary": "Remove a graph edge.",
+      "description": "Removes one directed edge by its `(src, edge_type, dst)` triple. The endpoints are untouched. Removing an edge that does not exist is not an error: the acknowledgement reports `deleted: false`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/edge/remove",
+      "cli": {
+        "path": [
+          "graph",
+          "remove-edge"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_edge_remove",
+        "description": "Use this when the user wants to delete one directed edge identified by source, edge type, and destination."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphRemoveEdge",
+      "output": "Output::GraphDeleteResult",
+      "outputs": [
+        "Output::GraphDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/edge_remove.json",
+        "response": "responses/v1/graph/edge_remove_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/graph/edge_add.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.edge.remove.md"
+      }
+    },
+    {
+      "id": "graph.list",
+      "family": "graph",
+      "op": "list",
+      "kind": "read.page",
+      "title": "List graphs",
+      "summary": "List graph names.",
+      "description": "Lists graph names in lexicographic order. Accepts an optional item limit (default 100), an exclusive name cursor for continuation, and an `as_of` timestamp to list the graphs visible at an earlier instant.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/graph/list",
+      "cli": {
+        "path": [
+          "graph",
+          "list"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_list",
+        "description": "Use this when the user wants to see which named graphs exist in the current branch and space."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphList",
+      "output": "Output::GraphNamePage",
+      "outputs": [
+        "Output::GraphNamePage"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<String, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/list.json",
+        "response": "responses/v1/graph/list_page.json",
+        "setup": [
+          "requests/v1/graph/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.list.md"
+      }
+    },
+    {
+      "id": "graph.meta",
+      "family": "graph",
+      "op": "meta",
+      "kind": "read.get",
+      "title": "Read graph metadata",
+      "summary": "Read graph metadata and counts.",
+      "description": "Reads a graph's metadata: live node and edge counts plus the create and last-update commit versions and timestamps. Reading a graph that does not exist returns no data rather than an error. Accepts `as_of` for time travel.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/graph/meta",
+      "cli": {
+        "path": [
+          "graph",
+          "meta"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_meta",
+        "description": "Use this when the user wants a graph's node count, edge count, or creation and update commit coordinates. Returns null if the graph does not exist."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphGetMeta",
+      "output": "Output::GraphInfoResult",
+      "outputs": [
+        "Output::GraphInfoResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<GraphInfoData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/meta.json",
+        "response": "responses/v1/graph/meta_found.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/graph/edge_add.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.meta.md"
+      }
+    },
+    {
+      "id": "graph.neighbors",
+      "family": "graph",
+      "op": "neighbors",
+      "kind": "read.page",
+      "title": "List graph neighbors",
+      "summary": "List a node's neighbors.",
+      "description": "Walks a node's edges and returns one hit per traversed edge. Direction is `outgoing`, `incoming`, or `both`; an optional edge-type filter restricts the walk. Each hit embeds both the traversed edge and the neighbor node in full, so a follow-up read is rarely needed. A missing node yields an empty page.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/graph/neighbors",
+      "cli": {
+        "path": [
+          "graph",
+          "neighbors"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_neighbors",
+        "description": "Use this when the user wants the nodes adjacent to a given node - who it points to, who points to it, or both - optionally filtered by edge type."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphNeighbors",
+      "output": "Output::GraphNeighborPage",
+      "outputs": [
+        "Output::GraphNeighborPage"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<GraphNeighborHit, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/neighbors.json",
+        "response": "responses/v1/graph/neighbors_page.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json",
+          "requests/v1/graph/edge_add.json",
+          "requests/v1/setup/graph_edge_alice_carol.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.neighbors.md"
+      }
+    },
+    {
+      "id": "graph.node.add",
+      "family": "graph",
+      "op": "node.add",
+      "kind": "mutation.put",
+      "title": "Add graph node",
+      "summary": "Add or replace a graph node.",
+      "description": "Adds a node to a graph or replaces it if the node id already exists. A node carries optional JSON properties, an optional declared object type (validated once the graph's ontology is frozen), and an optional entity binding that links the node to a row in another primitive. Cross-branch bindings are rejected.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/node/add",
+      "cli": {
+        "path": [
+          "graph",
+          "add-node"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_node_add",
+        "description": "Use this when the user wants to insert or upsert a node in a graph, optionally with JSON properties, a declared object type, or a binding to a KV/JSON/vector/event entity."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphAddNode",
+      "output": "Output::GraphNodeWriteResult",
+      "outputs": [
+        "Output::GraphNodeWriteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphNodeWrite>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_properties",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_properties"
+        },
+        {
+          "code": "invalid_argument.engine.graph_properties_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_properties_too_large"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_hint",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_hint"
+        },
+        {
+          "code": "invalid_argument.engine.graph_binding",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_binding"
+        },
+        {
+          "code": "unsupported.engine.graph_binding_cross_branch",
+          "docs": "https://stratadb.org/e/unsupported.engine.graph_binding_cross_branch"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_node_type",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_node_type"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_required_property",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_required_property"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/node_add.json",
+        "response": "responses/v1/graph/node_add_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.node.add.md"
+      }
+    },
+    {
+      "id": "graph.node.get",
+      "family": "graph",
+      "op": "node.get",
+      "kind": "read.get",
+      "title": "Get graph node",
+      "summary": "Read one graph node.",
+      "description": "Reads one node by id, returning its properties, declared object type, entity binding, and last-write commit coordinates. A removed or never-written node reads back as no data. Accepts `as_of` for time travel.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/graph/node/get",
+      "cli": {
+        "path": [
+          "graph",
+          "get-node"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_node_get",
+        "description": "Use this when the user wants to read a node's properties, declared type, or binding by node id. Returns null for a missing node."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphGetNode",
+      "output": "Output::GraphNodeResult",
+      "outputs": [
+        "Output::GraphNodeResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<GraphNodeDataOutput>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/node_get.json",
+        "response": "responses/v1/graph/node_get_found.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.node.get.md"
+      }
+    },
+    {
+      "id": "graph.node.list",
+      "family": "graph",
+      "op": "node.list",
+      "kind": "read.page",
+      "title": "List graph nodes",
+      "summary": "List graph nodes.",
+      "description": "Lists a graph's nodes in node-id order. Accepts an optional id prefix filter, an item limit (default 100), an exclusive cursor, and `as_of` for time travel. Each item carries the full node payload: properties, declared type, binding, and commit coordinates.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/graph/node/list",
+      "cli": {
+        "path": [
+          "graph",
+          "list-nodes"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_node_list",
+        "description": "Use this when the user wants to enumerate the nodes of a graph, optionally filtered by node-id prefix."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphListNodes",
+      "output": "Output::GraphNodePage",
+      "outputs": [
+        "Output::GraphNodePage"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<GraphNodeDataOutput, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/node_list.json",
+        "response": "responses/v1/graph/node_list_page.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.node.list.md"
+      }
+    },
+    {
+      "id": "graph.node.remove",
+      "family": "graph",
+      "op": "node.remove",
+      "kind": "mutation.delete",
+      "title": "Remove graph node",
+      "summary": "Remove a graph node and its edges.",
+      "description": "Removes a node and every edge incident to it in one commit. Removing a node that does not exist is not an error: the acknowledgement reports `deleted: false`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/node/remove",
+      "cli": {
+        "path": [
+          "graph",
+          "remove-node"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_node_remove",
+        "description": "Use this when the user wants to delete a node from a graph. Incident edges are removed with it."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphRemoveNode",
+      "output": "Output::GraphDeleteResult",
+      "outputs": [
+        "Output::GraphDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/node_remove.json",
+        "response": "responses/v1/graph/node_remove_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.node.remove.md"
+      }
+    },
+    {
+      "id": "graph.nodes_by_type",
+      "family": "graph",
+      "op": "nodes_by_type",
+      "kind": "read.page",
+      "title": "List graph nodes by type",
+      "summary": "List nodes declaring an object type.",
+      "description": "Lists the nodes that declare a given object type, in node-id order. The type index is maintained from each node's declared `object_type`, so this works whether the ontology is draft or frozen. Accepts a limit, an exclusive cursor, and `as_of` for time travel.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/graph/nodes_by_type",
+      "cli": {
+        "path": [
+          "graph",
+          "nodes-by-type"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_nodes_by_type",
+        "description": "Use this when the user wants every node of a given object type, for example all Person nodes. Works with draft or frozen ontologies."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphNodesByType",
+      "output": "Output::GraphNodePage",
+      "outputs": [
+        "Output::GraphNodePage"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<GraphNodeDataOutput, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_name"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/nodes_by_type.json",
+        "response": "responses/v1/graph/nodes_by_type_page.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.nodes_by_type.md"
+      }
+    },
+    {
+      "id": "graph.ontology.define_link_type",
+      "family": "graph",
+      "op": "ontology.define_link_type",
+      "kind": "mutation.put",
+      "title": "Define graph link type",
+      "summary": "Define a graph link type.",
+      "description": "Declares a link type in the graph's ontology: a name, its source and target object types, an optional cardinality hint (for example `many-to-one`), and property definitions. Source and target must name declared object types by the time the ontology is frozen. After freezing, this command fails with `failed_precondition.engine.graph_ontology_frozen`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/ontology/define_link_type",
+      "cli": {
+        "path": [
+          "graph",
+          "ontology",
+          "define-link-type"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_ontology_define_link_type",
+        "description": "Use this when the user wants to declare (or, while the ontology is still a draft, redefine) an edge link type between two object types, optionally with a cardinality hint and typed properties."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphDefineLinkType",
+      "output": "Output::GraphOntologyWriteResult",
+      "outputs": [
+        "Output::GraphOntologyWriteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphOntologyWrite>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_name"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_name_reserved"
+        },
+        {
+          "code": "invalid_argument.engine.graph_property_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_property_name"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_frozen",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_frozen"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/ontology_define_link_type.json",
+        "response": "responses/v1/graph/ontology_define_link_type_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/ontology_define_object_type.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.ontology.define_link_type.md"
+      }
+    },
+    {
+      "id": "graph.ontology.define_object_type",
+      "family": "graph",
+      "op": "ontology.define_object_type",
+      "kind": "mutation.put",
+      "title": "Define graph object type",
+      "summary": "Define a graph object type.",
+      "description": "Declares an object type in the graph's ontology: a name plus property definitions (`value_type`, `required`). While the ontology is a draft, redefining a type replaces it freely. After `graph.ontology.freeze`, the ontology is immutable and this command fails with `failed_precondition.engine.graph_ontology_frozen`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/ontology/define_object_type",
+      "cli": {
+        "path": [
+          "graph",
+          "ontology",
+          "define-object-type"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_ontology_define_object_type",
+        "description": "Use this when the user wants to declare (or, while the ontology is still a draft, redefine) a node object type with named, typed properties in a graph's ontology."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphDefineObjectType",
+      "output": "Output::GraphOntologyWriteResult",
+      "outputs": [
+        "Output::GraphOntologyWriteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphOntologyWrite>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_name"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_name_reserved"
+        },
+        {
+          "code": "invalid_argument.engine.graph_property_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_property_name"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_frozen",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_frozen"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/ontology_define_object_type.json",
+        "response": "responses/v1/graph/ontology_define_object_type_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.ontology.define_object_type.md"
+      }
+    },
+    {
+      "id": "graph.ontology.delete_link_type",
+      "family": "graph",
+      "op": "ontology.delete_link_type",
+      "kind": "mutation.delete",
+      "title": "Delete graph link type",
+      "summary": "Delete a draft link type.",
+      "description": "Removes a link type from the graph's draft ontology. Deleting a type that was never declared is not an error: the acknowledgement reports `deleted: false`. Once the ontology is frozen this command fails with `failed_precondition.engine.graph_ontology_frozen`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/ontology/delete_link_type",
+      "cli": {
+        "path": [
+          "graph",
+          "ontology",
+          "delete-link-type"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_ontology_delete_link_type",
+        "description": "Use this when the user wants to remove a link type from a graph's draft ontology. Frozen ontologies cannot change."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphDeleteLinkType",
+      "output": "Output::GraphOntologyDeleteResult",
+      "outputs": [
+        "Output::GraphOntologyDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphOntologyDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_name"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_frozen",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_frozen"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/ontology_delete_link_type.json",
+        "response": "responses/v1/graph/ontology_delete_link_type_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/ontology_define_object_type.json",
+          "requests/v1/setup/graph_define_link_type_knows.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.ontology.delete_link_type.md"
+      }
+    },
+    {
+      "id": "graph.ontology.delete_object_type",
+      "family": "graph",
+      "op": "ontology.delete_object_type",
+      "kind": "mutation.delete",
+      "title": "Delete graph object type",
+      "summary": "Delete a draft object type.",
+      "description": "Removes an object type from the graph's draft ontology. Deleting a type that was never declared is not an error: the acknowledgement reports `deleted: false`. Once the ontology is frozen this command fails with `failed_precondition.engine.graph_ontology_frozen`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/ontology/delete_object_type",
+      "cli": {
+        "path": [
+          "graph",
+          "ontology",
+          "delete-object-type"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_ontology_delete_object_type",
+        "description": "Use this when the user wants to remove an object type from a graph's draft ontology. Frozen ontologies cannot change."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphDeleteObjectType",
+      "output": "Output::GraphOntologyDeleteResult",
+      "outputs": [
+        "Output::GraphOntologyDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphOntologyDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_name"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_frozen",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_frozen"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/ontology_delete_object_type.json",
+        "response": "responses/v1/graph/ontology_delete_object_type_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/setup/graph_define_object_type_robot.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.ontology.delete_object_type.md"
+      }
+    },
+    {
+      "id": "graph.ontology.freeze",
+      "family": "graph",
+      "op": "ontology.freeze",
+      "kind": "mutation.put",
+      "title": "Freeze graph ontology",
+      "summary": "Freeze the graph ontology.",
+      "description": "Validates the draft ontology and freezes it. Validation requires at least one declared type and rejects link types whose source or target reference undeclared object types (`failed_precondition.engine.graph_ontology_freeze`). After freezing, writes enforce declared node object types, required properties, and link-type endpoint rules; the ontology itself can no longer change (`failed_precondition.engine.graph_ontology_frozen`).\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/ontology/freeze",
+      "cli": {
+        "path": [
+          "graph",
+          "ontology",
+          "freeze"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_ontology_freeze",
+        "description": "Use this when the user wants to lock a graph's ontology so subsequent node and edge writes are validated against the declared types. Freezing is permanent and validates the draft first."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphFreezeOntology",
+      "output": "Output::GraphOntologyFreezeResult",
+      "outputs": [
+        "Output::GraphOntologyFreezeResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphOntologyFreeze>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_freeze",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_freeze"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_frozen",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_frozen"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/ontology_freeze.json",
+        "response": "responses/v1/graph/ontology_freeze_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/ontology_define_object_type.json",
+          "requests/v1/graph/ontology_define_link_type.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.ontology.freeze.md"
+      }
+    },
+    {
+      "id": "graph.ontology.get",
+      "family": "graph",
+      "op": "ontology.get",
+      "kind": "read.get",
+      "title": "Read graph ontology",
+      "summary": "Read the graph ontology.",
+      "description": "Reads the graph's ontology: its status (`draft` or `frozen`) plus every declared object type and link type with their property definitions. Returns no data before any type has been declared. Accepts `as_of` for time travel.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/graph/ontology/get",
+      "cli": {
+        "path": [
+          "graph",
+          "ontology",
+          "get"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_ontology_get",
+        "description": "Use this when the user wants to inspect a graph's ontology - its draft or frozen status and every declared object type and link type."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphGetOntology",
+      "output": "Output::GraphOntologyResult",
+      "outputs": [
+        "Output::GraphOntologyResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<GraphOntologyData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/ontology_get.json",
+        "response": "responses/v1/graph/ontology_get_frozen.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/ontology_define_object_type.json",
+          "requests/v1/graph/ontology_define_link_type.json",
+          "requests/v1/graph/ontology_freeze.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.ontology.get.md"
+      }
+    },
+    {
+      "id": "graph.ontology.summary",
+      "family": "graph",
+      "op": "ontology.summary",
+      "kind": "read.get",
+      "title": "Read graph ontology summary",
+      "summary": "Read the ontology with usage counts.",
+      "description": "Reads the graph's ontology annotated with per-type usage: a node count for each object type and an edge count for each link type. Returns no data before any type has been declared. Accepts `as_of` for time travel.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/graph/ontology/summary",
+      "cli": {
+        "path": [
+          "graph",
+          "ontology",
+          "summary"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_ontology_summary",
+        "description": "Use this when the user wants ontology types together with usage statistics - how many nodes declare each object type and how many edges use each link type."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphOntologySummary",
+      "output": "Output::GraphOntologySummaryResult",
+      "outputs": [
+        "Output::GraphOntologySummaryResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<GraphOntologySummaryData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/ontology_summary.json",
+        "response": "responses/v1/graph/ontology_summary_found.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/ontology_define_object_type.json",
+          "requests/v1/graph/ontology_define_link_type.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.ontology.summary.md"
+      }
+    },
+    {
+      "id": "json.batch_delete",
+      "family": "json",
+      "op": "batch_delete",
+      "kind": "batch.itemwise_mutation",
+      "title": "Batch delete JSON values",
+      "summary": "Delete multiple JSON documents or paths in one itemwise batch.",
+      "description": "Deletes multiple document/path entries and returns one positional mutation result per entry. Missing documents and paths are represented as no-op item results; applied items share one engine commit.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/json/batch_delete",
+      "cli": {
+        "path": [
+          "json",
+          "batch-delete"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_json_batch_delete",
+        "description": "Use this when the user wants to remove several JSON documents or nested fields together."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::JsonBatchDelete",
+      "output": "Output::JsonBatchResults",
+      "outputs": [
+        "Output::JsonBatchResults"
+      ],
+      "wire_status": "stable",
+      "response_model": "BatchResult<JsonMutationItem>",
+      "commit": "itemwise_shared_commit",
+      "pagination": "none",
+      "batch": "itemwise",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        },
+        {
+          "code": "invalid_argument.engine.json_path",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_too_long",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_too_long"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/batch_delete.json",
+        "response": "responses/v1/json/batch_delete_partial.json",
+        "setup": [
+          "requests/v1/json/set.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.batch_delete.md"
+      }
+    },
+    {
+      "id": "json.batch_get",
+      "family": "json",
+      "op": "batch_get",
+      "kind": "batch.itemwise_read",
+      "title": "Batch get JSON values",
+      "summary": "Read multiple JSON values by document and path.",
+      "description": "Reads several document/path entries and returns positional item results. Each item records whether the value was found and includes version metadata when present.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/json/batch_get",
+      "cli": {
+        "path": [
+          "json",
+          "batch-get"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_json_batch_get",
+        "description": "Use this when the user wants to fetch several JSON documents or fields in one request."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonBatchGet",
+      "output": "Output::JsonBatchGetResults",
+      "outputs": [
+        "Output::JsonBatchGetResults"
+      ],
+      "wire_status": "stable",
+      "response_model": "BatchResult<Maybe<JsonValue>>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "itemwise",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        },
+        {
+          "code": "invalid_argument.engine.json_path",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_too_long",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_too_long"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/batch_get.json",
+        "response": "responses/v1/json/batch_get_ok.json",
+        "setup": [
+          "requests/v1/json/set.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.batch_get.md"
+      }
+    },
+    {
+      "id": "json.batch_set",
+      "family": "json",
+      "op": "batch_set",
+      "kind": "batch.itemwise_mutation",
+      "title": "Batch set JSON values",
+      "summary": "Set multiple JSON values in one itemwise batch.",
+      "description": "Writes multiple document/path/value entries using the executor batch contract. Valid items share one engine commit; entries targeting the same document are merged in order into a single new document version.\n\nItemwise batches return one positional item result per input item. The outer batch status summarizes whether all, some, or none of the items succeeded.",
+      "docs": "/docs/json/batch_set",
+      "cli": {
+        "path": [
+          "json",
+          "batch-set"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_json_batch_set",
+        "description": "Use this when the user wants to write several JSON documents or fields together in one commit."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::JsonBatchSet",
+      "output": "Output::JsonBatchResults",
+      "outputs": [
+        "Output::JsonBatchResults"
+      ],
+      "wire_status": "stable",
+      "response_model": "BatchResult<JsonMutationItem>",
+      "commit": "itemwise_shared_commit",
+      "pagination": "none",
+      "batch": "itemwise",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        },
+        {
+          "code": "invalid_argument.engine.json_path",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_too_long",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_too_long"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_not_found",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_not_found"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_type"
+        },
+        {
+          "code": "invalid_argument.engine.json_value",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_value"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_too_large"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_too_deep",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_too_deep"
+        },
+        {
+          "code": "invalid_argument.engine.json_array_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_array_too_large"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/batch_set.json",
+        "response": "responses/v1/json/batch_set_ok.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.batch_set.md"
+      }
+    },
+    {
+      "id": "json.count",
+      "family": "json",
+      "op": "count",
+      "kind": "read.status",
+      "title": "Count JSON documents",
+      "summary": "Count visible JSON documents.",
+      "description": "Counts visible JSON documents in the selected branch and space, optionally constrained by a document key prefix.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/json/count",
+      "cli": {
+        "path": [
+          "json",
+          "count"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_count",
+        "description": "Use this when the user wants the number of visible JSON documents."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonCount",
+      "output": "Output::Uint",
+      "outputs": [
+        "Output::Uint"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusValue<u64>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/count.json",
+        "response": "responses/v1/status/uint_count.json",
+        "setup": [
+          "requests/v1/json/batch_set.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.count.md"
+      }
+    },
+    {
+      "id": "json.delete",
+      "family": "json",
+      "op": "delete",
+      "kind": "mutation.delete",
+      "title": "Delete JSON value",
+      "summary": "Delete a whole JSON document or one path inside it.",
+      "description": "Deletes the root path `$` to remove the whole document, or a nested path to remove one field or array element. Missing documents and paths produce a no-op delete acknowledgement rather than an error.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/json/delete",
+      "cli": {
+        "path": [
+          "json",
+          "delete"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_delete",
+        "description": "Use this when the user wants to remove a JSON document or delete one nested field from it."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::JsonDelete",
+      "output": "Output::JsonDeleteResult",
+      "outputs": [
+        "Output::JsonDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<JsonDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        },
+        {
+          "code": "invalid_argument.engine.json_path",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_too_long",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_too_long"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/delete.json",
+        "response": "responses/v1/json/delete_missing.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.delete.md"
+      }
+    },
+    {
+      "id": "json.exists",
+      "family": "json",
+      "op": "exists",
+      "kind": "read.status",
+      "title": "Check JSON document existence",
+      "summary": "Check whether one JSON document exists.",
+      "description": "Returns a boolean status for one JSON document key without loading the stored document.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/json/exists",
+      "cli": {
+        "path": [
+          "json",
+          "exists"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_exists",
+        "description": "Use this when the user only needs to know if a JSON document is present."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonExists",
+      "output": "Output::Bool",
+      "outputs": [
+        "Output::Bool"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusValue<bool>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/exists.json",
+        "response": "responses/v1/status/bool_true.json",
+        "setup": [
+          "requests/v1/json/set.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.exists.md"
+      }
+    },
+    {
+      "id": "json.get",
+      "family": "json",
+      "op": "get",
+      "kind": "read.get",
+      "title": "Get JSON value",
+      "summary": "Read the current or historical JSON value at a document path.",
+      "description": "Reads the JSON value at a path inside a document. Current reads return the value with commit metadata; passing a timestamp returns the bare value visible at that point in time. A missing document or path is a found-false result, distinct from a stored JSON null.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/json/get",
+      "cli": {
+        "path": [
+          "json",
+          "get"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_get",
+        "description": "Use this when the user wants to fetch a JSON document or one nested field by key and path."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonGet",
+      "output": "Output::JsonVersionedValue",
+      "outputs": [
+        "Output::JsonValue",
+        "Output::JsonVersionedValue"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<JsonVersionedValue>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        },
+        {
+          "code": "invalid_argument.engine.json_path",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_too_long",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_too_long"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/get.json",
+        "response": "responses/v1/json/get_versioned_found.json",
+        "responses": [
+          "responses/v1/json/get_found.json"
+        ],
+        "setup": [
+          "requests/v1/json/set.json"
+        ],
+        "cases": [
+          {
+            "setup": [
+              "requests/v1/json/set.json"
+            ],
+            "request": "requests/v1/json/get_as_of.json",
+            "response": "responses/v1/json/get_found.json"
+          }
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.get.md"
+      }
+    },
+    {
+      "id": "json.history",
+      "family": "json",
+      "op": "history",
+      "kind": "read.history",
+      "title": "Read JSON document history",
+      "summary": "Read retained version history for one JSON document.",
+      "description": "Returns retained full-document history rows for a JSON document, newest first, including delete tombstones. A document with no retained history maps to an optional-read result.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/json/history",
+      "cli": {
+        "path": [
+          "json",
+          "history"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_history",
+        "description": "Use this when the user wants prior versions, edits, or tombstones of a JSON document."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonGetv",
+      "output": "Output::JsonVersionHistory",
+      "outputs": [
+        "Output::JsonVersionHistory"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<Vec<JsonHistoryItem>>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/history.json",
+        "response": "responses/v1/json/history_found.json",
+        "setup": [
+          "requests/v1/json/set.json",
+          "requests/v1/setup/json_set_user_age.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.history.md"
+      }
+    },
+    {
+      "id": "json.index.create",
+      "family": "json",
+      "op": "index.create",
+      "kind": "mutation.create",
+      "title": "Create JSON index",
+      "summary": "Create a JSON secondary index on a field path.",
+      "description": "Creates a secondary index over one JSON field path with a numeric, tag, or text kind. Existing documents are indexed at creation and future writes maintain the index automatically. The current wire response is a transitional bare index definition.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/json/index/create",
+      "cli": {
+        "path": [
+          "json",
+          "index",
+          "create"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_index_create",
+        "description": "Use this when the user wants to index a JSON field (numeric, tag, or text) for faster lookups."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::JsonCreateIndex",
+      "output": "Output::JsonIndexDefinition",
+      "outputs": [
+        "Output::JsonIndexDefinition"
+      ],
+      "wire_status": "transitional",
+      "response_model": "MutationAck<JsonIndexCreate>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_index_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_index_name"
+        },
+        {
+          "code": "invalid_argument.engine.json_index_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_index_name_reserved"
+        },
+        {
+          "code": "invalid_argument.engine.json_path",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_too_long",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_too_long"
+        },
+        {
+          "code": "already_exists.engine.json_index",
+          "docs": "https://stratadb.org/e/already_exists.engine.json_index"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/index_create.json",
+        "response": "responses/v1/json/index_definition.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.index.create.md"
+      }
+    },
+    {
+      "id": "json.index.drop",
+      "family": "json",
+      "op": "index.drop",
+      "kind": "mutation.delete",
+      "title": "Drop JSON index",
+      "summary": "Drop a JSON secondary index by name.",
+      "description": "Drops the named JSON secondary index and its stored entries. Documents are unaffected. The current wire response is a transitional boolean status.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/json/index/drop",
+      "cli": {
+        "path": [
+          "json",
+          "index",
+          "drop"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_index_drop",
+        "description": "Use this when the user wants to remove an existing JSON field index."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::JsonDropIndex",
+      "output": "Output::Bool",
+      "outputs": [
+        "Output::Bool"
+      ],
+      "wire_status": "transitional",
+      "response_model": "MutationAck<JsonIndexDrop>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_index_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_index_name"
+        },
+        {
+          "code": "invalid_argument.engine.json_index_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_index_name_reserved"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/index_drop.json",
+        "response": "responses/v1/status/bool_true.json",
+        "setup": [
+          "requests/v1/json/index_create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.index.drop.md"
+      }
+    },
+    {
+      "id": "json.index.list",
+      "family": "json",
+      "op": "index.list",
+      "kind": "read.page",
+      "title": "List JSON indexes",
+      "summary": "List JSON secondary indexes.",
+      "description": "Lists JSON secondary index definitions in the selected branch and space, including each index's field path and kind.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/json/index/list",
+      "cli": {
+        "path": [
+          "json",
+          "index",
+          "list"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_index_list",
+        "description": "Use this when the user wants to discover which JSON field indexes exist."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonListIndexes",
+      "output": "Output::JsonIndexList",
+      "outputs": [
+        "Output::JsonIndexList"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<JsonIndexDefinition, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/index_list.json",
+        "response": "responses/v1/json/index_list.json",
+        "setup": [
+          "requests/v1/json/index_create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.index.list.md"
+      }
+    },
+    {
+      "id": "json.list",
+      "family": "json",
+      "op": "list",
+      "kind": "read.page",
+      "title": "List JSON document keys",
+      "summary": "List JSON document keys with optional prefix filtering.",
+      "description": "Lists visible JSON document keys in byte order. Prefix, cursor, limit, and timestamp parameters constrain the page returned by the executor.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/json/list",
+      "cli": {
+        "path": [
+          "json",
+          "list"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_list",
+        "description": "Use this when the user wants to page through JSON document keys."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonList",
+      "output": "Output::JsonListResult",
+      "outputs": [
+        "Output::JsonListResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<String, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/list.json",
+        "response": "responses/v1/json/list_page.json",
+        "setup": [
+          "requests/v1/json/batch_set.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.list.md"
+      }
+    },
+    {
+      "id": "json.sample",
+      "family": "json",
+      "op": "sample",
+      "kind": "read.sample",
+      "title": "Sample JSON documents",
+      "summary": "Sample visible JSON documents.",
+      "description": "Returns a bounded sample of visible JSON documents plus the total matching count. Useful for inspecting document shape before writing queries or indexes.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/json/sample",
+      "cli": {
+        "path": [
+          "json",
+          "sample"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_sample",
+        "description": "Use this when the user wants a quick look at stored JSON documents without paging through all of them."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::JsonSample",
+      "output": "Output::JsonSampleResult",
+      "outputs": [
+        "Output::JsonSampleResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "SamplePage<JsonSampleItem>",
+      "commit": "none",
+      "pagination": "sample",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/sample.json",
+        "response": "responses/v1/json/sample_page.json",
+        "setup": [
+          "requests/v1/json/batch_set.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.sample.md"
+      }
+    },
+    {
+      "id": "json.set",
+      "family": "json",
+      "op": "set",
+      "kind": "mutation.put",
+      "title": "Set JSON value",
+      "summary": "Set a JSON value at a document path, creating the document when missing.",
+      "description": "Writes a JSON value at a path inside a document, creating the document and any missing intermediate objects when needed. Setting the root path `$` replaces the whole document; setting a nested path like `$.profile.name` updates one field and records a new document version.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/json/set",
+      "cli": {
+        "path": [
+          "json",
+          "set"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_json_set",
+        "description": "Use this when the user wants to write, update, or upsert JSON data — a whole document (path `$`) or one nested field."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::JsonSet",
+      "output": "Output::JsonWriteResult",
+      "outputs": [
+        "Output::JsonWriteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<JsonWrite>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_id"
+        },
+        {
+          "code": "invalid_argument.engine.json_path",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_too_long",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_too_long"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_not_found",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_not_found"
+        },
+        {
+          "code": "invalid_argument.engine.json_path_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_path_type"
+        },
+        {
+          "code": "invalid_argument.engine.json_value",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_value"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_too_large"
+        },
+        {
+          "code": "invalid_argument.engine.json_document_too_deep",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_document_too_deep"
+        },
+        {
+          "code": "invalid_argument.engine.json_array_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.json_array_too_large"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/json/set.json",
+        "response": "responses/v1/json/set_applied.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/json.yaml",
+        "prose": "commands/json.set.md"
+      }
+    },
+    {
       "id": "kv.batch_delete",
       "family": "kv",
       "op": "batch_delete",
@@ -850,6 +5258,255 @@
       "source": {
         "command": "crates/executor/idl/v1/commands/kv.yaml",
         "prose": "commands/kv.scan.md"
+      }
+    },
+    {
+      "id": "space.create",
+      "family": "space",
+      "op": "create",
+      "kind": "mutation.create",
+      "title": "Create product space",
+      "summary": "Create a product space on a branch.",
+      "description": "Creates a product space in the branch catalog. Creation is idempotent: creating a space that already exists succeeds with `created: false` and no mutation effect. Names reserved for engine control data are rejected with `invalid_argument.engine.product_space_reserved`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/space/create",
+      "cli": {
+        "path": [
+          "space",
+          "create"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_space_create",
+        "description": "Use this when the user wants a new named data namespace (space) on a branch."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::SpaceCreate",
+      "output": "Output::SpaceCreateResult",
+      "outputs": [
+        "Output::SpaceCreateResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<SpaceCreate>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.product_space_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space_reserved"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/spaces/create.json",
+        "response": "responses/v1/spaces/create.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/space.yaml",
+        "prose": "commands/space.create.md"
+      }
+    },
+    {
+      "id": "space.delete",
+      "family": "space",
+      "op": "delete",
+      "kind": "mutation.delete",
+      "title": "Delete product space",
+      "summary": "Delete a product space from a branch.",
+      "description": "Drops the product space from the branch catalog. The `default` space refuses deletion with `invalid_argument.engine.space_delete_default`. A space that still contains visible data refuses deletion with `failed_precondition.engine.space_not_empty` unless `force: true` is set, which tombstones the visible rows first and reports the count. Deleting a space that does not exist succeeds with `deleted: false`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/space/delete",
+      "cli": {
+        "path": [
+          "space",
+          "delete"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_space_delete",
+        "description": "Use this when the user wants to remove a space, optionally force-deleting its data."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::SpaceDelete",
+      "output": "Output::SpaceDeleteResult",
+      "outputs": [
+        "Output::SpaceDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<SpaceDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.product_space_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space_reserved"
+        },
+        {
+          "code": "invalid_argument.engine.space_delete_default",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.space_delete_default"
+        },
+        {
+          "code": "failed_precondition.engine.space_not_empty",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.space_not_empty"
+        },
+        {
+          "code": "invalid_argument.engine.space_delete_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.space_delete_too_large"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/spaces/delete.json",
+        "response": "responses/v1/spaces/delete.json",
+        "setup": [
+          "requests/v1/spaces/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/space.yaml",
+        "prose": "commands/space.delete.md"
+      }
+    },
+    {
+      "id": "space.exists",
+      "family": "space",
+      "op": "exists",
+      "kind": "read.status",
+      "title": "Check product space existence",
+      "summary": "Check whether a product space exists on a branch.",
+      "description": "Reports whether the named product space is cataloged on the target branch. A missing space is `false`, not an error; reserved names are rejected with `invalid_argument.engine.product_space_reserved`.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/space/exists",
+      "cli": {
+        "path": [
+          "space",
+          "exists"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_space_exists",
+        "description": "Use this when the user asks whether a specific space exists."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::SpaceExists",
+      "output": "Output::Bool",
+      "outputs": [
+        "Output::Bool"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusValue<bool>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.product_space_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space_reserved"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/spaces/exists.json",
+        "response": "responses/v1/spaces/exists_true.json",
+        "setup": [
+          "requests/v1/spaces/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/space.yaml",
+        "prose": "commands/space.exists.md"
+      }
+    },
+    {
+      "id": "space.list",
+      "family": "space",
+      "op": "list",
+      "kind": "read.page",
+      "title": "List product spaces",
+      "summary": "List product spaces on a branch.",
+      "description": "Lists the product space names cataloged on the target branch as a terminal page. Every branch has a `default` space; additional spaces isolate data namespaces within the same branch.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/space/list",
+      "cli": {
+        "path": [
+          "space",
+          "list"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_space_list",
+        "description": "Use this when the user wants to see which product spaces exist on a branch."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::SpaceList",
+      "output": "Output::SpaceList",
+      "outputs": [
+        "Output::SpaceList"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<String, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/spaces/list.json",
+        "response": "responses/v1/spaces/list.json",
+        "setup": [
+          "requests/v1/spaces/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/space.yaml",
+        "prose": "commands/space.list.md"
       }
     },
     {

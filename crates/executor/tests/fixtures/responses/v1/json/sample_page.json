@@ -1,0 +1,28 @@
+{
+  "data": {
+    "cursor": null,
+    "has_more": false,
+    "items": [
+      {
+        "document_version": 1,
+        "key": "user:ada",
+        "timestamp": 3,
+        "value": {
+          "name": "Ada"
+        },
+        "version": 3
+      },
+      {
+        "document_version": 1,
+        "key": "user:grace",
+        "timestamp": 3,
+        "value": {
+          "name": "Grace"
+        },
+        "version": 3
+      }
+    ],
+    "total_count": 2
+  },
+  "type": "json_sample_result"
+}

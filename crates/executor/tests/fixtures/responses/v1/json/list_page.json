@@ -1,0 +1,10 @@
+{
+  "data": {
+    "cursor": "user:ada",
+    "has_more": true,
+    "items": [
+      "user:ada"
+    ]
+  },
+  "type": "json_list_result"
+}

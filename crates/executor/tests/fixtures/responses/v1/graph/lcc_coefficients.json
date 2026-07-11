@@ -1,0 +1,11 @@
+{
+  "data": {
+    "coefficients": {
+      "alice": 1.0,
+      "bob": 1.0,
+      "carol": 1.0
+    },
+    "graph": "social"
+  },
+  "type": "graph_lcc_result"
+}

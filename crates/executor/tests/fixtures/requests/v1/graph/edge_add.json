@@ -1,0 +1,10 @@
+{
+  "type": "graph_add_edge",
+  "graph": "social",
+  "src": "alice",
+  "edge_type": "follows",
+  "dst": "bob",
+  "properties": {
+    "since": 2021
+  }
+}

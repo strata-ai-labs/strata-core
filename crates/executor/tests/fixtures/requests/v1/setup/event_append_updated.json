@@ -1,0 +1,1 @@
+{"type": "event_append", "event_type": "user.updated", "payload": {"name": "Ada", "plan": "pro"}}

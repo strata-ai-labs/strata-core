@@ -1,0 +1,135 @@
+{
+  "$defs": {
+    "CommitReceipt": {
+      "description": "Commit facts returned by mutating operations.",
+      "properties": {
+        "delete_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "durable": {
+          "type": "boolean"
+        },
+        "put_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "timestamp",
+        "durable",
+        "put_count",
+        "delete_count"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/graph.ontology.freeze.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "graph.ontology.freeze",
+  "request": {
+    "additionalProperties": false,
+    "description": "Freezes the ontology after validating it; writes then enforce it.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "graph": {
+        "description": "Graph name.",
+        "type": "string"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "graph_freeze_ontology",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "graph"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Graph ontology freeze acknowledgement.",
+    "properties": {
+      "data": {
+        "properties": {
+          "commit": {
+            "$ref": "#/$defs/CommitReceipt",
+            "description": "Commit receipt."
+          },
+          "graph": {
+            "description": "Graph name.",
+            "type": "string"
+          },
+          "link_types": {
+            "description": "Frozen link type count.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "object_types": {
+            "description": "Frozen object type count.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "timestamp": {
+            "description": "Commit timestamp.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "description": "Commit version.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "graph",
+          "object_types",
+          "link_types",
+          "commit",
+          "version",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "graph_ontology_freeze_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

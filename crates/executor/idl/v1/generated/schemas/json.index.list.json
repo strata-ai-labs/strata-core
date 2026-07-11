@@ -1,0 +1,131 @@
+{
+  "$defs": {
+    "JsonIndexDefinition": {
+      "description": "JSON secondary index definition exposed through the command boundary.",
+      "properties": {
+        "created_timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created_version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "field_path": {
+          "type": "string"
+        },
+        "index_type": {
+          "$ref": "#/$defs/JsonIndexType"
+        },
+        "name": {
+          "type": "string"
+        },
+        "space": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "space",
+        "field_path",
+        "index_type",
+        "created_version",
+        "created_timestamp"
+      ],
+      "type": "object"
+    },
+    "JsonIndexType": {
+      "description": "JSON secondary index kind exposed through the command boundary.",
+      "oneOf": [
+        {
+          "const": "numeric",
+          "description": "Numeric field index.",
+          "type": "string"
+        },
+        {
+          "const": "tag",
+          "description": "Exact tag/string field index.",
+          "type": "string"
+        },
+        {
+          "const": "text",
+          "description": "Lowercase text field index.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/json.index.list.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "json.index.list",
+  "request": {
+    "additionalProperties": false,
+    "description": "Lists JSON secondary indexes.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "json_list_indexes",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "JSON secondary index definitions.",
+    "properties": {
+      "data": {
+        "description": "Shared pagination continuation facts.",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "description": "Indexes in this page.",
+            "items": {
+              "$ref": "#/$defs/JsonIndexDefinition"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "json_index_list",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}
