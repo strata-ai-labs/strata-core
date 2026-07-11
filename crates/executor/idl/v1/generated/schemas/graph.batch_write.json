@@ -1,6 +1,6 @@
 {
   "$defs": {
-    "BatchItem8": {
+    "BatchItem9": {
       "description": "Shared positional item wrapper for all public batch responses.",
       "properties": {
         "applied": {
@@ -786,7 +786,7 @@
           },
           "items": {
             "items": {
-              "$ref": "#/$defs/BatchItem8"
+              "$ref": "#/$defs/BatchItem9"
             },
             "type": "array"
           },

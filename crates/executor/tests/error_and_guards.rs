@@ -1063,3 +1063,72 @@ fn workspace_root() -> PathBuf {
         .expect("crate is under workspace crates directory")
         .to_path_buf()
 }
+
+#[test]
+fn every_emitted_error_code_literal_is_registered() {
+    // Regression guard (audit S1): a code-shaped string literal in executor
+    // source that is not in the public registry would render with the
+    // silently-wrong `internal.executor.unregistered_code` fallback. This
+    // catches the drift at its source. (Codes built dynamically via format!
+    // are out of scope — this covers the common literal case.)
+    const CLASSES: &[&str] = &[
+        "invalid_argument.",
+        "not_found.",
+        "already_exists.",
+        "failed_precondition.",
+        "access_denied.",
+        "conflict.",
+        "ambiguous_commit.",
+        "history_unavailable.",
+        "unsupported.",
+        "resource_exhausted.",
+        "unavailable.",
+        "io.",
+        "corruption.",
+        "serialization.",
+        "internal.",
+        "data_loss.",
+        "inference.",
+    ];
+    let registered: std::collections::BTreeSet<&str> = public_error_code_entries()
+        .map(|entry| entry.code)
+        .collect();
+
+    let sources = source_files(&workspace_root().join("crates/executor/src"));
+
+    let mut unregistered: Vec<(String, String)> = Vec::new();
+    for path in sources {
+        // The IDL tooling module manipulates code strings and source
+        // filenames (e.g. "inference.yaml") as data, not as emitted errors.
+        if path.to_string_lossy().contains("idl_tooling") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).expect("source reads");
+        for class in CLASSES {
+            let needle = format!("\"{class}");
+            let mut cursor = 0;
+            while let Some(found) = text[cursor..].find(&needle) {
+                let start = cursor + found + 1; // past the opening quote
+                let rest = &text[start..];
+                let Some(end) = rest.find('"') else { break };
+                let code = &rest[..end];
+                cursor = start + end;
+                // Only a plausible code (segments of [a-z0-9_]); skips URLs
+                // and any quoted prose that happens to start with a class.
+                let plausible = code.split('.').all(|seg| {
+                    !seg.is_empty()
+                        && seg
+                            .chars()
+                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                });
+                if plausible && !registered.contains(code) {
+                    unregistered.push((path.display().to_string(), code.to_owned()));
+                }
+            }
+        }
+    }
+    assert!(
+        unregistered.is_empty(),
+        "these emitted error-code literals are not registered: {unregistered:?}"
+    );
+}

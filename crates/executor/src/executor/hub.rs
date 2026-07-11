@@ -92,12 +92,9 @@ impl Executor {
 
 #[cfg(feature = "hub")]
 fn hub_url_error(error: &HubUrlError) -> ExecutorError {
-    ExecutorError::new(
-        crate::ExecutorErrorClass::Unavailable,
-        "failed_precondition.executor.hub_url",
-        false,
-        error.to_string(),
-    )
+    // The only reachable HubUrlError is a malformed URL string — caller
+    // input, not a precondition on well-formed input, so invalid_argument.
+    ExecutorError::invalid_input("invalid_argument.executor.hub_url", error.to_string())
 }
 
 #[cfg(feature = "hub")]

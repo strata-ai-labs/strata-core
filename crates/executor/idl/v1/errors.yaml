@@ -18,7 +18,6 @@ errors:
   - invalid_argument.executor.vector_dimension
   - invalid_argument.executor.vector_limit
   - not_found.engine.vector_collection
-  - not_found.executor.vector_collection
   - invalid_argument.engine.json_document_id
   - invalid_argument.engine.json_path
   - invalid_argument.engine.json_path_too_long
@@ -93,7 +92,7 @@ errors:
   - invalid_argument.executor.hub_dataset
   - invalid_argument.executor.hub_branch
   - invalid_argument.executor.hub_feature_disabled
-  - failed_precondition.executor.hub_url
+  - invalid_argument.executor.hub_url
   - failed_precondition.executor.hub_clone
   - unavailable.executor.hub_transport
   - inference.unsupported_operation

@@ -35,8 +35,8 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         EXECUTOR_SCHEMA,
     ),
     entry(
-        "failed_precondition.executor.hub_url",
-        ErrorClass::FailedPrecondition,
+        "invalid_argument.executor.hub_url",
+        ErrorClass::InvalidArgument,
         RetryPolicy::Never,
         CommitOutcomeStatus::NotStarted,
         "The hub URL supplied for this invocation is invalid.",
@@ -248,15 +248,6 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         CommitOutcomeStatus::NotStarted,
         "The vector query limit is invalid.",
         "Use a positive vector query limit within the documented maximum.",
-        EXECUTOR_SCHEMA,
-    ),
-    entry(
-        "not_found.executor.vector_collection",
-        ErrorClass::NotFound,
-        RetryPolicy::Never,
-        CommitOutcomeStatus::NotApplicable,
-        "The requested vector collection was not found.",
-        "Create the vector collection or retry with an existing collection name.",
         EXECUTOR_SCHEMA,
     ),
     entry(

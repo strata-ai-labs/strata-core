@@ -184,7 +184,7 @@ fn import_vector(
                 // metric cannot be inferred from the data); require the target
                 // collection to pre-exist so the user chooses it explicitly.
                 return Err(not_found(
-                    "not_found.executor.vector_collection",
+                    "not_found.engine.vector_collection",
                     format!(
                         "vector collection `{collection}` does not exist; create it with the desired distance metric before importing (Arrow import does not create vector collections)"
                     ),

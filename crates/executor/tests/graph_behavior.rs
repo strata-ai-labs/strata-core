@@ -447,7 +447,7 @@ fn assert_graph_lifecycle_and_pagination(executor: &mut Executor) {
     assert!(zero_page.cursor.is_none());
 
     assert!(delete_graph(executor, "graph-b"));
-    assert!(get_meta(executor, "graph-b").is_none());
+    assert_meta_absent(executor, "graph-b");
     assert!(!delete_graph(executor, "graph-b"));
     let recreated = create_graph(executor, "graph-b");
     assert_eq!(recreated.node_count(), 0);
@@ -1096,7 +1096,16 @@ fn assert_graph_error_mapping(executor: &mut Executor) {
         })
         .expect_err("missing graph read fails");
     assert_eq!(missing_read.class(), ExecutorErrorClass::NotFound);
-    assert!(get_meta(executor, "missing").is_none());
+    let missing_meta = executor
+        .execute(Command::GraphGetMeta {
+            branch: None,
+            space: None,
+            graph: "missing".to_owned(),
+            as_of: None,
+        })
+        .expect_err("graph meta on a missing graph errors like its siblings");
+    assert_eq!(missing_meta.class(), ExecutorErrorClass::NotFound);
+    assert_eq!(missing_meta.code(), "not_found.engine.graph");
 
     let missing_write = executor
         .execute(Command::GraphAddNode {
@@ -1258,7 +1267,7 @@ fn run_graph_core_command_suite(executor: &mut Executor) {
         "node-c"
     ));
     assert!(delete_graph(executor, "deps"));
-    assert!(get_meta(executor, "deps").is_none());
+    assert_meta_absent(executor, "deps");
     assert!(!delete_graph(executor, "deps"));
 }
 
@@ -1379,6 +1388,19 @@ fn graph_names(executor: &mut Executor, cursor: Option<String>, limit: Option<u6
         Output::GraphNamePage { items: graphs, .. } => graphs,
         output => panic!("unexpected graph list output: {output:?}"),
     }
+}
+
+fn assert_meta_absent(executor: &mut Executor, graph: &str) {
+    let error = executor
+        .execute(Command::GraphGetMeta {
+            branch: None,
+            space: None,
+            graph: graph.to_owned(),
+            as_of: None,
+        })
+        .expect_err("graph meta on a missing graph errors like its siblings");
+    assert_eq!(error.class(), ExecutorErrorClass::NotFound);
+    assert_eq!(error.code(), "not_found.engine.graph");
 }
 
 fn get_meta(executor: &mut Executor, graph: &str) -> Option<strata_executor::GraphInfoData> {

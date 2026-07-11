@@ -53,7 +53,10 @@ pub(super) fn kv_outputs() -> Vec<Output> {
             "invalid key",
         )])),
         Output::Bool(true),
-        Output::BoolList(vec![true, false]),
+        Output::BatchExistsResults(kv_batch_exists(vec![
+            BatchExistsItemResult::new(bytes("a"), true),
+            BatchExistsItemResult::new(bytes("missing"), false),
+        ])),
         Output::Uint(2),
         Output::SampleResult {
             total_count: 3,

@@ -1,10 +1,11 @@
 use super::{
     batch_get_result, batch_item_result, bytes_from_key, delete_effect, delete_output,
-    empty_batch_get_results, empty_batch_results, finish_batch_get_results, finish_batch_results,
-    history_result, kv_batch_get_result, kv_batch_result, kv_key, kv_value, optional_key,
+    empty_batch_exists_results, empty_batch_get_results, empty_batch_results,
+    finish_batch_exists_results, finish_batch_get_results, finish_batch_results, history_result,
+    kv_batch_exists_result, kv_batch_get_result, kv_batch_result, kv_key, kv_value, optional_key,
     optional_limit, page_or_keys, reject_duplicate_valid_keys, sample_output, scan_item,
-    upsert_effect, versioned_value, write_output, BatchGetItemResult, BatchItemResult,
-    BatchKvEntry, Bytes, Executor, ExecutorResult, Output, PageInfo, Timestamp,
+    upsert_effect, versioned_value, write_output, BatchExistsItemResult, BatchGetItemResult,
+    BatchItemResult, BatchKvEntry, Bytes, Executor, ExecutorResult, Output, PageInfo, Timestamp,
 };
 
 impl Executor {
@@ -257,11 +258,38 @@ impl Executor {
         keys: Vec<Bytes>,
     ) -> ExecutorResult<Output> {
         let mut service = self.kv_service(branch, space)?;
-        let keys = keys
-            .into_iter()
-            .map(kv_key)
-            .collect::<ExecutorResult<Vec<_>>>()?;
-        Ok(Output::BoolList(service.batch_exists(&keys)?))
+        if keys.is_empty() {
+            return Ok(Output::BatchExistsResults(kv_batch_exists_result(
+                Vec::new(),
+            )));
+        }
+        let mut results = empty_batch_exists_results(keys.len());
+        let mut valid_keys = Vec::with_capacity(keys.len());
+        for (index, key) in keys.into_iter().enumerate() {
+            let output_key = key.clone();
+            match kv_key(key) {
+                Ok(key) => valid_keys.push((index, output_key, key)),
+                Err(error) => {
+                    results[index] = Some(BatchExistsItemResult::failed_error(output_key, error));
+                }
+            }
+        }
+        if valid_keys.is_empty() {
+            return Ok(Output::BatchExistsResults(finish_batch_exists_results(
+                results,
+            )));
+        }
+        let keys = valid_keys
+            .iter()
+            .map(|(_, _, key)| key.clone())
+            .collect::<Vec<_>>();
+        let exists = service.batch_exists(&keys)?;
+        for ((index, output_key, _), exists) in valid_keys.into_iter().zip(exists) {
+            results[index] = Some(BatchExistsItemResult::new(output_key, exists));
+        }
+        Ok(Output::BatchExistsResults(finish_batch_exists_results(
+            results,
+        )))
     }
 
     pub(super) fn execute_kv_exists(

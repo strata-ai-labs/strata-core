@@ -124,7 +124,7 @@ commands:
       - invalid_argument.executor.hub_dataset
       - invalid_argument.executor.hub_branch
       - invalid_argument.executor.hub_feature_disabled
-      - failed_precondition.executor.hub_url
+      - invalid_argument.executor.hub_url
       - failed_precondition.executor.hub_clone
       - unavailable.executor.hub_transport
     errors-:

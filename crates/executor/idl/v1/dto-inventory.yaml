@@ -6,6 +6,7 @@ response_models:
   - Page<ScanItem, Bytes>
   - BatchResult<KvMutationItem>
   - BatchResult<Maybe<Bytes>>
+  - BatchResult<BatchExistsItemResult>
   - BatchResult<StatusValue<bool>>
   - StatusValue<bool>
   - Maybe<Vec<HistoryItem>>

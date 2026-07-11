@@ -42,4 +42,4 @@ families:
       - invalid_argument.engine.product_space
       - invalid_argument.engine.vector_collection
       - invalid_argument.engine.vector_key
-      - not_found.executor.vector_collection
+      - not_found.engine.vector_collection

@@ -404,6 +404,56 @@ impl BatchGetItemResult {
     }
 }
 
+/// Positional batch existence result.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
+pub struct BatchExistsItemResult {
+    key: Bytes,
+    exists: bool,
+    error: Option<ErrorStatus>,
+}
+
+impl BatchExistsItemResult {
+    /// Creates a batch existence result. `exists` is a definitive answer,
+    /// so both true and false are `ok` items (never a miss).
+    pub const fn new(key: Bytes, exists: bool) -> Self {
+        Self {
+            key,
+            exists,
+            error: None,
+        }
+    }
+
+    /// Creates a failed batch existence result from an executor error.
+    pub fn failed_error(key: Bytes, error: ExecutorError) -> Self {
+        Self {
+            key,
+            exists: false,
+            error: Some(error.into_status()),
+        }
+    }
+
+    /// Returns the input key.
+    pub const fn key(&self) -> &Bytes {
+        &self.key
+    }
+
+    /// Returns whether the key exists.
+    pub const fn exists(&self) -> bool {
+        self.exists
+    }
+
+    /// Returns the item error message, when this item failed validation.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_ref().map(ErrorStatus::message)
+    }
+
+    /// Returns the structured item error status.
+    pub const fn error_status(&self) -> Option<&ErrorStatus> {
+        self.error.as_ref()
+    }
+}
+
 /// KV scan item.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]

@@ -1,7 +1,7 @@
 use super::{
-    bytes_from_key, optional_limit, usize_to_u64, BTreeSet, BatchGetItemResult, BatchItem,
-    BatchItemResult, BatchMode, BatchResult, Bytes, CommitReceipt, ErrorStatus,
-    EventBatchAppendItemResult, ExecutorError, ExecutorErrorClass, ExecutorResult,
+    bytes_from_key, optional_limit, usize_to_u64, BTreeSet, BatchExistsItemResult,
+    BatchGetItemResult, BatchItem, BatchItemResult, BatchMode, BatchResult, Bytes, CommitReceipt,
+    ErrorStatus, EventBatchAppendItemResult, ExecutorError, ExecutorErrorClass, ExecutorResult,
     GraphBatchItemResult, JsonBatchGetItemResult, JsonBatchItemResult, KvKey, MutationEffect,
     Output, PageInfo, VectorBatchGetItemResult, VectorBatchItemResult,
 };
@@ -93,6 +93,43 @@ pub(super) fn finish_batch_get_results(
         results
             .into_iter()
             .map(|result| result.expect("all batch get result slots are filled"))
+            .collect(),
+    )
+}
+
+pub(super) fn empty_batch_exists_results(len: usize) -> Vec<Option<BatchExistsItemResult>> {
+    std::iter::repeat_with(|| None).take(len).collect()
+}
+
+pub(super) fn kv_batch_exists_result(
+    results: Vec<BatchExistsItemResult>,
+) -> BatchResult<BatchExistsItemResult> {
+    // `exists` is a definitive answer, so valid items are always `ok`
+    // (true or false); only a malformed key is a positional error.
+    BatchResult::from_items(
+        BatchMode::Itemwise,
+        results
+            .into_iter()
+            .enumerate()
+            .map(|(index, result)| {
+                let index = usize_to_u64(index);
+                if let Some(error) = result.error_status().cloned() {
+                    BatchItem::failed(index, Some(result), error)
+                } else {
+                    BatchItem::ok(index, false, None, None, result)
+                }
+            })
+            .collect(),
+    )
+}
+
+pub(super) fn finish_batch_exists_results(
+    results: Vec<Option<BatchExistsItemResult>>,
+) -> BatchResult<BatchExistsItemResult> {
+    kv_batch_exists_result(
+        results
+            .into_iter()
+            .map(|result| result.expect("all batch exists result slots are filled"))
             .collect(),
     )
 }

@@ -697,3 +697,50 @@ fn uncovered_allowlist_is_disjoint_from_coverage() {
         }
     }
 }
+
+#[test]
+fn itemwise_batch_commands_return_a_batch_result() {
+    // Regression guard for the batch-bypass family (kv_batch_exists, #2578):
+    // any command declared batch.itemwise_* must actually return a
+    // BatchResult<T> on the wire, so it can express per-item status. A flat
+    // output (e.g. the old BoolList) would fail here — its schema `data`
+    // would be an array, not a $ref to a BatchResult def.
+    let index = resolve_default_index().expect("index resolves");
+    let schemas_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("idl/v1/generated/schemas");
+    let mut checked = 0;
+    for command in &index.commands {
+        if !command.kind.starts_with("batch.itemwise") {
+            continue;
+        }
+        assert!(
+            command.response_model.starts_with("BatchResult<"),
+            "{} is itemwise but its response_model is {}",
+            command.id,
+            command.response_model
+        );
+        let text = fs::read_to_string(schemas_dir.join(format!("{}.json", command.id)))
+            .expect("schema document exists");
+        let document: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        let data_ref = document["response"]["properties"]["data"]["$ref"]
+            .as_str()
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} response `data` is not a $ref (not a BatchResult shape)",
+                    command.id
+                )
+            });
+        let def = data_ref
+            .strip_prefix("#/$defs/")
+            .expect("$ref points into $defs");
+        assert!(
+            def.starts_with("BatchResult"),
+            "{} response `data` resolves to `{def}`, not a BatchResult",
+            command.id
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 4,
+        "expected several itemwise batch commands, saw {checked}"
+    );
+}

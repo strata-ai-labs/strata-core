@@ -1,7 +1,37 @@
 {
-  "type": "bool_list",
-  "data": [
-    true,
-    false
-  ]
+  "data": {
+    "applied": false,
+    "commit": null,
+    "items": [
+      {
+        "applied": false,
+        "commit": null,
+        "effect": null,
+        "error": null,
+        "index": 0,
+        "result": {
+          "error": null,
+          "exists": true,
+          "key": "YQ=="
+        },
+        "status": "ok"
+      },
+      {
+        "applied": false,
+        "commit": null,
+        "effect": null,
+        "error": null,
+        "index": 1,
+        "result": {
+          "error": null,
+          "exists": false,
+          "key": "bWlzc2luZw=="
+        },
+        "status": "ok"
+      }
+    ],
+    "mode": "itemwise",
+    "status": "ok"
+  },
+  "type": "batch_exists_results"
 }

@@ -1,6 +1,6 @@
 {
   "$defs": {
-    "BatchItem5": {
+    "BatchItem6": {
       "description": "Shared positional item wrapper for all public batch responses.",
       "properties": {
         "applied": {
@@ -97,7 +97,7 @@
         }
       ]
     },
-    "BatchResult5": {
+    "BatchResult6": {
       "description": "Shared batch response wrapper for all public batch commands.",
       "properties": {
         "applied": {
@@ -115,7 +115,7 @@
         },
         "items": {
           "items": {
-            "$ref": "#/$defs/BatchItem5"
+            "$ref": "#/$defs/BatchItem6"
           },
           "type": "array"
         },
@@ -579,7 +579,7 @@
     "description": "Positional vector batch delete results.",
     "properties": {
       "data": {
-        "$ref": "#/$defs/BatchResult5"
+        "$ref": "#/$defs/BatchResult6"
       },
       "type": {
         "const": "vector_batch_delete_results",

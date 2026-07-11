@@ -162,10 +162,7 @@ fn hub_clone_without_configuration_reports_the_hub_url_code() {
             hub_url: Some("not a url".to_owned()),
         })
         .expect_err("malformed hub URL refuses");
-    assert_eq!(
-        error.status().code(),
-        "failed_precondition.executor.hub_url"
-    );
+    assert_eq!(error.status().code(), "invalid_argument.executor.hub_url");
 }
 
 #[test]
