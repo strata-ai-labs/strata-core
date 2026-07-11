@@ -1,0 +1,103 @@
+# Error-code exhaustiveness allowlist (drift guard, mirrors uncovered-commands.yaml).
+#
+# Every registered public error code (executor + inference + engine) must be
+# declared in `errors.yaml` — so SDK-facing docs surface it — or listed here.
+# This list may ONLY shrink: declaring a code in errors.yaml requires deleting
+# its line, and the resolver fails if a listed code is undocumented-but-covered,
+# is not registered, or if a newly registered code is neither declared nor
+# listed. Do not add entries for new codes — declare them in errors.yaml.
+#
+# The current entries are cross-cutting engine-internal codes (persistence,
+# data-loss, corruption, control-plane) plus two executor codes that are not
+# tied to a single public command (`internal.executor.unregistered_code`, the
+# unregistered-code fallback, and `invalid_argument.executor.batch_item`, the
+# documented batch-item error shape). They are grandfathered pending per-surface
+# error mapping.
+uncovered:
+  - already_exists.engine.json_document
+  - already_exists.engine.persistence
+  - already_exists.engine.vector_collection
+  - ambiguous_commit.engine.persistence
+  - conflict.engine.artifact_import
+  - conflict.engine.branch_generation
+  - conflict.engine.persistence
+  - corruption.engine.artifact_payload
+  - corruption.engine.persistence_recovery
+  - data_loss.engine.branch_catalog
+  - data_loss.engine.branch_id
+  - data_loss.engine.control_name
+  - data_loss.engine.control_plane
+  - data_loss.engine.control_plane_missing
+  - data_loss.engine.event_index_key
+  - data_loss.engine.event_key
+  - data_loss.engine.event_metadata
+  - data_loss.engine.event_record
+  - data_loss.engine.graph_binding_key
+  - data_loss.engine.graph_binding_record
+  - data_loss.engine.graph_edge_key
+  - data_loss.engine.graph_edge_record
+  - data_loss.engine.graph_index
+  - data_loss.engine.graph_key
+  - data_loss.engine.graph_metadata
+  - data_loss.engine.graph_node_key
+  - data_loss.engine.graph_node_record
+  - data_loss.engine.graph_ontology_record
+  - data_loss.engine.graph_reverse_edge_key
+  - data_loss.engine.graph_type_index_key
+  - data_loss.engine.graph_type_index_record
+  - data_loss.engine.json_document
+  - data_loss.engine.json_index
+  - data_loss.engine.json_index_key
+  - data_loss.engine.json_key
+  - data_loss.engine.kv_key
+  - data_loss.engine.kv_value
+  - data_loss.engine.space_catalog
+  - data_loss.engine.vector_artifact
+  - data_loss.engine.vector_artifacts
+  - data_loss.engine.vector_collection
+  - data_loss.engine.vector_collection_key
+  - data_loss.engine.vector_index_manifest
+  - data_loss.engine.vector_index_manifest_key
+  - data_loss.engine.vector_key
+  - data_loss.engine.vector_record
+  - failed_precondition.engine.branch_status
+  - failed_precondition.engine.capability_registry
+  - failed_precondition.engine.control_payload_version
+  - failed_precondition.engine.default_branch
+  - failed_precondition.engine.layout_version
+  - failed_precondition.engine.migration_registry
+  - failed_precondition.engine.persistence
+  - failed_precondition.engine.storage_registry
+  - failed_precondition.engine.vector_artifact
+  - failed_precondition.engine.vector_index_manifest
+  - internal.engine.persistence
+  - internal.executor.unregistered_code
+  - invalid_argument.engine.branch_catalog
+  - invalid_argument.engine.event_metadata
+  - invalid_argument.engine.event_record
+  - invalid_argument.engine.graph_binding_record
+  - invalid_argument.engine.graph_edge_record
+  - invalid_argument.engine.graph_metadata
+  - invalid_argument.engine.graph_node_record
+  - invalid_argument.engine.graph_ontology_record
+  - invalid_argument.engine.graph_type_index_record
+  - invalid_argument.engine.json_batch
+  - invalid_argument.engine.json_batch_duplicate_document
+  - invalid_argument.engine.json_document
+  - invalid_argument.engine.json_index
+  - invalid_argument.engine.persistence
+  - invalid_argument.engine.space_catalog
+  - invalid_argument.engine.vector_artifact
+  - invalid_argument.engine.vector_artifact_budget
+  - invalid_argument.engine.vector_index_manifest
+  - invalid_argument.engine.vector_metadata_field
+  - invalid_argument.engine.vector_metadata_too_large
+  - invalid_argument.engine.vector_record
+  - invalid_argument.executor.batch_item
+  - not_found.engine.json_document
+  - not_found.engine.persistence
+  - resource_exhausted.engine.persistence_budget
+  - unavailable.engine.control_plane
+  - unavailable.engine.persistence
+  - unavailable.engine.vector_artifacts
+  - unsupported.engine.persistence_capability

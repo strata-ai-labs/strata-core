@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "dca1500058b6b3e81b53e380f5a636362c16f40f8d7a928331ce536a136625c2",
+    "checksum_sha256": "8dfb8a1bc983ce4c44d178d9bc0a6601e657cf57ccf1be0de663a3a5a19a186f",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -3675,6 +3675,10 @@
         {
           "code": "inference.local_runtime_failed",
           "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        },
+        {
+          "code": "inference.registry_corrupt",
+          "docs": "https://stratadb.org/e/inference.registry_corrupt"
         }
       ],
       "fixtures": {
@@ -3741,6 +3745,22 @@
         {
           "code": "inference.provider_unavailable",
           "docs": "https://stratadb.org/e/inference.provider_unavailable"
+        },
+        {
+          "code": "inference.provider_malformed_response",
+          "docs": "https://stratadb.org/e/inference.provider_malformed_response"
+        },
+        {
+          "code": "inference.unsupported_provider",
+          "docs": "https://stratadb.org/e/inference.unsupported_provider"
+        },
+        {
+          "code": "inference.unsupported_parameter",
+          "docs": "https://stratadb.org/e/inference.unsupported_parameter"
+        },
+        {
+          "code": "inference.registry_corrupt",
+          "docs": "https://stratadb.org/e/inference.registry_corrupt"
         }
       ],
       "fixtures": {
@@ -3807,6 +3827,22 @@
         {
           "code": "inference.provider_unavailable",
           "docs": "https://stratadb.org/e/inference.provider_unavailable"
+        },
+        {
+          "code": "inference.provider_malformed_response",
+          "docs": "https://stratadb.org/e/inference.provider_malformed_response"
+        },
+        {
+          "code": "inference.unsupported_provider",
+          "docs": "https://stratadb.org/e/inference.unsupported_provider"
+        },
+        {
+          "code": "inference.unsupported_parameter",
+          "docs": "https://stratadb.org/e/inference.unsupported_parameter"
+        },
+        {
+          "code": "inference.registry_corrupt",
+          "docs": "https://stratadb.org/e/inference.registry_corrupt"
         }
       ],
       "fixtures": {
@@ -3889,6 +3925,22 @@
         {
           "code": "inference.invalid_request",
           "docs": "https://stratadb.org/e/inference.invalid_request"
+        },
+        {
+          "code": "inference.provider_malformed_response",
+          "docs": "https://stratadb.org/e/inference.provider_malformed_response"
+        },
+        {
+          "code": "inference.unsupported_provider",
+          "docs": "https://stratadb.org/e/inference.unsupported_provider"
+        },
+        {
+          "code": "inference.unsupported_parameter",
+          "docs": "https://stratadb.org/e/inference.unsupported_parameter"
+        },
+        {
+          "code": "inference.registry_corrupt",
+          "docs": "https://stratadb.org/e/inference.registry_corrupt"
         }
       ],
       "fixtures": {
@@ -4038,6 +4090,10 @@
         {
           "code": "inference.io_failure",
           "docs": "https://stratadb.org/e/inference.io_failure"
+        },
+        {
+          "code": "inference.registry_corrupt",
+          "docs": "https://stratadb.org/e/inference.registry_corrupt"
         }
       ],
       "fixtures": {
@@ -4096,6 +4152,10 @@
         {
           "code": "inference.local_runtime_failed",
           "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        },
+        {
+          "code": "inference.registry_corrupt",
+          "docs": "https://stratadb.org/e/inference.registry_corrupt"
         }
       ],
       "fixtures": {
@@ -4154,6 +4214,10 @@
         {
           "code": "inference.local_runtime_failed",
           "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        },
+        {
+          "code": "inference.registry_corrupt",
+          "docs": "https://stratadb.org/e/inference.registry_corrupt"
         }
       ],
       "fixtures": {
