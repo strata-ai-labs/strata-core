@@ -3,7 +3,6 @@
   "data": {
     "graph": "deps",
     "node_id": "node-a",
-    "created": true,
     "effect": {
       "applied": true,
       "kind": "created",
@@ -16,8 +15,6 @@
       "durable": true,
       "put_count": 2,
       "delete_count": 0
-    },
-    "version": 2,
-    "timestamp": 20
+    }
   }
 }

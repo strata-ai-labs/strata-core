@@ -37,10 +37,10 @@ fn seed_graph(executor: &mut Executor) -> u64 {
         let output = executor
             .graph_add_edge("web", src, edge_type, dst, Some(weight), None)
             .expect("edge added");
-        let Output::GraphEdgeWriteResult { timestamp, .. } = output else {
+        let Output::GraphEdgeWriteResult { commit, .. } = output else {
             panic!("unexpected edge write output: {output:?}");
         };
-        last_timestamp = timestamp;
+        last_timestamp = commit.timestamp();
     }
     last_timestamp
 }

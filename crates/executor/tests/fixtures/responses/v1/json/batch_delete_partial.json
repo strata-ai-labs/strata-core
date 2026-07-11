@@ -27,21 +27,7 @@
         "error": null,
         "index": 0,
         "result": {
-          "commit": {
-            "delete_count": 1,
-            "durable": false,
-            "put_count": 0,
-            "timestamp": 4,
-            "version": 4
-          },
-          "document_version": null,
-          "effect": {
-            "affected_count": 1,
-            "applied": true,
-            "kind": "deleted",
-            "matched": true
-          },
-          "error": null
+          "document_version": null
         },
         "status": "ok"
       },
@@ -57,14 +43,7 @@
         "error": null,
         "index": 1,
         "result": {
-          "document_version": null,
-          "effect": {
-            "affected_count": 0,
-            "applied": false,
-            "kind": "not_found",
-            "matched": false
-          },
-          "error": null
+          "document_version": null
         },
         "status": "ok"
       }

@@ -152,7 +152,6 @@ fn export_kv(
             Output::KeysPage { items: keys, page } => {
                 (keys, page.has_more(), page.cursor().cloned())
             }
-            Output::Keys { items: keys, page } => (keys, page.has_more(), page.cursor().cloned()),
             _ => return Err(unexpected_output("kv_list")),
         };
         if keys.is_empty() {

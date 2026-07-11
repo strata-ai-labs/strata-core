@@ -1,5 +1,5 @@
 use super::{
-    bulk_delete_effect, commit_receipt, upsert_effect, usize_to_u64, BatchVectorEntry,
+    bulk_delete_effect, commit_receipt, upsert_effect, usize_to_u64, BatchItem, BatchVectorEntry,
     CommitOutcome, EngineVectorBulkDeleteOutcome, EngineVectorCollectionInfo,
     EngineVectorCollectionName, EngineVectorDistanceMetric, EngineVectorEmbedding,
     EngineVectorEntry, EngineVectorFilter, EngineVectorFilterCondition, EngineVectorFilterOp,
@@ -7,9 +7,10 @@ use super::{
     EngineVectorKeyPage, EngineVectorMetadata, EngineVectorMetadataPatch, EngineVectorScalar,
     EngineVectorSearchMatch, EngineVectorUpsertEntry, EngineVectorVersionedEntry, ExecutorError,
     ExecutorResult, MutationEffect, Output, OutputVectorCollectionInfo,
-    OutputVectorIndexArtifactSource, OutputVectorIndexDiagnostics, PageInfo, VectorBatchItemResult,
-    VectorData, VectorDistanceMetric, VectorFilterOp, VectorHistoryItem, VectorHistoryResult,
-    VectorMatch, VectorMetadataFilter, VectorScalar, VectorService, VectorVersionedData,
+    OutputVectorIndexArtifactSource, OutputVectorIndexDiagnostics, PageInfo,
+    VectorBatchGetItemResult, VectorBatchItemResult, VectorData, VectorDistanceMetric,
+    VectorFilterOp, VectorHistoryItem, VectorHistoryResult, VectorMatch, VectorMetadataFilter,
+    VectorScalar, VectorService, VectorVersionedData,
 };
 
 pub(super) fn vector_collection(name: String) -> ExecutorResult<EngineVectorCollectionName> {
@@ -264,8 +265,6 @@ pub(super) fn vector_write_output(
         key: key.as_str().to_owned(),
         effect: upsert_effect(!created),
         commit: commit_receipt(outcome),
-        version: outcome.version().as_u64(),
-        timestamp: outcome.timestamp().as_micros(),
         vector_revision,
     }
 }
@@ -277,27 +276,62 @@ pub(super) fn vector_bulk_delete_output(
     let commit = outcome.commit();
     Output::VectorBulkDeleteResult {
         collection: collection.as_str().to_owned(),
-        deleted_count: outcome.deleted_count(),
         effect: bulk_delete_effect(outcome.deleted_count()),
         commit: commit.map(commit_receipt),
-        version: commit.map(|outcome| outcome.version().as_u64()),
-        timestamp: commit.map(|outcome| outcome.timestamp().as_micros()),
     }
 }
 
 pub(super) fn vector_batch_item_result(
+    index: u64,
     applied: bool,
     effect: MutationEffect,
     outcome: Option<CommitOutcome>,
     vector_revision: Option<u64>,
-) -> VectorBatchItemResult {
-    let commit = outcome.map(commit_receipt);
-    VectorBatchItemResult::new_with_effect(
+) -> BatchItem<VectorBatchItemResult> {
+    BatchItem::ok(
+        index,
         applied,
-        effect,
-        commit,
-        outcome.map(|outcome| outcome.version().as_u64()),
-        outcome.map(|outcome| outcome.timestamp().as_micros()),
-        vector_revision,
+        Some(effect),
+        outcome.map(commit_receipt),
+        VectorBatchItemResult::new(vector_revision),
+    )
+}
+
+pub(super) fn vector_batch_item_failed(
+    index: u64,
+    error: ExecutorError,
+) -> BatchItem<VectorBatchItemResult> {
+    BatchItem::failed(
+        index,
+        Some(VectorBatchItemResult::new(None)),
+        error.into_status(),
+    )
+}
+
+pub(super) fn vector_batch_get_item(
+    index: u64,
+    value: Option<VectorVersionedData>,
+) -> BatchItem<VectorBatchGetItemResult> {
+    if value.is_some() {
+        BatchItem::ok(
+            index,
+            false,
+            None,
+            None,
+            VectorBatchGetItemResult::new(value),
+        )
+    } else {
+        BatchItem::miss(index, VectorBatchGetItemResult::not_found())
+    }
+}
+
+pub(super) fn vector_batch_get_failed(
+    index: u64,
+    error: ExecutorError,
+) -> BatchItem<VectorBatchGetItemResult> {
+    BatchItem::failed(
+        index,
+        Some(VectorBatchGetItemResult::not_found()),
+        error.into_status(),
     )
 }

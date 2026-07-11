@@ -8,15 +8,12 @@
       "timestamp": 6,
       "version": 6
     },
-    "deleted_count": 1,
     "effect": {
       "affected_count": 1,
       "applied": true,
       "kind": "deleted",
       "matched": true
-    },
-    "timestamp": 6,
-    "version": 6
+    }
   },
   "type": "vector_bulk_delete_result"
 }

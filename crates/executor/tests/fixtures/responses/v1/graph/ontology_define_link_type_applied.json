@@ -7,7 +7,6 @@
       "timestamp": 5,
       "version": 5
     },
-    "created": true,
     "effect": {
       "affected_count": 1,
       "applied": true,
@@ -16,9 +15,7 @@
     },
     "graph": "social",
     "kind": "link",
-    "timestamp": 5,
-    "type_name": "follows",
-    "version": 5
+    "type_name": "follows"
   },
   "type": "graph_ontology_write_result"
 }

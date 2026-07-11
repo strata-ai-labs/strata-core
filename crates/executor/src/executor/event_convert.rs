@@ -1,10 +1,11 @@
 use super::{
-    commit_receipt, BatchEventEntry, CommitOutcome, CommitVersion, EngineEventAppendOutcome,
-    EngineEventBatchAppendEntry, EngineEventBatchAppendItemOutcome, EngineEventChainVerification,
-    EngineEventPayload, EngineEventRangeDirection, EngineEventRangePage, EngineEventSequence,
-    EngineEventType, EngineEventVersionedRecord, EventBatchAppendItemResult, EventData,
-    EventRangeDirection, EventVersionedData, ExecutorError, ExecutorResult, MutationEffect, Output,
-    OutputEventChainVerification, PageInfo, Timestamp,
+    batch_item_error_status, commit_receipt, engine_error_status, BatchEventEntry, BatchItem,
+    CommitOutcome, EngineEventAppendOutcome, EngineEventBatchAppendEntry,
+    EngineEventBatchAppendItemOutcome, EngineEventChainVerification, EngineEventPayload,
+    EngineEventRangeDirection, EngineEventRangePage, EngineEventSequence, EngineEventType,
+    EngineEventVersionedRecord, EventBatchAppendItemResult, EventData, EventRangeDirection,
+    EventVersionedData, ExecutorError, ExecutorResult, MutationEffect, Output,
+    OutputEventChainVerification, PageInfo,
 };
 
 pub(super) fn engine_event_type(event_type: String) -> ExecutorResult<EngineEventType> {
@@ -40,14 +41,11 @@ pub(super) const fn engine_event_direction(
 }
 
 pub(super) fn event_append_output(outcome: &EngineEventAppendOutcome) -> Output {
-    let commit = outcome.commit();
     Output::EventAppendResult {
         sequence: outcome.sequence().as_u64(),
         event_type: outcome.event_type().as_str().to_owned(),
         effect: MutationEffect::created(),
-        commit: commit_receipt(commit),
-        version: commit.version().as_u64(),
-        timestamp: commit.timestamp().as_micros(),
+        commit: commit_receipt(outcome.commit()),
     }
 }
 
@@ -95,26 +93,38 @@ pub(super) fn event_range_output(page: &EngineEventRangePage) -> Output {
 }
 
 pub(super) fn event_batch_append_item_result(
+    index: u64,
     item: &EngineEventBatchAppendItemOutcome,
     batch_commit: Option<CommitOutcome>,
-) -> EventBatchAppendItemResult {
+) -> BatchItem<EventBatchAppendItemResult> {
     if let Some(error) = item.error_status() {
-        return EventBatchAppendItemResult::failed_engine_status(error);
+        return BatchItem::failed(
+            index,
+            Some(EventBatchAppendItemResult::new(None, None)),
+            engine_error_status(error),
+        );
     }
     if let Some(error) = item.error_message() {
-        return EventBatchAppendItemResult::failed(error);
+        return BatchItem::failed(
+            index,
+            Some(EventBatchAppendItemResult::new(None, None)),
+            batch_item_error_status(error),
+        );
     }
     let commit = item
         .sequence()
         .and_then(|_| batch_commit.map(commit_receipt));
-    EventBatchAppendItemResult::new_with_effect(
-        item.sequence().map(EngineEventSequence::as_u64),
-        item.event_type()
-            .map(|event_type| event_type.as_str().to_owned()),
-        item.sequence().map(|_| MutationEffect::created()),
+    let effect = item.sequence().map(|_| MutationEffect::created());
+    BatchItem::ok(
+        index,
+        effect.is_some_and(|value| value.applied()),
+        effect,
         commit,
-        item.commit_version().map(CommitVersion::as_u64),
-        item.commit_timestamp().map(Timestamp::as_micros),
+        EventBatchAppendItemResult::new(
+            item.sequence().map(EngineEventSequence::as_u64),
+            item.event_type()
+                .map(|event_type| event_type.as_str().to_owned()),
+        ),
     )
 }
 

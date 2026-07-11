@@ -78,7 +78,9 @@ use strata_engine::{
 };
 
 use crate::command::Command;
-use crate::error::{ErrorStatus, ExecutorError, ExecutorErrorClass, ExecutorResult};
+use crate::error::{
+    batch_item_error_status, engine_error_status, ExecutorError, ExecutorErrorClass, ExecutorResult,
+};
 use crate::output::Output;
 use crate::types::{
     AdminCapabilities as OutputAdminCapabilities, AdminConfig as OutputAdminConfig,
@@ -146,7 +148,6 @@ use batch::{
     finish_json_batch_results, finish_vector_batch_get_results, finish_vector_batch_results,
     graph_batch_result, json_batch_get_batch_result, json_batch_result, kv_batch_exists_result,
     kv_batch_get_result, kv_batch_result, page_or_keys, reject_duplicate_valid_keys,
-    vector_batch_get_result, vector_batch_result,
 };
 use event_convert::{
     engine_event_direction, engine_event_type, event_append_output, event_batch_append_item_result,
@@ -160,14 +161,14 @@ use graph_convert::{
     engine_graph_edge_data, engine_graph_node_data, engine_graph_pagerank_options,
     engine_graph_personalization, engine_graph_property_defs, graph_batch_operation_name,
     graph_batch_write_output, graph_bfs_output, graph_binding_page_output,
-    graph_bulk_insert_output, graph_cdlp_output, graph_delete_output, graph_delete_policy_output,
-    graph_edge_data_output, graph_edge_type, graph_edge_write_output, graph_info_data,
-    graph_lcc_output, graph_name, graph_name_page_output, graph_neighbor_page_output,
-    graph_node_data_output, graph_node_id, graph_node_page_output, graph_node_write_output,
-    graph_ontology_delete_output, graph_ontology_freeze_output, graph_ontology_output,
-    graph_ontology_summary_output, graph_ontology_write_output, graph_pagerank_output,
-    graph_sssp_output, graph_type_name, graph_wcc_output, optional_graph_edge_type,
-    optional_graph_name, optional_graph_node_id,
+    graph_bulk_insert_output, graph_cdlp_output, graph_create_output, graph_delete_output,
+    graph_delete_policy_output, graph_edge_data_output, graph_edge_type, graph_edge_write_output,
+    graph_info_data, graph_lcc_output, graph_name, graph_name_page_output,
+    graph_neighbor_page_output, graph_node_data_output, graph_node_id, graph_node_page_output,
+    graph_node_write_output, graph_ontology_delete_output, graph_ontology_freeze_output,
+    graph_ontology_output, graph_ontology_summary_output, graph_ontology_write_output,
+    graph_pagerank_output, graph_sssp_output, graph_type_name, graph_wcc_output,
+    optional_graph_edge_type, optional_graph_name, optional_graph_node_id,
 };
 use input_common::{
     branch_name, engine_json_index_type, json_document_id, json_get_entry, json_index_name,
@@ -175,16 +176,18 @@ use input_common::{
     optional_key, optional_limit, output_json_index_type, product_space, required_usize,
 };
 use kv_json_convert::{
-    batch_get_result, batch_item_result, branch_cleanup_item, branch_item, bulk_delete_effect,
-    bytes_from_key, commit_receipt, create_effect, delete_effect, delete_output, history_result,
-    json_batch_get_result, json_batch_item_result, json_delete_output, json_history_items,
-    json_index_definition, json_list_output, json_sample_output, json_value_output,
-    json_versioned_value, json_write_output, sample_output, scan_item, update_effect,
-    upsert_effect, usize_to_u64, versioned_value, write_output,
+    batch_exists_failed, batch_exists_item, batch_get_failed, batch_get_result, batch_item_failed,
+    batch_item_result, branch_cleanup_item, branch_item, bulk_delete_effect, bytes_from_key,
+    commit_receipt, create_effect, delete_effect, delete_output, history_result,
+    json_batch_get_failed, json_batch_get_result, json_batch_item_failed, json_batch_item_result,
+    json_delete_output, json_history_items, json_index_definition, json_list_output,
+    json_sample_output, json_value_output, json_versioned_value, json_write_output, sample_output,
+    scan_item, update_effect, upsert_effect, usize_to_u64, versioned_value, write_output,
 };
 use vector_convert::{
     engine_vector_metric, optional_vector_key, optional_vector_metadata, output_vector_metric,
-    require_vector_collection_info, vector_batch_item_result, vector_bulk_delete_output,
+    require_vector_collection_info, vector_batch_get_failed, vector_batch_get_item,
+    vector_batch_item_failed, vector_batch_item_result, vector_bulk_delete_output,
     vector_collection, vector_collection_info, vector_dimension_mismatch_error, vector_embedding,
     vector_filter, vector_history_result, vector_index_diagnostics, vector_key,
     vector_key_page_output, vector_match, vector_metadata_patch, vector_upsert_entry,

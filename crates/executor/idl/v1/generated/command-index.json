@@ -2581,9 +2581,9 @@
       "feature": "core",
       "access": "write",
       "input": "Command::GraphCreate",
-      "output": "Output::GraphInfo",
+      "output": "Output::GraphCreateResult",
       "outputs": [
-        "Output::GraphInfo"
+        "Output::GraphCreateResult"
       ],
       "wire_status": "stable",
       "response_model": "MutationAck<GraphInfoData>",
@@ -6479,7 +6479,6 @@
       "input": "Command::KvList",
       "output": "Output::KeysPage",
       "outputs": [
-        "Output::Keys",
         "Output::KeysPage"
       ],
       "wire_status": "stable",
@@ -6508,23 +6507,10 @@
       "fixtures": {
         "request": "requests/v1/kv/list.json",
         "response": "responses/v1/kv/list_page.json",
-        "responses": [
-          "responses/v1/kv/list_keys.json"
-        ],
         "setup": [
           "requests/v1/setup/kv_put_a1.json",
           "requests/v1/setup/kv_put_a2.json",
           "requests/v1/setup/kv_put_a3.json"
-        ],
-        "cases": [
-          {
-            "setup": [
-              "requests/v1/setup/kv_put_a1.json",
-              "requests/v1/setup/kv_put_a2.json"
-            ],
-            "request": "requests/v1/kv/list_all.json",
-            "response": "responses/v1/kv/list_keys.json"
-          }
         ]
       },
       "source": {

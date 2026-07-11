@@ -69,8 +69,8 @@ impl<'a> GraphService<'a> {
         }
     }
 
-    /// Creates a graph.
-    pub fn create_graph(&mut self, name: GraphName) -> EngineResult<GraphInfo> {
+    /// Creates a graph, returning the new metadata and the create commit.
+    pub fn create_graph(&mut self, name: GraphName) -> EngineResult<(GraphInfo, CommitOutcome)> {
         let record = self.branch_record()?;
         let address = self.metadata_address(&record, &name);
         if self
@@ -91,7 +91,7 @@ impl<'a> GraphService<'a> {
                 encode_graph_metadata_record(&metadata)?,
             )],
         )?;
-        Ok(GraphInfo::new(
+        let info = GraphInfo::new(
             name,
             0,
             0,
@@ -99,7 +99,8 @@ impl<'a> GraphService<'a> {
             commit.timestamp(),
             commit.version(),
             commit.timestamp(),
-        ))
+        );
+        Ok((info, commit))
     }
 
     /// Deletes a graph and all visible graph data rows.

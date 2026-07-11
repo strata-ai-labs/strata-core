@@ -138,10 +138,6 @@
             ],
             "description": "Commit receipt when a catalog mutation was applied."
           },
-          "created": {
-            "description": "True when a catalog row was created.",
-            "type": "boolean"
-          },
           "effect": {
             "$ref": "#/$defs/MutationEffect",
             "description": "Mutation effect facts."
@@ -149,29 +145,10 @@
           "space": {
             "description": "Product space name.",
             "type": "string"
-          },
-          "timestamp": {
-            "description": "Commit timestamp when a catalog mutation was applied.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "version": {
-            "description": "Commit version when a catalog mutation was applied.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
           }
         },
         "required": [
           "space",
-          "created",
           "effect"
         ],
         "type": "object"

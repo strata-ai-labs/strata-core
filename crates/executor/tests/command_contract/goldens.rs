@@ -38,10 +38,12 @@ fn shared_concept_goldens_match_public_json() {
         include_str!("../fixtures/responses/v1/shared/page_info_continued.json"),
     );
     assert_json_fixture(
-        &json_batch(vec![JsonBatchItemResult::new(
-            MutationEffect::created(),
+        &json_batch(vec![BatchItem::ok(
+            0,
+            true,
+            Some(MutationEffect::created()),
             Some(durable_commit),
-            Some(1),
+            JsonBatchItemResult::new(Some(1)),
         )]),
         include_str!("../fixtures/responses/v1/shared/batch_result_itemwise_ok.json"),
     );
@@ -71,11 +73,8 @@ fn public_response_family_goldens_match_public_json() {
         (
             Output::SpaceCreateResult {
                 space: "tenant_a".to_owned(),
-                created: true,
                 effect: MutationEffect::created(),
                 commit: Some(commit_receipt(2, 20, 1, 0)),
-                version: Some(2),
-                timestamp: Some(20),
             },
             include_str!("../fixtures/responses/v1/spaces/space_create_applied.json"),
         ),
@@ -95,7 +94,7 @@ fn public_response_family_goldens_match_public_json() {
             include_str!("../fixtures/responses/v1/kv/write_applied.json"),
         ),
         (
-            Output::Keys {
+            Output::KeysPage {
                 items: vec![bytes("a1"), bytes("a2")],
                 page: PageInfo::terminal(),
             },
@@ -123,8 +122,6 @@ fn public_response_family_goldens_match_public_json() {
                 key: "doc-a".to_owned(),
                 effect: MutationEffect::created(),
                 commit: CommitReceipt::new(4, 4, false, 1, 0),
-                version: 4,
-                timestamp: 4,
                 vector_revision: 1,
             },
             include_str!("../fixtures/responses/v1/vector/upsert_applied.json"),
@@ -148,8 +145,6 @@ fn public_response_family_goldens_match_public_json() {
                 // Mirrors the blessed cache-replay fixture (event row +
                 // type-index row + log metadata row in one commit).
                 commit: CommitReceipt::new(3, 3, false, 3, 0),
-                version: 3,
-                timestamp: 3,
             },
             include_str!("../fixtures/responses/v1/event/append_applied.json"),
         ),
@@ -157,11 +152,8 @@ fn public_response_family_goldens_match_public_json() {
             Output::GraphNodeWriteResult {
                 graph: "deps".to_owned(),
                 node_id: "node-a".to_owned(),
-                created: true,
                 effect: MutationEffect::created(),
                 commit: commit_receipt(2, 20, 2, 0),
-                version: 2,
-                timestamp: 20,
             },
             include_str!("../fixtures/responses/v1/graph/node_write_applied.json"),
         ),
@@ -264,17 +256,31 @@ fn batch_response_goldens_match_public_json() {
     let commit = commit_receipt(7, 70, 1, 0);
     let cases = [
         (
-            Output::JsonBatchResults(json_batch(vec![JsonBatchItemResult::new(
-                MutationEffect::created(),
+            Output::JsonBatchResults(json_batch(vec![BatchItem::ok(
+                0,
+                true,
+                Some(MutationEffect::created()),
                 Some(commit),
-                Some(1),
+                JsonBatchItemResult::new(Some(1)),
             )])),
             include_str!("../fixtures/responses/v1/shared/batch_result_ok.json"),
         ),
         (
             Output::JsonBatchResults(json_batch(vec![
-                JsonBatchItemResult::new(MutationEffect::created(), Some(commit), Some(1)),
-                JsonBatchItemResult::new(MutationEffect::not_found(), None, None),
+                BatchItem::ok(
+                    0,
+                    true,
+                    Some(MutationEffect::created()),
+                    Some(commit),
+                    JsonBatchItemResult::new(Some(1)),
+                ),
+                BatchItem::ok(
+                    1,
+                    false,
+                    Some(MutationEffect::not_found()),
+                    None,
+                    JsonBatchItemResult::new(None),
+                ),
             ])),
             include_str!("../fixtures/responses/v1/shared/batch_result_partial.json"),
         ),

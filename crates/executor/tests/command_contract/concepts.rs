@@ -133,10 +133,12 @@ fn batch_result_reports_mode_status_and_item_positions() {
     assert_eq!(empty.commit(), None);
     assert!(empty.is_empty());
 
-    let ok = json_batch(vec![JsonBatchItemResult::new(
-        MutationEffect::created(),
+    let ok = json_batch(vec![BatchItem::ok(
+        0,
+        true,
+        Some(MutationEffect::created()),
         Some(commit),
-        Some(1),
+        JsonBatchItemResult::new(Some(1)),
     )]);
     assert_eq!(ok.mode(), BatchMode::Itemwise);
     assert_eq!(ok.status(), BatchStatus::Ok);
@@ -145,8 +147,20 @@ fn batch_result_reports_mode_status_and_item_positions() {
     assert_eq!(ok[0].index(), 0);
 
     let partial = json_batch(vec![
-        JsonBatchItemResult::new(MutationEffect::created(), Some(commit), Some(1)),
-        JsonBatchItemResult::new(MutationEffect::not_found(), None, None),
+        BatchItem::ok(
+            0,
+            true,
+            Some(MutationEffect::created()),
+            Some(commit),
+            JsonBatchItemResult::new(Some(1)),
+        ),
+        BatchItem::ok(
+            1,
+            false,
+            Some(MutationEffect::not_found()),
+            None,
+            JsonBatchItemResult::new(None),
+        ),
     ]);
     assert_eq!(partial.status(), BatchStatus::Partial);
     assert!(partial.applied());
@@ -156,7 +170,11 @@ fn batch_result_reports_mode_status_and_item_positions() {
     assert_eq!(partial[1].effect(), Some(&MutationEffect::not_found()));
     assert_eq!(partial[1].error(), None);
 
-    let failed = json_batch(vec![JsonBatchItemResult::failed("invalid document id")]);
+    let failed = json_batch(vec![BatchItem::failed(
+        0,
+        Some(JsonBatchItemResult::new(None)),
+        item_error("invalid document id"),
+    )]);
     assert_eq!(failed.status(), BatchStatus::Error);
     assert!(!failed.applied());
     assert!(failed[0].error_status().is_some());
@@ -164,15 +182,12 @@ fn batch_result_reports_mode_status_and_item_positions() {
     assert_eq!(failed[0].effect(), None);
     assert_eq!(failed[0].commit(), None);
 
-    let graph = graph_batch(vec![GraphBatchItemResult::new_with_effect(
+    let graph = graph_batch(vec![BatchItem::ok(
         0,
-        "upsert_node",
-        Some(true),
-        None,
-        MutationEffect::created(),
+        true,
+        Some(MutationEffect::created()),
         Some(commit),
-        Some(7),
-        Some(70),
+        GraphBatchItemResult::new(0, "upsert_node", Some(true), None),
     )]);
     assert_eq!(graph.mode(), BatchMode::Atomic);
     assert_eq!(graph.status(), BatchStatus::Ok);
@@ -184,14 +199,38 @@ fn batch_result_shared_commit_requires_one_commit_identity() {
     let second_commit = commit_receipt(8, 80, 1, 0);
 
     let shared = json_batch(vec![
-        JsonBatchItemResult::new(MutationEffect::created(), Some(first_commit), Some(1)),
-        JsonBatchItemResult::new(MutationEffect::updated(), Some(first_commit), Some(2)),
+        BatchItem::ok(
+            0,
+            true,
+            Some(MutationEffect::created()),
+            Some(first_commit),
+            JsonBatchItemResult::new(Some(1)),
+        ),
+        BatchItem::ok(
+            1,
+            true,
+            Some(MutationEffect::updated()),
+            Some(first_commit),
+            JsonBatchItemResult::new(Some(2)),
+        ),
     ]);
     assert_eq!(shared.commit(), Some(&first_commit));
 
     let split = json_batch(vec![
-        JsonBatchItemResult::new(MutationEffect::created(), Some(first_commit), Some(1)),
-        JsonBatchItemResult::new(MutationEffect::updated(), Some(second_commit), Some(2)),
+        BatchItem::ok(
+            0,
+            true,
+            Some(MutationEffect::created()),
+            Some(first_commit),
+            JsonBatchItemResult::new(Some(1)),
+        ),
+        BatchItem::ok(
+            1,
+            true,
+            Some(MutationEffect::updated()),
+            Some(second_commit),
+            JsonBatchItemResult::new(Some(2)),
+        ),
     ]);
     assert_eq!(split.commit(), None);
     assert!(split.applied());
@@ -283,7 +322,11 @@ fn batch_get_items_report_found_without_losing_metadata() {
         ),
     ] {
         assert_eq!(encoded["found"], expected_found);
-        assert_eq!(encoded.get("error"), Some(&Value::Null));
+        assert_eq!(
+            encoded.get("error"),
+            None,
+            "batch read item payload no longer restates the wrapper's error"
+        );
     }
 }
 
@@ -303,9 +346,21 @@ fn page_outputs_reject_non_terminal_pages_without_cursor() {
 #[test]
 fn kv_batch_get_wrapper_marks_missing_items_as_miss() {
     let batch = kv_batch_get(vec![
-        BatchGetItemResult::new(bytes("a"), Some(bytes("one")), Some(1), Some(10)),
-        BatchGetItemResult::new(bytes("missing"), None, None, None),
-        BatchGetItemResult::new(bytes("b"), Some(bytes("two")), Some(2), Some(20)),
+        BatchItem::ok(
+            0,
+            false,
+            None,
+            None,
+            BatchGetItemResult::new(bytes("a"), Some(bytes("one")), Some(1), Some(10)),
+        ),
+        BatchItem::miss(1, BatchGetItemResult::not_found(bytes("missing"))),
+        BatchItem::ok(
+            2,
+            false,
+            None,
+            None,
+            BatchGetItemResult::new(bytes("b"), Some(bytes("two")), Some(2), Some(20)),
+        ),
     ]);
 
     assert_eq!(batch.status(), BatchStatus::Partial);
@@ -509,11 +564,33 @@ fn write_outputs_use_commit_receipt_and_mutation_effect() {
 
 #[test]
 fn batch_item_failures_use_structured_error_status() {
-    let kv = BatchItemResult::failed(Bytes::new(Vec::new()), "invalid key");
-    let json = JsonBatchItemResult::failed("invalid document id");
-    let vector = VectorBatchItemResult::failed("invalid vector");
-    let event = EventBatchAppendItemResult::failed("invalid event");
-    let graph = GraphBatchItemResult::failed(2, "upsert_edge", "invalid graph edge");
+    // The shared `BatchItem` wrapper owns the structured error now that the
+    // inner item DTOs no longer restate it.
+    let kv = BatchItem::failed(
+        0,
+        Some(BatchItemResult::new(Bytes::new(Vec::new()))),
+        item_error("invalid key"),
+    );
+    let json = BatchItem::failed(
+        0,
+        Some(JsonBatchItemResult::new(None)),
+        item_error("invalid document id"),
+    );
+    let vector = BatchItem::failed(
+        0,
+        Some(VectorBatchItemResult::new(None)),
+        item_error("invalid vector"),
+    );
+    let event = BatchItem::failed(
+        0,
+        Some(EventBatchAppendItemResult::new(None, None)),
+        item_error("invalid event"),
+    );
+    let graph = BatchItem::failed(
+        0,
+        Some(GraphBatchItemResult::new(2, "upsert_edge", None, None)),
+        item_error("invalid graph edge"),
+    );
 
     for encoded in [
         serde_json::to_value(&kv).expect("KV item serializes"),
@@ -554,24 +631,50 @@ fn batch_item_failures_use_structured_error_status() {
 
 #[test]
 fn batch_item_successes_serialize_error_null() {
+    // Every successful `BatchItem` wrapper serializes an explicit `error: null`
+    // even though the slimmed inner payloads no longer carry an error field.
     let commit = commit_receipt(7, 70, 1, 0);
-    let kv = BatchItemResult::new(
-        Bytes::new(b"key".to_vec()),
-        MutationEffect::created(),
+    let kv = BatchItem::ok(
+        0,
+        true,
+        Some(MutationEffect::created()),
         Some(commit),
+        BatchItemResult::new(Bytes::new(b"key".to_vec())),
     );
-    let json = JsonBatchItemResult::new(MutationEffect::updated(), Some(commit), Some(3));
-    let vector = VectorBatchItemResult::new(true, Some(7), Some(70), Some(4));
-    let vector_get = VectorBatchGetItemResult::new(None);
-    let event = EventBatchAppendItemResult::new(
-        Some(1),
-        Some("user.created".to_owned()),
-        Some(7),
-        Some(70),
+    let json = BatchItem::ok(
+        0,
+        true,
+        Some(MutationEffect::updated()),
+        Some(commit),
+        JsonBatchItemResult::new(Some(3)),
     );
-    let graph = GraphBatchItemResult::new(0, "upsert_node", Some(true), None, Some(7), Some(70));
-    let kv_get = BatchGetItemResult::new(Bytes::new(b"key".to_vec()), None, None, None);
-    let json_get = JsonBatchGetItemResult::new(None, None, None, None);
+    let vector = BatchItem::ok(
+        0,
+        true,
+        Some(MutationEffect::created()),
+        Some(commit),
+        VectorBatchItemResult::new(Some(4)),
+    );
+    let vector_get = BatchItem::miss(0, VectorBatchGetItemResult::not_found());
+    let event = BatchItem::ok(
+        0,
+        true,
+        Some(MutationEffect::created()),
+        Some(commit),
+        EventBatchAppendItemResult::new(Some(1), Some("user.created".to_owned())),
+    );
+    let graph = BatchItem::ok(
+        0,
+        true,
+        Some(MutationEffect::created()),
+        Some(commit),
+        GraphBatchItemResult::new(0, "upsert_node", Some(true), None),
+    );
+    let kv_get = BatchItem::miss(
+        0,
+        BatchGetItemResult::not_found(Bytes::new(b"key".to_vec())),
+    );
+    let json_get = BatchItem::miss(0, JsonBatchGetItemResult::not_found());
 
     for encoded in [
         serde_json::to_value(&kv).expect("KV item serializes"),

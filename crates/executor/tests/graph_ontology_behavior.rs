@@ -5,7 +5,9 @@
 #![allow(clippy::result_large_err, clippy::too_many_lines)]
 
 use serde_json::json;
-use strata_executor::{Executor, GraphObjectTypeDefData, GraphPropertyDef, Output};
+use strata_executor::{
+    Executor, GraphObjectTypeDefData, GraphPropertyDef, MutationEffectKind, Output,
+};
 use tempfile::TempDir;
 
 fn run_modes(mut exercise: impl FnMut(&mut Executor)) {
@@ -43,21 +45,25 @@ fn exercise_ontology_lifecycle(executor: &mut Executor) {
     };
 
     // Define types; first definition is created, redefinition is not.
-    let Output::GraphOntologyWriteResult { created, kind, .. } = executor
+    let Output::GraphOntologyWriteResult { effect, kind, .. } = executor
         .graph_define_object_type("deps", "Document", title_property())
         .expect("define succeeds")
     else {
         panic!("expected ontology write result");
     };
-    assert!(created);
+    assert_eq!(effect.kind(), MutationEffectKind::Created);
     assert_eq!(kind, "object");
-    let Output::GraphOntologyWriteResult { created, .. } = executor
+    let Output::GraphOntologyWriteResult { effect, .. } = executor
         .graph_define_object_type("deps", "Document", title_property())
         .expect("redefine succeeds")
     else {
         panic!("expected ontology write result");
     };
-    assert!(!created, "draft redefinition is not new");
+    assert_ne!(
+        effect.kind(),
+        MutationEffectKind::Created,
+        "draft redefinition is not new"
+    );
 
     executor
         .graph_define_object_type("deps", "Author", title_property())
@@ -89,13 +95,13 @@ fn exercise_ontology_lifecycle(executor: &mut Executor) {
     assert_eq!(ontology.link_types()[0].cardinality(), Some("one-to-many"));
 
     // Draft deletes report honestly; freeze validates and locks.
-    let Output::GraphOntologyDeleteResult { deleted, .. } = executor
+    let Output::GraphOntologyDeleteResult { effect, .. } = executor
         .graph_delete_object_type("deps", "Author")
         .expect("delete succeeds")
     else {
         panic!("expected ontology delete result");
     };
-    assert!(deleted);
+    assert!(effect.applied());
     let freeze_error = executor
         .graph_freeze_ontology("deps")
         .expect_err("dangling link endpoint cannot freeze");

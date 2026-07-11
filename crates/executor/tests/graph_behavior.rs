@@ -966,7 +966,10 @@ fn assert_graph_batch_success_atomicity_and_delete_edges(executor: &mut Executor
         deletes.results[2].effect(),
         Some(&MutationEffect::not_found())
     );
-    assert!(deletes.results[2].version().is_none());
+    assert!(deletes.results[2]
+        .commit()
+        .map(CommitReceipt::version)
+        .is_none());
     assert!(get_edge(executor, "batch", "a", "links", "b").is_none());
     assert!(get_edge(executor, "batch", "b", "back", "a").is_none());
     assert!(neighbor_node_ids(
@@ -1229,7 +1232,7 @@ fn run_graph_core_command_suite(executor: &mut Executor) {
     assert_eq!(batch[0].created(), Some(true));
     assert_eq!(batch[1].created(), Some(true));
     assert_eq!(batch[2].deleted(), Some(true));
-    assert!(batch[2].version().is_some());
+    assert!(batch[2].commit().map(CommitReceipt::version).is_some());
     assert!(get_edge(executor, "deps", "node-a", "depends_on", "node-b").is_none());
     assert_eq!(
         neighbor_nodes(executor, "deps", "node-b", GraphDirection::Outgoing, None),
@@ -1252,10 +1255,19 @@ fn run_graph_core_command_suite(executor: &mut Executor) {
         ],
     );
     assert_eq!(mixed_no_op_batch[0].created(), Some(true));
-    assert!(mixed_no_op_batch[0].version().is_some());
+    assert!(mixed_no_op_batch[0]
+        .commit()
+        .map(CommitReceipt::version)
+        .is_some());
     assert_eq!(mixed_no_op_batch[1].deleted(), Some(false));
-    assert!(mixed_no_op_batch[1].version().is_none());
-    assert!(mixed_no_op_batch[1].timestamp().is_none());
+    assert!(mixed_no_op_batch[1]
+        .commit()
+        .map(CommitReceipt::version)
+        .is_none());
+    assert!(mixed_no_op_batch[1]
+        .commit()
+        .map(CommitReceipt::timestamp)
+        .is_none());
 
     assert!(remove_node(executor, "deps", "node-c"));
     assert!(get_node(executor, "deps", "node-c").is_none());
@@ -1294,7 +1306,7 @@ struct NeighborSummaryPage {
 
 #[derive(Debug, PartialEq)]
 struct GraphBatchOutput {
-    results: Vec<GraphBatchItemResult>,
+    results: Vec<strata_executor::BatchItem<GraphBatchItemResult>>,
     effect: MutationEffect,
     version: Option<u64>,
     timestamp: Option<u64>,
@@ -1309,7 +1321,7 @@ fn create_graph(executor: &mut Executor, graph: &str) -> strata_executor::GraphI
         })
         .expect("graph create succeeds")
     {
-        Output::GraphInfo(info) => info,
+        Output::GraphCreateResult { info, .. } => info,
         output => panic!("unexpected graph create output: {output:?}"),
     }
 }
@@ -1355,7 +1367,7 @@ fn graph_create_in(
         })
         .expect("graph create succeeds")
     {
-        Output::GraphInfo(info) => info,
+        Output::GraphCreateResult { info, .. } => info,
         output => panic!("unexpected graph create output: {output:?}"),
     }
 }
@@ -1369,7 +1381,7 @@ fn delete_graph(executor: &mut Executor, graph: &str) -> bool {
         })
         .expect("graph delete succeeds")
     {
-        Output::GraphDeleteResult { deleted, .. } => deleted,
+        Output::GraphDeleteResult { effect, .. } => effect.applied(),
         output => panic!("unexpected graph delete output: {output:?}"),
     }
 }
@@ -1437,16 +1449,8 @@ fn add_node(
         })
         .expect("graph node add succeeds")
     {
-        Output::GraphNodeWriteResult {
-            effect,
-            commit,
-            version,
-            timestamp,
-            ..
-        } => {
+        Output::GraphNodeWriteResult { effect, .. } => {
             assert!(effect.applied());
-            assert_eq!(commit.version(), version);
-            assert_eq!(commit.timestamp(), timestamp);
         }
         output => panic!("unexpected graph node add output: {output:?}"),
     }
@@ -1471,14 +1475,8 @@ fn graph_add_node_output(
         })
         .expect("graph node add succeeds")
     {
-        Output::GraphNodeWriteResult {
-            created,
-            effect,
-            commit,
-            version,
-            timestamp,
-            ..
-        } => {
+        Output::GraphNodeWriteResult { effect, .. } => {
+            let created = effect.kind() == MutationEffectKind::Created;
             assert_eq!(
                 effect,
                 if created {
@@ -1487,8 +1485,6 @@ fn graph_add_node_output(
                     MutationEffect::updated()
                 }
             );
-            assert_eq!(commit.version(), version);
-            assert_eq!(commit.timestamp(), timestamp);
             created
         }
         output => panic!("unexpected graph node add output: {output:?}"),
@@ -1590,7 +1586,7 @@ fn add_node_capturing_timestamp(
         })
         .expect("graph node add succeeds")
     {
-        Output::GraphNodeWriteResult { timestamp, .. } => timestamp,
+        Output::GraphNodeWriteResult { commit, .. } => commit.timestamp(),
         output => panic!("unexpected graph node add output: {output:?}"),
     }
 }
@@ -1668,7 +1664,7 @@ fn remove_node(executor: &mut Executor, graph: &str, node_id: &str) -> bool {
         })
         .expect("graph node remove succeeds")
     {
-        Output::GraphDeleteResult { deleted, .. } => deleted,
+        Output::GraphDeleteResult { effect, .. } => effect.applied(),
         output => panic!("unexpected graph node remove output: {output:?}"),
     }
 }
@@ -1689,7 +1685,7 @@ fn graph_remove_node_in(
         })
         .expect("graph node remove succeeds")
     {
-        Output::GraphDeleteResult { deleted, .. } => deleted,
+        Output::GraphDeleteResult { effect, .. } => effect.applied(),
         output => panic!("unexpected graph node remove output: {output:?}"),
     }
 }
@@ -1794,16 +1790,8 @@ fn add_edge(
         })
         .expect("graph edge add succeeds")
     {
-        Output::GraphEdgeWriteResult {
-            effect,
-            commit,
-            version,
-            timestamp,
-            ..
-        } => {
+        Output::GraphEdgeWriteResult { effect, .. } => {
             assert!(effect.applied());
-            assert_eq!(commit.version(), version);
-            assert_eq!(commit.timestamp(), timestamp);
         }
         output => panic!("unexpected graph edge add output: {output:?}"),
     }
@@ -1832,14 +1820,8 @@ fn graph_add_edge_output(
         })
         .expect("graph edge add succeeds")
     {
-        Output::GraphEdgeWriteResult {
-            created,
-            effect,
-            commit,
-            version,
-            timestamp,
-            ..
-        } => {
+        Output::GraphEdgeWriteResult { effect, .. } => {
+            let created = effect.kind() == MutationEffectKind::Created;
             assert_eq!(
                 effect,
                 if created {
@@ -1848,8 +1830,6 @@ fn graph_add_edge_output(
                     MutationEffect::updated()
                 }
             );
-            assert_eq!(commit.version(), version);
-            assert_eq!(commit.timestamp(), timestamp);
             created
         }
         output => panic!("unexpected graph edge add output: {output:?}"),
@@ -2049,7 +2029,7 @@ fn remove_edge(
         })
         .expect("graph edge remove succeeds")
     {
-        Output::GraphDeleteResult { deleted, .. } => deleted,
+        Output::GraphDeleteResult { effect, .. } => effect.applied(),
         output => panic!("unexpected graph edge remove output: {output:?}"),
     }
 }
@@ -2171,7 +2151,7 @@ fn graph_batch_write(
     executor: &mut Executor,
     graph: &str,
     operations: Vec<GraphBatchOperation>,
-) -> Vec<strata_executor::GraphBatchItemResult> {
+) -> Vec<strata_executor::BatchItem<strata_executor::GraphBatchItemResult>> {
     match executor
         .execute(Command::GraphBatchWrite {
             branch: None,
@@ -2181,10 +2161,7 @@ fn graph_batch_write(
         })
         .expect("graph batch write succeeds")
     {
-        Output::GraphBatchWriteResult { batch, .. } => batch
-            .into_iter()
-            .map(|item| item.into_result().expect("primitive graph batch item"))
-            .collect(),
+        Output::GraphBatchWriteResult { batch, .. } => batch.into_items(),
         output => panic!("unexpected graph batch output: {output:?}"),
     }
 }
@@ -2203,19 +2180,11 @@ fn graph_batch_write_output(
         })
         .map(|output| match output {
             Output::GraphBatchWriteResult { batch, .. } => {
-                let effect = graph_batch_effect(
-                    batch
-                        .items()
-                        .iter()
-                        .map(|item| item.result().expect("primitive graph batch item")),
-                );
+                let effect = graph_batch_effect(batch.items().iter());
                 let version = batch.commit().map(CommitReceipt::version);
                 let timestamp = batch.commit().map(CommitReceipt::timestamp);
                 GraphBatchOutput {
-                    results: batch
-                        .into_iter()
-                        .map(|item| item.into_result().expect("primitive graph batch item"))
-                        .collect(),
+                    results: batch.into_items(),
                     effect,
                     version,
                     timestamp,
@@ -2226,7 +2195,7 @@ fn graph_batch_write_output(
 }
 
 fn graph_batch_effect<'a>(
-    items: impl IntoIterator<Item = &'a GraphBatchItemResult>,
+    items: impl IntoIterator<Item = &'a strata_executor::BatchItem<GraphBatchItemResult>>,
 ) -> MutationEffect {
     let items = items.into_iter().collect::<Vec<_>>();
     let mut affected_count = 0_u64;

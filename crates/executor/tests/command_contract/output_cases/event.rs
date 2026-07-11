@@ -7,8 +7,6 @@ pub(super) fn event_outputs() -> Vec<Output> {
             event_type: "user.created".to_owned(),
             effect: MutationEffect::created(),
             commit: commit_receipt(1, 10, 2, 0),
-            version: 1,
-            timestamp: 10,
         },
         Output::EventRecord(Some(event_versioned_data(0, "user.created", 1, 10))),
         Output::EventRecord(None),
@@ -32,18 +30,17 @@ pub(super) fn event_outputs() -> Vec<Output> {
             items: Vec::new(),
             page: PageInfo::terminal(),
         },
-        Output::EventBatchAppendResults(event_batch(vec![
-            EventBatchAppendItemResult::new_with_effect(
-                Some(0),
-                Some("user.created".to_owned()),
-                Some(MutationEffect::created()),
-                Some(commit_receipt(1, 10, 2, 0)),
-                Some(1),
-                Some(10),
-            ),
-        ])),
-        Output::EventBatchAppendResults(event_batch(vec![EventBatchAppendItemResult::failed(
-            "invalid event",
+        Output::EventBatchAppendResults(event_batch(vec![BatchItem::ok(
+            0,
+            true,
+            Some(MutationEffect::created()),
+            Some(commit_receipt(1, 10, 2, 0)),
+            EventBatchAppendItemResult::new(Some(0), Some("user.created".to_owned())),
+        )])),
+        Output::EventBatchAppendResults(event_batch(vec![BatchItem::failed(
+            0,
+            Some(EventBatchAppendItemResult::new(None, None)),
+            item_error("invalid event"),
         )])),
         Output::EventChainVerification(EventChainVerification::new(true, 2, None, None)),
         Output::EventChainVerification(EventChainVerification::new(

@@ -7,7 +7,6 @@
       "timestamp": 5,
       "version": 5
     },
-    "deleted": true,
     "effect": {
       "affected_count": 1,
       "applied": true,
@@ -16,9 +15,7 @@
     },
     "graph": "social",
     "kind": "object",
-    "timestamp": 5,
-    "type_name": "Robot",
-    "version": 5
+    "type_name": "Robot"
   },
   "type": "graph_ontology_delete_result"
 }

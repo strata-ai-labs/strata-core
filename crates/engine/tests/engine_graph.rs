@@ -455,7 +455,7 @@ fn graph_durable_delete_reopen_and_recreate_drops_stale_indexes() {
             .bindings()
             .is_empty());
 
-        let recreated = graph
+        let (recreated, _) = graph
             .create_graph(graph_name("deps"))
             .expect("graph recreate succeeds");
         assert_eq!(recreated.node_count(), 0);
@@ -514,7 +514,7 @@ fn exercise_graph_lifecycle_node_edge_and_binding(mut database: Database) {
         .graphs()
         .is_empty());
 
-    let info = graph
+    let (info, _) = graph
         .create_graph(graph_name("deps"))
         .expect("graph create succeeds");
     assert_eq!(info.name().as_str(), "deps");
@@ -1133,7 +1133,7 @@ fn exercise_graph_lifecycle_pagination_and_recreate(mut database: Database) {
         .bindings()
         .is_empty());
 
-    let recreated = graph
+    let (recreated, _) = graph
         .create_graph(graph_name("beta"))
         .expect("graph recreate succeeds");
     assert_eq!(recreated.node_count(), 0);

@@ -1,9 +1,8 @@
 //! Serializable request and response helper types.
 
-use crate::error::{batch_item_error_status, engine_error_status, ErrorStatus, ExecutorError};
+use crate::error::ErrorStatus;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
-use strata_engine::EngineErrorStatus;
 
 mod admin;
 mod arrow;

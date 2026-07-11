@@ -522,7 +522,7 @@ fn humanize_kv_bytes(output: &Output, value: &mut Value) {
     match output {
         Output::KvVersionedValue(_) => decode_bytes_fields(data, &["value"]),
         Output::VersionHistory(_) => decode_bytes_item_fields(data, &["value"]),
-        Output::Keys { .. } | Output::KeysPage { .. } => {
+        Output::KeysPage { .. } => {
             if let Some(items) = data.get_mut("items").and_then(Value::as_array_mut) {
                 for item in items {
                     decode_bytes_value(item);

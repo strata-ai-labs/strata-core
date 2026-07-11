@@ -63,38 +63,8 @@
       "type": "object"
     },
     "BatchItemResult": {
-      "description": "Positional batch write result.",
+      "description": "Positional batch write result payload.\n\nThe shared [`BatchItem`](crate::BatchItem) wrapper owns the status, mutation\neffect, commit receipt, and error; this payload carries only the KV-specific\nechoed key.",
       "properties": {
-        "commit": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CommitReceipt"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "effect": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/MutationEffect"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "error": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ErrorStatus"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "key": {
           "$ref": "#/$defs/Bytes"
         }

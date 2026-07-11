@@ -3,7 +3,7 @@
 use serde_json::json;
 use strata_executor::{
     AdminHealthStatus, AdminOpenTarget, Bytes, Command, Executor, ExecutorErrorClass,
-    MutationEffect, Output, VectorDistanceMetric, DEFAULT_BRANCH,
+    MutationEffect, MutationEffectKind, Output, VectorDistanceMetric, DEFAULT_BRANCH,
 };
 use tempfile::TempDir;
 
@@ -18,11 +18,8 @@ fn space_commands_manage_branch_local_catalogs() {
 
     let Output::SpaceCreateResult {
         space,
-        created,
         effect,
         commit,
-        version,
-        timestamp,
     } = executor
         .execute(Command::SpaceCreate {
             branch: None,
@@ -33,21 +30,20 @@ fn space_commands_manage_branch_local_catalogs() {
         panic!("unexpected space create output");
     };
     assert_eq!(space, "tenant_a");
-    assert!(created);
+    assert_eq!(effect.kind(), MutationEffectKind::Created);
     assert_eq!(effect, MutationEffect::created());
     assert!(commit.is_some());
-    assert!(version.is_some());
-    assert!(timestamp.is_some());
+    assert!(commit
+        .as_ref()
+        .map(strata_executor::CommitReceipt::version)
+        .is_some());
+    assert!(commit
+        .as_ref()
+        .map(strata_executor::CommitReceipt::timestamp)
+        .is_some());
     assert_eq!(space_list(&mut executor, None), vec!["default", "tenant_a"]);
 
-    let Output::SpaceCreateResult {
-        created,
-        effect,
-        commit,
-        version,
-        timestamp,
-        ..
-    } = executor
+    let Output::SpaceCreateResult { effect, commit, .. } = executor
         .execute(Command::SpaceCreate {
             branch: None,
             space: "tenant_a".to_owned(),
@@ -56,12 +52,18 @@ fn space_commands_manage_branch_local_catalogs() {
     else {
         panic!("unexpected idempotent space create output");
     };
-    assert!(!created);
+    assert_ne!(effect.kind(), MutationEffectKind::Created);
     assert!(!effect.applied());
     assert!(effect.matched());
     assert_eq!(commit, None);
-    assert!(version.is_none());
-    assert!(timestamp.is_none());
+    assert!(commit
+        .as_ref()
+        .map(strata_executor::CommitReceipt::version)
+        .is_none());
+    assert!(commit
+        .as_ref()
+        .map(strata_executor::CommitReceipt::timestamp)
+        .is_none());
 
     assert!(space_exists(&mut executor, None, "tenant_a"));
     assert!(!space_exists(&mut executor, None, "missing"));
@@ -115,13 +117,10 @@ fn space_delete_is_conservative_and_force_removes_visible_data() {
 
     let Output::SpaceDeleteResult {
         space,
-        deleted,
         force,
         deleted_rows,
         effect,
         commit,
-        version,
-        timestamp,
     } = executor
         .execute(Command::SpaceDelete {
             branch: None,
@@ -133,13 +132,19 @@ fn space_delete_is_conservative_and_force_removes_visible_data() {
         panic!("unexpected space delete output");
     };
     assert_eq!(space, "tenant_a");
-    assert!(deleted);
+    assert_eq!(effect.kind(), MutationEffectKind::Deleted);
     assert!(force);
     assert!(deleted_rows >= 5);
     assert_eq!(effect, MutationEffect::deleted());
     assert!(commit.is_some());
-    assert!(version.is_some());
-    assert!(timestamp.is_some());
+    assert!(commit
+        .as_ref()
+        .map(strata_executor::CommitReceipt::version)
+        .is_some());
+    assert!(commit
+        .as_ref()
+        .map(strata_executor::CommitReceipt::timestamp)
+        .is_some());
 
     assert!(!space_exists(&mut executor, None, "tenant_a"));
     assert_eq!(space_list(&mut executor, None), vec!["default"]);
@@ -155,14 +160,7 @@ fn space_delete_is_conservative_and_force_removes_visible_data() {
         Vec::<String>::new()
     );
 
-    let Output::SpaceDeleteResult {
-        deleted,
-        effect,
-        commit,
-        version,
-        timestamp,
-        ..
-    } = executor
+    let Output::SpaceDeleteResult { effect, commit, .. } = executor
         .execute(Command::SpaceDelete {
             branch: None,
             space: "tenant_a".to_owned(),
@@ -172,11 +170,17 @@ fn space_delete_is_conservative_and_force_removes_visible_data() {
     else {
         panic!("unexpected missing space delete output");
     };
-    assert!(!deleted);
+    assert!(!effect.applied());
     assert_eq!(effect, MutationEffect::not_found());
     assert_eq!(commit, None);
-    assert!(version.is_none());
-    assert!(timestamp.is_none());
+    assert!(commit
+        .as_ref()
+        .map(strata_executor::CommitReceipt::version)
+        .is_none());
+    assert!(commit
+        .as_ref()
+        .map(strata_executor::CommitReceipt::timestamp)
+        .is_none());
 }
 
 #[test]

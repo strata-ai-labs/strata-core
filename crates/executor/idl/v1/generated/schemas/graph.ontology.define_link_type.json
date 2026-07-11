@@ -183,10 +183,6 @@
             "$ref": "#/$defs/CommitReceipt",
             "description": "Commit receipt."
           },
-          "created": {
-            "description": "True when the definition was new (false: redefined in draft).",
-            "type": "boolean"
-          },
           "effect": {
             "$ref": "#/$defs/MutationEffect",
             "description": "Mutation effect facts."
@@ -199,32 +195,17 @@
             "description": "Type kind: `object` or `link`.",
             "type": "string"
           },
-          "timestamp": {
-            "description": "Commit timestamp.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
           "type_name": {
             "description": "Defined type name.",
             "type": "string"
-          },
-          "version": {
-            "description": "Commit version.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
           }
         },
         "required": [
           "graph",
           "kind",
           "type_name",
-          "created",
           "effect",
-          "commit",
-          "version",
-          "timestamp"
+          "commit"
         ],
         "type": "object"
       },

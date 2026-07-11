@@ -166,30 +166,8 @@
             "description": "Vector key.",
             "type": "string"
           },
-          "timestamp": {
-            "description": "Commit timestamp when an update was applied.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "updated": {
-            "description": "True when a visible vector was updated.",
-            "type": "boolean"
-          },
           "vector_revision": {
             "description": "Product vector revision when an update was applied.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "version": {
-            "description": "Commit version when an update was applied.",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -201,7 +179,6 @@
         "required": [
           "collection",
           "key",
-          "updated",
           "effect"
         ],
         "type": "object"

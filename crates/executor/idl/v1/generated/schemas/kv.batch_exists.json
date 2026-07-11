@@ -1,18 +1,8 @@
 {
   "$defs": {
     "BatchExistsItemResult": {
-      "description": "Positional batch existence result.",
+      "description": "Positional batch existence result payload.\n\nThe shared [`BatchItem`](crate::BatchItem) wrapper owns the status and error;\nthis payload carries the echoed key and the definitive existence answer.",
       "properties": {
-        "error": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ErrorStatus"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "exists": {
           "type": "boolean"
         },

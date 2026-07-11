@@ -412,7 +412,10 @@ fn json_large_batch_smoke_uses_batch_commands() {
             panic!("unexpected batch output");
         };
         assert_eq!(results.len(), end - start);
-        assert!(results.iter().all(|result| result.version().is_some()));
+        assert!(results.iter().all(|result| result
+            .commit()
+            .map(strata_executor::CommitReceipt::version)
+            .is_some()));
     }
 
     assert_eq!(
@@ -629,7 +632,10 @@ fn json_invalid_batch_items_are_positional_errors() {
         results[0].error_status().expect("item error status").code(),
         "invalid_argument.engine.json_document_id"
     );
-    assert!(results[1].version().is_some());
+    assert!(results[1]
+        .commit()
+        .map(strata_executor::CommitReceipt::version)
+        .is_some());
     assert_eq!(
         execute_json_get_value(&mut executor, "valid", "$.name"),
         Some(json!("Ada"))
@@ -675,7 +681,10 @@ fn json_invalid_batch_items_are_positional_errors() {
         results[0].error_status().expect("item error status").code(),
         "invalid_argument.engine.json_document_id"
     );
-    assert!(results[1].version().is_some());
+    assert!(results[1]
+        .commit()
+        .map(strata_executor::CommitReceipt::version)
+        .is_some());
     assert_eq!(
         execute_json_get_value(&mut executor, "valid", "$.name"),
         None
@@ -808,7 +817,10 @@ fn assert_json_batch_edges(executor: &mut Executor) {
         panic!("unexpected batch set output");
     };
     assert_eq!(results.len(), 3);
-    assert!(results.iter().all(|result| result.version().is_some()));
+    assert!(results.iter().all(|result| result
+        .commit()
+        .map(strata_executor::CommitReceipt::version)
+        .is_some()));
     assert_eq!(results[0].document_version(), Some(1));
     assert_eq!(results[1].document_version(), Some(2));
     assert_eq!(
@@ -1124,7 +1136,10 @@ fn assert_json_batch_item_error_boundaries(executor: &mut Executor) {
             .code(),
         "invalid_argument.engine.json_document_too_deep"
     );
-    assert!(results[2].version().is_some());
+    assert!(results[2]
+        .commit()
+        .map(strata_executor::CommitReceipt::version)
+        .is_some());
     assert!(
         results
             .iter()
@@ -1529,7 +1544,10 @@ fn batch_set_json(executor: &mut Executor, entries: Vec<BatchJsonEntry>) {
         .expect("JSON batch set succeeds")
     {
         Output::JsonBatchResults(results) => {
-            assert!(results.iter().all(|result| result.version().is_some()));
+            assert!(results.iter().all(|result| result
+                .commit()
+                .map(strata_executor::CommitReceipt::version)
+                .is_some()));
         }
         output => panic!("unexpected JSON batch set output: {output:?}"),
     }
@@ -1656,7 +1674,12 @@ fn execute_json_batch_delete(
     {
         Output::JsonBatchResults(results) => results
             .into_iter()
-            .map(|result| result.version().is_some())
+            .map(|result| {
+                result
+                    .commit()
+                    .map(strata_executor::CommitReceipt::version)
+                    .is_some()
+            })
             .collect(),
         output => panic!("unexpected JSON batch delete output: {output:?}"),
     }

@@ -1,7 +1,4 @@
-use super::{
-    batch_item_error_status, CommitReceipt, Deserialize, ErrorStatus, ExecutorError,
-    MutationEffect, Serialize, Value, VectorDistanceMetric,
-};
+use super::{Deserialize, Serialize, Value, VectorDistanceMetric};
 
 /// Vector collection facts.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -198,22 +195,18 @@ impl VectorHistoryItem {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorHistoryResult {
-    count: usize,
     items: Vec<VectorHistoryItem>,
 }
 
 impl VectorHistoryResult {
     /// Creates a vector history result.
-    pub fn new(items: Vec<VectorHistoryItem>) -> Self {
-        Self {
-            count: items.len(),
-            items,
-        }
+    pub const fn new(items: Vec<VectorHistoryItem>) -> Self {
+        Self { items }
     }
 
     /// Returns the number of history items.
     pub const fn count(&self) -> usize {
-        self.count
+        self.items.len()
     }
 
     /// Returns vector history items from newest to oldest.
@@ -576,131 +569,38 @@ impl VectorIndexQueryResult {
     }
 }
 
-/// Positional vector batch write/delete result.
+/// Positional vector batch write/delete result payload.
+///
+/// The shared [`BatchItem`](crate::BatchItem) wrapper owns the status, mutation
+/// effect, commit receipt, and error; this payload carries only the
+/// vector-specific revision.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorBatchItemResult {
-    applied: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    effect: Option<MutationEffect>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    commit: Option<CommitReceipt>,
-    version: Option<u64>,
-    timestamp: Option<u64>,
     vector_revision: Option<u64>,
-    error: Option<ErrorStatus>,
 }
 
 impl VectorBatchItemResult {
-    /// Creates a vector batch result.
-    pub const fn new(
-        applied: bool,
-        version: Option<u64>,
-        timestamp: Option<u64>,
-        vector_revision: Option<u64>,
-    ) -> Self {
-        Self {
-            applied,
-            effect: None,
-            commit: None,
-            version,
-            timestamp,
-            vector_revision,
-            error: None,
-        }
-    }
-
-    /// Creates a vector batch result with shared mutation facts.
-    pub const fn new_with_effect(
-        applied: bool,
-        effect: MutationEffect,
-        commit: Option<CommitReceipt>,
-        version: Option<u64>,
-        timestamp: Option<u64>,
-        vector_revision: Option<u64>,
-    ) -> Self {
-        Self {
-            applied,
-            effect: Some(effect),
-            commit,
-            version,
-            timestamp,
-            vector_revision,
-            error: None,
-        }
-    }
-
-    /// Creates a failed vector batch result.
-    pub fn failed(error: impl Into<String>) -> Self {
-        Self::failed_status(batch_item_error_status(error))
-    }
-
-    /// Creates a failed vector batch result from an executor error.
-    pub fn failed_error(error: ExecutorError) -> Self {
-        Self::failed_status(error.into_status())
-    }
-
-    /// Creates a failed vector batch result from a public error status.
-    pub fn failed_status(error: ErrorStatus) -> Self {
-        Self {
-            applied: false,
-            effect: None,
-            commit: None,
-            version: None,
-            timestamp: None,
-            vector_revision: None,
-            error: Some(error),
-        }
-    }
-
-    /// Returns true when this item changed a visible row.
-    pub const fn applied(&self) -> bool {
-        self.applied
-    }
-
-    /// Returns mutation effect facts for successful items.
-    pub const fn effect(&self) -> Option<&MutationEffect> {
-        self.effect.as_ref()
-    }
-
-    /// Returns commit receipt when this item applied a mutation.
-    pub const fn commit(&self) -> Option<&CommitReceipt> {
-        self.commit.as_ref()
-    }
-
-    /// Returns the commit version when present.
-    pub const fn version(&self) -> Option<u64> {
-        self.version
-    }
-
-    /// Returns the commit timestamp when present.
-    pub const fn timestamp(&self) -> Option<u64> {
-        self.timestamp
+    /// Creates a vector batch result payload.
+    pub const fn new(vector_revision: Option<u64>) -> Self {
+        Self { vector_revision }
     }
 
     /// Returns the vector revision when present.
     pub const fn vector_revision(&self) -> Option<u64> {
         self.vector_revision
     }
-
-    /// Returns the item error when validation failed.
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_ref().map(ErrorStatus::message)
-    }
-
-    /// Returns the structured item error status.
-    pub const fn error_status(&self) -> Option<&ErrorStatus> {
-        self.error.as_ref()
-    }
 }
 
-/// Positional vector batch read result.
+/// Positional vector batch read result payload.
+///
+/// The shared [`BatchItem`](crate::BatchItem) wrapper owns the status and error;
+/// this payload carries the read facts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct VectorBatchGetItemResult {
     found: bool,
     value: Option<VectorVersionedData>,
-    error: Option<ErrorStatus>,
 }
 
 impl VectorBatchGetItemResult {
@@ -709,26 +609,17 @@ impl VectorBatchGetItemResult {
         Self {
             found: value.is_some(),
             value,
-            error: None,
         }
     }
 
-    /// Creates a failed vector batch read result.
-    pub fn failed(error: impl Into<String>) -> Self {
-        Self::failed_status(batch_item_error_status(error))
-    }
-
-    /// Creates a failed vector batch read result from an executor error.
-    pub fn failed_error(error: ExecutorError) -> Self {
-        Self::failed_status(error.into_status())
-    }
-
-    /// Creates a failed vector batch read result from a public error status.
-    pub fn failed_status(error: ErrorStatus) -> Self {
+    /// Creates a vector batch read payload for an item that failed validation.
+    ///
+    /// The failure carries no read facts; the [`BatchItem`](crate::BatchItem)
+    /// wrapper carries the error.
+    pub const fn not_found() -> Self {
         Self {
             found: false,
             value: None,
-            error: Some(error),
         }
     }
 
@@ -744,15 +635,5 @@ impl VectorBatchGetItemResult {
         } else {
             None
         }
-    }
-
-    /// Returns the item error when validation failed.
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_ref().map(ErrorStatus::message)
-    }
-
-    /// Returns the structured item error status.
-    pub const fn error_status(&self) -> Option<&ErrorStatus> {
-        self.error.as_ref()
     }
 }

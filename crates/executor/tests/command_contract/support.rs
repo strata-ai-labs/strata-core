@@ -111,145 +111,74 @@ pub(super) fn bytes(value: &str) -> Bytes {
     Bytes::from(value)
 }
 
-pub(super) fn kv_batch(items: Vec<BatchItemResult>) -> BatchResult<BatchItemResult> {
-    fixture_batch(BatchMode::Itemwise, items, |item| {
-        (
-            item.applied(),
-            item.effect().copied(),
-            item.commit().copied(),
-            item.error_status().cloned(),
-        )
-    })
+pub(super) fn kv_batch(items: Vec<BatchItem<BatchItemResult>>) -> BatchResult<BatchItemResult> {
+    BatchResult::from_items(BatchMode::Itemwise, items)
 }
 
-pub(super) fn kv_batch_get(items: Vec<BatchGetItemResult>) -> BatchResult<BatchGetItemResult> {
-    BatchResult::from_items(
-        BatchMode::Itemwise,
-        items
-            .into_iter()
-            .enumerate()
-            .map(|(index, item)| {
-                let index = u64::try_from(index).expect("fixture index fits in u64");
-                if let Some(error) = item.error_status().cloned() {
-                    BatchItem::failed(index, Some(item), error)
-                } else if item.found() {
-                    BatchItem::ok(index, false, None, None, item)
-                } else {
-                    BatchItem::miss(index, item)
-                }
-            })
-            .collect(),
-    )
+pub(super) fn kv_batch_get(
+    items: Vec<BatchItem<BatchGetItemResult>>,
+) -> BatchResult<BatchGetItemResult> {
+    BatchResult::from_items(BatchMode::Itemwise, items)
 }
 
 pub(super) fn kv_batch_exists(
-    items: Vec<BatchExistsItemResult>,
+    items: Vec<BatchItem<BatchExistsItemResult>>,
 ) -> BatchResult<BatchExistsItemResult> {
-    BatchResult::from_items(
-        BatchMode::Itemwise,
-        items
-            .into_iter()
-            .enumerate()
-            .map(|(index, item)| {
-                let index = u64::try_from(index).expect("fixture index fits in u64");
-                if let Some(error) = item.error_status().cloned() {
-                    BatchItem::failed(index, Some(item), error)
-                } else {
-                    BatchItem::ok(index, false, None, None, item)
-                }
-            })
-            .collect(),
-    )
+    BatchResult::from_items(BatchMode::Itemwise, items)
 }
 
-pub(super) fn json_batch(items: Vec<JsonBatchItemResult>) -> BatchResult<JsonBatchItemResult> {
-    fixture_batch(BatchMode::Itemwise, items, |item| {
-        (
-            item.applied(),
-            item.effect().copied(),
-            item.commit().copied(),
-            item.error_status().cloned(),
-        )
-    })
+pub(super) fn json_batch(
+    items: Vec<BatchItem<JsonBatchItemResult>>,
+) -> BatchResult<JsonBatchItemResult> {
+    BatchResult::from_items(BatchMode::Itemwise, items)
 }
 
 pub(super) fn json_batch_get(
-    items: Vec<JsonBatchGetItemResult>,
+    items: Vec<BatchItem<JsonBatchGetItemResult>>,
 ) -> BatchResult<JsonBatchGetItemResult> {
-    fixture_batch(BatchMode::Itemwise, items, |item| {
-        (false, None, None, item.error_status().cloned())
-    })
+    BatchResult::from_items(BatchMode::Itemwise, items)
 }
 
 pub(super) fn vector_batch(
-    items: Vec<VectorBatchItemResult>,
+    items: Vec<BatchItem<VectorBatchItemResult>>,
 ) -> BatchResult<VectorBatchItemResult> {
-    fixture_batch(BatchMode::Itemwise, items, |item| {
-        (
-            item.applied(),
-            item.effect().copied(),
-            item.commit().copied(),
-            item.error_status().cloned(),
-        )
-    })
+    BatchResult::from_items(BatchMode::Itemwise, items)
 }
 
 pub(super) fn vector_batch_get(
-    items: Vec<VectorBatchGetItemResult>,
+    items: Vec<BatchItem<VectorBatchGetItemResult>>,
 ) -> BatchResult<VectorBatchGetItemResult> {
-    fixture_batch(BatchMode::Itemwise, items, |item| {
-        (false, None, None, item.error_status().cloned())
-    })
+    BatchResult::from_items(BatchMode::Itemwise, items)
 }
 
 pub(super) fn event_batch(
-    items: Vec<EventBatchAppendItemResult>,
+    items: Vec<BatchItem<EventBatchAppendItemResult>>,
 ) -> BatchResult<EventBatchAppendItemResult> {
-    fixture_batch(BatchMode::Itemwise, items, |item| {
-        let effect = item.effect().copied();
-        (
-            effect.is_some_and(|value| value.applied()),
-            effect,
-            item.commit().copied(),
-            item.error_status().cloned(),
-        )
-    })
+    BatchResult::from_items(BatchMode::Itemwise, items)
 }
 
-pub(super) fn graph_batch(items: Vec<GraphBatchItemResult>) -> BatchResult<GraphBatchItemResult> {
-    fixture_batch(BatchMode::Atomic, items, |item| {
-        let effect = item.effect().copied();
-        (
-            effect.is_some_and(|value| value.applied()),
-            effect,
-            item.commit().copied(),
-            item.error_status().cloned(),
-        )
-    })
+pub(super) fn graph_batch(
+    items: Vec<BatchItem<GraphBatchItemResult>>,
+) -> BatchResult<GraphBatchItemResult> {
+    BatchResult::from_items(BatchMode::Atomic, items)
 }
 
-pub(super) fn fixture_batch<T>(
-    mode: BatchMode,
-    items: Vec<T>,
-    mut facts: impl FnMut(
-        &T,
-    ) -> (
-        bool,
-        Option<MutationEffect>,
-        Option<CommitReceipt>,
-        Option<ErrorStatus>,
-    ),
-) -> BatchResult<T> {
-    BatchResult::from_items(
-        mode,
-        items
-            .into_iter()
-            .enumerate()
-            .map(|(index, item)| {
-                let (applied, effect, commit, error) = facts(&item);
-                BatchItem::new(index as u64, applied, effect, commit, Some(item), error)
-            })
-            .collect(),
+/// Builds a normalized item error for failed batch fixtures. The
+/// [`BatchItem`](strata_executor::BatchItem) wrapper carries the error now that
+/// the inner item DTOs no longer restate it.
+pub(super) fn item_error(message: &str) -> ErrorStatus {
+    ErrorStatus::new_with_docs_url(
+        ErrorClass::InvalidArgument,
+        "invalid_argument.executor.batch_item",
+        RetryPolicy::Never,
+        CommitOutcomeStatus::NotStarted,
+        message,
+        "Correct the batch item input and retry.",
+        "https://stratadb.org/e/invalid_argument.executor.batch_item",
+        "err-test-000001",
+        None,
+        Vec::new(),
+        Vec::new(),
     )
 }
 

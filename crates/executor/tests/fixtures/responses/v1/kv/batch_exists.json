@@ -10,7 +10,6 @@
         "error": null,
         "index": 0,
         "result": {
-          "error": null,
           "exists": true,
           "key": "YQ=="
         },
@@ -23,7 +22,6 @@
         "error": null,
         "index": 1,
         "result": {
-          "error": null,
           "exists": false,
           "key": "bWlzc2luZw=="
         },

@@ -78,7 +78,7 @@
     "type": "object"
   },
   "response": {
-    "description": "Paginated key list.",
+    "description": "Key list.\n\nA non-paginated list returns a terminal page (`has_more: false`,\n`cursor: null`); a paginated list carries the continuation cursor.",
     "properties": {
       "data": {
         "description": "Shared pagination continuation facts.",
@@ -120,95 +120,5 @@
       "data"
     ],
     "type": "object"
-  },
-  "responses": [
-    {
-      "description": "Key list.",
-      "properties": {
-        "data": {
-          "description": "Shared pagination continuation facts.",
-          "properties": {
-            "cursor": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Bytes"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "has_more": {
-              "type": "boolean"
-            },
-            "items": {
-              "description": "Keys in this page.",
-              "items": {
-                "$ref": "#/$defs/Bytes"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "items",
-            "has_more"
-          ],
-          "type": "object"
-        },
-        "type": {
-          "const": "keys",
-          "type": "string"
-        }
-      },
-      "required": [
-        "type",
-        "data"
-      ],
-      "type": "object"
-    },
-    {
-      "description": "Paginated key list.",
-      "properties": {
-        "data": {
-          "description": "Shared pagination continuation facts.",
-          "properties": {
-            "cursor": {
-              "anyOf": [
-                {
-                  "$ref": "#/$defs/Bytes"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "has_more": {
-              "type": "boolean"
-            },
-            "items": {
-              "description": "Keys in this page.",
-              "items": {
-                "$ref": "#/$defs/Bytes"
-              },
-              "type": "array"
-            }
-          },
-          "required": [
-            "items",
-            "has_more"
-          ],
-          "type": "object"
-        },
-        "type": {
-          "const": "keys_page",
-          "type": "string"
-        }
-      },
-      "required": [
-        "type",
-        "data"
-      ],
-      "type": "object"
-    }
-  ]
+  }
 }

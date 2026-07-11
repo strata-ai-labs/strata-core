@@ -10,7 +10,6 @@
         "error": null,
         "index": 0,
         "result": {
-          "error": null,
           "found": true,
           "key": "YQ==",
           "timestamp": 3,
@@ -26,7 +25,6 @@
         "error": null,
         "index": 1,
         "result": {
-          "error": null,
           "found": false,
           "key": "bWlzc2luZw==",
           "timestamp": null,

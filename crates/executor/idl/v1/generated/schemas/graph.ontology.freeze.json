@@ -97,27 +97,13 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
-          },
-          "timestamp": {
-            "description": "Commit timestamp.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "version": {
-            "description": "Commit version.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
           }
         },
         "required": [
           "graph",
           "object_types",
           "link_types",
-          "commit",
-          "version",
-          "timestamp"
+          "commit"
         ],
         "type": "object"
       },

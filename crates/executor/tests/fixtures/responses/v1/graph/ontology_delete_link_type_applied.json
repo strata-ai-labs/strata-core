@@ -7,7 +7,6 @@
       "timestamp": 6,
       "version": 6
     },
-    "deleted": true,
     "effect": {
       "affected_count": 1,
       "applied": true,
@@ -16,9 +15,7 @@
     },
     "graph": "social",
     "kind": "link",
-    "timestamp": 6,
-    "type_name": "knows",
-    "version": 6
+    "type_name": "knows"
   },
   "type": "graph_ontology_delete_result"
 }

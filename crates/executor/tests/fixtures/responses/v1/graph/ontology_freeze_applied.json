@@ -9,9 +9,7 @@
     },
     "graph": "social",
     "link_types": 1,
-    "object_types": 1,
-    "timestamp": 6,
-    "version": 6
+    "object_types": 1
   },
   "type": "graph_ontology_freeze_result"
 }

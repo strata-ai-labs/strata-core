@@ -66,11 +66,6 @@
     "VectorHistoryResult": {
       "description": "Vector history result for one key.",
       "properties": {
-        "count": {
-          "format": "uint",
-          "minimum": 0,
-          "type": "integer"
-        },
         "items": {
           "items": {
             "$ref": "#/$defs/VectorHistoryItem"
@@ -79,7 +74,6 @@
         }
       },
       "required": [
-        "count",
         "items"
       ],
       "type": "object"

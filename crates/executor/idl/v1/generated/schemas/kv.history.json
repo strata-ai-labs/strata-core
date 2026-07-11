@@ -42,11 +42,6 @@
     "HistoryResult": {
       "description": "Version-history result for one key.",
       "properties": {
-        "count": {
-          "format": "uint",
-          "minimum": 0,
-          "type": "integer"
-        },
         "items": {
           "items": {
             "$ref": "#/$defs/HistoryItem"
@@ -55,7 +50,6 @@
         }
       },
       "required": [
-        "count",
         "items"
       ],
       "type": "object"

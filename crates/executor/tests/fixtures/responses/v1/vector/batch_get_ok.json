@@ -10,7 +10,6 @@
         "error": null,
         "index": 0,
         "result": {
-          "error": null,
           "found": true,
           "value": {
             "data": {
@@ -37,7 +36,6 @@
         "error": null,
         "index": 1,
         "result": {
-          "error": null,
           "found": false,
           "value": null
         },

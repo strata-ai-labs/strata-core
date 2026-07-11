@@ -14,9 +14,7 @@
       "matched": false
     },
     "event_type": "user.created",
-    "sequence": 0,
-    "timestamp": 3,
-    "version": 3
+    "sequence": 0
   },
   "type": "event_append_result"
 }

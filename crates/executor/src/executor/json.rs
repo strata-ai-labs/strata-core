@@ -1,12 +1,12 @@
 use super::{
     delete_effect, empty_json_batch_get_results, empty_json_batch_results, engine_json_index_type,
     finish_json_batch_get_results, finish_json_batch_results, json_batch_get_batch_result,
-    json_batch_get_result, json_batch_item_result, json_batch_result, json_delete_output,
-    json_document_id, json_get_entry, json_history_items, json_index_definition, json_index_name,
-    json_list_output, json_path, json_sample_output, json_value, json_value_output,
-    json_versioned_value, json_write_output, optional_json_document_id, optional_json_prefix,
-    optional_limit, upsert_effect, BTreeSet, BatchJsonDeleteEntry, BatchJsonEntry,
-    BatchJsonGetEntry, Executor, ExecutorResult, JsonBatchGetItemResult, JsonBatchItemResult,
+    json_batch_get_failed, json_batch_get_result, json_batch_item_failed, json_batch_item_result,
+    json_batch_result, json_delete_output, json_document_id, json_get_entry, json_history_items,
+    json_index_definition, json_index_name, json_list_output, json_path, json_sample_output,
+    json_value, json_value_output, json_versioned_value, json_write_output,
+    optional_json_document_id, optional_json_prefix, optional_limit, upsert_effect, usize_to_u64,
+    BTreeSet, BatchJsonDeleteEntry, BatchJsonEntry, BatchJsonGetEntry, Executor, ExecutorResult,
     JsonIndexType, JsonSetEntry, MaybeJsonValue, MaybeJsonVersionedValue, Output, PageInfo,
     Timestamp, DEFAULT_JSON_LIST_LIMIT,
 };
@@ -122,7 +122,9 @@ impl Executor {
                     let effect = upsert_effect(existed || already_written);
                     valid_entries.push((index, effect, entry));
                 }
-                Err(error) => results[index] = Some(JsonBatchItemResult::failed_error(error)),
+                Err(error) => {
+                    results[index] = Some(json_batch_item_failed(usize_to_u64(index), error));
+                }
             }
         }
         if valid_entries.is_empty() {
@@ -135,6 +137,7 @@ impl Executor {
         let outcome = service.batch_set_or_create(engine_entries)?;
         for ((index, effect, _), item) in valid_entries.into_iter().zip(outcome.results()) {
             results[index] = Some(json_batch_item_result(
+                usize_to_u64(index),
                 effect,
                 outcome.commit(),
                 Some(item.document_version()),
@@ -161,7 +164,9 @@ impl Executor {
             let (key, path) = entry.into_parts();
             match json_get_entry(key, &path) {
                 Ok(entry) => valid_entries.push((index, entry)),
-                Err(error) => results[index] = Some(JsonBatchGetItemResult::failed_error(error)),
+                Err(error) => {
+                    results[index] = Some(json_batch_get_failed(usize_to_u64(index), error));
+                }
             }
         }
         if valid_entries.is_empty() {
@@ -175,7 +180,7 @@ impl Executor {
             .collect::<Vec<_>>();
         let values = service.batch_get(&engine_entries)?;
         for ((index, _), value) in valid_entries.into_iter().zip(values) {
-            results[index] = Some(json_batch_get_result(value));
+            results[index] = Some(json_batch_get_result(usize_to_u64(index), value));
         }
         Ok(Output::JsonBatchGetResults(finish_json_batch_get_results(
             results,
@@ -198,7 +203,9 @@ impl Executor {
             let (key, path) = entry.into_parts();
             match json_get_entry(key, &path) {
                 Ok(entry) => valid_entries.push((index, entry)),
-                Err(error) => results[index] = Some(JsonBatchItemResult::failed_error(error)),
+                Err(error) => {
+                    results[index] = Some(json_batch_item_failed(usize_to_u64(index), error));
+                }
             }
         }
         if valid_entries.is_empty() {
@@ -214,6 +221,7 @@ impl Executor {
             .zip(outcome.deleted().iter().copied())
         {
             results[index] = Some(json_batch_item_result(
+                usize_to_u64(index),
                 delete_effect(deleted),
                 deleted.then(|| outcome.commit()).flatten(),
                 None,

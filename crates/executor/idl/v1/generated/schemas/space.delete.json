@@ -142,10 +142,6 @@
             ],
             "description": "Commit receipt when a catalog mutation was applied."
           },
-          "deleted": {
-            "description": "True when a catalog row was deleted.",
-            "type": "boolean"
-          },
           "deleted_rows": {
             "description": "Number of visible space rows tombstoned, including primitive index/control rows.",
             "format": "uint64",
@@ -163,29 +159,10 @@
           "space": {
             "description": "Product space name.",
             "type": "string"
-          },
-          "timestamp": {
-            "description": "Commit timestamp when a catalog mutation was applied.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "version": {
-            "description": "Commit version when a catalog mutation was applied.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
           }
         },
         "required": [
           "space",
-          "deleted",
           "force",
           "deleted_rows",
           "effect"

@@ -11,7 +11,6 @@
         "index": 0,
         "result": {
           "document_version": 1,
-          "error": null,
           "found": true,
           "timestamp": 3,
           "value": "Ada",
@@ -27,7 +26,6 @@
         "index": 1,
         "result": {
           "document_version": null,
-          "error": null,
           "found": false,
           "timestamp": null,
           "value": null,

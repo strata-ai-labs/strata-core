@@ -164,10 +164,6 @@
             "$ref": "#/$defs/CommitReceipt",
             "description": "Commit receipt."
           },
-          "created": {
-            "description": "True when the edge did not previously exist.",
-            "type": "boolean"
-          },
           "dst": {
             "description": "Destination node id.",
             "type": "string"
@@ -187,18 +183,6 @@
           "src": {
             "description": "Source node id.",
             "type": "string"
-          },
-          "timestamp": {
-            "description": "Commit timestamp.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "version": {
-            "description": "Commit version.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
           }
         },
         "required": [
@@ -206,11 +190,8 @@
           "src",
           "edge_type",
           "dst",
-          "created",
           "effect",
-          "commit",
-          "version",
-          "timestamp"
+          "commit"
         ],
         "type": "object"
       },

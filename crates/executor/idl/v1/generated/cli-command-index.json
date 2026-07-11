@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "0212bb6b7dce940975d69ccb28740414b1c3787f6fa676e7dad4fa85f14c6f8e",
+    "checksum_sha256": "29e73e4e5e98e748b44c7a34852a5d923c9389c79acb58e828d5d6ebc8395bae",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -2090,7 +2090,7 @@
       "batch": "none",
       "input": "Command::GraphCreate",
       "outputs": [
-        "Output::GraphInfo"
+        "Output::GraphCreateResult"
       ],
       "response_model": "MutationAck<GraphInfoData>",
       "errors": [
@@ -5619,7 +5619,6 @@
       "batch": "none",
       "input": "Command::KvList",
       "outputs": [
-        "Output::Keys",
         "Output::KeysPage"
       ],
       "response_model": "Page<Bytes, Bytes>",
@@ -5644,23 +5643,10 @@
       "fixtures": {
         "request": "requests/v1/kv/list.json",
         "response": "responses/v1/kv/list_page.json",
-        "responses": [
-          "responses/v1/kv/list_keys.json"
-        ],
         "setup": [
           "requests/v1/setup/kv_put_a1.json",
           "requests/v1/setup/kv_put_a2.json",
           "requests/v1/setup/kv_put_a3.json"
-        ],
-        "cases": [
-          {
-            "setup": [
-              "requests/v1/setup/kv_put_a1.json",
-              "requests/v1/setup/kv_put_a2.json"
-            ],
-            "request": "requests/v1/kv/list_all.json",
-            "response": "responses/v1/kv/list_keys.json"
-          }
         ]
       },
       "wire_status": "stable"

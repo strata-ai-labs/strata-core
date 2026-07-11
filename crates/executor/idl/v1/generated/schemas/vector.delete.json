@@ -154,10 +154,6 @@
             ],
             "description": "Commit receipt when a delete was applied."
           },
-          "deleted": {
-            "description": "True when a visible vector was deleted.",
-            "type": "boolean"
-          },
           "effect": {
             "$ref": "#/$defs/MutationEffect",
             "description": "Mutation effect facts."
@@ -165,30 +161,11 @@
           "key": {
             "description": "Vector key.",
             "type": "string"
-          },
-          "timestamp": {
-            "description": "Commit timestamp when a delete was applied.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "version": {
-            "description": "Commit version when a delete was applied.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
           }
         },
         "required": [
           "collection",
           "key",
-          "deleted",
           "effect"
         ],
         "type": "object"

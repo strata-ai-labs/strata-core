@@ -13,10 +13,7 @@
       "kind": "updated",
       "matched": true
     },
-    "nodes_affected": 1,
-    "policy": "detach",
-    "timestamp": 5,
-    "version": 5
+    "policy": "detach"
   },
   "type": "graph_delete_policy_result"
 }

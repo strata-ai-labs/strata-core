@@ -1,5 +1,5 @@
 use super::{
-    commit_receipt, create_effect, delete_effect, output_vector_metric, CommitVersion,
+    commit_receipt, create_effect, delete_effect, output_vector_metric,
     EngineAdminCapabilitySummary, EngineAdminConfigSummary, EngineAdminDatabaseInfo,
     EngineAdminDescribeSummary, EngineAdminGraphSummary, EngineAdminHealthStatus,
     EngineAdminHealthSummary, EngineAdminMetricsSummary, EngineAdminPrimitiveSummary,
@@ -7,7 +7,7 @@ use super::{
     EngineSpaceCreateOutcome, EngineSpaceDeleteOutcome, Output, OutputAdminCapabilities,
     OutputAdminConfig, OutputAdminControlStatus, OutputAdminDatabaseInfo, OutputAdminDescribe,
     OutputAdminGraph, OutputAdminHealth, OutputAdminHealthStatus, OutputAdminMetrics,
-    OutputAdminOpenTarget, OutputAdminPrimitives, OutputAdminVectorCollection, Timestamp,
+    OutputAdminOpenTarget, OutputAdminPrimitives, OutputAdminVectorCollection,
 };
 
 #[cfg(not(feature = "arrow"))]
@@ -171,23 +171,17 @@ pub(super) fn output_admin_describe(describe: &EngineAdminDescribeSummary) -> Ou
 pub(super) fn output_space_create(outcome: &EngineSpaceCreateOutcome) -> Output {
     Output::SpaceCreateResult {
         space: outcome.space().as_str().to_owned(),
-        created: outcome.created(),
         effect: create_effect(outcome.created()),
         commit: outcome.commit().map(commit_receipt),
-        version: outcome.version().map(CommitVersion::as_u64),
-        timestamp: outcome.timestamp().map(Timestamp::as_micros),
     }
 }
 
 pub(super) fn output_space_delete(outcome: &EngineSpaceDeleteOutcome) -> Output {
     Output::SpaceDeleteResult {
         space: outcome.space().as_str().to_owned(),
-        deleted: outcome.deleted(),
         force: outcome.force(),
         deleted_rows: outcome.deleted_rows(),
         effect: delete_effect(outcome.deleted()),
         commit: outcome.commit().map(commit_receipt),
-        version: outcome.version().map(CommitVersion::as_u64),
-        timestamp: outcome.timestamp().map(Timestamp::as_micros),
     }
 }

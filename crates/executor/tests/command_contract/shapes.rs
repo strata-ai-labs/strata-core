@@ -9,7 +9,10 @@ fn kv_history_output_json_uses_counted_items_shape() {
     ])));
     let encoded = serde_json::to_value(&output).expect("history output serializes");
     assert_eq!(encoded["type"], "version_history");
-    assert_eq!(encoded["data"]["count"], 2);
+    assert!(
+        encoded["data"].get("count").is_none(),
+        "version history no longer restates a count field"
+    );
     assert_eq!(
         encoded["data"]["items"]
             .as_array()
@@ -48,7 +51,10 @@ fn vector_history_output_json_uses_counted_items_shape() {
     ])));
     let encoded = serde_json::to_value(&output).expect("history output serializes");
     assert_eq!(encoded["type"], "vector_version_history");
-    assert_eq!(encoded["data"]["count"], 2);
+    assert!(
+        encoded["data"].get("count").is_none(),
+        "vector version history no longer restates a count field"
+    );
     assert_eq!(
         encoded["data"]["items"]
             .as_array()
