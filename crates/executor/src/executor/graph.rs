@@ -9,8 +9,8 @@ use super::{
     graph_ontology_summary_output, graph_ontology_write_output, graph_type_name,
     optional_graph_edge_type, optional_graph_name, optional_graph_node_id, optional_limit,
     EngineGraphBatchWrite, EngineGraphLinkTypeDef, EngineGraphObjectTypeDef, Executor,
-    ExecutorResult, GraphBatchOperation, GraphBindingTarget, GraphDirection, GraphEdgeData,
-    GraphEntityBinding, GraphNodeData, GraphPropertyDef, Output, Timestamp,
+    ExecutorError, ExecutorResult, GraphBatchOperation, GraphBindingTarget, GraphDirection,
+    GraphEdgeData, GraphEntityBinding, GraphNodeData, GraphPropertyDef, Output, Timestamp,
     DEFAULT_GRAPH_LIST_LIMIT,
 };
 
@@ -78,7 +78,14 @@ impl Executor {
         } else {
             service.graph_info(&graph)?
         };
-        Ok(Output::GraphInfoResult(info.as_ref().map(graph_info_data)))
+        // A missing graph is an error here, matching every other graph read
+        // (get-node, list-nodes, neighbors, ontology). graph_info returning
+        // an Option is an engine quirk the wire boundary must not leak as a
+        // null "success".
+        let info = info.ok_or_else(|| {
+            ExecutorError::not_found("not_found.engine.graph", "graph does not exist")
+        })?;
+        Ok(Output::GraphInfoResult(Some(graph_info_data(&info))))
     }
 
     #[allow(clippy::too_many_arguments)]
