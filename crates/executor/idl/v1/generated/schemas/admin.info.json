@@ -1,0 +1,112 @@
+{
+  "$defs": {
+    "AdminDatabaseInfo": {
+      "description": "Database information output.",
+      "properties": {
+        "branch_count": {
+          "description": "Active branch count.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created": {
+          "description": "True when this open created a new database.",
+          "type": "boolean"
+        },
+        "default_branch": {
+          "description": "Default product branch.",
+          "type": "string"
+        },
+        "durable": {
+          "description": "True when storage is durable.",
+          "type": "boolean"
+        },
+        "open": {
+          "description": "True while the database handle is open.",
+          "type": "boolean"
+        },
+        "space_count": {
+          "description": "Registered space count for the selected branch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "target": {
+          "$ref": "#/$defs/AdminOpenTarget",
+          "description": "Open target."
+        },
+        "version": {
+          "description": "Engine package version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "target",
+        "created",
+        "durable",
+        "default_branch",
+        "branch_count",
+        "space_count",
+        "open"
+      ],
+      "type": "object"
+    },
+    "AdminOpenTarget": {
+      "description": "Database open target exposed in admin outputs.",
+      "oneOf": [
+        {
+          "const": "cache",
+          "description": "Volatile cache-backed database.",
+          "type": "string"
+        },
+        {
+          "const": "durable_local",
+          "description": "Durable local filesystem-backed database.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/admin.info.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "admin.info",
+  "request": {
+    "additionalProperties": false,
+    "description": "Returns database identity and catalog summary.",
+    "properties": {
+      "branch": {
+        "description": "Branch whose space catalog should be summarized. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "info",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Database identity and catalog summary.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/AdminDatabaseInfo"
+      },
+      "type": {
+        "const": "database_info",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

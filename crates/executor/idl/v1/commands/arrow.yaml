@@ -1,0 +1,53 @@
+commands:
+  - id: arrow.import
+    kind: action.status
+    title: Import Arrow file
+    input: Command::ArrowImport
+    output: Output::ArrowImportResult
+    result: ArrowImport
+    access: write
+    commit: commits_on_success
+    response_model: StatusResponse<ArrowImport>
+    prose: commands/arrow.import.md
+    errors+:
+      - invalid_argument.engine.product_space
+      - invalid_argument.executor.arrow_feature_disabled
+      - invalid_argument.executor.arrow_format
+      - invalid_argument.executor.arrow_input_missing
+      - invalid_argument.executor.arrow_key_column
+      - invalid_argument.executor.arrow_value_column
+      - invalid_argument.executor.arrow_collection
+      - invalid_argument.executor.arrow_embedding_type
+      - invalid_argument.executor.arrow_vector_dimension
+      - invalid_argument.executor.arrow_json_key
+      - invalid_argument.executor.arrow_base64
+      - unavailable.executor.arrow_io
+      - internal.executor.arrow
+    fixtures:
+      request: requests/v1/arrow/import.json
+      response: responses/v1/arrow/import_kv_csv.json
+      replay_skip: arrow import reads a real file from the filesystem; the source file does not exist on the scratch cache executor
+  - id: arrow.export
+    kind: action.status
+    title: Export Arrow file
+    input: Command::ArrowExport
+    output: Output::ArrowExportResult
+    result: ArrowExport
+    access: read
+    response_model: StatusResponse<ArrowExport>
+    prose: commands/arrow.export.md
+    errors+:
+      - invalid_argument.engine.product_space
+      - invalid_argument.executor.arrow_feature_disabled
+      - invalid_argument.executor.arrow_format
+      - invalid_argument.executor.arrow_empty_export
+      - invalid_argument.executor.arrow_value_column
+      - invalid_argument.executor.arrow_vector_key
+      - invalid_argument.executor.arrow_graph
+      - invalid_argument.executor.arrow_collection
+      - unavailable.executor.arrow_io
+      - internal.executor.arrow
+    fixtures:
+      request: requests/v1/arrow/export.json
+      response: responses/v1/arrow/export_kv_csv.json
+      replay_skip: arrow export writes real files to a filesystem path outside the scratch cache executor

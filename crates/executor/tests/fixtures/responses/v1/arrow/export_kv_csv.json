@@ -1,0 +1,12 @@
+{
+  "data": {
+    "format": "csv",
+    "paths": [
+      "kv_out.csv"
+    ],
+    "primitive": "kv",
+    "row_count": 3,
+    "size_bytes": 135
+  },
+  "type": "arrow_export_result"
+}

@@ -1,0 +1,44 @@
+{
+  "$id": "https://stratadb.org/idl/v1/schemas/admin.config_key.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "admin.config_key",
+  "request": {
+    "additionalProperties": false,
+    "description": "Returns one sanitized configuration value by key.",
+    "properties": {
+      "key": {
+        "description": "Config key.",
+        "type": "string"
+      },
+      "type": {
+        "const": "configure_get_key",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "key"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Optional sanitized configuration value.",
+    "properties": {
+      "data": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "config_value",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

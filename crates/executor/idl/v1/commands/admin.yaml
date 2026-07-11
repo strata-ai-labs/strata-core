@@ -1,0 +1,135 @@
+commands:
+  - id: admin.ping
+    kind: read.summary
+    title: Ping database
+    input: Command::Ping
+    output: Output::Pong
+    result: PingInfo
+    response_model: StatusResponse<PingInfo>
+    cli_path: ["ping"]
+    prose: commands/admin.ping.md
+    errors-:
+      - not_found.engine.branch
+    fixtures:
+      request: requests/v1/admin/ping.json
+      response: responses/v1/admin/ping.json
+  - id: admin.info
+    kind: read.summary
+    title: Read database info
+    input: Command::Info
+    output: Output::DatabaseInfo
+    result: AdminDatabaseInfo
+    response_model: StatusResponse<AdminDatabaseInfo>
+    cli_path: ["info"]
+    prose: commands/admin.info.md
+    errors+:
+      - invalid_argument.engine.branch_name
+    fixtures:
+      request: requests/v1/admin/info.json
+      response: responses/v1/admin/info.json
+  - id: admin.health
+    kind: read.summary
+    title: Read database health
+    input: Command::Health
+    output: Output::Health
+    result: AdminHealth
+    response_model: StatusResponse<AdminHealth>
+    cli_path: ["health"]
+    prose: commands/admin.health.md
+    errors+:
+      - invalid_argument.engine.branch_name
+    fixtures:
+      request: requests/v1/admin/health.json
+      response: responses/v1/admin/health.json
+  - id: admin.metrics
+    kind: read.summary
+    title: Read database metrics
+    input: Command::Metrics
+    output: Output::Metrics
+    result: AdminMetrics
+    response_model: StatusResponse<AdminMetrics>
+    cli_path: ["metrics"]
+    prose: commands/admin.metrics.md
+    errors+:
+      - invalid_argument.engine.branch_name
+    fixtures:
+      request: requests/v1/admin/metrics.json
+      response: responses/v1/admin/metrics.json
+  - id: admin.describe
+    kind: read.summary
+    title: Describe database
+    input: Command::Describe
+    output: Output::Described
+    result: AdminDescribe
+    response_model: StatusResponse<AdminDescribe>
+    cli_path: ["describe"]
+    prose: commands/admin.describe.md
+    errors+:
+      - invalid_argument.engine.branch_name
+    fixtures:
+      request: requests/v1/admin/describe.json
+      response: responses/v1/admin/describe.json
+  - id: admin.config
+    kind: read.summary
+    title: Read sanitized config
+    input: Command::ConfigGet
+    output: Output::Config
+    result: AdminConfig
+    response_model: StatusResponse<AdminConfig>
+    cli_path: ["config", "get"]
+    prose: commands/admin.config.md
+    errors-:
+      - not_found.engine.branch
+    fixtures:
+      request: requests/v1/admin/config_get.json
+      response: responses/v1/admin/config.json
+  - id: admin.remote
+    kind: read.get
+    title: Read remote origin
+    input: Command::RemoteGet
+    output: Output::RemoteOriginResult
+    result: RemoteOriginInfo
+    cli_path: ["remote"]
+    prose: commands/admin.remote.md
+    errors-:
+      - not_found.engine.branch
+    fixtures:
+      request: requests/v1/admin/remote_get.json
+      response: responses/v1/admin/remote_null.json
+  - id: admin.config_key
+    kind: read.get
+    title: Read one config value
+    input: Command::ConfigureGetKey
+    output: Output::ConfigValue
+    result: String
+    cli_path: ["config", "get-key"]
+    prose: commands/admin.config_key.md
+    errors+:
+      - invalid_argument.engine.config_key
+    errors-:
+      - not_found.engine.branch
+    fixtures:
+      request: requests/v1/admin/config_key.json
+      response: responses/v1/admin/config_value_default_branch.json
+  - id: admin.hub_clone
+    kind: action.status
+    title: Clone hub dataset
+    input: Command::HubClone
+    output: Output::HubCloneResult
+    result: HubClone
+    access: write
+    cli_path: ["clone"]
+    prose: commands/admin.hub_clone.md
+    errors+:
+      - invalid_argument.executor.hub_dataset
+      - invalid_argument.executor.hub_branch
+      - invalid_argument.executor.hub_feature_disabled
+      - failed_precondition.executor.hub_url
+      - failed_precondition.executor.hub_clone
+      - unavailable.executor.hub_transport
+    errors-:
+      - not_found.engine.branch
+    fixtures:
+      request: requests/v1/admin/hub_clone.json
+      response: responses/v1/admin/hub_clone.json
+      replay_skip: hub clone resolves and downloads a dataset over the network into a new database directory; it never runs against the scratch cache executor

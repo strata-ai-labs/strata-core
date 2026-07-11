@@ -634,6 +634,8 @@ pub fn resolve_index(repo_root: &Path) -> Result<CommandIndex> {
 
     let mut command_entries = Vec::new();
     for file_name in [
+        "admin.yaml",
+        "arrow.yaml",
         "branch.yaml",
         "event.yaml",
         "graph.yaml",

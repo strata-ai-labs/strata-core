@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "AdminConfig": {
+      "description": "Sanitized config output.",
+      "properties": {
+        "created": {
+          "description": "True when this open created a new database.",
+          "type": "boolean"
+        },
+        "default_branch": {
+          "description": "Default product branch.",
+          "type": "string"
+        },
+        "durable": {
+          "description": "True when storage is durable.",
+          "type": "boolean"
+        },
+        "target": {
+          "$ref": "#/$defs/AdminOpenTarget",
+          "description": "Open target."
+        }
+      },
+      "required": [
+        "target",
+        "created",
+        "durable",
+        "default_branch"
+      ],
+      "type": "object"
+    },
+    "AdminOpenTarget": {
+      "description": "Database open target exposed in admin outputs.",
+      "oneOf": [
+        {
+          "const": "cache",
+          "description": "Volatile cache-backed database.",
+          "type": "string"
+        },
+        {
+          "const": "durable_local",
+          "description": "Durable local filesystem-backed database.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/admin.config.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "admin.config",
+  "request": {
+    "additionalProperties": false,
+    "description": "Returns sanitized configuration facts.",
+    "properties": {
+      "type": {
+        "const": "config_get",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Sanitized configuration facts.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/AdminConfig"
+      },
+      "type": {
+        "const": "config",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

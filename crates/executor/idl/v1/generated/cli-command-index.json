@@ -4,12 +4,35 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "340d8ad1b9e12d78dab9a4ee1f2fd307c1cb92b698c0670489c78ee2e93da9aa",
+    "checksum_sha256": "0b52283a1f5bfc5818e94c89f5ff19a6f027d7c74d9b0011dcd54165a0645ab8",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
-  "command_count": 97,
+  "command_count": 108,
   "families": [
+    {
+      "id": "admin",
+      "command_count": 9,
+      "commands": [
+        "admin.hub_clone",
+        "admin.config",
+        "admin.config_key",
+        "admin.describe",
+        "admin.health",
+        "admin.info",
+        "admin.metrics",
+        "admin.ping",
+        "admin.remote"
+      ]
+    },
+    {
+      "id": "arrow",
+      "command_count": 2,
+      "commands": [
+        "arrow.export",
+        "arrow.import"
+      ]
+    },
     {
       "id": "branch",
       "command_count": 7,
@@ -151,6 +174,182 @@
     }
   ],
   "commands": [
+    {
+      "id": "arrow.export",
+      "path": [
+        "arrow",
+        "export"
+      ],
+      "path_display": "arrow export",
+      "surface": "verb",
+      "family": "arrow",
+      "op": "export",
+      "kind": "action.status",
+      "title": "Export Arrow file",
+      "summary": "Export a product primitive to an Arrow-compatible file.",
+      "description": "Exports a product primitive from the selected branch and space to an Arrow-compatible file (Parquet, CSV, or JSONL). Graph exports treat the path as a stem and write separate node and edge files. Returns a summary of the exported primitive, the concrete output paths, the row count, and the total output size.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/arrow/export",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::ArrowExport",
+      "outputs": [
+        "Output::ArrowExportResult"
+      ],
+      "response_model": "StatusResponse<ArrowExport>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_format",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_format"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_empty_export",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_empty_export"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_value_column",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_value_column"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_vector_key"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_graph",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_graph"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_collection"
+        },
+        {
+          "code": "unavailable.executor.arrow_io",
+          "docs": "https://stratadb.org/e/unavailable.executor.arrow_io"
+        },
+        {
+          "code": "internal.executor.arrow",
+          "docs": "https://stratadb.org/e/internal.executor.arrow"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/arrow/export.json",
+        "response": "responses/v1/arrow/export_kv_csv.json",
+        "replay_skip": "arrow export writes real files to a filesystem path outside the scratch cache executor"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "arrow.import",
+      "path": [
+        "arrow",
+        "import"
+      ],
+      "path_display": "arrow import",
+      "surface": "verb",
+      "family": "arrow",
+      "op": "import",
+      "kind": "action.status",
+      "title": "Import Arrow file",
+      "summary": "Import an Arrow-compatible file into a product primitive.",
+      "description": "Imports an Arrow-compatible file (Parquet, CSV, or JSONL) into a product primitive on the selected branch and space. Rows are written through the standard batch commands, so the import commits like any other write. Returns a summary of the target primitive, the input file, and the imported, skipped, and batch counts.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/arrow/import",
+      "feature": "core",
+      "access": "write",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::ArrowImport",
+      "outputs": [
+        "Output::ArrowImportResult"
+      ],
+      "response_model": "StatusResponse<ArrowImport>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_format",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_format"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_input_missing",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_input_missing"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_key_column",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_key_column"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_value_column",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_value_column"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_collection"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_embedding_type",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_embedding_type"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_vector_dimension",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_vector_dimension"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_json_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_json_key"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_base64",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_base64"
+        },
+        {
+          "code": "unavailable.executor.arrow_io",
+          "docs": "https://stratadb.org/e/unavailable.executor.arrow_io"
+        },
+        {
+          "code": "internal.executor.arrow",
+          "docs": "https://stratadb.org/e/internal.executor.arrow"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/arrow/import.json",
+        "response": "responses/v1/arrow/import_kv_csv.json",
+        "replay_skip": "arrow import reads a real file from the filesystem; the source file does not exist on the scratch cache executor"
+      },
+      "wire_status": "stable"
+    },
     {
       "id": "branch.create",
       "path": [
@@ -521,6 +720,189 @@
         "setup": [
           "requests/v1/branches/create.json"
         ]
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "admin.hub_clone",
+      "path": [
+        "clone"
+      ],
+      "path_display": "clone",
+      "surface": "verb",
+      "family": "admin",
+      "op": "hub_clone",
+      "kind": "action.status",
+      "title": "Clone hub dataset",
+      "summary": "Clone a dataset from a hub into a new local database.",
+      "description": "Clones a dataset from a hub into a new local database directory. Resolution, download, verification, reconstitution, and origin recording run once behind this command; the session database is not touched. The destination directory must not exist or must be empty. When the hub URL is not given, the layered resolver selects it from the flag, environment, and config layers.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/hub_clone",
+      "feature": "core",
+      "access": "write",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::HubClone",
+      "outputs": [
+        "Output::HubCloneResult"
+      ],
+      "response_model": "StatusResponse<HubClone>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "invalid_argument.executor.hub_dataset",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_dataset"
+        },
+        {
+          "code": "invalid_argument.executor.hub_branch",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_branch"
+        },
+        {
+          "code": "invalid_argument.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+        },
+        {
+          "code": "failed_precondition.executor.hub_url",
+          "docs": "https://stratadb.org/e/failed_precondition.executor.hub_url"
+        },
+        {
+          "code": "failed_precondition.executor.hub_clone",
+          "docs": "https://stratadb.org/e/failed_precondition.executor.hub_clone"
+        },
+        {
+          "code": "unavailable.executor.hub_transport",
+          "docs": "https://stratadb.org/e/unavailable.executor.hub_transport"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/hub_clone.json",
+        "response": "responses/v1/admin/hub_clone.json",
+        "replay_skip": "hub clone resolves and downloads a dataset over the network into a new database directory; it never runs against the scratch cache executor"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "admin.config",
+      "path": [
+        "config",
+        "get"
+      ],
+      "path_display": "config get",
+      "surface": "verb",
+      "family": "admin",
+      "op": "config",
+      "kind": "read.summary",
+      "title": "Read sanitized config",
+      "summary": "Read sanitized configuration facts.",
+      "description": "Returns sanitized configuration facts: the open target, whether this open created the database, durability, and the default branch. Only allowlisted, non-sensitive facts are exposed; no filesystem paths, credentials, or provider keys are ever returned.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/config",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::ConfigGet",
+      "outputs": [
+        "Output::Config"
+      ],
+      "response_model": "StatusResponse<AdminConfig>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/config_get.json",
+        "response": "responses/v1/admin/config.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "admin.config_key",
+      "path": [
+        "config",
+        "get-key"
+      ],
+      "path_display": "config get-key",
+      "surface": "verb",
+      "family": "admin",
+      "op": "config_key",
+      "kind": "read.get",
+      "title": "Read one config value",
+      "summary": "Read one sanitized configuration value by key.",
+      "description": "Returns one sanitized configuration value from the allowlist by key, or a null value when the key is not recognized. Only allowlisted, non-sensitive keys are served; an empty key is rejected with `invalid_argument.engine.config_key`.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/admin/config_key",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::ConfigureGetKey",
+      "outputs": [
+        "Output::ConfigValue"
+      ],
+      "response_model": "Maybe<String>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "invalid_argument.engine.config_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.config_key"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/config_key.json",
+        "response": "responses/v1/admin/config_value_default_branch.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "admin.describe",
+      "path": [
+        "describe"
+      ],
+      "path_display": "describe",
+      "surface": "verb",
+      "family": "admin",
+      "op": "describe",
+      "kind": "read.summary",
+      "title": "Describe database",
+      "summary": "Read a compact description of the database.",
+      "description": "Returns a compact description of the database for one branch: engine version, open target, the default and described branches, all active branches, the registered product spaces, per-primitive counts (KV, JSON, event, plus vector-collection and graph summaries), the sanitized config, and the available capabilities. The branch defaults to the handle branch when omitted.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/describe",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::Describe",
+      "outputs": [
+        "Output::Described"
+      ],
+      "response_model": "StatusResponse<AdminDescribe>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/describe.json",
+        "response": "responses/v1/admin/describe.json"
       },
       "wire_status": "stable"
     },
@@ -3097,6 +3479,94 @@
       "wire_status": "stable"
     },
     {
+      "id": "admin.health",
+      "path": [
+        "health"
+      ],
+      "path_display": "health",
+      "surface": "verb",
+      "family": "admin",
+      "op": "health",
+      "kind": "read.summary",
+      "title": "Read database health",
+      "summary": "Read control-plane health facts.",
+      "description": "Returns control-plane health facts: the worst overall status plus per-subsystem status for identity, registry, branch catalog, and the optional branch-local space catalog. Also reports the default branch and active branch count. A healthy result means every required control-plane fact is present and readable.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/health",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::Health",
+      "outputs": [
+        "Output::Health"
+      ],
+      "response_model": "StatusResponse<AdminHealth>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/health.json",
+        "response": "responses/v1/admin/health.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "admin.info",
+      "path": [
+        "info"
+      ],
+      "path_display": "info",
+      "surface": "verb",
+      "family": "admin",
+      "op": "info",
+      "kind": "read.summary",
+      "title": "Read database info",
+      "summary": "Read database identity and a catalog summary.",
+      "description": "Returns database identity and a catalog summary for one branch: engine version, open target, whether this open created the database, durability, the default branch, the active branch count, and the registered space count for the selected branch. The branch defaults to the handle branch when omitted.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/info",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::Info",
+      "outputs": [
+        "Output::DatabaseInfo"
+      ],
+      "response_model": "StatusResponse<AdminDatabaseInfo>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/info.json",
+        "response": "responses/v1/admin/info.json"
+      },
+      "wire_status": "stable"
+    },
+    {
       "id": "json.batch_delete",
       "path": [
         "json",
@@ -4669,6 +5139,122 @@
       "wire_status": "stable"
     },
     {
+      "id": "admin.metrics",
+      "path": [
+        "metrics"
+      ],
+      "path_display": "metrics",
+      "surface": "verb",
+      "family": "admin",
+      "op": "metrics",
+      "kind": "read.summary",
+      "title": "Read database metrics",
+      "summary": "Read lightweight database metrics.",
+      "description": "Returns lightweight database metrics: the open target, durability, whether the handle is open, the active branch count, the registered space count for the selected branch, and the control-plane health status. The branch defaults to the handle branch when omitted.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/metrics",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::Metrics",
+      "outputs": [
+        "Output::Metrics"
+      ],
+      "response_model": "StatusResponse<AdminMetrics>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/metrics.json",
+        "response": "responses/v1/admin/metrics.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "admin.ping",
+      "path": [
+        "ping"
+      ],
+      "path_display": "ping",
+      "surface": "verb",
+      "family": "admin",
+      "op": "ping",
+      "kind": "read.summary",
+      "title": "Ping database",
+      "summary": "Check that the database handle is live.",
+      "description": "Lightweight liveness check. Returns the engine package version without touching branches, spaces, or primitive data. Use it to confirm the handle is open and responsive before issuing heavier commands.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/ping",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::Ping",
+      "outputs": [
+        "Output::Pong"
+      ],
+      "response_model": "StatusResponse<PingInfo>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/ping.json",
+        "response": "responses/v1/admin/ping.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "admin.remote",
+      "path": [
+        "remote"
+      ],
+      "path_display": "remote",
+      "surface": "verb",
+      "family": "admin",
+      "op": "remote",
+      "kind": "read.get",
+      "title": "Read remote origin",
+      "summary": "Read where this database was cloned from.",
+      "description": "Reads the remote origin recorded when this database was cloned from a hub: the remote URL, dataset, branch, manifest hash, fetch time, and per-branch base frontier. Returns a null origin when the database was created locally and never cloned.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/admin/remote",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::RemoteGet",
+      "outputs": [
+        "Output::RemoteOriginResult"
+      ],
+      "response_model": "Maybe<RemoteOriginInfo>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/remote_get.json",
+        "response": "responses/v1/admin/remote_null.json"
+      },
+      "wire_status": "stable"
+    },
+    {
       "id": "space.create",
       "path": [
         "space",
@@ -6118,105 +6704,118 @@
   ],
   "lookup": {
     "by_id": {
-      "branch.create": 0,
-      "branch.delete": 1,
-      "branch.fork": 2,
-      "branch.fork_at_timestamp": 3,
-      "branch.fork_at_version": 4,
-      "branch.get": 5,
-      "branch.list": 6,
-      "event.append": 7,
-      "event.batch_append": 8,
-      "event.exists": 9,
-      "event.get": 10,
-      "event.len": 11,
-      "event.list": 12,
-      "event.range": 13,
-      "event.range_time": 14,
-      "event.types": 15,
-      "event.verify_chain": 16,
-      "graph.analytics.bfs": 21,
-      "graph.analytics.cdlp": 24,
-      "graph.analytics.lcc": 29,
-      "graph.analytics.pagerank": 42,
-      "graph.analytics.sssp": 45,
-      "graph.analytics.wcc": 46,
-      "graph.apply_delete_policy": 19,
-      "graph.batch_write": 20,
-      "graph.bindings": 22,
-      "graph.bulk_insert": 23,
-      "graph.create": 25,
-      "graph.delete": 26,
-      "graph.edge.add": 17,
-      "graph.edge.get": 27,
-      "graph.edge.remove": 43,
-      "graph.list": 30,
-      "graph.meta": 32,
-      "graph.neighbors": 33,
-      "graph.node.add": 18,
-      "graph.node.get": 28,
-      "graph.node.list": 31,
-      "graph.node.remove": 44,
-      "graph.nodes_by_type": 34,
-      "graph.ontology.define_link_type": 35,
-      "graph.ontology.define_object_type": 36,
-      "graph.ontology.delete_link_type": 37,
-      "graph.ontology.delete_object_type": 38,
-      "graph.ontology.freeze": 39,
-      "graph.ontology.get": 40,
-      "graph.ontology.summary": 41,
-      "json.batch_delete": 47,
-      "json.batch_get": 48,
-      "json.batch_set": 49,
-      "json.count": 50,
-      "json.delete": 51,
-      "json.exists": 52,
-      "json.get": 53,
-      "json.history": 54,
-      "json.index.create": 55,
-      "json.index.drop": 56,
-      "json.index.list": 57,
-      "json.list": 58,
-      "json.sample": 59,
-      "json.set": 60,
-      "kv.batch_delete": 61,
-      "kv.batch_exists": 62,
-      "kv.batch_get": 63,
-      "kv.batch_put": 64,
-      "kv.count": 65,
-      "kv.delete": 66,
-      "kv.exists": 67,
-      "kv.get": 68,
-      "kv.history": 69,
-      "kv.list": 70,
-      "kv.put": 71,
-      "kv.sample": 72,
-      "kv.scan": 73,
-      "space.create": 74,
-      "space.delete": 75,
-      "space.exists": 76,
-      "space.list": 77,
-      "vector.batch_delete": 78,
-      "vector.batch_get": 79,
-      "vector.batch_upsert": 80,
-      "vector.collection.create": 81,
-      "vector.collection.delete": 82,
-      "vector.collection.list": 83,
-      "vector.collection.stats": 84,
-      "vector.count": 85,
-      "vector.delete": 86,
-      "vector.delete_all": 87,
-      "vector.delete_by_filter": 88,
-      "vector.exists": 89,
-      "vector.get": 90,
-      "vector.history": 91,
-      "vector.index.query": 92,
-      "vector.keys": 93,
-      "vector.metadata.update": 95,
-      "vector.query": 94,
-      "vector.upsert": 96
+      "admin.config": 10,
+      "admin.config_key": 11,
+      "admin.describe": 12,
+      "admin.health": 53,
+      "admin.hub_clone": 9,
+      "admin.info": 54,
+      "admin.metrics": 82,
+      "admin.ping": 83,
+      "admin.remote": 84,
+      "arrow.export": 0,
+      "arrow.import": 1,
+      "branch.create": 2,
+      "branch.delete": 3,
+      "branch.fork": 4,
+      "branch.fork_at_timestamp": 5,
+      "branch.fork_at_version": 6,
+      "branch.get": 7,
+      "branch.list": 8,
+      "event.append": 13,
+      "event.batch_append": 14,
+      "event.exists": 15,
+      "event.get": 16,
+      "event.len": 17,
+      "event.list": 18,
+      "event.range": 19,
+      "event.range_time": 20,
+      "event.types": 21,
+      "event.verify_chain": 22,
+      "graph.analytics.bfs": 27,
+      "graph.analytics.cdlp": 30,
+      "graph.analytics.lcc": 35,
+      "graph.analytics.pagerank": 48,
+      "graph.analytics.sssp": 51,
+      "graph.analytics.wcc": 52,
+      "graph.apply_delete_policy": 25,
+      "graph.batch_write": 26,
+      "graph.bindings": 28,
+      "graph.bulk_insert": 29,
+      "graph.create": 31,
+      "graph.delete": 32,
+      "graph.edge.add": 23,
+      "graph.edge.get": 33,
+      "graph.edge.remove": 49,
+      "graph.list": 36,
+      "graph.meta": 38,
+      "graph.neighbors": 39,
+      "graph.node.add": 24,
+      "graph.node.get": 34,
+      "graph.node.list": 37,
+      "graph.node.remove": 50,
+      "graph.nodes_by_type": 40,
+      "graph.ontology.define_link_type": 41,
+      "graph.ontology.define_object_type": 42,
+      "graph.ontology.delete_link_type": 43,
+      "graph.ontology.delete_object_type": 44,
+      "graph.ontology.freeze": 45,
+      "graph.ontology.get": 46,
+      "graph.ontology.summary": 47,
+      "json.batch_delete": 55,
+      "json.batch_get": 56,
+      "json.batch_set": 57,
+      "json.count": 58,
+      "json.delete": 59,
+      "json.exists": 60,
+      "json.get": 61,
+      "json.history": 62,
+      "json.index.create": 63,
+      "json.index.drop": 64,
+      "json.index.list": 65,
+      "json.list": 66,
+      "json.sample": 67,
+      "json.set": 68,
+      "kv.batch_delete": 69,
+      "kv.batch_exists": 70,
+      "kv.batch_get": 71,
+      "kv.batch_put": 72,
+      "kv.count": 73,
+      "kv.delete": 74,
+      "kv.exists": 75,
+      "kv.get": 76,
+      "kv.history": 77,
+      "kv.list": 78,
+      "kv.put": 79,
+      "kv.sample": 80,
+      "kv.scan": 81,
+      "space.create": 85,
+      "space.delete": 86,
+      "space.exists": 87,
+      "space.list": 88,
+      "vector.batch_delete": 89,
+      "vector.batch_get": 90,
+      "vector.batch_upsert": 91,
+      "vector.collection.create": 92,
+      "vector.collection.delete": 93,
+      "vector.collection.list": 94,
+      "vector.collection.stats": 95,
+      "vector.count": 96,
+      "vector.delete": 97,
+      "vector.delete_all": 98,
+      "vector.delete_by_filter": 99,
+      "vector.exists": 100,
+      "vector.get": 101,
+      "vector.history": 102,
+      "vector.index.query": 103,
+      "vector.keys": 104,
+      "vector.metadata.update": 106,
+      "vector.query": 105,
+      "vector.upsert": 107
     },
     "by_path": {
+      "arrow export": "arrow.export",
+      "arrow import": "arrow.import",
       "branch create": "branch.create",
       "branch delete": "branch.delete",
       "branch fork": "branch.fork",
@@ -6224,6 +6823,10 @@
       "branch fork-at-version": "branch.fork_at_version",
       "branch get": "branch.get",
       "branch list": "branch.list",
+      "clone": "admin.hub_clone",
+      "config get": "admin.config",
+      "config get-key": "admin.config_key",
+      "describe": "admin.describe",
       "event append": "event.append",
       "event batch-append": "event.batch_append",
       "event exists": "event.exists",
@@ -6264,6 +6867,8 @@
       "graph remove-node": "graph.node.remove",
       "graph sssp": "graph.analytics.sssp",
       "graph wcc": "graph.analytics.wcc",
+      "health": "admin.health",
+      "info": "admin.info",
       "json batch-delete": "json.batch_delete",
       "json batch-get": "json.batch_get",
       "json batch-set": "json.batch_set",
@@ -6291,6 +6896,9 @@
       "kv put": "kv.put",
       "kv sample": "kv.sample",
       "kv scan": "kv.scan",
+      "metrics": "admin.metrics",
+      "ping": "admin.ping",
+      "remote": "admin.remote",
       "space create": "space.create",
       "space delete": "space.delete",
       "space exists": "space.exists",

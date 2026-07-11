@@ -1,4 +1,8 @@
 families:
+  - id: admin
+    docs: /docs/admin/{op_path}
+  - id: arrow
+    docs: /docs/arrow/{op_path}
   - id: branch
     docs: /docs/branch/{op_path}
     errors:

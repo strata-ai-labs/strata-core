@@ -74,3 +74,25 @@ errors:
   - failed_precondition.engine.graph_ontology_freeze
   - unsupported.engine.graph_binding_cross_branch
   - resource_exhausted.engine.graph_analytics_budget
+  - invalid_argument.engine.config_key
+  - invalid_argument.executor.arrow_feature_disabled
+  - invalid_argument.executor.arrow_format
+  - invalid_argument.executor.arrow_input_missing
+  - invalid_argument.executor.arrow_key_column
+  - invalid_argument.executor.arrow_value_column
+  - invalid_argument.executor.arrow_collection
+  - invalid_argument.executor.arrow_embedding_type
+  - invalid_argument.executor.arrow_vector_dimension
+  - invalid_argument.executor.arrow_json_key
+  - invalid_argument.executor.arrow_base64
+  - invalid_argument.executor.arrow_empty_export
+  - invalid_argument.executor.arrow_vector_key
+  - invalid_argument.executor.arrow_graph
+  - unavailable.executor.arrow_io
+  - internal.executor.arrow
+  - invalid_argument.executor.hub_dataset
+  - invalid_argument.executor.hub_branch
+  - invalid_argument.executor.hub_feature_disabled
+  - failed_precondition.executor.hub_url
+  - failed_precondition.executor.hub_clone
+  - unavailable.executor.hub_transport

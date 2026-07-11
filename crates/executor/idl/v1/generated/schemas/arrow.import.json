@@ -1,0 +1,168 @@
+{
+  "$defs": {
+    "ArrowFileFormat": {
+      "description": "Arrow file format selected for import/export.",
+      "oneOf": [
+        {
+          "const": "parquet",
+          "description": "Apache Parquet.",
+          "type": "string"
+        },
+        {
+          "const": "csv",
+          "description": "Comma-separated values with a header row.",
+          "type": "string"
+        },
+        {
+          "const": "jsonl",
+          "description": "Line-delimited JSON objects.",
+          "type": "string"
+        }
+      ]
+    },
+    "ArrowImportResult": {
+      "description": "Arrow import summary.",
+      "properties": {
+        "batches_processed": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "file_path": {
+          "type": "string"
+        },
+        "rows_imported": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "rows_skipped": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "target": {
+          "$ref": "#/$defs/ArrowImportTarget"
+        }
+      },
+      "required": [
+        "target",
+        "file_path",
+        "rows_imported",
+        "rows_skipped",
+        "batches_processed"
+      ],
+      "type": "object"
+    },
+    "ArrowImportTarget": {
+      "description": "Product primitive targeted by Arrow import.",
+      "oneOf": [
+        {
+          "const": "kv",
+          "description": "Import rows into the KV primitive.",
+          "type": "string"
+        },
+        {
+          "const": "json",
+          "description": "Import rows into the JSON primitive.",
+          "type": "string"
+        },
+        {
+          "const": "vector",
+          "description": "Import rows into a vector collection.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/arrow.import.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "arrow.import",
+  "request": {
+    "additionalProperties": false,
+    "description": "Imports an Arrow-compatible file into a product primitive.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "collection": {
+        "description": "Target vector collection for vector imports.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "file_path": {
+        "description": "Input file path.",
+        "type": "string"
+      },
+      "format": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ArrowFileFormat"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Input file format. Defaults to extension detection."
+      },
+      "key_column": {
+        "description": "Optional key column override.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "target": {
+        "$ref": "#/$defs/ArrowImportTarget",
+        "description": "Product primitive to import into."
+      },
+      "type": {
+        "const": "arrow_import",
+        "type": "string"
+      },
+      "value_column": {
+        "description": "Optional value, document, or embedding column override.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "type",
+      "file_path",
+      "target"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Arrow import summary.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/ArrowImportResult"
+      },
+      "type": {
+        "const": "arrow_import_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

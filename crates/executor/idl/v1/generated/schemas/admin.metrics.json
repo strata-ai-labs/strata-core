@@ -1,0 +1,122 @@
+{
+  "$defs": {
+    "AdminHealthStatus": {
+      "description": "Health status exposed in admin outputs.",
+      "oneOf": [
+        {
+          "const": "healthy",
+          "description": "All required facts are healthy.",
+          "type": "string"
+        },
+        {
+          "const": "degraded",
+          "description": "Database is available with warnings.",
+          "type": "string"
+        },
+        {
+          "const": "unhealthy",
+          "description": "A required subsystem is missing, corrupt, unavailable, or closed.",
+          "type": "string"
+        }
+      ]
+    },
+    "AdminMetrics": {
+      "description": "Metrics output.",
+      "properties": {
+        "branch_count": {
+          "description": "Active branch count.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "control_status": {
+          "$ref": "#/$defs/AdminHealthStatus",
+          "description": "Control-plane health status."
+        },
+        "durable": {
+          "description": "True when storage is durable.",
+          "type": "boolean"
+        },
+        "open": {
+          "description": "True while the database handle is open.",
+          "type": "boolean"
+        },
+        "space_count": {
+          "description": "Registered space count for the selected branch.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "target": {
+          "$ref": "#/$defs/AdminOpenTarget",
+          "description": "Open target."
+        }
+      },
+      "required": [
+        "target",
+        "durable",
+        "open",
+        "branch_count",
+        "space_count",
+        "control_status"
+      ],
+      "type": "object"
+    },
+    "AdminOpenTarget": {
+      "description": "Database open target exposed in admin outputs.",
+      "oneOf": [
+        {
+          "const": "cache",
+          "description": "Volatile cache-backed database.",
+          "type": "string"
+        },
+        {
+          "const": "durable_local",
+          "description": "Durable local filesystem-backed database.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/admin.metrics.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "admin.metrics",
+  "request": {
+    "additionalProperties": false,
+    "description": "Returns lightweight database metrics.",
+    "properties": {
+      "branch": {
+        "description": "Branch whose space catalog should be counted. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "metrics",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Lightweight database metrics.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/AdminMetrics"
+      },
+      "type": {
+        "const": "metrics",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

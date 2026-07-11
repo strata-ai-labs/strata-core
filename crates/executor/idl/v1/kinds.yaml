@@ -114,3 +114,15 @@ kinds:
     response_model: BatchResult<{result}>
     snippets:
       - atomic-batch.md
+  - id: read.summary
+    access: read
+    commit: none
+    response_model: StatusResponse<{result}>
+    snippets:
+      - status-value.md
+  - id: action.status
+    access: write
+    commit: none
+    response_model: StatusResponse<{result}>
+    snippets:
+      - status-value.md

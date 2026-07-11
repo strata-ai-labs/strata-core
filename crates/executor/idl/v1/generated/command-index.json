@@ -4,6 +4,679 @@
   "generator_version": "strata-executor-idl.1",
   "commands": [
     {
+      "id": "admin.config",
+      "family": "admin",
+      "op": "config",
+      "kind": "read.summary",
+      "title": "Read sanitized config",
+      "summary": "Read sanitized configuration facts.",
+      "description": "Returns sanitized configuration facts: the open target, whether this open created the database, durability, and the default branch. Only allowlisted, non-sensitive facts are exposed; no filesystem paths, credentials, or provider keys are ever returned.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/config",
+      "cli": {
+        "path": [
+          "config",
+          "get"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_config",
+        "description": "Use this when the user asks how the database is configured — its open target, durability, and default branch."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::ConfigGet",
+      "output": "Output::Config",
+      "outputs": [
+        "Output::Config"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<AdminConfig>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/config_get.json",
+        "response": "responses/v1/admin/config.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.config.md"
+      }
+    },
+    {
+      "id": "admin.config_key",
+      "family": "admin",
+      "op": "config_key",
+      "kind": "read.get",
+      "title": "Read one config value",
+      "summary": "Read one sanitized configuration value by key.",
+      "description": "Returns one sanitized configuration value from the allowlist by key, or a null value when the key is not recognized. Only allowlisted, non-sensitive keys are served; an empty key is rejected with `invalid_argument.engine.config_key`.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/admin/config_key",
+      "cli": {
+        "path": [
+          "config",
+          "get-key"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_config_key",
+        "description": "Use this when the user wants a single configuration value by key rather than the whole sanitized config."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::ConfigureGetKey",
+      "output": "Output::ConfigValue",
+      "outputs": [
+        "Output::ConfigValue"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<String>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "invalid_argument.engine.config_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.config_key"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/config_key.json",
+        "response": "responses/v1/admin/config_value_default_branch.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.config_key.md"
+      }
+    },
+    {
+      "id": "admin.describe",
+      "family": "admin",
+      "op": "describe",
+      "kind": "read.summary",
+      "title": "Describe database",
+      "summary": "Read a compact description of the database.",
+      "description": "Returns a compact description of the database for one branch: engine version, open target, the default and described branches, all active branches, the registered product spaces, per-primitive counts (KV, JSON, event, plus vector-collection and graph summaries), the sanitized config, and the available capabilities. The branch defaults to the handle branch when omitted.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/describe",
+      "cli": {
+        "path": [
+          "describe"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_describe",
+        "description": "Use this when the user wants an overview of a database — its branches, spaces, primitive counts, and available capabilities."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::Describe",
+      "output": "Output::Described",
+      "outputs": [
+        "Output::Described"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<AdminDescribe>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/describe.json",
+        "response": "responses/v1/admin/describe.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.describe.md"
+      }
+    },
+    {
+      "id": "admin.health",
+      "family": "admin",
+      "op": "health",
+      "kind": "read.summary",
+      "title": "Read database health",
+      "summary": "Read control-plane health facts.",
+      "description": "Returns control-plane health facts: the worst overall status plus per-subsystem status for identity, registry, branch catalog, and the optional branch-local space catalog. Also reports the default branch and active branch count. A healthy result means every required control-plane fact is present and readable.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/health",
+      "cli": {
+        "path": [
+          "health"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_health",
+        "description": "Use this when the user asks whether the database is healthy or wants to diagnose a degraded or unavailable control plane."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::Health",
+      "output": "Output::Health",
+      "outputs": [
+        "Output::Health"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<AdminHealth>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/health.json",
+        "response": "responses/v1/admin/health.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.health.md"
+      }
+    },
+    {
+      "id": "admin.hub_clone",
+      "family": "admin",
+      "op": "hub_clone",
+      "kind": "action.status",
+      "title": "Clone hub dataset",
+      "summary": "Clone a dataset from a hub into a new local database.",
+      "description": "Clones a dataset from a hub into a new local database directory. Resolution, download, verification, reconstitution, and origin recording run once behind this command; the session database is not touched. The destination directory must not exist or must be empty. When the hub URL is not given, the layered resolver selects it from the flag, environment, and config layers.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/hub_clone",
+      "cli": {
+        "path": [
+          "clone"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_hub_clone",
+        "description": "Use this when the user wants to download or clone a published hub dataset into a new local database directory."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::HubClone",
+      "output": "Output::HubCloneResult",
+      "outputs": [
+        "Output::HubCloneResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<HubClone>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "invalid_argument.executor.hub_dataset",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_dataset"
+        },
+        {
+          "code": "invalid_argument.executor.hub_branch",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_branch"
+        },
+        {
+          "code": "invalid_argument.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+        },
+        {
+          "code": "failed_precondition.executor.hub_url",
+          "docs": "https://stratadb.org/e/failed_precondition.executor.hub_url"
+        },
+        {
+          "code": "failed_precondition.executor.hub_clone",
+          "docs": "https://stratadb.org/e/failed_precondition.executor.hub_clone"
+        },
+        {
+          "code": "unavailable.executor.hub_transport",
+          "docs": "https://stratadb.org/e/unavailable.executor.hub_transport"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/hub_clone.json",
+        "response": "responses/v1/admin/hub_clone.json",
+        "replay_skip": "hub clone resolves and downloads a dataset over the network into a new database directory; it never runs against the scratch cache executor"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.hub_clone.md"
+      }
+    },
+    {
+      "id": "admin.info",
+      "family": "admin",
+      "op": "info",
+      "kind": "read.summary",
+      "title": "Read database info",
+      "summary": "Read database identity and a catalog summary.",
+      "description": "Returns database identity and a catalog summary for one branch: engine version, open target, whether this open created the database, durability, the default branch, the active branch count, and the registered space count for the selected branch. The branch defaults to the handle branch when omitted.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/info",
+      "cli": {
+        "path": [
+          "info"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_info",
+        "description": "Use this when the user asks what database this is, whether it was just created, or how many branches and spaces it holds."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::Info",
+      "output": "Output::DatabaseInfo",
+      "outputs": [
+        "Output::DatabaseInfo"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<AdminDatabaseInfo>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/info.json",
+        "response": "responses/v1/admin/info.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.info.md"
+      }
+    },
+    {
+      "id": "admin.metrics",
+      "family": "admin",
+      "op": "metrics",
+      "kind": "read.summary",
+      "title": "Read database metrics",
+      "summary": "Read lightweight database metrics.",
+      "description": "Returns lightweight database metrics: the open target, durability, whether the handle is open, the active branch count, the registered space count for the selected branch, and the control-plane health status. The branch defaults to the handle branch when omitted.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/metrics",
+      "cli": {
+        "path": [
+          "metrics"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_metrics",
+        "description": "Use this when the user wants quick database metrics such as branch and space counts and the control-plane status."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::Metrics",
+      "output": "Output::Metrics",
+      "outputs": [
+        "Output::Metrics"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<AdminMetrics>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/metrics.json",
+        "response": "responses/v1/admin/metrics.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.metrics.md"
+      }
+    },
+    {
+      "id": "admin.ping",
+      "family": "admin",
+      "op": "ping",
+      "kind": "read.summary",
+      "title": "Ping database",
+      "summary": "Check that the database handle is live.",
+      "description": "Lightweight liveness check. Returns the engine package version without touching branches, spaces, or primitive data. Use it to confirm the handle is open and responsive before issuing heavier commands.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/ping",
+      "cli": {
+        "path": [
+          "ping"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_ping",
+        "description": "Use this for a fast liveness probe that confirms the database responds and reports its engine version."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::Ping",
+      "output": "Output::Pong",
+      "outputs": [
+        "Output::Pong"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<PingInfo>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/ping.json",
+        "response": "responses/v1/admin/ping.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.ping.md"
+      }
+    },
+    {
+      "id": "admin.remote",
+      "family": "admin",
+      "op": "remote",
+      "kind": "read.get",
+      "title": "Read remote origin",
+      "summary": "Read where this database was cloned from.",
+      "description": "Reads the remote origin recorded when this database was cloned from a hub: the remote URL, dataset, branch, manifest hash, fetch time, and per-branch base frontier. Returns a null origin when the database was created locally and never cloned.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/admin/remote",
+      "cli": {
+        "path": [
+          "remote"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_remote",
+        "description": "Use this when the user asks where a database came from or whether it was cloned from a hub dataset."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::RemoteGet",
+      "output": "Output::RemoteOriginResult",
+      "outputs": [
+        "Output::RemoteOriginResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<RemoteOriginInfo>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/remote_get.json",
+        "response": "responses/v1/admin/remote_null.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.remote.md"
+      }
+    },
+    {
+      "id": "arrow.export",
+      "family": "arrow",
+      "op": "export",
+      "kind": "action.status",
+      "title": "Export Arrow file",
+      "summary": "Export a product primitive to an Arrow-compatible file.",
+      "description": "Exports a product primitive from the selected branch and space to an Arrow-compatible file (Parquet, CSV, or JSONL). Graph exports treat the path as a stem and write separate node and edge files. Returns a summary of the exported primitive, the concrete output paths, the row count, and the total output size.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/arrow/export",
+      "cli": {
+        "path": [
+          "arrow",
+          "export"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_arrow_export",
+        "description": "Use this when the user wants to write KV, JSON, event, vector, or graph data out to a Parquet, CSV, or JSONL file."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::ArrowExport",
+      "output": "Output::ArrowExportResult",
+      "outputs": [
+        "Output::ArrowExportResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<ArrowExport>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_format",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_format"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_empty_export",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_empty_export"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_value_column",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_value_column"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_vector_key"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_graph",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_graph"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_collection"
+        },
+        {
+          "code": "unavailable.executor.arrow_io",
+          "docs": "https://stratadb.org/e/unavailable.executor.arrow_io"
+        },
+        {
+          "code": "internal.executor.arrow",
+          "docs": "https://stratadb.org/e/internal.executor.arrow"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/arrow/export.json",
+        "response": "responses/v1/arrow/export_kv_csv.json",
+        "replay_skip": "arrow export writes real files to a filesystem path outside the scratch cache executor"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/arrow.yaml",
+        "prose": "commands/arrow.export.md"
+      }
+    },
+    {
+      "id": "arrow.import",
+      "family": "arrow",
+      "op": "import",
+      "kind": "action.status",
+      "title": "Import Arrow file",
+      "summary": "Import an Arrow-compatible file into a product primitive.",
+      "description": "Imports an Arrow-compatible file (Parquet, CSV, or JSONL) into a product primitive on the selected branch and space. Rows are written through the standard batch commands, so the import commits like any other write. Returns a summary of the target primitive, the input file, and the imported, skipped, and batch counts.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/arrow/import",
+      "cli": {
+        "path": [
+          "arrow",
+          "import"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_arrow_import",
+        "description": "Use this when the user wants to load a Parquet, CSV, or JSONL file into KV, JSON, or a vector collection."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::ArrowImport",
+      "output": "Output::ArrowImportResult",
+      "outputs": [
+        "Output::ArrowImportResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<ArrowImport>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_format",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_format"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_input_missing",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_input_missing"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_key_column",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_key_column"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_value_column",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_value_column"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_collection"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_embedding_type",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_embedding_type"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_vector_dimension",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_vector_dimension"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_json_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_json_key"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_base64",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_base64"
+        },
+        {
+          "code": "unavailable.executor.arrow_io",
+          "docs": "https://stratadb.org/e/unavailable.executor.arrow_io"
+        },
+        {
+          "code": "internal.executor.arrow",
+          "docs": "https://stratadb.org/e/internal.executor.arrow"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/arrow/import.json",
+        "response": "responses/v1/arrow/import_kv_csv.json",
+        "replay_skip": "arrow import reads a real file from the filesystem; the source file does not exist on the scratch cache executor"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/arrow.yaml",
+        "prose": "commands/arrow.import.md"
+      }
+    },
+    {
       "id": "branch.create",
       "family": "branch",
       "op": "create",
