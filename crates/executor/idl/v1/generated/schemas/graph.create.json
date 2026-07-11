@@ -1,0 +1,105 @@
+{
+  "$defs": {
+    "GraphInfoData": {
+      "description": "Serializable graph metadata.",
+      "properties": {
+        "created_timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "created_version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "edge_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "graph": {
+          "type": "string"
+        },
+        "node_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "updated_timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "updated_version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "graph",
+        "node_count",
+        "edge_count",
+        "created_version",
+        "created_timestamp",
+        "updated_version",
+        "updated_timestamp"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/graph.create.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "graph.create",
+  "request": {
+    "additionalProperties": false,
+    "description": "Creates a graph.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "graph": {
+        "description": "Graph name.",
+        "type": "string"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "graph_create",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "graph"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Graph metadata after create.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/GraphInfoData"
+      },
+      "type": {
+        "const": "graph_info",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

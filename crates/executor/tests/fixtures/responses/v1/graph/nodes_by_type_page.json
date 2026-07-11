@@ -1,0 +1,30 @@
+{
+  "data": {
+    "cursor": "bob",
+    "has_more": true,
+    "items": [
+      {
+        "graph": "social",
+        "node_id": "alice",
+        "object_type": "Person",
+        "properties": {
+          "name": "Alice",
+          "role": "eng"
+        },
+        "timestamp": 4,
+        "version": 4
+      },
+      {
+        "graph": "social",
+        "node_id": "bob",
+        "object_type": "Person",
+        "properties": {
+          "name": "Bob"
+        },
+        "timestamp": 5,
+        "version": 5
+      }
+    ]
+  },
+  "type": "graph_node_page"
+}

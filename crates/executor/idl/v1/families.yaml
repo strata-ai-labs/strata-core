@@ -8,6 +8,12 @@ families:
     docs: /docs/event/{op_path}
     errors:
       - invalid_argument.engine.product_space
+  - id: graph
+    docs: /docs/graph/{op_path}
+    errors:
+      - invalid_argument.engine.product_space
+      - invalid_argument.engine.graph_name
+      - not_found.engine.graph
   - id: json
     docs: /docs/json/{op_path}
     errors:

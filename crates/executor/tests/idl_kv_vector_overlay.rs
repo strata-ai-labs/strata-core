@@ -23,6 +23,39 @@ const REQUIRED_BRANCH: &[&str] = &[
 
 const REQUIRED_SPACE: &[&str] = &["space.list", "space.create", "space.exists", "space.delete"];
 
+const REQUIRED_GRAPH: &[&str] = &[
+    "graph.create",
+    "graph.delete",
+    "graph.list",
+    "graph.meta",
+    "graph.node.add",
+    "graph.node.get",
+    "graph.node.remove",
+    "graph.node.list",
+    "graph.edge.add",
+    "graph.edge.get",
+    "graph.edge.remove",
+    "graph.neighbors",
+    "graph.bindings",
+    "graph.batch_write",
+    "graph.ontology.define_object_type",
+    "graph.ontology.define_link_type",
+    "graph.ontology.delete_object_type",
+    "graph.ontology.delete_link_type",
+    "graph.ontology.freeze",
+    "graph.ontology.get",
+    "graph.ontology.summary",
+    "graph.nodes_by_type",
+    "graph.analytics.wcc",
+    "graph.analytics.lcc",
+    "graph.analytics.sssp",
+    "graph.analytics.pagerank",
+    "graph.analytics.cdlp",
+    "graph.analytics.bfs",
+    "graph.bulk_insert",
+    "graph.apply_delete_policy",
+];
+
 const REQUIRED_EVENT: &[&str] = &[
     "event.append",
     "event.batch_append",
@@ -56,6 +89,7 @@ const REQUIRED_JSON: &[&str] = &[
 fn required_command_count() -> usize {
     REQUIRED_BRANCH.len()
         + REQUIRED_EVENT.len()
+        + REQUIRED_GRAPH.len()
         + REQUIRED_JSON.len()
         + REQUIRED_KV.len()
         + REQUIRED_SPACE.len()
@@ -112,6 +146,7 @@ fn kv_and_vector_overlay_has_required_command_coverage() {
     for id in REQUIRED_BRANCH
         .iter()
         .chain(REQUIRED_EVENT.iter())
+        .chain(REQUIRED_GRAPH.iter())
         .chain(REQUIRED_JSON.iter())
         .chain(REQUIRED_KV.iter())
         .chain(REQUIRED_SPACE.iter())
@@ -375,6 +410,7 @@ fn cli_command_index_has_required_coverage_and_lookup_tables() {
     for id in REQUIRED_BRANCH
         .iter()
         .chain(REQUIRED_EVENT.iter())
+        .chain(REQUIRED_GRAPH.iter())
         .chain(REQUIRED_JSON.iter())
         .chain(REQUIRED_KV.iter())
         .chain(REQUIRED_SPACE.iter())

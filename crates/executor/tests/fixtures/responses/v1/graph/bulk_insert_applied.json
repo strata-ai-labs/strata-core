@@ -1,0 +1,18 @@
+{
+  "data": {
+    "commit": {
+      "delete_count": 0,
+      "durable": false,
+      "put_count": 2,
+      "timestamp": 5,
+      "version": 5
+    },
+    "commits": 2,
+    "edges_inserted": 2,
+    "graph": "social",
+    "nodes_inserted": 3,
+    "timestamp": 5,
+    "version": 5
+  },
+  "type": "graph_bulk_insert_result"
+}

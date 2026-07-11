@@ -1,0 +1,229 @@
+{
+  "$defs": {
+    "GraphAnalyticsBudget": {
+      "description": "Optional size bounds for one graph analytics snapshot (input form).\nUnset fields use the engine defaults.",
+      "properties": {
+        "max_edges": {
+          "description": "Maximum edge count admitted into the snapshot.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_nodes": {
+          "description": "Maximum node count admitted into the snapshot.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "GraphBfsData": {
+      "description": "Breadth-first-search result (wire form).",
+      "properties": {
+        "depths": {
+          "additionalProperties": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
+        },
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/GraphBfsEdgeData"
+          },
+          "type": "array"
+        },
+        "graph": {
+          "type": "string"
+        },
+        "start": {
+          "type": "string"
+        },
+        "visited": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "graph",
+        "start",
+        "visited",
+        "depths",
+        "edges"
+      ],
+      "type": "object"
+    },
+    "GraphBfsEdgeData": {
+      "description": "One traversal step recorded by a breadth-first search (wire form).\n`src`/`dst` follow traversal order.",
+      "properties": {
+        "dst": {
+          "type": "string"
+        },
+        "edge_type": {
+          "type": "string"
+        },
+        "src": {
+          "type": "string"
+        },
+        "weight": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "src",
+        "dst",
+        "edge_type",
+        "weight"
+      ],
+      "type": "object"
+    },
+    "GraphDirection": {
+      "description": "Graph neighbor traversal direction.",
+      "oneOf": [
+        {
+          "const": "outgoing",
+          "description": "Outgoing edges from the selected node.",
+          "type": "string"
+        },
+        {
+          "const": "incoming",
+          "description": "Incoming edges into the selected node.",
+          "type": "string"
+        },
+        {
+          "const": "both",
+          "description": "Incoming and outgoing edges.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/graph.analytics.bfs.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "graph.analytics.bfs",
+  "request": {
+    "additionalProperties": false,
+    "description": "Runs a bounded breadth-first traversal from a start node.",
+    "properties": {
+      "as_of": {
+        "description": "Optional timestamp in microseconds. Reads the graph state visible at that instant.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "budget": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/GraphAnalyticsBudget"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional snapshot size bounds. Defaults to the engine limits."
+      },
+      "direction": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/GraphDirection"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional traversal direction. Defaults to outgoing."
+      },
+      "edge_types": {
+        "description": "Optional edge-type restriction applied at every hop.",
+        "items": {
+          "type": "string"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "graph": {
+        "description": "Graph name.",
+        "type": "string"
+      },
+      "max_depth": {
+        "description": "Optional depth bound. Defaults to 100.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "max_nodes": {
+        "description": "Optional visited-node bound. Defaults to 10000.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "start": {
+        "description": "Start node id.",
+        "type": "string"
+      },
+      "type": {
+        "const": "graph_bfs",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "graph",
+      "start"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Breadth-first traversal computed over a graph snapshot.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/GraphBfsData"
+      },
+      "type": {
+        "const": "graph_bfs_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

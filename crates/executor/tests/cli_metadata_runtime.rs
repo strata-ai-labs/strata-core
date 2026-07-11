@@ -16,9 +16,9 @@ fn embedded_cli_metadata_loads_without_generator_feature() {
         catalog.index().generator_version,
         "strata-executor-cli-idl.1"
     );
-    assert_eq!(catalog.index().command_count, 67);
-    assert_eq!(catalog.commands().len(), 67);
-    assert_eq!(catalog.families().len(), 6);
+    assert_eq!(catalog.index().command_count, 97);
+    assert_eq!(catalog.commands().len(), 97);
+    assert_eq!(catalog.families().len(), 7);
 }
 
 #[test]
@@ -75,10 +75,11 @@ fn command_listing_is_grouped_and_sorted() {
     let families = catalog.families();
     assert_eq!(families[0].id, "branch");
     assert_eq!(families[1].id, "event");
-    assert_eq!(families[2].id, "json");
-    assert_eq!(families[3].id, "kv");
-    assert_eq!(families[4].id, "space");
-    assert_eq!(families[5].id, "vector");
+    assert_eq!(families[2].id, "graph");
+    assert_eq!(families[3].id, "json");
+    assert_eq!(families[4].id, "kv");
+    assert_eq!(families[5].id, "space");
+    assert_eq!(families[6].id, "vector");
 
     let kv_commands = catalog
         .commands_for_family("kv")
@@ -89,7 +90,7 @@ fn command_listing_is_grouped_and_sorted() {
             .iter()
             .map(|command| command.id.as_str())
             .collect::<Vec<_>>(),
-        families[3]
+        families[4]
             .commands
             .iter()
             .map(String::as_str)

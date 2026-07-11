@@ -1,0 +1,228 @@
+{
+  "$defs": {
+    "CommitReceipt": {
+      "description": "Commit facts returned by mutating operations.",
+      "properties": {
+        "delete_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "durable": {
+          "type": "boolean"
+        },
+        "put_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "timestamp",
+        "durable",
+        "put_count",
+        "delete_count"
+      ],
+      "type": "object"
+    },
+    "MutationEffect": {
+      "description": "Normalized mutation effect facts.",
+      "properties": {
+        "affected_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/MutationEffectKind"
+        },
+        "matched": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "applied",
+        "kind",
+        "matched",
+        "affected_count"
+      ],
+      "type": "object"
+    },
+    "MutationEffectKind": {
+      "description": "High-level mutation effect for idempotent and conditional operations.",
+      "oneOf": [
+        {
+          "const": "created",
+          "description": "A new logical entity was created.",
+          "type": "string"
+        },
+        {
+          "const": "updated",
+          "description": "An existing logical entity was updated.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "An existing logical entity was deleted.",
+          "type": "string"
+        },
+        {
+          "const": "unchanged",
+          "description": "The operation matched but left state unchanged.",
+          "type": "string"
+        },
+        {
+          "const": "not_found",
+          "description": "The operation did not match a visible entity.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/graph.edge.add.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "graph.edge.add",
+  "request": {
+    "additionalProperties": false,
+    "description": "Adds or replaces a graph edge.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "dst": {
+        "description": "Destination node id.",
+        "type": "string"
+      },
+      "edge_type": {
+        "description": "Edge type.",
+        "type": "string"
+      },
+      "graph": {
+        "description": "Graph name.",
+        "type": "string"
+      },
+      "properties": {
+        "description": "Optional edge properties."
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "src": {
+        "description": "Source node id.",
+        "type": "string"
+      },
+      "type": {
+        "const": "graph_add_edge",
+        "type": "string"
+      },
+      "weight": {
+        "description": "Optional edge weight. Defaults to 1.0.",
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "type",
+      "graph",
+      "src",
+      "edge_type",
+      "dst"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Graph edge write acknowledgement.",
+    "properties": {
+      "data": {
+        "properties": {
+          "commit": {
+            "$ref": "#/$defs/CommitReceipt",
+            "description": "Commit receipt."
+          },
+          "created": {
+            "description": "True when the edge did not previously exist.",
+            "type": "boolean"
+          },
+          "dst": {
+            "description": "Destination node id.",
+            "type": "string"
+          },
+          "edge_type": {
+            "description": "Edge type.",
+            "type": "string"
+          },
+          "effect": {
+            "$ref": "#/$defs/MutationEffect",
+            "description": "Mutation effect facts."
+          },
+          "graph": {
+            "description": "Graph name.",
+            "type": "string"
+          },
+          "src": {
+            "description": "Source node id.",
+            "type": "string"
+          },
+          "timestamp": {
+            "description": "Commit timestamp.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "description": "Commit version.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "graph",
+          "src",
+          "edge_type",
+          "dst",
+          "created",
+          "effect",
+          "commit",
+          "version",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "graph_edge_write_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

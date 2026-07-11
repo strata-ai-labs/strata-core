@@ -1,0 +1,205 @@
+{
+  "$defs": {
+    "GraphBindingHit": {
+      "description": "Serializable graph entity binding hit.",
+      "properties": {
+        "binding": {
+          "$ref": "#/$defs/GraphEntityBinding"
+        },
+        "graph": {
+          "type": "string"
+        },
+        "node_id": {
+          "type": "string"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "graph",
+        "node_id",
+        "binding",
+        "version",
+        "timestamp"
+      ],
+      "type": "object"
+    },
+    "GraphBindingPrimitive": {
+      "description": "Product primitive kind used by graph entity bindings.",
+      "oneOf": [
+        {
+          "const": "kv",
+          "description": "KV primitive.",
+          "type": "string"
+        },
+        {
+          "const": "json",
+          "description": "JSON primitive.",
+          "type": "string"
+        },
+        {
+          "const": "vector",
+          "description": "Vector primitive.",
+          "type": "string"
+        },
+        {
+          "const": "event",
+          "description": "Event primitive.",
+          "type": "string"
+        },
+        {
+          "const": "graph",
+          "description": "Graph primitive.",
+          "type": "string"
+        }
+      ]
+    },
+    "GraphBindingTarget": {
+      "description": "Typed product identity attached to a graph node.",
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "primitive": {
+          "$ref": "#/$defs/GraphBindingPrimitive"
+        },
+        "space": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "primitive",
+        "space",
+        "key"
+      ],
+      "type": "object"
+    },
+    "GraphEntityBinding": {
+      "description": "Node-to-entity binding.",
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/GraphBindingTarget"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/graph.bindings.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "graph.bindings",
+  "request": {
+    "additionalProperties": false,
+    "description": "Lists graph nodes bound to one entity target.",
+    "properties": {
+      "as_of": {
+        "description": "Optional timestamp in microseconds. Reads the graph state visible at that instant.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "cursor": {
+        "description": "Optional exclusive cursor.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "limit": {
+        "description": "Optional item limit. Defaults to 100.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "target": {
+        "$ref": "#/$defs/GraphBindingTarget",
+        "description": "Entity target to search for."
+      },
+      "type": {
+        "const": "graph_bindings_for_entity",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "target"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Paginated graph binding list.",
+    "properties": {
+      "data": {
+        "description": "Shared pagination continuation facts.",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "description": "Binding hits in this page.",
+            "items": {
+              "$ref": "#/$defs/GraphBindingHit"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "graph_binding_page",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "data": {
+    "graph": "social",
+    "iterations": 10,
+    "personalized": false,
+    "ranks": {
+      "alice": 0.3174603047943687,
+      "bob": 0.3174603047943687,
+      "carol": 0.3174603047943687,
+      "dave": 0.04761908561689371
+    }
+  },
+  "type": "graph_pagerank_result"
+}

@@ -1,0 +1,10 @@
+{
+  "type": "graph_add_node",
+  "graph": "social",
+  "node_id": "alice",
+  "properties": {
+    "name": "Alice",
+    "role": "eng"
+  },
+  "object_type": "Person"
+}

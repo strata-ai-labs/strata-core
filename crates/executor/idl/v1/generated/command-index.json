@@ -1083,6 +1083,2342 @@
       }
     },
     {
+      "id": "graph.analytics.bfs",
+      "family": "graph",
+      "op": "analytics.bfs",
+      "kind": "read.analytics",
+      "title": "Traverse graph breadth-first",
+      "summary": "Run a bounded breadth-first traversal.",
+      "description": "Runs a breadth-first traversal from a start node over a consistent snapshot, bounded by `max_depth` (default 100) and `max_nodes` (default 10000). Returns visited node ids in traversal order, a depth per node, and the tree edges in discovery order. Direction defaults to `outgoing`; an optional edge-type list restricts every hop. The start node must exist (`not_found.engine.graph_node`).\n\nAnalytics commands compute over a consistent snapshot of the visible graph and return a complete result payload in one response. They accept optional snapshot budgets and an `as_of` timestamp for time travel; results are deterministic for a fixed graph state.",
+      "docs": "/docs/graph/analytics/bfs",
+      "cli": {
+        "path": [
+          "graph",
+          "bfs"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_analytics_bfs",
+        "description": "Use this when the user wants to explore outward from a node level by level - reachability, hop distance, or a bounded expansion with depth, node, and edge-type limits."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphBfs",
+      "output": "Output::GraphBfsResult",
+      "outputs": [
+        "Output::GraphBfsResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "AnalyticsResult<GraphBfsData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type"
+        },
+        {
+          "code": "not_found.engine.graph_node",
+          "docs": "https://stratadb.org/e/not_found.engine.graph_node"
+        },
+        {
+          "code": "resource_exhausted.engine.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/bfs.json",
+        "response": "responses/v1/graph/bfs_traversal.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json",
+          "requests/v1/graph/edge_add.json",
+          "requests/v1/setup/graph_edge_alice_carol.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.analytics.bfs.md"
+      }
+    },
+    {
+      "id": "graph.analytics.cdlp",
+      "family": "graph",
+      "op": "analytics.cdlp",
+      "kind": "read.analytics",
+      "title": "Detect graph communities",
+      "summary": "Detect communities via label propagation.",
+      "description": "Detects communities by label propagation over a consistent snapshot: every node repeatedly adopts the most common label among its neighbors until labels stabilize or the iteration bound (default 10) is reached. Every node maps to its community representative node id. Propagation direction defaults to `both`. Accepts an optional snapshot budget and `as_of` for time travel.\n\nAnalytics commands compute over a consistent snapshot of the visible graph and return a complete result payload in one response. They accept optional snapshot budgets and an `as_of` timestamp for time travel; results are deterministic for a fixed graph state.",
+      "docs": "/docs/graph/analytics/cdlp",
+      "cli": {
+        "path": [
+          "graph",
+          "cdlp"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_analytics_cdlp",
+        "description": "Use this when the user wants community detection, graph clustering, or group structure via the community detection label propagation (CDLP) algorithm."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphCdlp",
+      "output": "Output::GraphCdlpResult",
+      "outputs": [
+        "Output::GraphCdlpResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "AnalyticsResult<GraphCdlpData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "resource_exhausted.engine.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/cdlp.json",
+        "response": "responses/v1/graph/cdlp_labels.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json",
+          "requests/v1/setup/graph_add_dave.json",
+          "requests/v1/graph/edge_add.json",
+          "requests/v1/setup/graph_edge_bob_carol.json",
+          "requests/v1/setup/graph_edge_carol_alice.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.analytics.cdlp.md"
+      }
+    },
+    {
+      "id": "graph.analytics.lcc",
+      "family": "graph",
+      "op": "analytics.lcc",
+      "kind": "read.analytics",
+      "title": "Compute graph clustering coefficients",
+      "summary": "Compute local clustering coefficients.",
+      "description": "Computes the local clustering coefficient for every node over a consistent snapshot: the fraction of a node's neighbor pairs that are themselves connected. Nodes in fully-triangulated neighborhoods score 1.0. Accepts an optional snapshot budget and `as_of` for time travel.\n\nAnalytics commands compute over a consistent snapshot of the visible graph and return a complete result payload in one response. They accept optional snapshot budgets and an `as_of` timestamp for time travel; results are deterministic for a fixed graph state.",
+      "docs": "/docs/graph/analytics/lcc",
+      "cli": {
+        "path": [
+          "graph",
+          "lcc"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_analytics_lcc",
+        "description": "Use this when the user wants per-node clustering coefficients - how densely each node's neighbors connect to each other (triangle density)."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphLcc",
+      "output": "Output::GraphLccResult",
+      "outputs": [
+        "Output::GraphLccResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "AnalyticsResult<GraphLccData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "resource_exhausted.engine.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/lcc.json",
+        "response": "responses/v1/graph/lcc_coefficients.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json",
+          "requests/v1/graph/edge_add.json",
+          "requests/v1/setup/graph_edge_bob_carol.json",
+          "requests/v1/setup/graph_edge_alice_carol.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.analytics.lcc.md"
+      }
+    },
+    {
+      "id": "graph.analytics.pagerank",
+      "family": "graph",
+      "op": "analytics.pagerank",
+      "kind": "read.analytics",
+      "title": "Compute graph pagerank",
+      "summary": "Compute PageRank importance scores.",
+      "description": "Computes PageRank over a consistent snapshot. Tunable damping (default 0.85), iteration bound (default 20), and convergence tolerance (default 1e-6); the response reports how many iterations actually ran. Optional personalization seeds steer both teleport and dangling mass toward weighted nodes, and the response flags `personalized: true`. Results are deterministic for a fixed graph state. Accepts an optional snapshot budget and `as_of` for time travel.\n\nAnalytics commands compute over a consistent snapshot of the visible graph and return a complete result payload in one response. They accept optional snapshot budgets and an `as_of` timestamp for time travel; results are deterministic for a fixed graph state.",
+      "docs": "/docs/graph/analytics/pagerank",
+      "cli": {
+        "path": [
+          "graph",
+          "pagerank"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_analytics_pagerank",
+        "description": "Use this when the user wants node importance, influence ranking, or personalized PageRank with seed weights."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphPagerank",
+      "output": "Output::GraphPagerankResult",
+      "outputs": [
+        "Output::GraphPagerankResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "AnalyticsResult<GraphPagerankData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_pagerank_options",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_pagerank_options"
+        },
+        {
+          "code": "invalid_argument.engine.graph_personalization",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_personalization"
+        },
+        {
+          "code": "resource_exhausted.engine.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/pagerank.json",
+        "response": "responses/v1/graph/pagerank_ranks.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json",
+          "requests/v1/setup/graph_add_dave.json",
+          "requests/v1/graph/edge_add.json",
+          "requests/v1/setup/graph_edge_bob_carol.json",
+          "requests/v1/setup/graph_edge_carol_alice.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.analytics.pagerank.md"
+      }
+    },
+    {
+      "id": "graph.analytics.sssp",
+      "family": "graph",
+      "op": "analytics.sssp",
+      "kind": "read.analytics",
+      "title": "Compute graph shortest paths",
+      "summary": "Compute shortest-path distances from a source.",
+      "description": "Computes weighted shortest-path distances from a source node over a consistent snapshot. Edge weights (default 1.0) accumulate along paths; unreachable nodes are omitted from the result. Direction defaults to `outgoing`. The source node must exist (`not_found.engine.graph_node`). Accepts an optional snapshot budget and `as_of` for time travel.\n\nAnalytics commands compute over a consistent snapshot of the visible graph and return a complete result payload in one response. They accept optional snapshot budgets and an `as_of` timestamp for time travel; results are deterministic for a fixed graph state.",
+      "docs": "/docs/graph/analytics/sssp",
+      "cli": {
+        "path": [
+          "graph",
+          "sssp"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_analytics_sssp",
+        "description": "Use this when the user wants weighted shortest-path distances from one node to every reachable node (single-source shortest path / Dijkstra-style queries)."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphSssp",
+      "output": "Output::GraphSsspResult",
+      "outputs": [
+        "Output::GraphSsspResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "AnalyticsResult<GraphSsspData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "not_found.engine.graph_node",
+          "docs": "https://stratadb.org/e/not_found.engine.graph_node"
+        },
+        {
+          "code": "resource_exhausted.engine.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/sssp.json",
+        "response": "responses/v1/graph/sssp_distances.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json",
+          "requests/v1/graph/edge_add.json",
+          "requests/v1/setup/graph_edge_bob_carol.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.analytics.sssp.md"
+      }
+    },
+    {
+      "id": "graph.analytics.wcc",
+      "family": "graph",
+      "op": "analytics.wcc",
+      "kind": "read.analytics",
+      "title": "Compute graph connected components",
+      "summary": "Compute weakly connected components.",
+      "description": "Computes weakly connected components over a consistent snapshot of the graph, ignoring edge direction. Every node maps to its component representative - the smallest node id in its component - and the response carries the distinct component count. Accepts an optional snapshot budget and `as_of` for time travel.\n\nAnalytics commands compute over a consistent snapshot of the visible graph and return a complete result payload in one response. They accept optional snapshot budgets and an `as_of` timestamp for time travel; results are deterministic for a fixed graph state.",
+      "docs": "/docs/graph/analytics/wcc",
+      "cli": {
+        "path": [
+          "graph",
+          "wcc"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_analytics_wcc",
+        "description": "Use this when the user wants to find connected components, clusters of mutually reachable nodes, or check whether a graph is fully connected. Reachable via the generic command runner or the CLI verb `graph wcc`."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphWcc",
+      "output": "Output::GraphWccResult",
+      "outputs": [
+        "Output::GraphWccResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "AnalyticsResult<GraphWccData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "resource_exhausted.engine.graph_analytics_budget",
+          "docs": "https://stratadb.org/e/resource_exhausted.engine.graph_analytics_budget"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/wcc.json",
+        "response": "responses/v1/graph/wcc_components.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json",
+          "requests/v1/setup/graph_add_dave.json",
+          "requests/v1/graph/edge_add.json",
+          "requests/v1/setup/graph_edge_bob_carol.json",
+          "requests/v1/setup/graph_edge_carol_alice.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.analytics.wcc.md"
+      }
+    },
+    {
+      "id": "graph.apply_delete_policy",
+      "family": "graph",
+      "op": "apply_delete_policy",
+      "kind": "mutation.bulk_delete",
+      "title": "Apply graph delete policy",
+      "summary": "Apply a delete policy to bound graph facts.",
+      "description": "Applies an explicit policy to every graph node bound to the given entity target: `cascade` deletes the bound nodes and their incident edges, `detach` keeps the nodes but removes their bindings, and `keep_dangling` preserves the bindings so traversal can report the target's status. The acknowledgement reports how many bound nodes the policy covered.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/apply_delete_policy",
+      "cli": {
+        "path": [
+          "graph",
+          "apply-delete-policy"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_graph_apply_delete_policy",
+        "description": "Use this after deleting an entity in another primitive, when the user must decide what happens to graph nodes bound to it - cascade-delete them, detach the bindings, or keep them dangling. Wire-only; invoke via the generic command runner."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphApplyDeletePolicy",
+      "output": "Output::GraphDeletePolicyResult",
+      "outputs": [
+        "Output::GraphDeletePolicyResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphDeletePolicyApply>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_binding",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_binding"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/apply_delete_policy.json",
+        "response": "responses/v1/graph/apply_delete_policy_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/setup/graph_add_bound_node.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.apply_delete_policy.md"
+      }
+    },
+    {
+      "id": "graph.batch_write",
+      "family": "graph",
+      "op": "batch_write",
+      "kind": "batch.atomic_mutation",
+      "title": "Batch write graph",
+      "summary": "Apply graph mutations atomically.",
+      "description": "Applies a list of graph operations - `upsert_node`, `delete_node`, `upsert_edge`, `delete_edge` - in one engine commit. Validation failures (bad ids, missing edge endpoints, frozen-ontology violations) reject the whole batch; nothing is partially applied. The response reports one positional item result per operation, all sharing the same commit receipt.\n\nAtomic batches validate every operation up front and apply all of them in one engine commit, or none at all. The response still reports one positional item result per operation; all item results share the same commit receipt.",
+      "docs": "/docs/graph/batch_write",
+      "cli": {
+        "path": [
+          "graph",
+          "batch-write"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_graph_batch_write",
+        "description": "Use this when the user wants several graph mutations (node/edge upserts and deletes) applied together in one atomic commit - all succeed or none do. Wire-only; invoke via the generic command runner."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphBatchWrite",
+      "output": "Output::GraphBatchWriteResult",
+      "outputs": [
+        "Output::GraphBatchWriteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "BatchResult<GraphBatchItemResult>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "atomic",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_batch",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_batch"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_endpoint",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_endpoint"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_node_type",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_node_type"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_edge_type",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_edge_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/batch_write.json",
+        "response": "responses/v1/graph/batch_write_ok.json",
+        "setup": [
+          "requests/v1/graph/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.batch_write.md"
+      }
+    },
+    {
+      "id": "graph.bindings",
+      "family": "graph",
+      "op": "bindings",
+      "kind": "read.page",
+      "title": "List graph bindings for entity",
+      "summary": "Find graph nodes bound to an entity.",
+      "description": "Searches every graph in the selected branch and space for nodes whose entity binding matches the given target (primitive, space, key). This is the reverse index of node bindings: given an entity, find the graph facts attached to it. Results paginate by an opaque cursor.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/graph/bindings",
+      "cli": {
+        "path": [
+          "graph",
+          "bindings"
+        ],
+        "surface": "wire"
+      },
+      "mcp": {
+        "name": "strata_graph_bindings",
+        "description": "Use this when the user wants to find every graph node bound to a specific KV, JSON, vector, event, or graph entity (reverse lookup from entity to nodes). Wire-only; invoke via the generic command runner."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphBindingsForEntity",
+      "output": "Output::GraphBindingPage",
+      "outputs": [
+        "Output::GraphBindingPage"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<GraphBindingHit, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_binding",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_binding"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/bindings_for_entity.json",
+        "response": "responses/v1/graph/bindings_page.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/setup/graph_add_bound_node.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.bindings.md"
+      }
+    },
+    {
+      "id": "graph.bulk_insert",
+      "family": "graph",
+      "op": "bulk_insert",
+      "kind": "mutation.put",
+      "title": "Bulk insert graph data",
+      "summary": "Bulk-load nodes and edges in chunks.",
+      "description": "Ingests a payload of nodes and edges in chunked commits: nodes first, then edges, so edges may reference nodes from the same payload. Node objects use the key `node_id`; edges use `src`, `edge_type`, `dst`, and optional `weight` (default 1.0) and `properties`. `chunk_size` bounds items per commit (default 512, clamped at 800). The acknowledgement reports inserted counts, the number of chunk commits, and the final chunk's commit receipt.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/bulk_insert",
+      "cli": {
+        "path": [
+          "graph",
+          "bulk-insert"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_bulk_insert",
+        "description": "Use this when the user wants to load many nodes and edges into a graph at once. Nodes commit before edges in chunked commits; edge endpoints must exist or arrive in the same payload."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphBulkInsert",
+      "output": "Output::GraphBulkInsertResult",
+      "outputs": [
+        "Output::GraphBulkInsertResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphBulkInsert>",
+      "commit": "chunked_commits",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_weight",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_weight"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_endpoint",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_endpoint"
+        },
+        {
+          "code": "invalid_argument.engine.graph_properties",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_properties"
+        },
+        {
+          "code": "invalid_argument.engine.graph_properties_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_properties_too_large"
+        },
+        {
+          "code": "failed_precondition.engine.graph_negative_weight",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_negative_weight"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_node_type",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_node_type"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_edge_type",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_edge_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/bulk_insert.json",
+        "response": "responses/v1/graph/bulk_insert_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.bulk_insert.md"
+      }
+    },
+    {
+      "id": "graph.create",
+      "family": "graph",
+      "op": "create",
+      "kind": "mutation.create",
+      "title": "Create graph",
+      "summary": "Create a named graph.",
+      "description": "Creates an empty named graph in the selected space and returns its metadata, including node and edge counts (zero at creation) and the create commit coordinates. A database can hold many graphs; graph names are unique per branch and space. Creating a name that already exists fails with `already_exists.engine.graph`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/create",
+      "cli": {
+        "path": [
+          "graph",
+          "create"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_create",
+        "description": "Use this when the user wants to create a new named graph for nodes and edges. Fails if a graph with this name already exists."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphCreate",
+      "output": "Output::GraphInfo",
+      "outputs": [
+        "Output::GraphInfo"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphInfoData>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "already_exists.engine.graph",
+          "docs": "https://stratadb.org/e/already_exists.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name_reserved"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/create.json",
+        "response": "responses/v1/graph/create_applied.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.create.md"
+      }
+    },
+    {
+      "id": "graph.delete",
+      "family": "graph",
+      "op": "delete",
+      "kind": "mutation.delete",
+      "title": "Delete graph",
+      "summary": "Delete a graph and its visible data.",
+      "description": "Deletes a named graph and every visible node, edge, binding, and ontology row it owns. Deleting a graph that does not exist is not an error: the acknowledgement reports `deleted: false` with a `not_found` effect. Earlier states remain readable through time travel on other commands.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/delete",
+      "cli": {
+        "path": [
+          "graph",
+          "delete"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_delete",
+        "description": "Use this when the user wants to delete an entire named graph, including all of its nodes and edges. Returns deleted=false if the graph does not exist."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphDelete",
+      "output": "Output::GraphDeleteResult",
+      "outputs": [
+        "Output::GraphDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/delete.json",
+        "response": "responses/v1/graph/delete_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.delete.md"
+      }
+    },
+    {
+      "id": "graph.edge.add",
+      "family": "graph",
+      "op": "edge.add",
+      "kind": "mutation.put",
+      "title": "Add graph edge",
+      "summary": "Add or replace a graph edge.",
+      "description": "Adds a directed edge `src -[edge_type]-> dst` or replaces it if the same triple already exists. Both endpoints must already exist; writing an edge to a missing node fails with `invalid_argument.engine.graph_edge_endpoint`. Weight defaults to 1.0 and must not be negative. Once the graph's ontology is frozen, the edge type and its endpoint object types are validated against the declared link types.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/edge/add",
+      "cli": {
+        "path": [
+          "graph",
+          "add-edge"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_edge_add",
+        "description": "Use this when the user wants to connect two existing nodes with a directed, typed edge, optionally weighted or carrying JSON properties."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphAddEdge",
+      "output": "Output::GraphEdgeWriteResult",
+      "outputs": [
+        "Output::GraphEdgeWriteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphEdgeWrite>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type_reserved"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_weight",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_weight"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_endpoint",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_endpoint"
+        },
+        {
+          "code": "invalid_argument.engine.graph_properties",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_properties"
+        },
+        {
+          "code": "invalid_argument.engine.graph_properties_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_properties_too_large"
+        },
+        {
+          "code": "failed_precondition.engine.graph_negative_weight",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_negative_weight"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_edge_type",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_edge_type"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_endpoint_type",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_endpoint_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/edge_add.json",
+        "response": "responses/v1/graph/edge_add_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.edge.add.md"
+      }
+    },
+    {
+      "id": "graph.edge.get",
+      "family": "graph",
+      "op": "edge.get",
+      "kind": "read.get",
+      "title": "Get graph edge",
+      "summary": "Read one graph edge.",
+      "description": "Reads one edge by its `(src, edge_type, dst)` triple, returning its weight, properties, and last-write commit coordinates. A missing edge reads back as no data. Accepts `as_of` for time travel.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/graph/edge/get",
+      "cli": {
+        "path": [
+          "graph",
+          "get-edge"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_edge_get",
+        "description": "Use this when the user wants to read an edge's weight or properties by its source, edge type, and destination. Returns null for a missing edge."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphGetEdge",
+      "output": "Output::GraphEdgeResult",
+      "outputs": [
+        "Output::GraphEdgeResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<GraphEdgeDataOutput>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/edge_get.json",
+        "response": "responses/v1/graph/edge_get_found.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/graph/edge_add.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.edge.get.md"
+      }
+    },
+    {
+      "id": "graph.edge.remove",
+      "family": "graph",
+      "op": "edge.remove",
+      "kind": "mutation.delete",
+      "title": "Remove graph edge",
+      "summary": "Remove a graph edge.",
+      "description": "Removes one directed edge by its `(src, edge_type, dst)` triple. The endpoints are untouched. Removing an edge that does not exist is not an error: the acknowledgement reports `deleted: false`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/edge/remove",
+      "cli": {
+        "path": [
+          "graph",
+          "remove-edge"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_edge_remove",
+        "description": "Use this when the user wants to delete one directed edge identified by source, edge type, and destination."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphRemoveEdge",
+      "output": "Output::GraphDeleteResult",
+      "outputs": [
+        "Output::GraphDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/edge_remove.json",
+        "response": "responses/v1/graph/edge_remove_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/graph/edge_add.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.edge.remove.md"
+      }
+    },
+    {
+      "id": "graph.list",
+      "family": "graph",
+      "op": "list",
+      "kind": "read.page",
+      "title": "List graphs",
+      "summary": "List graph names.",
+      "description": "Lists graph names in lexicographic order. Accepts an optional item limit (default 100), an exclusive name cursor for continuation, and an `as_of` timestamp to list the graphs visible at an earlier instant.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/graph/list",
+      "cli": {
+        "path": [
+          "graph",
+          "list"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_list",
+        "description": "Use this when the user wants to see which named graphs exist in the current branch and space."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphList",
+      "output": "Output::GraphNamePage",
+      "outputs": [
+        "Output::GraphNamePage"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<String, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/list.json",
+        "response": "responses/v1/graph/list_page.json",
+        "setup": [
+          "requests/v1/graph/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.list.md"
+      }
+    },
+    {
+      "id": "graph.meta",
+      "family": "graph",
+      "op": "meta",
+      "kind": "read.get",
+      "title": "Read graph metadata",
+      "summary": "Read graph metadata and counts.",
+      "description": "Reads a graph's metadata: live node and edge counts plus the create and last-update commit versions and timestamps. Reading a graph that does not exist returns no data rather than an error. Accepts `as_of` for time travel.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/graph/meta",
+      "cli": {
+        "path": [
+          "graph",
+          "meta"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_meta",
+        "description": "Use this when the user wants a graph's node count, edge count, or creation and update commit coordinates. Returns null if the graph does not exist."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphGetMeta",
+      "output": "Output::GraphInfoResult",
+      "outputs": [
+        "Output::GraphInfoResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<GraphInfoData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/meta.json",
+        "response": "responses/v1/graph/meta_found.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/graph/edge_add.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.meta.md"
+      }
+    },
+    {
+      "id": "graph.neighbors",
+      "family": "graph",
+      "op": "neighbors",
+      "kind": "read.page",
+      "title": "List graph neighbors",
+      "summary": "List a node's neighbors.",
+      "description": "Walks a node's edges and returns one hit per traversed edge. Direction is `outgoing`, `incoming`, or `both`; an optional edge-type filter restricts the walk. Each hit embeds both the traversed edge and the neighbor node in full, so a follow-up read is rarely needed. A missing node yields an empty page.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/graph/neighbors",
+      "cli": {
+        "path": [
+          "graph",
+          "neighbors"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_neighbors",
+        "description": "Use this when the user wants the nodes adjacent to a given node - who it points to, who points to it, or both - optionally filtered by edge type."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphNeighbors",
+      "output": "Output::GraphNeighborPage",
+      "outputs": [
+        "Output::GraphNeighborPage"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<GraphNeighborHit, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_edge_type",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_edge_type"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/neighbors.json",
+        "response": "responses/v1/graph/neighbors_page.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json",
+          "requests/v1/graph/edge_add.json",
+          "requests/v1/setup/graph_edge_alice_carol.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.neighbors.md"
+      }
+    },
+    {
+      "id": "graph.node.add",
+      "family": "graph",
+      "op": "node.add",
+      "kind": "mutation.put",
+      "title": "Add graph node",
+      "summary": "Add or replace a graph node.",
+      "description": "Adds a node to a graph or replaces it if the node id already exists. A node carries optional JSON properties, an optional declared object type (validated once the graph's ontology is frozen), and an optional entity binding that links the node to a row in another primitive. Cross-branch bindings are rejected.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/node/add",
+      "cli": {
+        "path": [
+          "graph",
+          "add-node"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_node_add",
+        "description": "Use this when the user wants to insert or upsert a node in a graph, optionally with JSON properties, a declared object type, or a binding to a KV/JSON/vector/event entity."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphAddNode",
+      "output": "Output::GraphNodeWriteResult",
+      "outputs": [
+        "Output::GraphNodeWriteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphNodeWrite>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        },
+        {
+          "code": "invalid_argument.engine.graph_properties",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_properties"
+        },
+        {
+          "code": "invalid_argument.engine.graph_properties_too_large",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_properties_too_large"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_hint",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_hint"
+        },
+        {
+          "code": "invalid_argument.engine.graph_binding",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_binding"
+        },
+        {
+          "code": "unsupported.engine.graph_binding_cross_branch",
+          "docs": "https://stratadb.org/e/unsupported.engine.graph_binding_cross_branch"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_node_type",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_node_type"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_required_property",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_required_property"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/node_add.json",
+        "response": "responses/v1/graph/node_add_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.node.add.md"
+      }
+    },
+    {
+      "id": "graph.node.get",
+      "family": "graph",
+      "op": "node.get",
+      "kind": "read.get",
+      "title": "Get graph node",
+      "summary": "Read one graph node.",
+      "description": "Reads one node by id, returning its properties, declared object type, entity binding, and last-write commit coordinates. A removed or never-written node reads back as no data. Accepts `as_of` for time travel.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/graph/node/get",
+      "cli": {
+        "path": [
+          "graph",
+          "get-node"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_node_get",
+        "description": "Use this when the user wants to read a node's properties, declared type, or binding by node id. Returns null for a missing node."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphGetNode",
+      "output": "Output::GraphNodeResult",
+      "outputs": [
+        "Output::GraphNodeResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<GraphNodeDataOutput>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/node_get.json",
+        "response": "responses/v1/graph/node_get_found.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.node.get.md"
+      }
+    },
+    {
+      "id": "graph.node.list",
+      "family": "graph",
+      "op": "node.list",
+      "kind": "read.page",
+      "title": "List graph nodes",
+      "summary": "List graph nodes.",
+      "description": "Lists a graph's nodes in node-id order. Accepts an optional id prefix filter, an item limit (default 100), an exclusive cursor, and `as_of` for time travel. Each item carries the full node payload: properties, declared type, binding, and commit coordinates.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/graph/node/list",
+      "cli": {
+        "path": [
+          "graph",
+          "list-nodes"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_node_list",
+        "description": "Use this when the user wants to enumerate the nodes of a graph, optionally filtered by node-id prefix."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphListNodes",
+      "output": "Output::GraphNodePage",
+      "outputs": [
+        "Output::GraphNodePage"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<GraphNodeDataOutput, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/node_list.json",
+        "response": "responses/v1/graph/node_list_page.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.node.list.md"
+      }
+    },
+    {
+      "id": "graph.node.remove",
+      "family": "graph",
+      "op": "node.remove",
+      "kind": "mutation.delete",
+      "title": "Remove graph node",
+      "summary": "Remove a graph node and its edges.",
+      "description": "Removes a node and every edge incident to it in one commit. Removing a node that does not exist is not an error: the acknowledgement reports `deleted: false`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/node/remove",
+      "cli": {
+        "path": [
+          "graph",
+          "remove-node"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_node_remove",
+        "description": "Use this when the user wants to delete a node from a graph. Incident edges are removed with it."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphRemoveNode",
+      "output": "Output::GraphDeleteResult",
+      "outputs": [
+        "Output::GraphDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/node_remove.json",
+        "response": "responses/v1/graph/node_remove_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.node.remove.md"
+      }
+    },
+    {
+      "id": "graph.nodes_by_type",
+      "family": "graph",
+      "op": "nodes_by_type",
+      "kind": "read.page",
+      "title": "List graph nodes by type",
+      "summary": "List nodes declaring an object type.",
+      "description": "Lists the nodes that declare a given object type, in node-id order. The type index is maintained from each node's declared `object_type`, so this works whether the ontology is draft or frozen. Accepts a limit, an exclusive cursor, and `as_of` for time travel.\n\nPaginated responses use opaque cursors. Clients should pass the returned cursor back to the same command shape and must not parse cursor contents.",
+      "docs": "/docs/graph/nodes_by_type",
+      "cli": {
+        "path": [
+          "graph",
+          "nodes-by-type"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_nodes_by_type",
+        "description": "Use this when the user wants every node of a given object type, for example all Person nodes. Works with draft or frozen ontologies."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphNodesByType",
+      "output": "Output::GraphNodePage",
+      "outputs": [
+        "Output::GraphNodePage"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<GraphNodeDataOutput, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_name"
+        },
+        {
+          "code": "invalid_argument.engine.graph_node_id",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_node_id"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/nodes_by_type.json",
+        "response": "responses/v1/graph/nodes_by_type_page.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json",
+          "requests/v1/setup/graph_add_carol.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.nodes_by_type.md"
+      }
+    },
+    {
+      "id": "graph.ontology.define_link_type",
+      "family": "graph",
+      "op": "ontology.define_link_type",
+      "kind": "mutation.put",
+      "title": "Define graph link type",
+      "summary": "Define a graph link type.",
+      "description": "Declares a link type in the graph's ontology: a name, its source and target object types, an optional cardinality hint (for example `many-to-one`), and property definitions. Source and target must name declared object types by the time the ontology is frozen. After freezing, this command fails with `failed_precondition.engine.graph_ontology_frozen`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/ontology/define_link_type",
+      "cli": {
+        "path": [
+          "graph",
+          "ontology",
+          "define-link-type"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_ontology_define_link_type",
+        "description": "Use this when the user wants to declare (or, while the ontology is still a draft, redefine) an edge link type between two object types, optionally with a cardinality hint and typed properties."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphDefineLinkType",
+      "output": "Output::GraphOntologyWriteResult",
+      "outputs": [
+        "Output::GraphOntologyWriteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphOntologyWrite>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_name"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_name_reserved"
+        },
+        {
+          "code": "invalid_argument.engine.graph_property_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_property_name"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_frozen",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_frozen"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/ontology_define_link_type.json",
+        "response": "responses/v1/graph/ontology_define_link_type_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/ontology_define_object_type.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.ontology.define_link_type.md"
+      }
+    },
+    {
+      "id": "graph.ontology.define_object_type",
+      "family": "graph",
+      "op": "ontology.define_object_type",
+      "kind": "mutation.put",
+      "title": "Define graph object type",
+      "summary": "Define a graph object type.",
+      "description": "Declares an object type in the graph's ontology: a name plus property definitions (`value_type`, `required`). While the ontology is a draft, redefining a type replaces it freely. After `graph.ontology.freeze`, the ontology is immutable and this command fails with `failed_precondition.engine.graph_ontology_frozen`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/ontology/define_object_type",
+      "cli": {
+        "path": [
+          "graph",
+          "ontology",
+          "define-object-type"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_ontology_define_object_type",
+        "description": "Use this when the user wants to declare (or, while the ontology is still a draft, redefine) a node object type with named, typed properties in a graph's ontology."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphDefineObjectType",
+      "output": "Output::GraphOntologyWriteResult",
+      "outputs": [
+        "Output::GraphOntologyWriteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphOntologyWrite>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_name"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_name_reserved",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_name_reserved"
+        },
+        {
+          "code": "invalid_argument.engine.graph_property_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_property_name"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_frozen",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_frozen"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/ontology_define_object_type.json",
+        "response": "responses/v1/graph/ontology_define_object_type_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.ontology.define_object_type.md"
+      }
+    },
+    {
+      "id": "graph.ontology.delete_link_type",
+      "family": "graph",
+      "op": "ontology.delete_link_type",
+      "kind": "mutation.delete",
+      "title": "Delete graph link type",
+      "summary": "Delete a draft link type.",
+      "description": "Removes a link type from the graph's draft ontology. Deleting a type that was never declared is not an error: the acknowledgement reports `deleted: false`. Once the ontology is frozen this command fails with `failed_precondition.engine.graph_ontology_frozen`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/ontology/delete_link_type",
+      "cli": {
+        "path": [
+          "graph",
+          "ontology",
+          "delete-link-type"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_ontology_delete_link_type",
+        "description": "Use this when the user wants to remove a link type from a graph's draft ontology. Frozen ontologies cannot change."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphDeleteLinkType",
+      "output": "Output::GraphOntologyDeleteResult",
+      "outputs": [
+        "Output::GraphOntologyDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphOntologyDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_name"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_frozen",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_frozen"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/ontology_delete_link_type.json",
+        "response": "responses/v1/graph/ontology_delete_link_type_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/ontology_define_object_type.json",
+          "requests/v1/setup/graph_define_link_type_knows.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.ontology.delete_link_type.md"
+      }
+    },
+    {
+      "id": "graph.ontology.delete_object_type",
+      "family": "graph",
+      "op": "ontology.delete_object_type",
+      "kind": "mutation.delete",
+      "title": "Delete graph object type",
+      "summary": "Delete a draft object type.",
+      "description": "Removes an object type from the graph's draft ontology. Deleting a type that was never declared is not an error: the acknowledgement reports `deleted: false`. Once the ontology is frozen this command fails with `failed_precondition.engine.graph_ontology_frozen`.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/ontology/delete_object_type",
+      "cli": {
+        "path": [
+          "graph",
+          "ontology",
+          "delete-object-type"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_ontology_delete_object_type",
+        "description": "Use this when the user wants to remove an object type from a graph's draft ontology. Frozen ontologies cannot change."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphDeleteObjectType",
+      "output": "Output::GraphOntologyDeleteResult",
+      "outputs": [
+        "Output::GraphOntologyDeleteResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphOntologyDelete>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "invalid_argument.engine.graph_type_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_type_name"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_frozen",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_frozen"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/ontology_delete_object_type.json",
+        "response": "responses/v1/graph/ontology_delete_object_type_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/setup/graph_define_object_type_robot.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.ontology.delete_object_type.md"
+      }
+    },
+    {
+      "id": "graph.ontology.freeze",
+      "family": "graph",
+      "op": "ontology.freeze",
+      "kind": "mutation.put",
+      "title": "Freeze graph ontology",
+      "summary": "Freeze the graph ontology.",
+      "description": "Validates the draft ontology and freezes it. Validation requires at least one declared type and rejects link types whose source or target reference undeclared object types (`failed_precondition.engine.graph_ontology_freeze`). After freezing, writes enforce declared node object types, required properties, and link-type endpoint rules; the ontology itself can no longer change (`failed_precondition.engine.graph_ontology_frozen`).\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/graph/ontology/freeze",
+      "cli": {
+        "path": [
+          "graph",
+          "ontology",
+          "freeze"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_ontology_freeze",
+        "description": "Use this when the user wants to lock a graph's ontology so subsequent node and edge writes are validated against the declared types. Freezing is permanent and validates the draft first."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::GraphFreezeOntology",
+      "output": "Output::GraphOntologyFreezeResult",
+      "outputs": [
+        "Output::GraphOntologyFreezeResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "MutationAck<GraphOntologyFreeze>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_freeze",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_freeze"
+        },
+        {
+          "code": "failed_precondition.engine.graph_ontology_frozen",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.graph_ontology_frozen"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/ontology_freeze.json",
+        "response": "responses/v1/graph/ontology_freeze_applied.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/ontology_define_object_type.json",
+          "requests/v1/graph/ontology_define_link_type.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.ontology.freeze.md"
+      }
+    },
+    {
+      "id": "graph.ontology.get",
+      "family": "graph",
+      "op": "ontology.get",
+      "kind": "read.get",
+      "title": "Read graph ontology",
+      "summary": "Read the graph ontology.",
+      "description": "Reads the graph's ontology: its status (`draft` or `frozen`) plus every declared object type and link type with their property definitions. Returns no data before any type has been declared. Accepts `as_of` for time travel.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/graph/ontology/get",
+      "cli": {
+        "path": [
+          "graph",
+          "ontology",
+          "get"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_ontology_get",
+        "description": "Use this when the user wants to inspect a graph's ontology - its draft or frozen status and every declared object type and link type."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphGetOntology",
+      "output": "Output::GraphOntologyResult",
+      "outputs": [
+        "Output::GraphOntologyResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<GraphOntologyData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/ontology_get.json",
+        "response": "responses/v1/graph/ontology_get_frozen.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/ontology_define_object_type.json",
+          "requests/v1/graph/ontology_define_link_type.json",
+          "requests/v1/graph/ontology_freeze.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.ontology.get.md"
+      }
+    },
+    {
+      "id": "graph.ontology.summary",
+      "family": "graph",
+      "op": "ontology.summary",
+      "kind": "read.get",
+      "title": "Read graph ontology summary",
+      "summary": "Read the ontology with usage counts.",
+      "description": "Reads the graph's ontology annotated with per-type usage: a node count for each object type and an edge count for each link type. Returns no data before any type has been declared. Accepts `as_of` for time travel.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/graph/ontology/summary",
+      "cli": {
+        "path": [
+          "graph",
+          "ontology",
+          "summary"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_graph_ontology_summary",
+        "description": "Use this when the user wants ontology types together with usage statistics - how many nodes declare each object type and how many edges use each link type."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::GraphOntologySummary",
+      "output": "Output::GraphOntologySummaryResult",
+      "outputs": [
+        "Output::GraphOntologySummaryResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<GraphOntologySummaryData>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.graph_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.graph_name"
+        },
+        {
+          "code": "not_found.engine.graph",
+          "docs": "https://stratadb.org/e/not_found.engine.graph"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/graph/ontology_summary.json",
+        "response": "responses/v1/graph/ontology_summary_found.json",
+        "setup": [
+          "requests/v1/graph/create.json",
+          "requests/v1/graph/ontology_define_object_type.json",
+          "requests/v1/graph/ontology_define_link_type.json",
+          "requests/v1/graph/node_add.json",
+          "requests/v1/setup/graph_add_bob.json"
+        ]
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/graph.yaml",
+        "prose": "commands/graph.ontology.summary.md"
+      }
+    },
+    {
       "id": "json.batch_delete",
       "family": "json",
       "op": "batch_delete",

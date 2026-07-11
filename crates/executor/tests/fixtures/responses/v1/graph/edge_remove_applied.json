@@ -1,0 +1,25 @@
+{
+  "data": {
+    "commit": {
+      "delete_count": 1,
+      "durable": false,
+      "put_count": 0,
+      "timestamp": 7,
+      "version": 7
+    },
+    "deleted": true,
+    "dst": "bob",
+    "edge_type": "follows",
+    "effect": {
+      "affected_count": 1,
+      "applied": true,
+      "kind": "deleted",
+      "matched": true
+    },
+    "graph": "social",
+    "src": "alice",
+    "timestamp": 7,
+    "version": 7
+  },
+  "type": "graph_delete_result"
+}

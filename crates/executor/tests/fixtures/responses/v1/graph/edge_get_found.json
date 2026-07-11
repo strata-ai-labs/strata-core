@@ -1,0 +1,15 @@
+{
+  "data": {
+    "dst": "bob",
+    "edge_type": "follows",
+    "graph": "social",
+    "properties": {
+      "since": 2021
+    },
+    "src": "alice",
+    "timestamp": 6,
+    "version": 6,
+    "weight": 1.0
+  },
+  "type": "graph_edge_result"
+}

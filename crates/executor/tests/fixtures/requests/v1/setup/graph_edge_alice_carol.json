@@ -1,0 +1,7 @@
+{
+  "type": "graph_add_edge",
+  "graph": "social",
+  "src": "alice",
+  "edge_type": "knows",
+  "dst": "carol"
+}

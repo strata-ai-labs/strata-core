@@ -1,0 +1,5 @@
+{
+  "type": "graph_remove_node",
+  "graph": "social",
+  "node_id": "alice"
+}

@@ -1,0 +1,17 @@
+{
+  "data": {
+    "commit": {
+      "delete_count": 0,
+      "durable": false,
+      "put_count": 1,
+      "timestamp": 6,
+      "version": 6
+    },
+    "graph": "social",
+    "link_types": 1,
+    "object_types": 1,
+    "timestamp": 6,
+    "version": 6
+  },
+  "type": "graph_ontology_freeze_result"
+}

@@ -1,0 +1,286 @@
+{
+  "$defs": {
+    "CommitReceipt": {
+      "description": "Commit facts returned by mutating operations.",
+      "properties": {
+        "delete_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "durable": {
+          "type": "boolean"
+        },
+        "put_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "timestamp",
+        "durable",
+        "put_count",
+        "delete_count"
+      ],
+      "type": "object"
+    },
+    "GraphBindingPrimitive": {
+      "description": "Product primitive kind used by graph entity bindings.",
+      "oneOf": [
+        {
+          "const": "kv",
+          "description": "KV primitive.",
+          "type": "string"
+        },
+        {
+          "const": "json",
+          "description": "JSON primitive.",
+          "type": "string"
+        },
+        {
+          "const": "vector",
+          "description": "Vector primitive.",
+          "type": "string"
+        },
+        {
+          "const": "event",
+          "description": "Event primitive.",
+          "type": "string"
+        },
+        {
+          "const": "graph",
+          "description": "Graph primitive.",
+          "type": "string"
+        }
+      ]
+    },
+    "GraphBindingTarget": {
+      "description": "Typed product identity attached to a graph node.",
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "primitive": {
+          "$ref": "#/$defs/GraphBindingPrimitive"
+        },
+        "space": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "primitive",
+        "space",
+        "key"
+      ],
+      "type": "object"
+    },
+    "GraphEntityBinding": {
+      "description": "Node-to-entity binding.",
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/GraphBindingTarget"
+        }
+      },
+      "required": [
+        "target"
+      ],
+      "type": "object"
+    },
+    "MutationEffect": {
+      "description": "Normalized mutation effect facts.",
+      "properties": {
+        "affected_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "kind": {
+          "$ref": "#/$defs/MutationEffectKind"
+        },
+        "matched": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "applied",
+        "kind",
+        "matched",
+        "affected_count"
+      ],
+      "type": "object"
+    },
+    "MutationEffectKind": {
+      "description": "High-level mutation effect for idempotent and conditional operations.",
+      "oneOf": [
+        {
+          "const": "created",
+          "description": "A new logical entity was created.",
+          "type": "string"
+        },
+        {
+          "const": "updated",
+          "description": "An existing logical entity was updated.",
+          "type": "string"
+        },
+        {
+          "const": "deleted",
+          "description": "An existing logical entity was deleted.",
+          "type": "string"
+        },
+        {
+          "const": "unchanged",
+          "description": "The operation matched but left state unchanged.",
+          "type": "string"
+        },
+        {
+          "const": "not_found",
+          "description": "The operation did not match a visible entity.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/graph.node.add.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "graph.node.add",
+  "request": {
+    "additionalProperties": false,
+    "description": "Adds or replaces a graph node.",
+    "properties": {
+      "binding": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/GraphEntityBinding"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional entity binding."
+      },
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "graph": {
+        "description": "Graph name.",
+        "type": "string"
+      },
+      "node_id": {
+        "description": "Node id.",
+        "type": "string"
+      },
+      "object_type": {
+        "description": "Optional declared object type (validated once the ontology is frozen).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "properties": {
+        "description": "Optional node properties."
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "graph_add_node",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "graph",
+      "node_id"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Graph node write acknowledgement.",
+    "properties": {
+      "data": {
+        "properties": {
+          "commit": {
+            "$ref": "#/$defs/CommitReceipt",
+            "description": "Commit receipt."
+          },
+          "created": {
+            "description": "True when the node did not previously exist.",
+            "type": "boolean"
+          },
+          "effect": {
+            "$ref": "#/$defs/MutationEffect",
+            "description": "Mutation effect facts."
+          },
+          "graph": {
+            "description": "Graph name.",
+            "type": "string"
+          },
+          "node_id": {
+            "description": "Node id.",
+            "type": "string"
+          },
+          "timestamp": {
+            "description": "Commit timestamp.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "description": "Commit version.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "graph",
+          "node_id",
+          "created",
+          "effect",
+          "commit",
+          "version",
+          "timestamp"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "graph_node_write_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

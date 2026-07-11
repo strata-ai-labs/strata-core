@@ -636,6 +636,7 @@ pub fn resolve_index(repo_root: &Path) -> Result<CommandIndex> {
     for file_name in [
         "branch.yaml",
         "event.yaml",
+        "graph.yaml",
         "json.yaml",
         "kv.yaml",
         "space.yaml",

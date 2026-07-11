@@ -1,0 +1,22 @@
+{
+  "data": {
+    "cursor": null,
+    "has_more": false,
+    "items": [
+      {
+        "binding": {
+          "target": {
+            "key": "user:alice",
+            "primitive": "kv",
+            "space": "default"
+          }
+        },
+        "graph": "social",
+        "node_id": "alice-profile",
+        "timestamp": 4,
+        "version": 4
+      }
+    ]
+  },
+  "type": "graph_binding_page"
+}

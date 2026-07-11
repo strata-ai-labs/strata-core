@@ -1,0 +1,31 @@
+{
+  "type": "graph_bulk_insert",
+  "graph": "social",
+  "nodes": [
+    {
+      "node_id": "n1",
+      "properties": {
+        "kind": "a"
+      }
+    },
+    {
+      "node_id": "n2"
+    },
+    {
+      "node_id": "n3"
+    }
+  ],
+  "edges": [
+    {
+      "src": "n1",
+      "edge_type": "link",
+      "dst": "n2",
+      "weight": 1.5
+    },
+    {
+      "src": "n2",
+      "edge_type": "link",
+      "dst": "n3"
+    }
+  ]
+}

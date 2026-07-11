@@ -1,0 +1,25 @@
+{
+  "data": {
+    "commit": {
+      "delete_count": 0,
+      "durable": false,
+      "put_count": 1,
+      "timestamp": 6,
+      "version": 6
+    },
+    "created": true,
+    "dst": "bob",
+    "edge_type": "follows",
+    "effect": {
+      "affected_count": 1,
+      "applied": true,
+      "kind": "created",
+      "matched": false
+    },
+    "graph": "social",
+    "src": "alice",
+    "timestamp": 6,
+    "version": 6
+  },
+  "type": "graph_edge_write_result"
+}

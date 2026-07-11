@@ -1,0 +1,5 @@
+{
+  "type": "graph_sssp",
+  "graph": "social",
+  "source": "alice"
+}

@@ -1,0 +1,167 @@
+{
+  "$defs": {
+    "GraphAnalyticsBudget": {
+      "description": "Optional size bounds for one graph analytics snapshot (input form).\nUnset fields use the engine defaults.",
+      "properties": {
+        "max_edges": {
+          "description": "Maximum edge count admitted into the snapshot.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_nodes": {
+          "description": "Maximum node count admitted into the snapshot.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "GraphPagerankData": {
+      "description": "`PageRank` result (wire form).",
+      "properties": {
+        "graph": {
+          "type": "string"
+        },
+        "iterations": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "personalized": {
+          "type": "boolean"
+        },
+        "ranks": {
+          "additionalProperties": {
+            "format": "double",
+            "type": "number"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "graph",
+        "ranks",
+        "iterations",
+        "personalized"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/graph.analytics.pagerank.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "graph.analytics.pagerank",
+  "request": {
+    "additionalProperties": false,
+    "description": "Computes `PageRank` scores, optionally personalized by seed weights.",
+    "properties": {
+      "as_of": {
+        "description": "Optional timestamp in microseconds. Reads the graph state visible at that instant.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "budget": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/GraphAnalyticsBudget"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional snapshot size bounds. Defaults to the engine limits."
+      },
+      "damping": {
+        "description": "Optional damping factor. Defaults to 0.85.",
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "graph": {
+        "description": "Graph name.",
+        "type": "string"
+      },
+      "max_iterations": {
+        "description": "Optional iteration bound. Defaults to 20.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "personalization": {
+        "additionalProperties": {
+          "format": "double",
+          "type": "number"
+        },
+        "description": "Optional seed weights (node id to weight). When present, both\nteleport and dangling mass follow the seeds.",
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "tolerance": {
+        "description": "Optional convergence tolerance. Defaults to 1e-6.",
+        "format": "double",
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "graph_pagerank",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "graph"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "`PageRank` scores computed over a graph snapshot.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/GraphPagerankData"
+      },
+      "type": {
+        "const": "graph_pagerank_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

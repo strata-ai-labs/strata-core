@@ -1,0 +1,8 @@
+{
+  "type": "graph_wcc",
+  "graph": "social",
+  "budget": {
+    "max_nodes": 1000,
+    "max_edges": 1000
+  }
+}

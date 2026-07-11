@@ -1,0 +1,130 @@
+{
+  "$defs": {
+    "GraphEdgeDataOutput": {
+      "description": "Serializable graph edge output.",
+      "properties": {
+        "dst": {
+          "type": "string"
+        },
+        "edge_type": {
+          "type": "string"
+        },
+        "graph": {
+          "type": "string"
+        },
+        "properties": true,
+        "src": {
+          "type": "string"
+        },
+        "timestamp": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "weight": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "graph",
+        "src",
+        "edge_type",
+        "dst",
+        "weight",
+        "version",
+        "timestamp"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/graph.edge.get.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "graph.edge.get",
+  "request": {
+    "additionalProperties": false,
+    "description": "Reads a graph edge.",
+    "properties": {
+      "as_of": {
+        "description": "Optional timestamp in microseconds. Reads the graph state visible at that instant.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "dst": {
+        "description": "Destination node id.",
+        "type": "string"
+      },
+      "edge_type": {
+        "description": "Edge type.",
+        "type": "string"
+      },
+      "graph": {
+        "description": "Graph name.",
+        "type": "string"
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "src": {
+        "description": "Source node id.",
+        "type": "string"
+      },
+      "type": {
+        "const": "graph_get_edge",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "graph",
+      "src",
+      "edge_type",
+      "dst"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Optional graph edge.",
+    "properties": {
+      "data": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/GraphEdgeDataOutput"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "type": {
+        "const": "graph_edge_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

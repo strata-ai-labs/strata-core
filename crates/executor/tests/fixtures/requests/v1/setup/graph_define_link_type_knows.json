@@ -1,0 +1,7 @@
+{
+  "type": "graph_define_link_type",
+  "graph": "social",
+  "name": "knows",
+  "source": "Person",
+  "target": "Person"
+}

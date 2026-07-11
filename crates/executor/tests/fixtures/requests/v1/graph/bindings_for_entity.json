@@ -1,0 +1,8 @@
+{
+  "type": "graph_bindings_for_entity",
+  "target": {
+    "primitive": "kv",
+    "space": "default",
+    "key": "user:alice"
+  }
+}

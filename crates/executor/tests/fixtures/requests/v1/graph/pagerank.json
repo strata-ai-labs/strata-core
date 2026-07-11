@@ -1,0 +1,4 @@
+{
+  "type": "graph_pagerank",
+  "graph": "social"
+}
