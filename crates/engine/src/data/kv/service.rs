@@ -213,6 +213,33 @@ impl<'a> KvService<'a> {
         Ok(KvListPage::new(keys, has_more, cursor))
     }
 
+    /// Lists a page of keys visible at a commit timestamp. Pagination
+    /// (cursor + limit) is applied in the engine — mirrors `list_page`, so
+    /// the caller never materializes the whole keyset for a time-travel list.
+    pub fn list_at_page(
+        &mut self,
+        prefix: Option<&KvKey>,
+        cursor: Option<&KvKey>,
+        limit: usize,
+        timestamp: Timestamp,
+    ) -> EngineResult<KvListPage> {
+        if limit == 0 {
+            return Ok(KvListPage::new(Vec::new(), false, None));
+        }
+        let mut keys = self.scan_keys_after_cursor(
+            prefix,
+            cursor,
+            limit.saturating_add(1),
+            ReadSelector::AtTimestamp(timestamp),
+        )?;
+        let has_more = keys.len() > limit;
+        if has_more {
+            keys.truncate(limit);
+        }
+        let cursor = has_more.then(|| keys.last().expect("non-empty page").clone());
+        Ok(KvListPage::new(keys, has_more, cursor))
+    }
+
     /// Lists keys visible at a commit timestamp.
     pub fn list_at(
         &mut self,
