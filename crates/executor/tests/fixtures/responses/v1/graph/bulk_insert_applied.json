@@ -10,9 +10,7 @@
     "commits": 2,
     "edges_inserted": 2,
     "graph": "social",
-    "nodes_inserted": 3,
-    "timestamp": 5,
-    "version": 5
+    "nodes_inserted": 3
   },
   "type": "graph_bulk_insert_result"
 }

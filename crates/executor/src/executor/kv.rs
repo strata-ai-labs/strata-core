@@ -1,11 +1,12 @@
 use super::{
-    batch_get_result, batch_item_result, bytes_from_key, delete_effect, delete_output,
-    empty_batch_exists_results, empty_batch_get_results, empty_batch_results,
-    finish_batch_exists_results, finish_batch_get_results, finish_batch_results, history_result,
-    kv_batch_exists_result, kv_batch_get_result, kv_batch_result, kv_key, kv_value, optional_key,
-    optional_limit, page_or_keys, reject_duplicate_valid_keys, sample_output, scan_item,
-    upsert_effect, versioned_value, write_output, BatchExistsItemResult, BatchGetItemResult,
-    BatchItemResult, BatchKvEntry, Bytes, Executor, ExecutorResult, Output, PageInfo, Timestamp,
+    batch_exists_failed, batch_exists_item, batch_get_failed, batch_get_result, batch_item_failed,
+    batch_item_result, bytes_from_key, delete_effect, delete_output, empty_batch_exists_results,
+    empty_batch_get_results, empty_batch_results, finish_batch_exists_results,
+    finish_batch_get_results, finish_batch_results, history_result, kv_batch_exists_result,
+    kv_batch_get_result, kv_batch_result, kv_key, kv_value, optional_key, optional_limit,
+    page_or_keys, reject_duplicate_valid_keys, sample_output, scan_item, upsert_effect,
+    usize_to_u64, versioned_value, write_output, BatchKvEntry, Bytes, Executor, ExecutorResult,
+    Output, PageInfo, Timestamp,
 };
 
 impl Executor {
@@ -91,7 +92,7 @@ impl Executor {
         if cursor.is_some() {
             return page_or_keys(keys, cursor.as_ref(), limit);
         }
-        Ok(Output::Keys {
+        Ok(Output::KeysPage {
             items: keys.iter().map(bytes_from_key).collect(),
             page: PageInfo::terminal(),
         })
@@ -144,7 +145,8 @@ impl Executor {
             match kv_key(key) {
                 Ok(key) => valid_entries.push((index, output_key, key, kv_value(value))),
                 Err(error) => {
-                    results[index] = Some(BatchItemResult::failed_error(output_key, error));
+                    results[index] =
+                        Some(batch_item_failed(usize_to_u64(index), output_key, error));
                 }
             }
         }
@@ -164,6 +166,7 @@ impl Executor {
         let outcome = service.put_batch(engine_entries)?;
         for ((index, output_key, ..), existed) in valid_entries.into_iter().zip(existing) {
             results[index] = Some(batch_item_result(
+                usize_to_u64(index),
                 output_key,
                 upsert_effect(existed),
                 Some(outcome),
@@ -189,7 +192,7 @@ impl Executor {
             match kv_key(key) {
                 Ok(key) => valid_keys.push((index, output_key, key)),
                 Err(error) => {
-                    results[index] = Some(BatchGetItemResult::failed_error(output_key, error));
+                    results[index] = Some(batch_get_failed(usize_to_u64(index), output_key, error));
                 }
             }
         }
@@ -202,7 +205,7 @@ impl Executor {
             .collect::<Vec<_>>();
         let values = service.batch_get(&keys)?;
         for ((index, output_key, _), value) in valid_keys.into_iter().zip(values) {
-            results[index] = Some(batch_get_result(output_key, value));
+            results[index] = Some(batch_get_result(usize_to_u64(index), output_key, value));
         }
         Ok(Output::BatchGetResults(finish_batch_get_results(results)))
     }
@@ -224,7 +227,8 @@ impl Executor {
             match kv_key(key) {
                 Ok(key) => valid_keys.push((index, output_key, key)),
                 Err(error) => {
-                    results[index] = Some(BatchItemResult::failed_error(output_key, error));
+                    results[index] =
+                        Some(batch_item_failed(usize_to_u64(index), output_key, error));
                 }
             }
         }
@@ -243,6 +247,7 @@ impl Executor {
         {
             let commit = deleted.then(|| outcome.commit()).flatten();
             results[index] = Some(batch_item_result(
+                usize_to_u64(index),
                 output_key,
                 delete_effect(deleted),
                 commit,
@@ -270,7 +275,8 @@ impl Executor {
             match kv_key(key) {
                 Ok(key) => valid_keys.push((index, output_key, key)),
                 Err(error) => {
-                    results[index] = Some(BatchExistsItemResult::failed_error(output_key, error));
+                    results[index] =
+                        Some(batch_exists_failed(usize_to_u64(index), output_key, error));
                 }
             }
         }
@@ -285,7 +291,7 @@ impl Executor {
             .collect::<Vec<_>>();
         let exists = service.batch_exists(&keys)?;
         for ((index, output_key, _), exists) in valid_keys.into_iter().zip(exists) {
-            results[index] = Some(BatchExistsItemResult::new(output_key, exists));
+            results[index] = Some(batch_exists_item(usize_to_u64(index), output_key, exists));
         }
         Ok(Output::BatchExistsResults(finish_batch_exists_results(
             results,

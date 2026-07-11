@@ -145,10 +145,6 @@
             ],
             "description": "Commit receipt when a delete was applied."
           },
-          "deleted": {
-            "description": "True when a visible graph fact was deleted.",
-            "type": "boolean"
-          },
           "dst": {
             "description": "Deleted edge destination for edge deletes.",
             "type": [
@@ -184,29 +180,10 @@
               "string",
               "null"
             ]
-          },
-          "timestamp": {
-            "description": "Commit timestamp when a delete was applied.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "version": {
-            "description": "Commit version when a delete was applied.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
           }
         },
         "required": [
           "graph",
-          "deleted",
           "effect"
         ],
         "type": "object"

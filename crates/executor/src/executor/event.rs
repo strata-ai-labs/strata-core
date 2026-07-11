@@ -2,8 +2,8 @@ use super::{
     engine_event_direction, engine_event_type, event_append_output, event_batch_append_item_result,
     event_batch_entry, event_batch_result, event_chain_verification, event_payload,
     event_range_output, event_records, event_sequence, event_versioned_data,
-    optional_engine_event_type, optional_limit, BatchEventEntry, EventRangeDirection, Executor,
-    ExecutorResult, Output, PageInfo, Timestamp,
+    optional_engine_event_type, optional_limit, usize_to_u64, BatchEventEntry, EventRangeDirection,
+    Executor, ExecutorResult, Output, PageInfo, Timestamp,
 };
 
 impl Executor {
@@ -19,11 +19,15 @@ impl Executor {
             .collect::<Vec<_>>();
         let mut service = self.event_service(branch, space)?;
         let outcome = service.batch_append(entries)?;
+        let commit = outcome.commit();
         Ok(Output::EventBatchAppendResults(event_batch_result(
             outcome
                 .items()
                 .iter()
-                .map(|item| event_batch_append_item_result(item, outcome.commit()))
+                .enumerate()
+                .map(|(index, item)| {
+                    event_batch_append_item_result(usize_to_u64(index), item, commit)
+                })
                 .collect(),
         )))
     }

@@ -7,16 +7,13 @@
       "timestamp": 3,
       "version": 3
     },
-    "created": true,
     "effect": {
       "affected_count": 1,
       "applied": true,
       "kind": "created",
       "matched": false
     },
-    "space": "tenant_a",
-    "timestamp": 3,
-    "version": 3
+    "space": "tenant_a"
   },
   "type": "space_create_result"
 }

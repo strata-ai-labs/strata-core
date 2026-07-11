@@ -2,16 +2,16 @@ use super::{
     engine_graph_batch_operation, engine_graph_binding_target, engine_graph_direction,
     engine_graph_edge_data, engine_graph_node_data, engine_graph_property_defs,
     graph_batch_operation_name, graph_batch_write_output, graph_binding_page_output,
-    graph_delete_output, graph_edge_data_output, graph_edge_type, graph_edge_write_output,
-    graph_info_data, graph_name, graph_name_page_output, graph_neighbor_page_output,
-    graph_node_data_output, graph_node_id, graph_node_page_output, graph_node_write_output,
-    graph_ontology_delete_output, graph_ontology_freeze_output, graph_ontology_output,
-    graph_ontology_summary_output, graph_ontology_write_output, graph_type_name,
-    optional_graph_edge_type, optional_graph_name, optional_graph_node_id, optional_limit,
-    EngineGraphBatchWrite, EngineGraphLinkTypeDef, EngineGraphObjectTypeDef, Executor,
-    ExecutorError, ExecutorResult, GraphBatchOperation, GraphBindingTarget, GraphDirection,
-    GraphEdgeData, GraphEntityBinding, GraphNodeData, GraphPropertyDef, Output, Timestamp,
-    DEFAULT_GRAPH_LIST_LIMIT,
+    graph_create_output, graph_delete_output, graph_edge_data_output, graph_edge_type,
+    graph_edge_write_output, graph_info_data, graph_name, graph_name_page_output,
+    graph_neighbor_page_output, graph_node_data_output, graph_node_id, graph_node_page_output,
+    graph_node_write_output, graph_ontology_delete_output, graph_ontology_freeze_output,
+    graph_ontology_output, graph_ontology_summary_output, graph_ontology_write_output,
+    graph_type_name, optional_graph_edge_type, optional_graph_name, optional_graph_node_id,
+    optional_limit, EngineGraphBatchWrite, EngineGraphLinkTypeDef, EngineGraphObjectTypeDef,
+    Executor, ExecutorError, ExecutorResult, GraphBatchOperation, GraphBindingTarget,
+    GraphDirection, GraphEdgeData, GraphEntityBinding, GraphNodeData, GraphPropertyDef, Output,
+    Timestamp, DEFAULT_GRAPH_LIST_LIMIT,
 };
 
 impl Executor {
@@ -23,9 +23,8 @@ impl Executor {
     ) -> ExecutorResult<Output> {
         let graph = graph_name(graph)?;
         let mut service = self.graph_service(branch, space)?;
-        Ok(Output::GraphInfo(graph_info_data(
-            &service.create_graph(graph)?,
-        )))
+        let (info, commit) = service.create_graph(graph)?;
+        Ok(graph_create_output(&info, commit))
     }
 
     pub(super) fn execute_graph_delete(

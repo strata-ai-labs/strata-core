@@ -149,38 +149,13 @@
             ],
             "description": "Commit receipt when deletes were applied."
           },
-          "deleted_count": {
-            "description": "Number of visible vectors deleted.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
           "effect": {
             "$ref": "#/$defs/MutationEffect",
             "description": "Mutation effect facts."
-          },
-          "timestamp": {
-            "description": "Commit timestamp when deletes were applied.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "version": {
-            "description": "Commit version when deletes were applied.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
           }
         },
         "required": [
           "collection",
-          "deleted_count",
           "effect"
         ],
         "type": "object"

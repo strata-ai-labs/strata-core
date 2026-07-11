@@ -3,7 +3,7 @@ commands:
     kind: mutation.create
     title: Create graph
     input: Command::GraphCreate
-    output: Output::GraphInfo
+    output: Output::GraphCreateResult
     result: GraphInfoData
     response_model: MutationAck<GraphInfoData>
     prose: commands/graph.create.md

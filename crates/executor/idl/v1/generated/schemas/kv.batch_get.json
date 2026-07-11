@@ -1,18 +1,8 @@
 {
   "$defs": {
     "BatchGetItemResult": {
-      "description": "Positional batch read result.",
+      "description": "Positional batch read result payload.\n\nThe shared [`BatchItem`](crate::BatchItem) wrapper owns the status and error;\nthis payload carries the echoed key and the read facts.",
       "properties": {
-        "error": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ErrorStatus"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "found": {
           "type": "boolean"
         },

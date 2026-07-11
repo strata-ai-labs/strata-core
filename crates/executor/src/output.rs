@@ -69,26 +69,16 @@ pub enum Output {
     SpaceCreateResult {
         /// Product space name.
         space: String,
-        /// True when a catalog row was created.
-        created: bool,
         /// Mutation effect facts.
         effect: MutationEffect,
         /// Commit receipt when a catalog mutation was applied.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<CommitReceipt>,
-        /// Commit version when a catalog mutation was applied.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        version: Option<u64>,
-        /// Commit timestamp when a catalog mutation was applied.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        timestamp: Option<u64>,
     },
     /// Product space delete result.
     SpaceDeleteResult {
         /// Product space name.
         space: String,
-        /// True when a catalog row was deleted.
-        deleted: bool,
         /// True when visible space data was force-deleted.
         force: bool,
         /// Number of visible space rows tombstoned, including primitive index/control rows.
@@ -98,12 +88,6 @@ pub enum Output {
         /// Commit receipt when a catalog mutation was applied.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<CommitReceipt>,
-        /// Commit version when a catalog mutation was applied.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        version: Option<u64>,
-        /// Commit timestamp when a catalog mutation was applied.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        timestamp: Option<u64>,
     },
     /// One branch summary.
     Branch(BranchItem),
@@ -141,14 +125,9 @@ pub enum Output {
     /// Full JSON document version history.
     JsonVersionHistory(Option<Vec<JsonHistoryItem>>),
     /// Key list.
-    Keys {
-        /// Keys in this page.
-        items: Vec<Bytes>,
-        /// Shared page continuation facts.
-        #[serde(flatten)]
-        page: PageInfo<Bytes>,
-    },
-    /// Paginated key list.
+    ///
+    /// A non-paginated list returns a terminal page (`has_more: false`,
+    /// `cursor: null`); a paginated list carries the continuation cursor.
     KeysPage {
         /// Keys in this page.
         items: Vec<Bytes>,
@@ -271,10 +250,6 @@ pub enum Output {
         effect: MutationEffect,
         /// Commit receipt.
         commit: CommitReceipt,
-        /// Commit version.
-        version: u64,
-        /// Commit timestamp.
-        timestamp: u64,
         /// Product vector revision.
         vector_revision: u64,
     },
@@ -284,19 +259,11 @@ pub enum Output {
         collection: String,
         /// Vector key.
         key: String,
-        /// True when a visible vector was updated.
-        updated: bool,
         /// Mutation effect facts.
         effect: MutationEffect,
         /// Commit receipt when an update was applied.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<CommitReceipt>,
-        /// Commit version when an update was applied.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        version: Option<u64>,
-        /// Commit timestamp when an update was applied.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        timestamp: Option<u64>,
         /// Product vector revision when an update was applied.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         vector_revision: Option<u64>,
@@ -307,37 +274,21 @@ pub enum Output {
         collection: String,
         /// Vector key.
         key: String,
-        /// True when a visible vector was deleted.
-        deleted: bool,
         /// Mutation effect facts.
         effect: MutationEffect,
         /// Commit receipt when a delete was applied.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<CommitReceipt>,
-        /// Commit version when a delete was applied.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        version: Option<u64>,
-        /// Commit timestamp when a delete was applied.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        timestamp: Option<u64>,
     },
     /// Vector bulk delete acknowledgement.
     VectorBulkDeleteResult {
         /// Collection name.
         collection: String,
-        /// Number of visible vectors deleted.
-        deleted_count: u64,
         /// Mutation effect facts.
         effect: MutationEffect,
         /// Commit receipt when deletes were applied.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<CommitReceipt>,
-        /// Commit version when deletes were applied.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        version: Option<u64>,
-        /// Commit timestamp when deletes were applied.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        timestamp: Option<u64>,
     },
     /// Optional vector value.
     VectorData(Option<VectorVersionedData>),
@@ -379,10 +330,6 @@ pub enum Output {
         effect: MutationEffect,
         /// Commit receipt.
         commit: CommitReceipt,
-        /// Commit version.
-        version: u64,
-        /// Commit timestamp.
-        timestamp: u64,
     },
     /// Optional event record.
     EventRecord(Option<EventVersionedData>),
@@ -419,8 +366,16 @@ pub enum Output {
     EventBatchAppendResults(BatchResult<EventBatchAppendItemResult>),
     /// Event hash-chain verification result.
     EventChainVerification(EventChainVerification),
-    /// Graph metadata after create.
-    GraphInfo(GraphInfoData),
+    /// Graph create acknowledgement carrying the new graph metadata and commit
+    /// receipt.
+    GraphCreateResult {
+        /// Created graph metadata.
+        info: GraphInfoData,
+        /// Mutation effect facts.
+        effect: MutationEffect,
+        /// Commit receipt.
+        commit: CommitReceipt,
+    },
     /// Optional graph metadata.
     GraphInfoResult(Option<GraphInfoData>),
     /// Paginated graph name list.
@@ -465,16 +420,10 @@ pub enum Output {
         graph: String,
         /// Node id.
         node_id: String,
-        /// True when the node did not previously exist.
-        created: bool,
         /// Mutation effect facts.
         effect: MutationEffect,
         /// Commit receipt.
         commit: CommitReceipt,
-        /// Commit version.
-        version: u64,
-        /// Commit timestamp.
-        timestamp: u64,
     },
     /// Graph edge write acknowledgement.
     GraphEdgeWriteResult {
@@ -486,16 +435,10 @@ pub enum Output {
         edge_type: String,
         /// Destination node id.
         dst: String,
-        /// True when the edge did not previously exist.
-        created: bool,
         /// Mutation effect facts.
         effect: MutationEffect,
         /// Commit receipt.
         commit: CommitReceipt,
-        /// Commit version.
-        version: u64,
-        /// Commit timestamp.
-        timestamp: u64,
     },
     /// Graph delete acknowledgement.
     GraphDeleteResult {
@@ -513,19 +456,11 @@ pub enum Output {
         /// Deleted edge destination for edge deletes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dst: Option<String>,
-        /// True when a visible graph fact was deleted.
-        deleted: bool,
         /// Mutation effect facts.
         effect: MutationEffect,
         /// Commit receipt when a delete was applied.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<CommitReceipt>,
-        /// Commit version when a delete was applied.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        version: Option<u64>,
-        /// Commit timestamp when a delete was applied.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        timestamp: Option<u64>,
     },
     /// Graph batch write acknowledgement.
     GraphBatchWriteResult {
@@ -547,16 +482,10 @@ pub enum Output {
         kind: String,
         /// Defined type name.
         type_name: String,
-        /// True when the definition was new (false: redefined in draft).
-        created: bool,
         /// Mutation effect facts.
         effect: MutationEffect,
         /// Commit receipt.
         commit: CommitReceipt,
-        /// Commit version.
-        version: u64,
-        /// Commit timestamp.
-        timestamp: u64,
     },
     /// Weakly connected components computed over a graph snapshot.
     GraphWccResult(GraphWccData),
@@ -583,30 +512,17 @@ pub enum Output {
         /// Final chunk's commit receipt, when any chunk committed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<CommitReceipt>,
-        /// Final chunk's commit version, when any chunk committed.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        version: Option<u64>,
-        /// Final chunk's commit timestamp, when any chunk committed.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        timestamp: Option<u64>,
     },
     /// Delete-policy application acknowledgement.
     GraphDeletePolicyResult {
         /// Applied policy: `cascade`, `detach`, or `keep_dangling`.
         policy: String,
-        /// How many bound nodes the policy covered.
-        nodes_affected: u64,
-        /// Mutation effect facts.
+        /// Mutation effect facts. The number of bound nodes the policy covered
+        /// is reported by `effect.affected_count`.
         effect: MutationEffect,
         /// Commit receipt when rows changed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<CommitReceipt>,
-        /// Commit version when rows changed.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        version: Option<u64>,
-        /// Commit timestamp when rows changed.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        timestamp: Option<u64>,
     },
     /// Graph ontology type deletion acknowledgement.
     GraphOntologyDeleteResult {
@@ -616,19 +532,11 @@ pub enum Output {
         kind: String,
         /// Deleted type name.
         type_name: String,
-        /// True when the type existed.
-        deleted: bool,
         /// Mutation effect facts.
         effect: MutationEffect,
         /// Commit receipt when a row changed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         commit: Option<CommitReceipt>,
-        /// Commit version when a row changed.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        version: Option<u64>,
-        /// Commit timestamp when a row changed.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        timestamp: Option<u64>,
     },
     /// Graph ontology freeze acknowledgement.
     GraphOntologyFreezeResult {
@@ -640,10 +548,6 @@ pub enum Output {
         link_types: u64,
         /// Commit receipt.
         commit: CommitReceipt,
-        /// Commit version.
-        version: u64,
-        /// Commit timestamp.
-        timestamp: u64,
     },
     /// Arrow import summary.
     ArrowImportResult(ArrowImportResult),

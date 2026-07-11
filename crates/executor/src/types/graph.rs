@@ -1,7 +1,4 @@
-use super::{
-    batch_item_error_status, CommitReceipt, Deserialize, ErrorStatus, ExecutorError,
-    MutationEffect, Serialize, Value,
-};
+use super::{Deserialize, Serialize, Value};
 
 /// Graph neighbor traversal direction.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -612,7 +609,11 @@ impl GraphBindingHit {
     }
 }
 
-/// Positional graph batch write result.
+/// Positional graph batch write result payload.
+///
+/// The shared [`BatchItem`](crate::BatchItem) wrapper owns the status, mutation
+/// effect, commit receipt, and error; this payload carries the graph-specific
+/// operation identity and the create/delete facts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct GraphBatchItemResult {
@@ -622,99 +623,21 @@ pub struct GraphBatchItemResult {
     created: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     deleted: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    effect: Option<MutationEffect>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    commit: Option<CommitReceipt>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    version: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    timestamp: Option<u64>,
-    error: Option<ErrorStatus>,
 }
 
 impl GraphBatchItemResult {
-    /// Creates a successful graph batch item result.
+    /// Creates a graph batch item result payload.
     pub fn new(
         operation_index: u64,
         operation: impl Into<String>,
         created: Option<bool>,
         deleted: Option<bool>,
-        version: Option<u64>,
-        timestamp: Option<u64>,
     ) -> Self {
         Self {
             operation_index,
             operation: operation.into(),
             created,
             deleted,
-            effect: None,
-            commit: None,
-            version,
-            timestamp,
-            error: None,
-        }
-    }
-
-    /// Creates a successful graph batch item result with shared mutation facts.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_effect(
-        operation_index: u64,
-        operation: impl Into<String>,
-        created: Option<bool>,
-        deleted: Option<bool>,
-        effect: MutationEffect,
-        commit: Option<CommitReceipt>,
-        version: Option<u64>,
-        timestamp: Option<u64>,
-    ) -> Self {
-        Self {
-            operation_index,
-            operation: operation.into(),
-            created,
-            deleted,
-            effect: Some(effect),
-            commit,
-            version,
-            timestamp,
-            error: None,
-        }
-    }
-
-    /// Creates a failed graph batch item result.
-    pub fn failed(
-        operation_index: u64,
-        operation: impl Into<String>,
-        error: impl Into<String>,
-    ) -> Self {
-        Self::failed_status(operation_index, operation, batch_item_error_status(error))
-    }
-
-    /// Creates a failed graph batch item result from an executor error.
-    pub fn failed_error(
-        operation_index: u64,
-        operation: impl Into<String>,
-        error: ExecutorError,
-    ) -> Self {
-        Self::failed_status(operation_index, operation, error.into_status())
-    }
-
-    /// Creates a failed graph batch item result from a public error status.
-    pub fn failed_status(
-        operation_index: u64,
-        operation: impl Into<String>,
-        error: ErrorStatus,
-    ) -> Self {
-        Self {
-            operation_index,
-            operation: operation.into(),
-            created: None,
-            deleted: None,
-            effect: None,
-            commit: None,
-            version: None,
-            timestamp: None,
-            error: Some(error),
         }
     }
 
@@ -736,36 +659,6 @@ impl GraphBatchItemResult {
     /// Returns delete/no-op fact.
     pub const fn deleted(&self) -> Option<bool> {
         self.deleted
-    }
-
-    /// Returns mutation effect facts for successful items.
-    pub const fn effect(&self) -> Option<&MutationEffect> {
-        self.effect.as_ref()
-    }
-
-    /// Returns commit receipt when this item applied a mutation.
-    pub const fn commit(&self) -> Option<&CommitReceipt> {
-        self.commit.as_ref()
-    }
-
-    /// Returns commit version when present.
-    pub const fn version(&self) -> Option<u64> {
-        self.version
-    }
-
-    /// Returns commit timestamp when present.
-    pub const fn timestamp(&self) -> Option<u64> {
-        self.timestamp
-    }
-
-    /// Returns item error when present.
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_ref().map(ErrorStatus::message)
-    }
-
-    /// Returns the structured item error status.
-    pub const fn error_status(&self) -> Option<&ErrorStatus> {
-        self.error.as_ref()
     }
 }
 

@@ -1,12 +1,27 @@
 {
   "data": {
-    "created_timestamp": 3,
-    "created_version": 3,
-    "edge_count": 0,
-    "graph": "social",
-    "node_count": 0,
-    "updated_timestamp": 3,
-    "updated_version": 3
+    "info": {
+      "created_timestamp": 3,
+      "created_version": 3,
+      "edge_count": 0,
+      "graph": "social",
+      "node_count": 0,
+      "updated_timestamp": 3,
+      "updated_version": 3
+    },
+    "effect": {
+      "applied": true,
+      "kind": "created",
+      "matched": false,
+      "affected_count": 1
+    },
+    "commit": {
+      "version": 3,
+      "timestamp": 3,
+      "durable": false,
+      "put_count": 1,
+      "delete_count": 0
+    }
   },
-  "type": "graph_info"
+  "type": "graph_create_result"
 }

@@ -305,7 +305,10 @@ fn kv_vector_concepts_resolve_to_expected_shared_models() {
 }
 
 #[test]
-fn kv_list_declares_both_current_wire_outputs() {
+fn kv_list_declares_a_single_keys_page_output() {
+    // `Output::Keys` and `Output::KeysPage` were structurally identical and
+    // collapsed into one paginated variant (a non-paginated list returns a
+    // terminal page), so kv.list now declares exactly one wire output.
     let index = resolve_default_index().expect("IDL resolves");
     let command = index
         .commands
@@ -314,15 +317,9 @@ fn kv_list_declares_both_current_wire_outputs() {
         .expect("kv.list exists");
 
     assert_eq!(command.output, "Output::KeysPage");
-    assert_eq!(
-        command.outputs,
-        vec!["Output::Keys".to_owned(), "Output::KeysPage".to_owned()]
-    );
+    assert_eq!(command.outputs, vec!["Output::KeysPage".to_owned()]);
     assert_eq!(command.fixtures.response, "responses/v1/kv/list_page.json");
-    assert_eq!(
-        command.fixtures.responses,
-        vec!["responses/v1/kv/list_keys.json".to_owned()]
-    );
+    assert!(command.fixtures.responses.is_empty());
 }
 
 #[test]

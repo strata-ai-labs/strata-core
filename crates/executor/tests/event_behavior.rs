@@ -279,15 +279,24 @@ fn run_event_batch_append_edges(executor: &mut Executor) {
     );
     assert_eq!(results[1].sequence(), Some(0));
     assert_eq!(results[1].event_type(), Some("user.created"));
-    assert!(results[1].version().is_some());
-    assert!(results[1].timestamp().is_some());
+    assert!(results[1]
+        .commit()
+        .map(strata_executor::CommitReceipt::version)
+        .is_some());
+    assert!(results[1]
+        .commit()
+        .map(strata_executor::CommitReceipt::timestamp)
+        .is_some());
     assert_eq!(results[1].effect(), Some(&MutationEffect::created()));
     assert_eq!(
         results[1]
             .commit()
             .expect("first valid item commit")
             .version(),
-        results[1].version().expect("first valid item version")
+        results[1]
+            .commit()
+            .map(strata_executor::CommitReceipt::version)
+            .expect("first valid item version")
     );
     assert!(results[1].error().is_none());
     assert_eq!(results[0].effect(), None);
@@ -304,8 +313,14 @@ fn run_event_batch_append_edges(executor: &mut Executor) {
     assert_eq!(results[2].commit(), None);
     assert_eq!(results[3].sequence(), Some(1));
     assert_eq!(results[3].event_type(), Some("user.updated"));
-    assert!(results[3].version().is_some());
-    assert!(results[3].timestamp().is_some());
+    assert!(results[3]
+        .commit()
+        .map(strata_executor::CommitReceipt::version)
+        .is_some());
+    assert!(results[3]
+        .commit()
+        .map(strata_executor::CommitReceipt::timestamp)
+        .is_some());
     assert_eq!(results[3].effect(), Some(&MutationEffect::created()));
     assert_eq!(
         results[3]
@@ -513,10 +528,22 @@ fn run_event_command_suite(executor: &mut Executor) {
     assert_eq!(batch[1].sequence(), Some(3));
     assert_eq!(batch[0].event_type(), Some("user.created"));
     assert_eq!(batch[1].event_type(), Some("audit.recorded"));
-    assert!(batch[0].version().is_some());
-    assert!(batch[0].timestamp().is_some());
-    assert!(batch[1].version().is_some());
-    assert!(batch[1].timestamp().is_some());
+    assert!(batch[0]
+        .commit()
+        .map(strata_executor::CommitReceipt::version)
+        .is_some());
+    assert!(batch[0]
+        .commit()
+        .map(strata_executor::CommitReceipt::timestamp)
+        .is_some());
+    assert!(batch[1]
+        .commit()
+        .map(strata_executor::CommitReceipt::version)
+        .is_some());
+    assert!(batch[1]
+        .commit()
+        .map(strata_executor::CommitReceipt::timestamp)
+        .is_some());
     let third = get_event(executor, None, None, 2, None).expect("third event exists");
     let fourth = get_event(executor, None, None, 3, None).expect("fourth event exists");
     assert_eq!(
@@ -983,12 +1010,10 @@ fn append_event(
             event_type,
             effect,
             commit,
-            version,
-            timestamp,
         } => {
             assert_eq!(effect, MutationEffect::created());
-            assert_eq!(commit.version(), version);
-            assert_eq!(commit.timestamp(), timestamp);
+            let version = commit.version();
+            let timestamp = commit.timestamp();
             AppendFacts {
                 sequence,
                 event_type,
@@ -1013,7 +1038,7 @@ fn event_batch_append(
     branch: Option<&str>,
     space: Option<&str>,
     entries: Vec<BatchEventEntry>,
-) -> Vec<strata_executor::EventBatchAppendItemResult> {
+) -> strata_executor::BatchResult<strata_executor::EventBatchAppendItemResult> {
     match executor
         .execute(Command::EventBatchAppend {
             branch: branch.map(str::to_owned),
@@ -1022,10 +1047,7 @@ fn event_batch_append(
         })
         .expect("batch append succeeds")
     {
-        Output::EventBatchAppendResults(results) => results
-            .into_iter()
-            .map(|item| item.into_result().expect("primitive event batch item"))
-            .collect(),
+        Output::EventBatchAppendResults(results) => results,
         output => panic!("unexpected batch append output: {output:?}"),
     }
 }

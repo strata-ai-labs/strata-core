@@ -15,10 +15,7 @@
       "matched": true
     },
     "key": "doc-a",
-    "timestamp": 6,
-    "updated": true,
-    "vector_revision": 2,
-    "version": 6
+    "vector_revision": 2
   },
   "type": "vector_metadata_update_result"
 }

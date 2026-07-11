@@ -426,7 +426,7 @@ fn command_to_output_mapping_is_explicit_for_every_variant() {
     assert!(matches!(outputs[0], Output::WriteResult { .. }));
     assert!(matches!(outputs[1], Output::KvVersionedValue(_)));
     assert!(matches!(outputs[2], Output::DeleteResult { .. }));
-    assert!(matches!(outputs[3], Output::Keys { .. }));
+    assert!(matches!(outputs[3], Output::KeysPage { .. }));
     assert!(matches!(outputs[4], Output::KvScanResult { .. }));
     assert!(matches!(outputs[5], Output::BatchResults(_)));
     assert!(matches!(outputs[6], Output::BatchGetResults(_)));
@@ -831,7 +831,7 @@ fn execute_list(executor: &mut Executor, prefix: Option<&str>) -> Vec<Bytes> {
         })
         .expect("list succeeds")
     {
-        Output::Keys { items: keys, .. } => keys,
+        Output::KeysPage { items: keys, .. } => keys,
         output => panic!("unexpected list output: {output:?}"),
     }
 }
@@ -870,7 +870,7 @@ fn execute_list_as_of(executor: &mut Executor, prefix: Option<&str>, as_of: u64)
         })
         .expect("historical list succeeds")
     {
-        Output::Keys { items: keys, .. } => keys,
+        Output::KeysPage { items: keys, .. } => keys,
         output => panic!("unexpected historical list output: {output:?}"),
     }
 }

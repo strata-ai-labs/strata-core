@@ -11,7 +11,7 @@ pub(super) fn kv_outputs() -> Vec<Output> {
             10,
         )]))),
         Output::VersionHistory(None),
-        Output::Keys {
+        Output::KeysPage {
             items: vec![bytes("a"), bytes("b")],
             page: PageInfo::terminal(),
         },
@@ -33,29 +33,46 @@ pub(super) fn kv_outputs() -> Vec<Output> {
             items: vec![ScanItem::new(bytes("a"), bytes("one"), 1, 10)],
             page: PageInfo::terminal(),
         },
-        Output::BatchResults(kv_batch(vec![BatchItemResult::new(
-            bytes("a"),
-            MutationEffect::created(),
+        Output::BatchResults(kv_batch(vec![BatchItem::ok(
+            0,
+            true,
+            Some(MutationEffect::created()),
             Some(commit_receipt(1, 10, 1, 0)),
+            BatchItemResult::new(bytes("a")),
         )])),
-        Output::BatchResults(kv_batch(vec![BatchItemResult::failed(
-            Bytes::new(Vec::new()),
-            "invalid key",
+        Output::BatchResults(kv_batch(vec![BatchItem::failed(
+            0,
+            Some(BatchItemResult::new(Bytes::new(Vec::new()))),
+            item_error("invalid key"),
         )])),
-        Output::BatchGetResults(kv_batch_get(vec![BatchGetItemResult::new(
-            bytes("a"),
-            Some(bytes("one")),
-            Some(1),
-            Some(10),
+        Output::BatchGetResults(kv_batch_get(vec![BatchItem::ok(
+            0,
+            false,
+            None,
+            None,
+            BatchGetItemResult::new(bytes("a"), Some(bytes("one")), Some(1), Some(10)),
         )])),
-        Output::BatchGetResults(kv_batch_get(vec![BatchGetItemResult::failed(
-            Bytes::new(Vec::new()),
-            "invalid key",
+        Output::BatchGetResults(kv_batch_get(vec![BatchItem::failed(
+            0,
+            Some(BatchGetItemResult::not_found(Bytes::new(Vec::new()))),
+            item_error("invalid key"),
         )])),
         Output::Bool(true),
         Output::BatchExistsResults(kv_batch_exists(vec![
-            BatchExistsItemResult::new(bytes("a"), true),
-            BatchExistsItemResult::new(bytes("missing"), false),
+            BatchItem::ok(
+                0,
+                false,
+                None,
+                None,
+                BatchExistsItemResult::new(bytes("a"), true),
+            ),
+            BatchItem::ok(
+                1,
+                false,
+                None,
+                None,
+                BatchExistsItemResult::new(bytes("missing"), false),
+            ),
         ])),
         Output::Uint(2),
         Output::SampleResult {
@@ -100,22 +117,29 @@ pub(super) fn json_outputs() -> Vec<Output> {
             items: vec!["doc-a".to_owned()],
             page: PageInfo::new(true, Some("doc-a".to_owned())),
         },
-        Output::JsonBatchResults(json_batch(vec![JsonBatchItemResult::new(
-            MutationEffect::created(),
+        Output::JsonBatchResults(json_batch(vec![BatchItem::ok(
+            0,
+            true,
+            Some(MutationEffect::created()),
             Some(commit_receipt(1, 10, 1, 0)),
-            Some(2),
+            JsonBatchItemResult::new(Some(2)),
         )])),
-        Output::JsonBatchResults(json_batch(vec![JsonBatchItemResult::failed(
-            "invalid document id",
+        Output::JsonBatchResults(json_batch(vec![BatchItem::failed(
+            0,
+            Some(JsonBatchItemResult::new(None)),
+            item_error("invalid document id"),
         )])),
-        Output::JsonBatchGetResults(json_batch_get(vec![JsonBatchGetItemResult::new(
-            Some(json!("Ada")),
-            Some(1),
-            Some(10),
-            Some(2),
+        Output::JsonBatchGetResults(json_batch_get(vec![BatchItem::ok(
+            0,
+            false,
+            None,
+            None,
+            JsonBatchGetItemResult::new(Some(json!("Ada")), Some(1), Some(10), Some(2)),
         )])),
-        Output::JsonBatchGetResults(json_batch_get(vec![JsonBatchGetItemResult::failed(
-            "invalid document id",
+        Output::JsonBatchGetResults(json_batch_get(vec![BatchItem::failed(
+            0,
+            Some(JsonBatchGetItemResult::not_found()),
+            item_error("invalid document id"),
         )])),
         Output::JsonSampleResult {
             total_count: 3,

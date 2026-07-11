@@ -7,7 +7,6 @@
       "timestamp": 4,
       "version": 4
     },
-    "created": true,
     "effect": {
       "affected_count": 1,
       "applied": true,
@@ -16,9 +15,7 @@
     },
     "graph": "social",
     "kind": "object",
-    "timestamp": 4,
-    "type_name": "Person",
-    "version": 4
+    "type_name": "Person"
   },
   "type": "graph_ontology_write_result"
 }

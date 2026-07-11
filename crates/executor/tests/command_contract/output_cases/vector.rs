@@ -14,36 +14,25 @@ pub(super) fn vector_mutation_outputs() -> Vec<Output> {
             key: "doc-a".to_owned(),
             effect: MutationEffect::created(),
             commit: commit_receipt(1, 10, 1, 0),
-            version: 1,
-            timestamp: 10,
             vector_revision: 1,
         },
         Output::VectorMetadataUpdateResult {
             collection: "docs".to_owned(),
             key: "doc-a".to_owned(),
-            updated: true,
             effect: MutationEffect::updated(),
             commit: Some(commit_receipt(2, 20, 1, 0)),
-            version: Some(2),
-            timestamp: Some(20),
             vector_revision: Some(2),
         },
         Output::VectorDeleteResult {
             collection: "docs".to_owned(),
             key: "doc-a".to_owned(),
-            deleted: true,
             effect: MutationEffect::deleted(),
             commit: Some(commit_receipt(3, 30, 0, 1)),
-            version: Some(3),
-            timestamp: Some(30),
         },
         Output::VectorBulkDeleteResult {
             collection: "docs".to_owned(),
-            deleted_count: 2,
             effect: deleted_count_effect(2),
             commit: Some(commit_receipt(4, 40, 0, 2)),
-            version: Some(4),
-            timestamp: Some(40),
         },
     ]
 }
@@ -101,41 +90,43 @@ pub(super) fn vector_read_outputs() -> Vec<Output> {
 
 pub(super) fn vector_batch_outputs() -> Vec<Output> {
     vec![
-        Output::VectorBatchUpsertResults(vector_batch(vec![
-            VectorBatchItemResult::new_with_effect(
-                true,
-                MutationEffect::created(),
-                Some(commit_receipt(1, 10, 1, 0)),
-                Some(1),
-                Some(10),
-                Some(1),
-            ),
-        ])),
-        Output::VectorBatchUpsertResults(vector_batch(vec![VectorBatchItemResult::failed(
-            "invalid vector",
+        Output::VectorBatchUpsertResults(vector_batch(vec![BatchItem::ok(
+            0,
+            true,
+            Some(MutationEffect::created()),
+            Some(commit_receipt(1, 10, 1, 0)),
+            VectorBatchItemResult::new(Some(1)),
         )])),
-        Output::VectorBatchGetResults(vector_batch_get(vec![VectorBatchGetItemResult::new(Some(
-            VectorVersionedData::new(
+        Output::VectorBatchUpsertResults(vector_batch(vec![BatchItem::failed(
+            0,
+            Some(VectorBatchItemResult::new(None)),
+            item_error("invalid vector"),
+        )])),
+        Output::VectorBatchGetResults(vector_batch_get(vec![BatchItem::ok(
+            0,
+            false,
+            None,
+            None,
+            VectorBatchGetItemResult::new(Some(VectorVersionedData::new(
                 "doc-a".to_owned(),
                 VectorData::new(vec![1.0, 0.0], None),
                 1,
                 10,
                 1,
-            ),
-        ))])),
-        Output::VectorBatchGetResults(vector_batch_get(vec![VectorBatchGetItemResult::failed(
-            "invalid vector key",
+            ))),
         )])),
-        Output::VectorBatchDeleteResults(vector_batch(vec![
-            VectorBatchItemResult::new_with_effect(
-                true,
-                MutationEffect::deleted(),
-                Some(commit_receipt(2, 20, 0, 1)),
-                Some(2),
-                Some(20),
-                None,
-            ),
-        ])),
+        Output::VectorBatchGetResults(vector_batch_get(vec![BatchItem::failed(
+            0,
+            Some(VectorBatchGetItemResult::not_found()),
+            item_error("invalid vector key"),
+        )])),
+        Output::VectorBatchDeleteResults(vector_batch(vec![BatchItem::ok(
+            0,
+            true,
+            Some(MutationEffect::deleted()),
+            Some(commit_receipt(2, 20, 0, 1)),
+            VectorBatchItemResult::new(None),
+        )])),
     ]
 }
 

@@ -30,21 +30,7 @@
           "delete_count": 0
         },
         "result": {
-          "effect": {
-            "applied": true,
-            "kind": "created",
-            "matched": false,
-            "affected_count": 1
-          },
-          "commit": {
-            "version": 7,
-            "timestamp": 70,
-            "durable": true,
-            "put_count": 1,
-            "delete_count": 0
-          },
-          "document_version": 1,
-          "error": null
+          "document_version": 1
         },
         "error": null
       }

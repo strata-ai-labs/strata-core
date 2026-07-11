@@ -132,7 +132,7 @@ fn exercise_delete_policy_command(executor: &mut Executor) {
         .expect("cascade applies");
     let Output::GraphDeletePolicyResult {
         policy,
-        nodes_affected,
+        effect,
         commit,
         ..
     } = output
@@ -140,7 +140,7 @@ fn exercise_delete_policy_command(executor: &mut Executor) {
         panic!("unexpected delete-policy output");
     };
     assert_eq!(policy, "cascade");
-    assert_eq!(nodes_affected, 2);
+    assert_eq!(effect.affected_count(), 2);
     assert!(commit.is_some());
 
     let output = executor
@@ -151,7 +151,7 @@ fn exercise_delete_policy_command(executor: &mut Executor) {
         .expect("keep-dangling applies");
     let Output::GraphDeletePolicyResult {
         policy,
-        nodes_affected,
+        effect,
         commit,
         ..
     } = output
@@ -159,7 +159,7 @@ fn exercise_delete_policy_command(executor: &mut Executor) {
         panic!("unexpected delete-policy output");
     };
     assert_eq!(policy, "keep_dangling");
-    assert_eq!(nodes_affected, 1);
+    assert_eq!(effect.affected_count(), 1);
     assert!(commit.is_none());
     // The kept binding surfaces as missing through traversal (doc-y was
     // never written to KV).

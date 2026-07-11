@@ -228,40 +228,15 @@
           },
           "effect": {
             "$ref": "#/$defs/MutationEffect",
-            "description": "Mutation effect facts."
-          },
-          "nodes_affected": {
-            "description": "How many bound nodes the policy covered.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
+            "description": "Mutation effect facts. The number of bound nodes the policy covered\nis reported by `effect.affected_count`."
           },
           "policy": {
             "description": "Applied policy: `cascade`, `detach`, or `keep_dangling`.",
             "type": "string"
-          },
-          "timestamp": {
-            "description": "Commit timestamp when rows changed.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "version": {
-            "description": "Commit version when rows changed.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
           }
         },
         "required": [
           "policy",
-          "nodes_affected",
           "effect"
         ],
         "type": "object"

@@ -1,7 +1,4 @@
-use super::{
-    batch_item_error_status, CommitReceipt, Deserialize, ErrorStatus, ExecutorError,
-    MutationEffect, Serialize, Value,
-};
+use super::{Deserialize, Serialize, Value};
 
 /// JSON secondary index kind exposed through the command boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -235,104 +232,33 @@ impl JsonHistoryItem {
     }
 }
 
-/// Positional JSON batch write/delete result.
+/// Positional JSON batch write/delete result payload.
+///
+/// The shared [`BatchItem`](crate::BatchItem) wrapper owns the status, mutation
+/// effect, commit receipt, and error; this payload carries only the
+/// JSON-specific document version.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct JsonBatchItemResult {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    effect: Option<MutationEffect>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    commit: Option<CommitReceipt>,
     document_version: Option<u64>,
-    error: Option<ErrorStatus>,
 }
 
 impl JsonBatchItemResult {
-    /// Creates a successful JSON batch result.
-    pub const fn new(
-        effect: MutationEffect,
-        commit: Option<CommitReceipt>,
-        document_version: Option<u64>,
-    ) -> Self {
-        Self {
-            effect: Some(effect),
-            commit,
-            document_version,
-            error: None,
-        }
-    }
-
-    /// Creates a failed JSON batch result.
-    pub fn failed(error: impl Into<String>) -> Self {
-        Self::failed_status(batch_item_error_status(error))
-    }
-
-    /// Creates a failed JSON batch result from an executor error.
-    pub fn failed_error(error: ExecutorError) -> Self {
-        Self::failed_status(error.into_status())
-    }
-
-    /// Creates a failed JSON batch result from a public error status.
-    pub fn failed_status(error: ErrorStatus) -> Self {
-        Self {
-            effect: None,
-            commit: None,
-            document_version: None,
-            error: Some(error),
-        }
-    }
-
-    /// Returns mutation effect facts for successful items.
-    pub const fn effect(&self) -> Option<&MutationEffect> {
-        self.effect.as_ref()
-    }
-
-    /// Returns true when this item applied a mutation.
-    pub const fn applied(&self) -> bool {
-        match self.effect {
-            Some(effect) => effect.applied(),
-            None => false,
-        }
-    }
-
-    /// Returns the commit receipt, when this item applied a commit.
-    pub const fn commit(&self) -> Option<&CommitReceipt> {
-        self.commit.as_ref()
-    }
-
-    /// Returns the commit version, when present.
-    pub const fn version(&self) -> Option<u64> {
-        match self.commit {
-            Some(commit) => Some(commit.version()),
-            None => None,
-        }
-    }
-
-    /// Returns the commit timestamp, when present.
-    pub const fn timestamp(&self) -> Option<u64> {
-        match self.commit {
-            Some(commit) => Some(commit.timestamp()),
-            None => None,
-        }
+    /// Creates a JSON batch result payload.
+    pub const fn new(document_version: Option<u64>) -> Self {
+        Self { document_version }
     }
 
     /// Returns the document version, when present.
     pub const fn document_version(&self) -> Option<u64> {
         self.document_version
     }
-
-    /// Returns the item error, when this item failed validation.
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_ref().map(ErrorStatus::message)
-    }
-
-    /// Returns the structured item error status.
-    pub const fn error_status(&self) -> Option<&ErrorStatus> {
-        self.error.as_ref()
-    }
 }
 
-/// Positional JSON batch read result.
+/// Positional JSON batch read result payload.
+///
+/// The shared [`BatchItem`](crate::BatchItem) wrapper owns the status and error;
+/// this payload carries the read facts.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct JsonBatchGetItemResult {
@@ -341,7 +267,6 @@ pub struct JsonBatchGetItemResult {
     version: Option<u64>,
     timestamp: Option<u64>,
     document_version: Option<u64>,
-    error: Option<ErrorStatus>,
 }
 
 impl JsonBatchGetItemResult {
@@ -359,7 +284,6 @@ impl JsonBatchGetItemResult {
                 version,
                 timestamp,
                 document_version,
-                error: None,
             },
             None => Self {
                 found: false,
@@ -367,30 +291,21 @@ impl JsonBatchGetItemResult {
                 version,
                 timestamp,
                 document_version,
-                error: None,
             },
         }
     }
 
-    /// Creates a failed JSON batch read result.
-    pub fn failed(error: impl Into<String>) -> Self {
-        Self::failed_status(batch_item_error_status(error))
-    }
-
-    /// Creates a failed JSON batch read result from an executor error.
-    pub fn failed_error(error: ExecutorError) -> Self {
-        Self::failed_status(error.into_status())
-    }
-
-    /// Creates a failed JSON batch read result from a public error status.
-    pub fn failed_status(error: ErrorStatus) -> Self {
+    /// Creates a JSON batch read payload for an item that failed validation.
+    ///
+    /// The failure carries no read facts; the [`BatchItem`](crate::BatchItem)
+    /// wrapper carries the error.
+    pub const fn not_found() -> Self {
         Self {
             found: false,
             value: Value::Null,
             version: None,
             timestamp: None,
             document_version: None,
-            error: Some(error),
         }
     }
 
@@ -421,16 +336,6 @@ impl JsonBatchGetItemResult {
     /// Returns the document version, when present.
     pub const fn document_version(&self) -> Option<u64> {
         self.document_version
-    }
-
-    /// Returns the item error, when this item failed validation.
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_ref().map(ErrorStatus::message)
-    }
-
-    /// Returns the structured item error status.
-    pub const fn error_status(&self) -> Option<&ErrorStatus> {
-        self.error.as_ref()
     }
 }
 

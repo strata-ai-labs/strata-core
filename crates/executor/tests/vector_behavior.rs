@@ -734,7 +734,7 @@ fn assert_vector_mutation_patch_and_delete_edges(executor: &mut Executor) {
         .expect("missing patch succeeds");
     assert!(matches!(
         missing_patch,
-        Output::VectorMetadataUpdateResult { updated: false, .. }
+        Output::VectorMetadataUpdateResult { effect, .. } if !effect.applied()
     ));
 
     let bad_patch = executor
@@ -1441,7 +1441,6 @@ fn assert_vector_listing_metadata_and_query(executor: &mut Executor) {
     assert_eq!(page.cursor(), Some(&"doc-a".to_owned()));
 
     let Output::VectorMetadataUpdateResult {
-        updated,
         effect,
         commit,
         vector_revision,
@@ -1458,7 +1457,7 @@ fn assert_vector_listing_metadata_and_query(executor: &mut Executor) {
     else {
         panic!("unexpected metadata update output");
     };
-    assert!(updated);
+    assert!(effect.applied());
     assert_eq!(effect, MutationEffect::updated());
     assert!(commit.is_some());
     assert_eq!(vector_revision, Some(2));
@@ -1520,12 +1519,7 @@ fn assert_vector_batch_delete_and_bulk_deletes(executor: &mut Executor) {
     assert_eq!(deleted[2].effect(), Some(&MutationEffect::not_found()));
     assert_eq!(deleted[2].commit(), None);
 
-    let Output::VectorBulkDeleteResult {
-        deleted_count,
-        effect,
-        commit,
-        ..
-    } = executor
+    let Output::VectorBulkDeleteResult { effect, commit, .. } = executor
         .execute(Command::VectorDeleteByFilter {
             branch: None,
             space: None,
@@ -1536,19 +1530,13 @@ fn assert_vector_batch_delete_and_bulk_deletes(executor: &mut Executor) {
     else {
         panic!("unexpected filtered delete output");
     };
-    assert_eq!(deleted_count, 1);
-    assert!(effect.applied());
     assert_eq!(effect.affected_count(), 1);
+    assert!(effect.applied());
     assert!(commit.is_some());
 
     assert_vector_history_has_tombstone(executor, "docs", "doc-b");
 
-    let Output::VectorDeleteResult {
-        deleted,
-        effect,
-        commit,
-        ..
-    } = executor
+    let Output::VectorDeleteResult { effect, commit, .. } = executor
         .execute(Command::VectorDelete {
             branch: None,
             space: None,
@@ -1559,16 +1547,11 @@ fn assert_vector_batch_delete_and_bulk_deletes(executor: &mut Executor) {
     else {
         panic!("unexpected delete output");
     };
-    assert!(!deleted);
+    assert!(!effect.applied());
     assert_eq!(effect, MutationEffect::not_found());
     assert_eq!(commit, None);
 
-    let Output::VectorBulkDeleteResult {
-        deleted_count,
-        effect,
-        commit,
-        ..
-    } = executor
+    let Output::VectorBulkDeleteResult { effect, commit, .. } = executor
         .execute(Command::VectorDeleteAll {
             branch: None,
             space: None,
@@ -1578,7 +1561,7 @@ fn assert_vector_batch_delete_and_bulk_deletes(executor: &mut Executor) {
     else {
         panic!("unexpected delete-all output");
     };
-    assert_eq!(deleted_count, 0);
+    assert_eq!(effect.affected_count(), 0);
     assert_eq!(effect, MutationEffect::not_found());
     assert_eq!(commit, None);
 }
@@ -1703,7 +1686,7 @@ fn upsert_without_metadata(
     key: &str,
     vector: Vec<f32>,
 ) -> u64 {
-    let Output::VectorWriteResult { timestamp, .. } = executor
+    let Output::VectorWriteResult { commit, .. } = executor
         .execute(Command::VectorUpsert {
             branch: None,
             space: None,
@@ -1716,7 +1699,7 @@ fn upsert_without_metadata(
     else {
         panic!("unexpected upsert output");
     };
-    timestamp
+    commit.timestamp()
 }
 
 fn upsert_vector(
@@ -1726,7 +1709,7 @@ fn upsert_vector(
     vector: Vec<f32>,
     metadata: serde_json::Value,
 ) -> u64 {
-    let Output::VectorWriteResult { timestamp, .. } = executor
+    let Output::VectorWriteResult { commit, .. } = executor
         .execute(Command::VectorUpsert {
             branch: None,
             space: None,
@@ -1739,7 +1722,7 @@ fn upsert_vector(
     else {
         panic!("unexpected upsert output");
     };
-    timestamp
+    commit.timestamp()
 }
 
 fn upsert_vector_in(
@@ -1821,7 +1804,7 @@ fn patch_vector_metadata_in(
 }
 
 fn delete_vector(executor: &mut Executor, collection: &str, key: &str) -> bool {
-    let Output::VectorDeleteResult { deleted, .. } = executor
+    let Output::VectorDeleteResult { effect, .. } = executor
         .execute(Command::VectorDelete {
             branch: None,
             space: None,
@@ -1832,7 +1815,7 @@ fn delete_vector(executor: &mut Executor, collection: &str, key: &str) -> bool {
     else {
         panic!("unexpected delete output");
     };
-    deleted
+    effect.applied()
 }
 
 fn vector_count(executor: &mut Executor, collection: &str) -> u64 {
@@ -1982,7 +1965,7 @@ fn delete_by_filter_in(
     collection: &str,
     kind: &str,
 ) -> u64 {
-    let Output::VectorBulkDeleteResult { deleted_count, .. } = executor
+    let Output::VectorBulkDeleteResult { effect, .. } = executor
         .execute(Command::VectorDeleteByFilter {
             branch: branch.map(str::to_owned),
             space: space.map(str::to_owned),
@@ -1993,7 +1976,7 @@ fn delete_by_filter_in(
     else {
         panic!("unexpected filtered delete output");
     };
-    deleted_count
+    effect.affected_count()
 }
 
 fn delete_all_vectors(executor: &mut Executor, collection: &str) -> u64 {
@@ -2006,7 +1989,7 @@ fn delete_all_vectors_in(
     space: Option<&str>,
     collection: &str,
 ) -> u64 {
-    let Output::VectorBulkDeleteResult { deleted_count, .. } = executor
+    let Output::VectorBulkDeleteResult { effect, .. } = executor
         .execute(Command::VectorDeleteAll {
             branch: branch.map(str::to_owned),
             space: space.map(str::to_owned),
@@ -2016,7 +1999,7 @@ fn delete_all_vectors_in(
     else {
         panic!("unexpected delete-all output");
     };
-    deleted_count
+    effect.affected_count()
 }
 
 fn get_vector_where(

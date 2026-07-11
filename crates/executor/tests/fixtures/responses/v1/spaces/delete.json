@@ -7,7 +7,6 @@
       "timestamp": 4,
       "version": 4
     },
-    "deleted": true,
     "deleted_rows": 0,
     "effect": {
       "affected_count": 1,
@@ -16,9 +15,7 @@
       "matched": true
     },
     "force": false,
-    "space": "tenant_a",
-    "timestamp": 4,
-    "version": 4
+    "space": "tenant_a"
   },
   "type": "space_delete_result"
 }

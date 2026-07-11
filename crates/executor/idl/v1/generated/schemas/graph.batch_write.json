@@ -342,18 +342,8 @@
       "type": "object"
     },
     "GraphBatchItemResult": {
-      "description": "Positional graph batch write result.",
+      "description": "Positional graph batch write result payload.\n\nThe shared [`BatchItem`](crate::BatchItem) wrapper owns the status, mutation\neffect, commit receipt, and error; this payload carries the graph-specific\noperation identity and the create/delete facts.",
       "properties": {
-        "commit": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CommitReceipt"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "created": {
           "type": [
             "boolean",
@@ -366,26 +356,6 @@
             "null"
           ]
         },
-        "effect": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/MutationEffect"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "error": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ErrorStatus"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "operation": {
           "type": "string"
         },
@@ -393,22 +363,6 @@
           "format": "uint64",
           "minimum": 0,
           "type": "integer"
-        },
-        "timestamp": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "version": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
         }
       },
       "required": [

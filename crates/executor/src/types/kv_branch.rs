@@ -1,7 +1,4 @@
-use super::{
-    batch_item_error_status, Bytes, CommitReceipt, Deserialize, ErrorStatus, ExecutorError,
-    MutationEffect, Serialize,
-};
+use super::{Bytes, Deserialize, Serialize};
 
 /// Stored value with commit metadata.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -219,100 +216,33 @@ impl VersionedValue {
     }
 }
 
-/// Positional batch write result.
+/// Positional batch write result payload.
+///
+/// The shared [`BatchItem`](crate::BatchItem) wrapper owns the status, mutation
+/// effect, commit receipt, and error; this payload carries only the KV-specific
+/// echoed key.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BatchItemResult {
     key: Bytes,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    effect: Option<MutationEffect>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    commit: Option<CommitReceipt>,
-    error: Option<ErrorStatus>,
 }
 
 impl BatchItemResult {
-    /// Creates a batch item result.
-    pub fn new(key: Bytes, effect: MutationEffect, commit: Option<CommitReceipt>) -> Self {
-        Self {
-            key,
-            effect: Some(effect),
-            commit,
-            error: None,
-        }
-    }
-
-    /// Creates a failed batch item result.
-    pub fn failed(key: Bytes, error: impl Into<String>) -> Self {
-        Self::failed_status(key, batch_item_error_status(error))
-    }
-
-    /// Creates a failed batch item result from an executor error.
-    pub fn failed_error(key: Bytes, error: ExecutorError) -> Self {
-        Self::failed_status(key, error.into_status())
-    }
-
-    /// Creates a failed batch item result from a public error status.
-    pub fn failed_status(key: Bytes, error: ErrorStatus) -> Self {
-        Self {
-            key,
-            effect: None,
-            commit: None,
-            error: Some(error),
-        }
+    /// Creates a batch item result payload.
+    pub const fn new(key: Bytes) -> Self {
+        Self { key }
     }
 
     /// Returns the input key.
     pub const fn key(&self) -> &Bytes {
         &self.key
     }
-
-    /// Returns mutation effect facts for successful items.
-    pub const fn effect(&self) -> Option<&MutationEffect> {
-        self.effect.as_ref()
-    }
-
-    /// Returns true when this item was applied.
-    pub const fn applied(&self) -> bool {
-        match self.effect {
-            Some(effect) => effect.applied(),
-            None => false,
-        }
-    }
-
-    /// Returns the commit receipt, when this item applied a commit.
-    pub const fn commit(&self) -> Option<&CommitReceipt> {
-        self.commit.as_ref()
-    }
-
-    /// Returns the commit version, when an item was applied.
-    pub const fn version(&self) -> Option<u64> {
-        match self.commit {
-            Some(commit) => Some(commit.version()),
-            None => None,
-        }
-    }
-
-    /// Returns the commit timestamp, when an item was applied.
-    pub const fn timestamp(&self) -> Option<u64> {
-        match self.commit {
-            Some(commit) => Some(commit.timestamp()),
-            None => None,
-        }
-    }
-
-    /// Returns the item error, when this item failed validation.
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_ref().map(ErrorStatus::message)
-    }
-
-    /// Returns the structured item error status.
-    pub const fn error_status(&self) -> Option<&ErrorStatus> {
-        self.error.as_ref()
-    }
 }
 
-/// Positional batch read result.
+/// Positional batch read result payload.
+///
+/// The shared [`BatchItem`](crate::BatchItem) wrapper owns the status and error;
+/// this payload carries the echoed key and the read facts.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BatchGetItemResult {
@@ -321,7 +251,6 @@ pub struct BatchGetItemResult {
     value: Option<Bytes>,
     version: Option<u64>,
     timestamp: Option<u64>,
-    error: Option<ErrorStatus>,
 }
 
 impl BatchGetItemResult {
@@ -338,29 +267,20 @@ impl BatchGetItemResult {
             value,
             version,
             timestamp,
-            error: None,
         }
     }
 
-    /// Creates a failed batch read result.
-    pub fn failed(key: Bytes, error: impl Into<String>) -> Self {
-        Self::failed_status(key, batch_item_error_status(error))
-    }
-
-    /// Creates a failed batch read result from an executor error.
-    pub fn failed_error(key: Bytes, error: ExecutorError) -> Self {
-        Self::failed_status(key, error.into_status())
-    }
-
-    /// Creates a failed batch read result from a public error status.
-    pub fn failed_status(key: Bytes, error: ErrorStatus) -> Self {
+    /// Creates a batch read payload for an item that failed validation.
+    ///
+    /// The failure carries no read facts; the [`BatchItem`](crate::BatchItem)
+    /// wrapper carries the error.
+    pub const fn not_found(key: Bytes) -> Self {
         Self {
             key,
             found: false,
             value: None,
             version: None,
             timestamp: None,
-            error: Some(error),
         }
     }
 
@@ -392,45 +312,24 @@ impl BatchGetItemResult {
     pub const fn timestamp(&self) -> Option<u64> {
         self.timestamp
     }
-
-    /// Returns the item error, when this item failed validation.
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_ref().map(ErrorStatus::message)
-    }
-
-    /// Returns the structured item error status.
-    pub const fn error_status(&self) -> Option<&ErrorStatus> {
-        self.error.as_ref()
-    }
 }
 
-/// Positional batch existence result.
+/// Positional batch existence result payload.
+///
+/// The shared [`BatchItem`](crate::BatchItem) wrapper owns the status and error;
+/// this payload carries the echoed key and the definitive existence answer.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct BatchExistsItemResult {
     key: Bytes,
     exists: bool,
-    error: Option<ErrorStatus>,
 }
 
 impl BatchExistsItemResult {
     /// Creates a batch existence result. `exists` is a definitive answer,
     /// so both true and false are `ok` items (never a miss).
     pub const fn new(key: Bytes, exists: bool) -> Self {
-        Self {
-            key,
-            exists,
-            error: None,
-        }
-    }
-
-    /// Creates a failed batch existence result from an executor error.
-    pub fn failed_error(key: Bytes, error: ExecutorError) -> Self {
-        Self {
-            key,
-            exists: false,
-            error: Some(error.into_status()),
-        }
+        Self { key, exists }
     }
 
     /// Returns the input key.
@@ -441,16 +340,6 @@ impl BatchExistsItemResult {
     /// Returns whether the key exists.
     pub const fn exists(&self) -> bool {
         self.exists
-    }
-
-    /// Returns the item error message, when this item failed validation.
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_ref().map(ErrorStatus::message)
-    }
-
-    /// Returns the structured item error status.
-    pub const fn error_status(&self) -> Option<&ErrorStatus> {
-        self.error.as_ref()
     }
 }
 
@@ -542,22 +431,18 @@ impl HistoryItem {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct HistoryResult {
-    count: usize,
     items: Vec<HistoryItem>,
 }
 
 impl HistoryResult {
     /// Creates a version-history result.
-    pub fn new(items: Vec<HistoryItem>) -> Self {
-        Self {
-            count: items.len(),
-            items,
-        }
+    pub const fn new(items: Vec<HistoryItem>) -> Self {
+        Self { items }
     }
 
     /// Returns the number of history items.
     pub const fn count(&self) -> usize {
-        self.count
+        self.items.len()
     }
 
     /// Returns version-history items from newest to oldest.

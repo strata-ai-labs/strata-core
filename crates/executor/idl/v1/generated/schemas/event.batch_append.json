@@ -393,38 +393,8 @@
       "type": "object"
     },
     "EventBatchAppendItemResult": {
-      "description": "Positional event batch append result.",
+      "description": "Positional event batch append result payload.\n\nThe shared [`BatchItem`](crate::BatchItem) wrapper owns the status, mutation\neffect, commit receipt, and error; this payload carries only the\nevent-specific sequence and type for successful items.",
       "properties": {
-        "commit": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CommitReceipt"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "effect": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/MutationEffect"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "error": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ErrorStatus"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "event_type": {
           "type": [
             "string",
@@ -432,22 +402,6 @@
           ]
         },
         "sequence": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "timestamp": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "version": {
           "format": "uint64",
           "minimum": 0,
           "type": [

@@ -269,24 +269,6 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
-          },
-          "timestamp": {
-            "description": "Final chunk's commit timestamp, when any chunk committed.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "version": {
-            "description": "Final chunk's commit version, when any chunk committed.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
           }
         },
         "required": [

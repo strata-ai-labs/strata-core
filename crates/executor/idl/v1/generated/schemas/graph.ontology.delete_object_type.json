@@ -150,10 +150,6 @@
             ],
             "description": "Commit receipt when a row changed."
           },
-          "deleted": {
-            "description": "True when the type existed.",
-            "type": "boolean"
-          },
           "effect": {
             "$ref": "#/$defs/MutationEffect",
             "description": "Mutation effect facts."
@@ -166,34 +162,15 @@
             "description": "Type kind: `object` or `link`.",
             "type": "string"
           },
-          "timestamp": {
-            "description": "Commit timestamp when a row changed.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
           "type_name": {
             "description": "Deleted type name.",
             "type": "string"
-          },
-          "version": {
-            "description": "Commit version when a row changed.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
           }
         },
         "required": [
           "graph",
           "kind",
           "type_name",
-          "deleted",
           "effect"
         ],
         "type": "object"

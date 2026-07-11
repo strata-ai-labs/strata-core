@@ -2,14 +2,15 @@ use super::{
     commit_receipt, delete_effect, empty_vector_batch_get_results, empty_vector_batch_results,
     engine_vector_metric, finish_vector_batch_get_results, finish_vector_batch_results,
     optional_limit, optional_vector_key, optional_vector_metadata, require_vector_collection_info,
-    required_usize, update_effect, upsert_effect, vector_batch_get_result,
-    vector_batch_item_result, vector_batch_result, vector_bulk_delete_output, vector_collection,
-    vector_collection_info, vector_dimension_mismatch_error, vector_embedding, vector_filter,
-    vector_history_result, vector_index_diagnostics, vector_key, vector_key_page_output,
-    vector_match, vector_metadata_patch, vector_upsert_entry, vector_versioned_data,
-    vector_write_output, BatchVectorEntry, EngineVectorConfig, Executor, ExecutorError,
-    ExecutorResult, Output, PageInfo, Timestamp, VectorBatchGetItemResult, VectorBatchItemResult,
-    VectorDistanceMetric, VectorIndexQueryResult, VectorMetadataFilter, DEFAULT_VECTOR_LIST_LIMIT,
+    required_usize, update_effect, upsert_effect, usize_to_u64, vector_batch_get_failed,
+    vector_batch_get_item, vector_batch_item_failed, vector_batch_item_result,
+    vector_bulk_delete_output, vector_collection, vector_collection_info,
+    vector_dimension_mismatch_error, vector_embedding, vector_filter, vector_history_result,
+    vector_index_diagnostics, vector_key, vector_key_page_output, vector_match,
+    vector_metadata_patch, vector_upsert_entry, vector_versioned_data, vector_write_output,
+    BatchVectorEntry, EngineVectorConfig, Executor, ExecutorError, ExecutorResult, Output,
+    PageInfo, Timestamp, VectorDistanceMetric, VectorIndexQueryResult, VectorMetadataFilter,
+    DEFAULT_VECTOR_LIST_LIMIT,
 };
 
 impl Executor {
@@ -212,13 +213,8 @@ impl Executor {
         Ok(Output::VectorMetadataUpdateResult {
             collection: collection.as_str().to_owned(),
             key: outcome.key().as_str().to_owned(),
-            updated: outcome.updated(),
             effect: update_effect(outcome.updated()),
             commit: outcome.commit().map(commit_receipt),
-            version: outcome.commit().map(|outcome| outcome.version().as_u64()),
-            timestamp: outcome
-                .commit()
-                .map(|outcome| outcome.timestamp().as_micros()),
             vector_revision: outcome.vector_revision(),
         })
     }
@@ -237,13 +233,8 @@ impl Executor {
         Ok(Output::VectorDeleteResult {
             collection: collection.as_str().to_owned(),
             key: outcome.key().as_str().to_owned(),
-            deleted: outcome.deleted(),
             effect: delete_effect(outcome.deleted()),
             commit: outcome.commit().map(commit_receipt),
-            version: outcome.commit().map(|outcome| outcome.version().as_u64()),
-            timestamp: outcome
-                .commit()
-                .map(|outcome| outcome.timestamp().as_micros()),
         })
     }
 
@@ -365,20 +356,23 @@ impl Executor {
                     valid_entries.push((index, entry));
                 }
                 Ok(entry) => {
-                    results[index] = Some(VectorBatchItemResult::failed_error(
+                    results[index] = Some(vector_batch_item_failed(
+                        usize_to_u64(index),
                         vector_dimension_mismatch_error(
                             expected_dimension,
                             entry.embedding().dimension(),
                         ),
                     ));
                 }
-                Err(error) => results[index] = Some(VectorBatchItemResult::failed_error(error)),
+                Err(error) => {
+                    results[index] = Some(vector_batch_item_failed(usize_to_u64(index), error));
+                }
             }
         }
         if valid_entries.is_empty() {
-            return Ok(Output::VectorBatchUpsertResults(vector_batch_result(
+            return Ok(Output::VectorBatchUpsertResults(
                 finish_vector_batch_results(results),
-            )));
+            ));
         }
         let entries = valid_entries
             .iter()
@@ -393,15 +387,16 @@ impl Executor {
                 .zip(outcome.created().iter().copied()),
         ) {
             results[index] = Some(vector_batch_item_result(
+                usize_to_u64(index),
                 true,
                 upsert_effect(!created),
                 outcome.commit(),
                 Some(revision),
             ));
         }
-        Ok(Output::VectorBatchUpsertResults(vector_batch_result(
+        Ok(Output::VectorBatchUpsertResults(
             finish_vector_batch_results(results),
-        )))
+        ))
     }
 
     pub(super) fn execute_vector_batch_get(
@@ -419,13 +414,15 @@ impl Executor {
         for (index, key) in keys.into_iter().enumerate() {
             match vector_key(key) {
                 Ok(key) => valid_keys.push((index, key)),
-                Err(error) => results[index] = Some(VectorBatchGetItemResult::failed_error(error)),
+                Err(error) => {
+                    results[index] = Some(vector_batch_get_failed(usize_to_u64(index), error));
+                }
             }
         }
         if valid_keys.is_empty() {
-            return Ok(Output::VectorBatchGetResults(vector_batch_get_result(
+            return Ok(Output::VectorBatchGetResults(
                 finish_vector_batch_get_results(results),
-            )));
+            ));
         }
         let keys = valid_keys
             .iter()
@@ -433,13 +430,14 @@ impl Executor {
             .collect::<Vec<_>>();
         let outcome = service.batch_get(&collection, &keys)?;
         for ((index, _), entry) in valid_keys.into_iter().zip(outcome.entries()) {
-            results[index] = Some(VectorBatchGetItemResult::new(
+            results[index] = Some(vector_batch_get_item(
+                usize_to_u64(index),
                 entry.as_ref().map(vector_versioned_data),
             ));
         }
-        Ok(Output::VectorBatchGetResults(vector_batch_get_result(
+        Ok(Output::VectorBatchGetResults(
             finish_vector_batch_get_results(results),
-        )))
+        ))
     }
 
     pub(super) fn execute_vector_batch_delete(
@@ -457,13 +455,15 @@ impl Executor {
         for (index, key) in keys.into_iter().enumerate() {
             match vector_key(key) {
                 Ok(key) => valid_keys.push((index, key)),
-                Err(error) => results[index] = Some(VectorBatchItemResult::failed_error(error)),
+                Err(error) => {
+                    results[index] = Some(vector_batch_item_failed(usize_to_u64(index), error));
+                }
             }
         }
         if valid_keys.is_empty() {
-            return Ok(Output::VectorBatchDeleteResults(vector_batch_result(
+            return Ok(Output::VectorBatchDeleteResults(
                 finish_vector_batch_results(results),
-            )));
+            ));
         }
         let keys = valid_keys
             .iter()
@@ -475,14 +475,15 @@ impl Executor {
             .zip(outcome.deleted().iter().copied())
         {
             results[index] = Some(vector_batch_item_result(
+                usize_to_u64(index),
                 deleted,
                 delete_effect(deleted),
                 deleted.then(|| outcome.commit()).flatten(),
                 None,
             ));
         }
-        Ok(Output::VectorBatchDeleteResults(vector_batch_result(
+        Ok(Output::VectorBatchDeleteResults(
             finish_vector_batch_results(results),
-        )))
+        ))
     }
 }

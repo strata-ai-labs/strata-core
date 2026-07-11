@@ -232,10 +232,6 @@
             "$ref": "#/$defs/CommitReceipt",
             "description": "Commit receipt."
           },
-          "created": {
-            "description": "True when the node did not previously exist.",
-            "type": "boolean"
-          },
           "effect": {
             "$ref": "#/$defs/MutationEffect",
             "description": "Mutation effect facts."
@@ -247,28 +243,13 @@
           "node_id": {
             "description": "Node id.",
             "type": "string"
-          },
-          "timestamp": {
-            "description": "Commit timestamp.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "version": {
-            "description": "Commit version.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
           }
         },
         "required": [
           "graph",
           "node_id",
-          "created",
           "effect",
-          "commit",
-          "version",
-          "timestamp"
+          "commit"
         ],
         "type": "object"
       },

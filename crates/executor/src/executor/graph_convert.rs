@@ -1,6 +1,6 @@
 use super::{
     branch_name, commit_receipt, delete_effect, graph_batch_result, product_space, upsert_effect,
-    usize_to_u64, CommitOutcome, EngineGraphAdjacencyIndex, EngineGraphAnalyticsBudget,
+    usize_to_u64, BatchItem, CommitOutcome, EngineGraphAdjacencyIndex, EngineGraphAnalyticsBudget,
     EngineGraphBatchOpOutcome, EngineGraphBatchOperation, EngineGraphBatchWriteOutcome,
     EngineGraphBfsOptions, EngineGraphBfsResult, EngineGraphBinding, EngineGraphBindingPage,
     EngineGraphBindingPrimitive, EngineGraphBindingTarget, EngineGraphBulkInsertOutcome,
@@ -225,6 +225,14 @@ pub(super) fn graph_info_data(info: &EngineGraphInfo) -> GraphInfoData {
     )
 }
 
+pub(super) fn graph_create_output(info: &EngineGraphInfo, commit: CommitOutcome) -> Output {
+    Output::GraphCreateResult {
+        info: graph_info_data(info),
+        effect: MutationEffect::created(),
+        commit: commit_receipt(commit),
+    }
+}
+
 pub(super) fn graph_node_data_output(node: &EngineGraphNode) -> GraphNodeDataOutput {
     GraphNodeDataOutput::new(
         node.graph().as_str().to_owned(),
@@ -314,12 +322,6 @@ pub(super) fn graph_bulk_insert_output(outcome: &EngineGraphBulkInsertOutcome) -
         edges_inserted: outcome.edges_inserted(),
         commits: outcome.commits(),
         commit: outcome.last_commit().map(|commit| commit_receipt(*commit)),
-        version: outcome
-            .last_commit()
-            .map(|commit| commit.version().as_u64()),
-        timestamp: outcome
-            .last_commit()
-            .map(|commit| commit.timestamp().as_micros()),
     }
 }
 
@@ -347,7 +349,6 @@ pub(super) fn graph_delete_policy_output(outcome: &EngineGraphDeletePolicyOutcom
     };
     Output::GraphDeletePolicyResult {
         policy: policy.to_owned(),
-        nodes_affected: outcome.nodes_affected(),
         effect: MutationEffect::new(
             outcome.commit().is_some(),
             kind,
@@ -355,10 +356,6 @@ pub(super) fn graph_delete_policy_output(outcome: &EngineGraphDeletePolicyOutcom
             outcome.nodes_affected(),
         ),
         commit: outcome.commit().map(|commit| commit_receipt(*commit)),
-        version: outcome.commit().map(|commit| commit.version().as_u64()),
-        timestamp: outcome
-            .commit()
-            .map(|commit| commit.timestamp().as_micros()),
     }
 }
 
@@ -423,30 +420,22 @@ pub(super) fn graph_binding_page_output(page: &EngineGraphBindingPage) -> Output
 }
 
 pub(super) fn graph_node_write_output(outcome: &EngineGraphWriteOutcome) -> Output {
-    let commit = outcome.commit();
     Output::GraphNodeWriteResult {
         graph: outcome.graph().as_str().to_owned(),
         node_id: outcome.node_id().as_str().to_owned(),
-        created: outcome.created(),
         effect: upsert_effect(!outcome.created()),
-        commit: commit_receipt(commit),
-        version: commit.version().as_u64(),
-        timestamp: commit.timestamp().as_micros(),
+        commit: commit_receipt(outcome.commit()),
     }
 }
 
 pub(super) fn graph_edge_write_output(outcome: &EngineGraphEdgeWriteOutcome) -> Output {
-    let commit = outcome.commit();
     Output::GraphEdgeWriteResult {
         graph: outcome.graph().as_str().to_owned(),
         src: outcome.src().as_str().to_owned(),
         edge_type: outcome.edge_type().as_str().to_owned(),
         dst: outcome.dst().as_str().to_owned(),
-        created: outcome.created(),
         effect: upsert_effect(!outcome.created()),
-        commit: commit_receipt(commit),
-        version: commit.version().as_u64(),
-        timestamp: commit.timestamp().as_micros(),
+        commit: commit_receipt(outcome.commit()),
     }
 }
 
@@ -463,13 +452,8 @@ pub(super) fn graph_delete_output(
         src,
         edge_type,
         dst,
-        deleted: outcome.deleted(),
         effect: delete_effect(outcome.deleted()),
         commit: outcome.commit().map(commit_receipt),
-        version: outcome.commit().map(|commit| commit.version().as_u64()),
-        timestamp: outcome
-            .commit()
-            .map(|commit| commit.timestamp().as_micros()),
     }
 }
 
@@ -478,17 +462,13 @@ pub(super) fn graph_batch_write_output(
     operation_names: &[&'static str],
 ) -> Output {
     let commit = outcome.commit();
-    let version = commit.map(|commit| commit.version().as_u64());
-    let timestamp = commit.map(|commit| commit.timestamp().as_micros());
     Output::GraphBatchWriteResult {
         graph: outcome.graph().as_str().to_owned(),
         batch: graph_batch_result(
             outcome
                 .results()
                 .iter()
-                .map(|item| {
-                    graph_batch_item_result(item, operation_names, commit, version, timestamp)
-                })
+                .map(|item| graph_batch_item_result(item, operation_names, commit))
                 .collect(),
         ),
     }
@@ -498,24 +478,24 @@ pub(super) fn graph_batch_item_result(
     item: &EngineGraphBatchOpOutcome,
     operation_names: &[&'static str],
     commit: Option<CommitOutcome>,
-    version: Option<u64>,
-    timestamp: Option<u64>,
-) -> GraphBatchItemResult {
+) -> BatchItem<GraphBatchItemResult> {
     let operation_index = usize_to_u64(item.operation_index());
     let operation = operation_names
         .get(item.operation_index())
         .copied()
         .unwrap_or("unknown");
     let applied = graph_batch_item_applied(item);
-    GraphBatchItemResult::new_with_effect(
+    BatchItem::ok(
         operation_index,
-        operation,
-        item.created_flag(),
-        item.deleted_flag(),
-        graph_batch_item_effect(item),
+        applied,
+        Some(graph_batch_item_effect(item)),
         applied.then(|| commit.map(commit_receipt)).flatten(),
-        applied.then_some(version).flatten(),
-        applied.then_some(timestamp).flatten(),
+        GraphBatchItemResult::new(
+            operation_index,
+            operation,
+            item.created_flag(),
+            item.deleted_flag(),
+        ),
     )
 }
 
@@ -637,16 +617,12 @@ pub(super) fn graph_ontology_write_output(
     outcome: &EngineGraphOntologyWriteOutcome,
     kind: &str,
 ) -> Output {
-    let commit = outcome.commit();
     Output::GraphOntologyWriteResult {
         graph: outcome.graph().as_str().to_owned(),
         kind: kind.to_owned(),
         type_name: outcome.type_name().as_str().to_owned(),
-        created: outcome.created(),
         effect: upsert_effect(!outcome.created()),
-        commit: commit_receipt(*commit),
-        version: commit.version().as_u64(),
-        timestamp: commit.timestamp().as_micros(),
+        commit: commit_receipt(*outcome.commit()),
     }
 }
 
@@ -659,25 +635,17 @@ pub(super) fn graph_ontology_delete_output(
         graph: outcome.graph().as_str().to_owned(),
         kind: kind.to_owned(),
         type_name: type_name.to_owned(),
-        deleted: outcome.deleted(),
         effect: delete_effect(outcome.deleted()),
         commit: outcome.commit().map(commit_receipt),
-        version: outcome.commit().map(|commit| commit.version().as_u64()),
-        timestamp: outcome
-            .commit()
-            .map(|commit| commit.timestamp().as_micros()),
     }
 }
 
 pub(super) fn graph_ontology_freeze_output(outcome: &EngineGraphOntologyFreezeOutcome) -> Output {
-    let commit = outcome.commit();
     Output::GraphOntologyFreezeResult {
         graph: outcome.graph().as_str().to_owned(),
         object_types: usize_to_u64(outcome.object_types()),
         link_types: usize_to_u64(outcome.link_types()),
-        commit: commit_receipt(*commit),
-        version: commit.version().as_u64(),
-        timestamp: commit.timestamp().as_micros(),
+        commit: commit_receipt(*outcome.commit()),
     }
 }
 

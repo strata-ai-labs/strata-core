@@ -15,9 +15,7 @@
       "matched": false
     },
     "key": "doc-a",
-    "timestamp": 4,
-    "vector_revision": 1,
-    "version": 4
+    "vector_revision": 1
   },
   "type": "vector_write_result"
 }

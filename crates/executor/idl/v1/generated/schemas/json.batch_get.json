@@ -395,7 +395,7 @@
       "type": "object"
     },
     "JsonBatchGetItemResult": {
-      "description": "Positional JSON batch read result.",
+      "description": "Positional JSON batch read result payload.\n\nThe shared [`BatchItem`](crate::BatchItem) wrapper owns the status and error;\nthis payload carries the read facts.",
       "properties": {
         "document_version": {
           "format": "uint64",
@@ -403,16 +403,6 @@
           "type": [
             "integer",
             "null"
-          ]
-        },
-        "error": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ErrorStatus"
-            },
-            {
-              "type": "null"
-            }
           ]
         },
         "found": {

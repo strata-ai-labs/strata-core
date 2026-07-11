@@ -7,7 +7,6 @@
       "timestamp": 4,
       "version": 4
     },
-    "created": true,
     "effect": {
       "affected_count": 1,
       "applied": true,
@@ -15,9 +14,7 @@
       "matched": false
     },
     "graph": "social",
-    "node_id": "alice",
-    "timestamp": 4,
-    "version": 4
+    "node_id": "alice"
   },
   "type": "graph_node_write_result"
 }

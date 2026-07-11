@@ -167,20 +167,8 @@
             "description": "Vector key.",
             "type": "string"
           },
-          "timestamp": {
-            "description": "Commit timestamp.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
           "vector_revision": {
             "description": "Product vector revision.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "version": {
-            "description": "Commit version.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
@@ -191,8 +179,6 @@
           "key",
           "effect",
           "commit",
-          "version",
-          "timestamp",
           "vector_revision"
         ],
         "type": "object"

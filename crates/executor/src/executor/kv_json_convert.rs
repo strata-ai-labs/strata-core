@@ -1,12 +1,13 @@
 use super::{
-    output_json_index_type, BatchGetItemResult, BatchItemResult, BranchCleanupItem,
-    BranchCleanupSummary, BranchItem, BranchParentItem, BranchStatus, BranchSummary, Bytes,
-    CommitOutcome, CommitReceipt, CommitVersion, EngineBranchStatus, EngineJsonIndexDefinition,
-    EngineJsonSample, EngineJsonValue, EngineJsonVersionedValue, HistoryItem, HistoryResult,
-    JsonBatchGetItemResult, JsonBatchItemResult, JsonHistory, JsonHistoryItem, JsonHistoryRow,
-    JsonIndexDefinition, JsonListPage, JsonSampleItem, JsonSampleRow, KvHistory, KvHistoryRow,
-    KvKey, KvSample, KvScanRow, KvVersionedValue, MutationEffect, MutationEffectKind, Output,
-    OutputJsonVersionedValue, PageInfo, SampleItem, ScanItem, Timestamp, VersionedValue,
+    output_json_index_type, BatchExistsItemResult, BatchGetItemResult, BatchItem, BatchItemResult,
+    BranchCleanupItem, BranchCleanupSummary, BranchItem, BranchParentItem, BranchStatus,
+    BranchSummary, Bytes, CommitOutcome, CommitReceipt, CommitVersion, EngineBranchStatus,
+    EngineJsonIndexDefinition, EngineJsonSample, EngineJsonValue, EngineJsonVersionedValue,
+    ExecutorError, HistoryItem, HistoryResult, JsonBatchGetItemResult, JsonBatchItemResult,
+    JsonHistory, JsonHistoryItem, JsonHistoryRow, JsonIndexDefinition, JsonListPage,
+    JsonSampleItem, JsonSampleRow, KvHistory, KvHistoryRow, KvKey, KvSample, KvScanRow,
+    KvVersionedValue, MutationEffect, MutationEffectKind, Output, OutputJsonVersionedValue,
+    PageInfo, SampleItem, ScanItem, Timestamp, VersionedValue,
 };
 
 pub(super) fn bytes_from_key(key: &KvKey) -> Bytes {
@@ -120,23 +121,86 @@ pub(super) fn delete_output(key: Bytes, deleted: bool, outcome: Option<CommitOut
 }
 
 pub(super) fn batch_item_result(
+    index: u64,
     key: Bytes,
     effect: MutationEffect,
     outcome: Option<CommitOutcome>,
-) -> BatchItemResult {
-    BatchItemResult::new(key, effect, outcome.map(commit_receipt))
+) -> BatchItem<BatchItemResult> {
+    BatchItem::ok(
+        index,
+        effect.applied(),
+        Some(effect),
+        outcome.map(commit_receipt),
+        BatchItemResult::new(key),
+    )
 }
 
-pub(super) fn batch_get_result(key: Bytes, value: Option<KvVersionedValue>) -> BatchGetItemResult {
+pub(super) fn batch_item_failed(
+    index: u64,
+    key: Bytes,
+    error: ExecutorError,
+) -> BatchItem<BatchItemResult> {
+    BatchItem::failed(index, Some(BatchItemResult::new(key)), error.into_status())
+}
+
+pub(super) fn batch_get_result(
+    index: u64,
+    key: Bytes,
+    value: Option<KvVersionedValue>,
+) -> BatchItem<BatchGetItemResult> {
     match value {
-        Some(value) => BatchGetItemResult::new(
-            key,
-            Some(Bytes::from(value.value().as_bytes())),
-            Some(value.version().as_u64()),
-            Some(value.timestamp().as_micros()),
+        Some(value) => BatchItem::ok(
+            index,
+            false,
+            None,
+            None,
+            BatchGetItemResult::new(
+                key,
+                Some(Bytes::from(value.value().as_bytes())),
+                Some(value.version().as_u64()),
+                Some(value.timestamp().as_micros()),
+            ),
         ),
-        None => BatchGetItemResult::new(key, None, None, None),
+        None => BatchItem::miss(index, BatchGetItemResult::not_found(key)),
     }
+}
+
+pub(super) fn batch_get_failed(
+    index: u64,
+    key: Bytes,
+    error: ExecutorError,
+) -> BatchItem<BatchGetItemResult> {
+    BatchItem::failed(
+        index,
+        Some(BatchGetItemResult::not_found(key)),
+        error.into_status(),
+    )
+}
+
+pub(super) fn batch_exists_item(
+    index: u64,
+    key: Bytes,
+    exists: bool,
+) -> BatchItem<BatchExistsItemResult> {
+    BatchItem::ok(
+        index,
+        false,
+        None,
+        None,
+        BatchExistsItemResult::new(key, exists),
+    )
+}
+
+pub(super) fn batch_exists_failed(
+    index: u64,
+    key: Bytes,
+    error: ExecutorError,
+) -> BatchItem<BatchExistsItemResult> {
+    BatchItem::failed(
+        index,
+        Some(BatchExistsItemResult::new(key, false)),
+        error.into_status(),
+    )
 }
 
 pub(super) fn versioned_value(value: &KvVersionedValue) -> VersionedValue {
@@ -238,25 +302,61 @@ pub(super) fn json_history_item(row: &JsonHistoryRow) -> JsonHistoryItem {
 }
 
 pub(super) fn json_batch_item_result(
+    index: u64,
     effect: MutationEffect,
     outcome: Option<CommitOutcome>,
     document_version: Option<u64>,
-) -> JsonBatchItemResult {
-    JsonBatchItemResult::new(effect, outcome.map(commit_receipt), document_version)
+) -> BatchItem<JsonBatchItemResult> {
+    BatchItem::ok(
+        index,
+        effect.applied(),
+        Some(effect),
+        outcome.map(commit_receipt),
+        JsonBatchItemResult::new(document_version),
+    )
+}
+
+pub(super) fn json_batch_item_failed(
+    index: u64,
+    error: ExecutorError,
+) -> BatchItem<JsonBatchItemResult> {
+    BatchItem::failed(
+        index,
+        Some(JsonBatchItemResult::new(None)),
+        error.into_status(),
+    )
 }
 
 pub(super) fn json_batch_get_result(
+    index: u64,
     value: Option<EngineJsonVersionedValue>,
-) -> JsonBatchGetItemResult {
+) -> BatchItem<JsonBatchGetItemResult> {
     match value {
-        Some(value) => JsonBatchGetItemResult::new(
-            Some(value.value().clone().into_inner()),
-            Some(value.version().as_u64()),
-            Some(value.timestamp().as_micros()),
-            Some(value.document_version()),
+        Some(value) => BatchItem::ok(
+            index,
+            false,
+            None,
+            None,
+            JsonBatchGetItemResult::new(
+                Some(value.value().clone().into_inner()),
+                Some(value.version().as_u64()),
+                Some(value.timestamp().as_micros()),
+                Some(value.document_version()),
+            ),
         ),
-        None => JsonBatchGetItemResult::new(None, None, None, None),
+        None => BatchItem::miss(index, JsonBatchGetItemResult::not_found()),
     }
+}
+
+pub(super) fn json_batch_get_failed(
+    index: u64,
+    error: ExecutorError,
+) -> BatchItem<JsonBatchGetItemResult> {
+    BatchItem::failed(
+        index,
+        Some(JsonBatchGetItemResult::not_found()),
+        error.into_status(),
+    )
 }
 
 pub(super) fn json_list_output(page: &JsonListPage) -> Output {

@@ -37,27 +37,16 @@ commands:
     title: List KV keys
     input: Command::KvList
     output: Output::KeysPage
-    outputs:
-      - Output::Keys
-      - Output::KeysPage
     result: Bytes
     response_model: Page<Bytes, Bytes>
     prose: commands/kv.list.md
     fixtures:
       request: requests/v1/kv/list.json
       response: responses/v1/kv/list_page.json
-      responses:
-        - responses/v1/kv/list_keys.json
       setup:
         - requests/v1/setup/kv_put_a1.json
         - requests/v1/setup/kv_put_a2.json
         - requests/v1/setup/kv_put_a3.json
-      cases:
-        - setup:
-            - requests/v1/setup/kv_put_a1.json
-            - requests/v1/setup/kv_put_a2.json
-          request: requests/v1/kv/list_all.json
-          response: responses/v1/kv/list_keys.json
   - id: kv.scan
     kind: read.page
     title: Scan KV rows

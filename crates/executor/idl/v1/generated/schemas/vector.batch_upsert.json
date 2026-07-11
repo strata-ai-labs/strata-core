@@ -486,58 +486,9 @@
       ]
     },
     "VectorBatchItemResult": {
-      "description": "Positional vector batch write/delete result.",
+      "description": "Positional vector batch write/delete result payload.\n\nThe shared [`BatchItem`](crate::BatchItem) wrapper owns the status, mutation\neffect, commit receipt, and error; this payload carries only the\nvector-specific revision.",
       "properties": {
-        "applied": {
-          "type": "boolean"
-        },
-        "commit": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/CommitReceipt"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "effect": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/MutationEffect"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "error": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ErrorStatus"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "timestamp": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
         "vector_revision": {
-          "format": "uint64",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
-        },
-        "version": {
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -546,9 +497,6 @@
           ]
         }
       },
-      "required": [
-        "applied"
-      ],
       "type": "object"
     }
   },
