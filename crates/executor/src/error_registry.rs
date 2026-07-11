@@ -17,24 +17,6 @@ const INFERENCE_SCHEMA: &str = "strata.error.details.inference.v1";
 
 const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
     entry(
-        "failed_precondition.executor.runtime_closed",
-        ErrorClass::FailedPrecondition,
-        RetryPolicy::Never,
-        CommitOutcomeStatus::NotStarted,
-        "The executor handle is closed.",
-        "Open a new executor handle before issuing more commands.",
-        EXECUTOR_SCHEMA,
-    ),
-    entry(
-        "failed_precondition.executor.space_not_empty",
-        ErrorClass::FailedPrecondition,
-        RetryPolicy::Never,
-        CommitOutcomeStatus::NotStarted,
-        "The requested space is not empty.",
-        "Delete or move data out of the space before deleting it.",
-        EXECUTOR_SCHEMA,
-    ),
-    entry(
         "invalid_argument.executor.hub_url",
         ErrorClass::InvalidArgument,
         RetryPolicy::Never,

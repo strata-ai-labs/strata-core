@@ -78,9 +78,7 @@ use strata_engine::{
 };
 
 use crate::command::Command;
-use crate::error::{
-    batch_item_error_status, engine_error_status, ExecutorError, ExecutorErrorClass, ExecutorResult,
-};
+use crate::error::{engine_error_status, ExecutorError, ExecutorErrorClass, ExecutorResult};
 use crate::output::Output;
 use crate::types::{
     AdminCapabilities as OutputAdminCapabilities, AdminConfig as OutputAdminConfig,
