@@ -1,10 +1,10 @@
 use super::{
     commit_receipt, delete_effect, empty_vector_batch_get_results, empty_vector_batch_results,
     engine_vector_metric, finish_vector_batch_get_results, finish_vector_batch_results,
-    optional_limit, optional_vector_key, optional_vector_metadata, require_vector_collection_info,
-    required_usize, update_effect, upsert_effect, usize_to_u64, vector_batch_get_failed,
-    vector_batch_get_item, vector_batch_item_failed, vector_batch_item_result,
-    vector_bulk_delete_output, vector_collection, vector_collection_info,
+    optional_limit, optional_vector_key, optional_vector_metadata, reject_duplicate_vector_keys,
+    require_vector_collection_info, required_usize, update_effect, upsert_effect, usize_to_u64,
+    vector_batch_get_failed, vector_batch_get_item, vector_batch_item_failed,
+    vector_batch_item_result, vector_bulk_delete_output, vector_collection, vector_collection_info,
     vector_dimension_mismatch_error, vector_embedding, vector_filter, vector_history_result,
     vector_index_diagnostics, vector_key, vector_key_page_output, vector_match,
     vector_metadata_patch, vector_upsert_entry, vector_versioned_data, vector_write_output,
@@ -351,9 +351,10 @@ impl Executor {
         let mut results = empty_vector_batch_results(entries.len());
         let mut valid_entries = Vec::with_capacity(entries.len());
         for (index, entry) in entries.into_iter().enumerate() {
+            let key = entry.key().to_owned();
             match vector_upsert_entry(entry) {
                 Ok(entry) if entry.embedding().dimension() == expected_dimension => {
-                    valid_entries.push((index, entry));
+                    valid_entries.push((index, entry, key));
                 }
                 Ok(entry) => {
                     results[index] = Some(vector_batch_item_failed(
@@ -374,12 +375,15 @@ impl Executor {
                 finish_vector_batch_results(results),
             ));
         }
+        // Two items targeting the same key are rejected, matching KV's
+        // whole-batch duplicate rule rather than silently applying last-wins.
+        reject_duplicate_vector_keys(valid_entries.iter().map(|(_, _, key)| key.as_str()))?;
         let entries = valid_entries
             .iter()
-            .map(|(_, entry)| entry.clone())
+            .map(|(_, entry, _)| entry.clone())
             .collect::<Vec<_>>();
         let outcome = service.batch_upsert(&collection, &entries)?;
-        for ((index, _), (revision, created)) in valid_entries.into_iter().zip(
+        for ((index, _, _), (revision, created)) in valid_entries.into_iter().zip(
             outcome
                 .vector_revisions()
                 .iter()
@@ -453,8 +457,9 @@ impl Executor {
         let mut results = empty_vector_batch_results(keys.len());
         let mut valid_keys = Vec::with_capacity(keys.len());
         for (index, key) in keys.into_iter().enumerate() {
+            let raw = key.clone();
             match vector_key(key) {
-                Ok(key) => valid_keys.push((index, key)),
+                Ok(key) => valid_keys.push((index, key, raw)),
                 Err(error) => {
                     results[index] = Some(vector_batch_item_failed(usize_to_u64(index), error));
                 }
@@ -465,12 +470,13 @@ impl Executor {
                 finish_vector_batch_results(results),
             ));
         }
+        reject_duplicate_vector_keys(valid_keys.iter().map(|(_, _, raw)| raw.as_str()))?;
         let keys = valid_keys
             .iter()
-            .map(|(_, key)| key.clone())
+            .map(|(_, key, _)| key.clone())
             .collect::<Vec<_>>();
         let outcome = service.batch_delete(&collection, &keys)?;
-        for ((index, _), deleted) in valid_keys
+        for ((index, _, _), deleted) in valid_keys
             .into_iter()
             .zip(outcome.deleted().iter().copied())
         {

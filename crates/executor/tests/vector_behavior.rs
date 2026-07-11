@@ -816,6 +816,27 @@ fn assert_mixed_validity_batch_returns_positional_errors(executor: &mut Executor
 }
 
 fn assert_duplicate_batch_upsert_and_batch_reads(executor: &mut Executor) {
+    // A duplicate key in a mutation batch rejects the whole batch (KV's rule)
+    // and leaves state untouched, rather than silently applying last-wins.
+    let error = executor
+        .execute(Command::VectorBatchUpsert {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            entries: vec![
+                BatchVectorEntry::new("a", vec![1.0, 0.0], Some(json!({"group": "batch"}))),
+                BatchVectorEntry::new("a", vec![0.5, 0.5], Some(json!({"group": "batch"}))),
+            ],
+        })
+        .expect_err("duplicate-key batch upsert is rejected");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(
+        error.code(),
+        "invalid_argument.executor.vector_batch_duplicate_key"
+    );
+    assert_eq!(vector_count(executor, "docs"), 0);
+
+    // A batch with unique keys applies and establishes "a" and "b".
     let Output::VectorBatchUpsertResults(results) = executor
         .execute(Command::VectorBatchUpsert {
             branch: None,
@@ -824,18 +845,16 @@ fn assert_duplicate_batch_upsert_and_batch_reads(executor: &mut Executor) {
             entries: vec![
                 BatchVectorEntry::new("b", vec![0.0, 1.0], Some(json!({"group": "batch"}))),
                 BatchVectorEntry::new("a", vec![1.0, 0.0], Some(json!({"group": "batch"}))),
-                BatchVectorEntry::new("a", vec![0.5, 0.5], Some(json!({"group": "batch"}))),
             ],
         })
-        .expect("batch upsert succeeds")
+        .expect("unique-key batch upsert succeeds")
     else {
         panic!("unexpected batch upsert output");
     };
-    assert_eq!(results.len(), 3);
+    assert_eq!(results.len(), 2);
     assert!(results.iter().all(strata_executor::BatchItem::applied));
     assert_eq!(results[0].vector_revision(), Some(1));
     assert_eq!(results[1].vector_revision(), Some(1));
-    assert_eq!(results[2].vector_revision(), Some(2));
     assert_eq!(vector_count(executor, "docs"), 2);
 
     let Output::VectorBatchGetResults(values) = executor
@@ -884,12 +903,30 @@ fn assert_duplicate_batch_upsert_and_batch_reads(executor: &mut Executor) {
 }
 
 fn assert_batch_delete_edges(executor: &mut Executor) {
+    // A duplicate key in a delete batch rejects the whole batch and changes
+    // nothing (KV's rule).
+    let error = executor
+        .execute(Command::VectorBatchDelete {
+            branch: None,
+            space: None,
+            collection: "docs".to_owned(),
+            keys: vec!["a".to_owned(), "a".to_owned()],
+        })
+        .expect_err("duplicate-key batch delete is rejected");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(
+        error.code(),
+        "invalid_argument.executor.vector_batch_duplicate_key"
+    );
+    assert!(get_vector_value(executor, None, None, "docs", "a", None).is_some());
+
+    // Unique keys apply; a missing key is a positional no-op.
     let Output::VectorBatchDeleteResults(results) = executor
         .execute(Command::VectorBatchDelete {
             branch: None,
             space: None,
             collection: "docs".to_owned(),
-            keys: vec!["a".to_owned(), "a".to_owned(), "missing".to_owned()],
+            keys: vec!["a".to_owned(), "missing".to_owned()],
         })
         .expect("batch delete succeeds")
     else {
@@ -900,7 +937,7 @@ fn assert_batch_delete_edges(executor: &mut Executor) {
             .iter()
             .map(strata_executor::BatchItem::applied)
             .collect::<Vec<_>>(),
-        vec![true, false, false]
+        vec![true, false]
     );
     assert!(get_vector_value(executor, None, None, "docs", "a", None).is_none());
     assert_eq!(
@@ -1502,7 +1539,7 @@ fn assert_vector_batch_delete_and_bulk_deletes(executor: &mut Executor) {
             branch: None,
             space: None,
             collection: "docs".to_owned(),
-            keys: vec!["doc-b".to_owned(), "doc-b".to_owned(), "missing".to_owned()],
+            keys: vec!["doc-b".to_owned(), "missing".to_owned()],
         })
         .expect("batch delete succeeds")
     else {
@@ -1513,14 +1550,12 @@ fn assert_vector_batch_delete_and_bulk_deletes(executor: &mut Executor) {
             .iter()
             .map(strata_executor::BatchItem::applied)
             .collect::<Vec<_>>(),
-        vec![true, false, false]
+        vec![true, false]
     );
     assert_eq!(deleted[0].effect(), Some(&MutationEffect::deleted()));
     assert!(deleted[0].commit().is_some());
     assert_eq!(deleted[1].effect(), Some(&MutationEffect::not_found()));
     assert_eq!(deleted[1].commit(), None);
-    assert_eq!(deleted[2].effect(), Some(&MutationEffect::not_found()));
-    assert_eq!(deleted[2].commit(), None);
 
     let Output::VectorBulkDeleteResult { effect, commit, .. } = executor
         .execute(Command::VectorDeleteByFilter {

@@ -98,6 +98,7 @@ commands:
       - invalid_argument.engine.json_document_too_large
       - invalid_argument.engine.json_document_too_deep
       - invalid_argument.engine.json_array_too_large
+      - invalid_argument.executor.json_batch_duplicate_key
     fixtures:
       request: requests/v1/json/batch_set.json
       response: responses/v1/json/batch_set_ok.json
@@ -127,6 +128,7 @@ commands:
       - invalid_argument.engine.json_path
       - invalid_argument.engine.json_path_too_long
       - invalid_argument.engine.json_path_type
+      - invalid_argument.executor.json_batch_duplicate_key
     fixtures:
       setup:
         - requests/v1/json/set.json

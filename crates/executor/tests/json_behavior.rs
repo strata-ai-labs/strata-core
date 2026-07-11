@@ -860,6 +860,63 @@ fn assert_json_batch_edges(executor: &mut Executor) {
     assert_eq!(execute_json_get_value(executor, "batch-delete", "$"), None);
 }
 
+#[test]
+fn json_batch_rejects_duplicate_targets() {
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+
+    // Two items writing the same (document, path) reject the whole batch,
+    // matching KV's rule instead of silently applying last-wins.
+    let error = executor
+        .execute(Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonEntry::new("doc", "$.count", json!(1)),
+                BatchJsonEntry::new("doc", "$.count", json!(2)),
+            ],
+        })
+        .expect_err("duplicate-target batch set is rejected");
+    assert_eq!(error.class(), ExecutorErrorClass::InvalidInput);
+    assert_eq!(
+        error.code(),
+        "invalid_argument.executor.json_batch_duplicate_key"
+    );
+    // The whole batch was rejected before any write.
+    assert_eq!(execute_json_get_value(&mut executor, "doc", "$"), None);
+
+    // Two distinct paths of one document are separate targets, not duplicates.
+    executor
+        .execute(Command::JsonBatchSet {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonEntry::new("doc", "$", json!({"count": 1})),
+                BatchJsonEntry::new("doc", "$.label", json!("x")),
+            ],
+        })
+        .expect("distinct-path batch set succeeds");
+    assert_eq!(
+        execute_json_get_value(&mut executor, "doc", "$.label"),
+        Some(json!("x"))
+    );
+
+    // Delete batches reject duplicate targets the same way.
+    let error = executor
+        .execute(Command::JsonBatchDelete {
+            branch: None,
+            space: None,
+            entries: vec![
+                BatchJsonDeleteEntry::new("doc", "$.count"),
+                BatchJsonDeleteEntry::new("doc", "$.count"),
+            ],
+        })
+        .expect_err("duplicate-target batch delete is rejected");
+    assert_eq!(
+        error.code(),
+        "invalid_argument.executor.json_batch_duplicate_key"
+    );
+}
+
 fn assert_empty_json_batches(executor: &mut Executor) {
     assert!(matches!(
         executor
