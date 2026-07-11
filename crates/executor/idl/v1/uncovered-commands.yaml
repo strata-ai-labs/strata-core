@@ -1,0 +1,96 @@
+# Exhaustiveness allowlist (drift guard #1, strategy: v1-idl-overlay-strategy.md).
+#
+# Every `Command` enum variant must have a resolved IDL entry or appear
+# here. This list may ONLY shrink: covering a command requires deleting its
+# line, and the resolver fails if a listed variant is covered, unknown, or
+# if a new variant is neither covered nor listed. Do not add entries for
+# new commands — author their IDL coverage instead.
+uncovered:
+  - Command::ArrowExport
+  - Command::ArrowImport
+  - Command::BranchCreate
+  - Command::BranchDelete
+  - Command::BranchForkAtTimestamp
+  - Command::BranchForkAtVersion
+  - Command::BranchForkCurrent
+  - Command::BranchGet
+  - Command::BranchList
+  - Command::ConfigGet
+  - Command::ConfigureGetKey
+  - Command::Describe
+  - Command::EventAppend
+  - Command::EventBatchAppend
+  - Command::EventExists
+  - Command::EventGet
+  - Command::EventLen
+  - Command::EventList
+  - Command::EventListTypes
+  - Command::EventRange
+  - Command::EventRangeByTime
+  - Command::EventVerifyChain
+  - Command::GraphAddEdge
+  - Command::GraphAddNode
+  - Command::GraphApplyDeletePolicy
+  - Command::GraphBatchWrite
+  - Command::GraphBfs
+  - Command::GraphBindingsForEntity
+  - Command::GraphBulkInsert
+  - Command::GraphCdlp
+  - Command::GraphCreate
+  - Command::GraphDefineLinkType
+  - Command::GraphDefineObjectType
+  - Command::GraphDelete
+  - Command::GraphDeleteLinkType
+  - Command::GraphDeleteObjectType
+  - Command::GraphFreezeOntology
+  - Command::GraphGetEdge
+  - Command::GraphGetMeta
+  - Command::GraphGetNode
+  - Command::GraphGetOntology
+  - Command::GraphLcc
+  - Command::GraphList
+  - Command::GraphListNodes
+  - Command::GraphNeighbors
+  - Command::GraphNodesByType
+  - Command::GraphOntologySummary
+  - Command::GraphPagerank
+  - Command::GraphRemoveEdge
+  - Command::GraphRemoveNode
+  - Command::GraphSssp
+  - Command::GraphWcc
+  - Command::Health
+  - Command::HubClone
+  - Command::InferenceCacheStatus
+  - Command::InferenceDetokenize
+  - Command::InferenceEmbed
+  - Command::InferenceEmbedBatch
+  - Command::InferenceGenerate
+  - Command::InferenceModelCapability
+  - Command::InferenceModelsList
+  - Command::InferenceModelsLocal
+  - Command::InferenceModelsPull
+  - Command::InferenceRank
+  - Command::InferenceTokenize
+  - Command::InferenceUnload
+  - Command::Info
+  - Command::JsonBatchDelete
+  - Command::JsonBatchGet
+  - Command::JsonBatchSet
+  - Command::JsonCount
+  - Command::JsonCreateIndex
+  - Command::JsonDelete
+  - Command::JsonDropIndex
+  - Command::JsonExists
+  - Command::JsonGet
+  - Command::JsonGetv
+  - Command::JsonList
+  - Command::JsonListIndexes
+  - Command::JsonSample
+  - Command::JsonSet
+  - Command::Metrics
+  - Command::Ping
+  - Command::RemoteGet
+  - Command::SpaceCreate
+  - Command::SpaceDelete
+  - Command::SpaceExists
+  - Command::SpaceList

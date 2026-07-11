@@ -16,7 +16,8 @@
         "path": [
           "kv",
           "batch-delete"
-        ]
+        ],
+        "surface": "wire"
       },
       "mcp": {
         "name": "strata_kv_batch_delete",
@@ -86,7 +87,8 @@
         "path": [
           "kv",
           "batch-exists"
-        ]
+        ],
+        "surface": "wire"
       },
       "mcp": {
         "name": "strata_kv_batch_exists",
@@ -148,7 +150,8 @@
         "path": [
           "kv",
           "batch-get"
-        ]
+        ],
+        "surface": "wire"
       },
       "mcp": {
         "name": "strata_kv_batch_get",
@@ -210,7 +213,8 @@
         "path": [
           "kv",
           "batch-put"
-        ]
+        ],
+        "surface": "wire"
       },
       "mcp": {
         "name": "strata_kv_batch_put",
@@ -280,7 +284,8 @@
         "path": [
           "kv",
           "count"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_kv_count",
@@ -338,7 +343,8 @@
         "path": [
           "kv",
           "delete"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_kv_delete",
@@ -396,7 +402,8 @@
         "path": [
           "kv",
           "exists"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_kv_exists",
@@ -454,7 +461,8 @@
         "path": [
           "kv",
           "get"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_kv_get",
@@ -512,7 +520,8 @@
         "path": [
           "kv",
           "history"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_kv_history",
@@ -570,7 +579,8 @@
         "path": [
           "kv",
           "list"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_kv_list",
@@ -632,7 +642,8 @@
         "path": [
           "kv",
           "put"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_kv_put",
@@ -690,7 +701,8 @@
         "path": [
           "kv",
           "sample"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_kv_sample",
@@ -748,7 +760,8 @@
         "path": [
           "kv",
           "scan"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_kv_scan",
@@ -806,7 +819,8 @@
         "path": [
           "vector",
           "batch-delete"
-        ]
+        ],
+        "surface": "wire"
       },
       "mcp": {
         "name": "strata_vector_batch_delete",
@@ -876,7 +890,8 @@
         "path": [
           "vector",
           "batch-get"
-        ]
+        ],
+        "surface": "wire"
       },
       "mcp": {
         "name": "strata_vector_batch_get",
@@ -946,7 +961,8 @@
         "path": [
           "vector",
           "batch-upsert"
-        ]
+        ],
+        "surface": "wire"
       },
       "mcp": {
         "name": "strata_vector_batch_upsert",
@@ -1029,7 +1045,8 @@
           "vector",
           "collection",
           "create"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_collection_create",
@@ -1104,7 +1121,8 @@
           "vector",
           "collection",
           "delete"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_collection_delete",
@@ -1171,7 +1189,8 @@
           "vector",
           "collection",
           "list"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_collection_list",
@@ -1238,7 +1257,8 @@
           "vector",
           "collection",
           "stats"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_collection_stats",
@@ -1304,7 +1324,8 @@
         "path": [
           "vector",
           "count"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_count",
@@ -1370,7 +1391,8 @@
         "path": [
           "vector",
           "delete"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_delete",
@@ -1436,7 +1458,8 @@
         "path": [
           "vector",
           "delete-all"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_delete_all",
@@ -1502,7 +1525,8 @@
         "path": [
           "vector",
           "delete-by-filter"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_delete_by_filter",
@@ -1572,7 +1596,8 @@
         "path": [
           "vector",
           "exists"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_exists",
@@ -1638,7 +1663,8 @@
         "path": [
           "vector",
           "get"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_get",
@@ -1704,7 +1730,8 @@
         "path": [
           "vector",
           "history"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_history",
@@ -1771,7 +1798,8 @@
           "vector",
           "index",
           "query"
-        ]
+        ],
+        "surface": "wire"
       },
       "mcp": {
         "name": "strata_vector_index_query",
@@ -1845,7 +1873,8 @@
         "path": [
           "vector",
           "keys"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_keys",
@@ -1910,9 +1939,9 @@
       "cli": {
         "path": [
           "vector",
-          "metadata",
-          "update"
-        ]
+          "update-metadata"
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_metadata_update",
@@ -1982,7 +2011,8 @@
         "path": [
           "vector",
           "query"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_query",
@@ -2056,7 +2086,8 @@
         "path": [
           "vector",
           "upsert"
-        ]
+        ],
+        "surface": "verb"
       },
       "mcp": {
         "name": "strata_vector_upsert",

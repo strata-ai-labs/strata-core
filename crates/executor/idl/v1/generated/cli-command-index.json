@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "1e22e4cd7cb4f968d76380ac59250714d0b1b41aad1258dbb6af746b1dfd07ae",
+    "checksum_sha256": "205f95d2e53b979558bd35c583be2f7ed3bf090970081d96ba15537af3985608",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -49,8 +49,8 @@
         "vector.history",
         "vector.index.query",
         "vector.keys",
-        "vector.metadata.update",
         "vector.query",
+        "vector.metadata.update",
         "vector.upsert"
       ]
     }
@@ -63,6 +63,7 @@
         "batch-delete"
       ],
       "path_display": "kv batch-delete",
+      "surface": "wire",
       "family": "kv",
       "op": "batch_delete",
       "kind": "batch.itemwise_mutation",
@@ -123,6 +124,7 @@
         "batch-exists"
       ],
       "path_display": "kv batch-exists",
+      "surface": "wire",
       "family": "kv",
       "op": "batch_exists",
       "kind": "batch.itemwise_status",
@@ -175,6 +177,7 @@
         "batch-get"
       ],
       "path_display": "kv batch-get",
+      "surface": "wire",
       "family": "kv",
       "op": "batch_get",
       "kind": "batch.itemwise_read",
@@ -227,6 +230,7 @@
         "batch-put"
       ],
       "path_display": "kv batch-put",
+      "surface": "wire",
       "family": "kv",
       "op": "batch_put",
       "kind": "batch.itemwise_mutation",
@@ -287,6 +291,7 @@
         "count"
       ],
       "path_display": "kv count",
+      "surface": "verb",
       "family": "kv",
       "op": "count",
       "kind": "read.status",
@@ -335,6 +340,7 @@
         "delete"
       ],
       "path_display": "kv delete",
+      "surface": "verb",
       "family": "kv",
       "op": "delete",
       "kind": "mutation.delete",
@@ -383,6 +389,7 @@
         "exists"
       ],
       "path_display": "kv exists",
+      "surface": "verb",
       "family": "kv",
       "op": "exists",
       "kind": "read.status",
@@ -431,6 +438,7 @@
         "get"
       ],
       "path_display": "kv get",
+      "surface": "verb",
       "family": "kv",
       "op": "get",
       "kind": "read.get",
@@ -479,6 +487,7 @@
         "history"
       ],
       "path_display": "kv history",
+      "surface": "verb",
       "family": "kv",
       "op": "history",
       "kind": "read.history",
@@ -527,6 +536,7 @@
         "list"
       ],
       "path_display": "kv list",
+      "surface": "verb",
       "family": "kv",
       "op": "list",
       "kind": "read.page",
@@ -579,6 +589,7 @@
         "put"
       ],
       "path_display": "kv put",
+      "surface": "verb",
       "family": "kv",
       "op": "put",
       "kind": "mutation.put",
@@ -627,6 +638,7 @@
         "sample"
       ],
       "path_display": "kv sample",
+      "surface": "verb",
       "family": "kv",
       "op": "sample",
       "kind": "read.sample",
@@ -675,6 +687,7 @@
         "scan"
       ],
       "path_display": "kv scan",
+      "surface": "verb",
       "family": "kv",
       "op": "scan",
       "kind": "read.page",
@@ -723,6 +736,7 @@
         "batch-delete"
       ],
       "path_display": "vector batch-delete",
+      "surface": "wire",
       "family": "vector",
       "op": "batch_delete",
       "kind": "batch.itemwise_mutation",
@@ -783,6 +797,7 @@
         "batch-get"
       ],
       "path_display": "vector batch-get",
+      "surface": "wire",
       "family": "vector",
       "op": "batch_get",
       "kind": "batch.itemwise_read",
@@ -843,6 +858,7 @@
         "batch-upsert"
       ],
       "path_display": "vector batch-upsert",
+      "surface": "wire",
       "family": "vector",
       "op": "batch_upsert",
       "kind": "batch.itemwise_mutation",
@@ -916,6 +932,7 @@
         "create"
       ],
       "path_display": "vector collection create",
+      "surface": "verb",
       "family": "vector",
       "op": "collection.create",
       "kind": "mutation.create",
@@ -981,6 +998,7 @@
         "delete"
       ],
       "path_display": "vector collection delete",
+      "surface": "verb",
       "family": "vector",
       "op": "collection.delete",
       "kind": "mutation.delete",
@@ -1038,6 +1056,7 @@
         "list"
       ],
       "path_display": "vector collection list",
+      "surface": "verb",
       "family": "vector",
       "op": "collection.list",
       "kind": "read.page",
@@ -1095,6 +1114,7 @@
         "stats"
       ],
       "path_display": "vector collection stats",
+      "surface": "verb",
       "family": "vector",
       "op": "collection.stats",
       "kind": "read.status",
@@ -1151,6 +1171,7 @@
         "count"
       ],
       "path_display": "vector count",
+      "surface": "verb",
       "family": "vector",
       "op": "count",
       "kind": "read.status",
@@ -1207,6 +1228,7 @@
         "delete"
       ],
       "path_display": "vector delete",
+      "surface": "verb",
       "family": "vector",
       "op": "delete",
       "kind": "mutation.delete",
@@ -1263,6 +1285,7 @@
         "delete-all"
       ],
       "path_display": "vector delete-all",
+      "surface": "verb",
       "family": "vector",
       "op": "delete_all",
       "kind": "mutation.bulk_delete",
@@ -1319,6 +1342,7 @@
         "delete-by-filter"
       ],
       "path_display": "vector delete-by-filter",
+      "surface": "verb",
       "family": "vector",
       "op": "delete_by_filter",
       "kind": "mutation.bulk_delete",
@@ -1379,6 +1403,7 @@
         "exists"
       ],
       "path_display": "vector exists",
+      "surface": "verb",
       "family": "vector",
       "op": "exists",
       "kind": "read.status",
@@ -1435,6 +1460,7 @@
         "get"
       ],
       "path_display": "vector get",
+      "surface": "verb",
       "family": "vector",
       "op": "get",
       "kind": "read.get",
@@ -1491,6 +1517,7 @@
         "history"
       ],
       "path_display": "vector history",
+      "surface": "verb",
       "family": "vector",
       "op": "history",
       "kind": "read.history",
@@ -1548,6 +1575,7 @@
         "query"
       ],
       "path_display": "vector index query",
+      "surface": "wire",
       "family": "vector",
       "op": "index.query",
       "kind": "read.diagnostics",
@@ -1612,6 +1640,7 @@
         "keys"
       ],
       "path_display": "vector keys",
+      "surface": "verb",
       "family": "vector",
       "op": "keys",
       "kind": "read.page",
@@ -1662,73 +1691,13 @@
       "wire_status": "stable"
     },
     {
-      "id": "vector.metadata.update",
-      "path": [
-        "vector",
-        "metadata",
-        "update"
-      ],
-      "path_display": "vector metadata update",
-      "family": "vector",
-      "op": "metadata.update",
-      "kind": "mutation.metadata_update",
-      "title": "Update vector metadata",
-      "summary": "Patch metadata for one vector.",
-      "description": "Applies a top-level metadata patch to one visible vector. Missing vectors return a no-op mutation acknowledgement.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
-      "docs": "/docs/vector/metadata/update",
-      "feature": "core",
-      "access": "write",
-      "commit": "commits_on_success",
-      "pagination": "none",
-      "batch": "none",
-      "input": "Command::VectorUpdateMetadata",
-      "outputs": [
-        "Output::VectorMetadataUpdateResult"
-      ],
-      "response_model": "MutationAck<VectorMetadataUpdate>",
-      "errors": [
-        {
-          "code": "failed_precondition.engine.runtime_closed",
-          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
-        },
-        {
-          "code": "not_found.engine.branch",
-          "docs": "https://stratadb.org/e/not_found.engine.branch"
-        },
-        {
-          "code": "invalid_argument.engine.product_space",
-          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
-        },
-        {
-          "code": "invalid_argument.engine.vector_collection",
-          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
-        },
-        {
-          "code": "invalid_argument.engine.vector_key",
-          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
-        },
-        {
-          "code": "not_found.executor.vector_collection",
-          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
-        },
-        {
-          "code": "invalid_argument.engine.vector_metadata_patch",
-          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_metadata_patch"
-        }
-      ],
-      "fixtures": {
-        "request": "requests/v1/vector/metadata_update.json",
-        "response": "responses/v1/vector/metadata_update_applied.json"
-      },
-      "wire_status": "stable"
-    },
-    {
       "id": "vector.query",
       "path": [
         "vector",
         "query"
       ],
       "path_display": "vector query",
+      "surface": "verb",
       "family": "vector",
       "op": "query",
       "kind": "read.search",
@@ -1787,12 +1756,74 @@
       "wire_status": "stable"
     },
     {
+      "id": "vector.metadata.update",
+      "path": [
+        "vector",
+        "update-metadata"
+      ],
+      "path_display": "vector update-metadata",
+      "surface": "verb",
+      "family": "vector",
+      "op": "metadata.update",
+      "kind": "mutation.metadata_update",
+      "title": "Update vector metadata",
+      "summary": "Patch metadata for one vector.",
+      "description": "Applies a top-level metadata patch to one visible vector. Missing vectors return a no-op mutation acknowledgement.\n\nSuccessful mutations return an acknowledgement that identifies the affected target, the mutation effect, and commit facts when the operation changed stored state.",
+      "docs": "/docs/vector/metadata/update",
+      "feature": "core",
+      "access": "write",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::VectorUpdateMetadata",
+      "outputs": [
+        "Output::VectorMetadataUpdateResult"
+      ],
+      "response_model": "MutationAck<VectorMetadataUpdate>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.engine.vector_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_key"
+        },
+        {
+          "code": "not_found.executor.vector_collection",
+          "docs": "https://stratadb.org/e/not_found.executor.vector_collection"
+        },
+        {
+          "code": "invalid_argument.engine.vector_metadata_patch",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.vector_metadata_patch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/vector/metadata_update.json",
+        "response": "responses/v1/vector/metadata_update_applied.json"
+      },
+      "wire_status": "stable"
+    },
+    {
       "id": "vector.upsert",
       "path": [
         "vector",
         "upsert"
       ],
       "path_display": "vector upsert",
+      "surface": "verb",
       "family": "vector",
       "op": "upsert",
       "kind": "mutation.put",
@@ -1890,8 +1921,8 @@
       "vector.history": 26,
       "vector.index.query": 27,
       "vector.keys": 28,
-      "vector.metadata.update": 29,
-      "vector.query": 30,
+      "vector.metadata.update": 30,
+      "vector.query": 29,
       "vector.upsert": 31
     },
     "by_path": {
@@ -1924,8 +1955,8 @@
       "vector history": "vector.history",
       "vector index query": "vector.index.query",
       "vector keys": "vector.keys",
-      "vector metadata update": "vector.metadata.update",
       "vector query": "vector.query",
+      "vector update-metadata": "vector.metadata.update",
       "vector upsert": "vector.upsert"
     }
   }
