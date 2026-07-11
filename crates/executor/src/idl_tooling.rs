@@ -639,6 +639,7 @@ pub fn resolve_index(repo_root: &Path) -> Result<CommandIndex> {
         "branch.yaml",
         "event.yaml",
         "graph.yaml",
+        "inference.yaml",
         "json.yaml",
         "kv.yaml",
         "space.yaml",

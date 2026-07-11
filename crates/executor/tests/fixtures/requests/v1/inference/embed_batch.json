@@ -1,0 +1,8 @@
+{
+  "type": "inference_embed_batch",
+  "model": "miniLM",
+  "texts": [
+    "hello world",
+    "vector search"
+  ]
+}

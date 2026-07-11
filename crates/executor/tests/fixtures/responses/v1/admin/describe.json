@@ -8,7 +8,7 @@
       "arrow": true,
       "event": true,
       "graph_core": true,
-      "inference": false,
+      "inference": true,
       "json": true,
       "kv": true,
       "vector": true,

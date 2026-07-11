@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "ModelCacheStatus": {
+      "description": "Model cache facts exposed for diagnostics.",
+      "properties": {
+        "embedding_models": {
+          "description": "Cached embedding model specs.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "generation_models": {
+          "description": "Cached generation model specs.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ranking_models": {
+          "description": "Cached ranking model specs.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "generation_models",
+        "embedding_models",
+        "ranking_models"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/inference.cache_status.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "inference.cache_status",
+  "request": {
+    "additionalProperties": false,
+    "description": "Returns inference runtime cache diagnostics.",
+    "properties": {
+      "type": {
+        "const": "inference_cache_status",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Inference runtime cache diagnostics.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/ModelCacheStatus"
+      },
+      "type": {
+        "const": "inference_cache_status",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

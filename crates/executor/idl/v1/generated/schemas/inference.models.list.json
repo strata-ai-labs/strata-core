@@ -1,0 +1,140 @@
+{
+  "$defs": {
+    "ModelInfo": {
+      "description": "Information about a resolved model.",
+      "properties": {
+        "architecture": {
+          "description": "Model architecture family.",
+          "type": "string"
+        },
+        "default_quant": {
+          "description": "Default quantization variant.",
+          "type": "string"
+        },
+        "embedding_dim": {
+          "description": "Embedding dimension, or zero for non-embedding models.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "hf_repo": {
+          "description": "HuggingFace repository for the model artifact.",
+          "type": "string"
+        },
+        "is_local": {
+          "description": "Whether the model artifact is present locally.",
+          "type": "boolean"
+        },
+        "local_path": {
+          "description": "Local GGUF path when present.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Stable model catalog name.",
+          "type": "string"
+        },
+        "size_bytes": {
+          "description": "Approximate model artifact size in bytes.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "task": {
+          "$ref": "#/$defs/ModelTask",
+          "description": "Model task type."
+        }
+      },
+      "required": [
+        "name",
+        "task",
+        "architecture",
+        "default_quant",
+        "embedding_dim",
+        "is_local",
+        "size_bytes",
+        "hf_repo"
+      ],
+      "type": "object"
+    },
+    "ModelTask": {
+      "description": "What a model is designed for.",
+      "oneOf": [
+        {
+          "const": "embed",
+          "description": "Embedding model.",
+          "type": "string"
+        },
+        {
+          "const": "generate",
+          "description": "Text generation model.",
+          "type": "string"
+        },
+        {
+          "const": "rank",
+          "description": "Passage ranking model.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/inference.models.list.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "inference.models.list",
+  "request": {
+    "additionalProperties": false,
+    "description": "Lists catalog models known to the inference runtime.",
+    "properties": {
+      "type": {
+        "const": "inference_models_list",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Inference model list.",
+    "properties": {
+      "data": {
+        "description": "Shared pagination continuation facts.",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "has_more": {
+            "type": "boolean"
+          },
+          "items": {
+            "description": "Models in this page.",
+            "items": {
+              "$ref": "#/$defs/ModelInfo"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "inference_models",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

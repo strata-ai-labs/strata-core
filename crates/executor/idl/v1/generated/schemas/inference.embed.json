@@ -1,0 +1,65 @@
+{
+  "$defs": {
+    "EmbedRequest": {
+      "description": "Embedding request.",
+      "properties": {
+        "text": {
+          "description": "Text to embed.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/inference.embed.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "inference.embed",
+  "request": {
+    "additionalProperties": false,
+    "description": "Embeds one text with an inference model.",
+    "properties": {
+      "model": {
+        "description": "Model spec.",
+        "type": "string"
+      },
+      "request": {
+        "$ref": "#/$defs/EmbedRequest",
+        "description": "Embedding request."
+      },
+      "type": {
+        "const": "inference_embed",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "model",
+      "request"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Inference embedding vector.",
+    "properties": {
+      "data": {
+        "items": {
+          "format": "float",
+          "type": "number"
+        },
+        "type": "array"
+      },
+      "type": {
+        "const": "inference_embedding",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

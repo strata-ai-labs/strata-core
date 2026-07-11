@@ -1,0 +1,133 @@
+{
+  "$defs": {
+    "InferenceCapability": {
+      "description": "Provider/model capability facts.",
+      "properties": {
+        "can_embed": {
+          "description": "Whether embedding is supported.",
+          "type": "boolean"
+        },
+        "can_generate": {
+          "description": "Whether generation is supported.",
+          "type": "boolean"
+        },
+        "can_rank": {
+          "description": "Whether ranking is supported.",
+          "type": "boolean"
+        },
+        "can_tokenize": {
+          "description": "Whether tokenization is supported.",
+          "type": "boolean"
+        },
+        "embedding_dim": {
+          "description": "Known embedding dimension, if available.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "description": "Model name or path after provider parsing.",
+          "type": "string"
+        },
+        "network_enabled": {
+          "description": "Whether this runtime configuration currently allows network access.",
+          "type": "boolean"
+        },
+        "provider": {
+          "$ref": "#/$defs/ProviderKind",
+          "description": "Provider kind."
+        },
+        "provider_feature_enabled": {
+          "description": "Whether this binary was compiled with the provider feature needed for execution.",
+          "type": "boolean"
+        },
+        "requires_api_key": {
+          "description": "Whether the provider requires an API key.",
+          "type": "boolean"
+        },
+        "requires_network": {
+          "description": "Whether the operation requires network access.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "provider",
+        "model",
+        "can_generate",
+        "can_tokenize",
+        "can_embed",
+        "can_rank",
+        "requires_network",
+        "requires_api_key",
+        "provider_feature_enabled",
+        "network_enabled",
+        "embedding_dim"
+      ],
+      "type": "object"
+    },
+    "ProviderKind": {
+      "description": "Which inference provider to use.",
+      "oneOf": [
+        {
+          "const": "local",
+          "description": "Local GGUF model provider.",
+          "type": "string"
+        },
+        {
+          "const": "anthropic",
+          "description": "Anthropic cloud provider.",
+          "type": "string"
+        },
+        {
+          "const": "openai",
+          "description": "OpenAI cloud provider.",
+          "type": "string"
+        },
+        {
+          "const": "google",
+          "description": "Google Gemini cloud provider.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/inference.capability.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "inference.capability",
+  "request": {
+    "additionalProperties": false,
+    "description": "Returns capability facts for one inference model spec.",
+    "properties": {
+      "model": {
+        "description": "Model spec.",
+        "type": "string"
+      },
+      "type": {
+        "const": "inference_model_capability",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "model"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Inference capability facts.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/InferenceCapability"
+      },
+      "type": {
+        "const": "inference_capability",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

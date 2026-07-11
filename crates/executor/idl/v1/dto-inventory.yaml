@@ -82,3 +82,14 @@ response_models:
   - StatusResponse<HubClone>
   - StatusResponse<ArrowImport>
   - StatusResponse<ArrowExport>
+  - Page<ModelInfo, String>
+  - PullModelOutput
+  - InferenceCapability
+  - GenerateResponse
+  - TokenIds
+  - DetokenizedText
+  - EmbeddingVector
+  - EmbedResponse
+  - RankResponse
+  - UnloadResult
+  - ModelCacheStatus

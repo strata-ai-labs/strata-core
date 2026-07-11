@@ -1,0 +1,52 @@
+{
+  "$id": "https://stratadb.org/idl/v1/schemas/inference.unload.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "inference.unload",
+  "request": {
+    "additionalProperties": false,
+    "description": "Unloads one cached inference model, or all cached models when omitted.",
+    "properties": {
+      "model": {
+        "description": "Optional model spec.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "inference_unload",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Inference unload result.",
+    "properties": {
+      "data": {
+        "properties": {
+          "unloaded": {
+            "description": "True when a cached entry was removed.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "unloaded"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "inference_unload_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

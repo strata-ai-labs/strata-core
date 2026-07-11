@@ -1,0 +1,56 @@
+{
+  "$id": "https://stratadb.org/idl/v1/schemas/inference.tokenize.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "inference.tokenize",
+  "request": {
+    "additionalProperties": false,
+    "description": "Tokenizes text with a local inference model.",
+    "properties": {
+      "add_special": {
+        "default": false,
+        "description": "Whether to add special tokens.",
+        "type": "boolean"
+      },
+      "model": {
+        "description": "Model spec.",
+        "type": "string"
+      },
+      "text": {
+        "description": "Text to tokenize.",
+        "type": "string"
+      },
+      "type": {
+        "const": "inference_tokenize",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "model",
+      "text"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Inference token ids.",
+    "properties": {
+      "data": {
+        "items": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": "array"
+      },
+      "type": {
+        "const": "inference_token_ids",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

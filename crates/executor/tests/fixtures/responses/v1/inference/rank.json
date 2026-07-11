@@ -1,0 +1,17 @@
+{
+  "data": {
+    "items": [
+      {
+        "index": 0,
+        "score": 1.0,
+        "status": "ok"
+      },
+      {
+        "index": 1,
+        "score": 0.0,
+        "status": "ok"
+      }
+    ]
+  },
+  "type": "inference_ranking"
+}

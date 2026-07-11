@@ -1,0 +1,4 @@
+{
+  "type": "inference_model_capability",
+  "model": "anthropic:claude-3-5-haiku-latest"
+}

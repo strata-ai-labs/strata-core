@@ -106,11 +106,27 @@ fn required_command_count() -> usize {
         + REQUIRED_BRANCH.len()
         + REQUIRED_EVENT.len()
         + REQUIRED_GRAPH.len()
+        + REQUIRED_INFERENCE.len()
         + REQUIRED_JSON.len()
         + REQUIRED_KV.len()
         + REQUIRED_SPACE.len()
         + REQUIRED_VECTOR.len()
 }
+
+const REQUIRED_INFERENCE: &[&str] = &[
+    "inference.models.list",
+    "inference.models.local",
+    "inference.models.pull",
+    "inference.capability",
+    "inference.generate",
+    "inference.tokenize",
+    "inference.detokenize",
+    "inference.embed",
+    "inference.embed_batch",
+    "inference.rank",
+    "inference.unload",
+    "inference.cache_status",
+];
 
 const REQUIRED_KV: &[&str] = &[
     "kv.put",
@@ -165,6 +181,7 @@ fn kv_and_vector_overlay_has_required_command_coverage() {
         .chain(REQUIRED_BRANCH.iter())
         .chain(REQUIRED_EVENT.iter())
         .chain(REQUIRED_GRAPH.iter())
+        .chain(REQUIRED_INFERENCE.iter())
         .chain(REQUIRED_JSON.iter())
         .chain(REQUIRED_KV.iter())
         .chain(REQUIRED_SPACE.iter())
@@ -431,6 +448,7 @@ fn cli_command_index_has_required_coverage_and_lookup_tables() {
         .chain(REQUIRED_BRANCH.iter())
         .chain(REQUIRED_EVENT.iter())
         .chain(REQUIRED_GRAPH.iter())
+        .chain(REQUIRED_INFERENCE.iter())
         .chain(REQUIRED_JSON.iter())
         .chain(REQUIRED_KV.iter())
         .chain(REQUIRED_SPACE.iter())

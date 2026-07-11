@@ -96,3 +96,17 @@ errors:
   - failed_precondition.executor.hub_url
   - failed_precondition.executor.hub_clone
   - unavailable.executor.hub_transport
+  - inference.unsupported_operation
+  - inference.missing_model
+  - inference.model_load_failed
+  - inference.local_runtime_failed
+  - inference.missing_api_key
+  - inference.provider_auth_failed
+  - inference.provider_unavailable
+  - inference.provider_timeout
+  - inference.provider_rate_limited
+  - inference.invalid_request
+  - inference.download_disabled
+  - inference.download_failed
+  - inference.download_verification_failed
+  - inference.io_failure

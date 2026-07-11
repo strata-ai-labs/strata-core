@@ -16,9 +16,9 @@ fn embedded_cli_metadata_loads_without_generator_feature() {
         catalog.index().generator_version,
         "strata-executor-cli-idl.1"
     );
-    assert_eq!(catalog.index().command_count, 108);
-    assert_eq!(catalog.commands().len(), 108);
-    assert_eq!(catalog.families().len(), 9);
+    assert_eq!(catalog.index().command_count, 120);
+    assert_eq!(catalog.commands().len(), 120);
+    assert_eq!(catalog.families().len(), 10);
 }
 
 #[test]
@@ -78,10 +78,11 @@ fn command_listing_is_grouped_and_sorted() {
     assert_eq!(families[2].id, "branch");
     assert_eq!(families[3].id, "event");
     assert_eq!(families[4].id, "graph");
-    assert_eq!(families[5].id, "json");
-    assert_eq!(families[6].id, "kv");
-    assert_eq!(families[7].id, "space");
-    assert_eq!(families[8].id, "vector");
+    assert_eq!(families[5].id, "inference");
+    assert_eq!(families[6].id, "json");
+    assert_eq!(families[7].id, "kv");
+    assert_eq!(families[8].id, "space");
+    assert_eq!(families[9].id, "vector");
 
     let kv_commands = catalog
         .commands_for_family("kv")
@@ -92,7 +93,7 @@ fn command_listing_is_grouped_and_sorted() {
             .iter()
             .map(|command| command.id.as_str())
             .collect::<Vec<_>>(),
-        families[6]
+        families[7]
             .commands
             .iter()
             .map(String::as_str)
@@ -107,7 +108,7 @@ fn command_listing_is_grouped_and_sorted() {
     let actual_paths = sorted_paths.clone();
     sorted_paths.sort();
     assert_eq!(actual_paths, sorted_paths);
-    assert!(catalog.commands_for_family("inference").is_none());
+    assert!(catalog.commands_for_family("__absent__").is_none());
 }
 
 #[test]

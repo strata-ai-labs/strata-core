@@ -1,0 +1,16 @@
+{
+  "data": {
+    "can_embed": false,
+    "can_generate": true,
+    "can_rank": false,
+    "can_tokenize": false,
+    "embedding_dim": 0,
+    "model": "claude-3-5-haiku-latest",
+    "network_enabled": true,
+    "provider": "anthropic",
+    "provider_feature_enabled": true,
+    "requires_api_key": true,
+    "requires_network": true
+  },
+  "type": "inference_capability"
+}

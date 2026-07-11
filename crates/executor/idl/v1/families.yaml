@@ -18,6 +18,9 @@ families:
       - invalid_argument.engine.product_space
       - invalid_argument.engine.graph_name
       - not_found.engine.graph
+  - id: inference
+    docs: /docs/inference/{op_path}
+    errors: []
   - id: json
     docs: /docs/json/{op_path}
     errors:

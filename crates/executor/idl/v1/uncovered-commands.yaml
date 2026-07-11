@@ -6,15 +6,3 @@
 # if a new variant is neither covered nor listed. Do not add entries for
 # new commands — author their IDL coverage instead.
 uncovered:
-  - Command::InferenceCacheStatus
-  - Command::InferenceDetokenize
-  - Command::InferenceEmbed
-  - Command::InferenceEmbedBatch
-  - Command::InferenceGenerate
-  - Command::InferenceModelCapability
-  - Command::InferenceModelsList
-  - Command::InferenceModelsLocal
-  - Command::InferenceModelsPull
-  - Command::InferenceRank
-  - Command::InferenceTokenize
-  - Command::InferenceUnload

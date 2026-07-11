@@ -62,10 +62,10 @@ jobs:
           cargo test --locked -p strata-engine --test capability_conformance
       - name: Executor IDL drift gates
         run: |
-          cargo run --locked -p strata-executor --features idl-tooling --bin strata-idl -- check
-          cargo run --locked -p strata-executor --features idl-tooling --bin strata-idl -- check-cli
-          cargo run --locked -p strata-executor --features idl-tooling --bin strata-idl -- verify-fixtures
-          cargo test --locked -p strata-executor --features idl-tooling --test idl_kv_vector_overlay
+          cargo run --locked -p strata-executor --features idl-tooling,inference --bin strata-idl -- check
+          cargo run --locked -p strata-executor --features idl-tooling,inference --bin strata-idl -- check-cli
+          cargo run --locked -p strata-executor --features idl-tooling,inference --bin strata-idl -- verify-fixtures
+          cargo test --locked -p strata-executor --features idl-tooling,inference --test idl_kv_vector_overlay
       - name: Doc tests
         run: cargo test --locked --workspace --doc
 

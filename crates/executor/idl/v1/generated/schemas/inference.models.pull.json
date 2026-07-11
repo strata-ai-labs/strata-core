@@ -1,0 +1,61 @@
+{
+  "$defs": {
+    "PullModelOutput": {
+      "description": "Pull-model command output.",
+      "properties": {
+        "model": {
+          "description": "Requested model spec.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Local path containing the resolved GGUF file.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model",
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/inference.models.pull.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "inference.models.pull",
+  "request": {
+    "additionalProperties": false,
+    "description": "Pulls an inference model into the local model directory.",
+    "properties": {
+      "model": {
+        "description": "Model spec or catalog name.",
+        "type": "string"
+      },
+      "type": {
+        "const": "inference_models_pull",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "model"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Inference model pull output.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/PullModelOutput"
+      },
+      "type": {
+        "const": "inference_model_pulled",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

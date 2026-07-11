@@ -1,0 +1,20 @@
+{
+  "data": {
+    "cursor": null,
+    "has_more": false,
+    "items": [
+      {
+        "architecture": "bert",
+        "default_quant": "f16",
+        "embedding_dim": 384,
+        "hf_repo": "stratalab-org/all-MiniLM-L6-v2-GGUF",
+        "is_local": false,
+        "local_path": null,
+        "name": "miniLM",
+        "size_bytes": 45000000,
+        "task": "embed"
+      }
+    ]
+  },
+  "type": "inference_models"
+}

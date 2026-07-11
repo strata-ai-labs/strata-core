@@ -126,3 +126,11 @@ kinds:
     response_model: StatusResponse<{result}>
     snippets:
       - status-value.md
+  - id: inference.models_page
+    access: read
+    commit: none
+    pagination: cursor
+    response_model: Page<ModelInfo, String>
+  - id: inference.runtime_op
+    access: read
+    commit: none

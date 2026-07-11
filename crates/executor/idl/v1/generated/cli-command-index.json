@@ -4,11 +4,11 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "0b52283a1f5bfc5818e94c89f5ff19a6f027d7c74d9b0011dcd54165a0645ab8",
+    "checksum_sha256": "b62a6b7275a828d50968f0001c991420538b8a05269e3381c0388380255bf5be",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
-  "command_count": 108,
+  "command_count": 120,
   "families": [
     {
       "id": "admin",
@@ -96,6 +96,24 @@
         "graph.node.remove",
         "graph.analytics.sssp",
         "graph.analytics.wcc"
+      ]
+    },
+    {
+      "id": "inference",
+      "command_count": 12,
+      "commands": [
+        "inference.cache_status",
+        "inference.capability",
+        "inference.detokenize",
+        "inference.embed",
+        "inference.embed_batch",
+        "inference.generate",
+        "inference.models.list",
+        "inference.models.local",
+        "inference.models.pull",
+        "inference.rank",
+        "inference.tokenize",
+        "inference.unload"
       ]
     },
     {
@@ -3523,6 +3541,670 @@
       "wire_status": "stable"
     },
     {
+      "id": "inference.cache_status",
+      "path": [
+        "inference",
+        "cache-status"
+      ],
+      "path_display": "inference cache-status",
+      "surface": "verb",
+      "family": "inference",
+      "op": "cache_status",
+      "kind": "inference.runtime_op",
+      "title": "Report model cache",
+      "summary": "Report loaded model cache state.",
+      "description": "Reports the runtime model cache as three lists of specs: the generation, embedding, and ranking models currently loaded in memory. Use it to check what is resident before generating, or to confirm that `inference unload` freed the models you expected. The lists reflect only in-memory engines, not models available on disk.",
+      "docs": "/docs/inference/cache_status",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::InferenceCacheStatus",
+      "outputs": [
+        "Output::InferenceCacheStatus"
+      ],
+      "response_model": "ModelCacheStatus",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/cache_status.json",
+        "response": "responses/v1/inference/cache_status.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "inference.capability",
+      "path": [
+        "inference",
+        "capability"
+      ],
+      "path_display": "inference capability",
+      "surface": "verb",
+      "family": "inference",
+      "op": "capability",
+      "kind": "inference.runtime_op",
+      "title": "Report model capabilities",
+      "summary": "Report capabilities for a model spec.",
+      "description": "Parses a model spec into a provider and model name and reports what that combination supports without running the model. The result states whether generation, tokenization, embedding, and ranking are available, whether the operation requires network access or an API key, whether this binary was compiled with the provider feature needed to execute, whether the runtime currently permits network calls, and the known embedding dimension. Model specs are catalog names (`tinyllama`), catalog `name:quant` pairs (`tinyllama:q8_0`), local GGUF paths, or provider specs (`anthropic:claude-...`).",
+      "docs": "/docs/inference/capability",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::InferenceModelCapability",
+      "outputs": [
+        "Output::InferenceCapability"
+      ],
+      "response_model": "InferenceCapability",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.provider_unavailable",
+          "docs": "https://stratadb.org/e/inference.provider_unavailable"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/capability.json",
+        "response": "responses/v1/inference/capability.json"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "inference.detokenize",
+      "path": [
+        "inference",
+        "detokenize"
+      ],
+      "path_display": "inference detokenize",
+      "surface": "verb",
+      "family": "inference",
+      "op": "detokenize",
+      "kind": "inference.runtime_op",
+      "title": "Detokenize token ids",
+      "summary": "Detokenize token ids with a local model.",
+      "description": "Decodes an ordered list of token ids back into text using a local model's vocabulary, returning the reconstructed string. Detokenization is a local-only operation: it requires a build with the local execution feature and returns `inference.unsupported_operation` for cloud provider specs.",
+      "docs": "/docs/inference/detokenize",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::InferenceDetokenize",
+      "outputs": [
+        "Output::InferenceText"
+      ],
+      "response_model": "DetokenizedText",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.unsupported_operation",
+          "docs": "https://stratadb.org/e/inference.unsupported_operation"
+        },
+        {
+          "code": "inference.missing_model",
+          "docs": "https://stratadb.org/e/inference.missing_model"
+        },
+        {
+          "code": "inference.model_load_failed",
+          "docs": "https://stratadb.org/e/inference.model_load_failed"
+        },
+        {
+          "code": "inference.local_runtime_failed",
+          "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/detokenize.json",
+        "response": "responses/v1/inference/text.json",
+        "replay_skip": "detokenization loads a local model, which requires the local build feature"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "inference.embed",
+      "path": [
+        "inference",
+        "embed"
+      ],
+      "path_display": "inference embed",
+      "surface": "verb",
+      "family": "inference",
+      "op": "embed",
+      "kind": "inference.runtime_op",
+      "title": "Embed one text",
+      "summary": "Embed one text into a vector.",
+      "description": "Embeds one text with an embedding-capable model and returns the resulting vector. The vector's dimension is fixed by the model. Local embedding models require a build with the local execution feature; cloud embedding providers (OpenAI, Google) require the matching provider feature and an API key. To embed several texts in one call, use `inference embed-batch`.",
+      "docs": "/docs/inference/embed",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::InferenceEmbed",
+      "outputs": [
+        "Output::InferenceEmbedding"
+      ],
+      "response_model": "EmbeddingVector",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.unsupported_operation",
+          "docs": "https://stratadb.org/e/inference.unsupported_operation"
+        },
+        {
+          "code": "inference.missing_model",
+          "docs": "https://stratadb.org/e/inference.missing_model"
+        },
+        {
+          "code": "inference.model_load_failed",
+          "docs": "https://stratadb.org/e/inference.model_load_failed"
+        },
+        {
+          "code": "inference.local_runtime_failed",
+          "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        },
+        {
+          "code": "inference.missing_api_key",
+          "docs": "https://stratadb.org/e/inference.missing_api_key"
+        },
+        {
+          "code": "inference.provider_unavailable",
+          "docs": "https://stratadb.org/e/inference.provider_unavailable"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/embed.json",
+        "response": "responses/v1/inference/embed.json",
+        "replay_skip": "embedding runs a model: local execution needs the local build feature and cloud execution needs a provider API key"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "inference.embed_batch",
+      "path": [
+        "inference",
+        "embed-batch"
+      ],
+      "path_display": "inference embed-batch",
+      "surface": "verb",
+      "family": "inference",
+      "op": "embed_batch",
+      "kind": "inference.runtime_op",
+      "title": "Embed multiple texts",
+      "summary": "Embed multiple texts into vectors.",
+      "description": "Embeds an ordered list of texts with an embedding-capable model and returns one outcome per input in the same order, alongside the embedding dimension. Each item is either a successful vector or a per-item error carrying a stable code and a redacted message, so one bad input does not fail the whole batch. Local embedding models require a build with the local execution feature; cloud embedding providers (OpenAI, Google) require the matching provider feature and an API key.",
+      "docs": "/docs/inference/embed_batch",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::InferenceEmbedBatch",
+      "outputs": [
+        "Output::InferenceEmbeddings"
+      ],
+      "response_model": "EmbedResponse",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.unsupported_operation",
+          "docs": "https://stratadb.org/e/inference.unsupported_operation"
+        },
+        {
+          "code": "inference.missing_model",
+          "docs": "https://stratadb.org/e/inference.missing_model"
+        },
+        {
+          "code": "inference.model_load_failed",
+          "docs": "https://stratadb.org/e/inference.model_load_failed"
+        },
+        {
+          "code": "inference.local_runtime_failed",
+          "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        },
+        {
+          "code": "inference.missing_api_key",
+          "docs": "https://stratadb.org/e/inference.missing_api_key"
+        },
+        {
+          "code": "inference.provider_unavailable",
+          "docs": "https://stratadb.org/e/inference.provider_unavailable"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/embed_batch.json",
+        "response": "responses/v1/inference/embed_batch.json",
+        "replay_skip": "embedding runs a model: local execution needs the local build feature and cloud execution needs a provider API key"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "inference.generate",
+      "path": [
+        "inference",
+        "generate"
+      ],
+      "path_display": "inference generate",
+      "surface": "verb",
+      "family": "inference",
+      "op": "generate",
+      "kind": "inference.runtime_op",
+      "title": "Generate text",
+      "summary": "Generate text with an inference model.",
+      "description": "Runs a text-generation request against a local or cloud model and returns the completion, the reason generation stopped, and the provider-reported prompt and completion token counts. The request controls the maximum completion tokens, sampling temperature, top-k and top-p cutoffs, an optional deterministic seed, string and token-id stop sequences, and an optional GBNF grammar for constrained generation. Chat models expect their chat template already applied in the prompt. Local models require a build with the local execution feature; cloud providers require the matching provider feature and an API key.",
+      "docs": "/docs/inference/generate",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::InferenceGenerate",
+      "outputs": [
+        "Output::InferenceGeneration"
+      ],
+      "response_model": "GenerateResponse",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.unsupported_operation",
+          "docs": "https://stratadb.org/e/inference.unsupported_operation"
+        },
+        {
+          "code": "inference.missing_model",
+          "docs": "https://stratadb.org/e/inference.missing_model"
+        },
+        {
+          "code": "inference.model_load_failed",
+          "docs": "https://stratadb.org/e/inference.model_load_failed"
+        },
+        {
+          "code": "inference.local_runtime_failed",
+          "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        },
+        {
+          "code": "inference.missing_api_key",
+          "docs": "https://stratadb.org/e/inference.missing_api_key"
+        },
+        {
+          "code": "inference.provider_auth_failed",
+          "docs": "https://stratadb.org/e/inference.provider_auth_failed"
+        },
+        {
+          "code": "inference.provider_unavailable",
+          "docs": "https://stratadb.org/e/inference.provider_unavailable"
+        },
+        {
+          "code": "inference.provider_timeout",
+          "docs": "https://stratadb.org/e/inference.provider_timeout"
+        },
+        {
+          "code": "inference.provider_rate_limited",
+          "docs": "https://stratadb.org/e/inference.provider_rate_limited"
+        },
+        {
+          "code": "inference.invalid_request",
+          "docs": "https://stratadb.org/e/inference.invalid_request"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/generate.json",
+        "response": "responses/v1/inference/generate.json",
+        "replay_skip": "text generation runs a model: local execution needs the local build feature and cloud execution needs a provider API key"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "inference.models.list",
+      "path": [
+        "inference",
+        "models",
+        "list"
+      ],
+      "path_display": "inference models list",
+      "surface": "verb",
+      "family": "inference",
+      "op": "models.list",
+      "kind": "inference.models_page",
+      "title": "List catalog models",
+      "summary": "List catalog inference models.",
+      "description": "Lists every model in Strata's built-in catalog as a terminal page. Each entry reports the model's task (embed, generate, or rank), architecture, default quantization, embedding dimension, HuggingFace repository, approximate artifact size, and whether the model artifact is already present in the local model directory. Use `inference models local` to see only the downloaded models, or `inference models pull` to fetch one.",
+      "docs": "/docs/inference/models/list",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "input": "Command::InferenceModelsList",
+      "outputs": [
+        "Output::InferenceModels"
+      ],
+      "response_model": "Page<ModelInfo, String>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/models_list.json",
+        "response": "responses/v1/inference/models_list.json",
+        "replay_skip": "list marks each model is_local from the machine's model directory (STRATA_MODELS_DIR or ~/.strata/models), so the success output is machine-dependent"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "inference.models.local",
+      "path": [
+        "inference",
+        "models",
+        "local"
+      ],
+      "path_display": "inference models local",
+      "surface": "verb",
+      "family": "inference",
+      "op": "models.local",
+      "kind": "inference.models_page",
+      "title": "List local models",
+      "summary": "List locally downloaded inference models.",
+      "description": "Lists the catalog models that have at least one quantization variant present in the local model directory, as a terminal page. Entries carry the same facts as `inference models list` but are restricted to models that can run without a further download. The local model directory is resolved from `STRATA_MODELS_DIR`, falling back to `~/.strata/models`.",
+      "docs": "/docs/inference/models/local",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "input": "Command::InferenceModelsLocal",
+      "outputs": [
+        "Output::InferenceModels"
+      ],
+      "response_model": "Page<ModelInfo, String>",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/models_local.json",
+        "response": "responses/v1/inference/models_local.json",
+        "replay_skip": "which models are present depends on the machine's model directory (STRATA_MODELS_DIR or ~/.strata/models)"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "inference.models.pull",
+      "path": [
+        "inference",
+        "models",
+        "pull"
+      ],
+      "path_display": "inference models pull",
+      "surface": "verb",
+      "family": "inference",
+      "op": "models.pull",
+      "kind": "inference.runtime_op",
+      "title": "Download a model",
+      "summary": "Download an inference model locally.",
+      "description": "Resolves a catalog name or model spec and downloads the model artifact into the local model directory, returning the resolved local path. Honors `STRATA_MODELS_DIR` for the destination and `STRATA_HF_ENDPOINT` and `STRATA_HF_TOKEN` (or `HF_TOKEN`) for gated HuggingFace repositories. Downloading requires network access and a build with the local execution feature; cloud-only builds return `inference.unsupported_operation`.",
+      "docs": "/docs/inference/models/pull",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::InferenceModelsPull",
+      "outputs": [
+        "Output::InferenceModelPulled"
+      ],
+      "response_model": "PullModelOutput",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.download_disabled",
+          "docs": "https://stratadb.org/e/inference.download_disabled"
+        },
+        {
+          "code": "inference.missing_model",
+          "docs": "https://stratadb.org/e/inference.missing_model"
+        },
+        {
+          "code": "inference.download_failed",
+          "docs": "https://stratadb.org/e/inference.download_failed"
+        },
+        {
+          "code": "inference.download_verification_failed",
+          "docs": "https://stratadb.org/e/inference.download_verification_failed"
+        },
+        {
+          "code": "inference.io_failure",
+          "docs": "https://stratadb.org/e/inference.io_failure"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/models_pull.json",
+        "response": "responses/v1/inference/models_pull.json",
+        "replay_skip": "model download performs network I/O and requires the local execution build feature"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "inference.rank",
+      "path": [
+        "inference",
+        "rank"
+      ],
+      "path_display": "inference rank",
+      "surface": "verb",
+      "family": "inference",
+      "op": "rank",
+      "kind": "inference.runtime_op",
+      "title": "Rank passages",
+      "summary": "Rank passages against a query.",
+      "description": "Scores each candidate passage against a query with a ranking model and returns one outcome per passage. Each item carries the passage's original index and either a relevance score or a per-item error with a stable code and a redacted message, so callers can reorder passages by score while keeping them tied to their inputs. Ranking is a local-only operation: it requires a build with the local execution feature and a ranking-capable model.",
+      "docs": "/docs/inference/rank",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::InferenceRank",
+      "outputs": [
+        "Output::InferenceRanking"
+      ],
+      "response_model": "RankResponse",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.unsupported_operation",
+          "docs": "https://stratadb.org/e/inference.unsupported_operation"
+        },
+        {
+          "code": "inference.missing_model",
+          "docs": "https://stratadb.org/e/inference.missing_model"
+        },
+        {
+          "code": "inference.model_load_failed",
+          "docs": "https://stratadb.org/e/inference.model_load_failed"
+        },
+        {
+          "code": "inference.local_runtime_failed",
+          "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/rank.json",
+        "response": "responses/v1/inference/rank.json",
+        "replay_skip": "ranking loads a local model, which requires the local build feature"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "inference.tokenize",
+      "path": [
+        "inference",
+        "tokenize"
+      ],
+      "path_display": "inference tokenize",
+      "surface": "verb",
+      "family": "inference",
+      "op": "tokenize",
+      "kind": "inference.runtime_op",
+      "title": "Tokenize text",
+      "summary": "Tokenize text with a local model.",
+      "description": "Encodes text into the token id sequence a local model would see and returns the ids in order. Set `add_special` to include the model's special tokens (such as beginning-of-sequence markers). Tokenization is a local-only operation: it requires a build with the local execution feature and returns `inference.unsupported_operation` for cloud provider specs.",
+      "docs": "/docs/inference/tokenize",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::InferenceTokenize",
+      "outputs": [
+        "Output::InferenceTokenIds"
+      ],
+      "response_model": "TokenIds",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.unsupported_operation",
+          "docs": "https://stratadb.org/e/inference.unsupported_operation"
+        },
+        {
+          "code": "inference.missing_model",
+          "docs": "https://stratadb.org/e/inference.missing_model"
+        },
+        {
+          "code": "inference.model_load_failed",
+          "docs": "https://stratadb.org/e/inference.model_load_failed"
+        },
+        {
+          "code": "inference.local_runtime_failed",
+          "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/tokenize.json",
+        "response": "responses/v1/inference/tokenize.json",
+        "replay_skip": "tokenization loads a local model, which requires the local build feature"
+      },
+      "wire_status": "stable"
+    },
+    {
+      "id": "inference.unload",
+      "path": [
+        "inference",
+        "unload"
+      ],
+      "path_display": "inference unload",
+      "surface": "verb",
+      "family": "inference",
+      "op": "unload",
+      "kind": "inference.runtime_op",
+      "title": "Unload cached models",
+      "summary": "Unload cached inference models.",
+      "description": "Removes cached model engines from the runtime to free memory. Pass a model spec to unload one entry, or omit it to unload every cached generation, embedding, and ranking model. The result reports whether any cached entry was actually removed. This affects only the in-memory runtime cache; it never deletes downloaded model files from disk.",
+      "docs": "/docs/inference/unload",
+      "feature": "core",
+      "access": "read",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "input": "Command::InferenceUnload",
+      "outputs": [
+        "Output::InferenceUnloadResult"
+      ],
+      "response_model": "UnloadResult",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/unload.json",
+        "response": "responses/v1/inference/unload.json"
+      },
+      "wire_status": "stable"
+    },
+    {
       "id": "admin.info",
       "path": [
         "info"
@@ -6709,10 +7391,10 @@
       "admin.describe": 12,
       "admin.health": 53,
       "admin.hub_clone": 9,
-      "admin.info": 54,
-      "admin.metrics": 82,
-      "admin.ping": 83,
-      "admin.remote": 84,
+      "admin.info": 66,
+      "admin.metrics": 94,
+      "admin.ping": 95,
+      "admin.remote": 96,
       "arrow.export": 0,
       "arrow.import": 1,
       "branch.create": 2,
@@ -6762,56 +7444,68 @@
       "graph.ontology.freeze": 45,
       "graph.ontology.get": 46,
       "graph.ontology.summary": 47,
-      "json.batch_delete": 55,
-      "json.batch_get": 56,
-      "json.batch_set": 57,
-      "json.count": 58,
-      "json.delete": 59,
-      "json.exists": 60,
-      "json.get": 61,
-      "json.history": 62,
-      "json.index.create": 63,
-      "json.index.drop": 64,
-      "json.index.list": 65,
-      "json.list": 66,
-      "json.sample": 67,
-      "json.set": 68,
-      "kv.batch_delete": 69,
-      "kv.batch_exists": 70,
-      "kv.batch_get": 71,
-      "kv.batch_put": 72,
-      "kv.count": 73,
-      "kv.delete": 74,
-      "kv.exists": 75,
-      "kv.get": 76,
-      "kv.history": 77,
-      "kv.list": 78,
-      "kv.put": 79,
-      "kv.sample": 80,
-      "kv.scan": 81,
-      "space.create": 85,
-      "space.delete": 86,
-      "space.exists": 87,
-      "space.list": 88,
-      "vector.batch_delete": 89,
-      "vector.batch_get": 90,
-      "vector.batch_upsert": 91,
-      "vector.collection.create": 92,
-      "vector.collection.delete": 93,
-      "vector.collection.list": 94,
-      "vector.collection.stats": 95,
-      "vector.count": 96,
-      "vector.delete": 97,
-      "vector.delete_all": 98,
-      "vector.delete_by_filter": 99,
-      "vector.exists": 100,
-      "vector.get": 101,
-      "vector.history": 102,
-      "vector.index.query": 103,
-      "vector.keys": 104,
-      "vector.metadata.update": 106,
-      "vector.query": 105,
-      "vector.upsert": 107
+      "inference.cache_status": 54,
+      "inference.capability": 55,
+      "inference.detokenize": 56,
+      "inference.embed": 57,
+      "inference.embed_batch": 58,
+      "inference.generate": 59,
+      "inference.models.list": 60,
+      "inference.models.local": 61,
+      "inference.models.pull": 62,
+      "inference.rank": 63,
+      "inference.tokenize": 64,
+      "inference.unload": 65,
+      "json.batch_delete": 67,
+      "json.batch_get": 68,
+      "json.batch_set": 69,
+      "json.count": 70,
+      "json.delete": 71,
+      "json.exists": 72,
+      "json.get": 73,
+      "json.history": 74,
+      "json.index.create": 75,
+      "json.index.drop": 76,
+      "json.index.list": 77,
+      "json.list": 78,
+      "json.sample": 79,
+      "json.set": 80,
+      "kv.batch_delete": 81,
+      "kv.batch_exists": 82,
+      "kv.batch_get": 83,
+      "kv.batch_put": 84,
+      "kv.count": 85,
+      "kv.delete": 86,
+      "kv.exists": 87,
+      "kv.get": 88,
+      "kv.history": 89,
+      "kv.list": 90,
+      "kv.put": 91,
+      "kv.sample": 92,
+      "kv.scan": 93,
+      "space.create": 97,
+      "space.delete": 98,
+      "space.exists": 99,
+      "space.list": 100,
+      "vector.batch_delete": 101,
+      "vector.batch_get": 102,
+      "vector.batch_upsert": 103,
+      "vector.collection.create": 104,
+      "vector.collection.delete": 105,
+      "vector.collection.list": 106,
+      "vector.collection.stats": 107,
+      "vector.count": 108,
+      "vector.delete": 109,
+      "vector.delete_all": 110,
+      "vector.delete_by_filter": 111,
+      "vector.exists": 112,
+      "vector.get": 113,
+      "vector.history": 114,
+      "vector.index.query": 115,
+      "vector.keys": 116,
+      "vector.metadata.update": 118,
+      "vector.query": 117,
+      "vector.upsert": 119
     },
     "by_path": {
       "arrow export": "arrow.export",
@@ -6868,6 +7562,18 @@
       "graph sssp": "graph.analytics.sssp",
       "graph wcc": "graph.analytics.wcc",
       "health": "admin.health",
+      "inference cache-status": "inference.cache_status",
+      "inference capability": "inference.capability",
+      "inference detokenize": "inference.detokenize",
+      "inference embed": "inference.embed",
+      "inference embed-batch": "inference.embed_batch",
+      "inference generate": "inference.generate",
+      "inference models list": "inference.models.list",
+      "inference models local": "inference.models.local",
+      "inference models pull": "inference.models.pull",
+      "inference rank": "inference.rank",
+      "inference tokenize": "inference.tokenize",
+      "inference unload": "inference.unload",
       "info": "admin.info",
       "json batch-delete": "json.batch_delete",
       "json batch-get": "json.batch_get",
