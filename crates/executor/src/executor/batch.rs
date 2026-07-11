@@ -1,41 +1,9 @@
 use super::{
-    bytes_from_key, optional_limit, BTreeSet, BatchExistsItemResult, BatchGetItemResult, BatchItem,
-    BatchItemResult, BatchMode, BatchResult, Bytes, EventBatchAppendItemResult, ExecutorError,
-    ExecutorErrorClass, ExecutorResult, GraphBatchItemResult, JsonBatchGetItemResult,
-    JsonBatchItemResult, KvKey, Output, PageInfo, VectorBatchGetItemResult, VectorBatchItemResult,
+    BTreeSet, BatchExistsItemResult, BatchGetItemResult, BatchItem, BatchItemResult, BatchMode,
+    BatchResult, Bytes, EventBatchAppendItemResult, ExecutorError, ExecutorErrorClass,
+    ExecutorResult, GraphBatchItemResult, JsonBatchGetItemResult, JsonBatchItemResult,
+    VectorBatchGetItemResult, VectorBatchItemResult,
 };
-
-pub(super) fn page_or_keys(
-    keys: Vec<KvKey>,
-    cursor: Option<&KvKey>,
-    limit: Option<u64>,
-) -> ExecutorResult<Output> {
-    if cursor.is_none() && limit.is_none() {
-        return Ok(Output::KeysPage {
-            items: keys.iter().map(bytes_from_key).collect(),
-            page: PageInfo::terminal(),
-        });
-    }
-    let limit = optional_limit(limit)?.unwrap_or(usize::MAX);
-    if limit == 0 {
-        return Ok(Output::KeysPage {
-            items: Vec::new(),
-            page: PageInfo::terminal(),
-        });
-    }
-    let filtered = keys
-        .into_iter()
-        .filter(|key| cursor.is_none_or(|cursor| key.as_bytes() > cursor.as_bytes()))
-        .take(limit.saturating_add(1))
-        .collect::<Vec<_>>();
-    let has_more = filtered.len() > limit;
-    let keys = filtered.into_iter().take(limit).collect::<Vec<_>>();
-    let cursor = has_more.then(|| keys.last().expect("non-empty page").clone());
-    Ok(Output::KeysPage {
-        items: keys.iter().map(bytes_from_key).collect(),
-        page: PageInfo::new(has_more, cursor.as_ref().map(bytes_from_key)),
-    })
-}
 
 pub(super) fn empty_batch_results(len: usize) -> Vec<Option<BatchItem<BatchItemResult>>> {
     std::iter::repeat_with(|| None).take(len).collect()

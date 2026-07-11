@@ -4,9 +4,9 @@ use super::{
     empty_batch_get_results, empty_batch_results, finish_batch_exists_results,
     finish_batch_get_results, finish_batch_results, history_result, kv_batch_exists_result,
     kv_batch_get_result, kv_batch_result, kv_key, kv_value, optional_key, optional_limit,
-    page_or_keys, reject_duplicate_valid_keys, sample_output, scan_item, upsert_effect,
-    usize_to_u64, versioned_value, write_output, BatchKvEntry, Bytes, Executor, ExecutorResult,
-    Output, PageInfo, Timestamp,
+    reject_duplicate_valid_keys, sample_output, scan_item, upsert_effect, usize_to_u64,
+    versioned_value, write_output, BatchKvEntry, Bytes, Executor, ExecutorResult, Output, PageInfo,
+    Timestamp,
 };
 
 impl Executor {
@@ -76,25 +76,32 @@ impl Executor {
         let prefix = optional_key(prefix)?;
         let cursor = optional_key(cursor)?;
         let mut service = self.kv_service(branch, space)?;
-        if let Some(as_of) = as_of {
-            let keys = service.list_at(prefix.as_ref(), Timestamp::from_micros(as_of))?;
-            return page_or_keys(keys, cursor.as_ref(), limit);
-        }
-        if limit.is_some() {
-            let limit = optional_limit(limit)?.unwrap_or(usize::MAX);
-            let page = service.list_page(prefix.as_ref(), cursor.as_ref(), limit)?;
+        // A bare list (no cursor, no limit) returns every key; any pagination
+        // request routes through the engine's page methods so the executor
+        // never materializes the whole keyset or does cursor math itself.
+        if cursor.is_none() && limit.is_none() {
+            let keys = match as_of {
+                Some(as_of) => service.list_at(prefix.as_ref(), Timestamp::from_micros(as_of))?,
+                None => service.list(prefix.as_ref())?,
+            };
             return Ok(Output::KeysPage {
-                items: page.keys().iter().map(bytes_from_key).collect(),
-                page: PageInfo::new(page.has_more(), page.cursor().map(bytes_from_key)),
+                items: keys.iter().map(bytes_from_key).collect(),
+                page: PageInfo::terminal(),
             });
         }
-        let keys = service.list(prefix.as_ref())?;
-        if cursor.is_some() {
-            return page_or_keys(keys, cursor.as_ref(), limit);
-        }
+        let limit = optional_limit(limit)?.unwrap_or(usize::MAX);
+        let page = match as_of {
+            Some(as_of) => service.list_at_page(
+                prefix.as_ref(),
+                cursor.as_ref(),
+                limit,
+                Timestamp::from_micros(as_of),
+            )?,
+            None => service.list_page(prefix.as_ref(), cursor.as_ref(), limit)?,
+        };
         Ok(Output::KeysPage {
-            items: keys.iter().map(bytes_from_key).collect(),
-            page: PageInfo::terminal(),
+            items: page.keys().iter().map(bytes_from_key).collect(),
+            page: PageInfo::new(page.has_more(), page.cursor().map(bytes_from_key)),
         })
     }
 

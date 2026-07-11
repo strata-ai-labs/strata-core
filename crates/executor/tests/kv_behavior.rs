@@ -201,7 +201,7 @@ fn durable_executor_reopens_values_lists_and_history() {
 fn branch_and_space_defaults_are_isolated() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
     executor
-        .create_branch_from_head(DEFAULT_BRANCH, "feature")
+        .branch_fork_current(DEFAULT_BRANCH, "feature")
         .expect("branch creates");
 
     write(&mut executor, None, None, "shared", "default-branch");
@@ -915,6 +915,55 @@ fn kv_scan_paginates_honestly_with_a_cursor() {
     let mut expected: Vec<Vec<u8>> = (0..6).map(|i| format!("k{i}").into_bytes()).collect();
     expected.sort();
     assert_eq!(seen, expected);
+}
+
+#[test]
+fn kv_list_as_of_paginates_in_the_engine() {
+    // Time-travel listing paginates via the engine (list_at_page), so a
+    // historical page reflects only keys visible at that timestamp and never
+    // materializes the whole keyset in the executor.
+    let mut executor = Executor::open_cache().expect("cache executor opens");
+    let mut historical = 0;
+    for i in 0..4 {
+        historical = write(&mut executor, None, None, &format!("h{i}"), "v").timestamp;
+    }
+    // Keys added after the snapshot must not appear in the historical pages.
+    write(&mut executor, None, None, "h4", "v");
+    write(&mut executor, None, None, "h5", "v");
+
+    let mut cursor: Option<Bytes> = None;
+    let mut seen: Vec<Vec<u8>> = Vec::new();
+    let mut pages = 0;
+    loop {
+        let Output::KeysPage { items, page } = executor
+            .execute(Command::KvList {
+                branch: None,
+                space: None,
+                prefix: None,
+                cursor: cursor.clone(),
+                limit: Some(2),
+                as_of: Some(historical),
+            })
+            .expect("historical page succeeds")
+        else {
+            panic!("unexpected list output");
+        };
+        assert!(items.len() <= 2);
+        seen.extend(items.iter().map(|key| key.as_slice().to_vec()));
+        pages += 1;
+        assert!(pages <= 4, "pagination did not terminate");
+        match page.cursor() {
+            Some(next) => cursor = Some(next.clone()),
+            None => break,
+        }
+    }
+    seen.sort();
+    let expected: Vec<Vec<u8>> = (0..4).map(|i| format!("h{i}").into_bytes()).collect();
+    assert_eq!(
+        seen, expected,
+        "only the 4 keys visible at the snapshot, paginated"
+    );
+    assert_eq!(pages, 2, "4 keys at limit 2 = two pages");
 }
 
 fn scan_page(

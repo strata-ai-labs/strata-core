@@ -147,7 +147,7 @@ use batch::{
     finish_batch_get_results, finish_batch_results, finish_json_batch_get_results,
     finish_json_batch_results, finish_vector_batch_get_results, finish_vector_batch_results,
     graph_batch_result, json_batch_get_batch_result, json_batch_result, kv_batch_exists_result,
-    kv_batch_get_result, kv_batch_result, page_or_keys, reject_duplicate_valid_keys,
+    kv_batch_get_result, kv_batch_result, reject_duplicate_valid_keys,
 };
 use event_convert::{
     engine_event_direction, engine_event_type, event_append_output, event_batch_append_item_result,
@@ -283,20 +283,6 @@ impl Executor {
     /// Closes the underlying database handle.
     pub fn close(&mut self) -> ExecutorResult<()> {
         self.database.close()?;
-        Ok(())
-    }
-
-    /// Creates a branch from the current source branch head.
-    pub fn create_branch_from_head(
-        &mut self,
-        source: impl AsRef<str>,
-        branch: impl Into<String>,
-    ) -> ExecutorResult<()> {
-        let source = branch_name(Some(source.as_ref()), DEFAULT_BRANCH)?;
-        let branch = branch.into();
-        let branch = branch_name(Some(branch.as_str()), DEFAULT_BRANCH)?;
-        let mut branches = self.database.branches()?;
-        branches.fork_current(&source, branch)?;
         Ok(())
     }
 }
