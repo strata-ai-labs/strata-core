@@ -2,23 +2,21 @@
   "data": {
     "collection": "docs",
     "commit": {
-      "delete_count": 0,
+      "delete_count": 2,
       "durable": false,
-      "put_count": 1,
+      "put_count": 0,
       "timestamp": 6,
       "version": 6
     },
+    "deleted_count": 2,
     "effect": {
-      "affected_count": 1,
+      "affected_count": 2,
       "applied": true,
-      "kind": "updated",
+      "kind": "deleted",
       "matched": true
     },
-    "key": "doc-a",
     "timestamp": 6,
-    "updated": true,
-    "vector_revision": 2,
     "version": 6
   },
-  "type": "vector_metadata_update_result"
+  "type": "vector_bulk_delete_result"
 }

@@ -1,7 +1,1 @@
-{
-  "type": "vector_list_keys",
-  "collection": "docs",
-  "prefix": "doc-",
-  "cursor": "doc-a",
-  "limit": 2
-}
+{"type": "vector_list_keys", "collection": "docs", "prefix": "doc-", "limit": 2}

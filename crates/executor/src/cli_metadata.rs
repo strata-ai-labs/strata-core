@@ -286,6 +286,12 @@ pub struct CliFixtureRefs {
     pub request: String,
     /// Primary response fixture path relative to `crates/executor/tests/fixtures`.
     pub response: String,
+    /// Request fixtures replayed before the primary request (behavior guard).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<serde_json::Value>,
+    /// Executed request/response fixture pairs (behavior guard).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cases: Vec<serde_json::Value>,
     /// Alternate response fixtures for commands with multiple current wire outputs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub responses: Vec<String>,

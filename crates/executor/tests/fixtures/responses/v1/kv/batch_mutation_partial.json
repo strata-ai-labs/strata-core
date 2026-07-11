@@ -1,76 +1,76 @@
 {
-  "type": "batch_results",
   "data": {
-    "mode": "itemwise",
-    "status": "partial",
     "applied": true,
     "commit": {
-      "version": 2,
-      "timestamp": 20,
-      "durable": true,
+      "delete_count": 1,
+      "durable": false,
       "put_count": 0,
-      "delete_count": 1
+      "timestamp": 4,
+      "version": 4
     },
     "items": [
       {
-        "index": 0,
-        "status": "ok",
         "applied": true,
+        "commit": {
+          "delete_count": 1,
+          "durable": false,
+          "put_count": 0,
+          "timestamp": 4,
+          "version": 4
+        },
         "effect": {
+          "affected_count": 1,
           "applied": true,
           "kind": "deleted",
-          "matched": true,
-          "affected_count": 1
+          "matched": true
         },
-        "commit": {
-          "version": 2,
-          "timestamp": 20,
-          "durable": true,
-          "put_count": 0,
-          "delete_count": 1
-        },
+        "error": null,
+        "index": 0,
         "result": {
-          "key": "YQ==",
+          "commit": {
+            "delete_count": 1,
+            "durable": false,
+            "put_count": 0,
+            "timestamp": 4,
+            "version": 4
+          },
           "effect": {
+            "affected_count": 1,
             "applied": true,
             "kind": "deleted",
-            "matched": true,
-            "affected_count": 1
+            "matched": true
           },
-          "commit": {
-            "version": 2,
-            "timestamp": 20,
-            "durable": true,
-            "put_count": 0,
-            "delete_count": 1
-          },
-          "error": null
+          "error": null,
+          "key": "YQ=="
         },
-        "error": null
+        "status": "ok"
       },
       {
-        "index": 1,
-        "status": "ok",
         "applied": false,
+        "commit": null,
         "effect": {
+          "affected_count": 0,
           "applied": false,
           "kind": "not_found",
-          "matched": false,
-          "affected_count": 0
+          "matched": false
         },
-        "commit": null,
+        "error": null,
+        "index": 1,
         "result": {
-          "key": "bWlzc2luZw==",
           "effect": {
+            "affected_count": 0,
             "applied": false,
             "kind": "not_found",
-            "matched": false,
-            "affected_count": 0
+            "matched": false
           },
-          "error": null
+          "error": null,
+          "key": "bWlzc2luZw=="
         },
-        "error": null
+        "status": "ok"
       }
-    ]
-  }
+    ],
+    "mode": "itemwise",
+    "status": "partial"
+  },
+  "type": "batch_results"
 }

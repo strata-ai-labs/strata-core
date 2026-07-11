@@ -1,12 +1,12 @@
 {
-  "type": "delete_result",
   "data": {
-    "key": "bWlzc2luZw==",
     "effect": {
+      "affected_count": 0,
       "applied": false,
       "kind": "not_found",
-      "matched": false,
-      "affected_count": 0
-    }
-  }
+      "matched": false
+    },
+    "key": "YQ=="
+  },
+  "type": "delete_result"
 }

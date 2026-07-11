@@ -1,0 +1,44 @@
+{
+  "data": {
+    "diagnostics": {
+      "active_delta_count": 0,
+      "active_delta_seal_threshold": 16,
+      "active_delta_source_count": 0,
+      "artifact_sources": [],
+      "collection": "docs",
+      "collection_exact_threshold": 64,
+      "derived_bytes": 0,
+      "exact_fallback_count": 0,
+      "exact_source_count": 1,
+      "filtered_underfill_fallback": true,
+      "flat_source_count": 0,
+      "hnsw_graph_builds": 0,
+      "hnsw_memory_budget_bytes": 67108864,
+      "hnsw_source_count": 0,
+      "indexed_source_count": 0,
+      "indexed_vector_count": 0,
+      "last_query_fallback_reason": "collection_below_exact_threshold",
+      "last_query_used_index": false,
+      "manifest_inherited_ref_count": 0,
+      "manifest_owned_ref_count": 0,
+      "manifest_ref_count": 0,
+      "manifest_status": "missing",
+      "overfetch_factor": 4,
+      "policy_mode": "auto",
+      "resolved_index_kind_summary": "exact",
+      "source_candidate_limit": 18446744073709551615,
+      "source_flat_threshold": 64,
+      "source_hnsw_threshold": 18446744073709551615
+    },
+    "matches": [
+      {
+        "key": "doc-a",
+        "metadata": {
+          "kind": "doc"
+        },
+        "score": 1.0
+      }
+    ]
+  },
+  "type": "vector_index_query"
+}

@@ -1,56 +1,56 @@
 {
-  "type": "vector_batch_upsert_results",
   "data": {
-    "mode": "itemwise",
-    "status": "ok",
     "applied": true,
     "commit": {
-      "version": 1,
-      "timestamp": 10,
-      "durable": true,
+      "delete_count": 0,
+      "durable": false,
       "put_count": 1,
-      "delete_count": 0
+      "timestamp": 4,
+      "version": 4
     },
     "items": [
       {
-        "index": 0,
-        "status": "ok",
         "applied": true,
+        "commit": {
+          "delete_count": 0,
+          "durable": false,
+          "put_count": 1,
+          "timestamp": 4,
+          "version": 4
+        },
         "effect": {
+          "affected_count": 1,
           "applied": true,
           "kind": "created",
-          "matched": false,
-          "affected_count": 1
+          "matched": false
         },
-        "commit": {
-          "version": 1,
-          "timestamp": 10,
-          "durable": true,
-          "put_count": 1,
-          "delete_count": 0
-        },
+        "error": null,
+        "index": 0,
         "result": {
           "applied": true,
+          "commit": {
+            "delete_count": 0,
+            "durable": false,
+            "put_count": 1,
+            "timestamp": 4,
+            "version": 4
+          },
           "effect": {
+            "affected_count": 1,
             "applied": true,
             "kind": "created",
-            "matched": false,
-            "affected_count": 1
+            "matched": false
           },
-          "commit": {
-            "version": 1,
-            "timestamp": 10,
-            "durable": true,
-            "put_count": 1,
-            "delete_count": 0
-          },
-          "version": 1,
-          "timestamp": 10,
+          "error": null,
+          "timestamp": 4,
           "vector_revision": 1,
-          "error": null
+          "version": 4
         },
-        "error": null
+        "status": "ok"
       }
-    ]
-  }
+    ],
+    "mode": "itemwise",
+    "status": "ok"
+  },
+  "type": "vector_batch_upsert_results"
 }

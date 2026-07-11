@@ -1,23 +1,23 @@
 {
-  "type": "vector_delete_result",
   "data": {
     "collection": "docs",
-    "key": "doc-a",
+    "commit": {
+      "delete_count": 1,
+      "durable": false,
+      "put_count": 0,
+      "timestamp": 6,
+      "version": 6
+    },
     "deleted": true,
     "effect": {
+      "affected_count": 1,
       "applied": true,
       "kind": "deleted",
-      "matched": true,
-      "affected_count": 1
+      "matched": true
     },
-    "commit": {
-      "version": 3,
-      "timestamp": 30,
-      "durable": true,
-      "put_count": 0,
-      "delete_count": 1
-    },
-    "version": 3,
-    "timestamp": 30
-  }
+    "key": "doc-a",
+    "timestamp": 6,
+    "version": 6
+  },
+  "type": "vector_delete_result"
 }

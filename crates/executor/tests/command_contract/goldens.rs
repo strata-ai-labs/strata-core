@@ -87,24 +87,27 @@ fn public_response_family_goldens_match_public_json() {
             Output::WriteResult {
                 key: bytes("a"),
                 effect: MutationEffect::created(),
-                commit: commit_receipt(1, 10, 1, 0),
+                // Mirrors the blessed cache-replay fixture: logical commit
+                // clock 3, durable false (fixtures reproduce from a scratch
+                // cache executor via `strata-idl verify-fixtures`).
+                commit: CommitReceipt::new(3, 3, false, 1, 0),
             },
             include_str!("../fixtures/responses/v1/kv/write_applied.json"),
         ),
         (
             Output::Keys {
-                items: vec![bytes("a")],
+                items: vec![bytes("a1"), bytes("a2")],
                 page: PageInfo::terminal(),
             },
             include_str!("../fixtures/responses/v1/kv/list_keys.json"),
         ),
         (
-            Output::KvVersionedValue(Some(VersionedValue::new(bytes("one"), 1, 10))),
+            Output::KvVersionedValue(Some(VersionedValue::new(bytes("one"), 3, 3))),
             include_str!("../fixtures/responses/v1/kv/get_found.json"),
         ),
         (
             Output::DeleteResult {
-                key: bytes("missing"),
+                key: bytes("a"),
                 effect: MutationEffect::not_found(),
                 commit: None,
             },
@@ -119,9 +122,9 @@ fn public_response_family_goldens_match_public_json() {
                 collection: "docs".to_owned(),
                 key: "doc-a".to_owned(),
                 effect: MutationEffect::created(),
-                commit: commit_receipt(1, 10, 1, 0),
-                version: 1,
-                timestamp: 10,
+                commit: CommitReceipt::new(4, 4, false, 1, 0),
+                version: 4,
+                timestamp: 4,
                 vector_revision: 1,
             },
             include_str!("../fixtures/responses/v1/vector/upsert_applied.json"),

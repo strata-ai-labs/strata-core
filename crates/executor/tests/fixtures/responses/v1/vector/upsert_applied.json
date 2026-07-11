@@ -1,23 +1,23 @@
 {
-  "type": "vector_write_result",
   "data": {
     "collection": "docs",
-    "key": "doc-a",
+    "commit": {
+      "delete_count": 0,
+      "durable": false,
+      "put_count": 1,
+      "timestamp": 4,
+      "version": 4
+    },
     "effect": {
+      "affected_count": 1,
       "applied": true,
       "kind": "created",
-      "matched": false,
-      "affected_count": 1
+      "matched": false
     },
-    "commit": {
-      "version": 1,
-      "timestamp": 10,
-      "durable": true,
-      "put_count": 1,
-      "delete_count": 0
-    },
-    "version": 1,
-    "timestamp": 10,
-    "vector_revision": 1
-  }
+    "key": "doc-a",
+    "timestamp": 4,
+    "vector_revision": 1,
+    "version": 4
+  },
+  "type": "vector_write_result"
 }

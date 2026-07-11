@@ -12,6 +12,7 @@ use thiserror::Error;
 use crate::{public_error_code_entries, Command, Output};
 
 mod schemas;
+mod verify;
 
 const IDL_DIR: &str = "crates/executor/idl/v1";
 const FIXTURE_ROOT: &str = "crates/executor/tests/fixtures";
@@ -211,6 +212,27 @@ pub struct FixtureRefs {
     /// Alternate response fixtures for commands with multiple current wire outputs.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub responses: Vec<String>,
+    /// Request fixtures replayed against a scratch executor before the
+    /// primary request (fixture-behavior guard setup).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<String>,
+    /// Additional executed request/response pairs; every alternate response
+    /// in `responses` must be reproduced by one of these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cases: Vec<FixtureCase>,
+}
+
+/// One executed fixture pair for the fixture-behavior guard.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FixtureCase {
+    /// Setup request fixtures replayed first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<String>,
+    /// Request fixture executed for this case.
+    pub request: String,
+    /// Response fixture the execution must reproduce.
+    pub response: String,
 }
 
 /// Authored source locations.
@@ -806,6 +828,13 @@ pub fn generate_cli(repo_root: &Path) -> Result<()> {
     let json = to_generated_cli_json(&index)?;
     let path = cli_command_index_path(repo_root);
     fs::write(&path, json).map_err(|source| IdlError::Write { path, source })
+}
+
+/// Verifies every fixture pair against a scratch executor run; with
+/// `update`, blesses mismatching response fixtures instead of failing.
+pub fn verify_fixtures(repo_root: &Path, update: bool) -> Result<Vec<PathBuf>> {
+    let index = resolve_index(repo_root)?;
+    verify::verify_fixtures(repo_root, &index, update)
 }
 
 /// Checks whether the generated CLI command metadata is fresh.

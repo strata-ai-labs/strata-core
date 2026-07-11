@@ -1,15 +1,15 @@
 {
-  "type": "vector_collection_list",
   "data": {
+    "cursor": null,
+    "has_more": false,
     "items": [
       {
-        "name": "docs",
+        "count": 0,
         "dimension": 2,
         "metric": "cosine",
-        "count": 1
+        "name": "docs"
       }
-    ],
-    "has_more": false,
-    "cursor": null
-  }
+    ]
+  },
+  "type": "vector_collection_list"
 }

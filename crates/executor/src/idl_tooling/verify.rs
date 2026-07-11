@@ -1,0 +1,156 @@
+//! Fixture-behavior verification (drift guard #4).
+//!
+//! Schema validation alone cannot catch a frozen lie: a response fixture
+//! can be schema-valid while pinning facts a real run never produces (the
+//! `kv.scan` `has_more` finding, DSGN-2). This guard executes every request
+//! fixture against a scratch cache executor — after replaying the entry's
+//! declared `setup` fixtures — and diffs the serialized output against the
+//! checked-in response fixture. With `update`, actual outputs are written
+//! back (blessing), to be reviewed like any other diff.
+
+use std::path::{Path, PathBuf};
+
+use serde_json::Value;
+
+use super::{invalid, CommandIndex, FixtureCase, IdlError, ResolvedCommand, Result};
+use crate::executor::Executor;
+use crate::Command;
+
+/// Executes every fixture pair; returns the list of blessed files when
+/// `update` is set (empty means everything already matched).
+pub(super) fn verify_fixtures(
+    repo_root: &Path,
+    index: &CommandIndex,
+    update: bool,
+) -> Result<Vec<PathBuf>> {
+    let mut blessed = Vec::new();
+    for entry in &index.commands {
+        let primary = FixtureCase {
+            setup: entry.fixtures.setup.clone(),
+            request: entry.fixtures.request.clone(),
+            response: entry.fixtures.response.clone(),
+        };
+        for (position, case) in std::iter::once(&primary)
+            .chain(&entry.fixtures.cases)
+            .enumerate()
+        {
+            verify_case(repo_root, entry, case, position, update, &mut blessed)?;
+        }
+        enforce_alternates_have_cases(entry)?;
+    }
+    Ok(blessed)
+}
+
+fn verify_case(
+    repo_root: &Path,
+    entry: &ResolvedCommand,
+    case: &FixtureCase,
+    position: usize,
+    update: bool,
+    blessed: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let mut executor = Executor::open_cache().map_err(|error| {
+        invalid(format!(
+            "`{}`: scratch executor failed to open: {error}",
+            entry.id
+        ))
+    })?;
+
+    for setup_path in &case.setup {
+        let setup_command = read_command(repo_root, setup_path)?;
+        executor.execute(setup_command).map_err(|error| {
+            invalid(format!(
+                "`{}` case {position}: setup fixture `{setup_path}` failed to execute: {error}",
+                entry.id
+            ))
+        })?;
+    }
+
+    let command = read_command(repo_root, &case.request)?;
+    let output = executor.execute(command).map_err(|error| {
+        invalid(format!(
+            "`{}` case {position}: request fixture `{}` failed to execute: {error}",
+            entry.id, case.request
+        ))
+    })?;
+    let actual = serde_json::to_value(&output).map_err(|source| IdlError::Json {
+        path: PathBuf::from(&case.request),
+        source,
+    })?;
+
+    let response_path = fixture_path(repo_root, &case.response);
+    let expected: Value = match std::fs::read_to_string(&response_path) {
+        Ok(text) => serde_json::from_str(&text).map_err(|source| IdlError::Json {
+            path: response_path.clone(),
+            source,
+        })?,
+        Err(error) if update && error.kind() == std::io::ErrorKind::NotFound => Value::Null,
+        Err(source) => {
+            return Err(IdlError::Read {
+                path: response_path,
+                source,
+            })
+        }
+    };
+
+    if actual != expected {
+        if update {
+            let mut text =
+                serde_json::to_string_pretty(&actual).map_err(|source| IdlError::Json {
+                    path: response_path.clone(),
+                    source,
+                })?;
+            text.push('\n');
+            std::fs::write(&response_path, text).map_err(|source| IdlError::Write {
+                path: response_path.clone(),
+                source,
+            })?;
+            blessed.push(response_path);
+        } else {
+            return Err(invalid(format!(
+                "`{}` case {position}: response fixture `{}` does not match a real run.\n  expected (fixture): {}\n  actual   (replay):  {}\nRun `strata-idl verify-fixtures --update` and review the diff.",
+                entry.id,
+                case.response,
+                compact(&expected),
+                compact(&actual),
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Every alternate wire output listed in `fixtures.responses` must be
+/// reproduced by some case — otherwise it is a frozen, unverifiable shape.
+fn enforce_alternates_have_cases(entry: &ResolvedCommand) -> Result<()> {
+    for alternate in &entry.fixtures.responses {
+        let reproduced = entry
+            .fixtures
+            .cases
+            .iter()
+            .any(|case| &case.response == alternate);
+        if !reproduced {
+            return Err(invalid(format!(
+                "`{}`: alternate response fixture `{alternate}` has no fixtures.cases entry that reproduces it; add a case with a request that yields this shape",
+                entry.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn read_command(repo_root: &Path, relative: &str) -> Result<Command> {
+    let path = fixture_path(repo_root, relative);
+    let text = std::fs::read_to_string(&path).map_err(|source| IdlError::Read {
+        path: path.clone(),
+        source,
+    })?;
+    serde_json::from_str(&text).map_err(|source| IdlError::Json { path, source })
+}
+
+fn fixture_path(repo_root: &Path, relative: &str) -> PathBuf {
+    repo_root.join(super::FIXTURE_ROOT).join(relative)
+}
+
+fn compact(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "<unserializable>".to_owned())
+}

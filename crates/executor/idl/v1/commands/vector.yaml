@@ -22,8 +22,10 @@ commands:
     prose: commands/vector.collection.delete.md
     wire_status: transitional
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
       request: requests/v1/vector/collection_delete.json
-      response: responses/v1/status/bool_true.json
+      response: responses/v1/vector/collection_delete_true.json
   - id: vector.collection.list
     kind: read.page
     title: List vector collections
@@ -33,6 +35,8 @@ commands:
     response_model: Page<VectorCollectionInfo, String>
     prose: commands/vector.collection.list.md
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
       request: requests/v1/vector/collection_list.json
       response: responses/v1/vector/collection_list.json
   - id: vector.collection.stats
@@ -45,6 +49,8 @@ commands:
     prose: commands/vector.collection.stats.md
     wire_status: transitional
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
       request: requests/v1/vector/collection_stats.json
       response: responses/v1/vector/collection_list.json
   - id: vector.count
@@ -55,8 +61,10 @@ commands:
     result: u64
     prose: commands/vector.count.md
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
       request: requests/v1/vector/count.json
-      response: responses/v1/status/uint_count.json
+      response: responses/v1/vector/count.json
   - id: vector.upsert
     kind: mutation.put
     title: Upsert vector
@@ -70,6 +78,8 @@ commands:
       - invalid_argument.engine.vector_metadata
       - invalid_argument.executor.vector_dimension
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
       request: requests/v1/vector/upsert.json
       response: responses/v1/vector/upsert_applied.json
   - id: vector.get
@@ -80,6 +90,10 @@ commands:
     result: VectorVersionedData
     prose: commands/vector.get.md
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
+        - requests/v1/vector/upsert.json
+        - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/get.json
       response: responses/v1/vector/get_found.json
   - id: vector.history
@@ -90,6 +104,10 @@ commands:
     result: VectorHistoryItem
     prose: commands/vector.history.md
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
+        - requests/v1/vector/upsert.json
+        - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/history.json
       response: responses/v1/vector/history_found.json
   - id: vector.exists
@@ -100,8 +118,12 @@ commands:
     result: bool
     prose: commands/vector.exists.md
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
+        - requests/v1/vector/upsert.json
+        - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/exists.json
-      response: responses/v1/status/bool_true.json
+      response: responses/v1/vector/exists_true.json
   - id: vector.keys
     kind: read.page
     title: List vector keys
@@ -111,6 +133,10 @@ commands:
     response_model: Page<String, String>
     prose: commands/vector.keys.md
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
+        - requests/v1/vector/upsert.json
+        - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/keys.json
       response: responses/v1/vector/key_page.json
   - id: vector.metadata.update
@@ -124,6 +150,10 @@ commands:
     errors+:
       - invalid_argument.engine.vector_metadata_patch
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
+        - requests/v1/vector/upsert.json
+        - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/metadata_update.json
       response: responses/v1/vector/metadata_update_applied.json
   - id: vector.delete
@@ -134,6 +164,10 @@ commands:
     result: VectorDelete
     prose: commands/vector.delete.md
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
+        - requests/v1/vector/upsert.json
+        - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/delete.json
       response: responses/v1/vector/delete_applied.json
   - id: vector.delete_by_filter
@@ -146,8 +180,12 @@ commands:
     errors+:
       - invalid_argument.engine.vector_filter
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
+        - requests/v1/vector/upsert.json
+        - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/delete_by_filter.json
-      response: responses/v1/vector/bulk_delete_applied.json
+      response: responses/v1/vector/delete_by_filter_applied.json
   - id: vector.delete_all
     kind: mutation.bulk_delete
     title: Delete all vectors
@@ -156,8 +194,12 @@ commands:
     result: VectorBulkDelete
     prose: commands/vector.delete_all.md
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
+        - requests/v1/vector/upsert.json
+        - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/delete_all.json
-      response: responses/v1/vector/bulk_delete_applied.json
+      response: responses/v1/vector/delete_all_applied.json
   - id: vector.query
     kind: read.search
     title: Query vectors
@@ -169,6 +211,10 @@ commands:
       - invalid_argument.engine.vector_filter
       - invalid_argument.executor.vector_limit
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
+        - requests/v1/vector/upsert.json
+        - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/query.json
       response: responses/v1/vector/search.json
   - id: vector.index.query
@@ -183,8 +229,12 @@ commands:
       - invalid_argument.engine.vector_filter
       - invalid_argument.executor.vector_limit
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
+        - requests/v1/vector/upsert.json
+        - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/index_query.json
-      response: responses/v1/vector/search_with_index_diagnostics.json
+      response: responses/v1/vector/index_query_exact.json
   - id: vector.batch_upsert
     kind: batch.itemwise_mutation
     title: Batch upsert vectors
@@ -198,6 +248,8 @@ commands:
       - invalid_argument.engine.vector_embedding
       - invalid_argument.executor.vector_dimension
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
       request: requests/v1/vector/batch_upsert.json
       response: responses/v1/vector/batch_upsert_ok.json
   - id: vector.batch_get
@@ -210,6 +262,10 @@ commands:
     errors+:
       - invalid_argument.engine.vector_batch
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
+        - requests/v1/vector/upsert.json
+        - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/batch_get.json
       response: responses/v1/vector/batch_get_ok.json
   - id: vector.batch_delete
@@ -222,5 +278,9 @@ commands:
     errors+:
       - invalid_argument.engine.vector_batch
     fixtures:
+      setup:
+        - requests/v1/vector/collection_create.json
+        - requests/v1/vector/upsert.json
+        - requests/v1/setup/vector_upsert_doc_b.json
       request: requests/v1/vector/batch_delete.json
       response: responses/v1/vector/batch_delete_ok.json
