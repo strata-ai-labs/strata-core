@@ -1,0 +1,10 @@
+{
+  "data": {
+    "batches_processed": 1,
+    "file_path": "input.csv",
+    "rows_imported": 3,
+    "rows_skipped": 0,
+    "target": "kv"
+  },
+  "type": "arrow_import_result"
+}

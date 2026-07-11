@@ -1,0 +1,11 @@
+{
+  "data": {
+    "branch_count": 1,
+    "control_status": "healthy",
+    "durable": false,
+    "open": true,
+    "space_count": 1,
+    "target": "cache"
+  },
+  "type": "metrics"
+}

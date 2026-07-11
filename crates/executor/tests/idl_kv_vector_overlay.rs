@@ -11,6 +11,20 @@ use strata_executor::idl_tooling::{
     resolve_default_index, resolve_default_schemas, to_generated_cli_json, to_generated_json,
 };
 
+const REQUIRED_ADMIN: &[&str] = &[
+    "admin.ping",
+    "admin.info",
+    "admin.health",
+    "admin.metrics",
+    "admin.describe",
+    "admin.config",
+    "admin.remote",
+    "admin.config_key",
+    "admin.hub_clone",
+];
+
+const REQUIRED_ARROW: &[&str] = &["arrow.import", "arrow.export"];
+
 const REQUIRED_BRANCH: &[&str] = &[
     "branch.list",
     "branch.get",
@@ -87,14 +101,32 @@ const REQUIRED_JSON: &[&str] = &[
 ];
 
 fn required_command_count() -> usize {
-    REQUIRED_BRANCH.len()
+    REQUIRED_ADMIN.len()
+        + REQUIRED_ARROW.len()
+        + REQUIRED_BRANCH.len()
         + REQUIRED_EVENT.len()
         + REQUIRED_GRAPH.len()
+        + REQUIRED_INFERENCE.len()
         + REQUIRED_JSON.len()
         + REQUIRED_KV.len()
         + REQUIRED_SPACE.len()
         + REQUIRED_VECTOR.len()
 }
+
+const REQUIRED_INFERENCE: &[&str] = &[
+    "inference.models.list",
+    "inference.models.local",
+    "inference.models.pull",
+    "inference.capability",
+    "inference.generate",
+    "inference.tokenize",
+    "inference.detokenize",
+    "inference.embed",
+    "inference.embed_batch",
+    "inference.rank",
+    "inference.unload",
+    "inference.cache_status",
+];
 
 const REQUIRED_KV: &[&str] = &[
     "kv.put",
@@ -143,10 +175,13 @@ fn kv_and_vector_overlay_has_required_command_coverage() {
         .map(|command| command.id.as_str())
         .collect();
 
-    for id in REQUIRED_BRANCH
+    for id in REQUIRED_ADMIN
         .iter()
+        .chain(REQUIRED_ARROW.iter())
+        .chain(REQUIRED_BRANCH.iter())
         .chain(REQUIRED_EVENT.iter())
         .chain(REQUIRED_GRAPH.iter())
+        .chain(REQUIRED_INFERENCE.iter())
         .chain(REQUIRED_JSON.iter())
         .chain(REQUIRED_KV.iter())
         .chain(REQUIRED_SPACE.iter())
@@ -407,10 +442,13 @@ fn cli_command_index_has_required_coverage_and_lookup_tables() {
         .iter()
         .map(|command| command.id.as_str())
         .collect();
-    for id in REQUIRED_BRANCH
+    for id in REQUIRED_ADMIN
         .iter()
+        .chain(REQUIRED_ARROW.iter())
+        .chain(REQUIRED_BRANCH.iter())
         .chain(REQUIRED_EVENT.iter())
         .chain(REQUIRED_GRAPH.iter())
+        .chain(REQUIRED_INFERENCE.iter())
         .chain(REQUIRED_JSON.iter())
         .chain(REQUIRED_KV.iter())
         .chain(REQUIRED_SPACE.iter())

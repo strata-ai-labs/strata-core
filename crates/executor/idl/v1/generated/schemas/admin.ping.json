@@ -1,0 +1,45 @@
+{
+  "$id": "https://stratadb.org/idl/v1/schemas/admin.ping.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "admin.ping",
+  "request": {
+    "additionalProperties": false,
+    "description": "Lightweight admin liveness check.",
+    "properties": {
+      "type": {
+        "const": "ping",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Lightweight admin liveness result.",
+    "properties": {
+      "data": {
+        "properties": {
+          "version": {
+            "description": "Engine package version.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "pong",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

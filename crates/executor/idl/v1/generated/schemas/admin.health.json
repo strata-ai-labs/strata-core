@@ -1,0 +1,141 @@
+{
+  "$defs": {
+    "AdminControlStatus": {
+      "description": "Control-plane status exposed in admin health outputs.",
+      "oneOf": [
+        {
+          "const": "healthy",
+          "description": "Required facts are healthy.",
+          "type": "string"
+        },
+        {
+          "const": "missing",
+          "description": "Requested facts are missing.",
+          "type": "string"
+        },
+        {
+          "const": "corrupt",
+          "description": "Required facts are corrupt.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "Required facts are unavailable.",
+          "type": "string"
+        }
+      ]
+    },
+    "AdminHealth": {
+      "description": "Health output.",
+      "properties": {
+        "branch_catalog": {
+          "$ref": "#/$defs/AdminControlStatus",
+          "description": "Branch catalog status."
+        },
+        "branch_count": {
+          "description": "Active branch count.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "default_branch": {
+          "description": "Default product branch.",
+          "type": "string"
+        },
+        "identity": {
+          "$ref": "#/$defs/AdminControlStatus",
+          "description": "Database identity status."
+        },
+        "registry": {
+          "$ref": "#/$defs/AdminControlStatus",
+          "description": "Registry status."
+        },
+        "space_catalog": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdminControlStatus"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional branch-local space catalog status."
+        },
+        "status": {
+          "$ref": "#/$defs/AdminHealthStatus",
+          "description": "Worst health status."
+        }
+      },
+      "required": [
+        "status",
+        "identity",
+        "registry",
+        "branch_catalog",
+        "default_branch",
+        "branch_count"
+      ],
+      "type": "object"
+    },
+    "AdminHealthStatus": {
+      "description": "Health status exposed in admin outputs.",
+      "oneOf": [
+        {
+          "const": "healthy",
+          "description": "All required facts are healthy.",
+          "type": "string"
+        },
+        {
+          "const": "degraded",
+          "description": "Database is available with warnings.",
+          "type": "string"
+        },
+        {
+          "const": "unhealthy",
+          "description": "A required subsystem is missing, corrupt, unavailable, or closed.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/admin.health.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "admin.health",
+  "request": {
+    "additionalProperties": false,
+    "description": "Returns control-plane health facts.",
+    "properties": {
+      "branch": {
+        "description": "Branch whose space catalog should be checked. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "health",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Control-plane health facts.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/AdminHealth"
+      },
+      "type": {
+        "const": "health",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

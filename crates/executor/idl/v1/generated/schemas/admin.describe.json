@@ -1,0 +1,319 @@
+{
+  "$defs": {
+    "AdminCapabilities": {
+      "description": "Capability flags in describe output.",
+      "properties": {
+        "arrow": {
+          "description": "Arrow command surface is available.",
+          "type": "boolean"
+        },
+        "event": {
+          "description": "Event primitive is available.",
+          "type": "boolean"
+        },
+        "graph_core": {
+          "description": "Graph core primitive is available.",
+          "type": "boolean"
+        },
+        "inference": {
+          "description": "Inference command surface is available.",
+          "type": "boolean"
+        },
+        "json": {
+          "description": "JSON primitive is available.",
+          "type": "boolean"
+        },
+        "kv": {
+          "description": "KV primitive is available.",
+          "type": "boolean"
+        },
+        "vector": {
+          "description": "Vector primitive is available.",
+          "type": "boolean"
+        },
+        "vector_index": {
+          "description": "Vector index query path is available.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "kv",
+        "json",
+        "event",
+        "vector",
+        "vector_index",
+        "graph_core",
+        "arrow",
+        "inference"
+      ],
+      "type": "object"
+    },
+    "AdminConfig": {
+      "description": "Sanitized config output.",
+      "properties": {
+        "created": {
+          "description": "True when this open created a new database.",
+          "type": "boolean"
+        },
+        "default_branch": {
+          "description": "Default product branch.",
+          "type": "string"
+        },
+        "durable": {
+          "description": "True when storage is durable.",
+          "type": "boolean"
+        },
+        "target": {
+          "$ref": "#/$defs/AdminOpenTarget",
+          "description": "Open target."
+        }
+      },
+      "required": [
+        "target",
+        "created",
+        "durable",
+        "default_branch"
+      ],
+      "type": "object"
+    },
+    "AdminDescribe": {
+      "description": "Database describe output.",
+      "properties": {
+        "branch": {
+          "description": "Described branch.",
+          "type": "string"
+        },
+        "branches": {
+          "description": "Active branches.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "capabilities": {
+          "$ref": "#/$defs/AdminCapabilities",
+          "description": "Available rebuilt capabilities."
+        },
+        "config": {
+          "$ref": "#/$defs/AdminConfig",
+          "description": "Sanitized config."
+        },
+        "default_branch": {
+          "description": "Default product branch.",
+          "type": "string"
+        },
+        "primitives": {
+          "$ref": "#/$defs/AdminPrimitives",
+          "description": "Primitive summaries."
+        },
+        "spaces": {
+          "description": "Registered product spaces on the described branch.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "target": {
+          "$ref": "#/$defs/AdminOpenTarget",
+          "description": "Open target."
+        },
+        "version": {
+          "description": "Engine package version.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "target",
+        "default_branch",
+        "branch",
+        "branches",
+        "spaces",
+        "primitives",
+        "config",
+        "capabilities"
+      ],
+      "type": "object"
+    },
+    "AdminGraph": {
+      "description": "Graph summary in describe output.",
+      "properties": {
+        "edge_count": {
+          "description": "Visible edge count.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Graph name.",
+          "type": "string"
+        },
+        "node_count": {
+          "description": "Visible node count.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "node_count",
+        "edge_count"
+      ],
+      "type": "object"
+    },
+    "AdminOpenTarget": {
+      "description": "Database open target exposed in admin outputs.",
+      "oneOf": [
+        {
+          "const": "cache",
+          "description": "Volatile cache-backed database.",
+          "type": "string"
+        },
+        {
+          "const": "durable_local",
+          "description": "Durable local filesystem-backed database.",
+          "type": "string"
+        }
+      ]
+    },
+    "AdminPrimitives": {
+      "description": "Primitive summaries in describe output.",
+      "properties": {
+        "event_count": {
+          "description": "Visible event count in the described space.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "graphs": {
+          "description": "Graph summaries.",
+          "items": {
+            "$ref": "#/$defs/AdminGraph"
+          },
+          "type": "array"
+        },
+        "json_count": {
+          "description": "Visible JSON document count in the described space.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kv_count": {
+          "description": "Visible KV row count in the described space.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "vector_collections": {
+          "description": "Vector collection summaries.",
+          "items": {
+            "$ref": "#/$defs/AdminVectorCollection"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kv_count",
+        "json_count",
+        "event_count",
+        "vector_collections",
+        "graphs"
+      ],
+      "type": "object"
+    },
+    "AdminVectorCollection": {
+      "description": "Vector collection summary in describe output.",
+      "properties": {
+        "count": {
+          "description": "Visible vector count.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dimension": {
+          "description": "Embedding dimension.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "metric": {
+          "$ref": "#/$defs/VectorDistanceMetric",
+          "description": "Distance metric."
+        },
+        "name": {
+          "description": "Collection name.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "dimension",
+        "metric",
+        "count"
+      ],
+      "type": "object"
+    },
+    "VectorDistanceMetric": {
+      "description": "Vector distance metric exposed through the command boundary.",
+      "oneOf": [
+        {
+          "const": "cosine",
+          "description": "Cosine similarity.",
+          "type": "string"
+        },
+        {
+          "const": "euclidean",
+          "description": "Euclidean similarity.",
+          "type": "string"
+        },
+        {
+          "const": "dot_product",
+          "description": "Raw dot product.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/admin.describe.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "admin.describe",
+  "request": {
+    "additionalProperties": false,
+    "description": "Returns a compact database description.",
+    "properties": {
+      "branch": {
+        "description": "Branch whose primitive data should be described. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "describe",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Compact database description.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/AdminDescribe"
+      },
+      "type": {
+        "const": "described",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

@@ -5,41 +5,29 @@
 # coverage for a verb requires deleting its line, and the guard test in
 # crates/cli/src/catalog_guard.rs fails if a listed verb is covered, stale,
 # or if a new verb is neither covered nor listed.
+#
+# As of the full 120-command family coverage, the residents here are not
+# "unfinished" — they are verbs with no wire command by design:
+#   - CLI-local operations that never reach the executor: init, doctor,
+#     agents {guide,commands,errors,init}, mcp serve, config
+#     {path,set,unset,show} (config get/get-key ARE wire commands and are
+#     covered), command {run,print} (the generic escape hatch itself).
+#   - event by-type: a curated clap alias of event.list (EventList) with a
+#     type filter. One catalog entry owns one cli_path today, so the alias
+#     stays here until the overlay grows explicit alias paths (strategy
+#     "unless an explicit alias is declared").
 uncovered:
   - agents commands
   - agents errors
   - agents guide
   - agents init
-  - arrow export
-  - arrow import
-  - clone
   - command print
   - command run
-  - config get
-  - config get-key
   - config path
   - config set
   - config show
   - config unset
-  - describe
   - doctor
   - event by-type
-  - health
-  - inference cache-status
-  - inference capability
-  - inference detokenize
-  - inference embed
-  - inference embed-batch
-  - inference generate
-  - inference models list
-  - inference models local
-  - inference models pull
-  - inference rank
-  - inference tokenize
-  - inference unload
-  - info
   - init
   - mcp serve
-  - metrics
-  - ping
-  - remote

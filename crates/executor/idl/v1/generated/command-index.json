@@ -4,6 +4,679 @@
   "generator_version": "strata-executor-idl.1",
   "commands": [
     {
+      "id": "admin.config",
+      "family": "admin",
+      "op": "config",
+      "kind": "read.summary",
+      "title": "Read sanitized config",
+      "summary": "Read sanitized configuration facts.",
+      "description": "Returns sanitized configuration facts: the open target, whether this open created the database, durability, and the default branch. Only allowlisted, non-sensitive facts are exposed; no filesystem paths, credentials, or provider keys are ever returned.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/config",
+      "cli": {
+        "path": [
+          "config",
+          "get"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_config",
+        "description": "Use this when the user asks how the database is configured — its open target, durability, and default branch."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::ConfigGet",
+      "output": "Output::Config",
+      "outputs": [
+        "Output::Config"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<AdminConfig>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/config_get.json",
+        "response": "responses/v1/admin/config.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.config.md"
+      }
+    },
+    {
+      "id": "admin.config_key",
+      "family": "admin",
+      "op": "config_key",
+      "kind": "read.get",
+      "title": "Read one config value",
+      "summary": "Read one sanitized configuration value by key.",
+      "description": "Returns one sanitized configuration value from the allowlist by key, or a null value when the key is not recognized. Only allowlisted, non-sensitive keys are served; an empty key is rejected with `invalid_argument.engine.config_key`.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/admin/config_key",
+      "cli": {
+        "path": [
+          "config",
+          "get-key"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_config_key",
+        "description": "Use this when the user wants a single configuration value by key rather than the whole sanitized config."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::ConfigureGetKey",
+      "output": "Output::ConfigValue",
+      "outputs": [
+        "Output::ConfigValue"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<String>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "invalid_argument.engine.config_key",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.config_key"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/config_key.json",
+        "response": "responses/v1/admin/config_value_default_branch.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.config_key.md"
+      }
+    },
+    {
+      "id": "admin.describe",
+      "family": "admin",
+      "op": "describe",
+      "kind": "read.summary",
+      "title": "Describe database",
+      "summary": "Read a compact description of the database.",
+      "description": "Returns a compact description of the database for one branch: engine version, open target, the default and described branches, all active branches, the registered product spaces, per-primitive counts (KV, JSON, event, plus vector-collection and graph summaries), the sanitized config, and the available capabilities. The branch defaults to the handle branch when omitted.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/describe",
+      "cli": {
+        "path": [
+          "describe"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_describe",
+        "description": "Use this when the user wants an overview of a database — its branches, spaces, primitive counts, and available capabilities."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::Describe",
+      "output": "Output::Described",
+      "outputs": [
+        "Output::Described"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<AdminDescribe>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/describe.json",
+        "response": "responses/v1/admin/describe.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.describe.md"
+      }
+    },
+    {
+      "id": "admin.health",
+      "family": "admin",
+      "op": "health",
+      "kind": "read.summary",
+      "title": "Read database health",
+      "summary": "Read control-plane health facts.",
+      "description": "Returns control-plane health facts: the worst overall status plus per-subsystem status for identity, registry, branch catalog, and the optional branch-local space catalog. Also reports the default branch and active branch count. A healthy result means every required control-plane fact is present and readable.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/health",
+      "cli": {
+        "path": [
+          "health"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_health",
+        "description": "Use this when the user asks whether the database is healthy or wants to diagnose a degraded or unavailable control plane."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::Health",
+      "output": "Output::Health",
+      "outputs": [
+        "Output::Health"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<AdminHealth>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/health.json",
+        "response": "responses/v1/admin/health.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.health.md"
+      }
+    },
+    {
+      "id": "admin.hub_clone",
+      "family": "admin",
+      "op": "hub_clone",
+      "kind": "action.status",
+      "title": "Clone hub dataset",
+      "summary": "Clone a dataset from a hub into a new local database.",
+      "description": "Clones a dataset from a hub into a new local database directory. Resolution, download, verification, reconstitution, and origin recording run once behind this command; the session database is not touched. The destination directory must not exist or must be empty. When the hub URL is not given, the layered resolver selects it from the flag, environment, and config layers.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/hub_clone",
+      "cli": {
+        "path": [
+          "clone"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_hub_clone",
+        "description": "Use this when the user wants to download or clone a published hub dataset into a new local database directory."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::HubClone",
+      "output": "Output::HubCloneResult",
+      "outputs": [
+        "Output::HubCloneResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<HubClone>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "invalid_argument.executor.hub_dataset",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_dataset"
+        },
+        {
+          "code": "invalid_argument.executor.hub_branch",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_branch"
+        },
+        {
+          "code": "invalid_argument.executor.hub_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
+        },
+        {
+          "code": "failed_precondition.executor.hub_url",
+          "docs": "https://stratadb.org/e/failed_precondition.executor.hub_url"
+        },
+        {
+          "code": "failed_precondition.executor.hub_clone",
+          "docs": "https://stratadb.org/e/failed_precondition.executor.hub_clone"
+        },
+        {
+          "code": "unavailable.executor.hub_transport",
+          "docs": "https://stratadb.org/e/unavailable.executor.hub_transport"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/hub_clone.json",
+        "response": "responses/v1/admin/hub_clone.json",
+        "replay_skip": "hub clone resolves and downloads a dataset over the network into a new database directory; it never runs against the scratch cache executor"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.hub_clone.md"
+      }
+    },
+    {
+      "id": "admin.info",
+      "family": "admin",
+      "op": "info",
+      "kind": "read.summary",
+      "title": "Read database info",
+      "summary": "Read database identity and a catalog summary.",
+      "description": "Returns database identity and a catalog summary for one branch: engine version, open target, whether this open created the database, durability, the default branch, the active branch count, and the registered space count for the selected branch. The branch defaults to the handle branch when omitted.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/info",
+      "cli": {
+        "path": [
+          "info"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_info",
+        "description": "Use this when the user asks what database this is, whether it was just created, or how many branches and spaces it holds."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::Info",
+      "output": "Output::DatabaseInfo",
+      "outputs": [
+        "Output::DatabaseInfo"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<AdminDatabaseInfo>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/info.json",
+        "response": "responses/v1/admin/info.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.info.md"
+      }
+    },
+    {
+      "id": "admin.metrics",
+      "family": "admin",
+      "op": "metrics",
+      "kind": "read.summary",
+      "title": "Read database metrics",
+      "summary": "Read lightweight database metrics.",
+      "description": "Returns lightweight database metrics: the open target, durability, whether the handle is open, the active branch count, the registered space count for the selected branch, and the control-plane health status. The branch defaults to the handle branch when omitted.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/metrics",
+      "cli": {
+        "path": [
+          "metrics"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_metrics",
+        "description": "Use this when the user wants quick database metrics such as branch and space counts and the control-plane status."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::Metrics",
+      "output": "Output::Metrics",
+      "outputs": [
+        "Output::Metrics"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<AdminMetrics>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.branch_name",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.branch_name"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/metrics.json",
+        "response": "responses/v1/admin/metrics.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.metrics.md"
+      }
+    },
+    {
+      "id": "admin.ping",
+      "family": "admin",
+      "op": "ping",
+      "kind": "read.summary",
+      "title": "Ping database",
+      "summary": "Check that the database handle is live.",
+      "description": "Lightweight liveness check. Returns the engine package version without touching branches, spaces, or primitive data. Use it to confirm the handle is open and responsive before issuing heavier commands.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/admin/ping",
+      "cli": {
+        "path": [
+          "ping"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_ping",
+        "description": "Use this for a fast liveness probe that confirms the database responds and reports its engine version."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::Ping",
+      "output": "Output::Pong",
+      "outputs": [
+        "Output::Pong"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<PingInfo>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/ping.json",
+        "response": "responses/v1/admin/ping.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.ping.md"
+      }
+    },
+    {
+      "id": "admin.remote",
+      "family": "admin",
+      "op": "remote",
+      "kind": "read.get",
+      "title": "Read remote origin",
+      "summary": "Read where this database was cloned from.",
+      "description": "Reads the remote origin recorded when this database was cloned from a hub: the remote URL, dataset, branch, manifest hash, fetch time, and per-branch base frontier. Returns a null origin when the database was created locally and never cloned.\n\nOptional reads distinguish present data from missing data. When version or timestamp facts exist on the executor output, SDK mappings should preserve them.",
+      "docs": "/docs/admin/remote",
+      "cli": {
+        "path": [
+          "remote"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_admin_remote",
+        "description": "Use this when the user asks where a database came from or whether it was cloned from a hub dataset."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::RemoteGet",
+      "output": "Output::RemoteOriginResult",
+      "outputs": [
+        "Output::RemoteOriginResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "Maybe<RemoteOriginInfo>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/admin/remote_get.json",
+        "response": "responses/v1/admin/remote_null.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/admin.yaml",
+        "prose": "commands/admin.remote.md"
+      }
+    },
+    {
+      "id": "arrow.export",
+      "family": "arrow",
+      "op": "export",
+      "kind": "action.status",
+      "title": "Export Arrow file",
+      "summary": "Export a product primitive to an Arrow-compatible file.",
+      "description": "Exports a product primitive from the selected branch and space to an Arrow-compatible file (Parquet, CSV, or JSONL). Graph exports treat the path as a stem and write separate node and edge files. Returns a summary of the exported primitive, the concrete output paths, the row count, and the total output size.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/arrow/export",
+      "cli": {
+        "path": [
+          "arrow",
+          "export"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_arrow_export",
+        "description": "Use this when the user wants to write KV, JSON, event, vector, or graph data out to a Parquet, CSV, or JSONL file."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::ArrowExport",
+      "output": "Output::ArrowExportResult",
+      "outputs": [
+        "Output::ArrowExportResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<ArrowExport>",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_format",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_format"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_empty_export",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_empty_export"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_value_column",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_value_column"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_vector_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_vector_key"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_graph",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_graph"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_collection"
+        },
+        {
+          "code": "unavailable.executor.arrow_io",
+          "docs": "https://stratadb.org/e/unavailable.executor.arrow_io"
+        },
+        {
+          "code": "internal.executor.arrow",
+          "docs": "https://stratadb.org/e/internal.executor.arrow"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/arrow/export.json",
+        "response": "responses/v1/arrow/export_kv_csv.json",
+        "replay_skip": "arrow export writes real files to a filesystem path outside the scratch cache executor"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/arrow.yaml",
+        "prose": "commands/arrow.export.md"
+      }
+    },
+    {
+      "id": "arrow.import",
+      "family": "arrow",
+      "op": "import",
+      "kind": "action.status",
+      "title": "Import Arrow file",
+      "summary": "Import an Arrow-compatible file into a product primitive.",
+      "description": "Imports an Arrow-compatible file (Parquet, CSV, or JSONL) into a product primitive on the selected branch and space. Rows are written through the standard batch commands, so the import commits like any other write. Returns a summary of the target primitive, the input file, and the imported, skipped, and batch counts.\n\nStatus commands return a scalar or compact status payload and do not mutate database state.",
+      "docs": "/docs/arrow/import",
+      "cli": {
+        "path": [
+          "arrow",
+          "import"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_arrow_import",
+        "description": "Use this when the user wants to load a Parquet, CSV, or JSONL file into KV, JSON, or a vector collection."
+      },
+      "feature": "core",
+      "access": "write",
+      "input": "Command::ArrowImport",
+      "output": "Output::ArrowImportResult",
+      "outputs": [
+        "Output::ArrowImportResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "StatusResponse<ArrowImport>",
+      "commit": "commits_on_success",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "invalid_argument.engine.product_space",
+          "docs": "https://stratadb.org/e/invalid_argument.engine.product_space"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_feature_disabled",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_feature_disabled"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_format",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_format"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_input_missing",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_input_missing"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_key_column",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_key_column"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_value_column",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_value_column"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_collection",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_collection"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_embedding_type",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_embedding_type"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_vector_dimension",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_vector_dimension"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_json_key",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_json_key"
+        },
+        {
+          "code": "invalid_argument.executor.arrow_base64",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.arrow_base64"
+        },
+        {
+          "code": "unavailable.executor.arrow_io",
+          "docs": "https://stratadb.org/e/unavailable.executor.arrow_io"
+        },
+        {
+          "code": "internal.executor.arrow",
+          "docs": "https://stratadb.org/e/internal.executor.arrow"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/arrow/import.json",
+        "response": "responses/v1/arrow/import_kv_csv.json",
+        "replay_skip": "arrow import reads a real file from the filesystem; the source file does not exist on the scratch cache executor"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/arrow.yaml",
+        "prose": "commands/arrow.import.md"
+      }
+    },
+    {
       "id": "branch.create",
       "family": "branch",
       "op": "create",
@@ -3416,6 +4089,790 @@
       "source": {
         "command": "crates/executor/idl/v1/commands/graph.yaml",
         "prose": "commands/graph.ontology.summary.md"
+      }
+    },
+    {
+      "id": "inference.cache_status",
+      "family": "inference",
+      "op": "cache_status",
+      "kind": "inference.runtime_op",
+      "title": "Report model cache",
+      "summary": "Report loaded model cache state.",
+      "description": "Reports the runtime model cache as three lists of specs: the generation, embedding, and ranking models currently loaded in memory. Use it to check what is resident before generating, or to confirm that `inference unload` freed the models you expected. The lists reflect only in-memory engines, not models available on disk.",
+      "docs": "/docs/inference/cache_status",
+      "cli": {
+        "path": [
+          "inference",
+          "cache-status"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_inference_cache_status",
+        "description": "Use this when the user wants to see which inference models are currently loaded in memory."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::InferenceCacheStatus",
+      "output": "Output::InferenceCacheStatus",
+      "outputs": [
+        "Output::InferenceCacheStatus"
+      ],
+      "wire_status": "stable",
+      "response_model": "ModelCacheStatus",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/cache_status.json",
+        "response": "responses/v1/inference/cache_status.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/inference.yaml",
+        "prose": "commands/inference.cache_status.md"
+      }
+    },
+    {
+      "id": "inference.capability",
+      "family": "inference",
+      "op": "capability",
+      "kind": "inference.runtime_op",
+      "title": "Report model capabilities",
+      "summary": "Report capabilities for a model spec.",
+      "description": "Parses a model spec into a provider and model name and reports what that combination supports without running the model. The result states whether generation, tokenization, embedding, and ranking are available, whether the operation requires network access or an API key, whether this binary was compiled with the provider feature needed to execute, whether the runtime currently permits network calls, and the known embedding dimension. Model specs are catalog names (`tinyllama`), catalog `name:quant` pairs (`tinyllama:q8_0`), local GGUF paths, or provider specs (`anthropic:claude-...`).",
+      "docs": "/docs/inference/capability",
+      "cli": {
+        "path": [
+          "inference",
+          "capability"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_inference_capability",
+        "description": "Use this when the user wants to know what a model spec can do — generate, tokenize, embed, or rank — and whether it needs the network, an API key, or a compiled provider feature."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::InferenceModelCapability",
+      "output": "Output::InferenceCapability",
+      "outputs": [
+        "Output::InferenceCapability"
+      ],
+      "wire_status": "stable",
+      "response_model": "InferenceCapability",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.provider_unavailable",
+          "docs": "https://stratadb.org/e/inference.provider_unavailable"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/capability.json",
+        "response": "responses/v1/inference/capability.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/inference.yaml",
+        "prose": "commands/inference.capability.md"
+      }
+    },
+    {
+      "id": "inference.detokenize",
+      "family": "inference",
+      "op": "detokenize",
+      "kind": "inference.runtime_op",
+      "title": "Detokenize token ids",
+      "summary": "Detokenize token ids with a local model.",
+      "description": "Decodes an ordered list of token ids back into text using a local model's vocabulary, returning the reconstructed string. Detokenization is a local-only operation: it requires a build with the local execution feature and returns `inference.unsupported_operation` for cloud provider specs.",
+      "docs": "/docs/inference/detokenize",
+      "cli": {
+        "path": [
+          "inference",
+          "detokenize"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_inference_detokenize",
+        "description": "Use this when the user wants to turn a local model's token ids back into text."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::InferenceDetokenize",
+      "output": "Output::InferenceText",
+      "outputs": [
+        "Output::InferenceText"
+      ],
+      "wire_status": "stable",
+      "response_model": "DetokenizedText",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.unsupported_operation",
+          "docs": "https://stratadb.org/e/inference.unsupported_operation"
+        },
+        {
+          "code": "inference.missing_model",
+          "docs": "https://stratadb.org/e/inference.missing_model"
+        },
+        {
+          "code": "inference.model_load_failed",
+          "docs": "https://stratadb.org/e/inference.model_load_failed"
+        },
+        {
+          "code": "inference.local_runtime_failed",
+          "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/detokenize.json",
+        "response": "responses/v1/inference/text.json",
+        "replay_skip": "detokenization loads a local model, which requires the local build feature"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/inference.yaml",
+        "prose": "commands/inference.detokenize.md"
+      }
+    },
+    {
+      "id": "inference.embed",
+      "family": "inference",
+      "op": "embed",
+      "kind": "inference.runtime_op",
+      "title": "Embed one text",
+      "summary": "Embed one text into a vector.",
+      "description": "Embeds one text with an embedding-capable model and returns the resulting vector. The vector's dimension is fixed by the model. Local embedding models require a build with the local execution feature; cloud embedding providers (OpenAI, Google) require the matching provider feature and an API key. To embed several texts in one call, use `inference embed-batch`.",
+      "docs": "/docs/inference/embed",
+      "cli": {
+        "path": [
+          "inference",
+          "embed"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_inference_embed",
+        "description": "Use this when the user wants to turn a single piece of text into an embedding vector with an inference model."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::InferenceEmbed",
+      "output": "Output::InferenceEmbedding",
+      "outputs": [
+        "Output::InferenceEmbedding"
+      ],
+      "wire_status": "stable",
+      "response_model": "EmbeddingVector",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.unsupported_operation",
+          "docs": "https://stratadb.org/e/inference.unsupported_operation"
+        },
+        {
+          "code": "inference.missing_model",
+          "docs": "https://stratadb.org/e/inference.missing_model"
+        },
+        {
+          "code": "inference.model_load_failed",
+          "docs": "https://stratadb.org/e/inference.model_load_failed"
+        },
+        {
+          "code": "inference.local_runtime_failed",
+          "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        },
+        {
+          "code": "inference.missing_api_key",
+          "docs": "https://stratadb.org/e/inference.missing_api_key"
+        },
+        {
+          "code": "inference.provider_unavailable",
+          "docs": "https://stratadb.org/e/inference.provider_unavailable"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/embed.json",
+        "response": "responses/v1/inference/embed.json",
+        "replay_skip": "embedding runs a model: local execution needs the local build feature and cloud execution needs a provider API key"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/inference.yaml",
+        "prose": "commands/inference.embed.md"
+      }
+    },
+    {
+      "id": "inference.embed_batch",
+      "family": "inference",
+      "op": "embed_batch",
+      "kind": "inference.runtime_op",
+      "title": "Embed multiple texts",
+      "summary": "Embed multiple texts into vectors.",
+      "description": "Embeds an ordered list of texts with an embedding-capable model and returns one outcome per input in the same order, alongside the embedding dimension. Each item is either a successful vector or a per-item error carrying a stable code and a redacted message, so one bad input does not fail the whole batch. Local embedding models require a build with the local execution feature; cloud embedding providers (OpenAI, Google) require the matching provider feature and an API key.",
+      "docs": "/docs/inference/embed_batch",
+      "cli": {
+        "path": [
+          "inference",
+          "embed-batch"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_inference_embed_batch",
+        "description": "Use this when the user wants to embed several texts at once and get one vector per input, preserving order."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::InferenceEmbedBatch",
+      "output": "Output::InferenceEmbeddings",
+      "outputs": [
+        "Output::InferenceEmbeddings"
+      ],
+      "wire_status": "stable",
+      "response_model": "EmbedResponse",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.unsupported_operation",
+          "docs": "https://stratadb.org/e/inference.unsupported_operation"
+        },
+        {
+          "code": "inference.missing_model",
+          "docs": "https://stratadb.org/e/inference.missing_model"
+        },
+        {
+          "code": "inference.model_load_failed",
+          "docs": "https://stratadb.org/e/inference.model_load_failed"
+        },
+        {
+          "code": "inference.local_runtime_failed",
+          "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        },
+        {
+          "code": "inference.missing_api_key",
+          "docs": "https://stratadb.org/e/inference.missing_api_key"
+        },
+        {
+          "code": "inference.provider_unavailable",
+          "docs": "https://stratadb.org/e/inference.provider_unavailable"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/embed_batch.json",
+        "response": "responses/v1/inference/embed_batch.json",
+        "replay_skip": "embedding runs a model: local execution needs the local build feature and cloud execution needs a provider API key"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/inference.yaml",
+        "prose": "commands/inference.embed_batch.md"
+      }
+    },
+    {
+      "id": "inference.generate",
+      "family": "inference",
+      "op": "generate",
+      "kind": "inference.runtime_op",
+      "title": "Generate text",
+      "summary": "Generate text with an inference model.",
+      "description": "Runs a text-generation request against a local or cloud model and returns the completion, the reason generation stopped, and the provider-reported prompt and completion token counts. The request controls the maximum completion tokens, sampling temperature, top-k and top-p cutoffs, an optional deterministic seed, string and token-id stop sequences, and an optional GBNF grammar for constrained generation. Chat models expect their chat template already applied in the prompt. Local models require a build with the local execution feature; cloud providers require the matching provider feature and an API key.",
+      "docs": "/docs/inference/generate",
+      "cli": {
+        "path": [
+          "inference",
+          "generate"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_inference_generate",
+        "description": "Use this when the user wants an inference model to produce or complete text from a prompt, with control over token budget, sampling, stop conditions, and grammar."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::InferenceGenerate",
+      "output": "Output::InferenceGeneration",
+      "outputs": [
+        "Output::InferenceGeneration"
+      ],
+      "wire_status": "stable",
+      "response_model": "GenerateResponse",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.unsupported_operation",
+          "docs": "https://stratadb.org/e/inference.unsupported_operation"
+        },
+        {
+          "code": "inference.missing_model",
+          "docs": "https://stratadb.org/e/inference.missing_model"
+        },
+        {
+          "code": "inference.model_load_failed",
+          "docs": "https://stratadb.org/e/inference.model_load_failed"
+        },
+        {
+          "code": "inference.local_runtime_failed",
+          "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        },
+        {
+          "code": "inference.missing_api_key",
+          "docs": "https://stratadb.org/e/inference.missing_api_key"
+        },
+        {
+          "code": "inference.provider_auth_failed",
+          "docs": "https://stratadb.org/e/inference.provider_auth_failed"
+        },
+        {
+          "code": "inference.provider_unavailable",
+          "docs": "https://stratadb.org/e/inference.provider_unavailable"
+        },
+        {
+          "code": "inference.provider_timeout",
+          "docs": "https://stratadb.org/e/inference.provider_timeout"
+        },
+        {
+          "code": "inference.provider_rate_limited",
+          "docs": "https://stratadb.org/e/inference.provider_rate_limited"
+        },
+        {
+          "code": "inference.invalid_request",
+          "docs": "https://stratadb.org/e/inference.invalid_request"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/generate.json",
+        "response": "responses/v1/inference/generate.json",
+        "replay_skip": "text generation runs a model: local execution needs the local build feature and cloud execution needs a provider API key"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/inference.yaml",
+        "prose": "commands/inference.generate.md"
+      }
+    },
+    {
+      "id": "inference.models.list",
+      "family": "inference",
+      "op": "models.list",
+      "kind": "inference.models_page",
+      "title": "List catalog models",
+      "summary": "List catalog inference models.",
+      "description": "Lists every model in Strata's built-in catalog as a terminal page. Each entry reports the model's task (embed, generate, or rank), architecture, default quantization, embedding dimension, HuggingFace repository, approximate artifact size, and whether the model artifact is already present in the local model directory. Use `inference models local` to see only the downloaded models, or `inference models pull` to fetch one.",
+      "docs": "/docs/inference/models/list",
+      "cli": {
+        "path": [
+          "inference",
+          "models",
+          "list"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_inference_models_list",
+        "description": "Use this when the user wants to see which inference models Strata knows about, including their task, embedding dimension, and whether each is already downloaded."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::InferenceModelsList",
+      "output": "Output::InferenceModels",
+      "outputs": [
+        "Output::InferenceModels"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<ModelInfo, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/models_list.json",
+        "response": "responses/v1/inference/models_list.json",
+        "replay_skip": "list marks each model is_local from the machine's model directory (STRATA_MODELS_DIR or ~/.strata/models), so the success output is machine-dependent"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/inference.yaml",
+        "prose": "commands/inference.models.list.md"
+      }
+    },
+    {
+      "id": "inference.models.local",
+      "family": "inference",
+      "op": "models.local",
+      "kind": "inference.models_page",
+      "title": "List local models",
+      "summary": "List locally downloaded inference models.",
+      "description": "Lists the catalog models that have at least one quantization variant present in the local model directory, as a terminal page. Entries carry the same facts as `inference models list` but are restricted to models that can run without a further download. The local model directory is resolved from `STRATA_MODELS_DIR`, falling back to `~/.strata/models`.",
+      "docs": "/docs/inference/models/local",
+      "cli": {
+        "path": [
+          "inference",
+          "models",
+          "local"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_inference_models_local",
+        "description": "Use this when the user wants to know which inference models are already downloaded and ready to run offline."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::InferenceModelsLocal",
+      "output": "Output::InferenceModels",
+      "outputs": [
+        "Output::InferenceModels"
+      ],
+      "wire_status": "stable",
+      "response_model": "Page<ModelInfo, String>",
+      "commit": "none",
+      "pagination": "cursor",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/models_local.json",
+        "response": "responses/v1/inference/models_local.json",
+        "replay_skip": "which models are present depends on the machine's model directory (STRATA_MODELS_DIR or ~/.strata/models)"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/inference.yaml",
+        "prose": "commands/inference.models.local.md"
+      }
+    },
+    {
+      "id": "inference.models.pull",
+      "family": "inference",
+      "op": "models.pull",
+      "kind": "inference.runtime_op",
+      "title": "Download a model",
+      "summary": "Download an inference model locally.",
+      "description": "Resolves a catalog name or model spec and downloads the model artifact into the local model directory, returning the resolved local path. Honors `STRATA_MODELS_DIR` for the destination and `STRATA_HF_ENDPOINT` and `STRATA_HF_TOKEN` (or `HF_TOKEN`) for gated HuggingFace repositories. Downloading requires network access and a build with the local execution feature; cloud-only builds return `inference.unsupported_operation`.",
+      "docs": "/docs/inference/models/pull",
+      "cli": {
+        "path": [
+          "inference",
+          "models",
+          "pull"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_inference_models_pull",
+        "description": "Use this when the user wants to download or fetch an inference model so it can run locally, offline."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::InferenceModelsPull",
+      "output": "Output::InferenceModelPulled",
+      "outputs": [
+        "Output::InferenceModelPulled"
+      ],
+      "wire_status": "stable",
+      "response_model": "PullModelOutput",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.download_disabled",
+          "docs": "https://stratadb.org/e/inference.download_disabled"
+        },
+        {
+          "code": "inference.missing_model",
+          "docs": "https://stratadb.org/e/inference.missing_model"
+        },
+        {
+          "code": "inference.download_failed",
+          "docs": "https://stratadb.org/e/inference.download_failed"
+        },
+        {
+          "code": "inference.download_verification_failed",
+          "docs": "https://stratadb.org/e/inference.download_verification_failed"
+        },
+        {
+          "code": "inference.io_failure",
+          "docs": "https://stratadb.org/e/inference.io_failure"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/models_pull.json",
+        "response": "responses/v1/inference/models_pull.json",
+        "replay_skip": "model download performs network I/O and requires the local execution build feature"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/inference.yaml",
+        "prose": "commands/inference.models.pull.md"
+      }
+    },
+    {
+      "id": "inference.rank",
+      "family": "inference",
+      "op": "rank",
+      "kind": "inference.runtime_op",
+      "title": "Rank passages",
+      "summary": "Rank passages against a query.",
+      "description": "Scores each candidate passage against a query with a ranking model and returns one outcome per passage. Each item carries the passage's original index and either a relevance score or a per-item error with a stable code and a redacted message, so callers can reorder passages by score while keeping them tied to their inputs. Ranking is a local-only operation: it requires a build with the local execution feature and a ranking-capable model.",
+      "docs": "/docs/inference/rank",
+      "cli": {
+        "path": [
+          "inference",
+          "rank"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_inference_rank",
+        "description": "Use this when the user wants to score or reorder candidate passages by relevance to a query using a reranking model."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::InferenceRank",
+      "output": "Output::InferenceRanking",
+      "outputs": [
+        "Output::InferenceRanking"
+      ],
+      "wire_status": "stable",
+      "response_model": "RankResponse",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.unsupported_operation",
+          "docs": "https://stratadb.org/e/inference.unsupported_operation"
+        },
+        {
+          "code": "inference.missing_model",
+          "docs": "https://stratadb.org/e/inference.missing_model"
+        },
+        {
+          "code": "inference.model_load_failed",
+          "docs": "https://stratadb.org/e/inference.model_load_failed"
+        },
+        {
+          "code": "inference.local_runtime_failed",
+          "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/rank.json",
+        "response": "responses/v1/inference/rank.json",
+        "replay_skip": "ranking loads a local model, which requires the local build feature"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/inference.yaml",
+        "prose": "commands/inference.rank.md"
+      }
+    },
+    {
+      "id": "inference.tokenize",
+      "family": "inference",
+      "op": "tokenize",
+      "kind": "inference.runtime_op",
+      "title": "Tokenize text",
+      "summary": "Tokenize text with a local model.",
+      "description": "Encodes text into the token id sequence a local model would see and returns the ids in order. Set `add_special` to include the model's special tokens (such as beginning-of-sequence markers). Tokenization is a local-only operation: it requires a build with the local execution feature and returns `inference.unsupported_operation` for cloud provider specs.",
+      "docs": "/docs/inference/tokenize",
+      "cli": {
+        "path": [
+          "inference",
+          "tokenize"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_inference_tokenize",
+        "description": "Use this when the user wants to convert text into a local model's token ids, for example to measure prompt length or inspect tokenization."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::InferenceTokenize",
+      "output": "Output::InferenceTokenIds",
+      "outputs": [
+        "Output::InferenceTokenIds"
+      ],
+      "wire_status": "stable",
+      "response_model": "TokenIds",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        },
+        {
+          "code": "inference.unsupported_operation",
+          "docs": "https://stratadb.org/e/inference.unsupported_operation"
+        },
+        {
+          "code": "inference.missing_model",
+          "docs": "https://stratadb.org/e/inference.missing_model"
+        },
+        {
+          "code": "inference.model_load_failed",
+          "docs": "https://stratadb.org/e/inference.model_load_failed"
+        },
+        {
+          "code": "inference.local_runtime_failed",
+          "docs": "https://stratadb.org/e/inference.local_runtime_failed"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/tokenize.json",
+        "response": "responses/v1/inference/tokenize.json",
+        "replay_skip": "tokenization loads a local model, which requires the local build feature"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/inference.yaml",
+        "prose": "commands/inference.tokenize.md"
+      }
+    },
+    {
+      "id": "inference.unload",
+      "family": "inference",
+      "op": "unload",
+      "kind": "inference.runtime_op",
+      "title": "Unload cached models",
+      "summary": "Unload cached inference models.",
+      "description": "Removes cached model engines from the runtime to free memory. Pass a model spec to unload one entry, or omit it to unload every cached generation, embedding, and ranking model. The result reports whether any cached entry was actually removed. This affects only the in-memory runtime cache; it never deletes downloaded model files from disk.",
+      "docs": "/docs/inference/unload",
+      "cli": {
+        "path": [
+          "inference",
+          "unload"
+        ],
+        "surface": "verb"
+      },
+      "mcp": {
+        "name": "strata_inference_unload",
+        "description": "Use this when the user wants to free memory by unloading a cached inference model, or all of them."
+      },
+      "feature": "core",
+      "access": "read",
+      "input": "Command::InferenceUnload",
+      "output": "Output::InferenceUnloadResult",
+      "outputs": [
+        "Output::InferenceUnloadResult"
+      ],
+      "wire_status": "stable",
+      "response_model": "UnloadResult",
+      "commit": "none",
+      "pagination": "none",
+      "batch": "none",
+      "errors": [
+        {
+          "code": "failed_precondition.engine.runtime_closed",
+          "docs": "https://stratadb.org/e/failed_precondition.engine.runtime_closed"
+        },
+        {
+          "code": "not_found.engine.branch",
+          "docs": "https://stratadb.org/e/not_found.engine.branch"
+        }
+      ],
+      "fixtures": {
+        "request": "requests/v1/inference/unload.json",
+        "response": "responses/v1/inference/unload.json"
+      },
+      "source": {
+        "command": "crates/executor/idl/v1/commands/inference.yaml",
+        "prose": "commands/inference.unload.md"
       }
     },
     {

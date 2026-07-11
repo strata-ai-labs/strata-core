@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "RemoteOriginFrontierInfo": {
+      "description": "One fetched branch in the recorded base frontier.",
+      "properties": {
+        "base": {
+          "description": "The bundle's per-branch base token.",
+          "type": "string"
+        },
+        "branch": {
+          "description": "The fetched branch name.",
+          "type": "string"
+        },
+        "local_version": {
+          "description": "Local head version at the sync point, when recorded.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "branch",
+        "base"
+      ],
+      "type": "object"
+    },
+    "RemoteOriginInfo": {
+      "description": "Serialized view of a database's recorded remote origin.",
+      "properties": {
+        "base_frontier": {
+          "description": "Per-branch base frontier recorded at the sync point.",
+          "items": {
+            "$ref": "#/$defs/RemoteOriginFrontierInfo"
+          },
+          "type": "array"
+        },
+        "branch": {
+          "description": "The branch the clone opened by default.",
+          "type": "string"
+        },
+        "dataset": {
+          "description": "The remote dataset name.",
+          "type": "string"
+        },
+        "fetched_at_micros": {
+          "description": "When the fetch happened (Unix microseconds).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "manifest_hash": {
+          "description": "The fetched bundle's manifest hash.",
+          "type": "string"
+        },
+        "remote_url": {
+          "description": "The remote host the database was fetched from.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "remote_url",
+        "dataset",
+        "branch",
+        "manifest_hash",
+        "fetched_at_micros",
+        "base_frontier"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/admin.remote.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "admin.remote",
+  "request": {
+    "additionalProperties": false,
+    "description": "Reads where this database was cloned from (its remote origin),\nwhen clone recorded one.",
+    "properties": {
+      "type": {
+        "const": "remote_get",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Remote origin of a cloned database (`None` when never recorded).",
+    "properties": {
+      "data": {
+        "properties": {
+          "origin": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RemoteOriginInfo"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The recorded origin, when present."
+          }
+        },
+        "type": "object"
+      },
+      "type": {
+        "const": "remote_origin_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

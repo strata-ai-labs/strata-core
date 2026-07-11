@@ -1,0 +1,6 @@
+{
+  "type": "inference_tokenize",
+  "model": "tinyllama",
+  "text": "hello world",
+  "add_special": false
+}

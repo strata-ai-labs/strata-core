@@ -1,0 +1,189 @@
+{
+  "$defs": {
+    "ArrowExportPrimitive": {
+      "description": "Product primitive selected by Arrow export.",
+      "oneOf": [
+        {
+          "const": "kv",
+          "description": "Export the KV primitive.",
+          "type": "string"
+        },
+        {
+          "const": "json",
+          "description": "Export the JSON primitive.",
+          "type": "string"
+        },
+        {
+          "const": "event",
+          "description": "Export the event primitive.",
+          "type": "string"
+        },
+        {
+          "const": "vector",
+          "description": "Export one vector collection.",
+          "type": "string"
+        },
+        {
+          "const": "graph",
+          "description": "Export one graph as node and edge files derived from the output stem.",
+          "type": "string"
+        }
+      ]
+    },
+    "ArrowExportResult": {
+      "description": "Arrow export summary.",
+      "properties": {
+        "format": {
+          "$ref": "#/$defs/ArrowFileFormat"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "primitive": {
+          "$ref": "#/$defs/ArrowExportPrimitive"
+        },
+        "row_count": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "size_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "primitive",
+        "format",
+        "paths",
+        "row_count",
+        "size_bytes"
+      ],
+      "type": "object"
+    },
+    "ArrowFileFormat": {
+      "description": "Arrow file format selected for import/export.",
+      "oneOf": [
+        {
+          "const": "parquet",
+          "description": "Apache Parquet.",
+          "type": "string"
+        },
+        {
+          "const": "csv",
+          "description": "Comma-separated values with a header row.",
+          "type": "string"
+        },
+        {
+          "const": "jsonl",
+          "description": "Line-delimited JSON objects.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/arrow.export.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "arrow.export",
+  "request": {
+    "additionalProperties": false,
+    "description": "Exports a product primitive to an Arrow-compatible file.",
+    "properties": {
+      "branch": {
+        "description": "Target branch. Defaults to the executor handle branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "collection": {
+        "description": "Target vector collection for vector exports.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "event_type": {
+        "description": "Optional event type filter for event exports.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "format": {
+        "$ref": "#/$defs/ArrowFileFormat",
+        "description": "Output file format."
+      },
+      "graph": {
+        "description": "Target graph for graph exports.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "limit": {
+        "description": "Optional row limit.",
+        "format": "uint64",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "description": "Output file path. Graph exports treat this as a stem and return concrete node and edge paths.",
+        "type": "string"
+      },
+      "prefix": {
+        "description": "Optional key, document, vector-key, or node-id prefix.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "primitive": {
+        "$ref": "#/$defs/ArrowExportPrimitive",
+        "description": "Product primitive to export."
+      },
+      "space": {
+        "description": "Target product space. Defaults to `\"default\"`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "arrow_export",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "primitive",
+      "format",
+      "path"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Arrow export summary.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/ArrowExportResult"
+      },
+      "type": {
+        "const": "arrow_export_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

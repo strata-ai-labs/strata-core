@@ -114,3 +114,23 @@ kinds:
     response_model: BatchResult<{result}>
     snippets:
       - atomic-batch.md
+  - id: read.summary
+    access: read
+    commit: none
+    response_model: StatusResponse<{result}>
+    snippets:
+      - status-value.md
+  - id: action.status
+    access: write
+    commit: none
+    response_model: StatusResponse<{result}>
+    snippets:
+      - status-value.md
+  - id: inference.models_page
+    access: read
+    commit: none
+    pagination: cursor
+    response_model: Page<ModelInfo, String>
+  - id: inference.runtime_op
+    access: read
+    commit: none

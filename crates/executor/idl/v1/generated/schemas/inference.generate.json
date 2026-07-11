@@ -1,0 +1,178 @@
+{
+  "$defs": {
+    "GenerateRequest": {
+      "description": "A request for text generation, provider-agnostic.",
+      "properties": {
+        "grammar": {
+          "default": null,
+          "description": "Optional GBNF grammar string for constrained generation.\n\nFor local models, this is passed to llama.cpp's grammar sampler.\nFor OpenAI, this enables JSON mode (`response_format: json_object`).\nFor Anthropic/Google, this field is silently ignored.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_tokens": {
+          "default": 256,
+          "description": "Maximum number of completion tokens to produce.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "prompt": {
+          "default": "",
+          "description": "Input prompt text.",
+          "type": "string"
+        },
+        "seed": {
+          "default": null,
+          "description": "Optional deterministic sampling seed for providers that support it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stop_sequences": {
+          "default": [],
+          "description": "String stop sequences.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "stop_tokens": {
+          "default": [],
+          "description": "Token-id stop sequences for local providers.",
+          "items": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "temperature": {
+          "default": 0.0,
+          "description": "Sampling temperature.",
+          "format": "float",
+          "type": "number"
+        },
+        "top_k": {
+          "default": 0,
+          "description": "Top-k sampling cutoff for providers that support it.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "top_p": {
+          "default": 1.0,
+          "description": "Nucleus sampling cutoff for providers that support it.",
+          "format": "float",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "GenerateResponse": {
+      "description": "The result of a generation request.",
+      "properties": {
+        "completion_tokens": {
+          "description": "Provider-reported completion token count.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "prompt_tokens": {
+          "description": "Provider-reported prompt token count.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stop_reason": {
+          "$ref": "#/$defs/StopReason",
+          "description": "Why generation stopped."
+        },
+        "text": {
+          "description": "Generated output text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "stop_reason",
+        "prompt_tokens",
+        "completion_tokens"
+      ],
+      "type": "object"
+    },
+    "StopReason": {
+      "description": "Why generation stopped.",
+      "oneOf": [
+        {
+          "const": "stop_token",
+          "description": "Generation reached a stop token or stop sequence.",
+          "type": "string"
+        },
+        {
+          "const": "max_tokens",
+          "description": "Generation reached the configured maximum token count.",
+          "type": "string"
+        },
+        {
+          "const": "context_length",
+          "description": "Generation reached the model context limit.",
+          "type": "string"
+        },
+        {
+          "const": "cancelled",
+          "description": "Generation was cancelled by provider policy or caller control.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/inference.generate.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "inference.generate",
+  "request": {
+    "additionalProperties": false,
+    "description": "Generates text with an inference model.",
+    "properties": {
+      "model": {
+        "description": "Model spec.",
+        "type": "string"
+      },
+      "request": {
+        "$ref": "#/$defs/GenerateRequest",
+        "description": "Generation request."
+      },
+      "type": {
+        "const": "inference_generate",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "model",
+      "request"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Inference generation output.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/GenerateResponse"
+      },
+      "type": {
+        "const": "inference_generation",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

@@ -71,3 +71,25 @@ response_models:
   - AnalyticsResult<GraphBfsData>
   - MutationAck<GraphBulkInsert>
   - MutationAck<GraphDeletePolicyApply>
+  - StatusResponse<PingInfo>
+  - StatusResponse<AdminDatabaseInfo>
+  - StatusResponse<AdminHealth>
+  - StatusResponse<AdminMetrics>
+  - StatusResponse<AdminDescribe>
+  - StatusResponse<AdminConfig>
+  - Maybe<RemoteOriginInfo>
+  - Maybe<String>
+  - StatusResponse<HubClone>
+  - StatusResponse<ArrowImport>
+  - StatusResponse<ArrowExport>
+  - Page<ModelInfo, String>
+  - PullModelOutput
+  - InferenceCapability
+  - GenerateResponse
+  - TokenIds
+  - DetokenizedText
+  - EmbeddingVector
+  - EmbedResponse
+  - RankResponse
+  - UnloadResult
+  - ModelCacheStatus

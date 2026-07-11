@@ -1,0 +1,51 @@
+{
+  "$id": "https://stratadb.org/idl/v1/schemas/inference.detokenize.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "inference.detokenize",
+  "request": {
+    "additionalProperties": false,
+    "description": "Detokenizes token ids with a local inference model.",
+    "properties": {
+      "ids": {
+        "description": "Token ids.",
+        "items": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "type": "array"
+      },
+      "model": {
+        "description": "Model spec.",
+        "type": "string"
+      },
+      "type": {
+        "const": "inference_detokenize",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "model",
+      "ids"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Inference detokenized text.",
+    "properties": {
+      "data": {
+        "type": "string"
+      },
+      "type": {
+        "const": "inference_text",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

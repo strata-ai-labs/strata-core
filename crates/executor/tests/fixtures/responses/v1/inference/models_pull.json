@@ -1,0 +1,7 @@
+{
+  "data": {
+    "model": "miniLM",
+    "path": "/home/strata/.strata/models/all-MiniLM-L6-v2.F16.gguf"
+  },
+  "type": "inference_model_pulled"
+}

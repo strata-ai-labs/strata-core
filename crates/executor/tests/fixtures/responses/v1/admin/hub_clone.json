@@ -1,0 +1,11 @@
+{
+  "data": {
+    "branch": "default",
+    "dataset": "strata/titanic",
+    "dest": "./titanic.strata",
+    "manifest_hash": "blake3:8ac589d2e4965c755758414a8f952e1b0f2a01cefea8d6841d1ce8246fc41175",
+    "object_count": 12,
+    "total_bytes": 40960
+  },
+  "type": "hub_clone_result"
+}

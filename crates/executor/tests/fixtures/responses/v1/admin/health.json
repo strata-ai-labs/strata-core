@@ -1,0 +1,12 @@
+{
+  "data": {
+    "branch_catalog": "healthy",
+    "branch_count": 1,
+    "default_branch": "default",
+    "identity": "healthy",
+    "registry": "healthy",
+    "space_catalog": "healthy",
+    "status": "healthy"
+  },
+  "type": "health"
+}

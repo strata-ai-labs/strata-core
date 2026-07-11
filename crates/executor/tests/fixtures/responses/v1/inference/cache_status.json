@@ -1,0 +1,8 @@
+{
+  "data": {
+    "embedding_models": [],
+    "generation_models": [],
+    "ranking_models": []
+  },
+  "type": "inference_cache_status"
+}

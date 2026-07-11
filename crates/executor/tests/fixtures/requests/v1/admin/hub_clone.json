@@ -1,0 +1,1 @@
+{"type": "hub_clone", "dataset": "strata/titanic", "branch": "default", "dest": "./titanic.strata"}

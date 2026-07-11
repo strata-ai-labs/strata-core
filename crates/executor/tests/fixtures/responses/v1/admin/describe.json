@@ -1,0 +1,38 @@
+{
+  "data": {
+    "branch": "default",
+    "branches": [
+      "default"
+    ],
+    "capabilities": {
+      "arrow": true,
+      "event": true,
+      "graph_core": true,
+      "inference": true,
+      "json": true,
+      "kv": true,
+      "vector": true,
+      "vector_index": true
+    },
+    "config": {
+      "created": true,
+      "default_branch": "default",
+      "durable": false,
+      "target": "cache"
+    },
+    "default_branch": "default",
+    "primitives": {
+      "event_count": 0,
+      "graphs": [],
+      "json_count": 0,
+      "kv_count": 0,
+      "vector_collections": []
+    },
+    "spaces": [
+      "default"
+    ],
+    "target": "cache",
+    "version": "1.0.0"
+  },
+  "type": "described"
+}

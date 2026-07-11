@@ -1,0 +1,98 @@
+{
+  "$id": "https://stratadb.org/idl/v1/schemas/admin.hub_clone.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "admin.hub_clone",
+  "request": {
+    "additionalProperties": false,
+    "description": "Clones a dataset from a hub into a new local database directory.\n\nOrchestration (resolution, download, verification, reconstitution,\norigin recording) runs once behind this command; every frontend\nreaches it here. The session database is not touched.",
+    "properties": {
+      "branch": {
+        "description": "Branch to fetch. Defaults to the dataset's default branch.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "dataset": {
+        "description": "Dataset to clone.",
+        "type": "string"
+      },
+      "dest": {
+        "description": "Destination directory (must not exist, or be empty).",
+        "type": "string"
+      },
+      "hub_url": {
+        "description": "Explicit hub URL; when absent the 5-layer resolver runs\n(flag, `STRATA_HUB_URL`, project config, global config).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "const": "hub_clone",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "dataset",
+      "dest"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "A completed hub clone.",
+    "properties": {
+      "data": {
+        "properties": {
+          "branch": {
+            "description": "Branch fetched.",
+            "type": "string"
+          },
+          "dataset": {
+            "description": "Dataset cloned.",
+            "type": "string"
+          },
+          "dest": {
+            "description": "Destination directory holding the new database.",
+            "type": "string"
+          },
+          "manifest_hash": {
+            "description": "The bundle's manifest hash.",
+            "type": "string"
+          },
+          "object_count": {
+            "description": "Objects fetched.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_bytes": {
+            "description": "Total bytes fetched.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "dataset",
+          "branch",
+          "dest",
+          "manifest_hash",
+          "object_count",
+          "total_bytes"
+        ],
+        "type": "object"
+      },
+      "type": {
+        "const": "hub_clone_result",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

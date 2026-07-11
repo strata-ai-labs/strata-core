@@ -1,0 +1,9 @@
+{
+  "data": {
+    "created": true,
+    "default_branch": "default",
+    "durable": false,
+    "target": "cache"
+  },
+  "type": "config"
+}

@@ -1,0 +1,146 @@
+{
+  "$defs": {
+    "RankRequest": {
+      "description": "Ranking request.",
+      "properties": {
+        "passages": {
+          "description": "Candidate passages.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "query": {
+          "description": "Query text.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query",
+        "passages"
+      ],
+      "type": "object"
+    },
+    "RankResponse": {
+      "description": "Ranking response.",
+      "properties": {
+        "items": {
+          "description": "Ordered ranking item outcomes.",
+          "items": {
+            "$ref": "#/$defs/RankRuntimeOutcome"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "RankRuntimeOutcome": {
+      "description": "Ranking item outcome.",
+      "oneOf": [
+        {
+          "description": "Successful ranking score.",
+          "properties": {
+            "index": {
+              "description": "Passage index.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "score": {
+              "description": "Relevance score.",
+              "format": "float",
+              "type": "number"
+            },
+            "status": {
+              "const": "ok",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "index",
+            "score"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Failed ranking item.",
+          "properties": {
+            "code": {
+              "description": "Stable error code.",
+              "type": "string"
+            },
+            "index": {
+              "description": "Passage index.",
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "message": {
+              "description": "Redacted public error message.",
+              "type": "string"
+            },
+            "status": {
+              "const": "error",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "index",
+            "code",
+            "message"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "$id": "https://stratadb.org/idl/v1/schemas/inference.rank.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "command": "inference.rank",
+  "request": {
+    "additionalProperties": false,
+    "description": "Ranks passages against a query with an inference model.",
+    "properties": {
+      "model": {
+        "description": "Model spec.",
+        "type": "string"
+      },
+      "request": {
+        "$ref": "#/$defs/RankRequest",
+        "description": "Ranking request."
+      },
+      "type": {
+        "const": "inference_rank",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "model",
+      "request"
+    ],
+    "type": "object"
+  },
+  "response": {
+    "description": "Inference ranking output.",
+    "properties": {
+      "data": {
+        "$ref": "#/$defs/RankResponse"
+      },
+      "type": {
+        "const": "inference_ranking",
+        "type": "string"
+      }
+    },
+    "required": [
+      "type",
+      "data"
+    ],
+    "type": "object"
+  }
+}

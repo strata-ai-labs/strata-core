@@ -6,26 +6,3 @@
 # if a new variant is neither covered nor listed. Do not add entries for
 # new commands — author their IDL coverage instead.
 uncovered:
-  - Command::ArrowExport
-  - Command::ArrowImport
-  - Command::ConfigGet
-  - Command::ConfigureGetKey
-  - Command::Describe
-  - Command::Health
-  - Command::HubClone
-  - Command::InferenceCacheStatus
-  - Command::InferenceDetokenize
-  - Command::InferenceEmbed
-  - Command::InferenceEmbedBatch
-  - Command::InferenceGenerate
-  - Command::InferenceModelCapability
-  - Command::InferenceModelsList
-  - Command::InferenceModelsLocal
-  - Command::InferenceModelsPull
-  - Command::InferenceRank
-  - Command::InferenceTokenize
-  - Command::InferenceUnload
-  - Command::Info
-  - Command::Metrics
-  - Command::Ping
-  - Command::RemoteGet
