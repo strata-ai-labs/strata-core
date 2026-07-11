@@ -35,8 +35,8 @@ const EXECUTOR_ERROR_CODES: &[ErrorCodeRegistryEntry] = &[
         EXECUTOR_SCHEMA,
     ),
     entry(
-        "failed_precondition.executor.hub_url",
-        ErrorClass::FailedPrecondition,
+        "invalid_argument.executor.hub_url",
+        ErrorClass::InvalidArgument,
         RetryPolicy::Never,
         CommitOutcomeStatus::NotStarted,
         "The hub URL supplied for this invocation is invalid.",

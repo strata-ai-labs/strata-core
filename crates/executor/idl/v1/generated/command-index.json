@@ -258,8 +258,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
         },
         {
-          "code": "failed_precondition.executor.hub_url",
-          "docs": "https://stratadb.org/e/failed_precondition.executor.hub_url"
+          "code": "invalid_argument.executor.hub_url",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_url"
         },
         {
           "code": "failed_precondition.executor.hub_clone",

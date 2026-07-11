@@ -4,7 +4,7 @@
   "generator_version": "strata-executor-cli-idl.1",
   "source": {
     "path": "crates/executor/idl/v1/generated/command-index.json",
-    "checksum_sha256": "59fb4dbe01df6d6a0b5031f410d93ad99bcd7271928a0ea1fd8303c77cd4ba14",
+    "checksum_sha256": "9119720193fb3a65f8f0ac9f01a2617398988274010dada2df208b2c994a113a",
     "schema_version": "strata.idl.v1",
     "generator_version": "strata-executor-idl.1"
   },
@@ -783,8 +783,8 @@
           "docs": "https://stratadb.org/e/invalid_argument.executor.hub_feature_disabled"
         },
         {
-          "code": "failed_precondition.executor.hub_url",
-          "docs": "https://stratadb.org/e/failed_precondition.executor.hub_url"
+          "code": "invalid_argument.executor.hub_url",
+          "docs": "https://stratadb.org/e/invalid_argument.executor.hub_url"
         },
         {
           "code": "failed_precondition.executor.hub_clone",
