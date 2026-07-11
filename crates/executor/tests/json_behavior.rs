@@ -266,7 +266,7 @@ fn json_null_documents_are_listed_as_present_documents() {
 fn json_branch_and_space_defaults_are_isolated() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
     executor
-        .create_branch_from_head(DEFAULT_BRANCH, "feature")
+        .branch_fork_current(DEFAULT_BRANCH, "feature")
         .expect("branch creates");
 
     write_json(

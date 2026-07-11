@@ -201,7 +201,7 @@ fn durable_executor_reopens_values_lists_and_history() {
 fn branch_and_space_defaults_are_isolated() {
     let mut executor = Executor::open_cache().expect("cache executor opens");
     executor
-        .create_branch_from_head(DEFAULT_BRANCH, "feature")
+        .branch_fork_current(DEFAULT_BRANCH, "feature")
         .expect("branch creates");
 
     write(&mut executor, None, None, "shared", "default-branch");

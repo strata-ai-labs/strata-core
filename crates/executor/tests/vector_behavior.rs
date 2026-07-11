@@ -153,7 +153,7 @@ fn vector_branch_and_space_defaults_are_isolated() {
         VectorDistanceMetric::Cosine,
     );
     executor
-        .create_branch_from_head(DEFAULT_BRANCH, "feature")
+        .branch_fork_current(DEFAULT_BRANCH, "feature")
         .expect("branch creates");
 
     upsert_vector_in(
@@ -1183,7 +1183,7 @@ fn assert_vector_branch_and_space_mutation_edges(executor: &mut Executor) {
 fn assert_vector_branch_mutation_edges(executor: &mut Executor) {
     create_collection_in(executor, None, None, "shared", VectorDistanceMetric::Cosine);
     executor
-        .create_branch_from_head(DEFAULT_BRANCH, "feature")
+        .branch_fork_current(DEFAULT_BRANCH, "feature")
         .expect("branch creates");
     upsert_vector_in(
         executor,

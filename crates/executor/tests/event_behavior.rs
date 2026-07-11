@@ -82,7 +82,7 @@ fn populate_branch_and_space_fixture(executor: &mut Executor) {
         json!({"branch": "base"}),
     );
     executor
-        .create_branch_from_head(DEFAULT_BRANCH, "feature")
+        .branch_fork_current(DEFAULT_BRANCH, "feature")
         .expect("branch creates");
 
     let feature_append = append_event(

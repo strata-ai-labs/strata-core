@@ -285,18 +285,4 @@ impl Executor {
         self.database.close()?;
         Ok(())
     }
-
-    /// Creates a branch from the current source branch head.
-    pub fn create_branch_from_head(
-        &mut self,
-        source: impl AsRef<str>,
-        branch: impl Into<String>,
-    ) -> ExecutorResult<()> {
-        let source = branch_name(Some(source.as_ref()), DEFAULT_BRANCH)?;
-        let branch = branch.into();
-        let branch = branch_name(Some(branch.as_str()), DEFAULT_BRANCH)?;
-        let mut branches = self.database.branches()?;
-        branches.fork_current(&source, branch)?;
-        Ok(())
-    }
 }
