@@ -289,6 +289,9 @@ pub struct CliFixtureRefs {
     /// Request fixtures replayed before the primary request (behavior guard).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub setup: Vec<serde_json::Value>,
+    /// Reason this entry is not replayed by the behavior guard, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_skip: Option<String>,
     /// Executed request/response fixture pairs (behavior guard).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cases: Vec<serde_json::Value>,

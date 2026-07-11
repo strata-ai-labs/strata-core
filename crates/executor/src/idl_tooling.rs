@@ -216,6 +216,11 @@ pub struct FixtureRefs {
     /// primary request (fixture-behavior guard setup).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub setup: Vec<String>,
+    /// When set, the behavior guard does not replay this entry; the value
+    /// states why (nondeterministic wall-clock output, network, filesystem,
+    /// feature-gated execution). Schema validation still applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_skip: Option<String>,
     /// Additional executed request/response pairs; every alternate response
     /// in `responses` must be reproduced by one of these.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -628,7 +633,7 @@ pub fn resolve_index(repo_root: &Path) -> Result<CommandIndex> {
     let response_models: BTreeSet<String> = dto_inventory.response_models.into_iter().collect();
 
     let mut command_entries = Vec::new();
-    for file_name in ["kv.yaml", "vector.yaml"] {
+    for file_name in ["json.yaml", "kv.yaml", "vector.yaml"] {
         let command_path = idl_root.join("commands").join(file_name);
         validate_command_source_text(&command_path)?;
         let command_file: CommandsFileSource = read_yaml(&command_path)?;

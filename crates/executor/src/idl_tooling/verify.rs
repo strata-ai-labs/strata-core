@@ -25,6 +25,15 @@ pub(super) fn verify_fixtures(
 ) -> Result<Vec<PathBuf>> {
     let mut blessed = Vec::new();
     for entry in &index.commands {
+        if let Some(reason) = &entry.fixtures.replay_skip {
+            if reason.trim().is_empty() {
+                return Err(invalid(format!(
+                    "`{}`: replay_skip must state a reason",
+                    entry.id
+                )));
+            }
+            continue;
+        }
         let primary = FixtureCase {
             setup: entry.fixtures.setup.clone(),
             request: entry.fixtures.request.clone(),
