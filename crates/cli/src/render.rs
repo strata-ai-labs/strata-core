@@ -64,6 +64,9 @@ fn render_human(value: &Value) -> Result<(), CliError> {
             "bool" | "uint" => println!("{}", scalar_summary(data)),
             "event_length" => print_count(data),
             "kv_versioned_value" => print_optional_data(data),
+            "vector_data" | "event_record" | "graph_node_result" | "graph_edge_result" => {
+                print_optional_record(data)?;
+            }
             "json_value" | "json_versioned_value" => print_maybe_json(kind, data)?,
             "json_version_history" => print_bare_items(data),
             "vector_matches" => print_matches_data(data),
@@ -145,6 +148,13 @@ fn render_raw(value: &Value) {
             let found = data.get("found").and_then(Value::as_bool).unwrap_or(false);
             if let Some(leaf) = json_leaf(kind, data, found) {
                 println!("{}", raw_scalar(leaf));
+            }
+            return;
+        }
+        "kv_versioned_value" => {
+            // The KV record nests the stored value under its own `value` field.
+            if let Some(value) = point_read_record(data).and_then(|record| record.get("value")) {
+                println!("{}", raw_scalar(value));
             }
             return;
         }
@@ -378,16 +388,35 @@ fn print_model_pulled(data: &Value) {
     println!("pulled {model} -> {path}");
 }
 
+/// Unwraps a `{found, value}` point-read envelope to its record, or `None`
+/// when the record is absent.
+fn point_read_record(data: &Value) -> Option<&Value> {
+    match data.get("found").and_then(Value::as_bool) {
+        Some(true) => data.get("value"),
+        _ => None,
+    }
+}
+
 fn print_optional_data(data: &Value) {
-    if data.is_null() {
-        println!("(nil)");
-        return;
+    // KV point reads answer with a {found, value} envelope whose record nests
+    // the stored value under its own `value` field.
+    match point_read_record(data) {
+        None => println!("(nil)"),
+        Some(record) => match record.get("value") {
+            Some(value) => println!("{}", scalar_summary(value)),
+            None => println!("{}", scalar_summary(record)),
+        },
     }
-    if let Some(value) = data.get("value") {
-        println!("{}", scalar_summary(value));
-        return;
+}
+
+fn print_optional_record(data: &Value) -> Result<(), CliError> {
+    // Vector/event/graph point reads share the envelope but carry structured
+    // records; show the record itself, or `(nil)` when absent.
+    match point_read_record(data) {
+        None => println!("(nil)"),
+        Some(record) => render_human_data(record)?,
     }
-    println!("{}", scalar_summary(data));
+    Ok(())
 }
 
 fn print_maybe_json(kind: &str, data: &Value) -> Result<(), CliError> {
@@ -520,7 +549,13 @@ fn humanize_kv_bytes(output: &Output, value: &mut Value) {
         return;
     };
     match output {
-        Output::KvVersionedValue(_) => decode_bytes_fields(data, &["value"]),
+        // The stored value sits inside the {found, value} point-read envelope,
+        // one level below `data`.
+        Output::KvVersionedValue(_) => {
+            if let Some(record) = data.get_mut("value") {
+                decode_bytes_fields(record, &["value"]);
+            }
+        }
         Output::VersionHistory(_) => decode_bytes_item_fields(data, &["value"]),
         Output::KeysPage { .. } => {
             if let Some(items) = data.get_mut("items").and_then(Value::as_array_mut) {
@@ -635,7 +670,7 @@ fn human_error_line(value: &Value) -> String {
 mod tests {
     use serde_json::json;
     use strata_executor::{
-        Bytes, CommitReceipt, MutationEffect, Output, PageInfo, ScanItem, VersionedValue,
+        Bytes, CommitReceipt, Maybe, MutationEffect, Output, PageInfo, ScanItem, VersionedValue,
     };
 
     use super::humanize_kv_bytes;
@@ -646,11 +681,12 @@ mod tests {
 
     #[test]
     fn kv_value_decodes_to_text_for_human_output() {
-        let output = Output::KvVersionedValue(Some(VersionedValue::new(bytes("one"), 1, 10)));
+        let output =
+            Output::KvVersionedValue(Maybe::found(VersionedValue::new(bytes("one"), 1, 10)));
         let mut value = serde_json::to_value(&output).expect("output serializes");
-        assert_eq!(value["data"]["value"], json!("b25l"));
+        assert_eq!(value["data"]["value"]["value"], json!("b25l"));
         humanize_kv_bytes(&output, &mut value);
-        assert_eq!(value["data"]["value"], json!("one"));
+        assert_eq!(value["data"]["value"]["value"], json!("one"));
     }
 
     #[test]
@@ -679,14 +715,14 @@ mod tests {
 
     #[test]
     fn non_utf8_bytes_keep_their_base64_form() {
-        let output = Output::KvVersionedValue(Some(VersionedValue::new(
+        let output = Output::KvVersionedValue(Maybe::found(VersionedValue::new(
             Bytes::new(vec![0xff, 0xfe]),
             1,
             10,
         )));
         let mut value = serde_json::to_value(&output).expect("output serializes");
         humanize_kv_bytes(&output, &mut value);
-        assert_eq!(value["data"]["value"], json!("//4="));
+        assert_eq!(value["data"]["value"]["value"], json!("//4="));
     }
 
     #[test]
@@ -703,10 +739,10 @@ mod tests {
 
     #[test]
     fn missing_reads_are_untouched() {
-        let output = Output::KvVersionedValue(None);
+        let output = Output::KvVersionedValue(Maybe::missing());
         let mut value = serde_json::to_value(&output).expect("output serializes");
         humanize_kv_bytes(&output, &mut value);
-        assert_eq!(value["data"], serde_json::Value::Null);
+        assert_eq!(value["data"], json!({ "found": false, "value": null }));
     }
 
     #[test]

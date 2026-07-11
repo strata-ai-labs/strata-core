@@ -8,8 +8,8 @@ pub(super) fn event_outputs() -> Vec<Output> {
             effect: MutationEffect::created(),
             commit: commit_receipt(1, 10, 2, 0),
         },
-        Output::EventRecord(Some(event_versioned_data(0, "user.created", 1, 10))),
-        Output::EventRecord(None),
+        Output::EventRecord(Maybe::found(event_versioned_data(0, "user.created", 1, 10))),
+        Output::EventRecord(Maybe::missing()),
         Output::EventRecords {
             items: vec![
                 event_versioned_data(0, "user.created", 1, 10),

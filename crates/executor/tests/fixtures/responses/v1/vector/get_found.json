@@ -1,18 +1,21 @@
 {
   "data": {
-    "data": {
-      "embedding": [
-        1.0,
-        0.0
-      ],
-      "metadata": {
-        "kind": "doc"
-      }
-    },
-    "key": "doc-a",
-    "timestamp": 4,
-    "vector_revision": 1,
-    "version": 4
+    "found": true,
+    "value": {
+      "data": {
+        "embedding": [
+          1.0,
+          0.0
+        ],
+        "metadata": {
+          "kind": "doc"
+        }
+      },
+      "key": "doc-a",
+      "timestamp": 4,
+      "vector_revision": 1,
+      "version": 4
+    }
   },
   "type": "vector_data"
 }

@@ -80,7 +80,7 @@ fn durable_executor_reopens_vector_collections_rows_and_history() {
 
     let mut reopened = Executor::open_durable_local(&path).expect("durable executor reopens");
     assert_eq!(vector_count(&mut reopened, "docs"), 1);
-    let Output::VectorData(Some(value)) = reopened
+    let Output::VectorData(value) = reopened
         .execute(Command::VectorGet {
             branch: None,
             space: None,
@@ -92,6 +92,7 @@ fn durable_executor_reopens_vector_collections_rows_and_history() {
     else {
         panic!("unexpected vector get output");
     };
+    let value = value.into_option().expect("vector value present");
     assert_eq!(value.data().embedding(), &[0.0, 1.0]);
     assert_eq!(value.vector_revision(), 3);
     assert_vector_history_has_tombstone(&mut reopened, "docs", "doc-b");
@@ -1392,7 +1393,7 @@ fn seed_vector_versions(executor: &mut Executor) -> u64 {
 }
 
 fn assert_vector_current_and_historical_reads(executor: &mut Executor, first_timestamp: u64) {
-    let Output::VectorData(Some(current)) = executor
+    let Output::VectorData(current) = executor
         .execute(Command::VectorGet {
             branch: None,
             space: None,
@@ -1404,10 +1405,11 @@ fn assert_vector_current_and_historical_reads(executor: &mut Executor, first_tim
     else {
         panic!("unexpected vector get output");
     };
+    let current = current.into_option().expect("vector value present");
     assert_eq!(current.data().embedding(), &[0.0, 1.0]);
     assert_eq!(current.vector_revision(), 3);
 
-    let Output::VectorData(Some(historical)) = executor
+    let Output::VectorData(historical) = executor
         .execute(Command::VectorGet {
             branch: None,
             space: None,
@@ -1419,6 +1421,7 @@ fn assert_vector_current_and_historical_reads(executor: &mut Executor, first_tim
     else {
         panic!("unexpected historical get output");
     };
+    let historical = historical.into_option().expect("vector value present");
     assert_eq!(historical.data().embedding(), &[1.0, 0.0]);
 }
 
@@ -1766,7 +1769,7 @@ fn get_vector_value(
     else {
         panic!("unexpected vector get output");
     };
-    value
+    value.into_option()
 }
 
 fn patch_vector_metadata(
@@ -2022,6 +2025,7 @@ fn get_vector_where(
         panic!("unexpected get output");
     };
     value
+        .into_option()
         .and_then(|value| value.data().metadata().cloned())
         .and_then(|metadata| metadata.get("where").cloned())
         .and_then(|where_value| where_value.as_str().map(str::to_owned))

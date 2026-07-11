@@ -8,7 +8,7 @@ use super::{
     vector_dimension_mismatch_error, vector_embedding, vector_filter, vector_history_result,
     vector_index_diagnostics, vector_key, vector_key_page_output, vector_match,
     vector_metadata_patch, vector_upsert_entry, vector_versioned_data, vector_write_output,
-    BatchVectorEntry, EngineVectorConfig, Executor, ExecutorError, ExecutorResult, Output,
+    BatchVectorEntry, EngineVectorConfig, Executor, ExecutorError, ExecutorResult, Maybe, Output,
     PageInfo, Timestamp, VectorDistanceMetric, VectorIndexQueryResult, VectorMetadataFilter,
     DEFAULT_VECTOR_LIST_LIMIT,
 };
@@ -139,9 +139,9 @@ impl Executor {
         } else {
             service.get_versioned(&collection, &key)?
         };
-        Ok(Output::VectorData(
+        Ok(Output::VectorData(Maybe::from_option(
             value.as_ref().map(vector_versioned_data),
-        ))
+        )))
     }
 
     pub(super) fn execute_vector_getv(

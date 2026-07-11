@@ -581,8 +581,16 @@ fn source_contract_uses_kv_specific_value_outputs() {
     for file in source_files(&crate_root().join("tests/command_contract")) {
         tests_source.push_str(&fs::read_to_string(file).expect("command contract module reads"));
     }
-    assert!(output_source.contains("KvVersionedValue"));
-    assert!(!output_source.contains("KvVersionedValue(Maybe"));
+    // Every non-JSON point read answers with the shared `Maybe` envelope
+    // carrying that capability's specific payload DTO, so absence is uniform
+    // across primitives instead of a bare `null`.
+    assert!(output_source.contains("KvVersionedValue(Maybe<VersionedValue>)"));
+    assert!(output_source.contains("VectorData(Maybe<VectorVersionedData>)"));
+    assert!(output_source.contains("EventRecord(Maybe<EventVersionedData>)"));
+    assert!(output_source.contains("GraphNodeResult(Maybe<GraphNodeDataOutput>)"));
+    assert!(output_source.contains("GraphEdgeResult(Maybe<GraphEdgeDataOutput>)"));
+    // JSON keeps its bespoke envelope: a non-optional `value` preserves a
+    // stored JSON null (found-null) that `Maybe<Value>` would collapse.
     assert!(output_source.contains("JsonValue(MaybeJsonValue)"));
     assert!(output_source.contains("JsonVersionedValue(MaybeJsonVersionedValue)"));
     assert!(tests_source.contains("MaybeJsonValue::missing"));

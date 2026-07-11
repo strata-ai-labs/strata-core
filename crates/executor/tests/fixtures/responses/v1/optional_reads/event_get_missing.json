@@ -1,4 +1,7 @@
 {
-  "type": "event_record",
-  "data": null
+  "data": {
+    "found": false,
+    "value": null
+  },
+  "type": "event_record"
 }

@@ -101,7 +101,7 @@ fn public_response_family_goldens_match_public_json() {
             include_str!("../fixtures/responses/v1/kv/list_keys.json"),
         ),
         (
-            Output::KvVersionedValue(Some(VersionedValue::new(bytes("one"), 3, 3))),
+            Output::KvVersionedValue(Maybe::found(VersionedValue::new(bytes("one"), 3, 3))),
             include_str!("../fixtures/responses/v1/kv/get_found.json"),
         ),
         (
@@ -303,15 +303,15 @@ fn optional_read_goldens_match_public_json() {
             include_str!("../fixtures/responses/v1/optional_reads/json_get_null.json"),
         ),
         (
-            Output::KvVersionedValue(None),
+            Output::KvVersionedValue(Maybe::missing()),
             include_str!("../fixtures/responses/v1/optional_reads/kv_get_versioned_missing.json"),
         ),
         (
-            Output::VectorData(None),
+            Output::VectorData(Maybe::missing()),
             include_str!("../fixtures/responses/v1/optional_reads/vector_get_missing.json"),
         ),
         (
-            Output::EventRecord(None),
+            Output::EventRecord(Maybe::missing()),
             include_str!("../fixtures/responses/v1/optional_reads/event_get_missing.json"),
         ),
     ];

@@ -5,8 +5,8 @@ use super::{
     finish_batch_get_results, finish_batch_results, history_result, kv_batch_exists_result,
     kv_batch_get_result, kv_batch_result, kv_key, kv_value, optional_key, optional_limit,
     reject_duplicate_valid_keys, sample_output, scan_item, upsert_effect, usize_to_u64,
-    versioned_value, write_output, BatchKvEntry, Bytes, Executor, ExecutorResult, Output, PageInfo,
-    Timestamp,
+    versioned_value, write_output, BatchKvEntry, Bytes, Executor, ExecutorResult, Maybe, Output,
+    PageInfo, Timestamp,
 };
 
 impl Executor {
@@ -38,16 +38,16 @@ impl Executor {
         let key = kv_key(key)?;
         let mut service = self.kv_service(branch, space)?;
         if let Some(as_of) = as_of {
-            return Ok(Output::KvVersionedValue(
+            return Ok(Output::KvVersionedValue(Maybe::from_option(
                 service
                     .get_versioned_at(&key, Timestamp::from_micros(as_of))?
                     .as_ref()
                     .map(versioned_value),
-            ));
+            )));
         }
-        Ok(Output::KvVersionedValue(
+        Ok(Output::KvVersionedValue(Maybe::from_option(
             service.get_versioned(&key)?.as_ref().map(versioned_value),
-        ))
+        )))
     }
 
     pub(super) fn execute_kv_delete(

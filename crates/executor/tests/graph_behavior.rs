@@ -1607,7 +1607,7 @@ fn get_node_as_of(
         })
         .expect("graph node get succeeds")
     {
-        Output::GraphNodeResult(node) => node,
+        Output::GraphNodeResult(node) => node.into_option(),
         output => panic!("unexpected graph node get output: {output:?}"),
     }
 }
@@ -1627,7 +1627,7 @@ fn get_node(
         })
         .expect("graph node get succeeds")
     {
-        Output::GraphNodeResult(node) => node,
+        Output::GraphNodeResult(node) => node.into_option(),
         output => panic!("unexpected graph node get output: {output:?}"),
     }
 }
@@ -1649,7 +1649,7 @@ fn graph_get_node_in(
         })
         .expect("graph node get succeeds")
     {
-        Output::GraphNodeResult(node) => node,
+        Output::GraphNodeResult(node) => node.into_option(),
         output => panic!("unexpected graph node get output: {output:?}"),
     }
 }
@@ -1884,7 +1884,7 @@ fn get_edge(
         })
         .expect("graph edge get succeeds")
     {
-        Output::GraphEdgeResult(edge) => edge,
+        Output::GraphEdgeResult(edge) => edge.into_option(),
         output => panic!("unexpected graph edge get output: {output:?}"),
     }
 }
@@ -1911,7 +1911,7 @@ fn graph_get_edge_in(
         })
         .expect("graph edge get succeeds")
     {
-        Output::GraphEdgeResult(edge) => edge,
+        Output::GraphEdgeResult(edge) => edge.into_option(),
         output => panic!("unexpected graph edge get output: {output:?}"),
     }
 }

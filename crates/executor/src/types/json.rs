@@ -56,6 +56,13 @@ impl JsonVersionedValue {
 }
 
 /// JSON point-read result that distinguishes absence from a stored JSON null.
+///
+/// Serializes the same `{found, value}` wire shape as the shared
+/// [`Maybe`](super::Maybe) envelope, but carries a non-optional `value` so a
+/// stored JSON `null` (`found: true, value: null`) stays distinct from an
+/// absent document (`found: false, value: null`). `Maybe<serde_json::Value>`
+/// cannot express that distinction because `Option<Value>` deserializes a JSON
+/// `null` back to absence — hence this dedicated type.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "idl-tooling", derive(schemars::JsonSchema))]
 pub struct MaybeJsonValue {

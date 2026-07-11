@@ -1,8 +1,11 @@
 {
   "data": {
-    "timestamp": 3,
-    "value": "b25l",
-    "version": 3
+    "found": true,
+    "value": {
+      "timestamp": 3,
+      "value": "b25l",
+      "version": 3
+    }
   },
   "type": "kv_versioned_value"
 }
