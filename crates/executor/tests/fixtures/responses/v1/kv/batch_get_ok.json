@@ -1,27 +1,43 @@
 {
-  "type": "batch_get_results",
   "data": {
-    "mode": "itemwise",
-    "status": "ok",
     "applied": false,
     "commit": null,
     "items": [
       {
-        "index": 0,
-        "status": "ok",
         "applied": false,
-        "effect": null,
         "commit": null,
+        "effect": null,
+        "error": null,
+        "index": 0,
         "result": {
-          "key": "YQ==",
+          "error": null,
           "found": true,
+          "key": "YQ==",
+          "timestamp": 3,
           "value": "b25l",
-          "version": 1,
-          "timestamp": 10,
-          "error": null
+          "version": 3
         },
-        "error": null
+        "status": "ok"
+      },
+      {
+        "applied": false,
+        "commit": null,
+        "effect": null,
+        "error": null,
+        "index": 1,
+        "result": {
+          "error": null,
+          "found": false,
+          "key": "bWlzc2luZw==",
+          "timestamp": null,
+          "value": null,
+          "version": null
+        },
+        "status": "miss"
       }
-    ]
-  }
+    ],
+    "mode": "itemwise",
+    "status": "partial"
+  },
+  "type": "batch_get_results"
 }

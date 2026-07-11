@@ -1,35 +1,51 @@
 {
-  "type": "vector_batch_get_results",
   "data": {
-    "mode": "itemwise",
-    "status": "ok",
     "applied": false,
     "commit": null,
     "items": [
       {
-        "index": 0,
-        "status": "ok",
         "applied": false,
-        "effect": null,
         "commit": null,
+        "effect": null,
+        "error": null,
+        "index": 0,
         "result": {
+          "error": null,
           "found": true,
           "value": {
-            "key": "doc-a",
             "data": {
               "embedding": [
                 1.0,
                 0.0
-              ]
+              ],
+              "metadata": {
+                "kind": "doc"
+              }
             },
-            "version": 1,
-            "timestamp": 10,
-            "vector_revision": 1
-          },
-          "error": null
+            "key": "doc-a",
+            "timestamp": 4,
+            "vector_revision": 1,
+            "version": 4
+          }
         },
-        "error": null
+        "status": "ok"
+      },
+      {
+        "applied": false,
+        "commit": null,
+        "effect": null,
+        "error": null,
+        "index": 1,
+        "result": {
+          "error": null,
+          "found": false,
+          "value": null
+        },
+        "status": "ok"
       }
-    ]
-  }
+    ],
+    "mode": "itemwise",
+    "status": "ok"
+  },
+  "type": "vector_batch_get_results"
 }

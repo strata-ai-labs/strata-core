@@ -19,6 +19,9 @@ commands:
     fixtures:
       request: requests/v1/kv/get.json
       response: responses/v1/kv/get_found.json
+      setup:
+        - requests/v1/kv/put.json
+        - requests/v1/setup/kv_put_a_two.json
   - id: kv.delete
     kind: mutation.delete
     title: Delete KV value
@@ -45,6 +48,16 @@ commands:
       response: responses/v1/kv/list_page.json
       responses:
         - responses/v1/kv/list_keys.json
+      setup:
+        - requests/v1/setup/kv_put_a1.json
+        - requests/v1/setup/kv_put_a2.json
+        - requests/v1/setup/kv_put_a3.json
+      cases:
+        - setup:
+            - requests/v1/setup/kv_put_a1.json
+            - requests/v1/setup/kv_put_a2.json
+          request: requests/v1/kv/list_all.json
+          response: responses/v1/kv/list_keys.json
   - id: kv.scan
     kind: read.page
     title: Scan KV rows
@@ -56,6 +69,10 @@ commands:
     fixtures:
       request: requests/v1/kv/scan.json
       response: responses/v1/kv/scan_page.json
+      setup:
+        - requests/v1/setup/kv_put_a1.json
+        - requests/v1/setup/kv_put_a2.json
+        - requests/v1/setup/kv_put_a3.json
   - id: kv.batch_put
     kind: batch.itemwise_mutation
     title: Batch put KV values
@@ -80,6 +97,8 @@ commands:
     errors+:
       - invalid_argument.engine.kv_batch
     fixtures:
+      setup:
+        - requests/v1/kv/put.json
       request: requests/v1/kv/batch_get.json
       response: responses/v1/kv/batch_get_ok.json
   - id: kv.batch_delete
@@ -94,6 +113,8 @@ commands:
       - invalid_argument.engine.kv_batch_duplicate_key
       - invalid_argument.executor.kv_batch_duplicate_key
     fixtures:
+      setup:
+        - requests/v1/kv/put.json
       request: requests/v1/kv/batch_delete.json
       response: responses/v1/kv/batch_mutation_partial.json
   - id: kv.batch_exists
@@ -106,6 +127,8 @@ commands:
     errors+:
       - invalid_argument.engine.kv_batch
     fixtures:
+      setup:
+        - requests/v1/kv/put.json
       request: requests/v1/kv/batch_exists.json
       response: responses/v1/kv/batch_exists.json
   - id: kv.exists
@@ -116,8 +139,10 @@ commands:
     result: bool
     prose: commands/kv.exists.md
     fixtures:
+      setup:
+        - requests/v1/kv/put.json
       request: requests/v1/kv/exists.json
-      response: responses/v1/status/bool_true.json
+      response: responses/v1/kv/exists_true.json
   - id: kv.history
     kind: read.history
     title: Read KV history
@@ -126,6 +151,9 @@ commands:
     result: HistoryItem
     prose: commands/kv.history.md
     fixtures:
+      setup:
+        - requests/v1/kv/put.json
+        - requests/v1/setup/kv_put_a_two.json
       request: requests/v1/kv/history.json
       response: responses/v1/kv/history_found.json
   - id: kv.count
@@ -136,8 +164,10 @@ commands:
     result: u64
     prose: commands/kv.count.md
     fixtures:
+      setup:
+        - requests/v1/kv/put.json
       request: requests/v1/kv/count.json
-      response: responses/v1/status/uint_count.json
+      response: responses/v1/kv/count.json
   - id: kv.sample
     kind: read.sample
     title: Sample KV rows
@@ -146,5 +176,7 @@ commands:
     result: SampleItem
     prose: commands/kv.sample.md
     fixtures:
+      setup:
+        - requests/v1/kv/put.json
       request: requests/v1/kv/sample.json
       response: responses/v1/kv/sample_page.json

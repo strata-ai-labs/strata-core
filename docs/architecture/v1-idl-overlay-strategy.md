@@ -1129,7 +1129,7 @@ Where the pipeline actually stands:
 | Runtime `CliCommandCatalog` | ✅ built, consumed only by its own tests |
 | JSON Schemas (schemars) | ✅ built 2026-07-10: per-command documents in `generated/schemas/`, fixtures validate against them in `generate`/`check` |
 | CLI reads the catalog (help/explain/listing) | ❌ Slice 2 unlanded; clap tree is parallel and unguarded (META-4) |
-| Exhaustiveness + consumer + fixture-behavior guards | ❌ (META-3, DSGN-2) |
+| Exhaustiveness + consumer + fixture-behavior guards | ✅ built 2026-07-10: `uncovered-commands.yaml` (shrink-only, resolver-enforced), CLI round-trip test + `uncovered-cli-verbs.yaml` in crates/cli, `strata-idl verify-fixtures` replays every pair against a scratch executor (CI-gated) |
 | Lifecycle vocabulary beyond `stable\|transitional`; runtime version exposure | ❌ (EVOL-2/3) |
 | Remaining 8 command families | ❌ scheduled below |
 | Publishing (binary `agents` surface, website, SDK embedding) | ❌ depends on first-run D3/D7 |

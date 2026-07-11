@@ -67,7 +67,10 @@
       ],
       "fixtures": {
         "request": "requests/v1/kv/batch_delete.json",
-        "response": "responses/v1/kv/batch_mutation_partial.json"
+        "response": "responses/v1/kv/batch_mutation_partial.json",
+        "setup": [
+          "requests/v1/kv/put.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/kv.yaml",
@@ -130,7 +133,10 @@
       ],
       "fixtures": {
         "request": "requests/v1/kv/batch_exists.json",
-        "response": "responses/v1/kv/batch_exists.json"
+        "response": "responses/v1/kv/batch_exists.json",
+        "setup": [
+          "requests/v1/kv/put.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/kv.yaml",
@@ -193,7 +199,10 @@
       ],
       "fixtures": {
         "request": "requests/v1/kv/batch_get.json",
-        "response": "responses/v1/kv/batch_get_ok.json"
+        "response": "responses/v1/kv/batch_get_ok.json",
+        "setup": [
+          "requests/v1/kv/put.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/kv.yaml",
@@ -323,7 +332,10 @@
       ],
       "fixtures": {
         "request": "requests/v1/kv/count.json",
-        "response": "responses/v1/status/uint_count.json"
+        "response": "responses/v1/kv/count.json",
+        "setup": [
+          "requests/v1/kv/put.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/kv.yaml",
@@ -441,7 +453,10 @@
       ],
       "fixtures": {
         "request": "requests/v1/kv/exists.json",
-        "response": "responses/v1/status/bool_true.json"
+        "response": "responses/v1/kv/exists_true.json",
+        "setup": [
+          "requests/v1/kv/put.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/kv.yaml",
@@ -500,7 +515,11 @@
       ],
       "fixtures": {
         "request": "requests/v1/kv/get.json",
-        "response": "responses/v1/kv/get_found.json"
+        "response": "responses/v1/kv/get_found.json",
+        "setup": [
+          "requests/v1/kv/put.json",
+          "requests/v1/setup/kv_put_a_two.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/kv.yaml",
@@ -559,7 +578,11 @@
       ],
       "fixtures": {
         "request": "requests/v1/kv/history.json",
-        "response": "responses/v1/kv/history_found.json"
+        "response": "responses/v1/kv/history_found.json",
+        "setup": [
+          "requests/v1/kv/put.json",
+          "requests/v1/setup/kv_put_a_two.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/kv.yaml",
@@ -622,6 +645,21 @@
         "response": "responses/v1/kv/list_page.json",
         "responses": [
           "responses/v1/kv/list_keys.json"
+        ],
+        "setup": [
+          "requests/v1/setup/kv_put_a1.json",
+          "requests/v1/setup/kv_put_a2.json",
+          "requests/v1/setup/kv_put_a3.json"
+        ],
+        "cases": [
+          {
+            "setup": [
+              "requests/v1/setup/kv_put_a1.json",
+              "requests/v1/setup/kv_put_a2.json"
+            ],
+            "request": "requests/v1/kv/list_all.json",
+            "response": "responses/v1/kv/list_keys.json"
+          }
         ]
       },
       "source": {
@@ -740,7 +778,10 @@
       ],
       "fixtures": {
         "request": "requests/v1/kv/sample.json",
-        "response": "responses/v1/kv/sample_page.json"
+        "response": "responses/v1/kv/sample_page.json",
+        "setup": [
+          "requests/v1/kv/put.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/kv.yaml",
@@ -799,7 +840,12 @@
       ],
       "fixtures": {
         "request": "requests/v1/kv/scan.json",
-        "response": "responses/v1/kv/scan_page.json"
+        "response": "responses/v1/kv/scan_page.json",
+        "setup": [
+          "requests/v1/setup/kv_put_a1.json",
+          "requests/v1/setup/kv_put_a2.json",
+          "requests/v1/setup/kv_put_a3.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/kv.yaml",
@@ -870,7 +916,12 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/batch_delete.json",
-        "response": "responses/v1/vector/batch_delete_ok.json"
+        "response": "responses/v1/vector/batch_delete_ok.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -941,7 +992,12 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/batch_get.json",
-        "response": "responses/v1/vector/batch_get_ok.json"
+        "response": "responses/v1/vector/batch_get_ok.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -1024,7 +1080,10 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/batch_upsert.json",
-        "response": "responses/v1/vector/batch_upsert_ok.json"
+        "response": "responses/v1/vector/batch_upsert_ok.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -1168,7 +1227,10 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/collection_delete.json",
-        "response": "responses/v1/status/bool_true.json"
+        "response": "responses/v1/vector/collection_delete_true.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -1236,7 +1298,10 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/collection_list.json",
-        "response": "responses/v1/vector/collection_list.json"
+        "response": "responses/v1/vector/collection_list.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -1304,7 +1369,10 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/collection_stats.json",
-        "response": "responses/v1/vector/collection_list.json"
+        "response": "responses/v1/vector/collection_list.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -1371,7 +1439,10 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/count.json",
-        "response": "responses/v1/status/uint_count.json"
+        "response": "responses/v1/vector/count.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -1438,7 +1509,12 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/delete.json",
-        "response": "responses/v1/vector/delete_applied.json"
+        "response": "responses/v1/vector/delete_applied.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -1505,7 +1581,12 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/delete_all.json",
-        "response": "responses/v1/vector/bulk_delete_applied.json"
+        "response": "responses/v1/vector/delete_all_applied.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -1576,7 +1657,12 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/delete_by_filter.json",
-        "response": "responses/v1/vector/bulk_delete_applied.json"
+        "response": "responses/v1/vector/delete_by_filter_applied.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -1643,7 +1729,12 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/exists.json",
-        "response": "responses/v1/status/bool_true.json"
+        "response": "responses/v1/vector/exists_true.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -1710,7 +1801,12 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/get.json",
-        "response": "responses/v1/vector/get_found.json"
+        "response": "responses/v1/vector/get_found.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -1777,7 +1873,12 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/history.json",
-        "response": "responses/v1/vector/history_found.json"
+        "response": "responses/v1/vector/history_found.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -1853,7 +1954,12 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/index_query.json",
-        "response": "responses/v1/vector/search_with_index_diagnostics.json"
+        "response": "responses/v1/vector/index_query_exact.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -1920,7 +2026,12 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/keys.json",
-        "response": "responses/v1/vector/key_page.json"
+        "response": "responses/v1/vector/key_page.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -1991,7 +2102,12 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/metadata_update.json",
-        "response": "responses/v1/vector/metadata_update_applied.json"
+        "response": "responses/v1/vector/metadata_update_applied.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -2066,7 +2182,12 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/query.json",
-        "response": "responses/v1/vector/search.json"
+        "response": "responses/v1/vector/search.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json",
+          "requests/v1/vector/upsert.json",
+          "requests/v1/setup/vector_upsert_doc_b.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",
@@ -2149,7 +2270,10 @@
       ],
       "fixtures": {
         "request": "requests/v1/vector/upsert.json",
-        "response": "responses/v1/vector/upsert_applied.json"
+        "response": "responses/v1/vector/upsert_applied.json",
+        "setup": [
+          "requests/v1/vector/collection_create.json"
+        ]
       },
       "source": {
         "command": "crates/executor/idl/v1/commands/vector.yaml",

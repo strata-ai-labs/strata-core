@@ -1,56 +1,82 @@
 {
-  "type": "vector_batch_delete_results",
   "data": {
-    "mode": "itemwise",
-    "status": "ok",
     "applied": true,
     "commit": {
-      "version": 2,
-      "timestamp": 20,
-      "durable": true,
+      "delete_count": 1,
+      "durable": false,
       "put_count": 0,
-      "delete_count": 1
+      "timestamp": 6,
+      "version": 6
     },
     "items": [
       {
-        "index": 0,
-        "status": "ok",
         "applied": true,
+        "commit": {
+          "delete_count": 1,
+          "durable": false,
+          "put_count": 0,
+          "timestamp": 6,
+          "version": 6
+        },
         "effect": {
+          "affected_count": 1,
           "applied": true,
           "kind": "deleted",
-          "matched": true,
-          "affected_count": 1
+          "matched": true
         },
-        "commit": {
-          "version": 2,
-          "timestamp": 20,
-          "durable": true,
-          "put_count": 0,
-          "delete_count": 1
-        },
+        "error": null,
+        "index": 0,
         "result": {
           "applied": true,
+          "commit": {
+            "delete_count": 1,
+            "durable": false,
+            "put_count": 0,
+            "timestamp": 6,
+            "version": 6
+          },
           "effect": {
+            "affected_count": 1,
             "applied": true,
             "kind": "deleted",
-            "matched": true,
-            "affected_count": 1
+            "matched": true
           },
-          "commit": {
-            "version": 2,
-            "timestamp": 20,
-            "durable": true,
-            "put_count": 0,
-            "delete_count": 1
-          },
-          "version": 2,
-          "timestamp": 20,
+          "error": null,
+          "timestamp": 6,
           "vector_revision": null,
-          "error": null
+          "version": 6
         },
-        "error": null
+        "status": "ok"
+      },
+      {
+        "applied": false,
+        "commit": null,
+        "effect": {
+          "affected_count": 0,
+          "applied": false,
+          "kind": "not_found",
+          "matched": false
+        },
+        "error": null,
+        "index": 1,
+        "result": {
+          "applied": false,
+          "effect": {
+            "affected_count": 0,
+            "applied": false,
+            "kind": "not_found",
+            "matched": false
+          },
+          "error": null,
+          "timestamp": null,
+          "vector_revision": null,
+          "version": null
+        },
+        "status": "ok"
       }
-    ]
-  }
+    ],
+    "mode": "itemwise",
+    "status": "partial"
+  },
+  "type": "vector_batch_delete_results"
 }
